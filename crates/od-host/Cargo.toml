@@ -4,5 +4,12 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+od-isa = { path = "../od-isa" }
+od-jit = { path = "../od-jit" }
+
 [lints]
 workspace = true

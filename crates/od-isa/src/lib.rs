@@ -1,3 +1,431 @@
-//! x86 architectural state, decoder, and reference interpreter.
+//! A deliberately small x86-64 fragment decoder and reference interpreter.
 //!
-//! Directory and build scaffold only; implementation has not started.
+//! This crate implements only the register-only S0-09 forms documented in
+//! `docs/specs/CPU_CONTRACT.md`. It is not an x86 emulator or a boot CPU.
+
+use std::collections::HashMap;
+
+const CF: u64 = 1 << 0;
+const PF: u64 = 1 << 2;
+const AF: u64 = 1 << 4;
+const ZF: u64 = 1 << 6;
+const SF: u64 = 1 << 7;
+const OF: u64 = 1 << 11;
+const ARITHMETIC_FLAGS: u64 = CF | PF | AF | ZF | SF | OF;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum Register {
+    Rax = 0,
+    Rcx = 1,
+    Rdx = 2,
+    Rbx = 3,
+}
+
+impl Register {
+    fn from_encoding(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Rax),
+            1 => Some(Self::Rcx),
+            2 => Some(Self::Rdx),
+            3 => Some(Self::Rbx),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Operation {
+    MovImm { dst: Register, value: u64 },
+    Add { dst: Register, src: Register },
+    Sub { dst: Register, src: Register },
+    Cmp { lhs: Register, rhs: Register },
+    Jz { displacement: i8 },
+    Jnz { displacement: i8 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Instruction {
+    pub offset: usize,
+    pub length: usize,
+    pub operation: Operation,
+}
+
+impl Instruction {
+    pub fn next_offset(self) -> usize {
+        self.offset + self.length
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DecodeError {
+    Truncated { offset: usize },
+    UnsupportedOpcode { offset: usize, opcode: u8 },
+    UnsupportedEncoding { offset: usize },
+    InvalidBranchTarget { offset: usize, target: i64 },
+}
+
+pub fn decode(code: &[u8]) -> Result<Vec<Instruction>, DecodeError> {
+    let mut result = Vec::new();
+    let mut offset = 0;
+    while offset < code.len() {
+        let start = offset;
+        let first = code[offset];
+        let instruction = if first == 0x48 {
+            offset += 1;
+            let opcode = *code
+                .get(offset)
+                .ok_or(DecodeError::Truncated { offset: start })?;
+            match opcode {
+                0xB8..=0xBB => {
+                    let dst = Register::from_encoding(opcode - 0xB8)
+                        .ok_or(DecodeError::UnsupportedEncoding { offset: start })?;
+                    offset += 1;
+                    let immediate = code
+                        .get(offset..offset + 8)
+                        .ok_or(DecodeError::Truncated { offset: start })?;
+                    let value = u64::from_le_bytes(immediate.try_into().expect("eight-byte slice"));
+                    offset += 8;
+                    Operation::MovImm { dst, value }
+                }
+                0x03 | 0x2B | 0x3B => {
+                    offset += 1;
+                    let modrm = *code
+                        .get(offset)
+                        .ok_or(DecodeError::Truncated { offset: start })?;
+                    offset += 1;
+                    if modrm >> 6 != 0b11 {
+                        return Err(DecodeError::UnsupportedEncoding { offset: start });
+                    }
+                    let dst = Register::from_encoding((modrm >> 3) & 7)
+                        .ok_or(DecodeError::UnsupportedEncoding { offset: start })?;
+                    let src = Register::from_encoding(modrm & 7)
+                        .ok_or(DecodeError::UnsupportedEncoding { offset: start })?;
+                    match opcode {
+                        0x03 => Operation::Add { dst, src },
+                        0x2B => Operation::Sub { dst, src },
+                        _ => Operation::Cmp { lhs: dst, rhs: src },
+                    }
+                }
+                _ => {
+                    return Err(DecodeError::UnsupportedOpcode {
+                        offset: start,
+                        opcode,
+                    });
+                }
+            }
+        } else {
+            match first {
+                0x74 | 0x75 => {
+                    offset += 1;
+                    let displacement = *code
+                        .get(offset)
+                        .ok_or(DecodeError::Truncated { offset: start })?
+                        as i8;
+                    offset += 1;
+                    if first == 0x74 {
+                        Operation::Jz { displacement }
+                    } else {
+                        Operation::Jnz { displacement }
+                    }
+                }
+                opcode => {
+                    return Err(DecodeError::UnsupportedOpcode {
+                        offset: start,
+                        opcode,
+                    });
+                }
+            }
+        };
+        result.push(Instruction {
+            offset: start,
+            length: offset - start,
+            operation: instruction,
+        });
+    }
+
+    validate_branch_targets(&result, code.len())?;
+    Ok(result)
+}
+
+fn branch_target(instruction: Instruction, displacement: i8) -> i64 {
+    instruction.next_offset() as i64 + i64::from(displacement)
+}
+
+fn validate_branch_targets(
+    instructions: &[Instruction],
+    code_length: usize,
+) -> Result<(), DecodeError> {
+    let boundaries: HashMap<usize, ()> = instructions.iter().map(|i| (i.offset, ())).collect();
+    for instruction in instructions {
+        let displacement = match instruction.operation {
+            Operation::Jz { displacement } | Operation::Jnz { displacement } => displacement,
+            _ => continue,
+        };
+        let target = branch_target(*instruction, displacement);
+        if target < 0
+            || (target as usize != code_length && !boundaries.contains_key(&(target as usize)))
+        {
+            return Err(DecodeError::InvalidBranchTarget {
+                offset: instruction.offset,
+                target,
+            });
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CpuState {
+    pub gpr: [u64; 4],
+    pub rip: usize,
+    /// Only CF/PF/AF/ZF/SF/OF are modeled. Reserved bit 1 is always set.
+    pub rflags: u64,
+}
+
+impl Default for CpuState {
+    fn default() -> Self {
+        Self {
+            gpr: [0; 4],
+            rip: 0,
+            rflags: 1 << 1,
+        }
+    }
+}
+
+impl CpuState {
+    pub fn register(&self, register: Register) -> u64 {
+        self.gpr[register as usize]
+    }
+
+    fn set_register(&mut self, register: Register, value: u64) {
+        self.gpr[register as usize] = value;
+    }
+
+    fn set_arithmetic_flags(&mut self, result: u64, carry: bool, auxiliary: bool, overflow: bool) {
+        let mut flags = self.rflags & !ARITHMETIC_FLAGS;
+        if carry {
+            flags |= CF;
+        }
+        if (result as u8).count_ones() % 2 == 0 {
+            flags |= PF;
+        }
+        if auxiliary {
+            flags |= AF;
+        }
+        if result == 0 {
+            flags |= ZF;
+        }
+        if result >> 63 != 0 {
+            flags |= SF;
+        }
+        if overflow {
+            flags |= OF;
+        }
+        self.rflags = flags | (1 << 1);
+    }
+
+    pub fn zero_flag(&self) -> bool {
+        self.rflags & ZF != 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExitReason {
+    ReachedCodeEnd,
+    InstructionBudgetExhausted,
+    StopRequested,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutionResult {
+    pub state: CpuState,
+    pub reason: ExitReason,
+    pub instructions_executed: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExecuteError {
+    InvalidInstructionPointer { rip: usize },
+}
+
+pub fn interpret(
+    code: &[u8],
+    state: &mut CpuState,
+    budget: u64,
+) -> Result<ExecutionResult, DecodeErrorOrExecute> {
+    let instructions = decode(code).map_err(DecodeErrorOrExecute::Decode)?;
+    interpret_decoded(code.len(), &instructions, state, budget)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DecodeErrorOrExecute {
+    Decode(DecodeError),
+    Execute(ExecuteError),
+}
+
+fn interpret_decoded(
+    code_length: usize,
+    instructions: &[Instruction],
+    state: &mut CpuState,
+    budget: u64,
+) -> Result<ExecutionResult, DecodeErrorOrExecute> {
+    let index: HashMap<usize, usize> = instructions
+        .iter()
+        .enumerate()
+        .map(|(i, ins)| (ins.offset, i))
+        .collect();
+    let mut executed = 0;
+    while state.rip != code_length {
+        if executed >= budget {
+            return Ok(ExecutionResult {
+                state: state.clone(),
+                reason: ExitReason::InstructionBudgetExhausted,
+                instructions_executed: executed,
+            });
+        }
+        let instruction = *instructions
+            .get(*index.get(&state.rip).ok_or_else(|| {
+                DecodeErrorOrExecute::Execute(ExecuteError::InvalidInstructionPointer {
+                    rip: state.rip,
+                })
+            })?)
+            .expect("instruction index is valid");
+        let mut next_rip = instruction.next_offset();
+        match instruction.operation {
+            Operation::MovImm { dst, value } => state.set_register(dst, value),
+            Operation::Add { dst, src } => {
+                let lhs = state.register(dst);
+                let rhs = state.register(src);
+                let (result, carry) = lhs.overflowing_add(rhs);
+                let overflow = (!(lhs ^ rhs) & (lhs ^ result)) >> 63 != 0;
+                state.set_arithmetic_flags(
+                    result,
+                    carry,
+                    (lhs ^ rhs ^ result) & 0x10 != 0,
+                    overflow,
+                );
+                state.set_register(dst, result);
+            }
+            Operation::Sub { dst, src } | Operation::Cmp { lhs: dst, rhs: src } => {
+                let lhs = state.register(dst);
+                let rhs = state.register(src);
+                let (result, borrow) = lhs.overflowing_sub(rhs);
+                let overflow = ((lhs ^ rhs) & (lhs ^ result)) >> 63 != 0;
+                state.set_arithmetic_flags(
+                    result,
+                    borrow,
+                    (lhs ^ rhs ^ result) & 0x10 != 0,
+                    overflow,
+                );
+                if matches!(instruction.operation, Operation::Sub { .. }) {
+                    state.set_register(dst, result);
+                }
+            }
+            Operation::Jz { displacement } if state.zero_flag() => {
+                next_rip = branch_target(instruction, displacement) as usize
+            }
+            Operation::Jnz { displacement } if !state.zero_flag() => {
+                next_rip = branch_target(instruction, displacement) as usize
+            }
+            Operation::Jz { .. } | Operation::Jnz { .. } => {}
+        }
+        state.rip = next_rip;
+        executed += 1;
+    }
+    Ok(ExecutionResult {
+        state: state.clone(),
+        reason: ExitReason::ReachedCodeEnd,
+        instructions_executed: executed,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arithmetic_flags_cover_carry_zero_and_signed_overflow() {
+        let mut state = CpuState::default();
+        state.gpr[0] = u64::MAX;
+        state.gpr[1] = 1;
+        let add = [0x48, 0x03, 0xC1];
+        interpret(&add, &mut state, 4).unwrap();
+        assert_eq!(state.gpr[0], 0);
+        assert_eq!(state.rflags & (CF | PF | ZF), CF | PF | ZF);
+
+        let mut state = CpuState::default();
+        state.gpr[0] = i64::MAX as u64;
+        state.gpr[1] = 1;
+        interpret(&add, &mut state, 4).unwrap();
+        assert_eq!(state.rflags & (SF | OF), SF | OF);
+
+        let mut state = CpuState::default();
+        state.gpr[0] = 0xFF;
+        state.gpr[1] = 1;
+        interpret(&add, &mut state, 4).unwrap();
+        assert_eq!(state.gpr[0], 0x100);
+        assert_ne!(state.rflags & PF, 0, "PF uses only the low result byte");
+    }
+
+    #[test]
+    fn dependent_sub_jnz_loop_stops_at_budget() {
+        let code = [0x48, 0x2B, 0xC1, 0x75, 0xFB]; // sub rax, rcx; jnz -5
+        let mut state = CpuState::default();
+        state.gpr[0] = 3;
+        state.gpr[1] = 1;
+        let result = interpret(&code, &mut state, 8).unwrap();
+        assert_eq!(result.reason, ExitReason::ReachedCodeEnd);
+        assert_eq!(result.state.gpr[0], 0);
+        assert_eq!(result.state.rip, code.len());
+        assert_eq!(result.instructions_executed, 6);
+    }
+
+    #[test]
+    fn unsupported_and_truncated_forms_are_distinct() {
+        assert_eq!(
+            decode(&[0x48, 0xB8, 1]),
+            Err(DecodeError::Truncated { offset: 0 })
+        );
+        assert_eq!(
+            decode(&[0x90]),
+            Err(DecodeError::UnsupportedOpcode {
+                offset: 0,
+                opcode: 0x90
+            })
+        );
+    }
+
+    #[test]
+    fn branch_into_instruction_body_is_rejected() {
+        let code = [0x74, 0x01, 0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(matches!(
+            decode(&code),
+            Err(DecodeError::InvalidBranchTarget { .. })
+        ));
+    }
+
+    #[test]
+    fn cmp_jz_program_exercises_conditional_branch() {
+        let code = [
+            0x48, 0xB8, 5, 0, 0, 0, 0, 0, 0, 0, 0x48, 0xB9, 5, 0, 0, 0, 0, 0, 0, 0, 0x48, 0x3B,
+            0xC1, 0x74, 0x00,
+        ];
+        let mut state = CpuState::default();
+        let result = interpret(&code, &mut state, 8).unwrap();
+        assert_eq!(result.reason, ExitReason::ReachedCodeEnd);
+        assert_eq!(result.instructions_executed, 4);
+        assert!(result.state.zero_flag());
+        assert_eq!(result.state.gpr[0], 5);
+    }
+
+    #[test]
+    fn backward_branch_respects_instruction_budget() {
+        let code = [0x75, 0xFE]; // jnz to itself; initial ZF is clear.
+        let mut state = CpuState::default();
+        let result = interpret(&code, &mut state, 5).unwrap();
+        assert_eq!(result.reason, ExitReason::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 5);
+        assert_eq!(result.state.rip, 0);
+    }
+}

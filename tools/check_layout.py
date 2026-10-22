@@ -32,6 +32,7 @@ def read_inventory(document, name):
 def check():
     document = LAYOUT.read_text(encoding="utf-8")
     directories = read_inventory(document, "required-directories")
+    allowed_root_directories = read_inventory(document, "allowed-root-directories")
     root_files = read_inventory(document, "root-files")
     errors = []
 
@@ -49,11 +50,11 @@ def check():
             errors.append(f"Missing root file: {name}")
 
     components = {PurePosixPath(path).parts[0] for path in directories}
-    allowed_directories = components | {".git", "target", "build", "dist"}
+    allowed_directories = components | set(allowed_root_directories) | {".git", "target", "build", "dist"}
     for path in sorted(ROOT.iterdir()):
         if path.is_dir() and path.name not in allowed_directories:
             errors.append(f"Unmapped root directory: {path.name}")
-        elif path.is_file() and path.name not in root_files:
+        elif path.is_file() and path.name != ".DS_Store" and path.name not in root_files:
             errors.append(f"Unmapped root file: {path.name}")
 
     scopes = sorted(components | {"guest/windows", "guest/linux"})

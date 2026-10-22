@@ -12,11 +12,67 @@
 
 ## Записи
 
-### ISSUE-001 — Каталоги в корне не отражены в карте проекта
+### ISSUE-005 — RUN_ACK опережает готовность VMHost к STOP
+
+- **Дата обнаружения:** 2026-10-22.
+- **Компонент:** `apps/vmhost`, запуск `FragmentWorker` и C ABI lifecycle.
+- **Статус:** решена 22 октября 2026 года.
+- **Суть и последствия:** успешный RUN_ACK отправляется сразу после постановки worker в DispatchQueue. C ABI теперь сохраняет STOP, пришедший до начала исполнения, и сбрасывает флаг после завершения run, поэтому остановка не зависит от планирования worker.
+- **Воспроизведение:** штатный launcher с `--hex 75fe --budget 18446744073709551615 --stop-after-ms 0`; на M3 Max в 5 из 100 запусков получен `VMHost returned status 6`. Подробности и сборка — в [ревью S0](reports/STAGE_0_REVIEW_2026-10-22.md).
+- **Результат:** `od_fragment_request_stop` сохраняет ранний запрос для следующего run; [control-race smoke](../tests/system/vmhost_control_race_smoke.py) прошёл 100/100 запусков немедленного STOP с reason 2. Отключение канала после RUN_ACK также проверено: VMHost остановил worker и завершил процесс.
+
+### ISSUE-006 — Неполный control frame блокирует готовый RESULT
+
+- **Дата обнаружения:** 2026-10-22.
+- **Компонент:** `apps/vmhost/Sources/main.swift`, `ControlFrame.read`.
+- **Статус:** решена 22 октября 2026 года.
+- **Суть и последствия:** POLLIN означает наличие хотя бы части кадра; блокирующий read всего кадра переставал обслуживать completion pipe. VMHost теперь неблокирующе накапливает данные и декодирует только полные кадры, продолжая опрашивать completion.
+- **Воспроизведение:** после RUN_ACK передать один байт `O` следующего header и держать socket открытым. Для конечного budget=2000000 RESULT не пришёл за 2 s, тогда как контроль без частичного кадра завершился за 0.021 s со стартом процесса. Полные входы — в [ревью S0](reports/STAGE_0_REVIEW_2026-10-22.md).
+- **Результат:** [control-race smoke](../tests/system/vmhost_control_race_smoke.py) подтверждает доставку RESULT при незавершённых header и payload; проверка отключения канала также проходит.
+
+### ISSUE-007 — Launcher теряет результат при завершении до отложенного STOP
+
+- **Дата обнаружения:** 2026-10-22.
+- **Компонент:** `apps/macos/Sources/launcher.swift`, ожидание `--stop-after-ms`.
+- **Статус:** решена 22 октября 2026 года.
+- **Суть и последствия:** launcher раньше спал до таймера STOP и затем безусловно отправлял запрос, теряя RESULT, если helper естественно завершился первым. Launcher теперь ожидает socket и срок STOP одновременно, затем принимает RESULT без ACK или STOP_ACK перед RESULT.
+- **Воспроизведение:** `--hex 48b80100000000000000 --stop-after-ms 25` возвращает exit=1 и `control frame write failed`. Подтверждено на свежих release smoke-бинарниках; [ревью S0](reports/STAGE_0_REVIEW_2026-10-22.md).
+- **Результат:** точное воспроизведение с задержкой 25 ms теперь завершается reason 0; 20 запусков с нулевой задержкой завершаются корректно с reason 0 либо reason 2. Допустимые порядки описаны в [CONTROL_PROTOCOL_V0.md](../protocols/control/CONTROL_PROTOCOL_V0.md).
+
+### ISSUE-001 — Корневые пользовательские каталоги и Finder metadata
 
 - **Дата обнаружения:** 2026-10-22.
 - **Компонент:** структура репозитория, [карта проекта](PROJECT_LAYOUT.md).
-- **Статус:** открыта.
-- **Проблема и последствия:** каталоги `.opencode/` и `graphify-out/` не описаны в нормативной карте; проверка структуры завершается с ошибкой.
-- **Воспроизведение:** из корня проекта запустить `python3 tools/check_layout.py`. Получены сообщения `ERROR: Unmapped root directory: .opencode` и `ERROR: Unmapped root directory: graphify-out`.
-- **Следующий шаг:** проверить назначение и происхождение каталогов, определить их место согласно правилам проекта и согласовать с картой и проверкой структуры. В рамках изменения правил документирования каталоги и проверка не менялись.
+- **Статус:** решена 22 октября 2026 года.
+- **Проблема и последствия:** проверка структуры обнаруживает не описанные в нормативной карте объекты корня: файлы `.DS_Store` и каталоги `.codex/`, `.opencode/`, `graphify-out/`, `iso/`. Из-за этого `check_layout.py` завершается ошибкой, хотя часть объектов может быть локальной конфигурацией или временными данными.
+- **Воспроизведение:** из корня проекта запустить `python3 tools/check_layout.py`. На 22 октября 2026 года получены `ERROR: Unmapped root file: .DS_Store` и `ERROR: Unmapped root directory` для `.codex`, `.opencode`, `graphify-out`, `iso`.
+- **Результат:** в [карте проекта](PROJECT_LAYOUT.md) перечислены допустимые необязательные каталоги `.codex/`, `.opencode/`, `graphify-out/` и `iso/`; layout checker учитывает их как локальные/производные данные и пропускает `.DS_Store`. Файлы и каталоги не перемещались и не удалялись. `python3 tools/check_layout.py` после изменения прошёл.
+
+### ISSUE-002 — Задержка VMHost RUN→RESULT из-за polling worker completion
+
+- **Дата обнаружения:** 2026-10-22.
+- **Компонент:** `apps/vmhost` control loop и VMHost completion signaling.
+- **Статус:** решена 22 октября 2026 года для короткого VMHost RUN→RESULT path; длительная нагрузка и отдельный STOP latency требуют дальнейшей проверки.
+- **Проблема и последствия:** первоначальный loop ожидал worker completion через `poll()` control socket с timeout 50 ms. Один короткий `MOV RAX,1` integration run дал медианный RUN→RESULT 51.33 ms [51.16–51.61] на 20 fresh VMHost processes.
+- **Основание:** [S0-13 CPU baseline report](reports/STAGE_0_CPU_BASELINE_2026-10-22.md), раздел VMHost integration pilot; raw samples до/после в локальном `work/stage-0/2026-10-22-e04-vmhost-abi-ipc-resource/`. Все 40 процессов вернули ожидаемые `RAX=1`, `RIP=10`, exit reason 0 и instruction count 1. Источник timeout и реализация completion signal: `apps/vmhost/Sources/main.swift`, `serviceStopRequests()` и `FragmentWorker`.
+- **Результат:** VMHost теперь одновременно ждёт control socket и completion pipe без периодического timeout. В повторе из 20 запусков медиана RUN→RESULT составила 138.1 μs [114.5–479.7], примерно в 372 раза меньше исходного пилота. Повторные launcher и isolation smoke прошли. Изменение и ограничения измерения описаны в [S0-13 baseline report](reports/STAGE_0_CPU_BASELINE_2026-10-22.md).
+- **Ограничения и следующий шаг:** сравнение было одним коротким сеансом при неконтролируемых условиях и не является изолированной мерой IPC или результатом длительной нагрузки. После исправления отдельный busy-helper pilot измерил STOP_ACK и STOP→RESULT; значения и ограничения описаны в S0-13 report. Для финального решения повторить с контролируемым фоном и длительной нагрузкой.
+
+### ISSUE-003 — Временный SSH-доступ к M1 Pro для JIT smoke
+
+- **Дата обнаружения:** 2026-10-22.
+- **Компонент:** внешний контрольный Mac M1 Pro, проверка S0-08/E01.
+- **Статус:** решена 2026-10-22 для разрешённого smoke-прогона.
+- **Суть и последствия:** исходный SSH-вход без ключа завершился отказом аутентификации, поэтому запуск на M1 Pro зависел от настройки временного ключа.
+- **Основание:** по запросу владельца SSH-хост достигнут 22 октября; после явного согласия владельца на передачу трёх smoke-файлов использован временный Ed25519 ключ. Приватный ключ не попадал в репозиторий.
+- **Результат:** на M1 Pro (macOS 14.6.1, MacBookPro18,3) прошли arithmetic JIT, cooperative STOP и process-isolation smoke. SHA-256 и ограничения опыта записаны в [STAND.md](testing/STAND.md); статус S0-08 — в [плане](plans/STAGE_0.md) и [отчёте](reports/STAGE_0_REPORT.md).
+- **Очистка доступа:** после проверок приватный ключ на основном Mac и каталог с тремя переданными smoke-файлами на M1 удалены. Владельцу остаётся удалить строку с комментарием `open-desktop-stage0-m1-temp` из `~/.ssh/authorized_keys` на M1.
+
+### ISSUE-004 — S0-08: Developer ID distribution и проверка конечного bundle
+
+- **Дата обнаружения:** 2026-10-22.
+- **Компонент:** `od-host`, VMHost supervisor и путь поставки, S0-08/E01.
+- **Статус:** открыта; локальные fault-diagnostics закрыты, но этап 0 не принят до проверки пути выпуска.
+- **Суть и последствия:** unit test подтверждает fault в generated code внутри дочернего процесса, а protocol-level test helper подтверждает `SIGSEGV` диагностику launcher-а. Временная ad-hoc `.app` smoke-упаковка валидна и исполняет JIT, но не подтверждает Developer ID distribution или notarization. Владелец сообщает о наличии Developer ID certificate, но соответствующая signing identity (сертификат с доступным private key) не найдена в keychains проверенных M3 Max и M1 Pro. Членство Apple Developer Program не активно; Apple notary service недоступен до его возобновления.
+- **Основание:** проверки `generated_code_fault_is_confined_to_child_process`, `vmhost_generated_fault_smoke.py` и `vmhost_app_bundle_smoke.sh` прошли на M3 Max. Инвентаризация подписи и пределы теста записаны в [STAND.md](testing/STAND.md) и [отчёте этапа 0](reports/STAGE_0_REPORT.md).
+- **Следующий шаг:** установить на M3 Max действующую Developer ID Application identity вместе с соответствующим private key и проверить подписание конечного Open Desktop bundle. Если требуется проверить notarization, владелец должен возобновить членство Apple Developer Program и предоставить авторизацию для notary service; учетные данные не передавать через чат. Затем повторить S0-14 review. До появления доступной identity Developer ID signing не проверено, а без активного членства notarization недоступна. Ответственный: владелец конфигурации подписи совместно с инженером macOS.

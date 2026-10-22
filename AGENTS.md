@@ -47,9 +47,11 @@
 
 ## Самостоятельная реализация
 
-- Запрещены сторонние runtime-библиотеки эмуляции, декодирования, JIT, firmware, TPM и графической трансляции. Не копировать их исходники, таблицы или реализации в проект под видом собственного кода.
+- Библиотеки общего назначения разрешены: логирование, CLI, конфигурация, сериализация, коллекции, очереди, синхронизация, асинхронная инфраструктура, bindings системных API и инструменты тестирования/измерений. Добавлять их при реальной необходимости согласно [политике зависимостей](docs/policies/DEPENDENCIES.md), без отдельного согласования каждого разрешённого пакета с пользователем.
+- Ключевая технология остаётся собственной: семантика/декодер x86, интерпретатор, IR, ARM64 emitter/JIT, MMU, модели оборудования, firmware, TPM-протокол, собственные драйверы и графическая трансляция. Готовые реализации этих компонентов, в том числе транзитивно, запрещены. Не копировать их исходники, таблицы или реализации под видом собственного кода.
 - Стандартные библиотеки, компиляторы, SDK и системные API допустимы. Компилятор Rust может использовать LLVM; подключать LLVM как движок нашего runtime-JIT нельзя.
-- Новые сторонние runtime-пакеты не добавлять. Cargo workspace на старте содержит только собственные библиотеки без внешних зависимостей.
+- Общая библиотека предоставляет инфраструктуру, а не определяет архитектурную семантику нашего движка. Например, сериализатор допустим; wire format, его ограничения и поведение протокола определяем мы. Криптографические примитивы можно брать из системных API или библиотек общего назначения; TPM/UEFI-протоколы и их состояние реализуем сами.
+- При добавлении зависимости фиксировать назначение, версию, источник, лицензию и необходимые features; учитывать транзитивные зависимости. Не добавлять пакеты «на будущее». Выбор на критичном участке подтверждать замерами согласно правилам выше.
 - Описания публичных стандартов использовать можно; фиксировать источник и версию. Форматы, таблицы, фикстуры и генераторы собственной реализации должны иметь понятное происхождение.
 
 ## Документирование результатов и открытых проблем
@@ -69,3 +71,17 @@
 - Проверять соразмерно изменению. Для Rust-кода — форматирование и сборка затронутых компонентов, затем необходимые проверки поведения. Для документации/структуры — ссылки и карта каталогов; запуск CPU-тестов без изменения CPU не нужен.
 - При изменении структуры запустить `python3 tools/check_layout.py`. Для Rust workspace доступны `cargo fmt --all -- --check` и `cargo check --workspace --all-targets --offline`. Успешная сборка пустого каркаса не доказывает готовность движка.
 - В отчёте различать выполненные проверки, непроверенные условия и ограничения. Правила проекта изменять при реальном изменении требований, а не для обхода проверки.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+
+Rules:
+- When graphify-out/graph.json exists, run `graphify query "<question>"` before your first grep, search or source-file read for a codebase question, and put this rule in every subagent prompt that explores code. Read raw files only for lines the graph or an earlier read already located. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff to it in a pull request is expected. Do not flag it as churn or suggest skipping the graph rebuild or its hooks.

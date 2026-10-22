@@ -5,6 +5,10 @@ version = 4
 [[package]]
 name = "od-host"
 version = "0.1.0"
+dependencies = [
+ "od-isa",
+ "od-jit",
+]
 
 [[package]]
 name = "od-isa"
@@ -13,10 +17,22 @@ version = "0.1.0"
 [[package]]
 name = "od-jit"
 version = "0.1.0"
+dependencies = [
+ "od-isa",
+]
 
 [[package]]
 name = "od-machine"
 version = "0.1.0"
+
+[[package]]
+name = "od-runner"
+version = "0.1.0"
+dependencies = [
+ "od-host",
+ "od-isa",
+ "od-jit",
+]
 
 [[package]]
 name = "od-storage"

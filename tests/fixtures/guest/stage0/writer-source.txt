@@ -1,0 +1,8 @@
+Open Desktop Stage 0 Writer workload
+
+Document sentinel: OD-STAGE0-WRITER-001
+
+This document is a small project-owned input for the LibreOffice Writer workflow.
+The scenario appends one fixed revision line and saves a copy as OpenDocument Text.
+
+Original content check: preserve every paragraph and the sentinel above.

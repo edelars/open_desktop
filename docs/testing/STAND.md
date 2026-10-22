@@ -1,0 +1,103 @@
+# Испытательный стенд S0
+
+Состояние на 22 октября 2026 года. Это инвентаризация доступного окружения, а не подтверждение прохождения тестов.
+
+## Основной host
+
+| Поле | Зафиксированное значение |
+|---|---|
+| Устройство | MacBook Pro (Mac15,11), Apple M3 Max, 14 CPU-ядер |
+| Память | 36 GB |
+| Host OS | macOS Tahoe 26.7.1, build 25G241 |
+| Host page size | 16 KiB |
+| Архитектура | arm64 |
+| Rust | rustc 1.99.0 (b940084d7 2026-09-28); cargo 1.99.0 (5f94df478 2026-08-27) |
+| Apple toolchain | Xcode 27.1 (27A9275), Apple Swift 6.4 (swiftlang-6.4.0.34.1), target arm64-apple-macosx26.0; macOS SDK 27.0 |
+| Ad-hoc Hardened Runtime JIT smoke вне debugger | Подтверждён на основном M3 Max; VMHost подписан ad-hoc с `allow-jit`, подпись проверена, JIT исполнился |
+| Developer ID / notarization / конечное приложение | `security find-identity -v -p codesigning` вернула `0 valid identities found`; Developer ID и notarization не проверены. Локальный `.app` smoke bundle проверен отдельно ниже, конечное приложение не собрано |
+
+## Дополнительные машины
+
+| Роль | Доступность | Необходимо инвентаризировать |
+|---|---|---|
+| Контрольный Apple Silicon Mac | MacBook Pro с Apple M1 Pro, MacBookPro18,3, 16 GB RAM | Проверен 22 октября: macOS 14.6.1 (23G93), arm64, host page size 16,384 bytes. Swift 5.10, Apple clang 15.0, Xcode developer directory доступен; `rustc` не установлен. Минимальный ad-hoc JIT smoke выполнен; source rebuild на M1 не выполнялся |
+| Физический x86 oracle | Mac mini (Late 2012), 16 GB RAM, Ubuntu (данные владельца) | После этапа 0 для перенесённого S0-12/E03: точная модель CPU, family/model/stepping, microcode, версия/build Ubuntu, compiler/toolchain и доступ к runner |
+
+Open Desktop пока не загружает гостевые ОС; Windows ISO подтверждён владельцем как рабочий. По прежнему порядку проверка M1 Pro следовала после контрольного Windows запуска в стороннем гипервизоре, но по прямому запросу владельца минимальный smoke выполнен 22 октября до этого запуска. Инвентаризация и физический x86 oracle Mac mini относятся к S0-12/E03 следующего этапа. До соответствующего прогона совместимость физического x86 не подтверждена. Не записывать серийные номера, hardware UUID, учётные данные и другие секреты.
+
+## Гостевые образы и fixtures
+
+- Windows 11 Pro x64 26H2 — установочный файл: `iso/Windows11_Client_x64_en-us_26300_9457.iso`, 9,047,330,816 bytes, bootable ISO 9660, label `CCCOMA_X64FRE_EN-US_DV9`. Локальный SHA-256: `bd4307df32bc8af33b39ccecb1174aeb345386630f89a2b86c7a4e36b55ea650`. В `sources/install.wim` найдено 11 образов; Windows 11 Pro — индекс 6, x86_64, en-US, version 10.0, base build 26300.9457. На 22 октября 2026 года Microsoft release information указывает cumulative update KB5127648/build 26300.9711 (13 октября); build фактически установленной VM нужно зафиксировать после запуска. WIM metadata прочитаны `wimlib-imagex info` после read-only подключения штатной командой `hdiutil attach -readonly -nobrowse ...`. По сведениям владельца, ISO получен из официального канала Microsoft; конкретный URL и дата загрузки не записаны. Файл исключён из Git правилом `.gitignore`.
+- Предыдущая ошибка `hdiutil: attach failed - Device not configured` возникала при задании отдельного `-mountpoint`. Без него штатное подключение прошло успешно в `/Volumes/CCCOMA_X64FRE_EN-US_DV9`; ISO затем отключён. Это была ошибка способа подключения, а не повреждение ISO.
+- Статическая инвентаризация `sources/install.wim`, индекс 6, выполнена `wimlib-imagex dir` и `wimlib-imagex extract`: `stornvme.inf` связывает `PCI\CC_010802` со службой `stornvme`, настроенной как `SERVICE_BOOT_START`; в `mshdc.inf` найден AHCI class ID `PCI\CC_010601`, в DriverStore есть `storahci.sys`; `nete1g3e.inf` содержит hardware ID `PCI\VEN_8086&DEV_100E` (Intel 82540EM-compatible). `vioscsi.inf`, `viostor.inf` и `netkvm.inf` в выбранном образе не найдены. Проверка метаданных и INF не подтверждает загрузку этих устройств в виртуальной машине.
+- Дополнительно проверены входные драйверы в `install.wim` (Pro, index 6) и `boot.wim` (WinPE index 1 и Windows Setup index 2). Во всех трёх образах присутствуют `usbxhci.inf`, `usbhub3.inf` и `input.inf`; `usbxhci.inf` сопоставляет стандартный PCI class ID `PCI\CC_0C0330` со службой `USBXHCI`, а `input.inf` связывает generic USB HID class `03` со службой `hidusb`. Это даёт основание выбрать xHCI + USB HID как candidate input profile для платы. Статический осмотр WIM не подтверждает запуск контроллера, работу клавиатуры/мыши или наличие USB/HID пути в собственной UEFI.
+- В ISO присутствуют `efi/boot/bootx64.efi`, `setup.exe`, `sources/boot.wim` и `sources/install.wim`. В `boot.wim` два образа: WinPE (индекс 1) и Windows Setup (индекс 2), оба x86_64, version 10.0, build 26100.9457; целевая Windows Pro в `install.wim` — build 26300.9457. Это различие записано как факт metadata; его влияние на установку ещё не проверено и дефектом не считается.
+- Ubuntu Server 26.04.1 LTS amd64 — выбранный кандидат. Официальный SHA-256 из манифеста: `cc8a95cde20f6ced61a322420de00f10cc3c90ced545daa46cb9c1a117f1d927`; локальное наличие и хеш ещё не проверены.
+- Сценарные приложения выбраны в [матрице поддержки](../specs/SUPPORT_MATRIX.md). Собственные входы для 7-Zip, Writer, Node.js и Blender добавлены в [`tests/fixtures/guest/stage0/`](../../tests/fixtures/guest/stage0/) с `SHA256SUMS`. Хеши fixtures проверены; Node workload на Node.js v26.12 на основном host возвращает ожидаемый JSON. Publisher reference SHA-256 для точных x64 installers записаны в матрице, но локальные package files ещё не получены/не сверены с ними. Прогоны в Windows VM, выходные артефакты и resource budgets не проверены.
+
+Сырые измерения и локальные образы хранить в `work/`, а не в Git. В репозитории сохранять только малые собственные fixtures и агрегированные отчёты, если это соответствует правилам проекта.
+
+## Состояние готовности
+
+Описан основной host; ad-hoc Hardened Runtime smoke с JIT вне debugger подтверждён на M3 Max и минимально повторён на M1 Pro. На M3 Max fault в сгенерированном коде завершил дочерний процесс; отдельный protocol-level test helper подтвердил, что launcher сообщает `SIGSEGV` и завершается с ошибкой. Локальная `.app` smoke-упаковка с ad-hoc подписью проверена. Для четырёх CPU fixtures проведён повторный пилот S0-13 по 20 samples; сырые результаты и диапазоны измерений сохранены локально, сводка включена в [CPU baseline report](../reports/STAGE_0_CPU_BASELINE_2026-10-22.md). Стенд и протокол S0-06 на основном M3 Max готовы. Mac mini и x86 runner перенесены вместе с S0-12/E03; Developer ID/notarization и поставка конечного продукта остаются непроверенными.
+
+Повторная проверка рабочей копии на основном host 22 октября 2026 года: `cargo fmt --all -- --check`, `cargo test --workspace --offline` (18 тестов), `cargo check --workspace --all-targets --offline`, `python3 tools/check_layout.py` и SHA-256 manifests x86/guest fixtures прошли. Повторная проверка относительных Markdown-путей в `docs/` прошла для 20 файлов: 0 отсутствующих целей.
+
+## M1 Pro JIT smoke
+
+22 октября 2026 года по SSH запущены три согласованные smoke-проверки на MacBook Pro с Apple M1 Pro (`MacBookPro18,3`): macOS 14.6.1, build 23G93, arm64, 16 GB RAM, page size 16,384 bytes. На M1 доступны Swift 5.10 / Apple clang 15.0 и Xcode developer directory `/Applications/Xcode.app/Contents/Developer`; Rust toolchain (`rustc`) отсутствует, репозитория на машине нет.
+
+Поэтому проверялся переносимый release smoke, собранный локально для `arm64-apple-macosx14.0`: `od-host` static library с `MACOSX_DEPLOYMENT_TARGET=14.0`, Swift VMHost helper и launcher с `-target arm64-apple-macosx14.0`. Helper подписан ad-hoc с Hardened Runtime и `com.apple.security.cs.allow-jit`; на M1 `codesign --verify --strict` прошёл, entitlements прочитаны и включали `allow-jit`. Сверка SHA-256 локальных и удалённых файлов прошла.
+
+| Файл | SHA-256 |
+|---|---|
+| `od-vmhost-m1-smoke` | `ea0844d620ec11bf0b39cd88e782daf7c13f0d4ef76d10d7589614c0ae2c102f` |
+| `open-desktop-launcher-m1-smoke` | `6e879307a7b0995979773e5965a439229429e224a636ac068dad1b9d54341bc8` |
+| `vmhost_isolation_smoke.py` | `56bf30dca3f6cbc404c43740aee23397aacc5c1b45bde2a3983b28e3f727d63d` |
+
+Результаты:
+
+- Arithmetic fragment `48 2b c1 75 fb`, `RAX=3`, `RCX=1`, budget 32: `RAX=0`, `RIP=5`, exit reason 0, 6 instructions.
+- Self-loop `75 fe`, STOP через 25 ms: exit reason 2, вернулось 21,427,106 выполненных инструкций.
+- `vmhost_isolation_smoke.py`: первый активный helper завершился от внешнего `SIGSEGV`; второй принял STOP и вернул собственное состояние.
+
+Это подтверждает исполнение сгенерированного ARM64 в ad-hoc Hardened Runtime helper на M1 и узкий STOP/isolation сценарий. Это не независимая сборка из исходников на M1, не fault внутри generated code и не тест Developer ID, notarization или packaged application. Исходники остаются источником воспроизведения; переданные бинарники находились во временном каталоге.
+
+## Fault внутри generated code на M3 Max
+
+Добавлен unit test `generated_code_fault_is_confined_to_child_process` в `crates/od-host/src/lib.rs`. Тестовый дочерний процесс компилирует x86 `MOV RAX,1` собственным `od-jit`, исполняет generated ARM64 с намеренно неверным ненулевым указателем состояния и должен завершиться от `SIGSEGV`. Родительский тест проверяет именно сигнал завершения. На основном M3 Max `cargo test --workspace --offline` прошёл: 18 тестов, включая этот сценарий; `cargo fmt --all -- --check` и `cargo check --workspace --all-targets --offline` также прошли.
+
+Проверка подтверждает fault именно при вызове сгенерированного кода и ограничение аварии дочерним процессом. Тест выполнялся на M3 Max; соответствующий бинарник не передавался на M1 Pro.
+
+Сквозной supervisor smoke использует test-only helper [vmhost_generated_fault_helper.swift](../../tests/system/vmhost_generated_fault_helper.swift): он завершает HELLO/READY/RUN по тому же control protocol, генерирует в MAP_JIT `LDR X0,[X0]` + `RET` и исполняет его с адресом `1`. Сценарий [vmhost_generated_fault_smoke.py](../../tests/system/vmhost_generated_fault_smoke.py) подтвердил код выхода launcher `1` и сообщение `VMHost terminated by SIGSEGV`. Это намеренный host fault только в отдельном тестовом helper; production VMHost не изменён. Отдельный [launcher signal smoke](../../tests/system/vmhost_launcher_signal_smoke.py) также проверяет сигнализацию helper, завершённого во время активного цикла.
+
+## Локальная `.app` smoke-упаковка
+
+Сценарий [vmhost_app_bundle_smoke.sh](../../tests/system/vmhost_app_bundle_smoke.sh) создаёт временный `.app` bundle, копирует внутрь launcher и VMHost, ad-hoc подписывает вложенные исполняемые файлы и bundle с Hardened Runtime, проверяет `Info.plist` и подпись, затем запускает arithmetic JIT через бинарники из bundle. На M3 Max `plutil -lint` и `codesign --verify --strict --deep` прошли, fragment вернул `RAX=0`, `RIP=5`, 6 instructions. Каталог удаляется скриптом после smoke.
+
+Это подтверждает только локальную ad-hoc `.app` упаковку smoke-инструментов. Это не конечное Open Desktop приложение, запуск через Launch Services, Developer ID distribution или notarization. Владелец сообщает, что у него есть Developer ID certificate, но на M3 Max не найдено ни действующей code-signing identity, ни Developer ID Application certificate в доступных keychains; на M1 Pro ранее найдено 0 Developer ID Application identities. Поэтому certificate+private key владельца пока не проверены на тестовых Mac. Членство Apple Developer Program не активно; [Apple указывает](https://developer.apple.com/help/account/access/resolving-access-issues), что при истёкшем членстве доступ к Apple notary service прекращается, поэтому notarization credentials не запрашивались и notarization не проверялась. Apple также сообщает, что уже подписанные приложения продолжают запускаться при истечении членства, а для получения нового Developer ID certificate после истечения самого сертификата требуется активное членство ([Developer ID certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates)). Подписание нового bundle имеющейся парой certificate+private key на этом host ещё не проверено.
+
+## Локальный smoke launcher ↔ VMHost
+
+22 октября 2026 года на основном M3 Max release `od-host` был связан с Swift VMHost и launcher. Ad-hoc подпись VMHost с Hardened Runtime и `com.apple.security.cs.allow-jit` прошла `codesign --verify`. Повторены:
+
+- Арифметический фрагмент `48 2b c1 75 fb`, `RAX=3`, `RCX=1`, бюджет 32: результат `RAX=0`, `RIP=5`, exit reason `0`, 6 инструкций.
+- Бесконечный цикл `75 fe`, STOP через 25 ms: exit reason `2`, состояние вернулось launcher-у.
+- Неизвестная версия control protocol: VMHost закрыл соединение и завершился с ошибкой.
+- Разрыв socketpair во время бесконечного фрагмента: VMHost запросил cooperative stop и завершился, не оставив работающий worker.
+- Два одновременно запущенных VMHost с отдельными socketpair: первый отверг неподдерживаемую версию, второй независимо выполнил RUN и вернул `RAX=1`.
+- Через launcher проверены invalid code (`VMHost returned status 2`), несовместимая версия ответа и закрытие канала до RESULT; launcher вернул ошибку и завершил дочерний helper.
+- Проверен helper, игнорирующий SIGTERM: launcher завершил его через SIGKILL после 500 ms grace period и собрал exit status.
+- Межкомпонентный [isolation smoke](../../tests/system/vmhost_isolation_smoke.py): оба VMHost одновременно исполняли self-loop; после отправки `SIGSEGV` первому второй отдельно принял STOP и вернул exit reason `2`. Это проверка изоляции при fatal process signal, не fault внутри сгенерированного кода.
+
+Воспроизводимые команды сборки и запуска находятся в [apps/vmhost/README.md](../../apps/vmhost/README.md); wire format — в [CONTROL_PROTOCOL_V0.md](../../protocols/control/CONTROL_PROTOCOL_V0.md). Эти проверки подтверждают локальный smoke path и базовую изоляцию процессов, но не полный GUI lifecycle, длительные параллельные VM с измерением JIT arena, Developer ID/нотаризацию или работу на другой модели Mac.
+
+## Исправления control lifecycle по ревью S0
+
+22 октября 2026 года исправлены три воспроизведённые гонки из [ревью S0](../reports/STAGE_0_REVIEW_2026-10-22.md):
+
+- C ABI теперь сохраняет STOP, поступивший после RUN_ACK, но до начала worker execution; запрос сбрасывается после одного run. Rust unit test подтверждает ранний STOP и отсутствие переноса флага на следующий run.
+- VMHost читает готовые байты control socket неблокирующе и декодирует полные кадры, продолжая ждать completion pipe при неполном заголовке или payload.
+- Launcher ожидает одновременно срок отложенного STOP и входящие ответы. Если фрагмент завершился первым, RESULT принимается как итог; после STOP launcher принимает STOP_ACK и RESULT в согласованном порядке, а при гонке завершения RESULT остаётся финальным ответом.
+
+Сценарий [vmhost_control_race_smoke.py](../../tests/system/vmhost_control_race_smoke.py) прошёл на основном M3 Max после release-сборки Rust и Swift binaries: 100/100 немедленных STOP вернули cooperative-stop reason; воспроизведение естественного завершения до 25 ms таймера вернуло RESULT с reason 0; 20 гонок с нулевой задержкой завершились с допустимым reason 0 или 2; неполные header и payload не задержали RESULT; закрытие канала после RUN_ACK остановило worker. Это smoke-регрессии control lifecycle, не benchmark.

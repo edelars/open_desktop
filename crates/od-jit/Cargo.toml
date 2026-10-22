@@ -4,5 +4,8 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[dependencies]
+od-isa = { path = "../od-isa" }
+
 [lints]
 workspace = true

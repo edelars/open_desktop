@@ -1,0 +1,17 @@
+[package]
+name = "od-runner"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "od-runner"
+path = "src/main.rs"
+
+[dependencies]
+od-host = { path = "../../crates/od-host" }
+od-isa = { path = "../../crates/od-isa" }
+od-jit = { path = "../../crates/od-jit" }
+
+[lints]
+workspace = true

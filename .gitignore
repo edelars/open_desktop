@@ -31,4 +31,6 @@ __pycache__/
 
 
 .opencode/*
+.codex/*
 /graphify-out/*
+/iso/*
