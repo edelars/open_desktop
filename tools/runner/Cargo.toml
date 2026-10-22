@@ -9,9 +9,13 @@ name = "od-runner"
 path = "src/main.rs"
 
 [dependencies]
-od-host = { path = "../../crates/od-host" }
 od-isa = { path = "../../crates/od-isa" }
 od-jit = { path = "../../crates/od-jit" }
+od-testkit = { path = "../../crates/od-testkit" }
+serde_json = "=1.0.151"
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+od-host = { path = "../../crates/od-host" }
 
 [lints]
 workspace = true

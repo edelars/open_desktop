@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use od_isa::{CpuState, ExecutionResult, interpret};
 
+mod test_cli;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Engine {
     Interpreter,
@@ -22,7 +24,15 @@ struct Config {
 }
 
 fn main() -> ExitCode {
-    match parse_args(std::env::args().skip(1)) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("--generate-corpus") => return test_cli::generate_corpus(&args[1..]),
+        Some("--minimize") => return test_cli::minimize_fixture(&args[1..]),
+        Some("--fixture") => return test_cli::run_fixture(&args[1..]),
+        Some("--compare-results") => return test_cli::compare_results(&args[1..]),
+        _ => {}
+    }
+    match parse_args(args.into_iter()) {
         Ok(None) => ExitCode::SUCCESS,
         Ok(Some(config)) => match run(config) {
             Ok(()) => ExitCode::SUCCESS,
@@ -149,6 +159,9 @@ fn parse_integer(input: &str) -> Result<u64, String> {
 
 fn run(config: Config) -> Result<(), String> {
     if config.benchmark {
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        return Err("JIT benchmark is unsupported on this host".to_string());
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         return run_benchmark(&config);
     }
     match config.engine {
@@ -160,8 +173,7 @@ fn run(config: Config) -> Result<(), String> {
         }
         Engine::Jit => {
             let mut state = config.state;
-            let result = od_host::execute_x86_fragment(&config.code, &mut state, config.budget)
-                .map_err(|error| format!("JIT failed: {error:?}"))?;
+            let result = execute_legacy_jit(&config.code, &mut state, config.budget)?;
             print_result("jit", &result);
         }
         Engine::Both => {
@@ -169,8 +181,7 @@ fn run(config: Config) -> Result<(), String> {
             let interpreter = interpret(&config.code, &mut interpreter_state, config.budget)
                 .map_err(|error| format!("interpreter failed: {error:?}"))?;
             let mut jit_state = config.state;
-            let jit = od_host::execute_x86_fragment(&config.code, &mut jit_state, config.budget)
-                .map_err(|error| format!("JIT failed: {error:?}"))?;
+            let jit = execute_legacy_jit(&config.code, &mut jit_state, config.budget)?;
             print_result("interpreter", &interpreter);
             print_result("jit", &jit);
             if interpreter != jit {
@@ -182,6 +193,24 @@ fn run(config: Config) -> Result<(), String> {
     Ok(())
 }
 
+fn execute_legacy_jit(
+    code: &[u8],
+    state: &mut CpuState,
+    budget: u64,
+) -> Result<ExecutionResult, String> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        od_host::execute_x86_fragment(code, state, budget)
+            .map_err(|error| format!("JIT failed: {error:?}"))
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        let _ = (code, state, budget);
+        Err("ARM64 JIT execution requires an aarch64 macOS host".to_string())
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn run_benchmark(config: &Config) -> Result<(), String> {
     const TARGET_BATCH: Duration = Duration::from_millis(200);
 
@@ -409,6 +438,7 @@ fn time_translation_batch(code: &[u8], operations: u64) -> Result<(Duration, ())
     Ok((start.elapsed(), ()))
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn time_compile_publish_batch(code: &[u8], operations: u64) -> Result<(Duration, ()), String> {
     let start = Instant::now();
     for _ in 0..operations {
@@ -438,6 +468,7 @@ fn time_interpreter_batch(
     Ok((elapsed, result))
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn time_jit_batch(
     config: &Config,
     compiled: &od_host::CompiledFragment,

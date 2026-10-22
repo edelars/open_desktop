@@ -1,6 +1,6 @@
-# S0-09 x86 byte fixtures
+# S0-09 and S1-06 x86 byte fixtures
 
-These project-owned hex inputs exercise the exact decoder/interpreter/JIT subset in [`CPU_CONTRACT.md`](../../../docs/specs/CPU_CONTRACT.md). The bytes are written in Intel opcode order and separated by spaces. `SHA256SUMS` fixes the committed fixture files.
+These project-owned hex inputs exercise the exact decoder/interpreter/JIT subset in [`CPU_CONTRACT.md`](../../../docs/specs/CPU_CONTRACT.md). The bytes are written in Intel opcode order and separated by spaces. Each positive `.hex` fixture has a `.case.json` companion with initial state, profile, timeout, comparison scope, provenance and a SHA-256 over decoded instruction bytes. `SHA256SUMS` fixes both fixture forms.
 
 Run the supported cases from the repository root with `cargo run --offline -p od-runner -- ... --engine both`; each command compares interpreter and JIT results:
 
@@ -18,3 +18,7 @@ cargo run --offline -p od-runner -- --hex-file tests/fixtures/x86/s0_09_unsuppor
 ```
 
 The command must exit with an invalid-code/decode error. These fixtures cover only the limited fragment profile; they do not validate a bootable x86 CPU.
+
+The JSON companions now feed the v1 runner. Run each positive case once per engine with `--fixture CASE.json --engine interpreter|jit --json`; stdout contains one result JSON document. Compare saved outputs with `--compare-results RESULT_A.json RESULT_B.json --case CASE.json --json`. The `s0_09_unsupported.case.json` companion exercises the explicit `unsupported` result path and exits with code 4. Expected exit is part of the fixture contract, not a recorded native result. These runner cases still do not provide RAM or exception coverage.
+
+Six additional, manually encoded boundary cases for signed overflow, subtraction borrow, signed comparison, taken/not-taken JZ and initial flag preservation are documented in [`S1_06_BOUNDARY.md`](S1_06_BOUNDARY.md). Each case has a strict v1 fixture and is included in `SHA256SUMS`.

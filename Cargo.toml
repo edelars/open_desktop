@@ -8,6 +8,7 @@ members = [
     "crates/od-host",
     "crates/od-testkit",
     "tools/runner",
+    "tools/x86-runner",
 ]
 
 [workspace.package]

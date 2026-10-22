@@ -21,7 +21,9 @@
 | Роль | Доступность | Необходимо инвентаризировать |
 |---|---|---|
 | Контрольный Apple Silicon Mac | MacBook Pro с Apple M1 Pro, MacBookPro18,3, 16 GB RAM | Проверен 22 октября: macOS 14.6.1 (23G93), arm64, host page size 16,384 bytes. Swift 5.10, Apple clang 15.0, Xcode developer directory доступен; `rustc` не установлен. Минимальный ad-hoc JIT smoke выполнен; source rebuild на M1 не выполнялся |
-| Физический x86 oracle | Mac mini (Late 2012), 16 GB RAM, Ubuntu (данные владельца) | После этапа 0 для перенесённого S0-12/E03: точная модель CPU, family/model/stepping, microcode, версия/build Ubuntu, compiler/toolchain и доступ к runner |
+| Физический x86 oracle | Mac mini (Late 2012), 16 GB RAM; Ubuntu 25.10, Linux 6.17.0-41-generic, x86_64, page size 4096 bytes; Intel Core i5-3210M, family 6/model 58/stepping 9, microcode `0x21`, 2 cores/4 threads. SSH `senya@192.168.1.14` подтверждён с проверкой host key | GCC 15.2.0; Rust stable 1.99.1 установлен в пользовательский каталог 22 октября 2026 года. Текущий checkout передан в `~/projects/open_desktop-stage1`. Linux workspace check, тесты целевых crates и `od-x86-runner` build прошли. Native fixture execution ещё не проверено |
+
+Порядок подготовки этого Mac mini и физического сравнения описан в [плане этапа 1](../plans/STAGE_1.md). Адрес SSH записан со слов владельца 22 октября 2026 года; наличие адреса не подтверждает исполнение oracle-проверок.
 
 Open Desktop пока не загружает гостевые ОС; Windows ISO подтверждён владельцем как рабочий. По прежнему порядку проверка M1 Pro следовала после контрольного Windows запуска в стороннем гипервизоре, но по прямому запросу владельца минимальный smoke выполнен 22 октября до этого запуска. Инвентаризация и физический x86 oracle Mac mini относятся к S0-12/E03 следующего этапа. До соответствующего прогона совместимость физического x86 не подтверждена. Не записывать серийные номера, hardware UUID, учётные данные и другие секреты.
 
@@ -101,3 +103,33 @@ Open Desktop пока не загружает гостевые ОС; Windows ISO
 - Launcher ожидает одновременно срок отложенного STOP и входящие ответы. Если фрагмент завершился первым, RESULT принимается как итог; после STOP launcher принимает STOP_ACK и RESULT в согласованном порядке, а при гонке завершения RESULT остаётся финальным ответом.
 
 Сценарий [vmhost_control_race_smoke.py](../../tests/system/vmhost_control_race_smoke.py) прошёл на основном M3 Max после release-сборки Rust и Swift binaries: 100/100 немедленных STOP вернули cooperative-stop reason; воспроизведение естественного завершения до 25 ms таймера вернуло RESULT с reason 0; 20 гонок с нулевой задержкой завершились с допустимым reason 0 или 2; неполные header и payload не задержали RESULT; закрытие канала после RUN_ACK остановило worker. Это smoke-регрессии control lifecycle, не benchmark.
+
+## Инвентаризация S1-00
+
+### Основной host: MacBook Pro с Apple M3 Max
+
+Локальная read-only инвентаризация 22 октября 2026 года: `arm64`, macOS 26.7.1 (build 25G241), Darwin kernel 25.6.0, Apple M3 Max, 36 GiB RAM, размер host page 16,384 bytes. Установлены `rustc 1.99.0` и `cargo 1.99.0`. Подробные данные о модели и памяти не заменяют инвентаризацию физического x86 host.
+
+### Физический x86 host: Mac mini с Ubuntu
+
+Read-only инвентаризация по SSH с включённой проверкой host key выполнена 22 октября 2026 года для `senya@192.168.1.14`. Host key был добавлен в пользовательскую `known_hosts` из локальной консоли; после этого соединение прошло. На машине: Ubuntu 25.10, kernel `6.17.0-41-generic`, `x86_64`, Intel Core i5-3210M, family 6/model 58/stepping 9, microcode `0x21`, 4 логических CPU, page size 4096 bytes. Флаги CPU зафиксированы для этой конфигурации командой `lscpu`; требуемые формы S0-09 используют базовые 64-bit integer инструкции и не требуют AVX или других расширений.
+
+Доступны `cc`/GCC 15.2.0 (`x86_64-linux-gnu`), GNU Make 4.4.1, Git 2.51.0 и Python 3.13.7. По разрешению владельца установлен Rust stable 1.99.1 в пользовательский каталог, checkout синхронизирован в отдельный `~/projects/open_desktop-stage1`. Необходимый native runner собран и выполнен без `sudo`; детали сравнения приведены в [CPU_ORACLE](CPU_ORACLE.md).
+
+Инвентаризация и S1-06 подтверждают физический oracle для ограниченного register-only набора: 10 fixtures исполнены по два раза и совпали с M3 Max interpreter/JIT. Результат не распространяется на прочие модели x86, полную ISA, paging или privileged режим.
+
+## Проверка S1-02 и S1-03 на основном host
+
+22 октября 2026 года финальный `stage1_harness.py --suite all --generated-count 1000 --seed 0x5eedcafe --repeats 2` прошёл на M3 Max и Mac mini. Локальные format/check/test проверки, Linux Cargo tests и сравнение native oracle прошли; четыре положительных fixtures также исполнены через interpreter и ARM64 JIT. Подробные команды, окружения и fingerprints записаны в [отчёте Stage 1](../reports/STAGE_1_REPORT.md).
+
+## Локальная проверка S1-04 supervisor
+
+Создан `od-x86-runner` с watchdog-процессом, ограничением stdout/stderr, обязательным kill/wait, разбором normal exit и signal, а также Linux `setrlimit` для CPU, address space и core dump. На M3 Max прошли 8 supervisor tests; на Ubuntu Mac mini прошли 13 tests, включая фактическую проверку лимитов и завершение потомка, удерживавшего pipe. Ограничения и точные сведения о машинах указаны в [отчёте Stage 1](../reports/STAGE_1_REPORT.md).
+
+## Локальные decode-boundary проверки S1-09
+
+`od-isa` тесты проверяют усечения доступных форм без частичного изменения CPU state, empty input, maximum supported 10-byte MOV, unsupported 15-byte prefix sequence, memory ModR/M, branch target и invalid entry RIP; локальные 9 tests прошли. На Ubuntu Mac mini реальные decode проверки REX prefix и усечённого MOV immediate перед guard page вернули `Truncated` без host fault. Архитектурные границы и полный список проверок приведены в [отчёте Stage 1](../reports/STAGE_1_REPORT.md).
+
+## Детерминированные control protocol сценарии S1-11
+
+Обновлённый `vmhost_control_race_smoke.py` прошёл на M3 Max против уже собранных launcher и настоящего `od-vmhost-smoke`. Помимо существующих 100 early-stop и 20 stop/result races, три фиксированных seed проверили разбиение HELLO/RUN frames; также проверены partial header/payload, disconnect, bad magic/version/kind, oversized lengths и логически неправильный STOP с последующим успешным STOP. Сценарии и генератор зафиксированы в `tests/fixtures/control/control_v0_scenarios.json` и `docs/testing/CONTROL_PROTOCOL_TESTING.md`.

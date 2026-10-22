@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-22",
+  "stage": "stage-1",
+  "status": "passed",
+  "source_fingerprint": "sha256:e40d446ba553031165bd8bfab414ef4343b864d1bf59eb4d7bb507107ed925f2",
+  "harness": {
+    "run_id": "stage1-harness-20261022-193139-96d1916a",
+    "summary_path": "work/stage1-harness/stage1-harness-20261022-193139-96d1916a/summary.json",
+    "summary_sha256": "af3aea0bc282d14da21ebf2332fedd6073bbd924486088e33f2818eed5b39b78",
+    "suites": {
+      "local": "passed",
+      "oracle": "passed",
+      "vmhost": "passed"
+    }
+  },
+  "machines": {
+    "host": {
+      "cpu": "Apple M3 Max",
+      "os": "macOS 26.7.1",
+      "kernel": "Darwin 25.6.0",
+      "architecture": "arm64",
+      "page_size": 16384,
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)"
+    },
+    "physical_x86": {
+      "cpu": "Intel Core i5-3210M",
+      "os": "Ubuntu 25.10",
+      "kernel": "6.17.0-41-generic",
+      "architecture": "x86_64",
+      "microcode": "0x21",
+      "page_size": 4096,
+      "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+      "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)"
+    }
+  },
+  "schemas": {
+    "fixture": 1,
+    "result": 1
+  },
+  "generated_corpus": {
+    "generator": "od-testkit-cpu-v1",
+    "seed": "0x5eedcafe",
+    "unique_cases": 1000,
+    "repeats": 2,
+    "native_results": 2000,
+    "all_engine_runs": 6000,
+    "corpus_sha256": "9356e916b2037a3f5a082e8366fe33bf4277ab00812489809bfc586210744d35"
+  },
+  "fixture_oracle": {
+    "manual_cases": 10,
+    "repeats": 2,
+    "native_results": 20,
+    "differences": 0
+  },
+  "generated_oracle": {
+    "native_results": 2000,
+    "differences": 0,
+    "failed": 0,
+    "unsupported": 0,
+    "skipped": 0
+  },
+  "oracle_manifest": {
+    "run_id": "stage1-20261022-193143-3244fc20",
+    "path": "work/stage1-oracle/stage1-20261022-193143-3244fc20/manifest.json",
+    "sha256": "5c12b9bae4bf76777468b5dbde4a5618ef54435bd190921f15a9dba70db96a5a"
+  },
+  "limitations": [
+    "register-only S0-09 profile",
+    "one Intel CPU model",
+    "no guest memory, MMU, architectural exceptions, privileged mode, SIMD, x87, guest OS boot, or AMD validation",
+    "native hardware instruction count unavailable"
+  ],
+  "stage0_open_issue": "ISSUE-004: product signing and notarization"
+}

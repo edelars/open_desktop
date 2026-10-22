@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "case_id": "s0_09_sub_jnz_loop",
+  "profile": "s0_09_register_subset_v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "tests/fixtures/x86/s0_09_sub_jnz_loop.hex",
+    "specification": "docs/specs/CPU_CONTRACT.md",
+    "specification_version": "v0.1; Intel SDM 093; AMD APM 4.09"
+  },
+  "program": {
+    "bytes_hex": "482bc175fb",
+    "sha256": "61f881528d0d23cfd9605586e5916797fb5d0e798cf9f0f14274f31627497b82"
+  },
+  "initial_state": {
+    "rax": "0x0000000000000003",
+    "rcx": "0x0000000000000001",
+    "rdx": "0x0000000000000000",
+    "rbx": "0x0000000000000000",
+    "rip": "0x0000000000000000",
+    "rflags": "0x0000000000000002"
+  },
+  "instruction_budget": 32,
+  "wall_timeout_ms": 1000,
+  "comparison": {
+    "registers": ["rax", "rcx", "rdx", "rbx"],
+    "rip": true,
+    "rflags_mask": "0x00000000000008d5",
+    "memory": {"status": "unsupported"},
+    "exceptions": {"status": "unsupported"}
+  },
+  "expected_exit": "reached_code_end"
+}

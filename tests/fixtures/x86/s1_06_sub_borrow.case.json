@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "case_id": "s1_06_sub_borrow",
+  "profile": "s0_09_register_subset_v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "tests/fixtures/x86/S1_06_BOUNDARY.md",
+    "specification": "docs/specs/CPU_CONTRACT.md",
+    "specification_version": "v0.1; Intel SDM 093"
+  },
+  "program": {
+    "bytes_hex": "482bc1",
+    "sha256": "d970d8f06fa2f7f5a26c1a3c70f8995e2f1ae5f053bc270e53403b7b208bf496"
+  },
+  "initial_state": {
+    "rax": "0x0000000000000000",
+    "rcx": "0x0000000000000001",
+    "rdx": "0x0000000000000000",
+    "rbx": "0x0000000000000000",
+    "rip": "0x0000000000000000",
+    "rflags": "0x0000000000000002"
+  },
+  "instruction_budget": 100,
+  "wall_timeout_ms": 1000,
+  "comparison": {
+    "registers": ["rax", "rcx", "rdx", "rbx"],
+    "rip": true,
+    "rflags_mask": "0x00000000000008d5",
+    "memory": {"status": "unsupported"},
+    "exceptions": {"status": "unsupported"}
+  },
+  "expected_exit": "reached_code_end"
+}

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "case_id": "s1_06_jz_not_taken",
+  "profile": "s0_09_register_subset_v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "tests/fixtures/x86/S1_06_BOUNDARY.md",
+    "specification": "docs/specs/CPU_CONTRACT.md",
+    "specification_version": "v0.1; Intel SDM 093"
+  },
+  "program": {
+    "bytes_hex": "48b8010000000000000048b90200000000000000483bc1740a48ba0000000000000000",
+    "sha256": "59f74b9340ec2231c13054779d4c2c748d00ec9134139566a205ee42d38722d3"
+  },
+  "initial_state": {
+    "rax": "0x0000000000000000",
+    "rcx": "0x0000000000000000",
+    "rdx": "0x000000000000feed",
+    "rbx": "0x0000000000000000",
+    "rip": "0x0000000000000000",
+    "rflags": "0x0000000000000002"
+  },
+  "instruction_budget": 100,
+  "wall_timeout_ms": 1000,
+  "comparison": {
+    "registers": ["rax", "rcx", "rdx", "rbx"],
+    "rip": true,
+    "rflags_mask": "0x00000000000008d5",
+    "memory": {"status": "unsupported"},
+    "exceptions": {"status": "unsupported"}
+  },
+  "expected_exit": "reached_code_end"
+}

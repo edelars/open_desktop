@@ -1,0 +1,17 @@
+[package]
+name = "od-x86-runner"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "od-x86-runner"
+path = "src/main.rs"
+
+[dependencies]
+libc = "=0.2.190"
+od-isa = { path = "../../crates/od-isa" }
+od-testkit = { path = "../../crates/od-testkit" }
+
+[lints]
+workspace = true

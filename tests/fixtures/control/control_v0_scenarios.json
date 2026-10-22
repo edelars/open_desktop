@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "protocol": "CONTROL_PROTOCOL_V0",
+  "max_payload_bytes": 8192,
+  "frame_chunking": {
+    "seeds": [0, 1, 24301],
+    "max_chunk_bytes": 13,
+    "inter_chunk_delay_ms": 1,
+    "generator": "32-bit LCG: state=(1664525*state+1013904223) mod 2^32"
+  },
+  "partial_frames": [
+    {"label": "partial header", "hex": "4f"},
+    {"label": "partial STOP payload", "hex": "4f44435000000500070000000400000000"}
+  ],
+  "malformed_hello": [
+    {"label": "bad magic", "magic_hex": "42414421", "version": 0, "kind": 1, "request_id": 0, "payload_length": 0},
+    {"label": "unsupported version", "magic_hex": "4f444350", "version": 1, "kind": 1, "request_id": 0, "payload_length": 0},
+    {"label": "unknown kind", "magic_hex": "4f444350", "version": 0, "kind": 254, "request_id": 0, "payload_length": 0},
+    {"label": "oversized HELLO payload", "magic_hex": "4f444350", "version": 0, "kind": 1, "request_id": 0, "payload_length": 8193}
+  ],
+  "malformed_stop": [
+    {"label": "bad STOP version", "version": 1, "kind": 5, "request_id": 19, "payload_length": 0},
+    {"label": "unknown STOP kind", "version": 0, "kind": 254, "request_id": 19, "payload_length": 0},
+    {"label": "oversized STOP payload", "version": 0, "kind": 5, "request_id": 19, "payload_length": 8193}
+  ],
+  "invalid_stop_requests": [
+    {"label": "wrong request ID", "request_id_delta": 1, "payload_hex": ""},
+    {"label": "unexpected payload", "request_id_delta": 0, "payload_hex": "78"}
+  ]
+}

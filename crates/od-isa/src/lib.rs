@@ -397,6 +397,80 @@ mod tests {
     }
 
     #[test]
+    fn every_truncated_prefix_of_supported_encodings_is_rejected_before_execution() {
+        let mov_imm64 = [0x48, 0xB8, 1, 2, 3, 4, 5, 6, 7, 8];
+        for length in 1..mov_imm64.len() {
+            let mut state = CpuState {
+                gpr: [11, 22, 33, 44],
+                rip: 0,
+                rflags: 1 << 1,
+            };
+            let before = state.clone();
+            assert_eq!(
+                interpret(&mov_imm64[..length], &mut state, 8),
+                Err(DecodeErrorOrExecute::Decode(DecodeError::Truncated {
+                    offset: 0
+                }))
+            );
+            assert_eq!(state, before, "truncated length {length} changed state");
+        }
+
+        for code in [&[0x48][..], &[0x48, 0x03][..], &[0x74][..]] {
+            assert_eq!(
+                decode(code),
+                Err(DecodeError::Truncated { offset: 0 }),
+                "truncated bytes {code:02x?}"
+            );
+        }
+        assert_eq!(decode(&mov_imm64).unwrap()[0].length, 10);
+    }
+
+    #[test]
+    fn empty_input_and_unsupported_max_length_prefix_have_defined_results() {
+        assert_eq!(decode(&[]), Ok(Vec::new()));
+        let mut state = CpuState::default();
+        let result = interpret(&[], &mut state, 1).unwrap();
+        assert_eq!(result.reason, ExitReason::ReachedCodeEnd);
+        assert_eq!(result.instructions_executed, 0);
+
+        let fifteen_byte_legacy_prefix_sequence = [0x66; 15];
+        assert_eq!(
+            decode(&fifteen_byte_legacy_prefix_sequence),
+            Err(DecodeError::UnsupportedOpcode {
+                offset: 0,
+                opcode: 0x66,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_memory_modrm_invalid_branch_targets_and_non_boundary_entry_rip() {
+        assert_eq!(
+            decode(&[0x48, 0x03, 0x00]),
+            Err(DecodeError::UnsupportedEncoding { offset: 0 })
+        );
+        assert_eq!(
+            decode(&[0x74, 0x01]),
+            Err(DecodeError::InvalidBranchTarget {
+                offset: 0,
+                target: 3,
+            })
+        );
+        assert!(decode(&[0x74, 0xFE]).is_ok());
+
+        let mut state = CpuState {
+            rip: 1,
+            ..CpuState::default()
+        };
+        assert_eq!(
+            interpret(&[0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0], &mut state, 1),
+            Err(DecodeErrorOrExecute::Execute(
+                ExecuteError::InvalidInstructionPointer { rip: 1 }
+            ))
+        );
+    }
+
+    #[test]
     fn branch_into_instruction_body_is_rejected() {
         let code = [0x74, 0x01, 0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0];
         assert!(matches!(
