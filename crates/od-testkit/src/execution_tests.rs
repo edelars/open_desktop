@@ -25,6 +25,89 @@ fn memory(code: &[u8], base: u64) -> FlatMemory {
     FlatMemory::from_fixture(&input).unwrap()
 }
 
+#[test]
+fn fsubp_runner_literal_outputs_follow_sti_minus_st0_and_pop() {
+    fn normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
+        let mut bytes = [0; 10];
+        bytes[..8].copy_from_slice(&significand.to_le_bytes());
+        bytes[8..].copy_from_slice(&(exponent | if negative { 0x8000 } else { 0 }).to_le_bytes());
+        bytes
+    }
+
+    for (destination, destination_value, source_value, expected) in [
+        (
+            1u8,
+            normal(0xc000_0000_0000_0000, 0x3fff, false),
+            normal(0x8000_0000_0000_0000, 0x3fff, false),
+            normal(0x8000_0000_0000_0000, 0x3ffe, false),
+        ),
+        (
+            2u8,
+            normal(0x8000_0000_0000_0000, 0x3fff, false),
+            normal(0xc000_0000_0000_0000, 0x3fff, false),
+            normal(0x8000_0000_0000_0000, 0x3ffe, true),
+        ),
+        (
+            3u8,
+            normal(0xc000_0000_0000_0000, 0x3fff, true),
+            normal(0x8000_0000_0000_0000, 0x3fff, true),
+            normal(0x8000_0000_0000_0000, 0x3ffe, true),
+        ),
+        (
+            4u8,
+            normal(0x8000_0000_0000_0000, 0x3fff, true),
+            normal(0xc000_0000_0000_0000, 0x3fff, true),
+            normal(0x8000_0000_0000_0000, 0x3ffe, false),
+        ),
+        (
+            5u8,
+            normal(0x8000_0000_0000_0000, 0x3fff, false),
+            normal(0x8000_0000_0000_0000, 0x3fff, true),
+            normal(0x8000_0000_0000_0000, 0x4000, false),
+        ),
+        (
+            6u8,
+            normal(0x8000_0000_0000_0000, 0x3fff, true),
+            normal(0x8000_0000_0000_0000, 0x3fff, false),
+            normal(0x8000_0000_0000_0000, 0x4000, true),
+        ),
+        (
+            7u8,
+            normal(0x8000_0000_0000_0001, 0x3fff, false),
+            normal(0x8000_0000_0000_0000, 0x3fff, false),
+            normal(0x8000_0000_0000_0000, 0x3fc0, false),
+        ),
+    ] {
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        let mut x87 = od_isa::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 1 << 9;
+        x87.tag_word = u16::MAX & !3 & !(3 << (usize::from(destination) * 2));
+        x87.registers[0] = source_value;
+        x87.registers[usize::from(destination)] = destination_value;
+        state.x87 = Some(x87);
+        let mut code = memory(&[0xde, 0xe8 | destination], 0x1000);
+        let result = run(&mut state, &mut code, config(1, Some(0x1002)), || false);
+        assert_eq!(result.exit, RunExit::StopAddress, "i={destination}");
+        assert_eq!(result.instructions_executed, 1, "i={destination}");
+        let after = state.x87.as_ref().unwrap();
+        assert_eq!(
+            after.registers[usize::from(destination)],
+            expected,
+            "i={destination}"
+        );
+        assert_eq!(after.top(), 1, "i={destination}");
+        assert_eq!(after.tag_word & 3, 3, "old TOP is empty, i={destination}");
+        assert_eq!(
+            after.status_word & (1 << 9),
+            0,
+            "C1 clears, i={destination}"
+        );
+        assert_eq!(state.rip, 0x1002, "i={destination}");
+    }
+}
+
 fn config(budget: u64, stop: Option<u64>) -> RunConfig {
     RunConfig {
         instruction_budget: budget,

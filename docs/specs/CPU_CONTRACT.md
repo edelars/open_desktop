@@ -1353,6 +1353,39 @@ Normative source: Intel SDM revision 093, Vol.2A, “FSUB/FSUBP/FISUB—Subtract
 pp.3-394–3-396 ([official Vol.2A PDF,
 pp.3-394–3-396](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=512)).
 
+## Local S2-30j: exact-only `FSUBP ST(i), ST(0)` (`DE E8+i`)
+
+The local long-mode interpreter accepts exactly bare `DE E8` through `DE EF`,
+with the low ModR/M bits selecting destination `i`. It reuses the S2-30i exact
+subtraction preconditions and helper: existing x87 state, FCW `0x037f`,
+`FSW & 0x80ff == 0`, Valid tags for both used physical registers, canonical
+Normal operands, equal normalized exponents, the accepted exact coefficient
+bound, and a canonical Normal output. Destination is old physical
+`(TOP+i)&7`; source is old physical TOP. `i=0` is Unsupported because the
+operands alias and the result is exact cancellation. All checks complete
+before mutation.
+
+On success, write the result bytes to the old physical destination, mark old
+physical TOP Empty while leaving its bytes in place, increment TOP modulo
+eight, clear C1, set FIP to starting RIP, advance RIP by two and retire once.
+Do not rotate physical registers or FTW. Preserve other payloads, other tags,
+FCW, remaining FSW bits, FDP, FOP, GPRs and RFLAGS. Every arithmetic/domain
+reject and fetch/stop/zero-budget path leaves state unchanged. Prefixes,
+FSUBRP `DE E0+i`, and DE ModR/M bytes outside the existing FADDP `DE C0+i`
+and this FSUBP range remain unsupported; native admission stays closed for
+all eight FSUBP codes.
+
+Literal vectors cover positive/negative subtraction orders, opposite signs,
+`±2^-63`, maximum even carry and minimum Normal. Every TOP×i pair checks the
+physical destination and TOP wrap/pop. Alias for every TOP, bad environment,
+tags, unequal exponents, special/non-Normal values, cancellation, odd 65-bit
+coefficient, exact subnormal and overflow compare full state. Decoder checks
+the full DE ModR/M space and prefixes; schema accepts eight codes; native
+profile rejection covers all eight.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FSUB/FSUBP/FISUB—Subtract,”
+pp.3-394–3-396 ([official PDF, pp.3-394–3-396](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=512)).
+
 ## Local S2-29a: raw binary80 representation and classification
 
 `od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory

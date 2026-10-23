@@ -3146,3 +3146,34 @@ passed. `python3 tools/check_layout.py` reports the pre-existing unmapped root
 test was not executed on this macOS host; the Linux-target runner check compiled
 that target. No hardware or SSH test was run; physical acceptance remains in
 the shared final acceptance substage.
+
+## S2-30j — exact-only FSUBP ST(i), ST(0) (bounded local slice)
+
+Added exactly bare `DE E8+i`, `i=0..7`, as exact-only `FSUBP ST(i), ST(0)`.
+Execution reuses the S2-30i `exact_fsub_result` gate for old physical
+destination `(TOP+i)&7` and old ST(0). It validates before mutation, writes
+the result, marks old physical TOP Empty, increments TOP modulo eight, clears
+C1, records FIP, advances RIP by two and retires once. Physical payloads and
+FTW are not rotated. Alias `i=0` is Unsupported atomically. Native admission
+remains closed for all eight encodings.
+
+Checks cover literal ±0.5/±2 outcomes, both `±2^-63` boundaries, maximum even
+65-bit carry and minimum Normal output, every TOP×i=1..7 physical placement,
+TOP wrap, tag/pop status, preserved payloads and unrelated CPU state. Alias
+for every TOP and bad environment/tag/exponent/class/coefficient/subnormal/
+overflow cases compare the complete state. Fetch fault, stop address, zero
+budget, exhaustive DE ModR/M and prefix decoding, fixture schema and native
+denial are covered. The testkit execution runner has independent literal
+expected binary80 outputs for sign/order cases and successful retirement.
+
+Normative source: Intel SDM revision 093, Vol.2A pp.3-394–3-396
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=512)); FSUBP computes `DEST − SRC` before popping old TOP.
+
+Verification passed: focused FSUBP tests, `cargo test --workspace --offline`,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+and `cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu
+--offline`. `git diff --check` and `graphify update .` completed. The layout
+check reports only the pre-existing unmapped root `.serena/` directory, which
+was left untouched. Linux-only native tests were compile-checked but not
+executed on macOS. No Mac mini, SSH or hardware test was run; physical
+acceptance remains the final substage.

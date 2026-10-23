@@ -190,6 +190,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30g | Bare `DE C0+i` FADDP ST(i), ST(0), same exact-only domain plus physical TOP pop, native closed | S2-30f |
 | [x] | S2-30h | Bare `D8 E0+i` FSUB ST(0), ST(i), exact-only same-exponent normal results; i=0 unsupported; native closed | S2-30e |
 | [x] | S2-30i | Bare `DC E8+i` FSUB ST(i), ST(0), exact-only same-exponent normal results; i=0 alias unsupported; native closed | S2-30h |
+| [x] | S2-30j | Bare `DE E8+i` FSUBP ST(i), ST(0), same exact-only domain plus physical TOP pop; i=0 alias unsupported; native closed | S2-30i |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1559,6 +1560,24 @@ every TOP×i placement, alias and unsupported-state atomicity, exhaustive DC
 ModR/M and prefix/fetch boundaries, fixture schema, CLI runner, and native
 denial are required. Full x87 architectural behavior remains outside this
 bounded slice.
+
+#### S2-30j. Bare exact-only FSUBP ST(i), ST(0) (bounded local slice)
+
+Accept only bare `DE E8+i`, `i=0..7`, as `FSUBP ST(i), ST(0)`. Reuse the
+S2-30i exact subtraction gate and result helper with old physical destination
+`(TOP+i)&7` and source TOP; reject alias `i=0` as exact cancellation. Validate
+the complete operation before mutation. On success write the result to the
+destination first, mark old physical TOP Empty, increment TOP modulo eight,
+clear C1, set FIP to old RIP, advance RIP by two and retire once. Do not rotate
+payloads or FTW. Unsupported arithmetic, environment, operand, and fetch
+conditions leave state unchanged. Native admission stays closed for all eight
+codes.
+
+Cover literal subtraction and boundary values, every TOP×i physical placement
+and pop/wrap behavior, alias and numeric/domain rejects with full-state
+equality, zero-budget/stop/fetch boundaries, exhaustive DE ModR/M and prefixes,
+fixture schema, and native denial. Normative source: Intel SDM rev.093 Vol.2A
+pp.3-394–3-396, FSUBP `DEST − SRC` and destination-before-pop semantics.
 
 ### S2-31. x87 conversions, rounding и exceptions
 

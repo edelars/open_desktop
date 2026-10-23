@@ -563,6 +563,7 @@ fn admission_with_tracee_memory(
             | Operation::FsubStSt0 { .. }
             | Operation::FaddStSt0 { .. }
             | Operation::FaddpStSt0 { .. }
+            | Operation::FsubpStSt0 { .. }
     ) {
         return Err("x87 instruction is not admitted by the native backend".into());
     }
@@ -3688,6 +3689,14 @@ mod tests {
             [0xde, 0xc5],
             [0xde, 0xc6],
             [0xde, 0xc7],
+            [0xde, 0xe8],
+            [0xde, 0xe9],
+            [0xde, 0xea],
+            [0xde, 0xeb],
+            [0xde, 0xec],
+            [0xde, 0xed],
+            [0xde, 0xee],
+            [0xde, 0xef],
         ] {
             let mut input = fixture(&code).fixture;
             input.profile = v2::Profile::LongX87StateV1;
@@ -3702,7 +3711,7 @@ mod tests {
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>();
             input.memory[0].comparison_mask_hex = "ffff".into();
-            if code == [0xd8, 0xe0] {
+            if matches!(code, [0xd8, 0xe0] | [0xdc, 0xe8] | [0xde, 0xe8]) {
                 input.expected_exit = v2::ExpectedExit::Unsupported;
                 input.stop_rip = None;
             } else {
