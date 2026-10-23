@@ -162,7 +162,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-22c | Только `48 8C E0` (`MOV RAX, FS`) в local-only profile с наблюдаемыми FS.base и selector; Intel SDM rev.093 Vol.2B MOV pp.4-28–4-31; descriptor/privilege semantics остаются открытыми | S2-22b |
 | [x] | S2-22d | Только `48 8C E8` (`MOV RAX, GS`) в отдельном local-only profile с наблюдаемыми GS.base и selector; zero-extend, descriptor lookup/load и privilege checks не входят | S2-22c |
 | [x] | S2-22e | Только bare `0F 00 E8` (`VERW AX`) на CPL3, GDT-only local profile; read-only 8-byte descriptor lookup, ZF rights check, table bounds and descriptor-origin memory context. S2-27 explicitly excludes this extracted form; S2-22 itself remains open | S2-22d, S2-20 |
-| [ ] | S2-22f | Только bare `8E E0` (`MOV FS, AX`) в Long64/CPL3, AX non-null GDT selector; полная загрузка FS hidden cache только для P=1/A=1, точные #GP/#NP priorities/codes, descriptor-origin read; A=0/null/TI остаются Unsupported | S2-22e |
+| [x] | S2-22f | Только bare `8E E0` (`MOV FS, AX`) в Long64/CPL3, AX non-null GDT selector; descriptor-origin read и точные #GP/#NP priorities/codes; A=0 пока не меняет состояние | S2-22e |
+| [x] | S2-22g | В том же local-only профиле для valid P=1/A=0 выполнить один byte write только по адресу access byte до CPU commit; A=1 не пишет; native profile остаётся fail-closed | S2-22f |
 | [ ] | S2-23 | Real mode 16-bit, если нужен пути загрузки | S2-22 |
 | [ ] | S2-24 | Protected/compatibility mode | S2-22; S2-23 при необходимости |
 | [ ] | S2-25 | CR/MSR и переходы режима | S2-24 |
@@ -837,23 +838,25 @@ loads, hidden descriptor caches, present faults, stack checks, LDT, other CPLs
 and other modes remain open. S2-27 excludes this exact form and continues to
 own the remaining descriptor/event/system-transition instructions.
 
-S2-22f is a partial local-only Long64/CPL3 load slice: exactly bare `8E E0`
-(`MOV FS, AX`) whose AX selector is a non-null GDT selector. It reads one complete descriptor
-through descriptor-table origin, checks type/privilege/presence in architectural
-priority order, and loads selector, zero-extended descriptor base, effective
-limit and attributes only when P=1 and A=1. A valid A=0 descriptor remains
-Unsupported because its required accessed-bit write is outside this slice.
-Null and TI/LDT selectors are also Unsupported. This does not close S2-22:
-LDT, GS/SS loads, other CPLs/modes, stack checks and general accessed-bit writes
-remain open.
+S2-22f/g is a partial local-only Long64/CPL3 load slice: exactly bare `8E E0`
+(`MOV FS, AX`) whose AX selector is a non-null GDT selector. It reads one
+complete descriptor through descriptor-table origin and checks
+type/readability, privilege and presence in architectural priority order.
+For valid P=1/A=0 it makes exactly one `GuestMemory::write` of `access | 1` at
+`descriptor_address + 5`, using the same descriptor context, before updating the
+FS selector/cache and committing RIP/retirement. A=1 performs no write. The
+byte-sized backend call defines the chosen semantic memory access, not physical
+bus width. Descriptor writes require private synchronous RAM, serial execution,
+and no external observer/writer, DMA, shared alias, delayed write or MMIO. A
+write error preserves the current CPU state and retirement; generic memory
+backends must honor the existing no-mutation-on-error contract. Native profile
+admission remains fail-closed. Null and TI/LDT selectors are Unsupported. This
+does not close S2-22: general accessed-bit writes, LDT, GS/SS loads, other
+CPLs/modes and stack checks remain open.
 
-The local S2-22f slice passed independent Sol-medium code review after fixing
-result validation for a committed FS load followed by a later exception. The
-final local verification passed 353 workspace tests, 85 CPU-oracle tests, all
-57 Stage 2 generator freshness checks, workspace check, formatting and layout
-checks. The Linux native test target compiled only; native execution and all
-Mac mini checks remain deferred to the single final physical-acceptance stage.
-S2-22 itself remains open.
+Local verification results for S2-22f/g are recorded in the Stage 2 report.
+No SSH, Mac mini or physical acceptance is performed here; those remain in the
+single shared final acceptance substage. S2-22 itself remains open.
 
 ### S2-23. Real mode при необходимости
 

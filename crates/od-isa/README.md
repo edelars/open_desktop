@@ -79,11 +79,18 @@ privilege levels, descriptor loads, native execution and hardware validation
 remain outside this slice. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md)
 and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
 
-S2-22f adds one local-only Long64/CPL3 `MOV FS, AX` form. It performs a single
-8-byte descriptor-origin GDT read, checks type/privilege before presence, and
-loads selector, zero-extended base, effective limit and attributes only for
-P=1/A=1. Null/TI, A=0, other modes/CPLs, LDT, GS/SS and accessed-bit writes
-remain unsupported. The profile makes initial FS cache state explicit; older
-wire shapes are unchanged, and native execution fails closed. See the
-[CPU contract](../../docs/specs/CPU_CONTRACT.md) and
+S2-22f/g adds one local-only Long64/CPL3 `MOV FS, AX` form. It performs a
+single 8-byte descriptor-origin GDT read, checks type/readability and
+privilege before presence, then handles A. A=1 needs no write; valid P=1/A=0
+uses one one-byte `GuestMemory::write` at the descriptor access byte before
+the FS cache and instruction commit. The backend call width is the chosen
+semantic access size, not a claim about physical bus width. Descriptor writes
+are limited to private synchronous RAM under serial execution without external
+observers, DMA, shared aliases, delayed writes or MMIO. Null/TI, other
+modes/CPLs, LDT, GS/SS and general accessed-bit updates remain unsupported. The
+profile makes initial FS cache state explicit; older wire shapes are
+unchanged, and native execution fails closed. Sources: Intel SDM rev.093
+Vol.2B MOV pp.4-28–4-31 and Vol.3A §3.4.5.1 pp.3-12–3-13, §5.6.1
+pp.5-33–5-35, §5.7 pp.5-37–5-38, §11.1.2.1 p.11-3 Automatic Locking. See
+the [CPU contract](../../docs/specs/CPU_CONTRACT.md) and
 [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).

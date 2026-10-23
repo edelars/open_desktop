@@ -75,7 +75,7 @@ const VERW_GDT_CASES: &[(&str, &[u8], bool)] = &[
         true,
     ),
 ];
-const FS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32)] = &[
+const FS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32, bool)] = &[
     (
         "s2_22f_fs_load_writable_g0",
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_22f_fs_load_writable_g0.case.json"),
@@ -84,6 +84,7 @@ const FS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32)] = &[
         0,
         0,
         0x89ab_cdef,
+        false,
     ),
     (
         "s2_22f_fs_load_readonly_g1",
@@ -93,6 +94,7 @@ const FS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32)] = &[
         0x0fff,
         8,
         0,
+        false,
     ),
     (
         "s2_22f_fs_load_readable_code",
@@ -102,6 +104,7 @@ const FS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32)] = &[
         0,
         0,
         0,
+        false,
     ),
     (
         "s2_22f_fs_load_conforming_code",
@@ -113,6 +116,7 @@ const FS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32)] = &[
         0,
         0,
         0,
+        false,
     ),
     (
         "s2_22f_fs_load_system_gp",
@@ -122,6 +126,7 @@ const FS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32)] = &[
         0,
         0,
         0,
+        false,
     ),
     (
         "s2_22f_fs_load_execute_only_gp",
@@ -133,6 +138,7 @@ const FS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32)] = &[
         0,
         0,
         0,
+        false,
     ),
     (
         "s2_22f_fs_load_privilege_gp",
@@ -142,6 +148,7 @@ const FS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32)] = &[
         0,
         0,
         0,
+        false,
     ),
     (
         "s2_22f_fs_load_not_present_np",
@@ -153,6 +160,7 @@ const FS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32)] = &[
         0,
         0,
         0,
+        false,
     ),
     (
         "s2_22f_fs_load_table_limit_gp",
@@ -164,6 +172,27 @@ const FS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32)] = &[
         0,
         0,
         0,
+        false,
+    ),
+    (
+        "s2_22g_fs_load_a0_writable",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22g_fs_load_a0_writable.case.json"),
+        None,
+        0xf3,
+        0,
+        0,
+        0x89ab_cdef,
+        true,
+    ),
+    (
+        "s2_22g_fs_load_a0_readonly",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22g_fs_load_a0_readonly.case.json"),
+        None,
+        0xf1,
+        0,
+        0,
+        0,
+        true,
     ),
 ];
 const CMPXCHG_QWORD_REGISTER_EQUAL: &[u8] = include_bytes!(
@@ -502,8 +531,16 @@ fn verw_gdt_fixtures_check_literal_rights_flags_state_and_descriptor_bytes() {
 
 #[test]
 fn fs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state() {
-    for (case_id, bytes, fault, expected_access, expected_limit, expected_flags, expected_base) in
-        FS_LOAD_CASES
+    for (
+        case_id,
+        bytes,
+        fault,
+        expected_access,
+        expected_limit,
+        expected_flags,
+        expected_base,
+        accessed_update,
+    ) in FS_LOAD_CASES
     {
         let (input, result) = run(bytes, "interpreter", 0);
         assert_eq!(input.fixture.case_id, *case_id);
@@ -519,10 +556,11 @@ fn fs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state(
         );
         assert_eq!(observed.memory.len(), 2);
         assert_eq!(observed.memory[0].bytes_hex, "8ee0");
-        assert_eq!(
-            observed.memory[1].bytes_hex,
-            input.fixture.memory[1].initial_bytes_hex
-        );
+        let mut expected_gdt = input.fixture.memory[1].initial_bytes_hex.clone();
+        if *accessed_update {
+            expected_gdt.replace_range(26..28, &format!("{expected_access:02x}"));
+        }
+        assert_eq!(observed.memory[1].bytes_hex, expected_gdt);
         assert_eq!(
             observed.exception,
             match fault {

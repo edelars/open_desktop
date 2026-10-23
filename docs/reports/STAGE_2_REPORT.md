@@ -103,13 +103,69 @@ physical Mac mini, or hardware acceptance was run; these remain in the shared
 final acceptance substage. The review follow-up's focused tests also passed:
 `cargo test -p od-testkit --offline fs_load_state_change_is_allowed_after_retirement_independent_of_terminal_outcome`,
 `cargo test -p od-runner --test fixture_v2 --offline fs_load_commit_is_preserved_when_a_later_instruction_faults_and_self_compares`,
-and `python3 tests/cpu/test_stage2_fs_load_generator.py`. Independent Sol-medium
-re-review is pending.
+and `python3 tests/cpu/test_stage2_fs_load_generator.py`. The later S2-22g
+independent Sol-medium review rechecked this path and reported no remaining
+findings.
 
 Source: Intel SDM revision 093, Vol.2B (253667-093US), MOV pp.4-28–4-31,
 [official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241); Vol.3A
 (325384-093US), §§3.4.3–3.4.5.1, 3.5.1, 6.4.1.1, 6.6–6.6.1, 6.11.5 and
 7.13 plus Event 11, [official combined PDF](https://cdrdv2.intel.com/v1/dl/getContent/671447).
+
+## S2-22g — CPL3 GDT-only `MOV FS, AX` accessed-bit update
+
+Extended the existing `s2-long-fs-load-v1` local-only profile for exactly bare
+`8E E0` at Long64/CPL3. The interpreter reads the complete descriptor once
+through `DescriptorTable` origin, preserving architectural Ring3 in the
+context while page privilege is Ring0. It preserves validation order
+S/type/readability → CPL/RPL/DPL → P → A, including conforming-code privilege
+exemption. A valid P=1/A=0 descriptor causes exactly one
+`GuestMemory::write(descriptor_address + 5, same_descriptor_context,
+&[access | 1])`; A=1 does no write. The FS selector/base/cache, RIP and
+retirement commit only after a successful write. Architectural write faults
+retain their payload; backend errors are returned unchanged; both leave the
+current instruction uncommitted. No CPU-state operation that can fail follows
+the successful backend write.
+
+The one-byte backend call is the selected semantic memory access size; it does
+not assert a physical bus transaction width. The operation is bounded to
+private synchronous RAM under serial interpreter execution with no external
+observer/writer, DMA, shared alias, delayed write or MMIO. Generic
+`GuestMemory` must retain its existing no-mutation-on-error contract. Native
+profile admission remains fail-closed, and S2-22 remains open.
+
+Coverage includes writable and read-only data descriptors with A=0, A=1 from
+a read-only mapping, exact read8 then write1 trace and matching descriptor
+context, read errors without a write, injected architectural/backend write
+errors without CPU/RIP/retirement commit, invalid type/rights/P=0 before an
+armed write error, adjacent GDT regions where only the access-byte region is
+writable, repeated selector loads that write once, and successful load/write
+state preserved before a later #UD. Existing null/TI/CPL/truncation/canonical/
+limit/high-base/G=0/G=1/conforming-code/native-admission cases remain covered.
+Two generated fixtures add A=0 writable/read-only descriptor successes and
+the fixture runner checks access-byte-only mutation.
+
+Local verification passed: `cargo test --workspace --offline` (360 tests),
+`cargo check --workspace --all-targets --offline`, the focused `od-isa`
+`mov_fs_ax` tests (10), the adjacent-region `od-testkit` test (1), the
+`fixture_v2` literal descriptor test (1), the Python CPU suite (85), all 57
+Stage 2 fixture-generator freshness checks, `cargo fmt --all -- --check`,
+`python3 tools/check_layout.py`, and `git diff --check`. No SSH, Mac mini,
+native execution or physical acceptance was run; those remain in the shared
+final acceptance substage. Independent Sol-medium code review completed with
+no remaining code or fixture findings after the descriptor-origin wording fix.
+
+Sources: Intel SDM revision 093, Vol.2B MOV pp.4-28–4-31, [official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241);
+Vol.3A §§3.4.5.1 pp.3-12–3-13, 5.6.1 pp.5-33–5-35, 5.7 pp.5-37–5-38,
+11.1.2.1 p.11-3 Automatic Locking, [official combined PDF](https://cdrdv2.intel.com/v1/dl/getContent/671447).
+
+```sh
+python3 tests/cpu/generate_stage2_fs_load.py --check
+python3 tests/cpu/test_stage2_fs_load_generator.py
+cargo test -p od-isa --offline mov_fs_ax
+cargo test -p od-testkit --offline fs_load_accessed_byte_write_spans_adjacent_gdt_regions_without_full_descriptor_writeback
+cargo test -p od-runner --test fixture_v2 --offline fs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state
+```
 
 ## S2-00 — профиль
 

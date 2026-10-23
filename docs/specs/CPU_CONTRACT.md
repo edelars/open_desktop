@@ -610,30 +610,48 @@ errors remain backend failures.
 After a successful read, validation order is: require S=1 and a data or
 readable-code type; require `max(CPL,RPL) <= DPL` for data and nonconforming
 readable code (conforming readable code follows its conforming-code rule); then
-check P. Type/privilege failures raise #GP(selector); P=0 raises #NP(selector).
-Both selector exceptions use error code `selector & 0xfffc` with EXT=IDT=0 and
-RPL cleared. For an otherwise-valid present descriptor, A=0 is Unsupported
-without descriptor writes or CPU commit; invalid type/privilege and not-present
-faults retain priority over this implementation boundary. Success requires
-P=1 and A=1.
+check P; then inspect A. Type/privilege failures raise #GP(selector); P=0 raises
+#NP(selector). Both selector exceptions use error code `selector & 0xfffc` with
+EXT=IDT=0 and RPL cleared. For an otherwise-valid present descriptor with A=0,
+the interpreter makes exactly one `GuestMemory::write` at
+`descriptor_address + 5`, with the same descriptor-table `AccessContext` and
+the one-byte value `access | 1`. An A=1 descriptor requires no write. The
+byte-sized backend call is the selected semantic memory access; it does not
+claim a physical bus transaction width. Only after a successful A-bit write
+does the interpreter update the visible selector, zero-extended base32,
+effective limit and cached attributes, then commit RIP and retirement. A read
+or write error propagates with no current-instruction CPU/RIP/retirement commit;
+the generic `GuestMemory` no-mutation-on-error contract applies. The descriptor
+write is admitted only for private synchronous RAM with serial interpreter
+execution and no external observer/writer, DMA, shared alias, delayed write or
+MMIO. A=0 is not supported by native profile admission.
 
 Tests cover exact decode/truncation/neighbors; null/TI/CPL boundary; full and
 short GDT bounds; one descriptor read with correct origin; read faults and
 backend errors without commit; data/read-only/readable-code/system/execute-only
 types; CPL3/RPL0/DPL0 privilege regression; #GP before #NP priority; P=0 #NP;
-A=0 Unsupported without writes; A=1 success; base32 high-bit zero extension,
-G=0/G=1 limit expansion, attribute preservation, full state and cache lifetime.
+A=0 writable/read-only-data success with access-byte-only update; A=1 success
+without write permission; exact read8 then write1 trace and descriptor context;
+architectural/backend write errors without commit; validation faults before an
+armed write error; split adjacent GDT regions where only the access byte is
+writable; one write across repeated loads; a committed load/write before a
+later fault; base32 high-bit zero extension, G=0/G=1 limit expansion, attribute
+preservation, full state and cache lifetime.
 This CPL3 slice does not claim a full RPL/CPL differential matrix. Native
 execution rejects the profile before mapping/tracee creation and legacy native
-admission rejects the decoded form. It implements neither accessed-bit writes
-nor LDT, null loads, other privilege levels, stack semantics, present-bit
-updates, trap delivery, or general FS limit/type checks.
+admission rejects the decoded form. Beyond the single A-bit write for this
+exact `MOV FS, AX` form, it implements no general accessed-bit updates for other
+descriptor loads. LDT, null loads, other privilege levels, stack semantics,
+present-bit updates, trap delivery, and general FS limit/type checks remain
+outside this slice.
 
 Sources: Intel SDM revision 093, Vol.2B (253667-093US), MOV pp.4-28–4-31,
 [official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241); Vol.3A
 (325384-093US), §§3.4.3 p.3-8, 3.4.4 p.3-9, 3.4.5.1 pp.3-12–3-13, 3.5.1
-p.3-15, 6.4.1.1 p.6-6, 6.6–6.6.1 pp.6-8–6-9, 6.11.5 p.6-29, 7.13
-pp.7-19–7-20 and Event 11 p.7-41, [official combined Vol.3 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671447).
+p.3-15, 5.6.1 pp.5-33–5-35, 5.7 pp.5-37–5-38, 6.4.1.1 p.6-6,
+6.6–6.6.1 pp.6-8–6-9, 6.11.5 p.6-29, 7.13 pp.7-19–7-20 and Event 11
+p.7-41, 11.1.2.1 p.11-3 Automatic Locking,
+[official combined Vol.3 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671447).
 
 ### Арифметика и eager flags — S2-11
 

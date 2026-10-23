@@ -5,8 +5,8 @@
   "provenance": {
     "kind": "project_fixture",
     "source": "Handwritten instruction bytes, GDT descriptor bytes, state, and expected exit. This generator serializes literals only; it does not assemble, emulate, or calculate CPU semantics.",
-    "specification": "Intel SDM revision 093 (253667-093US), Vol.2B MOV pp.4-28\u20134-31; Vol.3A (325384-093US) \u00a7\u00a73.4.3\u20133.4.5.1, 3.5.1, 6.4.1.1, 6.6\u20136.6.1, 6.11.5, 7.13.",
-    "specification_version": "Intel SDM revision 093; Vol.2B PDF https://cdrdv2.intel.com/v1/dl/getContent/671241; Vol.3A PDF https://cdrdv2.intel.com/v1/dl/getContent/671447; project S2-22f. full descriptor crosses GDTR limit and raises #GP(selector) before read"
+    "specification": "Intel SDM revision 093 (253667-093US), Vol.2B MOV pp.4-28\u20134-31; Vol.3A (325384-093US) \u00a73.4.5.1 pp.3-12\u20133-13, \u00a75.6.1 pp.5-33\u20135-35, \u00a75.7 pp.5-37\u20135-38, \u00a711.1.2.1 p.11-3 Automatic Locking.",
+    "specification_version": "Intel SDM revision 093; Vol.2B PDF https://cdrdv2.intel.com/v1/dl/getContent/671241; Vol.3A PDF https://cdrdv2.intel.com/v1/dl/getContent/671447; project S2-22f/g. full descriptor crosses GDTR limit and raises #GP(selector) before read"
   },
   "seed": null,
   "converted_from_v1_sha256": null,

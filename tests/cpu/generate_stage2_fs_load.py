@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serialize literal S2-22f MOV FS,AX descriptor-load cases."""
+"""Serialize literal S2-22f/g MOV FS,AX descriptor-load cases."""
 
 from __future__ import annotations
 
@@ -43,6 +43,10 @@ CASES = [
      "otherwise valid not-present descriptor raises #NP(selector)", 0),
     ("s2_22f_fs_load_table_limit_gp", 0x0B, 0xF3, 0x0, 0x000E, "exception",
      "full descriptor crosses GDTR limit and raises #GP(selector) before read", 0),
+    ("s2_22g_fs_load_a0_writable", 0x0B, 0xF2, 0x0, 0x000F, "stop_address",
+     "present writable data descriptor starts with A=0; one byte write sets A", 0x89ABCDEF),
+    ("s2_22g_fs_load_a0_readonly", 0x0B, 0xF0, 0x0, 0x000F, "stop_address",
+     "present read-only data descriptor starts with A=0; one byte write sets A", 0),
 ]
 
 
@@ -78,12 +82,13 @@ def make_case(case_id: str, selector: int, access: int, flags: int, gdtr_limit: 
                        "This generator serializes literals only; it does not assemble, emulate, "
                        "or calculate CPU semantics."),
             "specification": ("Intel SDM revision 093 (253667-093US), Vol.2B MOV pp.4-28–4-31; "
-                              "Vol.3A (325384-093US) §§3.4.3–3.4.5.1, 3.5.1, "
-                              "6.4.1.1, 6.6–6.6.1, 6.11.5, 7.13."),
+                              "Vol.3A (325384-093US) §3.4.5.1 pp.3-12–3-13, "
+                              "§5.6.1 pp.5-33–5-35, §5.7 pp.5-37–5-38, "
+                              "§11.1.2.1 p.11-3 Automatic Locking."),
             "specification_version": (
                 "Intel SDM revision 093; Vol.2B PDF "
                 "https://cdrdv2.intel.com/v1/dl/getContent/671241; Vol.3A PDF "
-                "https://cdrdv2.intel.com/v1/dl/getContent/671447; project S2-22f. " + note
+                "https://cdrdv2.intel.com/v1/dl/getContent/671447; project S2-22f/g. " + note
             ),
         },
         "seed": None,
@@ -114,7 +119,11 @@ def make_case(case_id: str, selector: int, access: int, flags: int, gdtr_limit: 
                 "region_id": "gdt",
                 "guest_address": hx(GDTR_BASE),
                 "length": 16,
-                "permissions": {"read": True, "write": False, "execute": False},
+                "permissions": {
+                    "read": True,
+                    "write": access & 1 == 0,
+                    "execute": False,
+                },
                 "initial_bytes_hex": (
                     "0000000000000000" + make_descriptor(access, flags, base32).hex()
                 ),
@@ -152,8 +161,8 @@ def main() -> int:
     if mismatches:
         print("stale generated files: " + ", ".join(mismatches))
         return 1
-    print("S2-22f MOV FS descriptor-load fixtures are fresh" if args.check
-          else "wrote S2-22f MOV FS descriptor-load fixtures")
+    print("S2-22f/g MOV FS descriptor-load fixtures are fresh" if args.check
+          else "wrote S2-22f/g MOV FS descriptor-load fixtures")
     return 0
 
 

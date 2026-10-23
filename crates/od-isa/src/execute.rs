@@ -1265,8 +1265,9 @@ fn load_fs_gdt_selector(
         return Err(selector_fault(13, selector));
     }
 
+    let descriptor_context = context.descriptor_table();
     let mut descriptor = [0; 8];
-    memory.read(address, context.descriptor_table(), &mut descriptor)?;
+    memory.read(address, descriptor_context, &mut descriptor)?;
     let access = descriptor[5];
     let kind = access & 0x0f;
     let system = access & 0x10 == 0;
@@ -1291,10 +1292,6 @@ fn load_fs_gdt_selector(
     if access & 0x80 == 0 {
         return Err(selector_fault(11, selector));
     }
-    if access & 0x01 == 0 {
-        return Ok(false);
-    }
-
     let limit20 = u32::from(descriptor[0])
         | (u32::from(descriptor[1]) << 8)
         | (u32::from(descriptor[6] & 0x0f) << 16);
@@ -1309,11 +1306,19 @@ fn load_fs_gdt_selector(
         | (u32::from(descriptor[4]) << 16)
         | (u32::from(descriptor[7]) << 24);
 
+    if access & 0x01 == 0 {
+        // The bounded profile uses one synchronous byte write to set the
+        // descriptor's accessed bit. Keep every possible failure before the
+        // CPU-state commit; on success the remaining assignments cannot fail.
+        memory.write(address + 5, descriptor_context, &[access | 1])?;
+    }
+    let cached_access = access | 1;
+
     state.fs_selector = selector;
     state.fs_base = u64::from(base32);
     state.fs_cache = Some(FsDescriptorCache {
         limit,
-        access,
+        access: cached_access,
         flags,
     });
     Ok(true)
@@ -1914,6 +1919,7 @@ mod tests {
         contexts: Vec<(AccessKind, AccessContext)>,
         error: Option<MemoryError>,
         error_kind: Option<AccessKind>,
+        deny_writes: bool,
         atomic_exchanges: Vec<(u64, OperandSize, u64)>,
         atomic_adds: Vec<(u64, OperandSize, u64)>,
         atomic_compare_exchanges: Vec<(u64, OperandSize, u64, u64)>,
@@ -1933,6 +1939,7 @@ mod tests {
                 contexts: vec![],
                 error: None,
                 error_kind: None,
+                deny_writes: false,
                 atomic_exchanges: vec![],
                 atomic_adds: vec![],
                 atomic_compare_exchanges: vec![],
@@ -1998,9 +2005,18 @@ mod tests {
         fn write(
             &mut self,
             address: u64,
-            _: AccessContext,
+            context: AccessContext,
             source: &[u8],
         ) -> Result<(), MemoryError> {
+            self.contexts.push((AccessKind::Write, context));
+            if self.deny_writes {
+                self.accesses
+                    .push((AccessKind::Write, address, source.len()));
+                return Err(MemoryError::PermissionDenied {
+                    address,
+                    access: AccessKind::Write,
+                });
+            }
             let range = self.range(address, source.len(), AccessKind::Write)?;
             self.bytes[range].copy_from_slice(source);
             Ok(())
@@ -7153,6 +7169,230 @@ mod tests {
     }
 
     #[test]
+    fn mov_fs_ax_sets_only_the_accessed_byte_after_validating_an_a_zero_descriptor() {
+        let descriptor_context = AccessContext::default().descriptor_table();
+        for access in [0xf2, 0xf0] {
+            let mut state = fs_load_state(0x0b, 15);
+            let mut memory = Memory::new(&[0x8e, 0xe0]);
+            memory.bytes[8..16].copy_from_slice(&descriptor(0x8123_4567, 0xabcde, access, 0x08));
+            let before = memory.bytes.clone();
+
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(state.rip, 2);
+            assert_eq!(state.fs_selector, 0x0b);
+            assert_eq!(state.fs_base, 0x8123_4567);
+            assert_eq!(state.fs_cache.unwrap().access, access | 1);
+            assert_eq!(memory.bytes[8..13], before[8..13]);
+            assert_eq!(memory.bytes[13], access | 1);
+            assert_eq!(memory.bytes[14..16], before[14..16]);
+            assert_eq!(
+                memory.accesses,
+                vec![
+                    (AccessKind::Read, 0x1008, 8),
+                    (AccessKind::Write, 0x100d, 1),
+                ]
+            );
+            assert_eq!(
+                memory.contexts,
+                vec![
+                    (AccessKind::Read, descriptor_context),
+                    (AccessKind::Write, descriptor_context),
+                ]
+            );
+            for (_, context) in memory.contexts {
+                assert_eq!(context.privilege, PrivilegeLevel::Ring3);
+                assert_eq!(context.origin, crate::memory::AccessOrigin::DescriptorTable);
+                assert_eq!(context.page_privilege(), PrivilegeLevel::Ring0);
+            }
+        }
+    }
+
+    #[test]
+    fn mov_fs_ax_a_one_needs_no_write_permission_or_write_call() {
+        let mut state = fs_load_state(0x0b, 15);
+        let mut memory = Memory::new(&[0x8e, 0xe0]);
+        memory.deny_writes = true;
+        memory.bytes[8..16].copy_from_slice(&descriptor(0x1234, 0xffff, 0xf3, 0));
+        let before_memory = memory.bytes.clone();
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.fs_selector, 0x0b);
+        assert_eq!(state.fs_base, 0x1234);
+        assert_eq!(memory.bytes, before_memory);
+        assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1008, 8)]);
+        assert_eq!(memory.contexts.len(), 1);
+        assert_eq!(memory.contexts[0].0, AccessKind::Read);
+    }
+
+    #[test]
+    fn mov_fs_ax_accessed_write_failures_preserve_cpu_and_memory() {
+        let architectural_fault = MemoryError::Architectural(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(0x100d),
+        });
+        let backend_error = MemoryError::Backend("injected descriptor write failure".into());
+        for error in [architectural_fault.clone(), backend_error.clone()] {
+            let mut state = fs_load_state(0x0b, 15);
+            let before_state = state.clone();
+            let mut memory = Memory::new(&[0x8e, 0xe0]);
+            memory.bytes[8..16].copy_from_slice(&descriptor(0x1234, 0xffff, 0xf2, 0));
+            let before_memory = memory.bytes.clone();
+            memory.error = Some(error.clone());
+            memory.error_kind = Some(AccessKind::Write);
+
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            match error {
+                MemoryError::Architectural(fault) => {
+                    assert_eq!(result.exit, RunExit::Fault(fault));
+                }
+                other => assert_eq!(result.exit, RunExit::MemoryError(other)),
+            }
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before_state);
+            assert_eq!(memory.bytes, before_memory);
+            assert_eq!(
+                memory.accesses,
+                vec![
+                    (AccessKind::Read, 0x1008, 8),
+                    (AccessKind::Write, 0x100d, 1),
+                ]
+            );
+        }
+
+        let mut read_state = fs_load_state(0x0b, 15);
+        let before_state = read_state.clone();
+        let mut read_memory = Memory::new(&[0x8e, 0xe0]);
+        read_memory.error = Some(MemoryError::Backend("descriptor read failure".into()));
+        read_memory.error_kind = Some(AccessKind::Read);
+        let before_memory = read_memory.bytes.clone();
+        let result = run(
+            &mut read_state,
+            &mut read_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::MemoryError(MemoryError::Backend("descriptor read failure".into()))
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(read_state, before_state);
+        assert_eq!(read_memory.bytes, before_memory);
+        assert_eq!(read_memory.accesses, vec![(AccessKind::Read, 0x1008, 8)]);
+    }
+
+    #[test]
+    fn mov_fs_ax_validation_faults_precede_an_armed_accessed_write_failure() {
+        for (access, expected_vector) in [(0x82, 13), (0x18, 13), (0x92, 13), (0x72, 11)] {
+            let mut state = fs_load_state(0x0b, 15);
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x8e, 0xe0]);
+            memory.bytes[8..16].copy_from_slice(&descriptor(0, 0xffff, access, 0));
+            memory.error = Some(MemoryError::Backend("write should not be reached".into()));
+            memory.error_kind = Some(AccessKind::Write);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: expected_vector,
+                    error_code: Some(8),
+                    linear_address: None,
+                }))
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1008, 8)]);
+        }
+    }
+
+    #[test]
+    fn mov_fs_ax_sets_accessed_once_then_a_second_load_reads_without_writing() {
+        let mut state = fs_load_state(0x0b, 15);
+        let mut memory = Memory::new(&[0x8e, 0xe0, 0x8e, 0xe0]);
+        memory.bytes[8..16].copy_from_slice(&descriptor(0x1234, 0xffff, 0xf2, 0));
+
+        let result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 2,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 2);
+        assert_eq!(state.rip, 4);
+        assert_eq!(memory.bytes[13], 0xf3);
+        assert_eq!(
+            memory.accesses,
+            vec![
+                (AccessKind::Read, 0x1008, 8),
+                (AccessKind::Write, 0x100d, 1),
+                (AccessKind::Read, 0x1008, 8),
+            ]
+        );
+    }
+
+    #[test]
+    fn mov_fs_ax_accessed_write_remains_committed_before_a_later_fault() {
+        let mut state = fs_load_state(0x0b, 15);
+        let mut memory = Memory::new(&[0x8e, 0xe0, 0x0f, 0x0b]);
+        memory.bytes[8..16].copy_from_slice(&descriptor(0x8123_4567, 0xabcde, 0xf2, 0));
+
+        let result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 2,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.rip, 2);
+        assert_eq!(state.fs_selector, 0x0b);
+        assert_eq!(state.fs_base, 0x8123_4567);
+        assert_eq!(state.fs_cache.unwrap().access, 0xf3);
+        assert_eq!(memory.bytes[13], 0xf3);
+        assert_eq!(
+            memory.accesses,
+            vec![
+                (AccessKind::Read, 0x1008, 8),
+                (AccessKind::Write, 0x100d, 1),
+            ]
+        );
+    }
+
+    #[test]
     fn mov_fs_ax_checks_type_privilege_presence_and_accessed_in_order() {
         for (access, vector, error_code) in [
             (0x02, 13, 0x08), // system descriptor, even though not present
@@ -7176,18 +7416,6 @@ mod tests {
             assert_eq!(state, before);
             assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1008, 8)]);
         }
-
-        let mut unaccessed = fs_load_state(0x0b, 15);
-        let before = unaccessed.clone();
-        let mut memory = Memory::new(&[0x8e, 0xe0]);
-        memory.bytes[8..16].copy_from_slice(&descriptor(0x1000, 0xffff, 0xf2, 0));
-        assert_eq!(
-            step(&mut unaccessed, &mut memory, AccessContext::default()),
-            Ok(StepOutcome::Unsupported { opcode: 0x8e })
-        );
-        assert_eq!(unaccessed, before);
-        assert_eq!(memory.bytes[13], 0xf2, "A=0 is not written by this slice");
-        assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1008, 8)]);
     }
 
     #[test]

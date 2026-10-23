@@ -941,22 +941,28 @@ python3 tests/cpu/test_stage2_verw_gdt_generator.py
 cargo test -p od-runner --test fixture_v2 verw_gdt_fixtures_check_literal_rights_flags_state_and_descriptor_bytes --offline
 ```
 
-## CPL3 GDT-only `MOV FS, AX` fixture S2-22f
+## CPL3 GDT-only `MOV FS, AX` fixture S2-22f/g
 
 The partial local-only `s2-long-fs-load-v1` profile runs only bare `8E E0`
 (`MOV FS, AX`) at Long64/CPL3. Literal inputs cover accessed writable/read-only
 data, readable conforming/nonconforming code, invalid system/execute-only and
-privilege cases, P=0 and a short GDTR limit. The runner checks the complete GPR
-array, RIP, FS base/selector/cache, unchanged GDTR/RFLAGS/GDT and exact #GP/#NP
+privilege cases, P=0, a short GDTR limit, and writable/read-only data with A=0.
+The runner checks the complete GPR array, RIP, FS base/selector/cache,
+unchanged GDTR/RFLAGS, the access-byte-only A update and exact #GP/#NP
 vectors/error codes. Unit coverage separately checks nonzero base32, G=0/G=1
-limit expansion, A=0 no-write, null/TI boundaries, truncated fetch and injected
-descriptor-read #PF/backend errors with no CPU or retirement commit. This is a
-local interpreter profile; native and physical execution are not claimed.
+limit expansion, A=1 with no write permission, exact read8/write1 trace and
+descriptor context, write-fault no-commit behavior, validation priority,
+repeated-selector write suppression, and a split adjacent GDT where only the
+access byte is writable. These writes require private synchronous RAM and
+serial interpreter execution with no external observer/writer, DMA, shared
+alias, delayed write or MMIO. The byte-sized backend call specifies semantic
+access width only, not physical bus transaction width. This is a local
+interpreter profile; native and physical execution are not claimed.
 
 Sources: Intel SDM revision 093, Vol.2B (253667-093US), MOV pp.4-28–4-31;
-Vol.3A (325384-093US), §§3.4.3–3.4.5.1, 3.5.1, 6.4.1.1, 6.6–6.6.1, 6.11.5,
-7.13 and Event 11. The generator records official PDF links and literal
-provenance with each case.
+Vol.3A (325384-093US), §3.4.5.1 pp.3-12–3-13, §5.6.1 pp.5-33–5-35,
+§5.7 pp.5-37–5-38, §11.1.2.1 p.11-3 Automatic Locking. The generator records
+official PDF links and literal provenance with each case.
 
 ```sh
 python3 tests/cpu/generate_stage2_fs_load.py --check

@@ -1,4 +1,4 @@
-"""Provenance and freshness checks for literal S2-22f MOV FS,AX cases."""
+"""Provenance and freshness checks for literal S2-22f/g MOV FS,AX cases."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ class FsLoadFixtureTests(unittest.TestCase):
             json.loads(raw)["case_id"]: json.loads(raw)
             for raw in GENERATOR.materialize().values()
         }
-        self.assertEqual(len(cases), 9)
+        self.assertEqual(len(cases), 11)
         for case_id, value in cases.items():
             self.assertEqual(value["profile"], "s2-long-fs-load-v1")
             self.assertEqual(value["memory"][0]["initial_bytes_hex"], "8ee0")
@@ -46,6 +46,15 @@ class FsLoadFixtureTests(unittest.TestCase):
         bounds = cases["s2_22f_fs_load_table_limit_gp"]
         self.assertEqual(bounds["initial_state"]["gdtr_limit"], "0x000000000000000e")
         self.assertEqual(len(bounds["memory"][1]["initial_bytes_hex"]), 32)
+        for case_id, access in [
+            ("s2_22g_fs_load_a0_writable", "f2"),
+            ("s2_22g_fs_load_a0_readonly", "f0"),
+        ]:
+            case = cases[case_id]
+            self.assertEqual(case["memory"][1]["initial_bytes_hex"][26:28], access)
+            self.assertTrue(case["memory"][1]["permissions"]["write"])
+            self.assertIn("11.1.2.1", case["provenance"]["specification"])
+            self.assertIn("S2-22f/g", case["provenance"]["specification_version"])
 
     def test_materialized_fixtures_are_fresh(self) -> None:
         result = subprocess.run(

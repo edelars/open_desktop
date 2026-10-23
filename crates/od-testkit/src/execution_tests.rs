@@ -1151,6 +1151,97 @@ fn pushfw_fixture_matches_literal_low_flags_word() {
     assert_literal_fixture_answers("s2_17q_pushfw_expected.json", 1);
 }
 
+#[test]
+fn fs_load_accessed_byte_write_spans_adjacent_gdt_regions_without_full_descriptor_writeback() {
+    let mut fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22f_fs_load_writable_g0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let gdt = fixture.memory[1].clone();
+    let mut bytes = gdt.initial_bytes_hex.clone();
+    bytes.replace_range(26..28, "f2");
+    let left = crate::case::MemoryRegionSpec {
+        region_id: "gdt_before_access_byte".into(),
+        guest_address: gdt.guest_address,
+        length: 13,
+        permissions: MemoryPermissions {
+            read: true,
+            write: false,
+            execute: false,
+        },
+        initial_bytes_hex: bytes[..26].into(),
+        comparison_mask_hex: "ff".repeat(13),
+    };
+    let right = crate::case::MemoryRegionSpec {
+        region_id: "gdt_access_byte".into(),
+        guest_address: HexU64(gdt.guest_address.get() + 13),
+        length: 1,
+        permissions: MemoryPermissions {
+            read: true,
+            write: true,
+            execute: false,
+        },
+        initial_bytes_hex: bytes[26..28].into(),
+        comparison_mask_hex: "ff".into(),
+    };
+    let tail = crate::case::MemoryRegionSpec {
+        region_id: "gdt_after_access_byte".into(),
+        guest_address: HexU64(gdt.guest_address.get() + 14),
+        length: 2,
+        permissions: MemoryPermissions {
+            read: true,
+            write: false,
+            execute: false,
+        },
+        initial_bytes_hex: bytes[28..].into(),
+        comparison_mask_hex: "ff".repeat(2),
+    };
+    fixture.memory = vec![fixture.memory[0].clone(), left, right, tail];
+
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(1, fixture.stop_rip.map(HexU64::get)),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, fixture.stop_rip.unwrap().get());
+    let snapshot = memory.snapshot();
+    assert_eq!(snapshot[1].bytes_hex, bytes[..26]);
+    assert_eq!(snapshot[2].bytes_hex, "f3");
+    assert_eq!(snapshot[3].bytes_hex, bytes[28..]);
+
+    let mut read_only_fixture = fixture;
+    read_only_fixture.memory[2].permissions.write = false;
+    let mut denied_memory = FlatMemory::from_fixture(&read_only_fixture).unwrap();
+    let mut denied_state = read_only_fixture
+        .initial_state
+        .to_cpu_for(read_only_fixture.profile)
+        .unwrap();
+    let before_state = denied_state.clone();
+    let before_memory = denied_memory.snapshot();
+    let denied = run(
+        &mut denied_state,
+        &mut denied_memory,
+        config(1, read_only_fixture.stop_rip.map(HexU64::get)),
+        || false,
+    );
+    assert_eq!(
+        denied.exit,
+        RunExit::MemoryError(MemoryError::PermissionDenied {
+            address: read_only_fixture.initial_state.gdtr_base.unwrap().get() + 13,
+            access: AccessKind::Write,
+        })
+    );
+    assert_eq!(denied.instructions_executed, 0);
+    assert_eq!(denied_state, before_state);
+    assert_eq!(denied_memory.snapshot(), before_memory);
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MovsbExpected {

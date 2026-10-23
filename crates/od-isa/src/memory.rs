@@ -25,7 +25,7 @@ pub enum InstructionMode {
 pub enum AccessOrigin {
     /// An explicit instruction fetch or data operand access.
     Explicit,
-    /// An implicit read of a segment descriptor table entry.
+    /// An implicit access to a segment descriptor table entry, including writes.
     DescriptorTable,
 }
 
@@ -96,8 +96,9 @@ pub enum MemoryError {
 
 /// Addresses are guest linear u64 values; slice lengths specify the access width.
 /// `AccessContext::privilege` is CPL, while page permission checks must use
-/// `AccessContext::page_privilege()` (descriptor-table reads are supervisor
-/// accesses even when the instruction executes at CPL3).
+/// `AccessContext::page_privilege()` (implicit descriptor-table reads and
+/// writes use supervisor page privilege even when the instruction executes at
+/// CPL3).
 /// Fetch reads one byte on demand. No method assumes a contiguous host page.
 ///
 /// Reads/writes must either complete the entire supplied access or return an error
