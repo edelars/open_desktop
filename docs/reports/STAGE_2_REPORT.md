@@ -2662,3 +2662,30 @@ update .` completed. No physical Mac mini check was required for this integer
 helper. Subnormals, NaNs/infinities, architectural overflow/underflow,
 architectural rounding/flags/exceptions, signed-zero selection, and guest x87
 instructions remain open; S2-29 and S2-28 remain open under ISSUE-019.
+
+## S2-29n — direct exact quotient-to-subnormal binary80 rounding/packing (partial)
+
+Added `round_pack_subnormal_quotient(sign, e, q, r, d, mode)` for exact
+normalized quotient inputs. It preserves the original quotient and rational
+remainder through one precision-rounding call for `k=1..63`, uses an exact
+half-minimum-subnormal comparison at `k=64`, and handles `k>=65` as strictly
+below half a minimum-subnormal unit. The exponent distance is computed in
+`i64`, so `i32::MIN` remains safe. The final significand is encoded with
+exponent field zero below `2^63`, with `2^63` encoded as minimum normal; a
+rounded zero retains the exact input sign.
+
+Literal vectors cover both signs and all four mathematical rounding modes,
+exact subnormals, half minimum subnormal, `k=1/63/64/65`, minimum and maximum
+subnormal, rounding to minimum normal, `i32::MIN`, invalid domains, and the
+anti-double-rounding input `e=-16383, q=2^63+1, r=1, d=3`. Composition uses
+exact S2-29i quotient getters for minimum normal divided by two and by three.
+The helper provides numerical finite-value rounding and encoding only; it does
+not implement architectural underflow/precision effects, x87 RC/PC, special
+values, operation signed-zero rules, flags/exceptions, or guest FDIV.
+
+Verification: `cargo test -p od-isa x87 --offline` passed (42 tests), as did
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+and `git diff --check`. `python3 tools/check_layout.py` stopped on the existing
+unmapped root `.serena/` directory, which was left untouched. `graphify update .`
+was run after the implementation. No physical Mac mini check was performed or
+required for this integer helper. S2-29 and S2-28 remain open under ISSUE-019.

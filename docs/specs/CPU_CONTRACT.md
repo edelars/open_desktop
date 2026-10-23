@@ -1313,10 +1313,36 @@ invalid bounded input or unsupported normal exponent range.
 
 Literal vectors cover p=1/2/24/53/63/64, signs, carry, minimum normal and carry
 into it, and maximum finite. Composition uses exact S2-29i 1/3 quotient results
-at p=24/53/64 and negative p=24 directed-rounding values. Subnormal and special
-encodings, architectural overflow/underflow, x87 PC/RC, flags/exceptions,
-signed-zero selection, and guest instruction behavior remain open under
-S2-29/S2-28 and ISSUE-019.
+at p=24/53/64 and negative p=24 directed-rounding values. S2-29n adds bounded
+numeric subnormal packing; special encodings, architectural overflow/underflow,
+x87 PC/RC, flags/exceptions, signed-zero operation rules, and guest instruction
+behavior remain open under S2-29/S2-28 and ISSUE-019.
+
+## Local S2-29n: direct exact quotient-to-subnormal rounding and packing
+
+`od_isa::x87::round_pack_subnormal_quotient(sign, e, q, r, d, mode)` consumes
+the exact nonzero value `(-1)^sign * (q + r/d) * 2^(e - 63)`. Its bounded input
+requires `q >= 2^63`, `d > 0`, `r < d`, and `e <= -16383`. It computes
+`k = -16382 - e` in a widened signed integer. For `1 <= k <= 63`, it rounds
+the original quotient and rational remainder directly once at precision
+`p = 64-k`. At `k=64`, it rounds against the exact half-minimum-subnormal
+boundary; for `k>=65`, nearest and toward-zero produce zero while a directed
+mode away from zero produces one minimum-subnormal unit. Magnitudes below
+`2^63` encode with exponent field zero; `2^63` encodes as minimum normal. The
+input sign bit is kept for rounded zero. `None` denotes only an invalid input
+domain.
+
+Literal byte vectors cover positive and negative signs, all four mathematical
+rounding modes, exact subnormal values, half the minimum subnormal, `k=1/63/64/65`,
+minimum and maximum subnormal, rounding to minimum normal, `i32::MIN`, invalid
+domain inputs, and a direct-rounding case that differs from double rounding.
+Composition uses exact S2-29i divider getter results for minimum normal divided
+by two and by three.
+
+This helper provides numerical finite normal/subnormal rounding and encoding
+only. It does not implement x87 RC/PC or control-word semantics, architectural
+underflow/precision flags or exceptions, special encodings, signed-zero
+operation rules, or guest FDIV. S2-29 and S2-28 remain open under ISSUE-019.
 
 ## Источники архитектурной семантики
 

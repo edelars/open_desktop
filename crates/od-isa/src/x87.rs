@@ -298,6 +298,77 @@ pub fn pack_normal_rounded_significand(
     ]))
 }
 
+/// Round an exact normalized quotient directly into the binary80 subnormal
+/// range, preserving the quotient's rational tail until the final rounding.
+///
+/// The exact value is `(-1)^sign * (q + r / d) * 2^(e - 63)`. The quotient
+/// must be normalized (`q >= 2^63`), `d` must be nonzero, `r < d`, and `e`
+/// must be at most -16383. A rounded magnitude below `2^63` is encoded with
+/// exponent field zero; `2^63` is the minimum normal encoding. Underflow to
+/// zero retains the input sign. This helper defines mathematical rounding and
+/// binary80 encoding only; it does not model architectural flags, exceptions,
+/// or x87 control-word behavior.
+pub fn round_pack_subnormal_quotient(
+    sign: bool,
+    e: i32,
+    q: u64,
+    r: u64,
+    d: u64,
+    mode: RationalRoundingMode,
+) -> Option<X87Binary80> {
+    if e > -16383 || q < (1_u64 << 63) || d == 0 || r >= d {
+        return None;
+    }
+
+    let k = -16382_i64 - i64::from(e);
+    let magnitude = if k <= 63 {
+        round_quotient_to_precision(sign, q, r, d, (64 - k) as u32, mode)?
+    } else if k == 64 {
+        let above_half = q > (1_u64 << 63) || (q == (1_u64 << 63) && r != 0);
+        let increment = match mode {
+            RationalRoundingMode::NearestTiesEven => above_half,
+            RationalRoundingMode::TowardZero => false,
+            // The scaled value is always strictly between zero and one unit,
+            // including the exact half-way input.
+            RationalRoundingMode::TowardPositive => !sign,
+            RationalRoundingMode::TowardNegative => sign,
+        };
+        u128::from(increment)
+    } else {
+        u128::from(match mode {
+            RationalRoundingMode::TowardPositive => !sign,
+            RationalRoundingMode::TowardNegative => sign,
+            RationalRoundingMode::NearestTiesEven | RationalRoundingMode::TowardZero => false,
+        })
+    };
+
+    let significand = if magnitude == (1_u128 << 63) {
+        1_u64 << 63
+    } else {
+        magnitude as u64
+    };
+    let exponent = if magnitude == (1_u128 << 63) {
+        1_u16
+    } else {
+        0_u16
+    };
+    let sign_exponent = exponent | if sign { 0x8000 } else { 0 };
+    let significand_bytes = significand.to_le_bytes();
+    let sign_exponent_bytes = sign_exponent.to_le_bytes();
+    Some(X87Binary80::from_bytes([
+        significand_bytes[0],
+        significand_bytes[1],
+        significand_bytes[2],
+        significand_bytes[3],
+        significand_bytes[4],
+        significand_bytes[5],
+        significand_bytes[6],
+        significand_bytes[7],
+        sign_exponent_bytes[0],
+        sign_exponent_bytes[1],
+    ]))
+}
+
 /// Round the unsigned rational value `q + r / d` to nearest with ties to even.
 ///
 /// This compatibility wrapper is equivalent to a positive coefficient using
@@ -602,8 +673,9 @@ mod tests {
         RationalRoundingMode, X87Binary80, X87Binary80Class, X87Finite, X87Grs,
         add_finite_same_exponent, align_finite_pair, divide_finite_significands,
         multiply_finite_significands, normalize_exact_coefficient, normalize_exact_magnitude,
-        pack_normal_rounded_significand, round_quotient_magnitude, round_quotient_ties_even,
-        round_quotient_to_precision, shift_right_jam, shift_right_jam_u128,
+        pack_normal_rounded_significand, round_pack_subnormal_quotient, round_quotient_magnitude,
+        round_quotient_ties_even, round_quotient_to_precision, shift_right_jam,
+        shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -694,6 +766,175 @@ mod tests {
                 .expect("literal normal value should pack");
             assert_eq!(packed.to_bytes(), expected);
             assert_eq!(packed.classify(), X87Binary80Class::Normal);
+        }
+    }
+
+    #[test]
+    fn subnormal_quotient_rounding_matches_literal_boundaries_and_modes() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let half_minimum_cases = [
+            (false, Nearest, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (false, Zero, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (false, Up, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (false, Down, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (true, Nearest, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]),
+            (true, Zero, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]),
+            (true, Up, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]),
+            (true, Down, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]),
+        ];
+        for (sign, mode, expected) in half_minimum_cases {
+            assert_eq!(
+                round_pack_subnormal_quotient(sign, -16446, 1_u64 << 63, 0, 1, mode)
+                    .unwrap()
+                    .to_bytes(),
+                expected,
+                "half-minimum sign={sign} mode={mode:?}"
+            );
+        }
+
+        let cases = [
+            // k=1: half of minimum normal is exactly subnormal.
+            (
+                -16383,
+                0x8000_0000_0000_0000,
+                0,
+                1,
+                Nearest,
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00],
+            ),
+            // k=63 and k=64 exercise the precision and integer-round paths.
+            (
+                -16445,
+                0x8000_0000_0000_0000,
+                0,
+                1,
+                Nearest,
+                [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            ),
+            (
+                -16446,
+                0xc000_0000_0000_0000,
+                0,
+                1,
+                Nearest,
+                [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            ),
+            // k=65 is below half the minimum subnormal, but directed rounding
+            // away from zero still produces one unit.
+            (
+                -16447,
+                0x8000_0000_0000_0000,
+                0,
+                1,
+                Up,
+                [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            ),
+            // The largest exact subnormal stays below the normal boundary.
+            (
+                -16383,
+                u64::MAX - 1,
+                0,
+                1,
+                Nearest,
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0x00, 0x00],
+            ),
+            // A tie at the top of the subnormal range rounds to min normal.
+            (
+                -16383,
+                u64::MAX,
+                0,
+                1,
+                Nearest,
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x01, 0x00],
+            ),
+            // Directed positive rounding of a tiny value increments one unit.
+            (
+                -16383,
+                0x8000_0000_0000_0000,
+                1,
+                2,
+                Up,
+                [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00],
+            ),
+        ];
+        for (e, q, r, d, mode, expected) in cases {
+            let packed = round_pack_subnormal_quotient(false, e, q, r, d, mode).unwrap();
+            assert_eq!(
+                packed.to_bytes(),
+                expected,
+                "e={e} q={q:#018x} mode={mode:?}"
+            );
+        }
+
+        assert_eq!(
+            round_pack_subnormal_quotient(true, i32::MIN, 1_u64 << 63, 0, 1, Down)
+                .unwrap()
+                .to_bytes(),
+            [0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]
+        );
+        assert_eq!(
+            round_pack_subnormal_quotient(false, i32::MIN, 1_u64 << 63, 0, 1, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0; 10]
+        );
+    }
+
+    #[test]
+    fn subnormal_quotient_rounding_validates_domain_and_avoids_double_rounding() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        for (e, q, r, d) in [
+            (-16382, 1_u64 << 63, 0, 1),
+            (-16383, (1_u64 << 63) - 1, 0, 1),
+            (-16383, 1_u64 << 63, 0, 0),
+            (-16383, 1_u64 << 63, 1, 1),
+        ] {
+            assert_eq!(
+                round_pack_subnormal_quotient(false, e, q, r, d, Nearest),
+                None
+            );
+        }
+
+        let direct =
+            round_pack_subnormal_quotient(false, -16383, (1_u64 << 63) + 1, 1, 3, Nearest).unwrap();
+        assert_eq!(direct.to_bytes(), [0x01, 0, 0, 0, 0, 0, 0, 0x40, 0, 0]);
+    }
+
+    #[test]
+    fn subnormal_quotient_rounding_composes_with_division() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let min_normal = finite(-16382, 1_u64 << 63, false, X87Binary80Class::Normal);
+        let two = finite(1, 1_u64 << 63, false, X87Binary80Class::Normal);
+        let three = finite(1, 0xc000_0000_0000_0000, false, X87Binary80Class::Normal);
+
+        for (denominator, expected) in [
+            (
+                two,
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00],
+            ),
+            (
+                three,
+                [0xab, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0x2a, 0x00, 0x00],
+            ),
+        ] {
+            let quotient = divide_finite_significands(min_normal, denominator).unwrap();
+            let packed = round_pack_subnormal_quotient(
+                quotient.sign(),
+                quotient.exponent(),
+                quotient.quotient(),
+                quotient.remainder(),
+                quotient.denominator(),
+                Nearest,
+            )
+            .unwrap();
+            assert_eq!(packed.to_bytes(), expected);
+            assert_eq!(packed.classify(), X87Binary80Class::Subnormal);
         }
     }
 

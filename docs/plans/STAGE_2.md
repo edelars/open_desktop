@@ -177,8 +177,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-29 | Собственное ядро extended precision | S2-28 |
 | [x] | S2-29a | Lossless binary80 raw fields and read-only raw encoding classification; no arithmetic or x87 execution | S2-28a |
 | [x] | S2-29b | Integer-only finite binary80 normalization with source-class provenance and right-shift-jam/GRS bit helpers; no rounding or arithmetic | S2-29a |
-| [x] | S2-29m | Bounded packing of already-rounded nonzero normal finite significands with one carry and finite normal exponent range; no subnormal/special packing or architectural effects | S2-29l |
 | [x] | S2-29c | Generic `u128` right-shift-jam preserving 64-bit significands plus three low GRS bits; literal boundary and normalized-finite bridge vectors; no rounding or arithmetic | S2-29b |
+| [x] | S2-29m | Bounded packing of already-rounded nonzero normal finite significands with one carry and finite normal exponent range; no subnormal/special packing or architectural effects | S2-29l |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
@@ -1267,10 +1267,33 @@ negative p=24 directed-rounding results. Invalid precision, zero/out-of-range
 magnitudes, exponent endpoints outside the finite normal range, checked carry
 overflow, and integer exponent extremes return `None`.
 
-This is a bounded packing helper only. Subnormals, pseudo encodings, infinity,
-NaNs, overflow/underflow behavior, architectural rounding control, flags,
-exceptions, signed-zero selection, and guest instructions remain outside this
-slice; S2-29 and S2-28 remain open.
+This is a bounded normal packing helper only. Subnormal numeric packing is
+covered by S2-29n; pseudo encodings, infinity, NaNs, architectural
+overflow/underflow behavior, control-word rounding, flags, exceptions,
+signed-zero selection, and guest instructions remain outside this slice.
+
+### S2-29n. Direct exact quotient-to-subnormal binary80 rounding/packing (partial)
+
+`round_pack_subnormal_quotient(sign, e, q, r, d, mode)` consumes the exact
+nonzero value `(-1)^sign * (q + r/d) * 2^(e - 63)` for `q >= 2^63`, `d > 0`,
+`r < d`, and `e <= -16383`. It computes `k = -16382 - e` in `i64` before any
+narrowing. For `1 <= k <= 63`, it calls the existing exact quotient precision
+rounder once at `p = 64-k`; `k=64` compares the exact coefficient with the
+half-minimum-subnormal boundary and rounds to zero or one; `k>=65` rounds to
+zero except for directed rounding away from zero. The final integer magnitude
+is encoded with exponent field zero below `2^63`, or as minimum normal at
+`2^63`. The input sign is retained even when rounding yields zero.
+
+Literal byte vectors cover signs and all mathematical modes, exact subnormals,
+half minimum subnormal, `k=1/63/64/65`, minimum/maximum subnormal, carry to
+minimum normal, `i32::MIN`, invalid inputs, and a direct-rounding case that
+would differ after rounding an intermediate magnitude. Composition uses exact
+S2-29i divider getters for minimum normal divided by two and three.
+
+This helper adds numerical normal/subnormal finite packing only. It does not
+define architectural underflow/precision flags or exceptions, x87 RC/PC,
+control-word behavior, pseudo/special values, signed-zero operation rules, or
+guest FDIV. S2-29 and S2-28 remain open.
 
 ### S2-30. Основные x87 операции
 
