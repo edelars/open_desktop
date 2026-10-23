@@ -26,6 +26,59 @@ fn memory(code: &[u8], base: u64) -> FlatMemory {
 }
 
 #[test]
+fn fmul_sti_st0_runner_checks_every_top_and_destination() {
+    fn normal(significand: u64, exponent: u16) -> [u8; 10] {
+        let mut bytes = [0; 10];
+        bytes[..8].copy_from_slice(&significand.to_le_bytes());
+        bytes[8..].copy_from_slice(&exponent.to_le_bytes());
+        bytes
+    }
+    let one_and_half = normal(0xc000_0000_0000_0000, 0x3fff);
+    let two = normal(0x8000_0000_0000_0000, 0x4000);
+    let three = normal(0xc000_0000_0000_0000, 0x4000);
+    let two_and_quarter = normal(0x9000_0000_0000_0000, 0x4000);
+    for top in 0u8..8 {
+        for destination in 0u8..8 {
+            let physical_top = usize::from(top);
+            let physical_destination = usize::from((top + destination) & 7);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            let mut x87 = od_isa::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = (u16::from(top) << 11) | (1 << 9);
+            x87.tag_word = u16::MAX;
+            x87.registers[physical_top] = one_and_half;
+            x87.set_tag(top, od_isa::state::X87Tag::Valid);
+            if destination != 0 {
+                x87.registers[physical_destination] = two;
+                x87.set_tag(physical_destination as u8, od_isa::state::X87Tag::Valid);
+            }
+            state.x87 = Some(x87);
+            let mut code = memory(&[0xdc, 0xc8 | destination], state.rip);
+            let result = run(&mut state, &mut code, config(1, Some(0x1002)), || false);
+            assert_eq!(
+                result.exit,
+                RunExit::StopAddress,
+                "TOP={top}, i={destination}"
+            );
+            assert_eq!(result.instructions_executed, 1);
+            let after = state.x87.as_ref().unwrap();
+            assert_eq!(
+                after.registers[physical_destination],
+                if destination == 0 {
+                    two_and_quarter
+                } else {
+                    three
+                }
+            );
+            assert_eq!(after.top(), top);
+            assert_eq!(after.status_word & (1 << 9), 0);
+            assert_eq!(state.rip, 0x1002);
+        }
+    }
+}
+
+#[test]
 fn fsubp_runner_literal_outputs_follow_sti_minus_st0_and_pop() {
     fn normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
         let mut bytes = [0; 10];

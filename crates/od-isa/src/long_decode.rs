@@ -471,6 +471,10 @@ pub enum Operation {
     FaddStSt0 {
         destination: u8,
     },
+    /// Bare `DC C8+i` FMUL ST(i), ST(0), exact finite local profile only.
+    FmulStSt0 {
+        destination: u8,
+    },
     /// Bare `DE C0+i` FADDP ST(i), ST(0), exact finite local profile only.
     FaddpStSt0 {
         destination: u8,
@@ -1000,6 +1004,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 let modrm = self.byte()?;
                 match modrm {
+                    0xc8..=0xcf => Operation::FmulStSt0 {
+                        destination: modrm & 7,
+                    },
                     0xe0..=0xe7 => Operation::FsubrStSt0 {
                         destination: modrm & 7,
                     },
@@ -2298,6 +2305,7 @@ mod tests {
         assert_eq!(truncated_prefixed.fetched, [0xfff, 0x1000]);
         for modrm in 0u8..=u8::MAX {
             if (0xc0..=0xc7).contains(&modrm)
+                || (0xc8..=0xcf).contains(&modrm)
                 || (0xe0..=0xe7).contains(&modrm)
                 || (0xe8..=0xef).contains(&modrm)
             {
@@ -2501,6 +2509,9 @@ mod tests {
                     0xc0..=0xc7 => Ok(Operation::FaddStSt0 {
                         destination: modrm & 7
                     }),
+                    0xc8..=0xcf => Ok(Operation::FmulStSt0 {
+                        destination: modrm & 7
+                    }),
                     0xe0..=0xe7 => Ok(Operation::FsubrStSt0 {
                         destination: modrm & 7
                     }),
@@ -2556,12 +2567,35 @@ mod tests {
             assert_eq!(memory.fetched, [0xfff, 0x1000]);
         }
 
+        for destination in 0u8..=7 {
+            let mut memory = Memory::new(&[0xdc, 0xc8 | destination]);
+            let instruction = memory.decode().unwrap();
+            assert_eq!(instruction.operation, Operation::FmulStSt0 { destination });
+            assert_eq!(instruction.length, 2);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+            assert_eq!(memory.fetched, [0xfff, 0x1000]);
+            for prefix in [
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            ]
+            .into_iter()
+            .chain(0x40..=0x4f)
+            {
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xdc, 0xc8 | destination]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
+        }
+
         for modrm in 0u8..=u8::MAX {
             let decoded = Memory::new(&[0xdc, modrm]).decode();
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0xc0..=0xc7 => Ok(Operation::FaddStSt0 {
+                        destination: modrm & 7,
+                    }),
+                    0xc8..=0xcf => Ok(Operation::FmulStSt0 {
                         destination: modrm & 7,
                     }),
                     0xe0..=0xe7 => Ok(Operation::FsubrStSt0 {

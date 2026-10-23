@@ -730,6 +730,12 @@ impl Fixture {
                     (code_bytes.as_str(), 2)
                 }
                 _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("dcc")
+                    && matches!(code_bytes.as_bytes()[3], b'8'..=b'f') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
+                _ if code_bytes.len() == 4
                     && code_bytes.starts_with("dce")
                     && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
                 {

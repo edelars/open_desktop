@@ -3328,3 +3328,31 @@ physical acceptance remains reserved for the shared final acceptance stage.
 Independent gpt-6.1-sol medium review found no production defect; it identified
 two test-coverage gaps (the baseline tag mask and an injected fetch fault that
 did not reach decode), both corrected and re-reviewed with no findings.
+
+## S2-30o — exact-only FMUL ST(i), ST(0) (bounded local slice)
+
+Added bare `DC C8+i`, `i=0..7`, as `FMUL ST(i), ST(0)`. The implementation
+reuses the S2-30n exact-result gate, including differing exponents, and writes
+only old physical `(TOP+i)&7`; it clears C1, records FIP and retires without
+popping. Literal unit coverage checks every TOP×i pair, the `i=0` square,
+physical payload sentinels, sign XOR, full-width-significand multiplication,
+inexact and range rejection, and fetch/stop/budget atomicity. Decoder expectations preserve
+the neighboring DC FADD, FSUBR and FSUB groups. Fixture schema accepts all
+eight bytes and native admission rejects all eight.
+
+The native deny list also now explicitly names `FsubrpStSt0`, correcting an
+existing mismatch in the test that expects an x87-specific denial for `DE E0`
+through `DE E7`. `docs/KNOWN_ISSUES.md` records the narrow resolution; broad
+x87 semantics and physical x87 comparison remain open.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+and `git diff --check`. The Linux-target check compiles native rejection tests;
+they were not executed on this arm64 macOS host. `python3 tools/check_layout.py`
+reports only the pre-existing unmapped root `.serena/` directory, left
+untouched. `graphify update .` completed. Independent gpt-6.1-sol medium review
+found no production defects or remaining coverage findings after the final
+prefix, missing-state and alias-wording corrections. No Mac mini, SSH, hardware
+execution or commit was performed; physical acceptance remains reserved for
+the shared final acceptance stage.

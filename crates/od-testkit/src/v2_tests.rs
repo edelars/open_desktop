@@ -319,6 +319,17 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         assert!(Fixture::from_json(&fadd.to_json().unwrap()).is_ok());
     }
 
+    for destination in 0u8..=7 {
+        let mut fmul = fixture.clone();
+        let code = fmul
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("dcc{:x}", 8 + destination);
+        assert!(Fixture::from_json(&fmul.to_json().unwrap()).is_ok());
+    }
+
     for source in 0u8..=7 {
         let mut fmul = fixture.clone();
         let code = fmul
@@ -470,7 +481,6 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         ("9bd8c1", 3, 0x1003),
         ("66d8e1", 3, 0x1003),
         ("9bd8e1", 3, 0x1003),
-        ("dcc8", 2, 0x1002),
         ("d8", 1, 0x1001),
         ("dec8", 2, 0x1002),
         ("de00", 2, 0x1002),

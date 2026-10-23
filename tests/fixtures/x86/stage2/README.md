@@ -1094,3 +1094,11 @@ runner cases cover every TOP×i pair, including the valid i=0 square, differing
 exponents, physical payload sentinels, C1 clearing and preservation of tags and
 other state. Exact-only domain failures remain Unsupported atomically; native
 x87 admission stays closed.
+
+### S2-30o x87 schema coverage
+
+The schema validator admits all eight bare `DC C8+i` FMUL encodings. Local
+runner checks cover every TOP×i physical destination, the valid i=0 square,
+different exponents, payload sentinels and atomic rejection of inexact/range
+inputs. DC C0..C7 remain FADD, E0..E7 remain FSUBR, and E8..EF remain FSUB.
+The forms are local-only; native x87 admission stays closed.

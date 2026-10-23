@@ -1658,6 +1658,24 @@ schema/runner cover all eight indices and native x87 admission stays closed.
 Normative source: Intel SDM revision 093, Vol.2A pp.3-360–3-362, “FMUL/FIMUL—
 Multiply”.
 
+#### S2-30o. Bare exact-only FMUL ST(i), ST(0) (bounded local slice)
+
+Accept exactly bare `DC C8+i`, `i=0..7`, as `FMUL ST(i), ST(0)`. Reuse
+S2-30n's exact multiplication gate, including differing exponents, canonical
+Normal operands and the zero-low-64-bits exactness requirement. The destination
+is physical `(TOP+i)&7`; source is physical TOP. `i=0` is the valid square and
+requires only one Valid tag. Reject every inexact/range/environment/tag/raw
+class failure before commit.
+
+Success writes only the selected physical payload, clears C1, records starting
+RIP as FIP, advances RIP by two and retires once. Preserve TOP, tags, every
+other payload and x87/GPR/RFLAGS field. Decode must add only DC C8..CF while
+preserving DC C0..C7 FADD, E0..E7 FSUBR and E8..EF FSUB. Fixture schema and
+runner cover all eight indices; native x87 admission stays closed. Native
+rejection also explicitly covers the existing DE E0..E7 FSUBRP form.
+Normative source: Intel SDM revision 093, Vol.2A pp.3-360–3-362, “FMUL/FIMUL—
+Multiply”.
+
 ### S2-31. x87 conversions, rounding и exceptions
 
 1. Добавить integer/float conversions, precision/rounding control и нужные control/status operations.
