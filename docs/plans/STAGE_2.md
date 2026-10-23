@@ -192,6 +192,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30i | Bare `DC E8+i` FSUB ST(i), ST(0), exact-only same-exponent normal results; i=0 alias unsupported; native closed | S2-30h |
 | [x] | S2-30j | Bare `DE E8+i` FSUBP ST(i), ST(0), same exact-only domain plus physical TOP pop; i=0 alias unsupported; native closed | S2-30i |
 | [x] | S2-30l | Bare `DC E0+i` FSUBR ST(i), ST(0), exact-only ST(0)−ST(i) into physical ST(i), no pop; i=0 alias unsupported; native closed | S2-30i |
+| [x] | S2-30m | Bare `DE E0+i` FSUBRP ST(i), ST(0), exact-only ST(0)−ST(i) into old ST(i), then physical TOP pop; i=0 alias unsupported; native closed | S2-30l |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1615,6 +1616,25 @@ DC E0..E7 and requires alias DC E0 to be Unsupported with no stop RIP and
 budget one. Native admission stays closed. Normative source: Intel SDM
 revision 093, Vol.2A pp.3-397–3-399; FSUBR computes SRC−DEST, C1 is cleared
 for exact results, and C0/C2/C3 are undefined.
+
+#### S2-30m. Bare exact-only FSUBRP ST(i), ST(0) (bounded local slice)
+
+Accept exactly bare `DE E0+i`, `i=0..7`, as `FSUBRP ST(i), ST(0)`. Reuse
+`exact_fsub_result(state, 0, i)` to compute old `ST(0) − ST(i)` and store the
+result at old physical `(TOP+i)&7` before popping. The `i=0` self-alias is
+Unsupported because it cancels exactly; the no-operand `DE E1` alias selects
+`ST(1), ST(0)` (`i=1`). Preserve the S2-30d exact numeric
+and environment domain; all rejections precede commit.
+
+On success, mark the old physical TOP Empty while retaining its payload, set
+TOP to `(old TOP+1)&7`, clear C1, set FIP to starting RIP, advance RIP by two
+and retire once. Preserve every other payload/tag and x87/GPR/RFLAGS field.
+The schema admits all eight codes and requires DE E0 alias Unsupported with
+no stop RIP and budget one. Exhaustive DE decoding preserves DE C0..C7 FADDP
+and DE E8..EF FSUBP. Native admission stays closed. Normative source: Intel
+SDM revision 093, Vol.2A pp.3-397–3-399, “FSUBR/FSUBRP/FISUBR—Reverse
+Subtract”; FSUBRP computes ST(0)−ST(i) before
+pop; exact results clear C1 while C0/C2/C3 are undefined.
 
 ### S2-31. x87 conversions, rounding и exceptions
 

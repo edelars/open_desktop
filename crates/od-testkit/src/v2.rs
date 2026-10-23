@@ -749,7 +749,7 @@ impl Fixture {
                 }
                 _ if code_bytes.len() == 4
                     && code_bytes.starts_with("dee")
-                    && matches!(code_bytes.as_bytes()[3], b'8'..=b'f') =>
+                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'f') =>
                 {
                     (code_bytes.as_str(), 2)
                 }
@@ -764,6 +764,7 @@ impl Fixture {
                 || code_bytes == "d8e8"
                 || code_bytes == "dce8"
                 || code_bytes == "dce0"
+                || code_bytes == "dee0"
                 || code_bytes == "dee8";
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length

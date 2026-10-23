@@ -1447,6 +1447,44 @@ Normative source: Intel SDM revision 093, Vol.2A pp.3-397–3-399
 `FSUBR` computes `SRC−DEST`, C1 is clear for exact results, and C0/C2/C3 are
 undefined.
 
+## Local S2-30m: exact-only `FSUBRP ST(i), ST(0)` (`DE E0+i`)
+
+The local long-mode interpreter accepts exactly bare `DE E0` through `DE E7`.
+It uses the S2-30d exact finite gate and calls
+`exact_fsub_result(state, 0, i)` to compute old `ST(0) − ST(i)`. The result
+goes to old physical `(TOP+i)&7`; only after that write does the operation
+mark old TOP Empty and increment TOP modulo eight. `i=0` is the decoded
+self-alias but is Unsupported because it produces exact cancellation. The
+no-operand `DE E1` alias represents `FSUBRP ST(1), ST(0)` (`i=1`) and executes
+through the same local register form.
+Missing state, invalid environment/tags, non-Normal or unequal-exponent
+operands, rejected coefficient, cancellation, subnormal/zero output and
+overflow all reject before state mutation.
+
+Success clears C1, records starting RIP in FIP, advances RIP by two and retires
+once. The popped TOP payload remains byte-for-byte present under its Empty tag;
+other tags/payloads, FCW, remaining FSW, FDP, FOP, GPRs and RFLAGS are
+preserved. There is no physical register rotation. C0/C2/C3 retention is local
+snapshot policy because the SDM leaves them undefined. STOP, fetch fault,
+truncation and zero instruction budget do not commit. The decoder covers all
+256 DE ModR/M values and rejects prefixes including REX and WAIT while
+preserving FADDP DE C0..C7 and FSUBP DE E8..EF. Schema accepts all eight codes
+and models DE E0 as Unsupported, `stop_rip: null`, budget one. Native profile
+and instruction admission remain closed for all eight encodings.
+
+Local literal coverage checks every TOP×i physical destination and pop,
+operand order/sign vectors including ±2^-63, maximum accepted even 65-bit
+coefficient and minimum Normal output, plus full-state atomic rejects for the
+numeric/environment/tag domain. Fixture-runner tests repeat all TOP×i and
+alias behavior. No general x87 rounding, exception delivery, CR0/#NM behavior,
+or physical x87 observation is claimed.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FSUBR/FSUBRP/FISUBR—Reverse
+Subtract,” pp.3-397–3-399 ([official PDF,
+pp.3-397–3-399](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515));
+FSUBRP computes old `ST(0) − ST(i)` before pop, exact results clear C1, and
+C0/C2/C3 are undefined.
+
 ## Local S2-29a: raw binary80 representation and classification
 
 `od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory

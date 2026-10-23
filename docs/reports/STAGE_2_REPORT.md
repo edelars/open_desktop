@@ -3233,3 +3233,50 @@ untouched. Independent gpt-6.1-sol medium review found no remaining concrete
 defects. This report does not claim general x87 semantics or physical oracle
 acceptance; Mac mini/SSH/hardware execution remains reserved for the shared
 final acceptance gate.
+
+## S2-30m — exact-only FSUBRP ST(i), ST(0) (bounded local slice)
+
+Added exact bare `DE E0+i`, `i=0..7`, as `FSUBRP ST(i), ST(0)`. The decoder
+keeps the existing `DE C0..C7` FADDP and `DE E8..EF` FSUBP forms and now
+recognizes the intervening E0..E7 range. Execution reuses
+`exact_fsub_result(state, 0, i)` for old `ST(0)−ST(i)`, writes the result to
+old physical `(TOP+i)&7`, then marks old physical TOP Empty and increments
+TOP. `i=0` decodes as the self-alias but is Unsupported before commit because
+the result is cancellation. The no-operand `DE E1` alias represents
+`FSUBRP ST(1), ST(0)` (`i=1`) and uses the same supported form.
+
+The S2-30i exact gate remains unchanged: existing x87 state, FCW `0x037f`,
+`FSW & 0x80ff == 0`, Valid used tags, canonical Normal operands with equal
+normalized exponents, accepted coefficient bound and canonical Normal output.
+Success clears C1, records FIP, advances RIP by two and retires once. The
+popped TOP payload remains present; other tags, payloads, FSW fields, FCW,
+FDP/FOP, GPRs and RFLAGS are preserved. The operation adds no CR0/#NM,
+exception, or native feature behavior.
+
+Literal tests cover every TOP×i pair, physical destination and pop, positive
+and negative operand orders, ±2^-63, the maximum accepted even 65-bit carry,
+minimum Normal output, alias and numeric/environment/tag/domain rejection,
+plus fetch/truncation/STOP/zero-budget atomicity. Testkit accepts DE E0..EF
+and represents DE E0 as Unsupported with no stop address and budget one. The
+fixture runner checks all 56 non-alias TOP/index pairs and all eight alias
+TOPs. Exhaustive DE ModR/M tests retain FADDP and FSUBP decoding; prefixes,
+REX and WAIT stay rejected. Native admission denies all eight new encodings.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FSUBR/FSUBRP/FISUBR—Reverse
+Subtract,” pp.3-397–3-399 ([official PDF,
+pp.3-397–3-399](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515)).
+It specifies old `ST(0)−ST(i)` before pop, C1 clear for exact results and
+C0/C2/C3 undefined.
+
+`cargo test --workspace --offline` passed before the final isolated fetch-fault
+assertion was added; after that test-only edit, focused `od-isa` FSUBRP and
+fixture-runner FSUBRP tests passed again. The testkit x87 schema test passed,
+and native fail-closed cases compile for `x86_64-unknown-linux-gnu`; the
+architecture-specific native test did not execute on this arm64 macOS host.
+`cargo fmt --all -- --check`, workspace all-target check, Linux-target runner
+all-target check, and `git diff --check` passed. `python3 tools/check_layout.py`
+reported only the pre-existing unmapped `.serena/` directory, left untouched.
+Graphify update completed. Independent gpt-6.1-sol medium review found no
+remaining defects or missing requested coverage. Physical acceptance remains
+reserved for the shared final acceptance substage; this report makes no
+hardware x87 claim.

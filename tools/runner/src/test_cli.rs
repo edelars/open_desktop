@@ -1301,4 +1301,123 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn x87_fsubrp_fixture_runner_covers_every_index_top_and_alias_rejection() {
+        let normal = |significand: u64, exponent: u16| {
+            let mut bytes = [0; 10];
+            bytes[..8].copy_from_slice(&significand.to_le_bytes());
+            bytes[8..].copy_from_slice(&exponent.to_le_bytes());
+            bytes
+        };
+        let one = normal(0x8000_0000_0000_0000, 0x3fff);
+        let one_and_half = normal(0xc000_0000_0000_0000, 0x3fff);
+        let half = normal(0x8000_0000_0000_0000, 0x3ffe);
+        for top in 0u8..8 {
+            for destination in 1u8..8 {
+                let old_top = usize::from(top);
+                let physical_destination = usize::from((top + destination) & 7);
+                let mut input = v2::Fixture::from_json(include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json"
+                ))
+                .unwrap()
+                .fixture;
+                input.case_id = format!("local_fsubrp_st{destination}_top{top}");
+                input.profile = v2::Profile::LongX87StateV1;
+                input.instruction_budget = 1;
+                input.initial_state.rip = HexU64(0x7100);
+                input.stop_rip = Some(HexU64(0x7102));
+                input.expected_exit = v2::ExpectedExit::StopAddress;
+                let code = input
+                    .memory
+                    .iter_mut()
+                    .find(|region| region.region_id == "code")
+                    .unwrap();
+                code.guest_address = HexU64(0x7100);
+                code.length = 2;
+                code.initial_bytes_hex = format!("dee{destination:x}");
+                code.comparison_mask_hex = "ffff".into();
+
+                let mut x87 = od_isa::state::X87State::fixture_seed();
+                x87.control_word = 0x037f;
+                x87.status_word = (u16::from(top) << 11) | 0x4700 | (1 << 9);
+                x87.tag_word =
+                    u16::MAX & !(3 << (old_top * 2)) & !(3 << (physical_destination * 2));
+                for physical in 0..8 {
+                    x87.registers[physical] = [physical as u8; 10];
+                }
+                x87.registers[old_top] = one_and_half;
+                x87.registers[physical_destination] = one;
+                x87.instruction_pointer = 0x1234;
+                x87.data_pointer = 0x5678;
+                x87.last_opcode = 0x05aa;
+                input.initial_state.x87 = Some(v2::X87Snapshot::from(&x87));
+
+                let loaded = v2::Fixture::from_json(&input.to_json().unwrap()).unwrap();
+                let mut memory =
+                    od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                let result = execute_fixture_v2(&loaded, &mut memory);
+                result.validate_for(&loaded).unwrap();
+                assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+                assert_eq!(
+                    result.instructions_executed,
+                    Observation::Available { value: HexU64(1) }
+                );
+                let Observation::Available { value } = result.snapshot else {
+                    panic!("x87 FSUBRP result must be observable");
+                };
+                let observed = value.state.x87.unwrap();
+                let mut expected = x87;
+                expected.registers[physical_destination] = half;
+                expected.set_tag(top, od_isa::state::X87Tag::Empty);
+                let new_top = top.wrapping_add(1) & 7;
+                expected.status_word =
+                    (expected.status_word & !((7 << 11) | (1 << 9))) | (u16::from(new_top) << 11);
+                expected.instruction_pointer = 0x7100;
+                assert_eq!(observed, v2::X87Snapshot::from(&expected));
+            }
+        }
+
+        for top in 0u8..8 {
+            let mut input = v2::Fixture::from_json(include_bytes!(
+                "../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json"
+            ))
+            .unwrap()
+            .fixture;
+            input.case_id = format!("local_fsubrp_alias_top{top}");
+            input.profile = v2::Profile::LongX87StateV1;
+            input.instruction_budget = 1;
+            input.initial_state.rip = HexU64(0x7200);
+            input.stop_rip = None;
+            input.expected_exit = v2::ExpectedExit::Unsupported;
+            let code = input
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "code")
+                .unwrap();
+            code.guest_address = HexU64(0x7200);
+            code.length = 2;
+            code.initial_bytes_hex = "dee0".into();
+            code.comparison_mask_hex = "ffff".into();
+            let mut x87 = od_isa::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = (u16::from(top) << 11) | 0x0200;
+            x87.tag_word = u16::MAX & !(3 << (usize::from(top) * 2));
+            x87.registers[usize::from(top)] = one;
+            input.initial_state.x87 = Some(v2::X87Snapshot::from(&x87));
+            let loaded = v2::Fixture::from_json(&input.to_json().unwrap()).unwrap();
+            let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            let result = execute_fixture_v2(&loaded, &mut memory);
+            result.validate_for(&loaded).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::Unsupported { .. }));
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(0) }
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("unsupported x87 alias remains observable");
+            };
+            assert_eq!(value.state, loaded.fixture.initial_state);
+        }
+    }
 }

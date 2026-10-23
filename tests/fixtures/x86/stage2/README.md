@@ -1078,3 +1078,11 @@ The schema validator admits all eight bare `DC E0+i` FSUBR encodings.
 instruction budget one. Local literal execution checks ST(0)−ST(i) output,
 physical destination placement and preservation of TOP/source state. These
 cases are local-only; native x87 admission stays closed.
+
+### S2-30m x87 schema coverage
+
+The schema validator admits all eight bare `DE E0+i` FSUBRP encodings.
+`DE E0` is expected to remain Unsupported with `stop_rip: null` and instruction
+budget one. Local execution and fixture-runner tests check old ST(i)
+destination placement, retention of the popped payload under its Empty tag,
+TOP increment and alias atomicity. Native x87 admission stays closed.

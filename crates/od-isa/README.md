@@ -103,3 +103,11 @@ profiles are unchanged. Native admission fails closed. No physical execution
 or general GS/SS, LDT, other-CPL or prefixed form is claimed. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md), [fixtures](../../tests/fixtures/x86/stage2/README.md)
 and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
+
+S2-30m adds bare `DE E0+i` FSUBRP through the existing exact same-exponent
+subtraction gate: write old `ST(0)−ST(i)` to old physical `(TOP+i)&7`, then
+empty old TOP and increment it. The decoded `i=0` alias remains Unsupported
+for exact cancellation. Native x87 admission and general x87 semantics remain
+closed; details and validation limits are in the [CPU contract](../../docs/specs/CPU_CONTRACT.md),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).

@@ -475,6 +475,10 @@ pub enum Operation {
     FsubpStSt0 {
         destination: u8,
     },
+    /// Bare `DE E0+i` FSUBRP ST(i), ST(0), exact finite local profile only.
+    FsubrpStSt0 {
+        destination: u8,
+    },
     Nop,
     /// Long-mode 16- or 64-bit PUSH/POP of an opcode-encoded GPR.
     StackRegister {
@@ -1010,6 +1014,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 match modrm {
                     0xc0..=0xc7 => Operation::FaddpStSt0 {
+                        destination: modrm & 7,
+                    },
+                    0xe0..=0xe7 => Operation::FsubrpStSt0 {
                         destination: modrm & 7,
                     },
                     0xe8..=0xef => Operation::FsubpStSt0 {
@@ -2281,7 +2288,7 @@ mod tests {
     }
 
     #[test]
-    fn fsub_st0_sti_accepts_only_bare_d8_e0_through_e7() {
+    fn fsub_st0_sti_accepts_only_bare_d8_and_fsubrp_alias_bare_de() {
         for source in 0u8..=7 {
             let mut memory = Memory::new(&[0xd8, 0xe0 | source]);
             let instruction = memory.decode().unwrap();
@@ -2290,6 +2297,36 @@ mod tests {
             assert_eq!(instruction.prefixes, Prefixes::default());
             assert_eq!(memory.fetched, [0xfff, 0x1000]);
         }
+        for destination in 0u8..=7 {
+            let mut memory = Memory::new(&[0xde, 0xe0 | destination]);
+            let instruction = memory.decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::FsubrpStSt0 { destination }
+            );
+            assert_eq!(instruction.length, 2);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+            assert_eq!(memory.fetched, [0xfff, 0x1000]);
+            for prefix in [
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            ]
+            .into_iter()
+            .chain(0x40..=0x4f)
+            {
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xde, 0xe0 | destination]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
+        }
+        assert!(matches!(
+            Memory::new(&[0xde]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped { .. }))
+        ));
+        assert!(matches!(
+            Memory::new(&[0x9b, 0xde, 0xe1]).decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
 
         for modrm in 0u8..=u8::MAX {
             let decoded = Memory::new(&[0xd8, modrm]).decode();
@@ -2338,10 +2375,10 @@ mod tests {
             Memory::new(&[0xdc, 0xf0]).decode(),
             Err(DecodeError::Unsupported { .. })
         ));
-        assert!(matches!(
-            Memory::new(&[0xde, 0xe0]).decode(),
-            Err(DecodeError::Unsupported { .. })
-        ));
+        assert_eq!(
+            Memory::new(&[0xde, 0xe0]).decode().unwrap().operation,
+            Operation::FsubrpStSt0 { destination: 0 }
+        );
     }
 
     #[test]
@@ -2553,6 +2590,9 @@ mod tests {
                     0xc0..=0xc7 => Ok(Operation::FaddpStSt0 {
                         destination: modrm & 7,
                     }),
+                    0xe0..=0xe7 => Ok(Operation::FsubrpStSt0 {
+                        destination: modrm & 7,
+                    }),
                     0xe8..=0xef => Ok(Operation::FsubpStSt0 {
                         destination: modrm & 7,
                     }),
@@ -2602,6 +2642,9 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0xc0..=0xc7 => Ok(Operation::FaddpStSt0 {
+                        destination: modrm & 7
+                    }),
+                    0xe0..=0xe7 => Ok(Operation::FsubrpStSt0 {
                         destination: modrm & 7
                     }),
                     0xe8..=0xef => Ok(Operation::FsubpStSt0 {
