@@ -153,3 +153,11 @@ tag; `i=1` makes the copied value new ST(0). C1 is retained by local policy.
 Invalid source/environment and fetch/stop/budget boundaries preserve full state.
 Memory forms, exception delivery and native x87 admission remain outside this
 slice. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30w-bounded-fstp-sti-dd-d8i), [Stage 2 plan](../../docs/plans/STAGE_2.md#s2-30w-bare-bounded-fstp-sti-local-raw-copy-slice), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+S2-30x adds only bare `DD D0+i` FST ST(i): a Valid canonical-Normal old
+ST(0) is copied byte-for-byte to old physical `(TOP+i)&7`, and that destination
+tag is set Valid. TOP and the complete FSW are preserved, including for the
+`i=0` alias; the old destination tag/payload is ignored. Invalid source or
+environment and fetch/stop/budget boundaries preserve full state. Memory
+forms, exception delivery and native x87 admission remain outside this slice.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30x-bounded-fst-sti-dd-d0i), [Stage 2 plan](../../docs/plans/STAGE_2.md#s2-30x-bare-bounded-fst-sti-local-raw-copy-slice), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

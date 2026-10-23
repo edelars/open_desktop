@@ -588,6 +588,15 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     }
 
     for destination in 0u8..=7 {
+        let mut fst = fixture.clone();
+        let code = fst
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("ddd{:x}", destination);
+        assert!(Fixture::from_json(&fst.to_json().unwrap()).is_ok());
+
         let mut fstp = fixture.clone();
         let code = fstp
             .memory
@@ -597,6 +606,18 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         code.initial_bytes_hex = format!("ddd{:x}", 8 + destination);
         assert!(Fixture::from_json(&fstp.to_json().unwrap()).is_ok());
     }
+
+    let mut fst_bad_source = fixture.clone();
+    fst_bad_source
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap()
+        .initial_bytes_hex = "ddd1".into();
+    fst_bad_source.stop_rip = None;
+    fst_bad_source.expected_exit = ExpectedExit::Unsupported;
+    fst_bad_source.instruction_budget = 1;
+    assert!(Fixture::from_json(&fst_bad_source.to_json().unwrap()).is_ok());
 
     let mut fstp_bad_source = fixture.clone();
     fstp_bad_source
@@ -635,7 +656,9 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         ("de00", 2, 0x1002),
         ("66dec1", 3, 0x1003),
         ("9bdec1", 3, 0x1003),
-        ("ddd0", 2, 0x1002),
+        ("66ddd1", 3, 0x1003),
+        ("48ddd1", 3, 0x1003),
+        ("9bddd1", 3, 0x1003),
         ("66ddd9", 3, 0x1003),
         ("9bddd9", 3, 0x1003),
         ("dd", 1, 0x1001),

@@ -203,6 +203,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30u | Bare `DC F0+i` FDIVR ST(i), ST(0), exact `ST(0)/ST(i)` into physical ST(i) without pop; native closed | S2-30t |
 | [x] | S2-30v | Bare `DC F8+i` FDIV ST(i), ST(0), exact `ST(i)/ST(0)` into physical ST(i) without pop; native closed | S2-30u |
 | [x] | S2-30w | Bare `DD D8+i` FSTP ST(i), canonical Normal source copy then physical TOP pop; native closed | S2-30v |
+| [x] | S2-30x | Bare `DD D0+i` FST ST(i), canonical Normal raw copy without TOP change; native closed | S2-30w |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1869,6 +1870,36 @@ Normal-edge copies, the `i=0`/`i=1` aliases, untouched sentinels and atomic
 rejection. The schema admits all eight encodings plus one source-tag rejection
 fixture (`DD D9`, no stop RIP, budget one). Native admission explicitly denies
 all eight forms.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
+Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
+
+#### S2-30x. Bare bounded `FST ST(i)` (local raw-copy slice)
+
+Accept only bare `DD D0+i`, `i=0..7`, with an existing x87 state. Reuse the
+bounded x87 store source gate: FCW `0x037f`, `FSW & 0x80ff == 0`, a Valid tag
+at old physical TOP, and a canonical Normal binary80 source. Capture the
+source's ten raw bytes and old TOP before mutation. Do not inspect the
+destination's old payload or tag. Success writes those bytes to old physical
+`(TOP+i)&7` and marks the destination Valid. TOP and all FSW bits are retained,
+including C1; for `i=0`, source bytes and its Valid tag are retained. The
+physical register array is never rotated.
+
+FIP becomes the instruction-start RIP and RIP advances by two. FCW, FDP, FOP,
+unrelated payloads/tags, GPRs and RFLAGS remain unchanged. Missing state, bad
+environment, invalid source tag/class, fetch fault/truncation, STOP and
+exhausted budget preserve full state and do not retire. No memory form,
+rounding/conversion, exception delivery, `#NM`, stack-fault handling or native
+x87 admission is included. This deterministic local policy is not a claim of
+hardware validation for the bounded slice.
+
+Decoder coverage enumerates the complete DD ModR/M byte space while retaining
+`DD D8..DF` as FSTP, and rejects prefixes, REX, WAIT and truncation. Interpreter
+vectors cover every TOP/index pair, each prior destination tag for `i!=0`, raw
+signed/minimum/maximum Normal bytes, the `i=0` alias, full FSW preservation
+and atomic rejection. The schema admits all eight encodings plus a source-tag
+rejection fixture (`DD D1`, no stop RIP, budget one). Native admission
+explicitly denies all eight forms.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
 Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).

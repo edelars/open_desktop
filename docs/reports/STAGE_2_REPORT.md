@@ -3713,3 +3713,42 @@ x86_64-unknown-linux-gnu --offline`), `git diff --check`, and `graphify update .
 native-denial tests compiled but were not run on this arm64 macOS host. No Mac
 mini, SSH or physical-hardware checks were run; these remain in the shared
 acceptance stage. Independent review is pending.
+
+## S2-30x — bounded FST ST(i) local raw-copy slice
+
+Added only bare `DD D0+i`, `i=0..7`, as a bounded register-register
+`FST ST(i)` form. It shares the source validation used by S2-30w: existing
+x87 state, FCW `0x037f`, `FSW & 0x80ff == 0`, and a Valid canonical-Normal old
+ST(0). The interpreter captures the exact ten source bytes before mutation,
+writes them to old physical `(TOP+i)&7`, and marks that destination Valid
+without rotating the register array. It does not inspect the destination's
+previous payload or tag. TOP and the complete FSW remain unchanged, including
+for `i=0`; FIP receives starting RIP, RIP advances by two and one instruction
+retires. FCW, FDP, FOP, unrelated payloads/tags, GPRs and RFLAGS are preserved.
+Native admission explicitly denies all eight encodings.
+
+`od-isa` vectors cover all 64 TOP/index pairs, each previous destination tag
+for `i!=0`, raw signed/minimum/maximum Normal values, full FSW preservation,
+and complete-state rejection for invalid source/environment, missing x87,
+fetch/truncation, STOP and budget boundaries. Exhaustive DD ModR/M checks
+preserve D8..DF as FSTP; prefix, REX, WAIT and truncation are rejected. The
+fixture schema admits all eight forms and the literal DD D1 source-tag reject
+fixture. CLI runner coverage verifies all destination indices and complete
+x87 snapshots.
+
+Normative source: Intel SDM revision 093, Vol.2A pp.3-386–3-387,
+“FST/FSTP—Store Floating-Point Value” ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
+This bounded slice preserves all FSW bits as a deterministic local policy and
+does not claim hardware validation. Memory forms, arithmetic, #NM/stack-fault
+delivery and broader x87 semantics remain unsupported.
+
+Validation passed: `cargo fmt --all -- --check`, `cargo test --workspace --offline`
+(all workspace tests), `cargo check --workspace --all-targets --offline`, the
+focused fixture schema and CLI runner tests, `cargo check -p od-x86-runner
+--all-targets --target x86_64-unknown-linux-gnu --offline`, `git diff --check`,
+and `graphify update .`. `python3 tools/check_layout.py` reports the pre-existing
+unmapped root `.serena/` directory; it was left untouched. The x86_64 Linux
+runner target compiled, but its native-denial test was not run on this arm64
+macOS host. No Mac mini, SSH or physical-hardware checks were run; those remain
+in the shared acceptance stage. Independent gpt-6.1-sol medium review completed
+with no findings.

@@ -29,6 +29,8 @@ const MFENCE_STORE_FENCE_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_21g_mfence_store_fence_load.case.json");
 const FSTP_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30w_fstp_invalid_source.case.json");
+const FST_INVALID_SOURCE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30x_fst_invalid_source.case.json");
 const GS_BASE_QWORD_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_22b_gs_base_qword_load_alias.case.json");
 const FS_SELECTOR_TO_RAX: &[u8] =
@@ -1154,6 +1156,58 @@ fn local_x87_fstp_fixture_runner_admits_every_destination_index() {
         let new_top = top.wrapping_add(1) & 7;
         expected.status_word =
             HexU64((initial.status_word.get() & !(7 << 11)) | (u64::from(new_top) << 11));
+        expected.instruction_pointer = input.fixture.initial_state.rip;
+        assert_eq!(observed.state.x87.as_ref(), Some(&expected));
+    }
+}
+
+#[test]
+fn local_x87_fst_invalid_source_fixture_is_atomic_in_the_cli_runner() {
+    let (input, result) = run(FST_INVALID_SOURCE, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, input.fixture.initial_state.rip);
+    assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    assert_eq!(observed.state.x87, input.fixture.initial_state.x87);
+}
+
+#[test]
+fn local_x87_fst_fixture_runner_admits_every_destination_index() {
+    for destination in 0u8..=7 {
+        let mut fixture = Fixture::from_json(FST_INVALID_SOURCE).unwrap().fixture;
+        fixture.case_id = format!("local_x87_fst_i{destination}");
+        fixture.stop_rip = Some(HexU64(0x0010_0002));
+        fixture.expected_exit = ExpectedExit::StopAddress;
+        let x87 = fixture.initial_state.x87.as_mut().unwrap();
+        let top = ((x87.status_word.get() >> 11) & 7) as u8;
+        let top_shift = u32::from(top) * 2;
+        x87.tag_word = HexU64((x87.tag_word.get() & !(3 << top_shift)) | (0 << top_shift));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("dd{:02x}", 0xd0 | destination);
+
+        let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 1);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+        assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+        assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+
+        let initial = input.fixture.initial_state.x87.as_ref().unwrap();
+        let mut expected = initial.clone();
+        let top = ((initial.status_word.get() >> 11) & 7) as u8;
+        let physical_destination = (top + destination) & 7;
+        expected.registers[usize::from(physical_destination)] =
+            initial.registers[usize::from(top)].clone();
+        let dest_shift = u32::from(physical_destination) * 2;
+        expected.tag_word =
+            HexU64((expected.tag_word.get() & !(3 << dest_shift)) | (0 << dest_shift));
         expected.instruction_pointer = input.fixture.initial_state.rip;
         assert_eq!(observed.state.x87.as_ref(), Some(&expected));
     }

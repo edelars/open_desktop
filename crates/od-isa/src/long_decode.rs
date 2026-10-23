@@ -447,6 +447,10 @@ pub enum Operation {
     FstpSti {
         destination: u8,
     },
+    /// Bare `DD D0+i` FST ST(i), raw Normal copy without changing TOP.
+    FstSti {
+        destination: u8,
+    },
     /// Bare `D8 C8+i` FMUL ST(0), ST(i), exact finite local profile only.
     FmulSt0St {
         source: u8,
@@ -1091,11 +1095,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 let modrm = self.byte()?;
-                if !(0xd8..=0xdf).contains(&modrm) {
+                if !(0xd0..=0xdf).contains(&modrm) {
                     return Err(self.unsupported(opcode));
                 }
-                Operation::FstpSti {
-                    destination: modrm & 7,
+                if modrm < 0xd8 {
+                    Operation::FstSti {
+                        destination: modrm & 7,
+                    }
+                } else {
+                    Operation::FstpSti {
+                        destination: modrm & 7,
+                    }
                 }
             }
             (OpcodeMap::Primary, 0xdf) => {
@@ -2262,8 +2272,19 @@ mod tests {
     }
 
     #[test]
-    fn fstp_sti_accepts_only_bare_dd_d8_through_df() {
+    fn fst_sti_and_fstp_sti_accept_only_their_bare_dd_modrm_ranges() {
         for index in 0u8..=7 {
+            let bytes = [0xdd, 0xd0 | index];
+            let mut memory = Memory::new(&bytes);
+            let instruction = memory.decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::FstSti { destination: index }
+            );
+            assert_eq!(instruction.length, 2);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+            assert_eq!(memory.fetched, [0xfff, 0x1000]);
+
             let bytes = [0xdd, 0xd8 | index];
             let mut memory = Memory::new(&bytes);
             let instruction = memory.decode().unwrap();
@@ -2280,7 +2301,11 @@ mod tests {
             let decoded = Memory::new(&[0xdd, modrm]).decode();
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
-                if (0xd8..=0xdf).contains(&modrm) {
+                if (0xd0..=0xd7).contains(&modrm) {
+                    Ok(Operation::FstSti {
+                        destination: modrm & 7,
+                    })
+                } else if (0xd8..=0xdf).contains(&modrm) {
                     Ok(Operation::FstpSti {
                         destination: modrm & 7,
                     })

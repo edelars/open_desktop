@@ -2195,3 +2195,36 @@ delivery, or native x87 admission is modeled.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
 Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)). Intel defines `DD D8+i` as copying ST(0) to ST(i) and popping; this local contract narrows the accepted source/environment and preserves C1 concretely.
+
+## Local S2-30x: bounded `FST ST(i)` (`DD D0+i`)
+
+The interpreter accepts exactly bare `DD D0` through `DD D7` with an existing
+`Some(X87State)`. It reuses the bounded x87 store source gate: FCW `0x037f`,
+`FSW & 0x80ff == 0`, a Valid tag at old physical TOP, and a canonical Normal
+binary80 source. The source is captured as its original ten bytes before any
+mutation. No destination payload or old destination tag is read, so all four
+old destination tag values are accepted when `i != 0`.
+
+Success copies the exact bytes to old physical `(TOP+i)&7` and marks that
+physical tag Valid without rotating the register array. TOP and every FSW bit
+are preserved; for `i=0`, the source bytes and Valid tag remain unchanged. FIP
+is set to the instruction-start RIP and RIP advances by two. FCW, FDP, FOP,
+unrelated physical payloads/tags, GPRs and RFLAGS are preserved.
+
+Invalid source tag/class, invalid FCW/FSW, missing x87 state, unsupported
+encoding, fetch fault/truncation, STOP and exhausted budget do not commit state
+or retire. No memory form, numeric conversion/rounding, stack-fault or `#NM`
+delivery, or native x87 admission is modeled. Preserving C1 and the other FSW
+bits is a deterministic local policy; this bounded slice is not claimed to
+have hardware validation.
+
+Decoder tests enumerate all DD ModR/M bytes, preserve `DD D8..DF` as FSTP,
+and reject prefixes, REX, WAIT and truncation. `od-isa` vectors cover every
+TOP/index pair and each previous destination tag for `i!=0`, raw signed and
+Normal-edge bytes, full FSW preservation, and full-state atomic rejection.
+The fixture schema admits all eight encodings and a source-tag rejection case
+(`DD D1`, no stop RIP, budget one); CLI runner checks cover all destination
+indices. Native admission explicitly denies all eight encodings.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
+Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)). Intel defines `DD D0+i` as copying ST(0) to ST(i); this local slice narrows accepted source/environment and preserves all FSW bits concretely.

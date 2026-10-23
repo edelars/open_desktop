@@ -1188,3 +1188,18 @@ cases are checked. Native x87 admission explicitly denies all eight forms.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
 Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
+
+### S2-30x x87 schema and fixture coverage
+
+The schema admits all eight bare `DD D0+i` FST ST(i) encodings. The literal
+`s2_30x_fst_invalid_source.case.json` uses `DD D1` with a canonical-Normal
+ST(0) tagged Empty, `stop_rip: null`, and budget one to verify atomic source-tag
+rejection through the CLI runner. Runner checks cover each destination index
+and verify raw payload placement, Valid destination tagging, unchanged TOP and
+FSW, and full x87 state. Local vectors additionally exercise every TOP×i pair
+and all old destination tags for i!=0. All DD ModR/M values and prefix,
+REX, WAIT and truncation behavior are checked; `DD D8..DF` remains FSTP.
+Native x87 admission explicitly denies all eight FST encodings.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
+Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
