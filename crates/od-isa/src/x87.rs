@@ -452,6 +452,39 @@ pub fn normalize_exact_coefficient(exponent: i32, coefficient: i128) -> Option<(
     Some((sign, normalized_exponent, normalized_magnitude))
 }
 
+/// Round an exact signed coefficient `coefficient * 2^(exponent - 63)` once
+/// into finite binary80 normal or subnormal encoding.
+///
+/// Zero is rejected because this helper does not choose a signed-zero result.
+/// For nonzero coefficients, normalization preserves the exact magnitude. Its
+/// even 128-bit result is decomposed as `q + r / 2^63`, then rounded directly
+/// at the final normal or subnormal boundary. `None` reports only rejection by
+/// these bounded numeric helpers, including exponent overflow or a result
+/// outside the finite binary80 range. No x87 control-word, status, exception,
+/// instruction, or signed-zero operation behavior is defined here.
+pub fn round_pack_exact_coefficient(
+    exponent: i32,
+    coefficient: i128,
+    mode: RationalRoundingMode,
+) -> Option<X87Binary80> {
+    if coefficient == 0 {
+        return None;
+    }
+
+    let (sign, normalized_exponent, magnitude) =
+        normalize_exact_coefficient(exponent, coefficient)?;
+    let q = (magnitude >> 64) as u64;
+    let r = (magnitude as u64) >> 1;
+    const D: u64 = 1_u64 << 63;
+
+    if normalized_exponent >= -16382 {
+        let rounded = round_quotient_to_precision(sign, q, r, D, 64, mode)?;
+        pack_normal_rounded_significand(sign, normalized_exponent, rounded, 64)
+    } else {
+        round_pack_subnormal_quotient(sign, normalized_exponent, q, r, D, mode)
+    }
+}
+
 /// Multiply two finite significands without alignment, jam bits, or
 /// normalization.
 ///
@@ -707,9 +740,9 @@ mod tests {
         RationalRoundingMode, X87Binary80, X87Binary80Class, X87Finite, X87Grs,
         add_finite_same_exponent, align_finite_pair, divide_finite_significands,
         divide_finite_to_binary80, multiply_finite_significands, normalize_exact_coefficient,
-        normalize_exact_magnitude, pack_normal_rounded_significand, round_pack_subnormal_quotient,
-        round_quotient_magnitude, round_quotient_ties_even, round_quotient_to_precision,
-        shift_right_jam, shift_right_jam_u128,
+        normalize_exact_magnitude, pack_normal_rounded_significand, round_pack_exact_coefficient,
+        round_pack_subnormal_quotient, round_quotient_magnitude, round_quotient_ties_even,
+        round_quotient_to_precision, shift_right_jam, shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -2659,6 +2692,229 @@ mod tests {
         assert_eq!(
             normalize_exact_coefficient(i32::MIN, 0),
             Some((false, 0, 0))
+        );
+    }
+
+    #[test]
+    fn exact_coefficient_rounding_matches_normal_and_subnormal_literal_encodings() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let cases = [
+            (0, 1_i128 << 63, [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f]),
+            (0, -(1_i128 << 63), [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xbf]),
+            (0, (1_i128 << 64) + 1, [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x40]),
+            (0, (1_i128 << 64) + 3, [2, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x40]),
+            (0, (1_i128 << 65) - 1, [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0x40]),
+            (-16382, 1, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (-16382, -1, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]),
+            (
+                -16385,
+                (1_i128 << 64) + 11,
+                [1, 0, 0, 0, 0, 0, 0, 0x20, 0, 0],
+            ),
+            (
+                -16382,
+                (1_i128 << 63) - 1,
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0, 0],
+            ),
+            (
+                -16383,
+                (1_i128 << 64) - 1,
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0],
+            ),
+            (
+                16383,
+                (1_i128 << 64) - 1,
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x7f],
+            ),
+            (-64, i128::MIN, [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xbf]),
+            (-64, i128::MAX, [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f]),
+        ];
+        for (exponent, coefficient, expected) in cases {
+            assert_eq!(
+                round_pack_exact_coefficient(exponent, coefficient, Nearest)
+                    .unwrap()
+                    .to_bytes(),
+                expected,
+                "exponent={exponent}, coefficient={coefficient}"
+            );
+        }
+
+        let negative_normal_tie = -(1_i128 << 64) - 1;
+        for (mode, expected) in [
+            (Nearest, [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0xc0]),
+            (
+                RationalRoundingMode::TowardZero,
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0xc0],
+            ),
+            (
+                RationalRoundingMode::TowardPositive,
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0xc0],
+            ),
+            (
+                RationalRoundingMode::TowardNegative,
+                [1, 0, 0, 0, 0, 0, 0, 0x80, 0, 0xc0],
+            ),
+        ] {
+            assert_eq!(
+                round_pack_exact_coefficient(0, negative_normal_tie, mode)
+                    .unwrap()
+                    .to_bytes(),
+                expected
+            );
+        }
+
+        // The directed result for i128::MAX retains the value below one.
+        assert_eq!(
+            round_pack_exact_coefficient(-64, i128::MAX, RationalRoundingMode::TowardZero)
+                .unwrap()
+                .to_bytes(),
+            [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x3f]
+        );
+    }
+
+    #[test]
+    fn exact_coefficient_rounding_handles_modes_boundaries_and_rejection() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let half_subnormal_modes = [
+            (
+                1_i128,
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            ),
+            (
+                -1_i128,
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+            ),
+        ];
+        for (coefficient, expected) in [
+            (1_i128, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (-1_i128, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]),
+        ] {
+            for mode in [Nearest, Zero, Up, Down] {
+                assert_eq!(
+                    round_pack_exact_coefficient(-16382, coefficient, mode)
+                        .unwrap()
+                        .to_bytes(),
+                    expected
+                );
+            }
+        }
+        for (coefficient, nearest, zero, up, down) in half_subnormal_modes {
+            for (mode, expected) in [(Nearest, nearest), (Zero, zero), (Up, up), (Down, down)] {
+                assert_eq!(
+                    round_pack_exact_coefficient(-16383, coefficient, mode)
+                        .unwrap()
+                        .to_bytes(),
+                    expected
+                );
+            }
+        }
+
+        assert_eq!(round_pack_exact_coefficient(i32::MIN, 1, Nearest), None);
+        assert_eq!(
+            round_pack_exact_coefficient(i32::MAX, i128::MIN, Nearest),
+            None
+        );
+        assert_eq!(
+            round_pack_exact_coefficient(16383, 1_i128 << 64, Nearest),
+            None
+        );
+        for mode in [Nearest, Zero, Up, Down] {
+            assert_eq!(round_pack_exact_coefficient(i32::MIN, 0, mode), None);
+            assert_eq!(round_pack_exact_coefficient(i32::MAX, 0, mode), None);
+        }
+    }
+
+    #[test]
+    fn exact_coefficient_rounding_composes_with_same_exponent_sum() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let min_normal = finite(
+            -16382,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        let adjacent = finite(
+            -16382,
+            0x8000_0000_0000_0001,
+            false,
+            X87Binary80Class::Normal,
+        );
+        let adjacent_negative = finite(
+            -16382,
+            0x8000_0000_0000_0001,
+            true,
+            X87Binary80Class::Normal,
+        );
+        let zero = finite(0, 0, true, X87Binary80Class::Zero);
+        let unequal = finite(
+            -16381,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        let operands_before = (min_normal, adjacent, adjacent_negative, zero, unequal);
+
+        let (cancel_exponent, positive_one) = add_finite_same_exponent(
+            adjacent,
+            finite(
+                -16382,
+                0x8000_0000_0000_0000,
+                true,
+                X87Binary80Class::Normal,
+            ),
+        )
+        .unwrap();
+        assert_eq!(positive_one, 1);
+        assert_eq!(
+            round_pack_exact_coefficient(cancel_exponent, positive_one, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+
+        let (negative_exponent, negative_one) =
+            add_finite_same_exponent(min_normal, adjacent_negative).unwrap();
+        assert_eq!(negative_one, -1);
+        assert_eq!(
+            round_pack_exact_coefficient(negative_exponent, negative_one, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]
+        );
+
+        let (carry_exponent, carry) = add_finite_same_exponent(min_normal, adjacent).unwrap();
+        assert_eq!(carry, 0x1_0000_0000_0000_0001);
+        assert_eq!(
+            round_pack_exact_coefficient(carry_exponent, carry, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 2, 0]
+        );
+
+        let (one_zero_exponent, one_zero_coefficient) =
+            add_finite_same_exponent(zero, min_normal).unwrap();
+        assert_eq!(
+            round_pack_exact_coefficient(one_zero_exponent, one_zero_coefficient, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]
+        );
+        assert_eq!(add_finite_same_exponent(min_normal, unequal), None);
+        assert_eq!(
+            (min_normal, adjacent, adjacent_negative, zero, unequal),
+            operands_before
         );
     }
 

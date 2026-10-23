@@ -2716,3 +2716,32 @@ and `git diff --check`. `python3 tools/check_layout.py` stopped on the existing
 unmapped root `.serena/` directory, which was left untouched. `graphify update .`
 was run after the implementation. No physical Mac mini check was required for
 this numeric helper. Architectural x87 behavior remains open under ISSUE-019.
+
+## S2-29p — round exact coefficient to one binary80 result (partial)
+
+Added `round_pack_exact_coefficient(exponent, coefficient, mode)`. It rejects
+zero, losslessly normalizes the signed `i128` coefficient, and decomposes the
+even `u128` magnitude into the exact quotient `q + r/2^63`. Normal results use
+one p=64 rounding call followed by normal packing. Subnormal results pass the
+original quotient and remainder directly to the subnormal packer, with no
+intermediate rounding. `None` means bounded normalization or packer rejection.
+
+Literal vectors cover both signs of `2^63`, normal ties with even and odd
+retained significands, synthetic carry to 4, minsub and half-minsub signed
+results under all mathematical modes, the anti-double-round target
+`(e=-16385, coefficient=2^64+11) -> significand 0x2000000000000001`, largest
+subnormal, tie into minimum normal, max finite, upper-range rejection,
+`i128::MIN/MAX`, exponent boundaries, and zero. S2-29e composition covers
+positive/negative cancellation to ±1, carry, a zero operand, unequal exponent
+rejection, and unchanged inputs. Inexact synthetic subnormal coefficient
+vectors are explicitly unreachable from exact binary80 same-exponent sums.
+This is numerical encoding only; it does not add guest operations or
+architectural x87 state effects.
+
+Verification: `cargo test -p od-isa x87 --offline` passed (48 tests), as did
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+and `git diff --check`. `python3 tools/check_layout.py` stopped on the existing
+unmapped root `.serena/` directory, which was left untouched. `graphify update .`
+was run after the implementation. No physical Mac mini check was required for
+this integer helper. S2-29, S2-28, and architectural x87 behavior remain open
+under ISSUE-019.

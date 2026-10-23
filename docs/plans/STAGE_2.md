@@ -179,6 +179,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29b | Integer-only finite binary80 normalization with source-class provenance and right-shift-jam/GRS bit helpers; no rounding or arithmetic | S2-29a |
 | [x] | S2-29c | Generic `u128` right-shift-jam preserving 64-bit significands plus three low GRS bits; literal boundary and normalized-finite bridge vectors; no rounding or arithmetic | S2-29b |
 | [x] | S2-29m | Bounded packing of already-rounded nonzero normal finite significands with one carry and finite normal exponent range; no subnormal/special packing or architectural effects | S2-29l |
+| [x] | S2-29p | Round an exact signed `i128` coefficient once to finite binary80 through lossless normalization and direct normal/subnormal packing; no x87 architectural effects | S2-29e, S2-29f, S2-29k–n |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
@@ -1316,6 +1317,32 @@ complete divider-to-pack composition. Normal p=64 synthetic ties/carry remain
 unreachable from normalized divider outputs; subnormal carry is reachable.
 This remains a numerical helper only: architectural control-word, flags,
 exceptions, special-value and guest FDIV semantics remain open under ISSUE-019.
+
+### S2-29p. Round an exact coefficient once to finite binary80 (partial)
+
+`round_pack_exact_coefficient(exponent, coefficient, mode)` rounds
+`coefficient * 2^(exponent - 63)` into finite normal or subnormal binary80.
+It rejects coefficient zero because no sign is selected for an exact zero,
+then calls `normalize_exact_coefficient` and decomposes its exact even `u128`
+magnitude as `q=(magnitude >> 64)`, `r=(magnitude as u64) >> 1`,
+`d=2^63`. Normal-range values use one p=64 quotient round then normal packing;
+subnormal-range values pass the original `q/r/d` directly to subnormal packing.
+Only bounded normalization and packer rejection propagates as `None`.
+
+Literal vectors cover positive/negative `2^63`, normal ties-to-even with even
+and odd retained significands, a synthetic normal carry to 4, minimum and
+half-minimum subnormal, directed signed-zero results, the subnormal
+anti-double-round case (`exponent=-16385`, `coefficient=2^64+11` gives
+significand `0x2000000000000001`), largest subnormal, tie into minimum normal,
+maximum finite, rejected upper range, `i128::MIN/MAX`, exponent edges, and zero
+rejection. The synthetic inexact subnormal vectors test general coefficient
+math; those tails are unreachable from exact binary80 same-exponent sums.
+Composition with S2-29e checks positive/negative cancellation to ±1, carry,
+one zero operand, unequal-exponent rejection, and immutable inputs. No jammed
+alignment or pre-rounded subnormal coefficient is used. This numerical helper
+does not implement x87 RC/PC, status, exceptions, instruction behavior,
+architectural signed zero, or special values; S2-29, S2-28, and ISSUE-019 remain
+open.
 
 ### S2-30. Основные x87 операции
 

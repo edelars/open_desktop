@@ -1376,6 +1376,37 @@ status flags, architectural exceptions, special-value handling, guest #Z/
 overflow, or guest FDIV is implemented. S2-29 and S2-28 remain open under
 ISSUE-019.
 
+## Local S2-29p: exact coefficient to one rounded binary80 result
+
+`od_isa::x87::round_pack_exact_coefficient(exponent, coefficient, mode)`
+rounds the exact value `coefficient * 2^(exponent - 63)` once into finite
+normal or subnormal binary80. Coefficient zero is rejected because this helper
+does not select a signed-zero result. For nonzero input it uses
+`normalize_exact_coefficient`, whose exact even magnitude is decomposed as
+`q=(magnitude >> 64)`, `r=(magnitude as u64) >> 1`, and `d=2^63`; thus
+`magnitude / 2^64 = q + r/d`. If the normalized exponent is at least `-16382`,
+it rounds this exact quotient once to p=64 and calls normal packing. Smaller
+exponents pass the original `q/r/d` directly to subnormal packing, avoiding
+intermediate rounding. `None` propagates only bounded normalization or packer
+rejection.
+
+Literal byte vectors cover signed `2^63`, normal p=64 ties with even and odd
+retained values, synthetic carry to 4, signed minimum subnormal, half-minimum
+subnormal under all modes, signed directed zero, largest subnormal, tie into
+minimum normal, maximum finite, upper-range rejection, `i128::MIN/MAX`, and
+exponent edges. The subnormal anti-double-round vector
+`(exponent=-16385, coefficient=2^64+11)` rounds to significand
+`0x2000000000000001`; pre-rounding the normalized coefficient would produce
+the wrong last bit. S2-29e composition checks cancellation to ±1, carry, one
+zero operand, unequal exponent rejection, and unchanged operands. Synthetic
+inexact subnormal vectors exercise general coefficient math and are not
+reachable from exact binary80 same-exponent sums.
+
+This is a numerical coefficient adapter only. It does not define x87 RC/PC or
+control-word behavior, architectural status/flags/exceptions, signed-zero
+selection, special values, or guest instructions. S2-29 and S2-28 remain open
+under ISSUE-019.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.
