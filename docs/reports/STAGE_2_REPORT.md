@@ -2271,13 +2271,14 @@ FOP. Empty tag values do not erase payload bytes.
 
 The new `s2-long-x87-state-v1` profile is isolated from existing integer
 profiles; `None` means the profile excludes x87, and old profiles continue to
-omit the x87 key. This profile admits only a one-byte NOP with budget 1 and a
-stop RIP immediately afterward. The fixture adapter loads the x87 image into
-`LongModeState`; the local interpreter executes the admitted NOP with that
-state, and the result adapter serializes the executed state. Comparison
-reports any x87 difference. The fragment adapter rejects `Some(x87)`, and
-native execution remains unsupported because its adapter cannot observe x87
-state. No x87 instruction semantics or FPU feature claim were added.
+omit the x87 key. In the original S2-28a slice, this profile admitted only a
+one-byte NOP with budget 1 and a stop RIP immediately afterward. The fixture
+adapter loaded the x87 image into `LongModeState`; the local interpreter
+executed the admitted NOP with that state, and the result adapter serialized
+the executed state. Comparison reports any x87 difference. The fragment
+adapter rejects `Some(x87)`, and native execution remains unsupported because
+its adapter cannot observe x87 state. S2-30a below adds one exact FNINIT form;
+no general x87 or FPU feature claim was added.
 
 `X87State::fixture_seed()` is deterministic non-architectural fixture data.
 `fninit()` is the separately named architectural transition: FCW `0x037f`, FSW
@@ -2292,7 +2293,50 @@ FNINIT payload preservation, raw-state wire roundtrip and malformed rejection,
 mutation-sensitive comparison, `IntegerState`/`LongModeState` adapter
 roundtrip, explicit fragment rejection, legacy profile wire/digest
 compatibility, and one-NOP runner preservation through the executed
-`LongModeState`. Commands:
+`LongModeState`. The S2-30a extension is recorded below.
+
+## S2-30a — bare FNINIT (bounded local slice)
+
+The local long-mode decoder accepts only the exact bare bytes `DB E3`; prefixes,
+other `DB` forms, and `9B DB E3` FINIT remain Unsupported. The interpreter
+requires an existing `Some(X87State)`, calls the existing `X87State::fninit()`
+transition, advances RIP by two, and retires one instruction. FCW, FSW, full
+tag word and FIP/FDP/FOP reset to `037F/0/FFFF/0/0/0`; all eight register
+payloads, GPRs and RFLAGS remain unchanged. Missing x87 state is Unsupported;
+this local profile assumes x87 is available and does not inspect CR0.EM/TS or
+deliver #NM. Native profile execution and instruction admission both remain
+closed. No FPU feature is advertised.
+
+The existing `s2-long-x87-state-v1` profile now admits exactly one NOP or one
+bare FNINIT, with budget 1 and stop RIP immediately after the instruction. The
+runner compares the entire raw x87 state. Local tests cover arbitrary seeded
+payload preservation, environment reset, decode neighbors and prefixes,
+truncated/faulting fetch without commit, missing state, STOP and budget
+boundaries, fixture validation, and native rejection. These checks do not
+provide physical CPU or native FPU observation.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FINIT/FNINIT—Initialize
+Floating-Point Unit,” pp.3-345–3-346, [official Vol.2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199).
+It identifies `DB E3` as FNINIT and `9B DB E3` as FINIT with WAIT; FNINIT
+resets FCW to `037F`, clears FSW, empties all tags, clears instruction/data
+pointers and opcode, leaves data-register payloads unchanged and generates no
+x87 floating-point exceptions.
+
+Validation passed: `cargo test -p od-isa fninit --offline`,
+`cargo test -p od-testkit x87_state_profile --offline`,
+`cargo test -p od-testkit x87_state_profile_admits --offline`, and
+`cargo test -p od-runner --test fixture_v2
+local_x87_state_profile_runs_fninit_with_full_environment_reset --offline`.
+The host macOS target does not include the Linux-only `od-x86-runner` tests;
+the FNINIT native-rejection test was added for that target but remains a
+compile-only check. `cargo test --workspace --offline`,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+Linux-target `cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, and `git diff --check` passed. The layout
+checker reports the pre-existing untracked `.serena/` directory as an unmapped
+root directory; it was left untouched. Independent gpt-6.1-sol medium review
+found no confirmed defects. No physical/Mac mini check was performed. S2-28,
+S2-29 and umbrella S2-30 remain open.
 
 ```sh
 cargo test -p od-isa x87 --offline

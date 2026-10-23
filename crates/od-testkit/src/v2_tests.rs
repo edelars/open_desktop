@@ -277,6 +277,40 @@ fn x87_state_profile_roundtrips_raw_empty_register_payloads_and_compares_mutatio
 }
 
 #[test]
+fn x87_state_profile_admits_only_exact_bare_fninit_as_its_two_byte_program() {
+    let mut fixture = x87_fixture().fixture;
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.length = 2;
+    code.initial_bytes_hex = "dbe3".into();
+    code.comparison_mask_hex = "ffff".into();
+    fixture.stop_rip = Some(HexU64(0x1002));
+    assert!(Fixture::from_json(&fixture.to_json().unwrap()).is_ok());
+
+    for (bytes, length, stop) in [
+        ("db", 1, 0x1001),
+        ("9bdbe3", 3, 0x1003),
+        ("66dbe3", 3, 0x1003),
+        ("dbe2", 2, 0x1002),
+    ] {
+        let mut unsupported = fixture.clone();
+        let code = unsupported
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = length;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(length as usize);
+        unsupported.stop_rip = Some(HexU64(stop));
+        assert!(unsupported.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
 fn result_rejects_observed_fs_base_different_from_initial() {
     let input = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_22a_fs_base_qword_load_alias.case.json"

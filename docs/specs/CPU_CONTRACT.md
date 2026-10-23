@@ -1025,13 +1025,44 @@ payloads remain unchanged. It does not model FINIT's pending-exception check
 or wait behavior. This is distinct from power-up/RESET/INIT: Vol.3A §11.1.1
 Table 11-1 note 5 says INIT leaves x87 FPU and MMX registers unchanged.
 
-The local fixture profile is restricted to one NOP with budget 1 and a stop
-RIP immediately after it. Fixture conversion loads the supplied x87 object
-into `LongModeState`, and result conversion observes that executed state;
-comparisons inspect the entire object. The fragment adapter explicitly rejects
-`Some(x87)`. Native x87 observation is unavailable, so native execution rejects
-this profile; no FPU CPUID feature or x87 instruction support is claimed.
-Remaining x87 semantics and integration stay open under S2-28–S2-39.
+The local fixture profile admits one exact instruction (`90` NOP or the S2-30a
+`DB E3` FNINIT) with budget 1 and a stop RIP immediately afterward. Fixture
+conversion loads the supplied x87 object into `LongModeState`, and result
+conversion observes that executed state; comparisons inspect the entire
+object. The fragment adapter explicitly rejects `Some(x87)`. Native x87
+observation is unavailable, so native execution rejects this profile; no FPU
+CPUID feature or general x87 support is claimed. Remaining x87 semantics and
+integration stay open under S2-28–S2-39.
+
+## Local S2-30a: bare `FNINIT` (`DB E3`)
+
+The local interpreter accepts exactly unprefixed `DB E3`, and only when
+`LongModeState.x87` already contains `Some(X87State)`. The profile assumes x87
+availability. Execution calls `X87State::fninit()`, advances RIP by two and
+retires one instruction. It preserves GPRs, RFLAGS, and all eight 10-byte
+register payloads while setting FCW=`0x037f`, FSW=`0`, FTW=`0xffff`, and
+FIP/FDP/FOP to zero. FNINIT itself raises no x87 floating-point exception.
+The executor does not check CR0.EM/TS or deliver #NM. It does not synthesize
+missing x87 state.
+
+Prefixes, other `DB` encodings, and `9B DB E3` FINIT remain Unsupported.
+Native execution still rejects x87 profiles and FNINIT; no FPU capability is
+advertised. This slice does not implement x87 pending-exception delivery or
+FINIT's preceding WAIT behavior, nor any other x87 instruction.
+
+Tests cover exact decoding and rejection neighbors, arbitrary register payload
+preservation, complete environment reset, full GPR/RFLAGS preservation,
+truncated/faulting fetch without commit, missing-state rejection, and STOP or
+budget boundaries without fetch or retirement. The testkit runner observes all
+x87 fields through the existing `s2-long-x87-state-v1` state profile.
+
+Normative source: Intel® 64 and IA-32 Architectures Software Developer's Manual,
+revision 093, Vol.2A, “FINIT/FNINIT—Initialize Floating-Point Unit,”
+pp.3-345–3-346, [official Vol.2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199).
+The manual specifies `DB E3` as FNINIT and `9B DB E3` as FINIT with WAIT;
+FNINIT restores FCW to `037F`, clears FSW and the last instruction/data
+pointers/opcode, marks all tags empty, preserves the eight data-register
+contents, and does not generate floating-point exceptions.
 
 Normative basis: Intel SDM revision 093, Vol.1 §§8.1.2, 8.1.3.1, 8.1.5,
 8.1.7–8.1.9 and 8.5; Vol.2A “FINIT/FNINIT—Initialize Floating-Point Unit,”

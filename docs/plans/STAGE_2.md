@@ -173,7 +173,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-26 | CPUID, системные инструкции и время | S2-25 |
 | [ ] | S2-27 | Remaining descriptor/event/syscall CPU semantics; the bounded VERW/GDT check is extracted to S2-22e | S2-25, S2-26 |
 | [ ] | S2-28 | Представить x87 state | S2-20 |
-| [x] | S2-28a | Lossless Long64 x87 state and local NOP-only snapshot profile; no x87 execution or FPU feature claim | S2-28 |
+| [x] | S2-28a | Lossless Long64 x87 state and local NOP/FNINIT-only state profile; no general x87 execution or FPU feature claim | S2-28 |
 | [ ] | S2-29 | Собственное ядро extended precision | S2-28 |
 | [x] | S2-29a | Lossless binary80 raw fields and read-only raw encoding classification; no arithmetic or x87 execution | S2-28a |
 | [x] | S2-29b | Integer-only finite binary80 normalization with source-class provenance and right-shift-jam/GRS bit helpers; no rounding or arithmetic | S2-29a |
@@ -181,6 +181,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29m | Bounded packing of already-rounded nonzero normal finite significands with one carry and finite normal exponent range; no subnormal/special packing or architectural effects | S2-29l |
 | [x] | S2-29p | Round an exact signed `i128` coefficient once to finite binary80 through lossless normalization and direct normal/subnormal packing; no x87 architectural effects | S2-29e, S2-29f, S2-29k–n |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
+| [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1381,6 +1382,18 @@ remain open.
 3. Расширить native snapshot на x87 без изменения состояния до захвата; сравнивать 80-bit bits и архитектурно определённые fields.
 
 **Готово:** обычные и граничные operands проходят native comparison, включая stack underflow/overflow и memory fault effects поддержанного профиля.
+
+#### S2-30a. Bare FNINIT (bounded local slice)
+
+Implement only the exact unprefixed bytes `DB E3` with an already-present
+`Some(X87State)`. Apply the existing `X87State::fninit()` transition, advance
+RIP by two and retire once. Preserve all GPRs, RFLAGS, and all eight data
+payloads. Other `DB` forms, every prefix, and `9B DB E3` FINIT stay
+unsupported. The local profile assumes x87 is available; CR0.EM/TS and #NM are
+not modeled. Missing x87 state remains Unsupported. Native admission and FPU
+feature advertisement remain closed. Tests cover decode neighbors/truncation,
+arbitrary seeded payload preservation, full environment reset, and no commit
+for fetch fault, STOP, budget exhaustion, or missing state.
 
 ### S2-31. x87 conversions, rounding и exceptions
 

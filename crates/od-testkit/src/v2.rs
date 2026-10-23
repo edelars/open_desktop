@@ -704,18 +704,33 @@ impl Fixture {
             let Some(code) = code else {
                 return Err(invalid("memory.code", "required by this profile"));
             };
-            let expected_stop = self.initial_state.rip.get().checked_add(1);
+            let (expected_bytes, expected_length) =
+                match code.initial_bytes_hex.to_ascii_lowercase().as_str() {
+                    "90" => ("90", 1),
+                    "dbe3" => ("dbe3", 2),
+                    _ => {
+                        return Err(invalid(
+                            "memory.code",
+                            "x87 state profile admits only one NOP or bare FNINIT",
+                        ));
+                    }
+                };
             if code.guest_address != self.initial_state.rip
-                || code.length != 1
+                || code.length != expected_length
                 || !code.permissions.execute
-                || !code.initial_bytes_hex.eq_ignore_ascii_case("90")
+                || !code.initial_bytes_hex.eq_ignore_ascii_case(expected_bytes)
                 || self.instruction_budget != 1
-                || self.stop_rip.map(HexU64::get) != expected_stop
+                || self.stop_rip.map(HexU64::get)
+                    != self
+                        .initial_state
+                        .rip
+                        .get()
+                        .checked_add(u64::from(expected_length))
                 || self.expected_exit != ExpectedExit::StopAddress
             {
                 return Err(invalid(
                     "memory.code",
-                    "x87 state profile admits only one NOP with budget 1 and the following stop RIP",
+                    "x87 state profile admits one exact instruction with budget 1 and the following stop RIP",
                 ));
             }
         }

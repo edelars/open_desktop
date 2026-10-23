@@ -437,6 +437,8 @@ pub enum Operation {
     },
     /// Bare `0F AE F0` completion fence for explicitly opted-in memory backends.
     Mfence,
+    /// Bare `DB E3` FNINIT in the local profile with an existing x87 state.
+    Fninit,
     Nop,
     /// Long-mode 16- or 64-bit PUSH/POP of an opcode-encoded GPR.
     StackRegister {
@@ -894,7 +896,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let known = (opcode.map == OpcodeMap::Primary
             && (direct_arithmetic(opcode.byte).is_some() || direct_logic(opcode.byte).is_some()))
             || matches!((opcode.map, opcode.byte),
-            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa5 | 0xa8 | 0xa9 | 0xaa | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xd0..=0xd3 | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf6 | 0xf7)
+            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa5 | 0xa8 | 0xa9 | 0xaa | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xd0..=0xd3 | 0xdb | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf6 | 0xf7)
             | (OpcodeMap::Escape0f, 0x00 | 0x40..=0x4f | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
@@ -925,6 +927,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let mut size = prefixes.operand_size();
         let rex = prefixes.rex.unwrap_or(0);
         let operation = match (opcode.map, opcode.byte) {
+            (OpcodeMap::Primary, 0xdb) => {
+                if prefixes != Prefixes::default() || self.byte()? != 0xe3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Fninit
+            }
             (OpcodeMap::Escape0f, 0x00) => {
                 if prefixes != Prefixes::default() || self.byte()? != 0xe8 {
                     return Err(self.unsupported(opcode));
@@ -1933,6 +1941,69 @@ mod tests {
         fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
             panic!("decoder performed a memory fence")
         }
+    }
+
+    #[test]
+    fn fninit_accepts_only_bare_db_e3() {
+        let mut memory = Memory::new(&[0xdb, 0xe3]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Fninit);
+        assert_eq!(instruction.length, 2);
+        assert_eq!(instruction.prefixes, Prefixes::default());
+        assert_eq!(memory.fetched, [0xfff, 0x1000]);
+
+        for bytes in [
+            &[0xdb, 0xe2][..],
+            &[0xdb, 0xe0][..],
+            &[0xf0, 0xdb, 0xe3][..],
+            &[0xf2, 0xdb, 0xe3][..],
+            &[0xf3, 0xdb, 0xe3][..],
+            &[0x26, 0xdb, 0xe3][..],
+            &[0x2e, 0xdb, 0xe3][..],
+            &[0x36, 0xdb, 0xe3][..],
+            &[0x3e, 0xdb, 0xe3][..],
+            &[0x64, 0xdb, 0xe3][..],
+            &[0x65, 0xdb, 0xe3][..],
+            &[0x66, 0xdb, 0xe3][..],
+            &[0x67, 0xdb, 0xe3][..],
+            &[0x40, 0xdb, 0xe3][..],
+            &[0x48, 0xdb, 0xe3][..],
+            &[0x9b, 0xdb, 0xe3][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        for modrm in 0u8..=u8::MAX {
+            let bytes = [0xdb, modrm];
+            let decoded = Memory::new(&bytes).decode();
+            assert_eq!(
+                decoded.map(|instruction| instruction.operation),
+                if modrm == 0xe3 {
+                    Ok(Operation::Fninit)
+                } else {
+                    Err(DecodeError::Unsupported {
+                        opcode: Opcode {
+                            map: OpcodeMap::Primary,
+                            byte: 0xdb,
+                        },
+                        length: 2,
+                    })
+                },
+                "DB {modrm:02x}"
+            );
+        }
+        assert!(matches!(
+            Memory::new(&[0xdb]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                address: 0x1000,
+                access: AccessKind::Fetch,
+            }))
+        ));
     }
 
     #[test]

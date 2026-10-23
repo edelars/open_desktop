@@ -975,6 +975,50 @@ fn local_x87_state_profile_preserves_all_raw_state_across_one_nop() {
 }
 
 #[test]
+fn local_x87_state_profile_runs_fninit_with_full_environment_reset() {
+    let mut fixture = Fixture::from_json(MFENCE_STORE_FENCE_LOAD).unwrap().fixture;
+    fixture.case_id = "local_x87_fninit".into();
+    fixture.profile = od_testkit::v2::Profile::LongX87StateV1;
+    fixture.initial_state.rip = HexU64(0x0010_0000);
+    let mut seed = od_isa::state::X87State::fixture_seed();
+    seed.registers = std::array::from_fn(|register| {
+        std::array::from_fn(|byte| (register as u8).wrapping_mul(31).wrapping_add(byte as u8))
+    });
+    fixture.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&seed));
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.guest_address = HexU64(0x0010_0000);
+    code.length = 2;
+    code.initial_bytes_hex = "dbe3".into();
+    code.comparison_mask_hex = "ffff".into();
+    fixture.instruction_budget = 1;
+    fixture.stop_rip = Some(HexU64(0x0010_0002));
+    fixture.expected_exit = ExpectedExit::StopAddress;
+
+    let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+    assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    let expected = od_testkit::v2::X87Snapshot {
+        registers: seed
+            .registers
+            .map(|register| register.iter().map(|byte| format!("{byte:02x}")).collect()),
+        control_word: HexU64(0x037f),
+        status_word: HexU64(0),
+        tag_word: HexU64(0xffff),
+        instruction_pointer: HexU64(0),
+        data_pointer: HexU64(0),
+        last_opcode: HexU64(0),
+    };
+    assert_eq!(observed.state.x87.as_ref(), Some(&expected));
+}
+
+#[test]
 fn fs_load_commit_is_preserved_when_a_later_instruction_faults_and_self_compares() {
     let mut fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_22j_fs_base_composition.case.json"
