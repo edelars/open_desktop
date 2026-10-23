@@ -760,6 +760,12 @@ impl Fixture {
                     (code_bytes.as_str(), 2)
                 }
                 _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("dcf")
+                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
+                _ if code_bytes.len() == 4
                     && code_bytes.starts_with("dec")
                     && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
                 {
@@ -805,6 +811,8 @@ impl Fixture {
             let is_fmulp_i0_unsupported = code_bytes == "dec8" && self.stop_rip.is_none();
             let is_fdiv_inexact_unsupported = code_bytes == "d8f1" && self.stop_rip.is_none();
             let is_fdivr_inexact_unsupported = code_bytes == "d8f9" && self.stop_rip.is_none();
+            let is_fdivr_sti_st0_inexact_unsupported =
+                code_bytes == "dcf1" && self.stop_rip.is_none();
             let is_fdivp_inexact_unsupported = code_bytes == "def9" && self.stop_rip.is_none();
             let is_fdivrp_inexact_unsupported = code_bytes == "def1" && self.stop_rip.is_none();
             if code.guest_address != self.initial_state.rip
@@ -816,6 +824,7 @@ impl Fixture {
                     || is_fmulp_i0_unsupported
                     || is_fdiv_inexact_unsupported
                     || is_fdivr_inexact_unsupported
+                    || is_fdivr_sti_st0_inexact_unsupported
                     || is_fdivp_inexact_unsupported
                     || is_fdivrp_inexact_unsupported
                 {

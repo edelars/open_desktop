@@ -200,6 +200,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30r | Bare `DE F8+i` FDIVP ST(i), ST(0), exact canonical Normal quotient then physical TOP pop; native closed | S2-30q |
 | [x] | S2-30s | Bare `DE F0+i` FDIVRP ST(i), ST(0), exact `ST(0)/ST(i)` into old ST(i), then physical TOP pop; native closed | S2-30r |
 | [x] | S2-30t | Bare `D8 F8+i` FDIVR ST(0), ST(i), exact `ST(i)/ST(0)` into old TOP without pop; native closed | S2-30s |
+| [x] | S2-30u | Bare `DC F0+i` FDIVR ST(i), ST(0), exact `ST(0)/ST(i)` into physical ST(i) without pop; native closed | S2-30t |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1788,6 +1789,31 @@ truncation; preserve adjacent groups. Fixture schema and runner cover all
 eight forms and atomic inexact `D8 F9` rejection with no stop RIP and budget
 one. Native admission remains closed. Normative source: Intel SDM revision
 093, Vol.2A pp.3-336–3-338, “FDIVR/FDIVRP/FIDIVR—Reverse Divide.”
+
+#### S2-30u. Bare exact-only FDIVR ST(i), ST(0) (bounded local slice)
+
+Accept exactly bare `DC F0+i`, `i=0..7`, as `FDIVR ST(i), ST(0)`. Require
+existing x87 state, FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags for the used
+physical operands, canonical Normal binary80 inputs and an exactly divisible
+normalized significand quotient. Compute old `ST(0)/ST(i)` using the shared
+ordered exact divide gate and require a canonical Normal precision-64 result.
+Reject zero, specials, noncanonical inputs, nonzero quotient remainder,
+overflow and subnormal/zero output before mutation. Exponents may differ. `i=0`
+uses one Valid tag and yields exact `+1`, retaining its tag and TOP. `DC F0..F7`
+is distinct from the existing `DC` add/multiply/subtract groups; memory forms,
+prefixes, WAIT and all other unsupported encodings remain outside this slice.
+
+Success writes the result to old physical `(TOP+i)&7`, clears C1, records
+starting RIP as FIP, advances RIP by two and retires once. All other tags,
+payloads, x87 fields, GPRs and RFLAGS remain unchanged. Exhaustively check DC
+ModR/M, prefixes/REX/WAIT and truncation. Cover all TOP×i placements, signs,
+normal edges and a non-power-of-two quotient; inexact `1/3` must return
+Unsupported without state changes. The fixture schema and interpreter runner
+admit the eight exact forms; native admission explicitly denies all eight
+encodings. Native x87 admission remains closed.
+
+Normative source: Intel SDM revision 093, Vol.2A pp.3-336–3-338,
+“FDIVR/FDIVRP/FIDIVR—Reverse Divide.”
 
 ### S2-31. x87 conversions, rounding и exceptions
 

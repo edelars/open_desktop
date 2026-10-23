@@ -107,6 +107,23 @@ fn x87_schema_admits_fdivr_forms_and_inexact_no_stop_case() {
         fixture.validate().unwrap();
     }
 
+    for destination in 0u8..=7 {
+        fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap()
+            .initial_bytes_hex = format!("dcf{destination:x}");
+        if destination == 1 {
+            fixture.stop_rip = None;
+            fixture.expected_exit = ExpectedExit::Unsupported;
+        } else {
+            fixture.stop_rip = Some(HexU64(0x1002));
+            fixture.expected_exit = ExpectedExit::StopAddress;
+        }
+        fixture.validate().unwrap();
+    }
+
     fixture
         .memory
         .iter_mut()

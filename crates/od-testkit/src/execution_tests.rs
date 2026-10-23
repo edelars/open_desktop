@@ -304,6 +304,75 @@ fn fdivr_runner_checks_every_top_and_index_and_atomic_inexact_rejection() {
 }
 
 #[test]
+fn fdivr_sti_st0_runner_checks_every_top_and_index_and_atomic_inexact_rejection() {
+    fn normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
+        let mut bytes = [0; 10];
+        bytes[..8].copy_from_slice(&significand.to_le_bytes());
+        bytes[8..].copy_from_slice(&(exponent | if negative { 0x8000 } else { 0 }).to_le_bytes());
+        bytes
+    }
+    let one = normal(0x8000_0000_0000_0000, 0x3fff, false);
+    let six = normal(0xc000_0000_0000_0000, 0x4001, false);
+    let three = normal(0xc000_0000_0000_0000, 0x4000, false);
+    let two = normal(0x8000_0000_0000_0000, 0x4000, false);
+
+    for top in 0u8..8 {
+        for index in 0u8..8 {
+            let physical_top = usize::from(top);
+            let physical_destination = usize::from((top + index) & 7);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            let mut x87 = od_isa::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = (u16::from(top) << 11) | 0x0700 | (1 << 9);
+            x87.tag_word = u16::MAX;
+            x87.registers = std::array::from_fn(|physical| {
+                std::array::from_fn(|byte| (0x60 + physical * 7 + byte) as u8)
+            });
+            x87.registers[physical_top] = if index == 0 { one } else { six };
+            x87.set_tag(top, od_isa::state::X87Tag::Valid);
+            if index != 0 {
+                x87.registers[physical_destination] = three;
+                x87.set_tag(physical_destination as u8, od_isa::state::X87Tag::Valid);
+            }
+            x87.instruction_pointer = 0x1234;
+            x87.data_pointer = 0x5678;
+            x87.last_opcode = 0x05aa;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut code = memory(&[0xdc, 0xf0 | index], state.rip);
+            let result = run(&mut state, &mut code, config(1, Some(0x1002)), || false);
+            assert_eq!(result.exit, RunExit::StopAddress, "TOP={top}, i={index}");
+            assert_eq!(result.instructions_executed, 1);
+            let mut expected = before.clone();
+            let expected_x87 = expected.x87.as_mut().unwrap();
+            expected_x87.registers[physical_destination] = if index == 0 { one } else { two };
+            expected_x87.status_word &= !(1 << 9);
+            expected_x87.instruction_pointer = 0x1000;
+            expected.rip = 0x1002;
+            assert_eq!(state, expected, "full state TOP={top}, i={index}");
+        }
+    }
+
+    // 1 / 3 is rejected before retirement and leaves every field unchanged.
+    let mut state = LongModeState::default();
+    state.rip = 0x1100;
+    let mut x87 = od_isa::state::X87State::fixture_seed();
+    x87.control_word = 0x037f;
+    x87.status_word = 0;
+    x87.tag_word = 0xfff0;
+    x87.registers[0] = one;
+    x87.registers[1] = three;
+    state.x87 = Some(x87);
+    let before = state.clone();
+    let mut code = memory(&[0xdc, 0xf1], state.rip);
+    let result = run(&mut state, &mut code, config(1, None), || false);
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xdc });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
 fn fsubp_runner_literal_outputs_follow_sti_minus_st0_and_pop() {
     fn normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
         let mut bytes = [0; 10];

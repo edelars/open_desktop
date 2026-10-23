@@ -1151,3 +1151,13 @@ destination, ordered `15/3 = 5`, exact `+1` alias behavior, C1 clearing and
 preservation of tags/TOP and unrelated raw state. An inexact `D8 F9` case uses
 `stop_rip: null` and budget one and verifies the full state is unchanged.
 `D8 F0..F7` FDIV remains distinct; native x87 admission stays closed.
+
+### S2-30u x87 schema coverage
+
+The instruction schema accepts the eight bare `DC F0+i` forms in the local
+interpreter profile. The runner tests every TOP×i destination, `ST(0)=6` over
+`ST(i)=3`, the exact `i=0` +1 alias, sign combinations, normal-range edges and
+`15/3=5` to verify operand order. An inexact `DC F1` case is Unsupported with
+no stop RIP and budget one, and compares the complete state. Exhaustive DC
+ModR/M and prefix checks preserve existing neighboring groups. Native x87
+admission explicitly rejects all eight encodings.
