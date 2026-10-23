@@ -180,3 +180,12 @@
 - **Суть и последствия:** S2-22a–i задают локальные профили для отдельных FS/GS base/selector операций, CPL3 VERW, ограниченных `MOV FS, AX` / `MOV GS, AX` загрузок из GDT с A-bit update только в private synchronous RAM и одного точного GS.base composition case. S2-22i показывает потребление загруженной базы уже поддержанной GS memory формой; он не расширяет профиль на другие последовательности. Эти срезы не реализуют LDT, null segment loads, общие accessed-bit updates, остальные GS/SS loads, stack checks, другие CPL/modes или применение protected-mode limit/type checks. Поэтому Stage 2 не может объявить полную сегментную архитектуру или завершить S2-22 по результатам этих профилей.
 - **Основание:** ограничения зафиксированы в [плане S2-22](plans/STAGE_2.md), [CPU contract](specs/CPU_CONTRACT.md) и [отчёте этапа 2](reports/STAGE_2_REPORT.md). Локальные fixture/unit checks подтверждают только перечисленные формы.
 - **Следующий шаг:** после утверждения обязательного guest profile в S2-00 выбрать отдельные bounded slices с собственным fault/state matrix и review. Не расширять текущие профили автоматически на перечисленные формы.
+
+### ISSUE-019 — Семантика арифметики и инструкций x87 остаётся открытой
+
+- **Дата обнаружения:** 2026-10-23.
+- **Компонент:** `od-isa::x87`, S2-29–S2-39.
+- **Статус:** открыта; S2-29a сохраняет и классифицирует только исходные кодировки binary80.
+- **Суть и последствия:** новая обёртка определяет класс исходной кодировки, но не реализует extended-precision arithmetic, нормализацию, guard/round/sticky bits, режимы округления, исключения, x87-инструкции, совместное состояние с MMX/SSE, наблюдение native-состояния или интеграцию save/restore. Эта задача не подтверждает исполнение x87 или наличие FPU feature. Снимок состояния x87 остаётся отдельным ограниченным профилем S2-28a.
+- **Основание:** literal-векторы и read-only tests S2-29a покрывают только представление и классификацию; см. [отчёт этапа 2](reports/STAGE_2_REPORT.md#s2-29a--lossless-binary80-raw-representation-and-classification-partial), [CPU contract](specs/CPU_CONTRACT.md#local-s2-29a-raw-binary80-representation-and-classification) и [план этапа 2](plans/STAGE_2.md#s2-29a-lossless-binary80-raw-representation-and-classification-partial).
+- **Следующий шаг:** в дальнейших срезах S2-29 реализовать и независимо проверить integer-based arithmetic primitives, округление и исключения; затем добавлять отдельно ограниченные x87-инструкции и наблюдение состояния до заявления поддержки исполнения. Пока S2-29 и umbrella S2-28 остаются открытыми.

@@ -175,6 +175,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-28 | Представить x87 state | S2-20 |
 | [x] | S2-28a | Lossless Long64 x87 state and local NOP-only snapshot profile; no x87 execution or FPU feature claim | S2-28 |
 | [ ] | S2-29 | Собственное ядро extended precision | S2-28 |
+| [x] | S2-29a | Lossless binary80 raw fields and read-only raw encoding classification; no arithmetic or x87 execution | S2-28a |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
@@ -996,6 +997,25 @@ and integration with later x87 instruction slices.
 3. Проверить границы exponent/significand, ties, signed zero, NaN classification и overflow/underflow/inexact на независимых вручную выведенных vectors.
 
 **Готово:** bit-level tests проверяют числа и flags. Этот слой не объявляется всей x87 реализацией; physical end-to-end comparisons добавляются с инструкциями S2-30.
+
+### S2-29a. Lossless binary80 raw representation and classification (partial)
+
+`od-isa::x87::X87Binary80` wraps exactly ten memory-order bytes and exposes
+the sign, 15-bit exponent, full 64-bit significand, explicit integer bit,
+63-bit fraction and Q bit without conversion through host floating point.
+Classification distinguishes zero, subnormal, normal, infinity, quiet/signaling
+NaN, pseudo-denormal, unnormal, pseudo-infinity and quiet/signaling pseudo-NaN.
+It only reads the wrapper; it does not consult or update architectural x87 tags
+or state. Literal hand-authored byte vectors include signed forms, payload
+boundaries and unsupported encodings, with an 80-bit walking-one extraction
+check.
+
+This is only the encoding layer. There are no arithmetic, normalization,
+rounding, exception or instruction semantics, and no `X87Tag` inference from
+the raw payload. S2-29 and S2-28 remain open.
+
+Normative basis: Intel SDM revision 093, Vol. 1 §4.2.2/Table 4-3 and
+§8.2.2/Table 8-3 ([253665-093US](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
 
 ### S2-30. Основные x87 операции
 

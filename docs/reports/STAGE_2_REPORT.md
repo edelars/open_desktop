@@ -2315,3 +2315,34 @@ in [CPU_CONTRACT](../specs/CPU_CONTRACT.md#local-profile-s2-28a-s2-long-x87-stat
 The x87 umbrella remains open: the profile does not execute x87 operations,
 observe native FPU state, implement exception delivery, or integrate x87 with
 the fragment/JIT state contract. No physical or Mac mini check was performed.
+
+## S2-29a — lossless binary80 raw representation and classification (partial)
+
+Added immutable `od-isa::x87::X87Binary80`, a ten-byte memory-order wrapper
+with exact accessors for sign, exponent, significand, J/integer bit, fraction,
+and Q bit. The classifier distinguishes zero, subnormal, normal, infinity,
+quiet/signaling NaN, pseudo-denormal, unnormal, pseudo-infinity, and
+quiet/signaling pseudo-NaN. It does not interpret `X87Tag`, normalize values,
+or modify any payload/state. No arithmetic, rounding, exception handling,
+instruction execution, wire changes, dependencies, or host `f64` conversion
+were introduced.
+
+Hand-authored literal vectors assert fields and classes for signed zero,
+subnormal and normal boundaries, infinities, NaN payload boundaries,
+negative QNaN indefinite, pseudo-denormals, unnormal exponent edges,
+pseudo-infinity, and both pseudo-NaN classes. An 80-case walking-one check
+checks every memory bit's extracted field; a separate regression classifies
+register payloads and asserts complete `X87State` and physical tags remain
+unchanged. Local verification results follow.
+
+Local checks passed: `cargo test -p od-isa x87 --offline` (6 tests), the
+existing `od-testkit` raw x87 round-trip test (1), and the one-NOP runner
+snapshot-preservation regression (1). `cargo check --workspace --all-targets
+--offline`, `cargo fmt --all -- --check`, `python3 tools/check_layout.py`,
+`git diff --check`, and `graphify update .` also passed. No physical CPU or
+performance measurement was needed or claimed for raw classification.
+
+Normative basis: Intel SDM revision 093, Vol. 1 §4.2.2/Table 4-3 and
+§8.2.2/Table 8-3 ([253665-093US](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+S2-29 and the S2-28 umbrella remain open; this slice makes no physical or
+performance claim. The follow-up scope is recorded as [ISSUE-019](../KNOWN_ISSUES.md).

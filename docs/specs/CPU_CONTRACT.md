@@ -1040,6 +1040,25 @@ pp.3-345–3-346; and Vol.3A §11.1.1 Table 11-1 note 5. Official manuals:
 [Vol.2A 253666-093US](https://cdrdv2.intel.com/v1/dl/getContent/671199),
 [Vol.3A combined manual](https://cdrdv2.intel.com/v1/dl/getContent/671447).
 
+## Local S2-29a: raw binary80 representation and classification
+
+`od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory
+order. Its accessors preserve sign, exponent, the complete 64-bit significand,
+explicit integer bit, fraction and Q bit exactly. `classify()` reports only
+the raw encoding class: zero, subnormal, normal, infinity, quiet/signaling
+NaN, pseudo-denormal, unnormal, pseudo-infinity, or quiet/signaling
+pseudo-NaN. For E=0,J=1 the class is pseudo-denormal; for 0<E<0x7fff,J=0 it
+is unnormal including zero fraction; for E=0x7fff,J=0 it is a pseudo-infinity
+or pseudo-NaN. Q is significand bit 62 and J is bit 63. Classifying a value
+does not read or change `X87Tag` or any `X87State` field. Payloads are never
+quieted, normalized, rounded or rewritten.
+
+Normative basis: Intel SDM revision 093, Vol. 1 §4.2.2/Table 4-3 and
+§8.2.2/Table 8-3 ([253665-093US](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+This raw representation and classification do not provide arithmetic,
+normalization, rounding, exceptions or x87 instruction execution. S2-29 and
+the S2-28 umbrella remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

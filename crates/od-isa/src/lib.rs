@@ -9,6 +9,7 @@ pub mod execute;
 pub mod long_decode;
 pub mod memory;
 pub mod state;
+pub mod x87;
 pub use state::{
     FragmentAdapterError, FsDescriptorCache, LongModeState, OperandSize, RegisterError,
     RegisterView,
