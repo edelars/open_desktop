@@ -186,6 +186,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30c | Bare `DB E2` FNCLEX with existing x87 state; clear FSW[0:7] and FSW[15], preserve C0–C3 by local policy, native closed | S2-28a |
 | [x] | S2-30d | Bare `D8 C1` FADD ST(0), ST(1), exact same-exponent canonical normal results only; native closed | S2-29q, S2-28a |
 | [x] | S2-30e | Bare `D8 C0+i` FADD ST(0), ST(i), i=0..7; same exact-only domain, native closed | S2-30d |
+| [x] | S2-30f | Bare `DC C0+i` FADD ST(i), ST(0), same exact-only domain, native closed | S2-30e |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1468,6 +1469,28 @@ Independent literal vectors cover every i and varied TOP values, including
 `i=0` with empty unrelated tags, plus wrap coverage for `i=1, TOP=7` and `i=7, TOP=7`. Schema, runner and
 native rejection checks cover all eight encodings. This extends only source
 indexing, not the arithmetic domain or architectural x87 claims.
+
+#### S2-30f. Bare exact-only FADD ST(i), ST(0) (bounded local slice)
+
+Accept only bare `DC C0+i`, `i=0..7`, as `FADD ST(i), ST(0)`. Keep every
+S2-30d arithmetic/environment condition and result restriction unchanged.
+The source is physical TOP and the destination is `(TOP+i)&7`. For `i=0`,
+read the shared register once and require only that tag; for other indices,
+both used tags must be Valid. Read both operands and validate the canonical
+Normal result before any mutation. Success writes only the destination payload,
+clears C1, sets FIP to starting RIP, advances RIP by two and retires once;
+there is no pop, and TOP/tags remain unchanged. Preserve other payloads,
+GPRs/RFLAGS, FCW, remaining FSW fields, FDP and FOP under the S2-30d local
+policy for undefined C0/C2/C3 and FDP. Prefixes, other DC ModR/M bytes,
+memory forms, DE, WAIT and native execution remain unsupported.
+
+Independent expected-byte vectors cover all destination indices, varied TOP
+and wrap, the `i=0` alias with unrelated empty tags, and source preservation
+for `i!=0`. No-commit rejects cover bad tags, specials, unequal exponents and
+inexact coefficient input. Decoder tests enumerate the full DC ModR/M space,
+prefixes and truncation; testkit schema and native fail-closed admission cover
+all eight accepted byte encodings. This extends destination selection only;
+the exact-only numerical domain does not widen.
 
 ### S2-31. x87 conversions, rounding и exceptions
 

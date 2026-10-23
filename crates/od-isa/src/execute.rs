@@ -184,7 +184,11 @@ fn step_tracked_with_stop(
     }
     if matches!(
         instruction.operation,
-        Operation::Fninit | Operation::Fnclex | Operation::FnstswAx | Operation::FaddSt0St { .. }
+        Operation::Fninit
+            | Operation::Fnclex
+            | Operation::FnstswAx
+            | Operation::FaddSt0St { .. }
+            | Operation::FaddStSt0 { .. }
     ) && state.x87.is_none()
     {
         return Ok(StepOutcome::Unsupported {
@@ -192,7 +196,14 @@ fn step_tracked_with_stop(
         });
     }
     if let Operation::FaddSt0St { source } = instruction.operation
-        && exact_fadd_result(state, source).is_none()
+        && exact_fadd_result(state, 0, source).is_none()
+    {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
+    if let Operation::FaddStSt0 { destination } = instruction.operation
+        && exact_fadd_result(state, destination, 0).is_none()
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
@@ -242,6 +253,13 @@ fn step_tracked_with_stop(
                 && instruction.length == 2
                 && instruction.prefixes == Prefixes::default()
                 && source <= 7
+        }
+        Operation::FaddStSt0 { destination } => {
+            instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0xdc
+                && instruction.length == 2
+                && instruction.prefixes == Prefixes::default()
+                && destination <= 7
         }
         Operation::LoadFsSelector => {
             instruction.opcode.map == OpcodeMap::Primary
@@ -471,12 +489,23 @@ fn step_tracked_with_stop(
         }
         Operation::FaddSt0St { source } => {
             // The complete bounded precondition and result check ran above, before mutation.
-            let result = exact_fadd_result(state, source).expect("FADD result was prevalidated");
+            let result = exact_fadd_result(state, 0, source).expect("FADD result was prevalidated");
             let x87 = state.x87.as_mut().expect("FADD state was prevalidated");
             let destination = x87
                 .physical_register_for_st(0)
                 .expect("ST(0) is a valid logical register") as usize;
             x87.registers[destination] = result.to_bytes();
+            x87.status_word &= !(1 << 9);
+            x87.instruction_pointer = state.rip;
+        }
+        Operation::FaddStSt0 { destination } => {
+            let result =
+                exact_fadd_result(state, destination, 0).expect("FADD result was prevalidated");
+            let x87 = state.x87.as_mut().expect("FADD state was prevalidated");
+            let physical_destination =
+                x87.physical_register_for_st(destination)
+                    .expect("ST(i) is a valid logical register") as usize;
+            x87.registers[physical_destination] = result.to_bytes();
             x87.status_word &= !(1 << 9);
             x87.instruction_pointer = state.rip;
         }
@@ -1287,12 +1316,16 @@ fn operand_width(size: OperandSize) -> u32 {
 
 /// Return the result only for the deliberately exact-only local FADD profile.
 /// The caller can use `None` as an atomic pre-commit rejection.
-fn exact_fadd_result(state: &LongModeState, source_index: u8) -> Option<X87Binary80> {
+fn exact_fadd_result(
+    state: &LongModeState,
+    destination_index: u8,
+    source_index: u8,
+) -> Option<X87Binary80> {
     let x87 = state.x87.as_ref()?;
     if x87.control_word != 0x037f || x87.status_word & 0x80ff != 0 {
         return None;
     }
-    let destination = x87.physical_register_for_st(0)?;
+    let destination = x87.physical_register_for_st(destination_index)?;
     let source = x87.physical_register_for_st(source_index)?;
     if x87.tag(destination)? != X87Tag::Valid
         || (source != destination && x87.tag(source)? != X87Tag::Valid)
@@ -8861,6 +8894,141 @@ mod tests {
                 Ok(StepOutcome::Unsupported { opcode: 0xd8 })
             );
             assert_eq!(state, before, "source index {source_index}");
+        }
+    }
+
+    #[test]
+    fn fadd_sti_st0_commits_only_the_selected_destination_for_all_indices() {
+        let one = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+        let two = binary80_normal(0x8000_0000_0000_0000, 0x4000, false);
+        for destination_index in 0u8..=7 {
+            let top = (destination_index.wrapping_mul(3).wrapping_add(5)) & 7;
+            let physical_destination = (top + destination_index) & 7;
+            let physical_source = top;
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr = std::array::from_fn(|index| 0x1122_3344_5566_7788 ^ index as u64);
+            state.rflags = 0xa55a_1234_5678_9abc;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = (u16::from(top) << 11) | 0x4500 | 0x0200;
+            x87.tag_word = u16::MAX;
+            x87.tag_word &= !(3 << (physical_destination * 2));
+            x87.tag_word &= !(3 << (physical_source * 2));
+            x87.registers[usize::from(physical_destination)] = one;
+            x87.registers[usize::from(physical_source)] = one;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xdc, 0xc0 | destination_index], 0x2000);
+            let run_result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2002),
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(run_result.exit, RunExit::StopAddress);
+            assert_eq!(run_result.instructions_executed, 1);
+            assert_eq!(state.rip, 0x2002);
+            assert_eq!(state.gpr, before.gpr);
+            assert_eq!(state.rflags, before.rflags);
+            let result = state.x87.as_ref().unwrap();
+            assert_eq!(
+                result.registers[usize::from(physical_destination)],
+                two,
+                "destination ST({destination_index}), TOP={top}"
+            );
+            for physical in 0..8 {
+                if physical != usize::from(physical_destination) {
+                    assert_eq!(
+                        result.registers[physical],
+                        before.x87.as_ref().unwrap().registers[physical],
+                        "preserved physical register {physical} for ST({destination_index})"
+                    );
+                }
+            }
+            assert_eq!(
+                result.control_word,
+                before.x87.as_ref().unwrap().control_word
+            );
+            assert_eq!(result.tag_word, before.x87.as_ref().unwrap().tag_word);
+            assert_eq!(result.top(), top);
+            assert_eq!(
+                result.status_word,
+                before.x87.as_ref().unwrap().status_word & !(1 << 9)
+            );
+            assert_eq!(result.instruction_pointer, 0x2000);
+            assert_eq!(
+                result.data_pointer,
+                before.x87.as_ref().unwrap().data_pointer
+            );
+            assert_eq!(result.last_opcode, before.x87.as_ref().unwrap().last_opcode);
+        }
+    }
+
+    #[test]
+    fn fadd_sti_st0_rejects_without_any_state_commit() {
+        for destination_index in 0u8..=7 {
+            let top = (destination_index.wrapping_mul(5).wrapping_add(1)) & 7;
+            let physical_destination = (top + destination_index) & 7;
+            let physical_source = top;
+            for rejection in 0..5 {
+                // The i=0 alias has one exponent and its self-sum coefficient
+                // is necessarily even; its single tag is covered by rejection 3.
+                if destination_index == 0 && matches!(rejection, 0 | 2 | 4) {
+                    continue;
+                }
+                let mut state = LongModeState::default();
+                state.rip = 0x3000;
+                state.gpr = [0x0123_4567_89ab_cdef; 16];
+                state.rflags = 0xa55a_1234_5678_9abc;
+                let mut x87 = crate::state::X87State::fixture_seed();
+                x87.control_word = 0x037f;
+                x87.status_word = u16::from(top) << 11;
+                x87.tag_word = 0;
+                x87.registers[usize::from(physical_destination)] =
+                    binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+                x87.registers[usize::from(physical_source)] =
+                    binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+                match rejection {
+                    0 => {
+                        x87.registers[usize::from(physical_source)] =
+                            binary80_normal(0x8000_0000_0000_0000, 0x4000, false);
+                    }
+                    1 => {
+                        x87.registers[usize::from(physical_source)] =
+                            binary80_normal(0x8000_0000_0000_0000, 0x7fff, false);
+                    }
+                    2 => {
+                        x87.registers[usize::from(physical_destination)] =
+                            binary80_normal(u64::MAX, 0x3fff, false);
+                        x87.registers[usize::from(physical_source)] =
+                            binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+                    }
+                    3 => {
+                        let bad_slot = if destination_index == 0 {
+                            physical_destination
+                        } else {
+                            physical_source
+                        };
+                        x87.tag_word |= 3 << (bad_slot * 2);
+                    }
+                    4 => x87.tag_word |= 3 << (physical_destination * 2),
+                    _ => unreachable!(),
+                }
+                state.x87 = Some(x87);
+                let before = state.clone();
+                let mut memory = Memory::at(&[0xdc, 0xc0 | destination_index], 0x3000);
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Unsupported { opcode: 0xdc }),
+                    "ST({destination_index}), TOP={top}, rejection={rejection}"
+                );
+                assert_eq!(state, before);
+            }
         }
     }
 

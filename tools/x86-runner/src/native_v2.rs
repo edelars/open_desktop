@@ -555,7 +555,11 @@ fn admission_with_tracee_memory(
         .map_err(|e| format!("native instruction outside admitted decode slice: {e:?}"))?;
     if matches!(
         instruction.operation,
-        Operation::Fninit | Operation::Fnclex | Operation::FnstswAx | Operation::FaddSt0St { .. }
+        Operation::Fninit
+            | Operation::Fnclex
+            | Operation::FnstswAx
+            | Operation::FaddSt0St { .. }
+            | Operation::FaddStSt0 { .. }
     ) {
         return Err("x87 instruction is not admitted by the native backend".into());
     }
@@ -3649,6 +3653,14 @@ mod tests {
             [0xd8, 0xc5],
             [0xd8, 0xc6],
             [0xd8, 0xc7],
+            [0xdc, 0xc0],
+            [0xdc, 0xc1],
+            [0xdc, 0xc2],
+            [0xdc, 0xc3],
+            [0xdc, 0xc4],
+            [0xdc, 0xc5],
+            [0xdc, 0xc6],
+            [0xdc, 0xc7],
         ] {
             let mut input = fixture(&code).fixture;
             input.profile = v2::Profile::LongX87StateV1;

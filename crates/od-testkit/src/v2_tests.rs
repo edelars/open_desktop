@@ -319,6 +319,17 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         assert!(Fixture::from_json(&fadd.to_json().unwrap()).is_ok());
     }
 
+    for destination in 0u8..=7 {
+        let mut fadd = fixture.clone();
+        let code = fadd
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("dcc{destination:x}");
+        assert!(Fixture::from_json(&fadd.to_json().unwrap()).is_ok());
+    }
+
     for (bytes, length, stop) in [
         ("db", 1, 0x1001),
         ("9bdbe3", 3, 0x1003),

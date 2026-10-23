@@ -2960,6 +2960,47 @@ pre-existing unmapped root `.serena/` directory, left untouched. Physical
 acceptance remains deferred to the shared final acceptance substage; no Mac
 mini or SSH check was run.
 
+## S2-30f — exact-only FADD ST(i), ST(0) destination forms (bounded local slice)
+
+Added a separate decoded operation for bare `DC C0+i`, `i=0..7`, implementing
+`FADD ST(i), ST(0)`. Execution retains the S2-30d arithmetic and environment
+gates. Source is physical TOP and destination is `(TOP+i)&7`; `i=0` reads the
+shared physical register once and checks only that tag. Both used payloads are
+captured and the result is validated before commit. Success writes only the
+destination payload, clears C1, records FIP, advances RIP by two, and preserves
+TOP, tags, other payloads, environment fields and integer state. There is no
+pop. Unsupported cases return before state mutation, and native admission
+remains closed.
+
+Literal expected-byte vectors exercise all destination indices, varied TOP,
+wrap, the alias case with unrelated Empty tags and source preservation for
+`i!=0`. Full-state reject vectors include bad used tags, special operands,
+unequal exponents and an inexact coefficient. The alias case cannot produce an
+inexact sum because a value added to itself has an even coefficient. Decoder
+tests enumerate every DC ModR/M value, all legacy/REX prefixes and truncation;
+testkit schema accepts all eight bare forms, and native profile/admission tests
+reject them. Existing D8 decoding and exact-only arithmetic remain unchanged.
+
+Normative basis: Intel SDM revision 093, Vol.2A pp.3-311–3-313 and Vol.1
+§§8.1.8–8.1.9.1 ([Vol.2A](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[Vol.1](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+Focused `cargo test -p od-isa fadd_sti_st0 --offline` (3 tests), focused
+testkit x87 schema coverage, and the full `cargo test --workspace --offline`
+passed. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, the Linux-target
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`, and `git diff --check` passed. The native rejection test is
+platform-gated and was not executed on this macOS host. The Linux target
+`cargo check` passed; an additional `cargo test --no-run` cross-link attempt
+could not use the host macOS linker, which rejected Linux linker flags.
+`python3 tools/check_layout.py` reports the existing
+unmapped root `.serena/` directory, left untouched. `graphify update .`
+completed after source and documentation updates. No Mac mini or SSH
+acceptance was run; the consolidated acceptance substage remains responsible
+for physical checks. Independent `gpt-6.1-sol` medium review found no code
+defects; it identified one contradictory phrase in the new contract, which was
+corrected to “other D8 forms.”
+
 ## S2-29q — compose same-exponent finite addition with one-round binary80 packing (partial)
 
 Added `add_finite_same_exponent_to_binary80(lhs, rhs, mode)`. It composes the

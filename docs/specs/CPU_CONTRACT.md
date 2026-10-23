@@ -1198,6 +1198,41 @@ cover every source index at varied TOP values, including the `i=0` alias with
 empty unrelated tags, and wrap cases `i=1, TOP=7` and `i=7, TOP=7`. This only generalizes source
 selection; the equal-exponent exact-only arithmetic domain is unchanged.
 
+## Local S2-30f: exact-only `FADD ST(i), ST(0)` (`DC C0+i`)
+
+The local long-mode interpreter accepts exactly bare `DC C0` through `DC C7`,
+mapping the low ModR/M bits to destination index `i`. All S2-30d arithmetic,
+environment, and result restrictions remain in force: existing x87 state, FCW
+`0x037f`, clear FSW `0x80ff` mask, Valid tags for used operands, canonical
+Normal payloads, equal normalized exponents, exact coefficient representability
+and canonical Normal output. Source is logical ST(0), at physical TOP; the
+destination is logical ST(i), at physical `(TOP+i)&7`.
+
+For `i=0`, the one physical register is read once as both operands and only
+its tag is required. For `i!=0`, both used tags must be Valid. Both raw
+operands are captured and the complete result is validated before mutation.
+Success writes only the destination payload once, clears FSW.C1, sets FIP to
+starting RIP, and advances RIP by two. There is no pop. TOP, tags, source and
+all other payloads, FCW, remaining FSW fields, FDP, FOP, GPRs and RFLAGS are
+preserved. C0/C2/C3 and FDP retention follows the S2-30d local deterministic
+policy for architecturally undefined state. Unsupported inputs and encodings
+return Unsupported without state commit.
+
+Prefixes, DC ModR/M values outside C0–C7, memory forms, other D8 forms, DE
+and WAIT remain unsupported. Native x87 execution and admission remain closed.
+Literal expected-byte vectors cover every destination index with varied TOP
+and wrap, `i=0` with unrelated empty tags, and source preservation for `i!=0`.
+Reject vectors cover used bad tags, special operands, unequal exponents and
+inexact coefficients; decoder checks cover all DC ModR/M bytes, prefixes and
+truncation. This changes destination selection only and does not enlarge the
+S2-30d exact-only arithmetic domain.
+
+Normative source: Intel® 64 and IA-32 Architectures Software Developer's
+Manual, revision 093, Vol.2A, “FADD/FADDP/FIADD—Add,” pp.3-311–3-313, and Vol.1
+§§8.1.8–8.1.9.1, pp.8-9–8-11 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+The local profile remains narrower than the architectural instruction.
+
 ## Local S2-29a: raw binary80 representation and classification
 
 `od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory
