@@ -1062,3 +1062,11 @@ python3 tests/cpu/test_stage2_gs_load_generator.py
 cargo test -p od-testkit --offline s2_22j
 cargo test -p od-runner --test fixture_v2 --offline s2_22j_fs_base_composition_runs_the_literal_two_instruction_profile
 ```
+
+### S2-30k x87 schema coverage
+
+The schema test admits all eight bare `D8 E8+i` FSUBR encodings. Alias
+`D8 E8` is represented with expected `Unsupported`, `stop_rip: null`, and an
+instruction budget of one. Local execution tests supply literal success
+vectors and compare the unchanged complete CPU/x87 snapshot on that alias.
+These cases remain local-only; native x87 admission stays closed.

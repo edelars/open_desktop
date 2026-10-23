@@ -1579,6 +1579,25 @@ equality, zero-budget/stop/fetch boundaries, exhaustive DE ModR/M and prefixes,
 fixture schema, and native denial. Normative source: Intel SDM rev.093 Vol.2A
 pp.3-394–3-396, FSUBP `DEST − SRC` and destination-before-pop semantics.
 
+#### S2-30k. Bare exact-only FSUBR ST(0), ST(i) (bounded local slice)
+
+Accept exactly bare `D8 E8+i`, `i=0..7`, as `FSUBR ST(0), ST(i)`. Reuse the
+S2-30i exact subtraction gate as `ST(i) − ST(0)`; the helper's logical
+destination/source indices do not change the architectural destination, which
+is the old physical TOP. `i=0` is Unsupported because the operands alias and
+the exact result cancels. Validate every condition before mutation.
+
+Success replaces only old physical TOP payload, clears C1, sets FIP to the
+starting RIP, advances RIP by two and retires once. Preserve TOP, FTW, FCW,
+FDP, FOP, other FSW bits, other payloads, GPRs and RFLAGS. Cover literal
+direction/sign vectors, ±2^-63, maximum even 65-bit carry, minimum Normal,
+every TOP×i physical placement, full-state domain rejects, fetch/stop/budget,
+exhaustive D8 ModR/M/prefix boundaries, fixture-schema alias (`stop_rip=None`,
+budget 1), literal runner outputs and alias snapshot. Native profile/admission
+remains closed. Normative source: Intel SDM rev.093 Vol.2A pp.3-397–3-399,
+FSUBR computes `SRC − DEST`, with C1 clear on exact results and C0/C2/C3
+undefined.
+
 ### S2-31. x87 conversions, rounding и exceptions
 
 1. Добавить integer/float conversions, precision/rounding control и нужные control/status operations.

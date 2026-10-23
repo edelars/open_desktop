@@ -560,6 +560,7 @@ fn admission_with_tracee_memory(
             | Operation::FnstswAx
             | Operation::FaddSt0St { .. }
             | Operation::FsubSt0St { .. }
+            | Operation::FsubrSt0St { .. }
             | Operation::FsubStSt0 { .. }
             | Operation::FaddStSt0 { .. }
             | Operation::FaddpStSt0 { .. }
@@ -3665,6 +3666,14 @@ mod tests {
             [0xd8, 0xe5],
             [0xd8, 0xe6],
             [0xd8, 0xe7],
+            [0xd8, 0xe8],
+            [0xd8, 0xe9],
+            [0xd8, 0xea],
+            [0xd8, 0xeb],
+            [0xd8, 0xec],
+            [0xd8, 0xed],
+            [0xd8, 0xee],
+            [0xd8, 0xef],
             [0xdc, 0xc0],
             [0xdc, 0xc1],
             [0xdc, 0xc2],
@@ -3711,7 +3720,10 @@ mod tests {
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>();
             input.memory[0].comparison_mask_hex = "ffff".into();
-            if matches!(code, [0xd8, 0xe0] | [0xdc, 0xe8] | [0xde, 0xe8]) {
+            if matches!(
+                code,
+                [0xd8, 0xe0] | [0xd8, 0xe8] | [0xdc, 0xe8] | [0xde, 0xe8]
+            ) {
                 input.expected_exit = v2::ExpectedExit::Unsupported;
                 input.stop_rip = None;
             } else {

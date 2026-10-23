@@ -334,6 +334,22 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         assert!(Fixture::from_json(&fsub.to_json().unwrap()).is_ok());
     }
 
+    for source in 0u8..=7 {
+        let mut fsubr = fixture.clone();
+        let code = fsubr
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("d8e{:x}", 8 + source);
+        if source == 0 {
+            fsubr.stop_rip = None;
+            fsubr.expected_exit = ExpectedExit::Unsupported;
+            fsubr.instruction_budget = 1;
+        }
+        assert!(Fixture::from_json(&fsubr.to_json().unwrap()).is_ok());
+    }
+
     for destination in 0u8..=7 {
         let mut fadd = fixture.clone();
         let code = fadd

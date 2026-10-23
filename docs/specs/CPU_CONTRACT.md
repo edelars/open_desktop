@@ -1386,6 +1386,43 @@ profile rejection covers all eight.
 Normative source: Intel SDM revision 093, Vol.2A, “FSUB/FSUBP/FISUB—Subtract,”
 pp.3-394–3-396 ([official PDF, pp.3-394–3-396](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=512)).
 
+## Local S2-30k: exact-only `FSUBR ST(0), ST(i)` (`D8 E8+i`)
+
+The local long-mode interpreter accepts exactly bare `D8 E8` through `D8 EF`.
+`ST(0)` is old physical TOP and `ST(i)` is physical `(TOP+i)&7`. The arithmetic
+helper is called with logical destination `i` and source `0`, so it computes
+`ST(i) − ST(0)`; the architectural write still targets old physical TOP. The
+operation retains the S2-30d gate: existing x87 state, FCW `0x037f`,
+`FSW & 0x80ff == 0`, Valid tags for used physical slots, canonical Normal
+operands with equal normalized exponents, an accepted exact coefficient
+(`<= u64::MAX` or even 65-bit `<= 2^65−2`), and canonical Normal output.
+Alias `i=0`, missing/bad state, unequal exponents, other raw classes,
+cancellation, odd 65-bit coefficient, exact zero/subnormal result and overflow
+are Unsupported before mutation.
+
+Success replaces only old physical TOP payload, clears C1, sets FIP to starting
+RIP, advances RIP by two and retires once. It preserves TOP, FTW, FCW, FDP,
+FOP, other FSW bits, other payloads, GPRs and RFLAGS. C0/C2/C3 are undefined;
+retaining their original snapshot bits is local deterministic policy. General
+x87 rounding/exceptions, special values, stack faults, CR0 behavior and native
+x87 execution remain unsupported. Native profile/admission remains closed for
+all eight encodings.
+
+Literal vectors cover `1.5−1=+0.5`, `1−1.5=−0.5`, the negative permutations,
+`1.5−(−1)=+2.5`, `−1.5−1=−2.5`, `±2^-63`, maximum even carry, and minimum
+Normal. Every TOP×i=1..7 pair verifies the old physical TOP destination and
+preserved source/sentinels. Alias and environment/tag/exponent/class/
+coefficient/subnormal/overflow rejects compare complete state. Decode coverage
+checks all D8 ModR/M values, prefixes, WAIT, truncation and adjacent D8/DC/DE
+forms. The fixture schema admits all eight encodings and represents `D8 E8`
+with `Unsupported`, no stop RIP and budget one; the local literal runner checks
+success state and an unchanged alias snapshot.
+
+Normative source: Intel SDM revision 093, Vol.2A pp.3-397–3-399,
+“FSUB/FSUBR/FSUBP/FISUBR—Subtract” ([official PDF, pp.3-397–3-399](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515)).
+It defines `D8 E8+i` as `ST(i) − ST(0)`, C1 clear when no round-up occurs,
+and C0/C2/C3 undefined.
+
 ## Local S2-29a: raw binary80 representation and classification
 
 `od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory

@@ -108,6 +108,98 @@ fn fsubp_runner_literal_outputs_follow_sti_minus_st0_and_pop() {
     }
 }
 
+#[test]
+fn fsubr_runner_literal_outputs_follow_sti_minus_st0_and_alias_is_atomic() {
+    fn normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
+        let mut bytes = [0; 10];
+        bytes[..8].copy_from_slice(&significand.to_le_bytes());
+        bytes[8..].copy_from_slice(&(exponent | if negative { 0x8000 } else { 0 }).to_le_bytes());
+        bytes
+    }
+
+    for (index, top, source, expected) in [
+        (
+            1u8,
+            normal(0x8000_0000_0000_0000, 0x3fff, false),
+            normal(0xc000_0000_0000_0000, 0x3fff, false),
+            normal(0x8000_0000_0000_0000, 0x3ffe, false),
+        ),
+        (
+            2,
+            normal(0xc000_0000_0000_0000, 0x3fff, false),
+            normal(0x8000_0000_0000_0000, 0x3fff, false),
+            normal(0x8000_0000_0000_0000, 0x3ffe, true),
+        ),
+        (
+            3,
+            normal(0xc000_0000_0000_0000, 0x3fff, true),
+            normal(0x8000_0000_0000_0000, 0x3fff, true),
+            normal(0x8000_0000_0000_0000, 0x3ffe, false),
+        ),
+        (
+            4,
+            normal(0x8000_0000_0000_0000, 0x3fff, true),
+            normal(0xc000_0000_0000_0000, 0x3fff, true),
+            normal(0x8000_0000_0000_0000, 0x3ffe, true),
+        ),
+        (
+            5,
+            normal(0x8000_0000_0000_0000, 0x3fff, true),
+            normal(0xc000_0000_0000_0000, 0x3fff, false),
+            normal(0xa000_0000_0000_0000, 0x4000, false),
+        ),
+        (
+            6,
+            normal(0x8000_0000_0000_0000, 0x3fff, false),
+            normal(0xc000_0000_0000_0000, 0x3fff, true),
+            normal(0xa000_0000_0000_0000, 0x4000, true),
+        ),
+    ] {
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        let mut x87 = od_isa::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 1 << 9;
+        x87.tag_word = u16::MAX & !3 & !(3 << (usize::from(index) * 2));
+        x87.registers[0] = top;
+        x87.registers[usize::from(index)] = source;
+        state.x87 = Some(x87);
+        let before = state.clone();
+        let mut code = memory(&[0xd8, 0xe8 | index], 0x1000);
+        let result = run(&mut state, &mut code, config(1, Some(0x1002)), || false);
+        assert_eq!(result.exit, RunExit::StopAddress, "i={index}");
+        assert_eq!(result.instructions_executed, 1, "i={index}");
+        let after = state.x87.as_ref().unwrap();
+        assert_eq!(after.registers[0], expected, "i={index}");
+        assert_eq!(
+            after.registers[usize::from(index)],
+            before.x87.as_ref().unwrap().registers[usize::from(index)]
+        );
+        assert_eq!(after.top(), 0, "no pop, i={index}");
+        assert_eq!(after.tag_word, before.x87.as_ref().unwrap().tag_word);
+        assert_eq!(
+            after.status_word,
+            before.x87.as_ref().unwrap().status_word & !(1 << 9)
+        );
+        assert_eq!(after.instruction_pointer, 0x1000);
+        assert_eq!(state.rip, 0x1002);
+    }
+
+    let mut state = LongModeState::default();
+    state.rip = 0x1000;
+    let mut x87 = od_isa::state::X87State::fixture_seed();
+    x87.control_word = 0x037f;
+    x87.tag_word = u16::MAX & !3;
+    x87.registers[0] = normal(0x8000_0000_0000_0000, 0x3fff, false);
+    state.x87 = Some(x87);
+    let before = state.clone();
+    let mut code = memory(&[0xd8, 0xe8], 0x1000);
+    let result = run(&mut state, &mut code, config(1, None), || false);
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xd8 });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
 fn config(budget: u64, stop: Option<u64>) -> RunConfig {
     RunConfig {
         instruction_budget: budget,

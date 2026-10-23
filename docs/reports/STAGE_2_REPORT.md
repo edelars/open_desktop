@@ -3177,3 +3177,38 @@ check reports only the pre-existing unmapped root `.serena/` directory, which
 was left untouched. Linux-only native tests were compile-checked but not
 executed on macOS. No Mac mini, SSH or hardware test was run; physical
 acceptance remains the final substage.
+
+## S2-30k — exact-only FSUBR ST(0), ST(i) (bounded local slice)
+
+Added exactly bare `D8 E8+i`, `i=0..7`, as `FSUBR ST(0), ST(i)`. Execution
+reuses the exact S2-30i subtraction gate with logical helper arguments
+`(i, 0)` to calculate `ST(i) − ST(0)`, then writes only the result to old
+physical TOP. Alias `i=0` returns Unsupported before commit. Success clears
+C1, records starting RIP in FIP, advances RIP by two and retires once; TOP,
+FTW, all other x87 payloads/state, GPRs and RFLAGS are preserved. Native
+profile/admission remains closed.
+
+Checks include literal sign/order cases, `±2^-63`, maximum even 65-bit carry,
+minimum Normal, every TOP×i=1..7 destination placement with source/sentinel
+preservation, full-state rejects for alias and arithmetic/environment/tag/
+exponent/class/coefficient/subnormal/overflow conditions, and fetch/stop/zero-
+budget no-commit. Decoder coverage is exhaustive over D8 ModR/M and checks
+prefixes, WAIT, truncation and neighboring D8/DC/DE forms. The schema accepts
+all eight bare codes and specifically validates D8 E8 as Unsupported with no
+stop RIP and budget one. Literal runner cases check successful state and the
+unchanged alias snapshot. Normative source: Intel SDM revision 093, Vol.2A
+pp.3-397–3-399 ([official PDF, pp.3-397–3-399](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515));
+the operation is `SRC − DEST`, C1 is clear for exact results, and C0/C2/C3 are
+undefined.
+
+`cargo test --workspace --offline`, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`, and `git diff --check` passed. The Linux-target check compiled the
+native runner tests but did not execute them on this macOS host.
+`python3 tools/check_layout.py` reports only the pre-existing unmapped root
+`.serena/` directory; it was left untouched. No Mac mini, SSH, hardware or
+native execution check was run; physical acceptance remains the shared final
+substage. `graphify update .` refreshed the project graph. Independent
+gpt-6.1-sol medium review found no concrete defects or missing required
+coverage; the review was static and made no changes.
