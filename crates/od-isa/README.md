@@ -111,3 +111,11 @@ for exact cancellation. Native x87 admission and general x87 semantics remain
 closed; details and validation limits are in the [CPU contract](../../docs/specs/CPU_CONTRACT.md),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
+
+S2-30s adds exact-only `DE F0+i` FDIVRP: old `ST(0)/ST(i)` is written to old
+physical `(TOP+i)&7`, then old TOP is emptied and TOP advances. The `i=0`
+alias writes exact `+1` before emptying its only tag. Inexact quotients,
+non-Normal inputs/results and invalid x87 environment/tags reject atomically;
+native x87 admission remains closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30s-exact-only-fdivrp-sti-st0-de-f0i),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md) and
+[Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).

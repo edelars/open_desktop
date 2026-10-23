@@ -1131,3 +1131,13 @@ TOP wrap, C1 clearing and full x87 snapshot preservation. An inexact `DE F9`
 fixture uses `stop_rip: null` and budget one, and verifies that the full state
 is unchanged. `DE F0..F7` FDIVRP remains unsupported; native x87 admission
 stays closed.
+
+### S2-30s x87 schema coverage
+
+The schema validator admits all eight bare `DE F0+i` FDIVRP encodings,
+including the no-operand `DE F1` alias. Runner cases check every TOP×i
+destination, ordered `15/3 = 5`, exact `+1` alias payload before the old TOP
+tag is emptied, TOP wrap, C1 clearing and unchanged unrelated state. An
+inexact `DE F1` case uses `stop_rip: null` and budget one and verifies that
+the full x87 state is unchanged. `DE F8..FF` FDIVP and adjacent DE groups keep
+their existing meanings; native x87 admission stays closed.

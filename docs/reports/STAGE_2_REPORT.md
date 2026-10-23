@@ -3489,3 +3489,52 @@ the pre-existing unmapped `.serena/` root directory, left untouched.
 `graphify update .` completed. Independent gpt-6.1-sol medium review reported
 no findings. No Mac mini, SSH, physical hardware execution or commit was used;
 hardware acceptance remains reserved for the shared acceptance stage.
+
+## S2-30s — exact-only FDIVRP ST(i), ST(0) (bounded local slice)
+
+Added bare `DE F0+i`, `i=0..7`, as exact-only `FDIVRP ST(i), ST(0)`. The
+operation reuses the ordered divide gate with old `ST(0)` as numerator and old
+`ST(i)` as denominator. It requires zero normalized quotient remainder before
+precision-64 packing and accepts only a canonical Normal result. The gate
+requires an existing x87 state, FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags
+for used operands and canonical Normal input encodings; unequal exponents are
+allowed. Zero, special/noncanonical inputs, inexact quotient, overflow and
+subnormal/zero output reject before mutation. The `i=0` alias uses one Valid
+tag and yields exact `+1` for either operand sign.
+
+Success writes old physical `(TOP+i)&7`, empties old physical TOP, increments
+TOP, clears C1, records starting RIP as FIP, advances RIP by two and retires
+once. In the alias case it writes `+1` before emptying the same tag. All other
+x87 fields, tags, payloads, GPRs and RFLAGS remain unchanged. Exhaustive DE
+ModR/M decoding preserves FADDP, FMULP, FSUBRP, FSUBP and FDIVP; prefixes,
+REX, WAIT and truncation remain unsupported. Schema admits all eight forms and
+represents an inexact `DE F1` as Unsupported with no stop RIP and budget one.
+Native x87 admission remains closed.
+
+Interpreter vectors cover every TOP×i placement, `15/3 = 5` to catch operand
+reversal, all result sign combinations, differing exponents, a full-width
+significand divided by one, and positive/negative i=0 self-division. Full-state
+atomic rejection covers inexact `1/3` and `2/3`, overflow, subnormal output,
+bad FCW/FSW, Empty/Special tags, raw zero/unnormal/pseudo-denormal/infinity/NaN
+inputs and missing x87 state. Truncated fetch, fetch fault, stop and zero budget
+do not commit. The testkit runner checks the all-index matrix and the inexact
+Unsupported path.
+
+Normative source: Intel SDM revision 093, Vol.2A pp.3-336–3-338,
+“FDIVR/FDIVRP/FIDIVR—Reverse Divide” ([official PDF, Vol.2A p.3-336](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=454)).
+It specifies old `ST(0)/ST(i)` before popping old `ST(0)`, clears C1 for exact
+results and leaves C0/C2/C3 undefined. General rounding, exceptions, special
+values, CR0/#NM, native x87 execution and hardware state observation remain
+outside this local profile.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`git diff --check`, and `graphify update .`. Linux-target compilation includes
+the native x87 denial coverage; it was compile-only on this arm64 macOS host.
+`python3 tools/check_layout.py` reports only the pre-existing unmapped
+`.serena/` root directory, left untouched. Independent gpt-6.1-sol medium
+review found two test/documentation issues, both corrected; re-review found no
+remaining findings. No Mac mini, SSH, physical hardware execution or commit
+was used; physical acceptance remains reserved for the shared acceptance
+stage.

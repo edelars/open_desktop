@@ -356,6 +356,34 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         assert!(Fixture::from_json(&fdiv.to_json().unwrap()).is_ok());
     }
 
+    for destination in 0u8..=7 {
+        let mut fdivrp = fixture.clone();
+        let code = fdivrp
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("def{:x}", destination);
+        if destination == 1 {
+            fdivrp.stop_rip = None;
+            fdivrp.expected_exit = ExpectedExit::Unsupported;
+            fdivrp.instruction_budget = 1;
+        }
+        assert!(Fixture::from_json(&fdivrp.to_json().unwrap()).is_ok());
+    }
+
+    let mut fdivrp_inexact = fixture.clone();
+    let code = fdivrp_inexact
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "def1".into();
+    fdivrp_inexact.stop_rip = None;
+    fdivrp_inexact.expected_exit = ExpectedExit::Unsupported;
+    fdivrp_inexact.instruction_budget = 1;
+    assert!(Fixture::from_json(&fdivrp_inexact.to_json().unwrap()).is_ok());
+
     for source in 0u8..=7 {
         let mut fsub = fixture.clone();
         let code = fsub
