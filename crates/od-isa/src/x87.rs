@@ -2,8 +2,8 @@
 //! integer-only helper representations.
 //!
 //! This module does not execute x87 instructions. Its bounded integer helpers
-//! preserve exact intermediate values. One pure unsigned rational helper
-//! rounds an integer quotient to nearest with ties to even; it does not define
+//! preserve exact intermediate values. One pure rational helper rounds an
+//! integer quotient under mathematical rounding modes; it does not define
 //! architectural x87 rounding, packing, or exception behavior. The byte array
 //! follows memory order, least significant byte first (Intel SDM revision 093,
 //! Vol. 1 §§4.2.2 and
@@ -53,6 +53,17 @@ pub struct X87FiniteQuotient {
     quotient: u64,
     remainder: u64,
     denominator: u64,
+}
+
+/// Mathematical rounding direction for an exact rational coefficient.
+///
+/// These modes do not represent x87 control-word values or instruction state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RationalRoundingMode {
+    NearestTiesEven,
+    TowardZero,
+    TowardPositive,
+    TowardNegative,
 }
 
 impl X87FiniteQuotient {
@@ -148,23 +159,48 @@ pub fn divide_finite_significands(lhs: X87Finite, rhs: X87Finite) -> Option<X87F
     })
 }
 
-/// Round the unsigned rational value `q + r / d` to the nearest integer,
-/// resolving exact half-way cases to an even result.
+/// Round the exact rational coefficient `(-1)^sign * (q + r / d)` to an
+/// integer lattice and return its unsigned magnitude.
 ///
-/// Returns `None` when `d == 0` or `r >= d`. This is a pure mathematical
-/// helper: it does not apply signs, adjust exponents, normalize or pack a
-/// binary80 value, or define any x87 control-word, status, or instruction
-/// behavior. The widened comparison safely handles every `u64` remainder.
-pub fn round_quotient_ties_even(q: u64, r: u64, d: u64) -> Option<u128> {
+/// Returns `None` when `d == 0` or `r >= d`. The sign affects only directed
+/// rounding; it does not produce signed zero or adjust an exponent. This is a
+/// mathematical helper and defines no x87 control-word, status, packing, or
+/// instruction behavior.
+pub fn round_quotient_magnitude(
+    sign: bool,
+    q: u64,
+    r: u64,
+    d: u64,
+    mode: RationalRoundingMode,
+) -> Option<u128> {
     if d == 0 || r >= d {
         return None;
     }
 
-    let twice_remainder = u128::from(r) * 2;
-    let denominator = u128::from(d);
-    let increment = twice_remainder > denominator || (twice_remainder == denominator && q & 1 != 0);
+    let increment = if r == 0 {
+        false
+    } else {
+        match mode {
+            RationalRoundingMode::NearestTiesEven => {
+                let twice_remainder = u128::from(r) * 2;
+                let denominator = u128::from(d);
+                twice_remainder > denominator || (twice_remainder == denominator && q & 1 != 0)
+            }
+            RationalRoundingMode::TowardZero => false,
+            RationalRoundingMode::TowardPositive => !sign,
+            RationalRoundingMode::TowardNegative => sign,
+        }
+    };
 
     Some(u128::from(q) + u128::from(increment))
+}
+
+/// Round the unsigned rational value `q + r / d` to nearest with ties to even.
+///
+/// This compatibility wrapper is equivalent to a positive coefficient using
+/// [`RationalRoundingMode::NearestTiesEven`].
+pub fn round_quotient_ties_even(q: u64, r: u64, d: u64) -> Option<u128> {
+    round_quotient_magnitude(false, q, r, d, RationalRoundingMode::NearestTiesEven)
 }
 
 /// Add two finite values exactly when their nonzero exponents match.
@@ -460,10 +496,10 @@ impl X87Binary80 {
 #[cfg(test)]
 mod tests {
     use super::{
-        X87Binary80, X87Binary80Class, X87Finite, X87Grs, add_finite_same_exponent,
-        align_finite_pair, divide_finite_significands, multiply_finite_significands,
-        normalize_exact_coefficient, normalize_exact_magnitude, round_quotient_ties_even,
-        shift_right_jam, shift_right_jam_u128,
+        RationalRoundingMode, X87Binary80, X87Binary80Class, X87Finite, X87Grs,
+        add_finite_same_exponent, align_finite_pair, divide_finite_significands,
+        multiply_finite_significands, normalize_exact_coefficient, normalize_exact_magnitude,
+        round_quotient_magnitude, round_quotient_ties_even, shift_right_jam, shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -926,6 +962,88 @@ mod tests {
     }
 
     #[test]
+    fn rational_rounding_modes_match_literal_signed_magnitude_vectors() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let cases = [
+            // Positive 2 + 1/4: only toward positive increments.
+            (false, 2, 1, 4, Nearest, 2),
+            (false, 2, 1, 4, Zero, 2),
+            (false, 2, 1, 4, Up, 3),
+            (false, 2, 1, 4, Down, 2),
+            // Negative 2 + 1/4: only toward negative increments magnitude.
+            (true, 2, 1, 4, Nearest, 2),
+            (true, 2, 1, 4, Zero, 2),
+            (true, 2, 1, 4, Up, 2),
+            (true, 2, 1, 4, Down, 3),
+            // Positive and negative 2 + 3/4.
+            (false, 2, 3, 4, Nearest, 3),
+            (false, 2, 3, 4, Zero, 2),
+            (false, 2, 3, 4, Up, 3),
+            (false, 2, 3, 4, Down, 2),
+            (true, 2, 3, 4, Nearest, 3),
+            (true, 2, 3, 4, Zero, 2),
+            (true, 2, 3, 4, Up, 2),
+            (true, 2, 3, 4, Down, 3),
+            // Ties exercise even and odd quotient parity and the u64 carry.
+            (false, 2, 1, 2, Nearest, 2),
+            (false, 2, 1, 2, Zero, 2),
+            (false, 2, 1, 2, Up, 3),
+            (false, 2, 1, 2, Down, 2),
+            (true, 2, 1, 2, Nearest, 2),
+            (true, 2, 1, 2, Zero, 2),
+            (true, 2, 1, 2, Up, 2),
+            (true, 2, 1, 2, Down, 3),
+            (false, 3, 1, 2, Nearest, 4),
+            (false, 3, 1, 2, Zero, 3),
+            (false, 3, 1, 2, Up, 4),
+            (false, 3, 1, 2, Down, 3),
+            (true, 3, 1, 2, Nearest, 4),
+            (true, 3, 1, 2, Zero, 3),
+            (true, 3, 1, 2, Up, 3),
+            (true, 3, 1, 2, Down, 4),
+            (false, u64::MAX, 1, 2, Nearest, 1_u128 << 64),
+            (true, u64::MAX, 1, 2, Down, 1_u128 << 64),
+            // Small fractions around zero and exact values in every mode.
+            (false, 0, 1, 4, Nearest, 0),
+            (false, 0, 1, 4, Up, 1),
+            (true, 0, 1, 4, Down, 1),
+            (true, 0, 1, 4, Up, 0),
+            (true, 7, 0, 1, Nearest, 7),
+            (true, 7, 0, 1, Zero, 7),
+            (true, 7, 0, 1, Up, 7),
+            (true, 7, 0, 1, Down, 7),
+            // Widening makes 2*r > d here; a u64 doubling would wrap.
+            (false, 2, 1_u64 << 63, u64::MAX, Nearest, 3),
+        ];
+
+        for (sign, q, r, d, mode, expected) in cases {
+            assert_eq!(
+                round_quotient_magnitude(sign, q, r, d, mode),
+                Some(expected),
+                "sign={sign} q={q} r={r} d={d} mode={mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rational_rounding_rejects_invalid_denominator_inputs_in_every_mode() {
+        let modes = [
+            RationalRoundingMode::NearestTiesEven,
+            RationalRoundingMode::TowardZero,
+            RationalRoundingMode::TowardPositive,
+            RationalRoundingMode::TowardNegative,
+        ];
+        for mode in modes {
+            assert_eq!(round_quotient_magnitude(false, 7, 0, 0, mode), None);
+            assert_eq!(round_quotient_magnitude(true, 7, 1, 1, mode), None);
+        }
+    }
+
+    #[test]
     fn unsigned_quotient_rounding_composes_with_s2_29i_division_vectors() {
         let cases = [
             (
@@ -958,6 +1076,43 @@ mod tests {
                 ),
                 Some(u128::from(expected_rounded))
             );
+        }
+    }
+
+    #[test]
+    fn signed_rational_rounding_composes_with_s2_29i_division_getters() {
+        let modes = [
+            RationalRoundingMode::NearestTiesEven,
+            RationalRoundingMode::TowardZero,
+            RationalRoundingMode::TowardPositive,
+            RationalRoundingMode::TowardNegative,
+        ];
+        for sign in [false, true] {
+            let lhs = finite(0, 0x8000_0000_0000_0000, sign, X87Binary80Class::Normal);
+            let rhs = finite(0, 0xc000_0000_0000_0000, false, X87Binary80Class::Normal);
+            let quotient = divide_finite_significands(lhs, rhs).unwrap();
+            assert_eq!(quotient.sign(), sign);
+            assert_eq!(quotient.quotient(), 0xaaaa_aaaa_aaaa_aaaa);
+            assert_eq!(quotient.remainder(), 0x8000_0000_0000_0000);
+            assert_eq!(quotient.denominator(), 0xc000_0000_0000_0000);
+            for mode in modes {
+                let expected = match (mode, sign) {
+                    (RationalRoundingMode::TowardZero, _)
+                    | (RationalRoundingMode::TowardPositive, true)
+                    | (RationalRoundingMode::TowardNegative, false) => 0xaaaa_aaaa_aaaa_aaaa_u128,
+                    _ => 0xaaaa_aaaa_aaaa_aaab_u128,
+                };
+                assert_eq!(
+                    round_quotient_magnitude(
+                        quotient.sign(),
+                        quotient.quotient(),
+                        quotient.remainder(),
+                        quotient.denominator(),
+                        mode,
+                    ),
+                    Some(expected)
+                );
+            }
         }
     }
 

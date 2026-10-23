@@ -2572,3 +2572,31 @@ behavior.
 stopped on the pre-existing unmapped root `.serena/` directory, which was left
 untouched. No physical Mac mini check was performed or required for this pure
 integer helper. S2-29 and the S2-28 umbrella remain open under ISSUE-019.
+
+## S2-29k — pure mathematical rational rounding modes (partial)
+
+Added `RationalRoundingMode` and `round_quotient_magnitude(sign, q, r, d,
+mode)`, which rounds the exact rational coefficient
+`(-1)^sign * (q + r / d)` to the integer lattice and returns its unsigned
+magnitude. Nearest mode uses ties-to-even; directed modes increment magnitude
+only when their direction and the coefficient sign require it. The helper
+returns `None` only for `d == 0` or `r >= d`, and preserves `q` when `r == 0`.
+The existing `round_quotient_ties_even` remains a positive nearest-even wrapper.
+
+Literal tests cover each mode across positive and negative quarter/three-quarter
+fractions, even and odd ties, small signed fractions, exact integers, invalid
+inputs in all modes, `u64::MAX` tie carry, and a widened half comparison.
+Composition vectors use S2-29i quotient/remainder/denominator/sign getters for
+positive and negative divisions. Tie and carry are synthetic generic rational
+inputs; the normalized S2-29i divider cannot produce them.
+
+The modes are mathematical only. They define no control-word values,
+precision parameter, exponent adjustment, signed zero, x87 RC/PC, binary80
+packing, status effects, or guest instruction behavior. Verification for this
+change: `cargo test -p od-isa x87 --offline` passed (32 tests),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+and `git diff --check` passed. `graphify update .` completed; it reported the
+existing parser warning for `include/open_desktop/host_abi.h`. The layout check
+stopped on the pre-existing unmapped `.serena/` directory, which was left
+untouched. No physical Mac mini check is required for this pure helper. S2-29
+and S2-28 remain open under ISSUE-019.

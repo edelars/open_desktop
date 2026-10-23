@@ -1244,6 +1244,28 @@ packing, guest FDIV, signs, exponent adjustment, architectural flags, and
 signed zero; it does not implement x87 instruction or control-word semantics.
 S2-29 and S2-28 remain open.
 
+## Local S2-29k: pure mathematical rational rounding modes
+
+`od_isa::x87::round_quotient_magnitude(sign, q, r, d, mode)` rounds the exact
+coefficient `(-1)^sign * (q + r/d)` on the integer lattice and returns its
+unsigned magnitude. `RationalRoundingMode` provides nearest with ties to even,
+toward zero, toward positive, and toward negative. The sign affects only the
+increment decision for directed modes. The helper returns `None` only when
+`d == 0` or `r >= d`; exact integers return `q` in every mode. Its widened
+half comparison safely handles all `u64` inputs, and `u128` preserves a carry
+from `u64::MAX` to `2^64`. `round_quotient_ties_even` remains a positive-sign
+nearest-even compatibility wrapper.
+
+Literal vectors cover each mode with positive and negative fractions, nearest
+ties with even and odd quotients, small fractions around zero, exact integers,
+invalid inputs in every mode, the widened-half boundary, and carry beyond
+`u64::MAX`. Composition vectors pass S2-29i quotient, remainder, denominator,
+and sign getters for positive and negative divisions. Synthetic tie and carry
+vectors cannot arise from normalized S2-29i divider outputs. This helper does
+not define control-word values, a precision parameter, exponent changes,
+signed zero, x87 RC/PC, binary80 packing, status effects, or guest instruction
+semantics. S2-29 and S2-28 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

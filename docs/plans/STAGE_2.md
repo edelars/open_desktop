@@ -1201,6 +1201,26 @@ x87 RC/PC, binary80 formatting or packing, guest FDIV, signs, exponent
 adjustment, architectural flags/exceptions, or signed zero. S2-29 and S2-28
 remain open.
 
+### S2-29k. Pure mathematical rational rounding modes (partial)
+
+`round_quotient_magnitude(sign, q, r, d, mode)` rounds the exact coefficient
+`(-1)^sign * (q + r/d)` to the integer lattice and returns its unsigned
+magnitude. `RationalRoundingMode` contains nearest/ties-to-even, toward zero,
+toward positive, and toward negative. The sign affects only whether either
+directed mode increments the magnitude. The helper returns `None` only for a
+zero denominator or `r >= d`; `r == 0` preserves `q` for every mode. The old
+`round_quotient_ties_even` API remains as a positive nearest-even wrapper.
+
+Literal vectors cover all modes for positive and negative fractions, both
+nearest-even quotient parities, small values around zero, exact integers,
+invalid inputs for every mode, carry beyond `u64::MAX`, and a widened half-way
+comparison. Composition vectors use S2-29i quotient, remainder, denominator,
+and sign getters for positive and negative results. Synthetic tie/carry cases
+remain generic rational vectors unreachable from normalized S2-29i output.
+These are mathematical modes only: no control-word encoding, precision
+parameter, exponent adjustment, signed zero, x87 RC/PC, packing, status, or
+instruction behavior is introduced. S2-29 and S2-28 remain open.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.
