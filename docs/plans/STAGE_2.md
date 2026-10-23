@@ -1182,6 +1182,25 @@ preservation, raw subnormal and pseudo-denormal composition, and synthetic
 rounding, packing, architectural flags/exceptions, guest instruction
 execution, or native execution. S2-29 and S2-28 remain open.
 
+### S2-29j. Pure unsigned rational nearest-integer ties-to-even (partial)
+
+`round_quotient_ties_even(q, r, d)` rounds the unsigned rational value
+`q + r / d` to its nearest integer, choosing an even result for an exact tie.
+It returns `None` only when `d == 0` or `r >= d`; the result is widened to
+`u128` so incrementing `u64::MAX` preserves the carry as `2^64`. The half-way
+comparison widens `r` before doubling, so it is defined for the full `u64`
+range.
+
+Literal vectors cover below/at/above half, both quotient parities at a tie,
+exact integers, invalid inputs, a `u64::MAX` carry, and a large remainder that
+requires the widened comparison. Composition vectors feed exact S2-29i
+quotient/remainder results into this helper. Exact ties and carry are synthetic
+generic rational vectors: the normalized S2-29i divider outputs cannot reach
+those cases. This helper does not implement x87 rounding modes/control word,
+x87 RC/PC, binary80 formatting or packing, guest FDIV, signs, exponent
+adjustment, architectural flags/exceptions, or signed zero. S2-29 and S2-28
+remain open.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.

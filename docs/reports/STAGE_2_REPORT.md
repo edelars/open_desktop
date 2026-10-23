@@ -2548,3 +2548,27 @@ untouched. Graphify reported its existing `include/open_desktop/host_abi.h`
 parse warning (tracked by ISSUE-010). No physical Mac mini check was performed
 or required for this integer helper. S2-29 and the S2-28 umbrella remain open
 under ISSUE-019.
+
+## S2-29j — pure unsigned rational nearest-integer ties-to-even (partial)
+
+Added `round_quotient_ties_even(q, r, d)`, a pure unsigned helper for rounding
+`q + r / d` to nearest with ties to even. It rejects zero denominators and
+remainders at or above the denominator, widens before the half comparison, and
+returns `u128` so a carry beyond `u64::MAX` is preserved. Literal tests cover
+below, exact, and above half; both quotient parities at a tie; exact integers;
+invalid inputs; a large remainder; and the widened carry. Composition vectors
+feed S2-29i division results through the helper. Exact ties and carry use
+synthetic generic rational values because the normalized divider cannot
+produce them.
+
+The helper does not implement x87 RC/PC, binary80 formatting or packing, guest
+FDIV, signs, exponent adjustment, architectural flags/exceptions, or signed
+zero. It does not execute guest instructions or claim architectural rounding
+behavior.
+
+`cargo test -p od-isa x87 --offline` passed (29 tests), as did
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check`, and `graphify update .`. `python3 tools/check_layout.py`
+stopped on the pre-existing unmapped root `.serena/` directory, which was left
+untouched. No physical Mac mini check was performed or required for this pure
+integer helper. S2-29 and the S2-28 umbrella remain open under ISSUE-019.

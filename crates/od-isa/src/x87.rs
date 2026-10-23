@@ -2,9 +2,11 @@
 //! integer-only helper representations.
 //!
 //! This module does not execute x87 instructions. Its bounded integer helpers
-//! preserve exact intermediate values and do not define rounding, packing, or
-//! architectural exception behavior. The byte array follows memory order,
-//! least significant byte first (Intel SDM revision 093, Vol. 1 §§4.2.2 and
+//! preserve exact intermediate values. One pure unsigned rational helper
+//! rounds an integer quotient to nearest with ties to even; it does not define
+//! architectural x87 rounding, packing, or exception behavior. The byte array
+//! follows memory order, least significant byte first (Intel SDM revision 093,
+//! Vol. 1 §§4.2.2 and
 //! 8.2.2, Tables 4-3 and 8-3).
 
 /// An immutable, lossless 80-bit x87 double-extended encoding.
@@ -144,6 +146,25 @@ pub fn divide_finite_significands(lhs: X87Finite, rhs: X87Finite) -> Option<X87F
         remainder,
         denominator,
     })
+}
+
+/// Round the unsigned rational value `q + r / d` to the nearest integer,
+/// resolving exact half-way cases to an even result.
+///
+/// Returns `None` when `d == 0` or `r >= d`. This is a pure mathematical
+/// helper: it does not apply signs, adjust exponents, normalize or pack a
+/// binary80 value, or define any x87 control-word, status, or instruction
+/// behavior. The widened comparison safely handles every `u64` remainder.
+pub fn round_quotient_ties_even(q: u64, r: u64, d: u64) -> Option<u128> {
+    if d == 0 || r >= d {
+        return None;
+    }
+
+    let twice_remainder = u128::from(r) * 2;
+    let denominator = u128::from(d);
+    let increment = twice_remainder > denominator || (twice_remainder == denominator && q & 1 != 0);
+
+    Some(u128::from(q) + u128::from(increment))
 }
 
 /// Add two finite values exactly when their nonzero exponents match.
@@ -441,8 +462,8 @@ mod tests {
     use super::{
         X87Binary80, X87Binary80Class, X87Finite, X87Grs, add_finite_same_exponent,
         align_finite_pair, divide_finite_significands, multiply_finite_significands,
-        normalize_exact_coefficient, normalize_exact_magnitude, shift_right_jam,
-        shift_right_jam_u128,
+        normalize_exact_coefficient, normalize_exact_magnitude, round_quotient_ties_even,
+        shift_right_jam, shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -876,6 +897,66 @@ mod tests {
             assert_eq!(
                 (lhs_sig as u128) << if lhs_sig >= rhs_sig { 63 } else { 64 },
                 result.quotient() as u128 * rhs_sig as u128 + result.remainder() as u128
+            );
+        }
+    }
+
+    #[test]
+    fn unsigned_quotient_rounding_matches_literal_ties_even_vectors() {
+        let cases = [
+            (2, 4, 10, Some(2)),                  // below half
+            (2, 5, 10, Some(2)),                  // tie, even quotient
+            (3, 5, 10, Some(4)),                  // tie, odd quotient
+            (3, 6, 10, Some(4)),                  // above half
+            (u64::MAX, 1, 2, Some(1_u128 << 64)), // carry past u64::MAX
+            (
+                0,
+                1_u64 << 63,
+                u64::MAX,
+                Some(1), // doubling r requires more than u64 width
+            ),
+            (7, 0, 1, Some(7)), // exact integer
+            (7, 0, 0, None),
+            (7, 1, 1, None),
+        ];
+
+        for (q, r, d, expected) in cases {
+            assert_eq!(round_quotient_ties_even(q, r, d), expected);
+        }
+    }
+
+    #[test]
+    fn unsigned_quotient_rounding_composes_with_s2_29i_division_vectors() {
+        let cases = [
+            (
+                0x8000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+            ),
+            (
+                0x8000_0000_0000_0000,
+                0xc000_0000_0000_0000,
+                0xaaaa_aaaa_aaaa_aaab,
+            ),
+            (0xffff_ffff_ffff_ffff, 0x8000_0000_0000_0000, u64::MAX),
+            (
+                0x8000_0000_0000_0001,
+                0x8000_0000_0000_0002,
+                0xffff_ffff_ffff_fffe,
+            ),
+        ];
+
+        for (lhs_significand, rhs_significand, expected_rounded) in cases {
+            let lhs = finite(0, lhs_significand, false, X87Binary80Class::Normal);
+            let rhs = finite(0, rhs_significand, false, X87Binary80Class::Normal);
+            let quotient = divide_finite_significands(lhs, rhs).unwrap();
+            assert_eq!(
+                round_quotient_ties_even(
+                    quotient.quotient(),
+                    quotient.remainder(),
+                    quotient.denominator()
+                ),
+                Some(u128::from(expected_rounded))
             );
         }
     }

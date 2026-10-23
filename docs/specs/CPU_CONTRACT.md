@@ -1228,6 +1228,22 @@ conversion limits. This primitive uses no alignment, jam, GRS, rounding,
 binary80 packing, architectural flags/exceptions, guest instruction, or native
 execution behavior. S2-29 and S2-28 remain open.
 
+## Local S2-29j: pure unsigned rational nearest-integer ties-to-even
+
+`od_isa::x87::round_quotient_ties_even(q, r, d)` rounds `q + r / d` to the
+nearest integer with ties to even. It returns `None` for `d == 0` or `r >= d`.
+The remainder is widened before doubling for the half comparison, and the
+rounded result is `u128`, preserving a carry from `u64::MAX` to `2^64`.
+
+Literal tests cover below/at/above-half cases, both quotient parities at an
+exact tie, exact integers, invalid inputs, large remainders, and the `u64::MAX`
+carry. Composition tests consume S2-29i divider vectors. Tie and carry cases
+are synthetic generic rational inputs because the normalized S2-29i divider
+cannot produce them. This helper excludes x87 RC/PC, binary80 formatting or
+packing, guest FDIV, signs, exponent adjustment, architectural flags, and
+signed zero; it does not implement x87 instruction or control-word semantics.
+S2-29 and S2-28 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.
