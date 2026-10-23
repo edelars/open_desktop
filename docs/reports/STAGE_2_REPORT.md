@@ -2277,7 +2277,8 @@ adapter loaded the x87 image into `LongModeState`; the local interpreter
 executed the admitted NOP with that state, and the result adapter serialized
 the executed state. Comparison reports any x87 difference. The fragment
 adapter rejects `Some(x87)`, and native execution remains unsupported because
-its adapter cannot observe x87 state. S2-30a below adds one exact FNINIT form;
+its adapter cannot observe x87 state. S2-30a and S2-30b below add one exact
+FNINIT form and one exact FNSTSW AX form;
 no general x87 or FPU feature claim was added.
 
 `X87State::fixture_seed()` is deterministic non-architectural fixture data.
@@ -2307,8 +2308,8 @@ this local profile assumes x87 is available and does not inspect CR0.EM/TS or
 deliver #NM. Native profile execution and instruction admission both remain
 closed. No FPU feature is advertised.
 
-The existing `s2-long-x87-state-v1` profile now admits exactly one NOP or one
-bare FNINIT, with budget 1 and stop RIP immediately after the instruction. The
+The existing `s2-long-x87-state-v1` profile admits exactly one NOP, one bare
+FNINIT, or one bare FNSTSW AX, with budget 1 and stop RIP immediately after the instruction. The
 runner compares the entire raw x87 state. Local tests cover arbitrary seeded
 payload preservation, environment reset, decode neighbors and prefixes,
 truncated/faulting fetch without commit, missing state, STOP and budget
@@ -2733,6 +2734,53 @@ and `git diff --check`. `python3 tools/check_layout.py` stopped on the existing
 unmapped root `.serena/` directory, which was left untouched. `graphify update .`
 was run after the implementation. No physical Mac mini check was performed or
 required for this integer helper. S2-29 and S2-28 remain open under ISSUE-019.
+
+## S2-30b — bare FNSTSW AX (bounded local slice)
+
+The local decoder and interpreter accept only exact unprefixed `DF E0` with an
+existing `Some(X87State)`. Execution reads the original raw 16-bit FSW, writes
+it to AX through the existing word-sized register path, advances RIP by two,
+and retires once. RAX[63:16], other GPRs, and RFLAGS are preserved. The local
+snapshot remains unchanged by deterministic implementation policy; this is not
+an architectural preservation claim for C0/C1/C2/C3, which Intel defines as
+undefined after FNSTSW. AX contains the raw pre-operation word, including the
+local concrete values of those four fields.
+
+The existing local x87 fixture profile admits one NOP, FNINIT, or FNSTSW AX
+instruction, with budget 1 and stop RIP immediately afterward. The interpreter
+does not synthesize x87 state or inspect CR0.EM/TS, deliver #NM, or insert WAIT.
+Every prefix, all other `DF` second bytes and memory forms, and `9B DF E0` stay
+Unsupported. Missing state, fetch fault, STOP, and budget exhaustion do not
+commit. Native execution still rejects the x87 profile and direct FNSTSW
+admission. No FPU feature is advertised.
+
+Local tests cover all 256 `DF` second bytes, prefix classes, truncated fetch,
+multiple raw FSW values including different TOP and exception/status bits,
+AX partial write, unchanged remaining GPR/RFLAGS and the deterministic local
+x87 snapshot, missing state, fetch fault, STOP, budget exhaustion, fixture
+schema admission, runner observation, and native rejection. The x87 snapshot
+check documents only the current local implementation policy for undefined
+condition codes.
+
+Normative source: Intel SDM revision 089 Vol.2A, “FNSTSW—Store x87 FPU Status
+Word,” p.3-385, [official Vol.2A PDF](https://cdrdv2-public.intel.com/868140/253666-089-sdm-vol-2a.pdf).
+The reference specifies `DF E0` writing the status word to AX, C0/C1/C2/C3 as
+undefined, and no x87 floating-point exceptions.
+
+Validation passed: `cargo test -p od-isa fnstsw --offline`,
+`cargo test -p od-testkit x87_state_profile --offline`, the focused runner
+fixture test, `cargo test --workspace --offline`, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and
+`cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`. `python3 tools/check_layout.py` stopped
+on the pre-existing untracked `.serena/` root directory, which was left
+untouched. An attempted Linux-target `cargo test` could not link because this
+macOS host's Darwin linker does not accept the Linux GNU linker flags; native
+rejection tests therefore have compile-only Linux-target coverage here.
+`graphify update .` completed and reported its existing partial extraction
+warning for `include/open_desktop/host_abi.h` (ISSUE-010). No physical CPU or
+Mac mini acceptance was run; those checks remain deferred to the shared final
+acceptance substage.
 
 ## S2-29o — compose finite division with single-round binary80 packing (partial)
 

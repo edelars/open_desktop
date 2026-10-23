@@ -177,7 +177,11 @@ fn step_tracked_with_stop(
             opcode: instruction.opcode.byte,
         });
     }
-    if matches!(instruction.operation, Operation::Fninit) && state.x87.is_none() {
+    if matches!(
+        instruction.operation,
+        Operation::Fninit | Operation::FnstswAx
+    ) && state.x87.is_none()
+    {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
         });
@@ -193,6 +197,7 @@ fn step_tracked_with_stop(
         | Operation::MovGsSelectorToRax
         | Operation::VerwGdt
         | Operation::Fninit
+        | Operation::FnstswAx
         | Operation::Extend { .. }
         | Operation::Lea { .. }
         | Operation::Xchg { .. }
@@ -428,6 +433,17 @@ fn step_tracked_with_stop(
             .as_mut()
             .expect("FNINIT is admitted only when x87 state exists")
             .fninit(),
+        Operation::FnstswAx => {
+            let status_word = state
+                .x87
+                .as_ref()
+                .expect("FNSTSW AX is admitted only when x87 state exists")
+                .status_word;
+            state.write(
+                RegisterView::low(Register::Rax, OperandSize::Word),
+                u64::from(status_word),
+            );
+        }
         operation @ (Operation::MovImmediate { .. }
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
@@ -8518,6 +8534,136 @@ mod tests {
         assert_eq!(x87.instruction_pointer, 0);
         assert_eq!(x87.data_pointer, 0);
         assert_eq!(x87.last_opcode, 0);
+    }
+
+    #[test]
+    fn fnstsw_ax_copies_raw_status_and_preserves_local_state() {
+        for status_word in [0x0000, 0xffff, 0x2800, 0x45a5, 0x8001] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.gpr = std::array::from_fn(|index| {
+                0xa1b2_c3d4_e5f6_0718u64 ^ (index as u64).wrapping_mul(0x1111_1111)
+            });
+            state.gpr[Register::Rax as usize] = 0xfeed_cafe_89ab_7654;
+            state.rflags = 0xa55a_1234_5678_9abc;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.status_word = status_word;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xdf, 0xe0], 0x1000);
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x1002),
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state.rip, 0x1002);
+            assert_eq!(
+                state.gpr[Register::Rax as usize] & 0xffff,
+                u64::from(status_word)
+            );
+            assert_eq!(state.gpr[Register::Rax as usize] >> 16, before.gpr[0] >> 16);
+            for index in 1..state.gpr.len() {
+                assert_eq!(state.gpr[index], before.gpr[index]);
+            }
+            assert_eq!(state.rflags, before.rflags);
+            // C0/C1/C2/C3 are architecturally undefined after FNSTSW. The
+            // local profile deterministically leaves its raw x87 snapshot intact.
+            assert_eq!(state.x87, before.x87);
+        }
+    }
+
+    #[test]
+    fn fnstsw_ax_missing_state_and_fetch_or_boundary_stops_do_not_commit() {
+        let mut absent = LongModeState::default();
+        let before = absent.clone();
+        let mut complete = Memory::new(&[0xdf, 0xe0]);
+        assert_eq!(
+            step(&mut absent, &mut complete, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xdf })
+        );
+        assert_eq!(absent, before);
+
+        let mut initial = LongModeState::default();
+        initial.gpr[Register::Rax as usize] = 0x1122_3344_5566_7788;
+        initial.x87 = Some(crate::state::X87State::fixture_seed());
+        for (bytes, fault, expected_exit) in [
+            (&[0xdf][..], None, None),
+            (
+                &[0xdf, 0xe0][..],
+                Some(1),
+                Some(RunExit::Fault(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(4),
+                    linear_address: Some(1),
+                })),
+            ),
+        ] {
+            let mut state = initial.clone();
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            if fault.is_some() {
+                memory.fetch_error = Some((
+                    1,
+                    MemoryError::Architectural(ArchitecturalFault {
+                        vector: 14,
+                        error_code: Some(4),
+                        linear_address: Some(1),
+                    }),
+                ));
+            }
+            if let Some(expected_exit) = expected_exit {
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(result.exit, expected_exit);
+                assert_eq!(result.instructions_executed, 0);
+            } else {
+                assert!(matches!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Err(MemoryError::Unmapped {
+                        access: AccessKind::Fetch,
+                        ..
+                    })
+                ));
+            }
+            assert_eq!(state, before);
+        }
+
+        for (stop_rip, budget, expected_exit) in [
+            (Some(0), 1, RunExit::StopAddress),
+            (None, 0, RunExit::InstructionBudgetExhausted),
+        ] {
+            let mut state = initial.clone();
+            let before = state.clone();
+            let mut memory = Memory::new(&[0xdf, 0xe0]);
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+        }
     }
 
     #[test]

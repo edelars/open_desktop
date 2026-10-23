@@ -173,7 +173,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-26 | CPUID, системные инструкции и время | S2-25 |
 | [ ] | S2-27 | Remaining descriptor/event/syscall CPU semantics; the bounded VERW/GDT check is extracted to S2-22e | S2-25, S2-26 |
 | [ ] | S2-28 | Представить x87 state | S2-20 |
-| [x] | S2-28a | Lossless Long64 x87 state and local NOP/FNINIT-only state profile; no general x87 execution or FPU feature claim | S2-28 |
+| [x] | S2-28a | Lossless Long64 x87 state and local NOP/FNINIT/FNSTSW AX-only state profile; no general x87 execution or FPU feature claim | S2-28 |
 | [ ] | S2-29 | Собственное ядро extended precision | S2-28 |
 | [x] | S2-29a | Lossless binary80 raw fields and read-only raw encoding classification; no arithmetic or x87 execution | S2-28a |
 | [x] | S2-29b | Integer-only finite binary80 normalization with source-class provenance and right-shift-jam/GRS bit helpers; no rounding or arithmetic | S2-29a |
@@ -182,6 +182,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29p | Round an exact signed `i128` coefficient once to finite binary80 through lossless normalization and direct normal/subnormal packing; no x87 architectural effects | S2-29e, S2-29f, S2-29k–n |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
+| [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1394,6 +1395,20 @@ not modeled. Missing x87 state remains Unsupported. Native admission and FPU
 feature advertisement remain closed. Tests cover decode neighbors/truncation,
 arbitrary seeded payload preservation, full environment reset, and no commit
 for fetch fault, STOP, budget exhaustion, or missing state.
+
+#### S2-30b. Bare FNSTSW AX (bounded local slice)
+
+Implement only the exact unprefixed bytes `DF E0` with an already-present
+`Some(X87State)`. Copy the original raw 16-bit FSW to AX using the existing
+word register write, preserving RAX[63:16], other GPRs, RFLAGS, and the local
+x87 snapshot. The local snapshot's deterministic retention of C0/C1/C2/C3 is
+an implementation policy; those four bits are architecturally undefined after
+FNSTSW and are not architectural preservation claims. Reject every prefix,
+neighboring `DF` encoding, memory form, and `9B DF E0`; missing state is
+Unsupported. The local profile continues to assume x87 availability without
+CR0.EM/TS checks, #NM delivery, or WAIT. Fetch fault, STOP and exhausted budget
+must not commit. Native x87-profile execution and FNSTSW admission remain
+closed. Do not synthesize x87 state or advertise an FPU feature.
 
 ### S2-31. x87 conversions, rounding и exceptions
 

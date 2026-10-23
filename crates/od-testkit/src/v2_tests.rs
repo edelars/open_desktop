@@ -277,7 +277,7 @@ fn x87_state_profile_roundtrips_raw_empty_register_payloads_and_compares_mutatio
 }
 
 #[test]
-fn x87_state_profile_admits_only_exact_bare_fninit_as_its_two_byte_program() {
+fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     let mut fixture = x87_fixture().fixture;
     let code = fixture
         .memory
@@ -290,11 +290,24 @@ fn x87_state_profile_admits_only_exact_bare_fninit_as_its_two_byte_program() {
     fixture.stop_rip = Some(HexU64(0x1002));
     assert!(Fixture::from_json(&fixture.to_json().unwrap()).is_ok());
 
+    let mut fnstsw = fixture.clone();
+    let code = fnstsw
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "dfe0".into();
+    assert!(Fixture::from_json(&fnstsw.to_json().unwrap()).is_ok());
+
     for (bytes, length, stop) in [
         ("db", 1, 0x1001),
         ("9bdbe3", 3, 0x1003),
         ("66dbe3", 3, 0x1003),
         ("dbe2", 2, 0x1002),
+        ("dfe1", 2, 0x1002),
+        ("df00", 2, 0x1002),
+        ("9bdfe0", 3, 0x1003),
+        ("66dfe0", 3, 0x1003),
     ] {
         let mut unsupported = fixture.clone();
         let code = unsupported

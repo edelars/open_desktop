@@ -1025,8 +1025,9 @@ payloads remain unchanged. It does not model FINIT's pending-exception check
 or wait behavior. This is distinct from power-up/RESET/INIT: Vol.3A §11.1.1
 Table 11-1 note 5 says INIT leaves x87 FPU and MMX registers unchanged.
 
-The local fixture profile admits one exact instruction (`90` NOP or the S2-30a
-`DB E3` FNINIT) with budget 1 and a stop RIP immediately afterward. Fixture
+The local fixture profile admits one exact instruction (`90` NOP, S2-30a
+`DB E3` FNINIT, or S2-30b `DF E0` FNSTSW AX) with budget 1 and a stop RIP
+immediately afterward. Fixture
 conversion loads the supplied x87 object into `LongModeState`, and result
 conversion observes that executed state; comparisons inspect the entire
 object. The fragment adapter explicitly rejects `Some(x87)`. Native x87
@@ -1070,6 +1071,38 @@ pp.3-345–3-346; and Vol.3A §11.1.1 Table 11-1 note 5. Official manuals:
 [Vol.1 253665-093US](https://cdrdv2.intel.com/v1/dl/getContent/671436),
 [Vol.2A 253666-093US](https://cdrdv2.intel.com/v1/dl/getContent/671199),
 [Vol.3A combined manual](https://cdrdv2.intel.com/v1/dl/getContent/671447).
+
+## Local S2-30b: bare `FNSTSW AX` (`DF E0`)
+
+The local long-mode interpreter accepts exactly the unprefixed bytes `DF E0`
+when `LongModeState.x87` already contains `Some(X87State)`. It reads the raw
+pre-operation 16-bit `status_word` and writes that value to AX through the
+existing word-sized GPR write, preserving RAX[63:16], all other GPRs, and
+RFLAGS. RIP advances by two and one instruction retires. Missing x87 state is
+Unsupported. This existing local state profile assumes x87 availability and
+does not test CR0.EM/TS, deliver #NM, or add a preceding WAIT.
+
+Intel SDM revision 089 Vol.2A defines C0/C1/C2/C3 as undefined after FNSTSW.
+Accordingly, the raw pre-operation FSW bits copied to AX include the concrete
+local values of those fields, but callers must not treat those four bits as
+architecturally preserved or require future native equality. The local model
+currently leaves the x87 snapshot untouched as a deterministic implementation
+policy; full raw-state comparison in this local-only fixture profile checks
+that policy, not an architectural guarantee. FNSTSW raises no x87 floating-
+point exception.
+
+All prefixes, other `DF` ModR/M bytes (including memory forms), and `9B DF E0`
+are Unsupported. Fetch faults, STOP, exhausted budget and missing state commit
+neither GPR nor x87 state. Native execution rejects both the x87 profile and
+FNSTSW instruction admission. This does not synthesize missing x87 state and
+does not advertise an FPU feature.
+
+Normative source: Intel® 64 and IA-32 Architectures Software Developer's
+Manual, revision 089, Vol.2A, “FNSTSW—Store x87 FPU Status Word,” p.3-385,
+[official Vol.2A PDF](https://cdrdv2-public.intel.com/868140/253666-089-sdm-vol-2a.pdf).
+The instruction reference specifies AX as the destination for `DF E0`, marks
+C0/C1/C2/C3 undefined, and states that FNSTSW does not generate floating-point
+exceptions.
 
 ## Local S2-29a: raw binary80 representation and classification
 

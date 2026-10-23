@@ -1019,6 +1019,46 @@ fn local_x87_state_profile_runs_fninit_with_full_environment_reset() {
 }
 
 #[test]
+fn local_x87_state_profile_runs_fnstsw_ax_from_raw_status_word() {
+    let mut fixture = Fixture::from_json(MFENCE_STORE_FENCE_LOAD).unwrap().fixture;
+    fixture.case_id = "local_x87_fnstsw_ax".into();
+    fixture.profile = od_testkit::v2::Profile::LongX87StateV1;
+    fixture.initial_state.rip = HexU64(0x0010_0000);
+    fixture.initial_state.gpr[0] = HexU64(0xfeed_cafe_89ab_7654);
+    let mut seed = od_isa::state::X87State::fixture_seed();
+    seed.status_word = 0xa5c3;
+    fixture.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&seed));
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.guest_address = HexU64(0x0010_0000);
+    code.length = 2;
+    code.initial_bytes_hex = "dfe0".into();
+    code.comparison_mask_hex = "ffff".into();
+    fixture.instruction_budget = 1;
+    fixture.stop_rip = Some(HexU64(0x0010_0002));
+    fixture.expected_exit = ExpectedExit::StopAddress;
+
+    let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+    assert_eq!(observed.state.gpr[0].get(), 0xfeed_cafe_89ab_a5c3);
+    for index in 1..observed.state.gpr.len() {
+        assert_eq!(
+            observed.state.gpr[index],
+            input.fixture.initial_state.gpr[index]
+        );
+    }
+    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    // The local model leaves C0/C1/C2/C3 deterministic; Intel defines them as
+    // undefined after FNSTSW, so this is not an architectural preservation claim.
+    assert_eq!(observed.state.x87, input.fixture.initial_state.x87);
+}
+
+#[test]
 fn fs_load_commit_is_preserved_when_a_later_instruction_faults_and_self_compares() {
     let mut fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_22j_fs_base_composition.case.json"

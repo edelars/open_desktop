@@ -553,7 +553,10 @@ fn admission_with_tracee_memory(
 ) -> Result<FlagEffects, String> {
     let instruction = long_decode::decode(decoder, actual.rip, AccessContext::default())
         .map_err(|e| format!("native instruction outside admitted decode slice: {e:?}"))?;
-    if matches!(instruction.operation, Operation::Fninit) {
+    if matches!(
+        instruction.operation,
+        Operation::Fninit | Operation::FnstswAx
+    ) {
         return Err("x87 instruction is not admitted by the native backend".into());
     }
     if matches!(
@@ -3633,29 +3636,31 @@ mod tests {
     }
 
     #[test]
-    fn fninit_is_rejected_by_native_profile_and_instruction_admission() {
-        let code = [0xdb, 0xe3];
-        let mut input = fixture(&code).fixture;
-        input.profile = v2::Profile::LongX87StateV1;
-        input.initial_state.x87 = Some(v2::X87Snapshot::from(
-            &od_isa::state::X87State::fixture_seed(),
-        ));
-        input.initial_state.rip = HexU64(0x1000);
-        input.memory[0].guest_address = HexU64(0x1000);
-        input.memory[0].length = 2;
-        input.memory[0].initial_bytes_hex = "dbe3".into();
-        input.memory[0].comparison_mask_hex = "ffff".into();
-        input.stop_rip = Some(HexU64(0x1002));
-        let loaded = Fixture::from_json(&input.to_json().unwrap()).unwrap();
-        assert!(matches!(
-            execute(&loaded).outcome,
-            Outcome::Unsupported { .. }
-        ));
+    fn x87_instructions_are_rejected_by_native_profile_and_instruction_admission() {
+        for code in [[0xdb, 0xe3], [0xdf, 0xe0]] {
+            let mut input = fixture(&code).fixture;
+            input.profile = v2::Profile::LongX87StateV1;
+            input.initial_state.x87 = Some(v2::X87Snapshot::from(
+                &od_isa::state::X87State::fixture_seed(),
+            ));
+            input.initial_state.rip = HexU64(0x1000);
+            input.memory[0].guest_address = HexU64(0x1000);
+            input.memory[0].length = 2;
+            input.memory[0].initial_bytes_hex =
+                if code[0] == 0xdf { "dfe0" } else { "dbe3" }.into();
+            input.memory[0].comparison_mask_hex = "ffff".into();
+            input.stop_rip = Some(HexU64(0x1002));
+            let loaded = Fixture::from_json(&input.to_json().unwrap()).unwrap();
+            assert!(matches!(
+                execute(&loaded).outcome,
+                Outcome::Unsupported { .. }
+            ));
 
-        let old_profile = fixture(&code);
-        let actual = old_profile.fixture.initial_state.to_cpu().unwrap();
-        let mut decoder = FlatMemory::from_fixture(&old_profile.fixture).unwrap();
-        let error = admission(&old_profile.fixture, &mut decoder, &actual).unwrap_err();
-        assert!(error.contains("x87 instruction is not admitted"));
+            let old_profile = fixture(&code);
+            let actual = old_profile.fixture.initial_state.to_cpu().unwrap();
+            let mut decoder = FlatMemory::from_fixture(&old_profile.fixture).unwrap();
+            let error = admission(&old_profile.fixture, &mut decoder, &actual).unwrap_err();
+            assert!(error.contains("x87 instruction is not admitted"));
+        }
     }
 }

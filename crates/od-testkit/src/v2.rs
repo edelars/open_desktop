@@ -708,10 +708,11 @@ impl Fixture {
                 match code.initial_bytes_hex.to_ascii_lowercase().as_str() {
                     "90" => ("90", 1),
                     "dbe3" => ("dbe3", 2),
+                    "dfe0" => ("dfe0", 2),
                     _ => {
                         return Err(invalid(
                             "memory.code",
-                            "x87 state profile admits only one NOP or bare FNINIT",
+                            "x87 state profile admits only one NOP, bare FNINIT, or bare FNSTSW AX",
                         ));
                     }
                 };
