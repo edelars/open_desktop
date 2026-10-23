@@ -3624,3 +3624,51 @@ tools/check_layout.py` reports only the pre-existing unmapped `.serena/` root
 directory; it was left untouched. Linux native-denial tests compiled but were
 not executed on this arm64 macOS host. No Mac mini, SSH, physical hardware
 execution or commit was used; the independent review is pending.
+
+## S2-30v — exact-only FDIV ST(i), ST(0) (bounded local slice)
+
+Added bare `DC F8+i`, `i=0..7`, as exact-only `FDIV ST(i), ST(0)`. The
+existing ordered exact-division gate computes old `ST(i)/ST(0)`, requires zero
+normalized quotient remainder before precision-64 packing and accepts only a
+canonical Normal result. Unequal exponents are allowed; zero, special or
+noncanonical operands, inexact quotients, overflow and subnormal/zero outputs
+reject before state changes.
+
+Success writes old physical `(TOP+i)&7`, clears C1, records starting RIP as
+FIP, advances RIP by two and retires once without popping or changing tags/TOP.
+The `i=0` alias produces exact +1 in place. DC F8..FF now decode while
+preserving DC F0..F7 FDIVR and the existing FADD/FMUL/FSUB groups; prefixed
+forms, WAIT and truncation remain unsupported. Native x87 admission explicitly
+rejects all eight new encodings.
+
+Local vectors cover all 64 TOP/index pairs, ordered `15/3=5`, the i=0 +1
+alias, sign combinations, differing exponents, lower/upper Normal edges and
+full-state atomic rejection of inexact `1/3`, invalid environment/tags,
+zero/special/noncanonical operands, overflow, subnormal output and missing
+x87 state. Fetch truncation, STOP and exhausted budget preserve state. Decoder
+tests enumerate all DC ModR/M values, reject prefixes/REX/WAIT and check
+truncation. The v2 fixture schema accepts all eight forms and permits the
+inexact `DC F9` Unsupported/no-stop shape; testkit runner coverage executes all
+TOP×i placements and verifies full-state inexact rejection. Native admission
+rejects every DC F8..FF form.
+
+Normative source: Intel SDM revision 093, Vol.2A pp.3-333–3-335,
+“FDIV/FIDIV—Divide” ([official PDF, Vol.2A p.3-333](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451)).
+It specifies old `ST(i)/ST(0)` into old `ST(i)` with no pop; exact results
+clear C1, while C0/C2/C3 are undefined. General rounding, architectural
+exceptions, special values, CR0/#NM, native x87 state observation and full x87
+behavior remain outside this slice.
+
+Validation passed: the focused `od-isa` S2-30v tests, `od-testkit` schema and
+runner tests, `cargo test --workspace --offline`, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, Linux x86 runner target
+compile (`cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`), `git diff --check` and `graphify update .`.
+`python3 tools/check_layout.py` reports the unmapped root `.serena/` directory;
+it was left untouched. Linux native-denial tests compiled for the x86_64 target
+but were not run on this arm64 macOS host. No Mac mini, SSH or physical hardware
+checks were run, as those remain in the shared acceptance stage. Independent
+gpt-6.1-sol high review found one documentation mismatch: signs and Normal
+range edges were attributed to the testkit runner instead of the `od-isa`
+literal vectors. The fixture notes were corrected and the re-review found no
+remaining findings.

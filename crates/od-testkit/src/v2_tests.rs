@@ -124,6 +124,23 @@ fn x87_schema_admits_fdivr_forms_and_inexact_no_stop_case() {
         fixture.validate().unwrap();
     }
 
+    for index in 0u8..=7 {
+        fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap()
+            .initial_bytes_hex = format!("dcf{:x}", 8 | index);
+        if index == 1 {
+            fixture.stop_rip = None;
+            fixture.expected_exit = ExpectedExit::Unsupported;
+        } else {
+            fixture.stop_rip = Some(HexU64(0x1002));
+            fixture.expected_exit = ExpectedExit::StopAddress;
+        }
+        fixture.validate().unwrap();
+    }
+
     fixture
         .memory
         .iter_mut()
@@ -135,6 +152,18 @@ fn x87_schema_admits_fdivr_forms_and_inexact_no_stop_case() {
     fixture.validate().unwrap();
     fixture.stop_rip = Some(HexU64(0x1002));
     fixture.expected_exit = ExpectedExit::Unsupported;
+    assert!(fixture.validate().is_err());
+
+    fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap()
+        .initial_bytes_hex = "dcf9".into();
+    fixture.stop_rip = None;
+    fixture.expected_exit = ExpectedExit::Unsupported;
+    fixture.validate().unwrap();
+    fixture.stop_rip = Some(HexU64(0x1002));
     assert!(fixture.validate().is_err());
 }
 

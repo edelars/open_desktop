@@ -201,6 +201,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30s | Bare `DE F0+i` FDIVRP ST(i), ST(0), exact `ST(0)/ST(i)` into old ST(i), then physical TOP pop; native closed | S2-30r |
 | [x] | S2-30t | Bare `D8 F8+i` FDIVR ST(0), ST(i), exact `ST(i)/ST(0)` into old TOP without pop; native closed | S2-30s |
 | [x] | S2-30u | Bare `DC F0+i` FDIVR ST(i), ST(0), exact `ST(0)/ST(i)` into physical ST(i) without pop; native closed | S2-30t |
+| [x] | S2-30v | Bare `DC F8+i` FDIV ST(i), ST(0), exact `ST(i)/ST(0)` into physical ST(i) without pop; native closed | S2-30u |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1814,6 +1815,31 @@ encodings. Native x87 admission remains closed.
 
 Normative source: Intel SDM revision 093, Vol.2A pp.3-336–3-338,
 “FDIVR/FDIVRP/FIDIVR—Reverse Divide.”
+
+#### S2-30v. Bare exact-only FDIV ST(i), ST(0) (bounded local slice)
+
+Accept exactly bare `DC F8+i`, `i=0..7`, as `FDIV ST(i), ST(0)`. Require an
+existing x87 state, FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags for the used
+physical operands, canonical Normal binary80 inputs and an exactly divisible
+normalized significand quotient. Compute old `ST(i)/ST(0)` using the shared
+ordered exact divide gate and require a canonical Normal precision-64 result.
+Reject zero, specials, noncanonical inputs, nonzero quotient remainder,
+overflow and subnormal/zero output before mutation. Exponents may differ. `i=0`
+uses one Valid tag and yields exact `+1`, retaining its tag and TOP. `DC F8..FF`
+remains distinct from `DC F0..F7` FDIVR; memory forms, prefixes, WAIT and all
+other unsupported encodings remain outside this slice.
+
+Success writes the result to old physical `(TOP+i)&7`, clears C1, records
+starting RIP as FIP, advances RIP by two and retires once. All other tags,
+payloads, x87 fields, GPRs and RFLAGS remain unchanged. Exhaustively check DC
+ModR/M, prefixes/REX/WAIT and truncation. Cover all TOP×i placements, signs,
+normal edges and ordered `15/3=5`; inexact `1/3` must return Unsupported
+without state changes. The fixture schema and interpreter runner admit the eight
+exact forms; the `DC F9` inexact rejection has no stop RIP and budget one.
+Native admission explicitly denies all eight encodings and remains closed.
+
+Normative source: Intel SDM revision 093, Vol.2A pp.3-333–3-335,
+“FDIV/FIDIV—Divide” ([official PDF, Vol.2A p.3-333](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451)).
 
 ### S2-31. x87 conversions, rounding и exceptions
 

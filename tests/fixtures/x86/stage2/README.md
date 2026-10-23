@@ -1161,3 +1161,14 @@ interpreter profile. The runner tests every TOP×i destination, `ST(0)=6` over
 no stop RIP and budget one, and compares the complete state. Exhaustive DC
 ModR/M and prefix checks preserve existing neighboring groups. Native x87
 admission explicitly rejects all eight encodings.
+
+### S2-30v x87 schema coverage
+
+The instruction schema accepts the eight bare `DC F8+i` FDIV forms in the
+local interpreter profile. The runner tests every TOP×i destination, ordered
+`15/3=5`, the exact `i=0` +1 alias, and payload/TOP/tag preservation. Its
+inexact `DC F9` case is Unsupported with no stop RIP and budget one, and
+compares the complete state. `od-isa` literal vectors additionally cover sign
+combinations and Normal-range edges. Exhaustive DC ModR/M and prefix checks
+preserve `DC F0..F7` FDIVR and adjacent groups. Native x87 admission explicitly
+rejects all eight new encodings.
