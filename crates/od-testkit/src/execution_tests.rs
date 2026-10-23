@@ -109,6 +109,61 @@ fn fsubp_runner_literal_outputs_follow_sti_minus_st0_and_pop() {
 }
 
 #[test]
+fn fsubr_sti_st0_runner_outputs_use_st0_minus_sti_without_pop() {
+    fn normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
+        let mut bytes = [0; 10];
+        bytes[..8].copy_from_slice(&significand.to_le_bytes());
+        bytes[8..].copy_from_slice(&(exponent | if negative { 0x8000 } else { 0 }).to_le_bytes());
+        bytes
+    }
+    for (st0, sti, expected) in [
+        (
+            normal(0xc000_0000_0000_0000, 0x3fff, false),
+            normal(0x8000_0000_0000_0000, 0x3fff, false),
+            normal(0x8000_0000_0000_0000, 0x3ffe, false),
+        ),
+        (
+            normal(0x8000_0000_0000_0000, 0x3fff, false),
+            normal(0xc000_0000_0000_0000, 0x3fff, false),
+            normal(0x8000_0000_0000_0000, 0x3ffe, true),
+        ),
+    ] {
+        for top in 0u8..8 {
+            let destination = usize::from((top + 3) & 7);
+            let source = usize::from(top);
+            let mut state = LongModeState::default();
+            state.rip = 0x7000;
+            let mut x87 = od_isa::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = u16::from(top) << 11;
+            x87.tag_word = 0;
+            x87.registers[source] = st0;
+            x87.registers[destination] = sti;
+            state.x87 = Some(x87);
+            let mut memory = memory(&[0xdc, 0xe3], 0x7000);
+            let outcome = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(outcome.instructions_executed, 1);
+            assert_eq!(state.rip, 0x7002);
+            let after = state.x87.unwrap();
+            assert_eq!(after.registers[destination], expected);
+            assert_eq!(after.registers[source], st0);
+            assert_eq!(after.top(), top);
+            assert_eq!(after.tag_word, 0);
+            assert_eq!(after.status_word, u16::from(top) << 11);
+        }
+    }
+}
+
+#[test]
 fn fsubr_runner_literal_outputs_follow_sti_minus_st0_and_alias_is_atomic() {
     fn normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
         let mut bytes = [0; 10];

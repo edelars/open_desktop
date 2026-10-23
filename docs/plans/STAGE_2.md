@@ -191,6 +191,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30h | Bare `D8 E0+i` FSUB ST(0), ST(i), exact-only same-exponent normal results; i=0 unsupported; native closed | S2-30e |
 | [x] | S2-30i | Bare `DC E8+i` FSUB ST(i), ST(0), exact-only same-exponent normal results; i=0 alias unsupported; native closed | S2-30h |
 | [x] | S2-30j | Bare `DE E8+i` FSUBP ST(i), ST(0), same exact-only domain plus physical TOP pop; i=0 alias unsupported; native closed | S2-30i |
+| [x] | S2-30l | Bare `DC E0+i` FSUBR ST(i), ST(0), exact-only ST(0)−ST(i) into physical ST(i), no pop; i=0 alias unsupported; native closed | S2-30i |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1597,6 +1598,23 @@ budget 1), literal runner outputs and alias snapshot. Native profile/admission
 remains closed. Normative source: Intel SDM rev.093 Vol.2A pp.3-397–3-399,
 FSUBR computes `SRC − DEST`, with C1 clear on exact results and C0/C2/C3
 undefined.
+
+#### S2-30l. Bare exact-only FSUBR ST(i), ST(0) (bounded local slice)
+
+Accept exactly bare `DC E0+i`, `i=0..7`, as `FSUBR ST(i), ST(0)`. Reuse
+`exact_fsub_result(state, 0, i)` to compute `ST(0) − ST(i)` and store at old
+physical `(TOP+i)&7`. The `i=0` alias is Unsupported because exact cancellation
+is outside this slice. Preserve the S2-30d exact numeric/environment domain
+and reject every unsupported input before commit.
+
+Success changes only the old physical `ST(i)` payload, clears C1, sets FIP to
+the starting RIP, advances RIP by two and retires once. Preserve TOP, FTW,
+source physical TOP payload, all other x87 fields, GPRs and RFLAGS. Decoder
+coverage includes the complete DC ModR/M and prefix matrix; schema accepts
+DC E0..E7 and requires alias DC E0 to be Unsupported with no stop RIP and
+budget one. Native admission stays closed. Normative source: Intel SDM
+revision 093, Vol.2A pp.3-397–3-399; FSUBR computes SRC−DEST, C1 is cleared
+for exact results, and C0/C2/C3 are undefined.
 
 ### S2-31. x87 conversions, rounding и exceptions
 

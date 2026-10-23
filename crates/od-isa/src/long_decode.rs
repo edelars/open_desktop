@@ -459,6 +459,10 @@ pub enum Operation {
     FsubStSt0 {
         destination: u8,
     },
+    /// Bare `DC E0+i` FSUBR ST(i), ST(0), exact finite local profile only.
+    FsubrStSt0 {
+        destination: u8,
+    },
     /// Bare `DC C0+i` FADD ST(i), ST(0), exact finite local profile only.
     FaddStSt0 {
         destination: u8,
@@ -987,6 +991,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 let modrm = self.byte()?;
                 match modrm {
+                    0xe0..=0xe7 => Operation::FsubrStSt0 {
+                        destination: modrm & 7,
+                    },
                     0xc0..=0xc7 => Operation::FaddStSt0 {
                         destination: modrm & 7,
                     },
@@ -2256,7 +2263,10 @@ mod tests {
         ));
         assert_eq!(truncated_prefixed.fetched, [0xfff, 0x1000]);
         for modrm in 0u8..=u8::MAX {
-            if (0xc0..=0xc7).contains(&modrm) || (0xe8..=0xef).contains(&modrm) {
+            if (0xc0..=0xc7).contains(&modrm)
+                || (0xe0..=0xe7).contains(&modrm)
+                || (0xe8..=0xef).contains(&modrm)
+            {
                 continue;
             }
             assert!(matches!(
@@ -2325,7 +2335,7 @@ mod tests {
             Err(DecodeError::Unsupported { .. })
         ));
         assert!(matches!(
-            Memory::new(&[0xdc, 0xe0]).decode(),
+            Memory::new(&[0xdc, 0xf0]).decode(),
             Err(DecodeError::Unsupported { .. })
         ));
         assert!(matches!(
@@ -2425,6 +2435,9 @@ mod tests {
                     0xc0..=0xc7 => Ok(Operation::FaddStSt0 {
                         destination: modrm & 7
                     }),
+                    0xe0..=0xe7 => Ok(Operation::FsubrStSt0 {
+                        destination: modrm & 7
+                    }),
                     0xe8..=0xef => Ok(Operation::FsubStSt0 {
                         destination: modrm & 7
                     }),
@@ -2440,12 +2453,18 @@ mod tests {
             );
         }
         for destination in 0u8..=7 {
-            for prefix in [0xf0, 0xf2, 0xf3, 0x26, 0x64, 0x66, 0x67, 0x9b]
-                .into_iter()
-                .chain(0x40..=0x4f)
+            for prefix in [
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            ]
+            .into_iter()
+            .chain(0x40..=0x4f)
             {
                 assert!(matches!(
                     Memory::new(&[prefix, 0xdc, 0xe8 | destination]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xdc, 0xe0 | destination]).decode(),
                     Err(DecodeError::Unsupported { .. })
                 ));
             }
@@ -2477,6 +2496,9 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0xc0..=0xc7 => Ok(Operation::FaddStSt0 {
+                        destination: modrm & 7,
+                    }),
+                    0xe0..=0xe7 => Ok(Operation::FsubrStSt0 {
                         destination: modrm & 7,
                     }),
                     0xe8..=0xef => Ok(Operation::FsubStSt0 {

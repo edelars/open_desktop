@@ -731,6 +731,12 @@ impl Fixture {
                 }
                 _ if code_bytes.len() == 4
                     && code_bytes.starts_with("dce")
+                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
+                _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("dce")
                     && matches!(code_bytes.as_bytes()[3], b'8'..=b'9' | b'a'..=b'f') =>
                 {
                     (code_bytes.as_str(), 2)
@@ -757,6 +763,7 @@ impl Fixture {
             let is_fsub_alias_unsupported = code_bytes == "d8e0"
                 || code_bytes == "d8e8"
                 || code_bytes == "dce8"
+                || code_bytes == "dce0"
                 || code_bytes == "dee8";
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length

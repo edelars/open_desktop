@@ -1070,3 +1070,11 @@ The schema test admits all eight bare `D8 E8+i` FSUBR encodings. Alias
 instruction budget of one. Local execution tests supply literal success
 vectors and compare the unchanged complete CPU/x87 snapshot on that alias.
 These cases remain local-only; native x87 admission stays closed.
+
+### S2-30l x87 schema coverage
+
+The schema validator admits all eight bare `DC E0+i` FSUBR encodings.
+`DC E0` is represented as expected `Unsupported` with `stop_rip: null` and
+instruction budget one. Local literal execution checks ST(0)−ST(i) output,
+physical destination placement and preservation of TOP/source state. These
+cases are local-only; native x87 admission stays closed.

@@ -388,6 +388,25 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     }
 
     for destination in 0u8..=7 {
+        let mut fsubr = fixture.clone();
+        let code = fsubr
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("dce{:x}", destination);
+        if destination == 0 {
+            fsubr.stop_rip = None;
+            fsubr.expected_exit = ExpectedExit::Unsupported;
+        }
+        assert_eq!(fsubr.instruction_budget, 1);
+        assert!(
+            Fixture::from_json(&fsubr.to_json().unwrap()).is_ok(),
+            "DC E{destination:x}"
+        );
+    }
+
+    for destination in 0u8..=7 {
         let mut fsubp = fixture.clone();
         let code = fsubp
             .memory
@@ -426,7 +445,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         ("9bd8c1", 3, 0x1003),
         ("66d8e1", 3, 0x1003),
         ("9bd8e1", 3, 0x1003),
-        ("dce1", 2, 0x1002),
+        ("dcc8", 2, 0x1002),
         ("dee1", 2, 0x1002),
         ("d8", 1, 0x1001),
         ("dec8", 2, 0x1002),

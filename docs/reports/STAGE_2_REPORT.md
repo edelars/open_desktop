@@ -3212,3 +3212,24 @@ native execution check was run; physical acceptance remains the shared final
 substage. `graphify update .` refreshed the project graph. Independent
 gpt-6.1-sol medium review found no concrete defects or missing required
 coverage; the review was static and made no changes.
+
+## S2-30l — exact-only FSUBR ST(i), ST(0) (bounded local slice)
+
+Implemented bare `DC E0+i`, `i=0..7`, as the separately decoded `FSUBR ST(i),
+ST(0)` operation. It computes `ST(0)−ST(i)` through the exact subtraction gate,
+commits only to old physical `(TOP+i)&7`, clears C1, records FIP, advances RIP
+by two and retires once. TOP/FTW and the source payload remain unchanged; alias
+`i=0` is Unsupported before commit. Native admission remains closed.
+
+Local literals verify every TOP×i physical placement, signs and operand order,
+`±2^-63`, maximum even carry, minimum Normal, alias atomicity, and fetch/stop/
+zero-budget atomicity. Decoder tests cover every DC ModR/M byte and rejected
+prefixes, fixture schema accepts DC E0..E7 with the alias unsupported, and
+native admission denies all eight encodings. `cargo test --workspace --offline`,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+the Linux-target runner compile check, and `git diff --check` passed. The layout
+check reports the pre-existing unmapped `.serena/` directory, which was left
+untouched. Independent gpt-6.1-sol medium review found no remaining concrete
+defects. This report does not claim general x87 semantics or physical oracle
+acceptance; Mac mini/SSH/hardware execution remains reserved for the shared
+final acceptance gate.

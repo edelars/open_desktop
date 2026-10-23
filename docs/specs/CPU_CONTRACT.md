@@ -1423,6 +1423,30 @@ Normative source: Intel SDM revision 093, Vol.2A pp.3-397–3-399,
 It defines `D8 E8+i` as `ST(i) − ST(0)`, C1 clear when no round-up occurs,
 and C0/C2/C3 undefined.
 
+## Local S2-30l: exact-only `FSUBR ST(i), ST(0)` (`DC E0+i`)
+
+The local long-mode interpreter accepts exactly bare `DC E0` through `DC E7`.
+For `i`, it computes logical `ST(0) − ST(i)` with
+`exact_fsub_result(state, 0, i)` and writes to old physical `(TOP+i)&7`.
+The domain remains the S2-30d exact finite profile: FCW `0x037f`,
+`FSW & 0x80ff == 0`, Valid used tags, canonical Normal operands with equal
+normalized exponents, accepted exact coefficient bounds and canonical Normal
+output. Alias `i=0` and every other unsupported state reject before commit.
+
+Success changes only old physical `ST(i)` payload, clears C1, records starting
+RIP in FIP, advances RIP by two and retires once. TOP, FTW, source physical
+TOP payload, other x87 fields, GPRs and RFLAGS are preserved. C0/C2/C3 remain
+deterministic local snapshot bits although architecturally undefined. Prefixes,
+other DC groups, and native x87 admission remain unsupported. Local validation
+covers literal signs/order, exact boundaries, every TOP×i placement,
+full-state domain rejection, fetch/stop/budget atomicity, complete DC ModR/M
+and prefix decoding, fixture schema, and native denial.
+
+Normative source: Intel SDM revision 093, Vol.2A pp.3-397–3-399
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515));
+`FSUBR` computes `SRC−DEST`, C1 is clear for exact results, and C0/C2/C3 are
+undefined.
+
 ## Local S2-29a: raw binary80 representation and classification
 
 `od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory
