@@ -451,6 +451,10 @@ pub enum Operation {
     FsubSt0St {
         source: u8,
     },
+    /// Bare `DC E8+i` FSUB ST(i), ST(0), exact finite local profile only.
+    FsubStSt0 {
+        destination: u8,
+    },
     /// Bare `DC C0+i` FADD ST(i), ST(0), exact finite local profile only.
     FaddStSt0 {
         destination: u8,
@@ -973,11 +977,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 let modrm = self.byte()?;
-                if !(0xc0..=0xc7).contains(&modrm) {
-                    return Err(self.unsupported(opcode));
-                }
-                Operation::FaddStSt0 {
-                    destination: modrm & 7,
+                match modrm {
+                    0xc0..=0xc7 => Operation::FaddStSt0 {
+                        destination: modrm & 7,
+                    },
+                    0xe8..=0xef => Operation::FsubStSt0 {
+                        destination: modrm & 7,
+                    },
+                    _ => return Err(self.unsupported(opcode)),
                 }
             }
             (OpcodeMap::Primary, 0xde) => {
@@ -2236,7 +2243,7 @@ mod tests {
         ));
         assert_eq!(truncated_prefixed.fetched, [0xfff, 0x1000]);
         for modrm in 0u8..=u8::MAX {
-            if (0xc0..=0xc7).contains(&modrm) {
+            if (0xc0..=0xc7).contains(&modrm) || (0xe8..=0xef).contains(&modrm) {
                 continue;
             }
             assert!(matches!(
@@ -2314,6 +2321,58 @@ mod tests {
     }
 
     #[test]
+    fn fsub_sti_st0_accepts_only_bare_dc_e8_through_ef() {
+        for destination in 0u8..=7 {
+            let mut memory = Memory::new(&[0xdc, 0xe8 | destination]);
+            let instruction = memory.decode().unwrap();
+            assert_eq!(instruction.operation, Operation::FsubStSt0 { destination });
+            assert_eq!(instruction.length, 2);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+        }
+        for modrm in 0u8..=u8::MAX {
+            let decoded = Memory::new(&[0xdc, modrm]).decode();
+            assert_eq!(
+                decoded.map(|instruction| instruction.operation),
+                match modrm {
+                    0xc0..=0xc7 => Ok(Operation::FaddStSt0 {
+                        destination: modrm & 7
+                    }),
+                    0xe8..=0xef => Ok(Operation::FsubStSt0 {
+                        destination: modrm & 7
+                    }),
+                    _ => Err(DecodeError::Unsupported {
+                        opcode: Opcode {
+                            map: OpcodeMap::Primary,
+                            byte: 0xdc
+                        },
+                        length: 2,
+                    }),
+                },
+                "DC {modrm:02x}"
+            );
+        }
+        for destination in 0u8..=7 {
+            for prefix in [0xf0, 0xf2, 0xf3, 0x26, 0x64, 0x66, 0x67, 0x9b]
+                .into_iter()
+                .chain(0x40..=0x4f)
+            {
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xdc, 0xe8 | destination]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
+        }
+        assert!(matches!(
+            Memory::new(&[0xdc]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped { .. }))
+        ));
+        assert!(matches!(
+            Memory::new(&[0x9b]).decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
     fn fadd_sti_st0_accepts_only_bare_dc_c0_through_c7() {
         for destination in 0u8..=7 {
             let mut memory = Memory::new(&[0xdc, 0xc0 | destination]);
@@ -2328,18 +2387,20 @@ mod tests {
             let decoded = Memory::new(&[0xdc, modrm]).decode();
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
-                if (0xc0..=0xc7).contains(&modrm) {
-                    Ok(Operation::FaddStSt0 {
+                match modrm {
+                    0xc0..=0xc7 => Ok(Operation::FaddStSt0 {
                         destination: modrm & 7,
-                    })
-                } else {
-                    Err(DecodeError::Unsupported {
+                    }),
+                    0xe8..=0xef => Ok(Operation::FsubStSt0 {
+                        destination: modrm & 7,
+                    }),
+                    _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
                             byte: 0xdc,
                         },
                         length: 2,
-                    })
+                    }),
                 },
                 "DC {modrm:02x}"
             );

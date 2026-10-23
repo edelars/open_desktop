@@ -1233,6 +1233,56 @@ fn local_x87_state_profile_runs_exact_fsub_sources_and_rejects_i0_atomically() {
 }
 
 #[test]
+fn local_x87_state_profile_runs_exact_fsub_destinations_for_all_top_and_indices() {
+    for top in 0u8..8 {
+        for destination_index in 1u8..8 {
+            let mut fixture = Fixture::from_json(MFENCE_STORE_FENCE_LOAD).unwrap().fixture;
+            fixture.case_id = format!("local_x87_fsub_dest_top{top}_i{destination_index}");
+            fixture.profile = od_testkit::v2::Profile::LongX87StateV1;
+            fixture.initial_state.rip = HexU64(0x0010_0000);
+            let source = usize::from(top);
+            let destination = usize::from((top + destination_index) & 7);
+            let mut seed = od_isa::state::X87State::fixture_seed();
+            seed.control_word = 0x037f;
+            seed.status_word = (u16::from(top) << 11) | 0x4700;
+            seed.tag_word = u16::MAX & !(3 << (source * 2)) & !(3 << (destination * 2));
+            seed.registers[source] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f]; // ST(0)=1.0
+            seed.registers[destination] = [0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x3f]; // ST(i)=1.5
+            seed.data_pointer = 0x5678;
+            seed.last_opcode = 0x05aa;
+            fixture.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&seed));
+            let code = fixture
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "code")
+                .unwrap();
+            code.guest_address = HexU64(0x0010_0000);
+            code.length = 2;
+            code.initial_bytes_hex = format!("dce{:x}", 8 + destination_index);
+            code.comparison_mask_hex = "ffff".into();
+            fixture.instruction_budget = 1;
+            fixture.stop_rip = Some(HexU64(0x0010_0002));
+            fixture.expected_exit = ExpectedExit::StopAddress;
+
+            let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+            assert_eq!(count(&result), 1, "TOP={top}, i={destination_index}");
+            let observed = snapshot(&result);
+            let mut expected = seed;
+            expected.registers[destination] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xfe, 0x3f]; // 0.5
+            expected.status_word &= !(1 << 9);
+            expected.instruction_pointer = 0x0010_0000;
+            assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+            assert_eq!(
+                observed.state.x87,
+                Some(od_testkit::v2::X87Snapshot::from(&expected))
+            );
+            assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+            assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+        }
+    }
+}
+
+#[test]
 fn fs_load_commit_is_preserved_when_a_later_instruction_faults_and_self_compares() {
     let mut fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_22j_fs_base_composition.case.json"

@@ -730,6 +730,12 @@ impl Fixture {
                     (code_bytes.as_str(), 2)
                 }
                 _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("dce")
+                    && matches!(code_bytes.as_bytes()[3], b'8'..=b'9' | b'a'..=b'f') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
+                _ if code_bytes.len() == 4
                     && code_bytes.starts_with("dec")
                     && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
                 {
@@ -742,13 +748,13 @@ impl Fixture {
                     ));
                 }
             };
-            let is_fsub_i0_unsupported = code_bytes == "d8e0";
+            let is_fsub_alias_unsupported = code_bytes == "d8e0" || code_bytes == "dce8";
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length
                 || !code.permissions.execute
                 || !code.initial_bytes_hex.eq_ignore_ascii_case(expected_bytes)
                 || self.instruction_budget != 1
-                || if is_fsub_i0_unsupported {
+                || if is_fsub_alias_unsupported {
                     self.stop_rip.is_some() || self.expected_exit != ExpectedExit::Unsupported
                 } else {
                     self.stop_rip.map(HexU64::get)

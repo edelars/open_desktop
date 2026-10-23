@@ -1312,6 +1312,47 @@ specified directly, and C0/C2/C3 are undefined. For this exact-only profile,
 C1=0 is the architectural non-rounded-result value. ([official Vol.2A PDF,
 pp.3-394–3-396](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=512))
 
+## Local S2-30i: exact-only `FSUB ST(i), ST(0)` (`DC E8+i`)
+
+The local long-mode interpreter accepts exactly bare `DC E8` through `DC EF`,
+using `ST(i)` at physical `(TOP+i)&7` as destination and `ST(0)` at physical
+TOP as source. It retains the S2-30d environment gate: an existing
+`X87State`, FCW `0x037f`, and `FSW & 0x80ff == 0`. Both used physical tags must
+be Valid, both raw operands must be canonical Normal binary80, and normalized
+exponents must match. After validating the original source, the interpreter
+toggles only bit 15 in a local ST(0) copy and uses the exact same-exponent
+addition path to form `DEST − SRC`; source payload bytes are preserved. The
+accepted coefficient bound remains at most `u64::MAX` or an even 65-bit
+magnitude no greater than `2^65−2`, and the packed output must be canonical
+Normal binary80.
+
+`i=0` is Unsupported because destination and source alias and the exact result
+is cancellation. Other rejects include missing state, bad used tags, dirty
+FCW/FSW, unequal exponents, all non-Normal classes, rejected exact
+coefficients, zero/subnormal output and overflow. Every reject precedes state
+mutation.
+
+Success replaces only physical `(TOP+i)&7`, clears FSW.C1, sets FIP to the
+starting RIP, advances RIP by two and retires once. It preserves physical TOP,
+FTW, FCW, FDP, FOP, other FSW bits, source ST(0), all other payloads, GPRs and
+RFLAGS. Retaining undefined C0/C2/C3 and FDP is local deterministic policy.
+Native instruction and profile admission remain closed for all eight
+encodings.
+
+Literal vectors include `1.5−1=+0.5`, `1−1.5=−0.5`, negative permutations,
+`1−(−1)=2`, `−1−1=−2`, `±2^-63`, maximum exact carry and minimum Normal.
+Every TOP×i pair checks physical placement and unchanged source. Alias, unequal
+exponents, special/non-Normal values, odd 65-bit coefficient, exact subnormal
+result and overflow reject atomically. Decoder checks the complete DC ModR/M
+space, prefixes, WAIT, truncation, memory forms, `FSUBR` and `FSUBP`; schema
+checks alias Unsupported, while the runner matrix covers i=1..7. This local
+instruction does not add general rounding, exceptions, stack faults, CR0
+behavior or native x87 observation.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FSUB/FSUBP/FISUB—Subtract,”
+pp.3-394–3-396 ([official Vol.2A PDF,
+pp.3-394–3-396](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=512)).
+
 ## Local S2-29a: raw binary80 representation and classification
 
 `od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory

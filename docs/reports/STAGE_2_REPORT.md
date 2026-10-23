@@ -3115,3 +3115,34 @@ parser warning for `include/open_desktop/host_abi.h` (tracked by ISSUE-010).
 `python3 tools/check_layout.py` stopped on the pre-existing unmapped root
 `.serena/` directory, which was left untouched. No physical Mac mini check is
 required for this integer helper. S2-29 and S2-28 remain open under ISSUE-019.
+
+## S2-30i — exact-only FSUB ST(i), ST(0) (bounded local slice)
+
+Added bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. The operation shares
+the S2-30d exact same-exponent arithmetic path, validates both original
+canonical Normal operands and their Valid tags before changing state, and
+toggles the sign only in a local copy of the ST(0) source. The result replaces
+only physical `(TOP+i)&7`; source ST(0), TOP, tags and other payloads are
+preserved. Alias `i=0` is Unsupported atomically. Native admission remains
+closed for all eight encodings.
+
+Literal sign/order vectors cover positive and negative results including
+`1.5−1`, `1−1.5`, negative permutations and `±2`. Additional literal vectors
+cover `±2^-63`, maximum even 65-bit carry and minimum Normal. All TOP×i=1..7
+execution pairs verify physical result placement and successful retirement;
+source bytes and all unrelated state remain unchanged. Full-state atomic reject
+cases cover alias, missing state, FCW/FSW, tags, unequal exponents, every raw
+non-Normal class, cancellation, odd 65-bit coefficient, exact subnormal output
+and overflow. Separate run checks verify fetch-fault, stop-address and zero-
+budget atomicity. Decoder, fixture schema, runner matrix and native fail-closed
+source tests cover the new encoding range.
+
+`cargo test --workspace --offline`, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, `git diff --check`, and `graphify update .`
+passed. `python3 tools/check_layout.py` reports the pre-existing unmapped root
+`.serena/` directory, which was left untouched. The Linux-only native rejection
+test was not executed on this macOS host; the Linux-target runner check compiled
+that target. No hardware or SSH test was run; physical acceptance remains in
+the shared final acceptance substage.

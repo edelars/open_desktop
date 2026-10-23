@@ -189,6 +189,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30f | Bare `DC C0+i` FADD ST(i), ST(0), same exact-only domain, native closed | S2-30e |
 | [x] | S2-30g | Bare `DE C0+i` FADDP ST(i), ST(0), same exact-only domain plus physical TOP pop, native closed | S2-30f |
 | [x] | S2-30h | Bare `D8 E0+i` FSUB ST(0), ST(i), exact-only same-exponent normal results; i=0 unsupported; native closed | S2-30e |
+| [x] | S2-30i | Bare `DC E8+i` FSUB ST(i), ST(0), exact-only same-exponent normal results; i=0 alias unsupported; native closed | S2-30h |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1538,6 +1539,26 @@ all TOP. Decoder coverage includes complete D8 ModR/M space, prefixes, WAIT,
 truncated fetch and reverse/memory subtraction neighbors; schema/runner cover
 all seven successes and the i=0 Unsupported outcome. Native profile/admission
 rejects all eight encodings.
+
+#### S2-30i. Bare exact-only FSUB ST(i), ST(0) (bounded local slice)
+
+Accept only bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. Retain the
+S2-30d environment, used Valid tags, canonical Normal inputs, equal normalized
+exponents, exact coefficient and canonical Normal result gates. Compute
+`ST(i) - ST(0)` by changing the sign in a local copy of the validated source
+ST(0); preserve its original bytes. Reject `i=0` because destination aliases
+source and the result is exact cancellation. Reject missing/bad state, unequal
+exponents, non-normal classes, rejected coefficients, zero/subnormal output
+and overflow before mutation.
+
+On success replace only physical `(TOP+i)&7`, clear C1, set FIP to old RIP,
+advance RIP by two and retire once. Preserve source ST(0), TOP, tags, all other
+payloads, FCW, other FSW bits, FDP/FOP and integer state under the established
+local policy. Native admission stays closed. Literal arithmetic vectors,
+every TOP×i placement, alias and unsupported-state atomicity, exhaustive DC
+ModR/M and prefix/fetch boundaries, fixture schema, CLI runner, and native
+denial are required. Full x87 architectural behavior remains outside this
+bounded slice.
 
 ### S2-31. x87 conversions, rounding и exceptions
 
