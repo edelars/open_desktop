@@ -1221,6 +1221,32 @@ These are mathematical modes only: no control-word encoding, precision
 parameter, exponent adjustment, signed zero, x87 RC/PC, packing, status, or
 instruction behavior is introduced. S2-29 and S2-28 remain open.
 
+### S2-29l. Direct exact quotient rounding to significant precision (partial)
+
+`round_quotient_to_precision(sign, q, r, d, precision, mode)` rounds the exact
+normalized coefficient `(-1)^sign * (q + r/d)` directly to 1–64 significant
+bits. It accepts only `d != 0`, `r < d`, and either the exact zero pair or a
+normalized nonzero `q` with bit 63 set. The result is a widened unsigned
+magnitude; a carry to `2^precision` remains visible and does not mutate an
+exponent. For an S2-29i divider exponent `e`, the rounded value is represented
+as `(-1)^sign * magnitude * 2^(e + 1 - precision)`. The caller owns that scale;
+this helper does not adjust the exponent.
+
+Nearest rounding compares the discarded quotient bits and exact remainder
+without multiplication or an intermediate rounding. Directed modes use the
+coefficient sign and whether any discarded information is nonzero. Literal
+vectors cover all four modes and signs, p=1/2/24/53/63/64, tie parity, carry,
+the `d = u64::MAX` half boundary, invalid inputs, and a direct-rounding case
+that would change under double rounding. p=64 synthetic ties/carry are
+unreachable from normalized divider output; reduced-precision ties remain
+valid tested cases. Composition uses exact S2-29i results for 1/3 at p=24, 53,
+and 64, including negative directed modes.
+
+This is mathematical precision rounding only: it does not implement x87 PC/RC
+or control-word values, exponent normalization/adjustment, subnormal/range
+handling, binary80 packing, flags/exceptions, signed-zero selection, or guest
+FDIV. S2-29 and S2-28 remain open.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.

@@ -2600,3 +2600,37 @@ existing parser warning for `include/open_desktop/host_abi.h`. The layout check
 stopped on the pre-existing unmapped `.serena/` directory, which was left
 untouched. No physical Mac mini check is required for this pure helper. S2-29
 and S2-28 remain open under ISSUE-019.
+
+## S2-29l — direct exact quotient rounding to significant precision (partial)
+
+Added `round_quotient_to_precision(sign, q, r, d, precision, mode)` for exact
+normalized quotient decompositions. It accepts 1–64 significant bits, rejects
+invalid denominator/remainder/precision inputs and nonzero unnormalized
+quotients, and returns zero for the exact zero pair. The implementation keeps
+`t = q >> (64 - precision)` and the discarded `lo` bits, then compares those
+bits and the exact rational remainder together. It uses no multiplication,
+intermediate rounding, host floating point, or exponent mutation. A carry to
+`2^precision` remains in the returned `u128`. With divider exponent `e`, the
+rounded result represents `(-1)^sign * magnitude * 2^(e + 1 - precision)`;
+the caller owns this scale.
+
+Literal tests cover all four mathematical modes and signs, reduced precision
+ties and directed tails, p=1 boundaries, exact zero, invalid input metadata,
+the maximum-denominator half boundary, and a counterexample to double
+rounding. Synthetic p=64 ties and carry are explicitly labeled unreachable
+from normalized divider output; reduced-precision ties remain valid. The exact
+S2-29i 1/3 quotient composes at p=24 (`0xaaaaab`), p=53
+(`0x15555555555555`), and p=64 (`0xaaaaaaaaaaaaaaab`), with negative directed
+modes checked at p=24.
+
+This remains a mathematical helper. x87 PC/RC/control-word behavior, exponent
+adjustment/normalization, subnormal/range handling, binary80 packing,
+architectural flags/exceptions, signed-zero choice, and guest FDIV remain
+outside this slice. Verification: `cargo test -p od-isa x87 --offline` passed
+(36 tests); `cargo fmt --all -- --check`, `cargo check --workspace
+--all-targets --offline`, and `git diff --check` passed. `python3
+tools/check_layout.py` stopped on the pre-existing unmapped root `.serena/`
+directory, which was left untouched. `graphify update .` completed with the
+existing parser warning for `include/open_desktop/host_abi.h`. No physical Mac
+mini check was performed or required for this pure integer helper. S2-29 and
+S2-28 remain open under ISSUE-019.

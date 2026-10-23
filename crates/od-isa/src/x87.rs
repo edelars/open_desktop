@@ -2,9 +2,10 @@
 //! integer-only helper representations.
 //!
 //! This module does not execute x87 instructions. Its bounded integer helpers
-//! preserve exact intermediate values. One pure rational helper rounds an
-//! integer quotient under mathematical rounding modes; it does not define
-//! architectural x87 rounding, packing, or exception behavior. The byte array
+//! preserve exact intermediate values. Pure rational helpers round integer
+//! quotients either to an integer lattice or a requested precision under
+//! mathematical rounding modes; they do not define architectural x87 rounding,
+//! packing, or exception behavior. The byte array
 //! follows memory order, least significant byte first (Intel SDM revision 093,
 //! Vol. 1 §§4.2.2 and
 //! 8.2.2, Tables 4-3 and 8-3).
@@ -193,6 +194,60 @@ pub fn round_quotient_magnitude(
     };
 
     Some(u128::from(q) + u128::from(increment))
+}
+
+/// Round an exact normalized rational quotient to `precision` significant bits.
+///
+/// The exact coefficient is `(-1)^sign * (q + r / d)`. For nonzero inputs,
+/// `q` must be normalized with bit 63 set. The returned `u128` is the rounded
+/// significand magnitude; a carry to `2^precision` is preserved without
+/// changing an exponent. When consumed with a divider result whose exponent is
+/// `e`, the represented value is
+/// `(-1)^sign * magnitude * 2^(e + 1 - precision)`. This helper does not adjust
+/// that exponent, pack binary80, or define x87 control-word/exception behavior.
+///
+/// The quotient tail is compared exactly: discarded quotient bits and the
+/// rational remainder jointly determine nearest rounding, so no intermediate
+/// rounding or multiplication is needed.
+pub fn round_quotient_to_precision(
+    sign: bool,
+    q: u64,
+    r: u64,
+    d: u64,
+    precision: u32,
+    mode: RationalRoundingMode,
+) -> Option<u128> {
+    if !(1..=64).contains(&precision) || d == 0 || r >= d {
+        return None;
+    }
+    if (q == 0 && r != 0) || (q != 0 && q < (1_u64 << 63)) {
+        return None;
+    }
+
+    if q == 0 {
+        return Some(0);
+    }
+
+    let k = 64 - precision;
+    let t = q >> k;
+    let lo = q - (t << k);
+    let inexact = lo != 0 || r != 0;
+    let increment = match mode {
+        RationalRoundingMode::NearestTiesEven => {
+            if k == 0 {
+                let complement = d - r;
+                r > complement || (r == complement && t & 1 != 0)
+            } else {
+                let halfway = 1_u64 << (k - 1);
+                lo > halfway || (lo == halfway && (r != 0 || t & 1 != 0))
+            }
+        }
+        RationalRoundingMode::TowardZero => false,
+        RationalRoundingMode::TowardPositive => inexact && !sign,
+        RationalRoundingMode::TowardNegative => inexact && sign,
+    };
+
+    Some(u128::from(t) + u128::from(increment))
 }
 
 /// Round the unsigned rational value `q + r / d` to nearest with ties to even.
@@ -499,7 +554,8 @@ mod tests {
         RationalRoundingMode, X87Binary80, X87Binary80Class, X87Finite, X87Grs,
         add_finite_same_exponent, align_finite_pair, divide_finite_significands,
         multiply_finite_significands, normalize_exact_coefficient, normalize_exact_magnitude,
-        round_quotient_magnitude, round_quotient_ties_even, shift_right_jam, shift_right_jam_u128,
+        round_quotient_magnitude, round_quotient_ties_even, round_quotient_to_precision,
+        shift_right_jam, shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -1026,6 +1082,193 @@ mod tests {
                 Some(expected),
                 "sign={sign} q={q} r={r} d={d} mode={mode:?}"
             );
+        }
+    }
+
+    #[test]
+    fn quotient_precision_rounding_matches_literal_vectors() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let cases = [
+            // Synthetic p=64 tie and carry cases: divider results cannot make
+            // these exact half tails, but the generic helper must preserve them.
+            (0x8000_0000_0000_0002, 1, 2, 64, 0x8000_0000_0000_0002),
+            (0x8000_0000_0000_0003, 1, 2, 64, 0x8000_0000_0000_0004),
+            (u64::MAX, 1, 2, 64, 1_u128 << 64),
+            // At p=1, a remainder just below one cannot bridge lo=H-1.
+            (0xbfff_ffff_ffff_ffff, u64::MAX - 1, u64::MAX, 1, 1),
+            (0xc000_0000_0000_0000, 0, 1, 1, 2), // exact halfway, odd t
+            (0xa000_0000_0000_0000, 0, 1, 2, 2), // exact halfway, even t
+            (0xe000_0000_0000_0000, 0, 1, 2, 4), // exact halfway, odd t
+            // Direct exact rounding avoids the double-rounding result 0x...000.
+            (0x8000_0000_0000_0001, 1, 4, 63, 0x4000_0000_0000_0001),
+            // d=MAX comparisons on either side of one half (p=64 synthetic).
+            (
+                0x8000_0000_0000_0000,
+                0x7fff_ffff_ffff_ffff,
+                u64::MAX,
+                64,
+                0x8000_0000_0000_0000,
+            ),
+            (
+                0x8000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+                u64::MAX,
+                64,
+                0x8000_0000_0000_0001,
+            ),
+        ];
+
+        for (q, r, d, precision, expected) in cases {
+            assert_eq!(
+                round_quotient_to_precision(false, q, r, d, precision, Nearest),
+                Some(u128::from(expected)),
+                "q={q:#018x} r={r} d={d} p={precision}"
+            );
+        }
+    }
+
+    #[test]
+    fn quotient_precision_rounding_applies_all_modes_and_signs() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let modes = [Nearest, Zero, Up, Down];
+        for sign in [false, true] {
+            for (mode, expected) in [
+                (Nearest, 0x4000_0000_0000_0000_u128),
+                (Zero, 0x4000_0000_0000_0000),
+                (
+                    Up,
+                    if sign {
+                        0x4000_0000_0000_0000
+                    } else {
+                        0x4000_0000_0000_0001
+                    },
+                ),
+                (
+                    Down,
+                    if sign {
+                        0x4000_0000_0000_0001
+                    } else {
+                        0x4000_0000_0000_0000
+                    },
+                ),
+            ] {
+                assert_eq!(
+                    round_quotient_to_precision(sign, 0x8000_0000_0000_0000, 1, 2, 63, mode,),
+                    Some(expected),
+                    "sign={sign} mode={mode:?}"
+                );
+            }
+
+            // A discarded bit with no rational remainder is still inexact,
+            // while an exact halfway value follows ties-to-even.
+            assert_eq!(
+                round_quotient_to_precision(sign, 0xa000_0000_0000_0000, 0, 1, 2, Nearest,),
+                Some(2)
+            );
+            assert_eq!(
+                round_quotient_to_precision(sign, 0xa000_0000_0000_0000, 0, 1, 2, Up,),
+                Some(if sign { 2 } else { 3 })
+            );
+            assert_eq!(
+                round_quotient_to_precision(sign, 0xa000_0000_0000_0000, 0, 1, 2, Down,),
+                Some(if sign { 3 } else { 2 })
+            );
+        }
+
+        // Every mode and sign accepts the exact zero decomposition.
+        for mode in modes {
+            for sign in [false, true] {
+                assert_eq!(
+                    round_quotient_to_precision(sign, 0, 0, 1, 64, mode),
+                    Some(0)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn quotient_precision_rounding_composes_with_division_without_double_rounding() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let numerator = finite(-1, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let denominator = finite(0, 0xc000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let quotient = divide_finite_significands(numerator, denominator).unwrap();
+        assert_eq!(quotient.sign(), false);
+        assert_eq!(quotient.exponent(), -2);
+        assert_eq!(quotient.quotient(), 0xaaaa_aaaa_aaaa_aaaa);
+        assert_eq!(quotient.remainder(), 0x8000_0000_0000_0000);
+        assert_eq!(quotient.denominator(), 0xc000_0000_0000_0000);
+        for (precision, nearest) in [
+            (24, 0x00aa_aaab_u128),
+            (53, 0x0015_5555_5555_5555),
+            (64, 0xaaaa_aaaa_aaaa_aaab),
+        ] {
+            assert_eq!(
+                round_quotient_to_precision(
+                    quotient.sign(),
+                    quotient.quotient(),
+                    quotient.remainder(),
+                    quotient.denominator(),
+                    precision,
+                    Nearest,
+                ),
+                Some(nearest)
+            );
+        }
+
+        let negative_numerator = finite(-1, 0x8000_0000_0000_0000, true, X87Binary80Class::Normal);
+        let negative_quotient =
+            divide_finite_significands(negative_numerator, denominator).unwrap();
+        assert!(negative_quotient.sign());
+        let p24 = [
+            (Nearest, 0x00aa_aaab_u128),
+            (Zero, 0x00aa_aaaa),
+            (Up, 0x00aa_aaaa),
+            (Down, 0x00aa_aaab),
+        ];
+        for (mode, expected) in p24 {
+            assert_eq!(
+                round_quotient_to_precision(
+                    negative_quotient.sign(),
+                    negative_quotient.quotient(),
+                    negative_quotient.remainder(),
+                    negative_quotient.denominator(),
+                    24,
+                    mode,
+                ),
+                Some(expected),
+                "mode={mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn quotient_precision_rounding_rejects_invalid_inputs() {
+        let modes = [
+            RationalRoundingMode::NearestTiesEven,
+            RationalRoundingMode::TowardZero,
+            RationalRoundingMode::TowardPositive,
+            RationalRoundingMode::TowardNegative,
+        ];
+        for mode in modes {
+            for precision in [0, 65, u32::MAX] {
+                assert_eq!(
+                    round_quotient_to_precision(false, 0, 0, 1, precision, mode),
+                    None
+                );
+            }
+            assert_eq!(round_quotient_to_precision(false, 7, 0, 0, 1, mode), None);
+            assert_eq!(round_quotient_to_precision(false, 7, 1, 1, 1, mode), None);
+            assert_eq!(round_quotient_to_precision(false, 1, 0, 1, 1, mode), None);
+            assert_eq!(round_quotient_to_precision(false, 0, 1, 2, 1, mode), None);
         }
     }
 

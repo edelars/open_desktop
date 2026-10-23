@@ -1266,6 +1266,37 @@ not define control-word values, a precision parameter, exponent changes,
 signed zero, x87 RC/PC, binary80 packing, status effects, or guest instruction
 semantics. S2-29 and S2-28 remain open.
 
+## Local S2-29l: direct exact quotient rounding to significant precision
+
+`od_isa::x87::round_quotient_to_precision(sign, q, r, d, precision, mode)`
+rounds `(-1)^sign * (q + r/d)` directly to 1–64 significant bits. Valid input
+requires `d != 0`, `r < d`, and either `q == 0 && r == 0` or a nonzero
+normalized quotient with bit 63 set. Invalid precision or quotient metadata
+returns `None`; exact zero returns zero for every valid precision and mode.
+
+For `k = 64 - precision`, it retains `t = q >> k` and examines
+`lo = q - (t << k)` together with the exact remainder. Nearest mode compares
+that combined tail with half an ulp, including ties-to-even, without multiplying
+or rounding an intermediate value. Directed modes increment only when the
+discarded tail is nonzero and the direction/sign require it. The returned
+`u128` preserves a carry to `2^precision` without changing an exponent. Given
+S2-29i exponent `e`, the rounded magnitude represents
+`(-1)^sign * magnitude * 2^(e + 1 - precision)`; exponent adjustment is a
+caller responsibility.
+
+Literal vectors cover all modes and signs, precision endpoints and reduced
+precisions, exact zero, invalid p/d/r/q inputs, tie parity, directed rounding
+of discarded quotient bits and rational remainder, `u64::MAX` denominator
+halfway boundaries, and a direct-rounding vector that distinguishes the
+result from double rounding. p=64 synthetic tie/carry inputs are unreachable
+from normalized divider output; ties at reduced precision remain valid cases.
+Composition vectors use the exact 1/3 S2-29i quotient/remainder at p=24, 53,
+and 64 and check negative directed modes. This is a mathematical helper only:
+it does not implement x87 PC/RC/control-word semantics, exponent normalization
+or adjustment, subnormal/range handling, binary80 packing, architectural
+flags/exceptions, signed-zero selection, or guest FDIV. S2-29 and S2-28 remain
+open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.
