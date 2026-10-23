@@ -177,6 +177,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-29 | Собственное ядро extended precision | S2-28 |
 | [x] | S2-29a | Lossless binary80 raw fields and read-only raw encoding classification; no arithmetic or x87 execution | S2-28a |
 | [x] | S2-29b | Integer-only finite binary80 normalization with source-class provenance and right-shift-jam/GRS bit helpers; no rounding or arithmetic | S2-29a |
+| [x] | S2-29c | Generic `u128` right-shift-jam preserving 64-bit significands plus three low GRS bits; literal boundary and normalized-finite bridge vectors; no rounding or arithmetic | S2-29b |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
@@ -1039,6 +1040,23 @@ minimum normal, maximum finite, unsupported encodings, and shift distances
 0/1/63/64/65 with sticky and GRS cases. This is a primitive slice only:
 rounding modes, arithmetic, exception behavior, and the S2-29/S2-28 umbrellas
 remain open.
+
+### S2-29c. Generic u128 right-shift-jam for extended significands (partial)
+
+`shift_right_jam_u128(value, distance)` is a standalone integer primitive:
+distance zero is identity; a nonzero distance below 128 shifts logically and
+ORs every discarded one into bit zero; distances at least 128 return one for
+nonzero input and zero otherwise. Repeated right jams preserve a sticky one;
+left shifts cannot reconstruct discarded bits. The bridge from a normalized
+64-bit finite significand is exactly `(significand as u128) << 3`. After a
+right jam, only the low three bits are cast to `X87Grs`, and the retained
+significand is read from `aligned >> 3`. This defines no rounding or arithmetic.
+
+Independent literal vectors cover zero, bit 127, `u128::MAX`, repeated sticky
+propagation, distances 0/1/2/3/63/64/65/66/67/127/128/129/`u32::MAX`, and the
+bridge for signed zero, negative subnormal, normal, and negative
+pseudo-denormal while preserving source-class metadata. S2-29 and S2-28 remain
+open.
 
 ### S2-30. Основные x87 операции
 

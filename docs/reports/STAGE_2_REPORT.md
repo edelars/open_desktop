@@ -2369,3 +2369,24 @@ classes, shift distances 0/1/63/64/65, sticky behavior and GRS bit extraction.
 documentation updates. No physical CPU check was required or performed; no
 performance result is claimed. The umbrella S2-29/S2-28 remain open, and
 ISSUE-019 tracks the remaining work.
+
+## S2-29c — generic u128 right-shift-jam (partial)
+
+Added standalone `shift_right_jam_u128(value, distance)`, preserving jammed
+sticky state across right shifts and returning only the sticky bit for
+distances at least 128. Its documented normalized-significand bridge is
+`(significand as u128) << 3`; callers extract GRS from only the low three bits
+and retain the aligned significand with `aligned >> 3`. No left-shift recovery,
+rounding, arithmetic, exceptions, instruction execution, result framework,
+or precision claim is provided.
+
+Independent literal vectors cover zero, bit 127, `u128::MAX`, all required
+distances 0/1/2/3/63/64/65/66/67/127/128/129/`u32::MAX`, repeated sticky
+propagation, and bridge cases for signed zero, negative subnormal, normal and
+negative pseudo-denormal with source-class metadata. The focused
+`cargo test -p od-isa x87 --offline` command passed (11 tests),
+`cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, `python3 tools/check_layout.py`, and
+`git diff --check` passed. No physical Mac mini check was performed or
+required for this integer helper. ISSUE-019 remains open for arithmetic,
+rounding, exceptions, instructions, and state integration.

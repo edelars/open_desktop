@@ -107,6 +107,24 @@ pub const fn shift_right_jam(value: u64, distance: u32) -> u64 {
     }
 }
 
+/// Shift a `u128` right while OR-ing every discarded one bit into bit zero.
+/// Distance zero is identity; distances at least 128 produce only the sticky
+/// bit. Repeated right shifts preserve an existing sticky bit. Left shifts
+/// cannot reconstruct bits discarded by this operation. This helper does no
+/// rounding and defines no floating-point arithmetic.
+pub const fn shift_right_jam_u128(value: u128, distance: u32) -> u128 {
+    if distance == 0 {
+        value
+    } else if distance < u128::BITS {
+        let discarded_mask = (1_u128 << distance) - 1;
+        (value >> distance) | if value & discarded_mask != 0 { 1 } else { 0 }
+    } else if value != 0 {
+        1
+    } else {
+        0
+    }
+}
+
 impl X87Binary80 {
     pub const BYTE_LEN: usize = 10;
 
@@ -211,7 +229,7 @@ impl X87Binary80 {
 
 #[cfg(test)]
 mod tests {
-    use super::{X87Binary80, X87Binary80Class, X87Grs, shift_right_jam};
+    use super::{X87Binary80, X87Binary80Class, X87Grs, shift_right_jam, shift_right_jam_u128};
     use crate::state::{X87State, X87Tag};
 
     #[test]
@@ -575,5 +593,129 @@ mod tests {
         assert!(!exact.guard());
         assert!(exact.round());
         assert!(!exact.sticky());
+    }
+
+    #[test]
+    fn u128_right_shift_jam_matches_literal_vectors_at_all_boundaries() {
+        let distances = [0, 1, 2, 3, 63, 64, 65, 66, 67, 127, 128, 129, u32::MAX];
+        let max_expected = [
+            u128::MAX,
+            0x7fff_ffff_ffff_ffff_ffff_ffff_ffff_ffff,
+            0x3fff_ffff_ffff_ffff_ffff_ffff_ffff_ffff,
+            0x1fff_ffff_ffff_ffff_ffff_ffff_ffff_ffff,
+            0x0000_0000_0000_0001_ffff_ffff_ffff_ffff,
+            0x0000_0000_0000_0000_ffff_ffff_ffff_ffff,
+            0x0000_0000_0000_0000_7fff_ffff_ffff_ffff,
+            0x0000_0000_0000_0000_3fff_ffff_ffff_ffff,
+            0x0000_0000_0000_0000_1fff_ffff_ffff_ffff,
+            1,
+            1,
+            1,
+            1,
+        ];
+        let high_bit_expected = [
+            0x8000_0000_0000_0000_0000_0000_0000_0000,
+            0x4000_0000_0000_0000_0000_0000_0000_0000,
+            0x2000_0000_0000_0000_0000_0000_0000_0000,
+            0x1000_0000_0000_0000_0000_0000_0000_0000,
+            0x0000_0000_0000_0001_0000_0000_0000_0000,
+            0x0000_0000_0000_0000_8000_0000_0000_0000,
+            0x0000_0000_0000_0000_4000_0000_0000_0000,
+            0x0000_0000_0000_0000_2000_0000_0000_0000,
+            0x0000_0000_0000_0000_1000_0000_0000_0000,
+            1,
+            1,
+            1,
+            1,
+        ];
+
+        for ((distance, expected_max), expected_high) in distances
+            .into_iter()
+            .zip(max_expected)
+            .zip(high_bit_expected)
+        {
+            assert_eq!(shift_right_jam_u128(0, distance), 0);
+            assert_eq!(shift_right_jam_u128(u128::MAX, distance), expected_max);
+            assert_eq!(shift_right_jam_u128(1_u128 << 127, distance), expected_high);
+        }
+    }
+
+    #[test]
+    fn u128_right_shift_jam_preserves_sticky_across_repeated_shifts() {
+        assert_eq!(shift_right_jam_u128(0x11, 1), 0x09);
+        assert_eq!(shift_right_jam_u128(0x09, 1), 0x05);
+        assert_eq!(shift_right_jam_u128(0x05, 1), 0x03);
+        assert_eq!(shift_right_jam_u128(0x03, 1), 0x01);
+        assert_eq!(shift_right_jam_u128(0x11, 4), 0x01);
+    }
+
+    #[test]
+    fn normalized_finite_significands_bridge_to_u128_grs_without_losing_metadata() {
+        let cases = [
+            (
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                true,
+                X87Binary80Class::Zero,
+                0,
+                0,
+                0,
+                0b000,
+            ),
+            (
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                true,
+                X87Binary80Class::Subnormal,
+                0x8000_0000_0000_0000,
+                0,
+                0x8000_0000_0000_0000,
+                0b000,
+            ),
+            (
+                [5, 0, 0, 0, 0, 0, 0, 0x80, 1, 0],
+                false,
+                X87Binary80Class::Normal,
+                0x8000_0000_0000_0005,
+                3,
+                0x1000_0000_0000_0000,
+                0b101,
+            ),
+            (
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x80],
+                true,
+                X87Binary80Class::PseudoDenormal,
+                0x8000_0000_0000_0000,
+                0,
+                0x8000_0000_0000_0000,
+                0b000,
+            ),
+        ];
+
+        for (
+            bytes,
+            expected_sign,
+            expected_class,
+            expected_significand,
+            distance,
+            expected_retained,
+            expected_grs_bits,
+        ) in cases
+        {
+            let finite = X87Binary80::from_bytes(bytes)
+                .normalize_finite()
+                .expect("finite class");
+            assert_eq!(finite.sign(), expected_sign);
+            assert_eq!(finite.source_class(), expected_class);
+            assert_eq!(finite.significand(), expected_significand);
+
+            let aligned = (finite.significand() as u128) << 3;
+            let shifted = shift_right_jam_u128(aligned, distance);
+            let grs = X87Grs::from_low_bits((shifted & 0b111) as u64);
+            let retained = (shifted >> 3) as u64;
+
+            assert_eq!(retained, expected_retained);
+            assert_eq!(grs.guard(), expected_grs_bits & 0b100 != 0);
+            assert_eq!(grs.round(), expected_grs_bits & 0b010 != 0);
+            assert_eq!(grs.sticky(), expected_grs_bits & 0b001 != 0);
+        }
     }
 }

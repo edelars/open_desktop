@@ -1082,6 +1082,24 @@ zero, subnormal endpoints, pseudo-denormal provenance, normal/minimum and
 maximum finite values, rejected classes, and shift boundaries/sticky state.
 S2-29 and S2-28 remain open.
 
+## Local S2-29c: 128-bit right-shift-jam and significand bridge
+
+`shift_right_jam_u128(value, distance)` is a standalone logical right shift
+that ORs all discarded one bits into bit zero. Distance zero returns the input
+unchanged; distances from 1 through 127 perform the shift and jam; distances
+at least 128 return one for nonzero input and zero for zero input. Repeated
+right jams preserve an existing sticky one. A left shift cannot reconstruct
+discarded information.
+
+The exact bridge for a normalized 64-bit finite significand is
+`(significand as u128) << 3`. Once shifted with jam, callers cast only the
+low three bits to `X87Grs`; the retained significand is `aligned >> 3`.
+Literal vectors cover zero, bit 127, `u128::MAX`, repeated sticky propagation,
+all specified width boundaries through `u32::MAX`, and normalized finite
+vectors retaining sign and source-class metadata. This helper adds no
+rounding, arithmetic, exception/status behavior, instruction execution, or
+precision claim. S2-29 and S2-28 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.
