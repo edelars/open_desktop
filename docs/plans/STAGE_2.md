@@ -1079,6 +1079,27 @@ retention proof. Addition/subtraction, result normalization, rounding,
 precision control, exceptions/status, special values, guest instructions, and
 native snapshot remain outside this partial slice; S2-29 and S2-28 remain open.
 
+### S2-29e. Exact signed sum for matching finite exponents (partial)
+
+`add_finite_same_exponent(lhs, rhs)` returns `Some((exponent, coefficient))`
+only when every nonzero input has the same exponent. The exact value is
+`coefficient * 2^(exponent - 63)`, where each normalized 64-bit significand is
+converted to a signed `i128` and added without alignment, jam bits, or host
+floating point. A zero is neutral and uses the other operand's exponent; two
+zeros return `(0, 0)` without choosing a signed zero. The coefficient is not
+normalized, so carry and cancellation remain represented exactly. Two
+nonzero unequal exponents return `None`. The input values, raw encodings, and
+source-class provenance are unchanged; the result carries no source class.
+
+Manual literal vectors cover positive and negative carry, maximum signed
+coefficient sums, adjacent-significand cancellation to `+1` and `-1`, exact
+cancellation, negative exponents, zeros in both operand orders, a
+pseudo-denormal plus its matching normal with distinct provenance, unequal
+exponent rejection, and source immutability. Jammed alignment, binary80
+packing, result normalization, unequal-exponent arithmetic, rounding/PC/RC,
+signed-zero selection, exceptions/flags, and instruction behavior remain
+outside this partial slice. S2-29 and the S2-28 umbrella remain open.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.

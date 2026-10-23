@@ -62,6 +62,35 @@ impl X87Finite {
     }
 }
 
+/// Add two finite values exactly when their nonzero exponents match.
+///
+/// The returned coefficient represents `coefficient * 2^(exponent - 63)`.
+/// Zero operands are neutral and do not select a signed-zero result. The
+/// coefficient is deliberately not normalized, so carry and cancellation
+/// information remains exact. Unequal nonzero exponents require a separate
+/// arithmetic path and return `None` here.
+pub fn add_finite_same_exponent(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, i128)> {
+    match (lhs.is_zero(), rhs.is_zero()) {
+        (true, true) => Some((0, 0)),
+        (true, false) => Some((rhs.exponent, signed_significand(rhs))),
+        (false, true) => Some((lhs.exponent, signed_significand(lhs))),
+        (false, false) if lhs.exponent == rhs.exponent => Some((
+            lhs.exponent,
+            signed_significand(lhs) + signed_significand(rhs),
+        )),
+        (false, false) => None,
+    }
+}
+
+fn signed_significand(value: X87Finite) -> i128 {
+    let significand = value.significand as i128;
+    if value.sign {
+        -significand
+    } else {
+        significand
+    }
+}
+
 /// Align two finite values to a shared exponent without changing their order
 /// or metadata. Nonzero significands are extended with three low GRS bits and
 /// right-shift-jammed to `max(lhs.exponent, rhs.exponent)`. Zero operands
@@ -259,8 +288,8 @@ impl X87Binary80 {
 #[cfg(test)]
 mod tests {
     use super::{
-        X87Binary80, X87Binary80Class, X87Finite, X87Grs, align_finite_pair, shift_right_jam,
-        shift_right_jam_u128,
+        X87Binary80, X87Binary80Class, X87Finite, X87Grs, add_finite_same_exponent,
+        align_finite_pair, shift_right_jam, shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -788,6 +817,196 @@ mod tests {
         ] {
             assert_eq!(align_finite_pair(lhs, rhs), (0, 0, 0));
         }
+    }
+
+    #[test]
+    fn exact_same_exponent_sum_preserves_carry_cancellation_and_inputs() {
+        let exponent = -7;
+        let positive_max = finite(exponent, u64::MAX, false, X87Binary80Class::Normal);
+        let negative_max = finite(exponent, u64::MAX, true, X87Binary80Class::Subnormal);
+        assert_eq!(
+            add_finite_same_exponent(positive_max, positive_max),
+            Some((exponent, 0x1_ffff_ffff_ffff_fffe))
+        );
+        assert_eq!(
+            add_finite_same_exponent(negative_max, negative_max),
+            Some((exponent, -0x1_ffff_ffff_ffff_fffe))
+        );
+
+        let positive_half = finite(
+            exponent,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        let negative_half = finite(
+            exponent,
+            0x8000_0000_0000_0000,
+            true,
+            X87Binary80Class::PseudoDenormal,
+        );
+        assert_eq!(
+            add_finite_same_exponent(positive_half, positive_half),
+            Some((exponent, 0x1_0000_0000_0000_0000))
+        );
+        assert_eq!(
+            add_finite_same_exponent(negative_half, negative_half),
+            Some((exponent, -0x1_0000_0000_0000_0000))
+        );
+
+        let all_ones = finite(exponent, u64::MAX, false, X87Binary80Class::Normal);
+        let leading_bit = finite(
+            exponent,
+            0x8000_0000_0000_0000,
+            true,
+            X87Binary80Class::Subnormal,
+        );
+        assert_eq!(
+            add_finite_same_exponent(all_ones, leading_bit),
+            Some((exponent, 0x7fff_ffff_ffff_ffff))
+        );
+        assert_eq!(
+            add_finite_same_exponent(leading_bit, all_ones),
+            Some((exponent, 0x7fff_ffff_ffff_ffff))
+        );
+        let negative_all_ones = finite(exponent, u64::MAX, true, X87Binary80Class::Normal);
+        let positive_leading_bit = finite(
+            exponent,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Subnormal,
+        );
+        assert_eq!(
+            add_finite_same_exponent(negative_all_ones, positive_leading_bit),
+            Some((exponent, -0x7fff_ffff_ffff_ffff))
+        );
+        assert_eq!(
+            add_finite_same_exponent(positive_leading_bit, negative_all_ones),
+            Some((exponent, -0x7fff_ffff_ffff_ffff))
+        );
+        assert_eq!(
+            add_finite_same_exponent(positive_half, negative_half),
+            Some((exponent, 0))
+        );
+
+        let adjacent_positive = finite(
+            exponent,
+            0x8000_0000_0000_0001,
+            false,
+            X87Binary80Class::Normal,
+        );
+        let adjacent_negative = finite(
+            exponent,
+            0x8000_0000_0000_0000,
+            true,
+            X87Binary80Class::Subnormal,
+        );
+        assert_eq!(
+            add_finite_same_exponent(adjacent_positive, adjacent_negative),
+            Some((exponent, 1))
+        );
+        assert_eq!(
+            add_finite_same_exponent(adjacent_negative, adjacent_positive),
+            Some((exponent, 1))
+        );
+        let adjacent_negative_large = finite(
+            exponent,
+            0x8000_0000_0000_0001,
+            true,
+            X87Binary80Class::Normal,
+        );
+        let adjacent_positive_small = finite(
+            exponent,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Subnormal,
+        );
+        assert_eq!(
+            add_finite_same_exponent(adjacent_negative_large, adjacent_positive_small),
+            Some((exponent, -1))
+        );
+        assert_eq!(
+            add_finite_same_exponent(adjacent_positive_small, adjacent_negative_large),
+            Some((exponent, -1))
+        );
+
+        let before = (all_ones, leading_bit, positive_half, negative_half);
+        let _ = add_finite_same_exponent(all_ones, leading_bit);
+        let _ = add_finite_same_exponent(positive_half, negative_half);
+        assert_eq!(
+            (all_ones, leading_bit, positive_half, negative_half),
+            before
+        );
+        assert_eq!(all_ones.source_class(), X87Binary80Class::Normal);
+        assert_eq!(leading_bit.source_class(), X87Binary80Class::Subnormal);
+        assert_eq!(positive_half.source_class(), X87Binary80Class::Normal);
+        assert_eq!(
+            negative_half.source_class(),
+            X87Binary80Class::PseudoDenormal
+        );
+    }
+
+    #[test]
+    fn exact_same_exponent_sum_handles_zero_provenance_and_rejects_unequal_exponents() {
+        let positive_zero = finite(0, 0, false, X87Binary80Class::Zero);
+        let negative_zero = finite(0, 0, true, X87Binary80Class::Zero);
+        let value = finite(
+            -11,
+            0x8123_4567_89ab_cdef,
+            true,
+            X87Binary80Class::Subnormal,
+        );
+        assert_eq!(
+            add_finite_same_exponent(positive_zero, negative_zero),
+            Some((0, 0))
+        );
+        assert_eq!(
+            add_finite_same_exponent(negative_zero, positive_zero),
+            Some((0, 0))
+        );
+        assert_eq!(
+            add_finite_same_exponent(positive_zero, value),
+            Some((-11, -0x8123_4567_89ab_cdef))
+        );
+        assert_eq!(
+            add_finite_same_exponent(value, negative_zero),
+            Some((-11, -0x8123_4567_89ab_cdef))
+        );
+        assert_eq!(
+            add_finite_same_exponent(
+                value,
+                finite(-10, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal)
+            ),
+            None
+        );
+
+        let pseudo_raw = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0]);
+        let pseudo = pseudo_raw.normalize_finite().unwrap();
+        let normal = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]);
+        let normal_finite = normal.normalize_finite().unwrap();
+        assert_eq!(pseudo.exponent(), -16382);
+        assert_eq!(normal_finite.exponent(), -16382);
+        assert_eq!(pseudo.significand(), normal_finite.significand());
+        assert_eq!(pseudo.source_class(), X87Binary80Class::PseudoDenormal);
+        assert_eq!(normal_finite.source_class(), X87Binary80Class::Normal);
+        let raw_before = (pseudo_raw, normal);
+        let finite_before = (pseudo, normal_finite);
+        assert_eq!(
+            add_finite_same_exponent(pseudo, normal_finite),
+            Some((-16382, 0x1_0000_0000_0000_0000))
+        );
+        assert_eq!(
+            add_finite_same_exponent(normal_finite, pseudo),
+            Some((-16382, 0x1_0000_0000_0000_0000))
+        );
+        assert_eq!((pseudo, normal_finite), finite_before);
+        assert_eq!(pseudo_raw.to_bytes(), [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0]);
+        assert_eq!(normal, raw_before.1);
+        assert_eq!(normal.to_bytes(), [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]);
+        assert_eq!(
+            X87Binary80::from_bytes(raw_before.1.to_bytes()).classify(),
+            X87Binary80Class::Normal
+        );
     }
 
     #[test]

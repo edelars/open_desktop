@@ -2416,3 +2416,29 @@ Local verification passed: `cargo test -p od-isa x87 --offline`,
 `python3 tools/check_layout.py`, `git diff --check`, and `graphify update .`.
 No physical Mac mini check was performed or required for this integer helper.
 S2-29 and the S2-28 umbrella remain open under ISSUE-019.
+
+## S2-29e — exact same-exponent finite sum (partial)
+
+Added `add_finite_same_exponent(lhs, rhs)`, which returns the exact signed
+`i128` coefficient when nonzero finite normalized inputs have matching
+exponents, including exponent zero.
+Its represented value is `coefficient * 2^(exponent - 63)`. It reads the
+original significands directly and does not consume jammed alignment data.
+Zeros are neutral; two zeros return `(0, 0)`. Carry and cancellation remain
+unnormalized, and no result source class is produced. Unequal nonzero
+exponents return `None`.
+
+Manual literal vectors cover positive/negative carry and maximum sums,
+adjacent-significand cancellation to `+1` and `-1`, exact cancellation, negative
+exponents, zeros in both orders, matching pseudo-denormal/normal values with
+distinct provenance, unequal exponents, and source immutability. Binary80
+packing, result normalization, unequal-exponent arithmetic, rounding/PC/RC,
+signed-zero selection, exceptions/flags, and instruction execution remain
+outside this slice. No performance claim is made.
+
+Local verification passed: `cargo test -p od-isa x87 --offline` (16 tests),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check`, and `graphify update .`. `python3 tools/check_layout.py`
+could not complete because the pre-existing untracked root directory `.serena/`
+is unmapped. No physical Mac mini check was performed or required for this
+integer helper. S2-29 and the S2-28 umbrella remain open under ISSUE-019.

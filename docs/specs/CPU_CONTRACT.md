@@ -1121,6 +1121,27 @@ addition/subtraction result, normalization, rounding, precision control,
 exception/status, special value, guest instruction, or native snapshot is
 defined. S2-29 and S2-28 remain open.
 
+## Local S2-29e: exact same-exponent finite sum
+
+`od_isa::x87::add_finite_same_exponent(lhs, rhs)` returns an exact
+`(exponent, coefficient)` pair when the exponents of nonzero finite normalized
+inputs match. Its value is `coefficient * 2^(exponent - 63)`. Each operand
+contributes its 64-bit significand as a signed `i128`; no GRS extension or
+jammed alignment is used. The sum remains unnormalized, preserving carries,
+cancellation and the exact signed coefficient, and does not carry a source
+class. One zero contributes nothing and the other input selects the exponent;
+two zeros return `(0, 0)` without selecting an architectural signed zero.
+Unequal nonzero exponents return `None`.
+
+Literal unit vectors cover positive/negative carry and maximum sums,
+adjacent-significand cancellation to `+1` and `-1`, exact cancellation, negative
+exponents, both zero operand orders, matching pseudo-denormal/normal inputs
+with distinct source classes, unequal exponent rejection, and unchanged input
+values and raw encoding. This primitive defines no jammed alignment,
+binary80 packing, result normalization, unequal-exponent arithmetic,
+rounding/PC/RC, signed-zero selection, exceptions/flags, or instruction
+behavior. S2-29 and S2-28 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.
