@@ -1344,6 +1344,38 @@ only. It does not implement x87 RC/PC or control-word semantics, architectural
 underflow/precision flags or exceptions, special encodings, signed-zero
 operation rules, or guest FDIV. S2-29 and S2-28 remain open under ISSUE-019.
 
+## Local S2-29o: finite division to one rounded binary80 result
+
+`od_isa::x87::divide_finite_to_binary80(lhs, rhs, mode)` composes the bounded
+finite-significand divider, rational precision rounder, and normal/subnormal
+packers. It rejects either zero operand before division. For nonzero operands,
+the output sign is `lhs.sign() XOR rhs.sign()`, and the divider's exact
+quotient, remainder, and denominator are retained until rounding. If its
+unrounded quotient exponent is `e >= -16382`, the helper rounds once to 64
+significant bits and packs the normal result. If `e <= -16383`, it passes the
+original exact quotient tail directly to `round_pack_subnormal_quotient`,
+allowing a rounded zero to retain the computed sign and allowing a reachable
+carry to minimum normal. `None` means only rejection by this bounded helper,
+including zero operands, exponent conversion failure, or a result outside its
+normal finite range; it does not mean guest #Z or overflow.
+
+Literal composition vectors cover exact normal/subnormal values, directed
+positive/negative 1/3, minimum normal, largest subnormal and its tie carry to
+minimum normal, minimum subnormal, below/at/above half minimum subnormal,
+signed-zero rounding, maximum finite and unsupported upper range, all four
+input sign combinations, zero operands, and unchanged inputs/provenance. The
+reachable anti-double-round vector uses `lhs=(e=-16382,sig=0x8000000000000002)`
+and `rhs=(e=0,sig=0xc000000000000000)`; the exact divider produces
+`e=-16383, q=0xaaaaaaaaaaaaaaad, r=0x4000000000000000,
+d=0xc000000000000000`, and nearest rounding yields bytes
+`57 55 55 55 55 55 55 55 00 00`. Normal p=64 synthetic ties/carry remain
+unreachable from normalized divider outputs; the subnormal carry is reachable.
+
+This is numerical finite division only. No x87 control-word interpretation,
+status flags, architectural exceptions, special-value handling, guest #Z/
+overflow, or guest FDIV is implemented. S2-29 and S2-28 remain open under
+ISSUE-019.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

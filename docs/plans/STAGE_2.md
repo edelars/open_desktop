@@ -1295,6 +1295,28 @@ define architectural underflow/precision flags or exceptions, x87 RC/PC,
 control-word behavior, pseudo/special values, signed-zero operation rules, or
 guest FDIV. S2-29 and S2-28 remain open.
 
+### S2-29o. Compose finite division with one-round binary80 packing (partial)
+
+`divide_finite_to_binary80(lhs, rhs, mode)` rejects either zero operand before
+calling the exact divider, since this bounded helper does not choose an
+operation's signed-zero result. For nonzero operands it retains the exact
+quotient/remainder and uses sign XOR. An unrounded quotient exponent at or
+above `-16382` takes one 64-bit precision round followed by normal packing;
+lower exponents go directly to subnormal quotient packing with the original
+exact tail. `None` is limited-helper rejection, including zero operands and
+values outside the finite binary80 exponent range, not guest #Z or overflow.
+
+Tests cover exact normal and subnormal values, inexact positive/negative 1/3
+under directed modes, minimum normal, largest subnormal and its reachable
+carry to minimum normal, minimum subnormal, half/below/above-half minimum
+subnormal, signed zero from tiny nonzero values, maximum finite and rejected
+upper range, all sign-XOR combinations, zero operands, and source/provenance
+immutability. The subnormal anti-double-rounding vector is checked through the
+complete divider-to-pack composition. Normal p=64 synthetic ties/carry remain
+unreachable from normalized divider outputs; subnormal carry is reachable.
+This remains a numerical helper only: architectural control-word, flags,
+exceptions, special-value and guest FDIV semantics remain open under ISSUE-019.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.

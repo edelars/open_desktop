@@ -2689,3 +2689,30 @@ and `git diff --check`. `python3 tools/check_layout.py` stopped on the existing
 unmapped root `.serena/` directory, which was left untouched. `graphify update .`
 was run after the implementation. No physical Mac mini check was performed or
 required for this integer helper. S2-29 and S2-28 remain open under ISSUE-019.
+
+## S2-29o — compose finite division with single-round binary80 packing (partial)
+
+Added `divide_finite_to_binary80(lhs, rhs, mode)`. It rejects either zero input
+before division, computes the exact significand quotient/remainder for
+nonzero inputs, applies sign XOR, and branches on the exact unrounded quotient
+exponent. Normal-range results use one p=64 rational round and normal packing;
+smaller results go directly to subnormal packing with the original exact
+remainder. Tiny nonzero values retain their result sign if they round to zero.
+`None` denotes bounded-helper rejection, not a guest #Z or overflow result.
+
+Literal tests include exact normal/subnormal values, signed directed 1/3,
+minimum normal, largest subnormal and the reachable carry to minimum normal,
+minimum subnormal, half/below/above-half minimum subnormal, signed zero,
+maximum finite, unsupported upper range, every sign-XOR combination, zero
+operand rejection, immutability/provenance, and the reachable anti-double-round
+vector (`e=-16383, q=0xaaaaaaaaaaaaaaad, r=0x4000000000000000,
+d=0xc000000000000000` → `57 55 55 55 55 55 55 55 00 00`). Normal p=64
+synthetic ties/carry remain unreachable from normalized divider outputs;
+subnormal carry is reachable.
+
+Verification: `cargo test -p od-isa x87 --offline` passed (45 tests), as did
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+and `git diff --check`. `python3 tools/check_layout.py` stopped on the existing
+unmapped root `.serena/` directory, which was left untouched. `graphify update .`
+was run after the implementation. No physical Mac mini check was required for
+this numeric helper. Architectural x87 behavior remains open under ISSUE-019.

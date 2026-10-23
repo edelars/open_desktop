@@ -369,6 +369,40 @@ pub fn round_pack_subnormal_quotient(
     ]))
 }
 
+/// Divide two nonzero finite values and round once to a bounded binary80 value.
+///
+/// The exact divider result is rounded to 64 significant bits when its
+/// unrounded exponent is normal (`e >= -16382`). Values below that boundary
+/// are rounded directly into the subnormal lattice from the original exact
+/// quotient and remainder. Zero operands are rejected before division because
+/// this helper does not choose an operation's signed-zero result. `None`
+/// reports only a bounded-helper rejection, including zero operands and
+/// results outside the finite binary80 exponent range; it does not represent a
+/// guest exception. This helper defines no x87 status flags, exceptions,
+/// control-word semantics, or instruction behavior.
+pub fn divide_finite_to_binary80(
+    lhs: X87Finite,
+    rhs: X87Finite,
+    mode: RationalRoundingMode,
+) -> Option<X87Binary80> {
+    if lhs.is_zero() || rhs.is_zero() {
+        return None;
+    }
+
+    let quotient = divide_finite_significands(lhs, rhs)?;
+    let sign = lhs.sign ^ rhs.sign;
+    let e = quotient.exponent();
+    let q = quotient.quotient();
+    let r = quotient.remainder();
+    let d = quotient.denominator();
+    if e >= -16382 {
+        let magnitude = round_quotient_to_precision(sign, q, r, d, 64, mode)?;
+        pack_normal_rounded_significand(sign, e, magnitude, 64)
+    } else {
+        round_pack_subnormal_quotient(sign, e, q, r, d, mode)
+    }
+}
+
 /// Round the unsigned rational value `q + r / d` to nearest with ties to even.
 ///
 /// This compatibility wrapper is equivalent to a positive coefficient using
@@ -672,10 +706,10 @@ mod tests {
     use super::{
         RationalRoundingMode, X87Binary80, X87Binary80Class, X87Finite, X87Grs,
         add_finite_same_exponent, align_finite_pair, divide_finite_significands,
-        multiply_finite_significands, normalize_exact_coefficient, normalize_exact_magnitude,
-        pack_normal_rounded_significand, round_pack_subnormal_quotient, round_quotient_magnitude,
-        round_quotient_ties_even, round_quotient_to_precision, shift_right_jam,
-        shift_right_jam_u128,
+        divide_finite_to_binary80, multiply_finite_significands, normalize_exact_coefficient,
+        normalize_exact_magnitude, pack_normal_rounded_significand, round_pack_subnormal_quotient,
+        round_quotient_magnitude, round_quotient_ties_even, round_quotient_to_precision,
+        shift_right_jam, shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -936,6 +970,227 @@ mod tests {
             assert_eq!(packed.to_bytes(), expected);
             assert_eq!(packed.classify(), X87Binary80Class::Subnormal);
         }
+    }
+
+    #[test]
+    fn finite_division_composes_with_single_rounding_and_binary80_packing() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let normal_one = finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let normal_half = finite(1, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        assert_eq!(
+            divide_finite_to_binary80(normal_one, normal_half, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0xfe, 0x3f]
+        );
+
+        let third_numerator = finite(-1, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let third_denominator = finite(0, 0xc000_0000_0000_0000, false, X87Binary80Class::Normal);
+        for (sign, mode, significand) in [
+            (false, Nearest, 0xaaaa_aaaa_aaaa_aaab_u64),
+            (false, Zero, 0xaaaa_aaaa_aaaa_aaaa),
+            (false, Up, 0xaaaa_aaaa_aaaa_aaab),
+            (false, Down, 0xaaaa_aaaa_aaaa_aaaa),
+            (true, Nearest, 0xaaaa_aaaa_aaaa_aaab),
+            (true, Zero, 0xaaaa_aaaa_aaaa_aaaa),
+            (true, Up, 0xaaaa_aaaa_aaaa_aaaa),
+            (true, Down, 0xaaaa_aaaa_aaaa_aaab),
+        ] {
+            let numerator = finite(
+                third_numerator.exponent(),
+                third_numerator.significand(),
+                sign,
+                X87Binary80Class::Normal,
+            );
+            let expected_sign_exponent: u16 = if sign { 0xbf_fd } else { 0x3f_fd };
+            let mut expected = [0; 10];
+            expected[..8].copy_from_slice(&significand.to_le_bytes());
+            expected[8..].copy_from_slice(&expected_sign_exponent.to_le_bytes());
+            assert_eq!(
+                divide_finite_to_binary80(numerator, third_denominator, mode)
+                    .unwrap()
+                    .to_bytes(),
+                expected,
+                "sign={sign} mode={mode:?}"
+            );
+        }
+
+        let min_normal = finite(-16382, 1_u64 << 63, false, X87Binary80Class::Normal);
+        let one = finite(0, 1_u64 << 63, false, X87Binary80Class::Normal);
+        assert_eq!(
+            divide_finite_to_binary80(min_normal, one, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]
+        );
+        let two = finite(1, 1_u64 << 63, false, X87Binary80Class::Normal);
+        assert_eq!(
+            divide_finite_to_binary80(min_normal, two, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0]
+        );
+        let three = finite(1, 0xc000_0000_0000_0000, false, X87Binary80Class::Normal);
+        assert_eq!(
+            divide_finite_to_binary80(min_normal, three, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0xab, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0x2a, 0, 0]
+        );
+
+        // The exact largest subnormal is adjacent to the minimum normal.
+        let largest_subnormal = finite(-16383, u64::MAX - 1, false, X87Binary80Class::Normal);
+        assert_eq!(
+            divide_finite_to_binary80(largest_subnormal, one, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0, 0]
+        );
+        // The exact halfway point rounds to minimum normal (ties to even).
+        let halfway_to_normal = finite(-16383, u64::MAX, false, X87Binary80Class::Normal);
+        assert_eq!(
+            divide_finite_to_binary80(halfway_to_normal, one, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]
+        );
+
+        let min_subnormal = finite(-16445, 1_u64 << 63, false, X87Binary80Class::Normal);
+        assert_eq!(
+            divide_finite_to_binary80(min_subnormal, one, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        let half_min_subnormal = finite(-16446, 1_u64 << 63, false, X87Binary80Class::Normal);
+        assert_eq!(
+            divide_finite_to_binary80(half_min_subnormal, one, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0; 10]
+        );
+        let negative_half = finite(-16446, 1_u64 << 63, true, X87Binary80Class::Normal);
+        assert_eq!(
+            divide_finite_to_binary80(negative_half, one, Zero)
+                .unwrap()
+                .to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]
+        );
+        assert_eq!(
+            divide_finite_to_binary80(half_min_subnormal, one, Up)
+                .unwrap()
+                .to_bytes(),
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            divide_finite_to_binary80(negative_half, one, Down)
+                .unwrap()
+                .to_bytes(),
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]
+        );
+        let above_half = finite(
+            -16446,
+            0xc000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        assert_eq!(
+            divide_finite_to_binary80(above_half, one, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        let below_half = finite(-16447, 1_u64 << 63, false, X87Binary80Class::Normal);
+        assert_eq!(
+            divide_finite_to_binary80(below_half, one, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0; 10]
+        );
+        assert_eq!(
+            divide_finite_to_binary80(below_half, one, Up)
+                .unwrap()
+                .to_bytes(),
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+
+        let max_finite = finite(16383, u64::MAX, false, X87Binary80Class::Normal);
+        assert_eq!(
+            divide_finite_to_binary80(max_finite, one, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x7f]
+        );
+        let above_finite_range = finite(16384, 1_u64 << 63, false, X87Binary80Class::Normal);
+        assert_eq!(
+            divide_finite_to_binary80(above_finite_range, one, Nearest),
+            None
+        );
+
+        for (lhs_sign, rhs_sign) in [(false, false), (false, true), (true, false), (true, true)] {
+            let lhs = finite(0, 1_u64 << 63, lhs_sign, X87Binary80Class::Normal);
+            let rhs = finite(1, 1_u64 << 63, rhs_sign, X87Binary80Class::Normal);
+            let result = divide_finite_to_binary80(lhs, rhs, Nearest).unwrap();
+            assert_eq!(result.sign(), lhs_sign ^ rhs_sign);
+        }
+
+        let positive_zero = finite(0, 0, false, X87Binary80Class::Zero);
+        let negative_zero = finite(0, 0, true, X87Binary80Class::Zero);
+        assert_eq!(divide_finite_to_binary80(positive_zero, one, Nearest), None);
+        assert_eq!(divide_finite_to_binary80(one, negative_zero, Nearest), None);
+        assert_eq!(
+            divide_finite_to_binary80(negative_zero, positive_zero, Nearest),
+            None
+        );
+    }
+
+    #[test]
+    fn finite_division_composition_uses_original_tail_for_subnormal_rounding() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let lhs = finite(
+            -16382,
+            0x8000_0000_0000_0002,
+            false,
+            X87Binary80Class::Normal,
+        );
+        let rhs = finite(0, 0xc000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let lhs_before = lhs;
+        let rhs_before = rhs;
+        let quotient = divide_finite_significands(lhs, rhs).unwrap();
+        assert_eq!(quotient.exponent(), -16383);
+        assert_eq!(quotient.quotient(), 0xaaaa_aaaa_aaaa_aaad);
+        assert_eq!(quotient.remainder(), 0x4000_0000_0000_0000);
+        assert_eq!(quotient.denominator(), 0xc000_0000_0000_0000);
+
+        let result = divide_finite_to_binary80(lhs, rhs, Nearest).unwrap();
+        assert_eq!(
+            result.to_bytes(),
+            [0x57, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0, 0]
+        );
+        assert_eq!((lhs, rhs), (lhs_before, rhs_before));
+        assert_eq!(lhs.source_class(), X87Binary80Class::Normal);
+        assert_eq!(rhs.source_class(), X87Binary80Class::Normal);
+    }
+
+    #[test]
+    fn finite_division_composition_preserves_raw_finite_provenance() {
+        let raw_subnormal = X87Binary80::from_bytes([1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let raw_pseudo = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x80]);
+        let lhs = raw_subnormal.normalize_finite().unwrap();
+        let rhs = raw_pseudo.normalize_finite().unwrap();
+        let before = (raw_subnormal, raw_pseudo, lhs, rhs);
+
+        let result =
+            divide_finite_to_binary80(lhs, rhs, RationalRoundingMode::NearestTiesEven).unwrap();
+        assert_eq!(result.sign(), true);
+        assert_eq!((raw_subnormal, raw_pseudo, lhs, rhs), before);
+        assert_eq!(lhs.source_class(), X87Binary80Class::Subnormal);
+        assert_eq!(rhs.source_class(), X87Binary80Class::PseudoDenormal);
     }
 
     #[test]
