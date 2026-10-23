@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_20b_ud2",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten complete UD2 bytes and literal input/output constants; tests/cpu/generate_stage2_ud2.py only serializes them. No assembler, emulator, or semantic expected-value generator.",
+    "specification": "Intel SDM revision 093, Vol.2A UD2: opcode 0F 0B raises the invalid-opcode exception. This case contains both bytes of the complete instruction; it does not claim priority over an instruction-fetch fault.",
+    "specification_version": "Intel SDM Vol.2A revision 093 (253667-093US); project S2-20b"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x00000000000008d7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 2,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "0f0b",
+      "comparison_mask_hex": "ffff"
+    }
+  ],
+  "stop_rip": null,
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "exception"
+}

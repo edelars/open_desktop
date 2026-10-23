@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_17f_ret_imm_small",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten x86 RET imm16 bytes and independent literal full-state answer; s2_17f_ret_imm_small. Materializer SHA256 ef5a599f114e2ad9661c2f54e19fe7bb48203d5811e0283796adba8252da29fc; no assembler or emulator.",
+    "specification": "Intel SDM document 325462 revision 093, Vol.2B RET\u2014Return From Procedure p.4-566: C2 iw is a near return that pops imm16 bytes after the return address; in 64-bit mode the return target is 64-bit.",
+    "specification_version": "Intel SDM revision 093; project S2-17f"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300070",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000802"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 3,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "c22000",
+      "comparison_mask_hex": "ffffff"
+    },
+    {
+      "region_id": "stack",
+      "guest_address": "0x0000000000300000",
+      "length": 256,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50300100000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100003",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

@@ -1,4 +1,110 @@
-# CPU fixture and result format v1
+# CPU fixture and result formats
+
+## Version 2: long-mode integer states
+
+`od_testkit::v2` implements schema `2` with profiles `s2-long-integer-v1` and
+`s2-long-fs-base-v1`, `s2-long-gs-base-v1`, `s2-long-fs-selector-v1` and
+`s2-long-gs-selector-v1`, `s2-long-verw-gdt-v1`, and local-only
+`s2-long-fs-load-v1`.
+V1 readers, bytes and historical digests remain unchanged. Segment profiles are
+profile-specific state extensions;
+it does not reinterpret or rewrite existing integer-profile fixtures.
+
+Fixture fields: `schema_version`, `case_id`, `profile`, `provenance`, optional
+HexU64 `seed`, `converted_from_v1_sha256`, `initial_state`, `memory`, optional
+`stop_rip`, `instruction_budget`, `wall_timeout_ms`, `rflags_mask`, `expected_exit`.
+For `s2-long-integer-v1`, state contains `mode: long64`, exactly 16 HexU64 `gpr`
+values in x86 encoding order (RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8…R15),
+architectural u64 RIP and RFLAGS. This profile retains its exact field set.
+`s2-long-fs-base-v1` uses the same values plus required HexU64 `fs_base` in
+`initial_state`; it must be canonical48. Its result snapshot must expose
+`fs_base` as an available architectural value, and comparison requires it to
+match the initial value. This field is not inferred from an absent field, and
+the older profile's result/digest shape is unchanged. RFLAGS allow integer
+arithmetic flags, DF and required reserved bit 1.
+`s2-long-gs-base-v1` similarly requires canonical48 HexU64 `gs_base` and exposes
+it in result snapshots; comparison requires it to match the initial value. The
+local-only `s2-long-fs-selector-v1` profile requires canonical48 `fs_base` and
+16-bit HexU64 `fs_selector` in initial and result state; both are compared with
+their initial values. The local-only `s2-long-gs-selector-v1` profile likewise
+requires canonical48 `gs_base` and 16-bit HexU64 `gs_selector` in initial and
+result state. Each selector profile exposes only its own selector and base;
+older and opposite-segment profile field sets remain unchanged.
+The VERW profile requires `gdtr_base` and `gdtr_limit` in initial and result
+state; the base and complete configured range must be canonical48. Older
+profiles omit both fields. It compares both GDTR values and does not infer them
+from absent fields.
+The FS-load profile also requires canonical48 `fs_base`, a 16-bit visible
+`fs_selector`, GDTR fields, and `fs_cache_limit`, `fs_cache_access`, and
+`fs_cache_flags` in initial and result state. It compares all of them. Initial
+cached FS state is explicit and need not equal current GDT contents; the
+instruction selector is read from AX and must be non-null with TI=0 for a
+supported load. Older
+profiles omit all FS cache fields.
+Unknown fields/versions/profiles/modes, numeric overflow and incompatible state
+are rejected. Unmapped/noncanonical entry RIP is allowed as input to fault tests.
+
+Code and data use the same guest mappings. `memory` reuses `MemoryRegionSpec`
+with unique IDs, nonoverlapping checked addresses, lengths, read/write/execute
+permissions, initial bytes and per-byte comparison masks. Limits: 16 regions,
+64 KiB total RAM, 512 KiB fixture JSON, 256 KiB result JSON. Budget is
+1…10000000 and wall timeout is 1…30000 ms. `stop_rip` is a harness boundary
+checked before fetch, not an x86 instruction or a universal end-of-RAM exit.
+
+Result fields include exact input SHA-256, case/profile/backend, build/machine
+metadata, `outcome`, observed instruction count and snapshot. Outcomes separate
+stop address, budget, stop request, architectural exception, unsupported,
+timeout, host signal and harness failure. An architectural exit requires a
+snapshot: full state, `rflags_defined`, memory and observed exception metadata.
+`exception: available(value: null)` means observed no exception; unavailable
+is distinct. Fault metadata includes vector, faulting RIP and observations of
+error code/address. The current fault profile requires saved RIP to equal the
+faulting RIP; trap delivery is not implemented. Required architectural error
+codes and the page-fault address cannot be unavailable.
+
+Comparison checks exact case/digest/profile/memory layout, all GPR, RIP,
+definedness, requested defined flags, masked memory bytes, outcome/expected exit
+and exception metadata. Incomplete/unsupported results cannot compare equal.
+The FS-base and GS-base profiles additionally compare their observed base; the
+selector profiles compare the matching segment base and selector. Profiles
+without those fields do not include or synthesize the observations. The VERW
+profile additionally compares GDTR base and limit as architectural state. The
+FS-load profile additionally compares the FS selector, base, limit and
+attributes plus GDTR state.
+Native retired count may be unavailable and is compared only if both sides
+observe it. Synthetic comparator tests do not constitute CPU execution evidence.
+S2-12 updates semantic `rflags_defined` from decoded `FlagEffects` only after
+successful retirement. AND/OR/XOR/TEST leave AF undefined (`0xcc7` instead of
+`0xcd7`); its value is excluded from comparison. NOT/MOV preserve definedness;
+later arithmetic can define AF again. A fault or unsupported instruction does
+not update the mask. The snapshot mask describes architecture semantics and is
+separate from the fixture's requested value-comparison mask; it is not an
+expected arithmetic/logic result evaluator.
+For fault observations, comparison ignores explanatory text in unavailable
+reasons, while retaining availability, available values and required-field
+validation. Both results are validated against the case before CLI status
+dispatch, including unsupported or failed results; such statuses do not bypass
+input digest, profile or snapshot validation. An unexpected core exit from the
+validated S0 adapter is a harness failure, not invalid fixture input.
+
+Explicit conversion creates a new JSON/digest and records the v1 input digest:
+
+```sh
+cargo run --offline -p od-runner -- --convert-fixture-v1 tests/fixtures/x86/s0_09_mov_imm64.case.json work/tmp/converted-v2.case.json
+```
+
+The output must not exist; conversion never overwrites it. Existing
+`--compare-results A.json B.json --case CASE.json --json` dispatches by case
+schema and uses strict v2 readers. Exit codes remain 0/2/3/4/5 for
+success/mismatch/invalid/unsupported/harness failure. The locally accepted S2-08 slice adds v2
+`--fixture` execution with the interpreter: full integer state, memory and
+architectural fault snapshots. V2 JIT returns Unsupported/exit 4 explicitly.
+Mapping/backend errors return Harness/exit 5; architectural faults remain a
+separate outcome. A cooperative instruction-boundary wall deadline returns
+TimedOut/exit 5, distinct from a stop request. See
+[INTERPRETER](INTERPRETER.md#mov-и-v2-execution--s2-08) for exact MOV forms.
+
+## Version 1
 
 **Status:** implemented in `od-testkit` and used by the Stage 1 local and physical-x86 runners; see [CPU_ORACLE.md](CPU_ORACLE.md).
 

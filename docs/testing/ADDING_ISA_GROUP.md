@@ -19,4 +19,8 @@
 
 Существующий пример задаёт формы `REX.W + 03 /r`, `REX.W + 2B /r` и `REX.W + 3B /r`, разрешает только регистровый ModR/M для RAX/RCX/RDX/RBX и сравнивает CF/PF/AF/ZF/SF/OF. Вручную составленные fixtures проверяют overflow, borrow, signed compare boundaries, а generated corpus покрывает фиксированные seed и boundary values. Source-of-truth семантики — [CPU contract v0.1](../specs/CPU_CONTRACT.md), Intel SDM 093; физическая проверка выполнена на одном Intel Core i5-3210M.
 
-Физическое подтверждение ограничено текущим register-only профилем. Оно не доказывает AMD equivalence, memory addressing, privileged режим или полную ISA.
+Физическое подтверждение именно этого исторического S0 примера ограничено
+register-only профилем. Позднее S2-09 отдельно подтвердил три положительные
+MOV/memory программы, full-GPR snapshots и literal fixture memory на одном
+Intel CPU; точные границы и evidence — в [CPU_ORACLE](CPU_ORACLE.md#native-v2-s2-09-границы-физического-подтверждения).
+Ни один из этих срезов не доказывает AMD equivalence, privileged режим или полную ISA.

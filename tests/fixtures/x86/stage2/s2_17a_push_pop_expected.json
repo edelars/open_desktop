@@ -1,0 +1,210 @@
+{
+  "s2_17a_push_rax": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x00000000003000f8",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000802",
+    "rflags_defined": "0x0000000000000cd7",
+    "memory": {
+      "code": "50",
+      "stack": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a58877665544332211"
+    }
+  },
+  "s2_17a_push_rsp": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x00000000003000f8",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000802",
+    "rflags_defined": "0x0000000000000cd7",
+    "memory": {
+      "code": "54",
+      "stack": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50001300000000000"
+    }
+  },
+  "s2_17a_push_r8": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x00000000003000f8",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000802",
+    "rflags_defined": "0x0000000000000cd7",
+    "memory": {
+      "code": "4150",
+      "stack": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5efcdab8967452301"
+    }
+  },
+  "s2_17a_push_r15": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x00000000003000f8",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000802",
+    "rflags_defined": "0x0000000000000cd7",
+    "memory": {
+      "code": "4157",
+      "stack": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5ffffffffffffffff"
+    }
+  },
+  "s2_17a_pop_rax": {
+    "gpr": [
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300100",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000802",
+    "rflags_defined": "0x0000000000000cd7",
+    "memory": {
+      "code": "58",
+      "stack": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a51122334455667788"
+    }
+  },
+  "s2_17a_pop_rsp": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x8877665544332211",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000802",
+    "rflags_defined": "0x0000000000000cd7",
+    "memory": {
+      "code": "5c",
+      "stack": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a51122334455667788"
+    }
+  },
+  "s2_17a_pop_r8": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300100",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x8877665544332211",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000802",
+    "rflags_defined": "0x0000000000000cd7",
+    "memory": {
+      "code": "4158",
+      "stack": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a51122334455667788"
+    }
+  },
+  "s2_17a_pop_r15": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300100",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0x8877665544332211"
+    ],
+    "rflags": "0x0000000000000802",
+    "rflags_defined": "0x0000000000000cd7",
+    "memory": {
+      "code": "415f",
+      "stack": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a51122334455667788"
+    }
+  }
+}

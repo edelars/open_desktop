@@ -5,6 +5,15 @@
 
 use std::collections::HashMap;
 
+pub mod execute;
+pub mod long_decode;
+pub mod memory;
+pub mod state;
+pub use state::{
+    FragmentAdapterError, FsDescriptorCache, LongModeState, OperandSize, RegisterError,
+    RegisterView,
+};
+
 const CF: u64 = 1 << 0;
 const PF: u64 = 1 << 2;
 const AF: u64 = 1 << 4;
@@ -12,6 +21,11 @@ const ZF: u64 = 1 << 6;
 const SF: u64 = 1 << 7;
 const OF: u64 = 1 << 11;
 const ARITHMETIC_FLAGS: u64 = CF | PF | AF | ZF | SF | OF;
+/// RFLAGS bits admitted and observed by the current long-mode integer profile:
+/// the six status flags, DF, and the architecturally fixed bit 1.
+pub const INTEGER_FLAGS: u64 = ARITHMETIC_FLAGS | (1 << 10) | 2;
+/// Profile flags writable by the implemented long-mode `POPFQ` slice.
+pub const POPFQ_INTEGER_FLAGS: u64 = ARITHMETIC_FLAGS | (1 << 10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -20,16 +34,48 @@ pub enum Register {
     Rcx = 1,
     Rdx = 2,
     Rbx = 3,
+    Rsp = 4,
+    Rbp = 5,
+    Rsi = 6,
+    Rdi = 7,
+    R8 = 8,
+    R9 = 9,
+    R10 = 10,
+    R11 = 11,
+    R12 = 12,
+    R13 = 13,
+    R14 = 14,
+    R15 = 15,
 }
 
 impl Register {
-    fn from_encoding(value: u8) -> Option<Self> {
+    pub const fn from_encoding(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Rax),
             1 => Some(Self::Rcx),
             2 => Some(Self::Rdx),
             3 => Some(Self::Rbx),
+            4 => Some(Self::Rsp),
+            5 => Some(Self::Rbp),
+            6 => Some(Self::Rsi),
+            7 => Some(Self::Rdi),
+            8 => Some(Self::R8),
+            9 => Some(Self::R9),
+            10 => Some(Self::R10),
+            11 => Some(Self::R11),
+            12 => Some(Self::R12),
+            13 => Some(Self::R13),
+            14 => Some(Self::R14),
+            15 => Some(Self::R15),
             _ => None,
+        }
+    }
+
+    fn from_fragment_encoding(value: u8) -> Option<Self> {
+        if value < 4 {
+            Self::from_encoding(value)
+        } else {
+            None
         }
     }
 }
@@ -78,7 +124,7 @@ pub fn decode(code: &[u8]) -> Result<Vec<Instruction>, DecodeError> {
                 .ok_or(DecodeError::Truncated { offset: start })?;
             match opcode {
                 0xB8..=0xBB => {
-                    let dst = Register::from_encoding(opcode - 0xB8)
+                    let dst = Register::from_fragment_encoding(opcode - 0xB8)
                         .ok_or(DecodeError::UnsupportedEncoding { offset: start })?;
                     offset += 1;
                     let immediate = code
@@ -97,9 +143,9 @@ pub fn decode(code: &[u8]) -> Result<Vec<Instruction>, DecodeError> {
                     if modrm >> 6 != 0b11 {
                         return Err(DecodeError::UnsupportedEncoding { offset: start });
                     }
-                    let dst = Register::from_encoding((modrm >> 3) & 7)
+                    let dst = Register::from_fragment_encoding((modrm >> 3) & 7)
                         .ok_or(DecodeError::UnsupportedEncoding { offset: start })?;
-                    let src = Register::from_encoding(modrm & 7)
+                    let src = Register::from_fragment_encoding(modrm & 7)
                         .ok_or(DecodeError::UnsupportedEncoding { offset: start })?;
                     match opcode {
                         0x03 => Operation::Add { dst, src },
@@ -176,14 +222,19 @@ fn validate_branch_targets(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CpuState {
+#[repr(C)]
+pub struct FragmentState {
     pub gpr: [u64; 4],
     pub rip: usize,
     /// Only CF/PF/AF/ZF/SF/OF are modeled. Reserved bit 1 is always set.
     pub rflags: u64,
 }
 
-impl Default for CpuState {
+/// Compatibility name for the S0-09 buffer API. New integer state uses
+/// `LongModeState`; conversion back to this four-register profile is fallible.
+pub type CpuState = FragmentState;
+
+impl Default for FragmentState {
     fn default() -> Self {
         Self {
             gpr: [0; 4],
@@ -193,36 +244,9 @@ impl Default for CpuState {
     }
 }
 
-impl CpuState {
-    pub fn register(&self, register: Register) -> u64 {
-        self.gpr[register as usize]
-    }
-
-    fn set_register(&mut self, register: Register, value: u64) {
-        self.gpr[register as usize] = value;
-    }
-
-    fn set_arithmetic_flags(&mut self, result: u64, carry: bool, auxiliary: bool, overflow: bool) {
-        let mut flags = self.rflags & !ARITHMETIC_FLAGS;
-        if carry {
-            flags |= CF;
-        }
-        if (result as u8).count_ones() % 2 == 0 {
-            flags |= PF;
-        }
-        if auxiliary {
-            flags |= AF;
-        }
-        if result == 0 {
-            flags |= ZF;
-        }
-        if result >> 63 != 0 {
-            flags |= SF;
-        }
-        if overflow {
-            flags |= OF;
-        }
-        self.rflags = flags | (1 << 1);
+impl FragmentState {
+    pub fn register(&self, register: Register) -> Option<u64> {
+        self.gpr.get(register as usize).copied()
     }
 
     pub fn zero_flag(&self) -> bool {
@@ -246,7 +270,14 @@ pub struct ExecutionResult {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExecuteError {
-    InvalidInstructionPointer { rip: usize },
+    InvalidInstructionPointer {
+        rip: usize,
+    },
+    /// The validated compatibility profile and the core disagreed; this is an
+    /// implementation error, not a manufactured guest exception.
+    UnexpectedCoreExit {
+        exit: execute::RunExit,
+    },
 }
 
 pub fn interpret(
@@ -255,7 +286,7 @@ pub fn interpret(
     budget: u64,
 ) -> Result<ExecutionResult, DecodeErrorOrExecute> {
     let instructions = decode(code).map_err(DecodeErrorOrExecute::Decode)?;
-    interpret_decoded(code.len(), &instructions, state, budget)
+    interpret_decoded(code, &instructions, state, budget)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -265,79 +296,136 @@ pub enum DecodeErrorOrExecute {
 }
 
 fn interpret_decoded(
-    code_length: usize,
+    code: &[u8],
     instructions: &[Instruction],
     state: &mut CpuState,
     budget: u64,
 ) -> Result<ExecutionResult, DecodeErrorOrExecute> {
-    let index: HashMap<usize, usize> = instructions
-        .iter()
-        .enumerate()
-        .map(|(i, ins)| (ins.offset, i))
-        .collect();
-    let mut executed = 0;
-    while state.rip != code_length {
-        if executed >= budget {
-            return Ok(ExecutionResult {
-                state: state.clone(),
-                reason: ExitReason::InstructionBudgetExhausted,
-                instructions_executed: executed,
-            });
-        }
-        let instruction = *instructions
-            .get(*index.get(&state.rip).ok_or_else(|| {
-                DecodeErrorOrExecute::Execute(ExecuteError::InvalidInstructionPointer {
-                    rip: state.rip,
-                })
-            })?)
-            .expect("instruction index is valid");
-        let mut next_rip = instruction.next_offset();
-        match instruction.operation {
-            Operation::MovImm { dst, value } => state.set_register(dst, value),
-            Operation::Add { dst, src } => {
-                let lhs = state.register(dst);
-                let rhs = state.register(src);
-                let (result, carry) = lhs.overflowing_add(rhs);
-                let overflow = (!(lhs ^ rhs) & (lhs ^ result)) >> 63 != 0;
-                state.set_arithmetic_flags(
-                    result,
-                    carry,
-                    (lhs ^ rhs ^ result) & 0x10 != 0,
-                    overflow,
-                );
-                state.set_register(dst, result);
-            }
-            Operation::Sub { dst, src } | Operation::Cmp { lhs: dst, rhs: src } => {
-                let lhs = state.register(dst);
-                let rhs = state.register(src);
-                let (result, borrow) = lhs.overflowing_sub(rhs);
-                let overflow = ((lhs ^ rhs) & (lhs ^ result)) >> 63 != 0;
-                state.set_arithmetic_flags(
-                    result,
-                    borrow,
-                    (lhs ^ rhs ^ result) & 0x10 != 0,
-                    overflow,
-                );
-                if matches!(instruction.operation, Operation::Sub { .. }) {
-                    state.set_register(dst, result);
-                }
-            }
-            Operation::Jz { displacement } if state.zero_flag() => {
-                next_rip = branch_target(instruction, displacement) as usize
-            }
-            Operation::Jnz { displacement } if !state.zero_flag() => {
-                next_rip = branch_target(instruction, displacement) as usize
-            }
-            Operation::Jz { .. } | Operation::Jnz { .. } => {}
-        }
-        state.rip = next_rip;
-        executed += 1;
+    // Preserve S0's static boundaries and its budget-before-entry-validation rule.
+    if state.rip != code.len() && budget != 0 && !instructions.iter().any(|i| i.offset == state.rip)
+    {
+        return Err(DecodeErrorOrExecute::Execute(
+            ExecuteError::InvalidInstructionPointer { rip: state.rip },
+        ));
     }
+    let mut core = LongModeState::from(&*state);
+    let result = execute::run(
+        &mut core,
+        &mut FragmentCode(code),
+        execute::RunConfig {
+            instruction_budget: budget,
+            stop_rip: Some(code.len() as u64),
+            context: memory::AccessContext::default(),
+        },
+        || false,
+    );
+    // Only the statically validated four-register forms can reach this adapter;
+    // all original flag bits are retained, including caller-supplied unmodeled bits.
+    state.gpr.copy_from_slice(&core.gpr[..4]);
+    state.rip = usize::try_from(core.rip).map_err(|_| {
+        DecodeErrorOrExecute::Execute(ExecuteError::UnexpectedCoreExit {
+            exit: result.exit.clone(),
+        })
+    })?;
+    state.rflags = core.rflags;
+    let reason = match result.exit {
+        execute::RunExit::StopAddress => ExitReason::ReachedCodeEnd,
+        execute::RunExit::InstructionBudgetExhausted => ExitReason::InstructionBudgetExhausted,
+        exit => {
+            return Err(DecodeErrorOrExecute::Execute(
+                ExecuteError::UnexpectedCoreExit { exit },
+            ));
+        }
+    };
     Ok(ExecutionResult {
         state: state.clone(),
-        reason: ExitReason::ReachedCodeEnd,
-        instructions_executed: executed,
+        reason,
+        instructions_executed: result.instructions_executed,
     })
+}
+
+struct FragmentCode<'a>(&'a [u8]);
+
+impl memory::GuestMemory for FragmentCode<'_> {
+    fn fetch(
+        &mut self,
+        address: u64,
+        _context: memory::AccessContext,
+    ) -> Result<u8, memory::MemoryError> {
+        usize::try_from(address)
+            .ok()
+            .and_then(|index| self.0.get(index))
+            .copied()
+            .ok_or(memory::MemoryError::Unmapped {
+                address,
+                access: memory::AccessKind::Fetch,
+            })
+    }
+
+    fn read(
+        &mut self,
+        _address: u64,
+        _context: memory::AccessContext,
+        _destination: &mut [u8],
+    ) -> Result<(), memory::MemoryError> {
+        Err(memory::MemoryError::Backend(
+            "validated S0 code cannot read data memory".into(),
+        ))
+    }
+
+    fn write(
+        &mut self,
+        _address: u64,
+        _context: memory::AccessContext,
+        _source: &[u8],
+    ) -> Result<(), memory::MemoryError> {
+        Err(memory::MemoryError::Backend(
+            "validated S0 code cannot write data memory".into(),
+        ))
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _address: u64,
+        _context: memory::AccessContext,
+        _size: OperandSize,
+        _replacement: u64,
+    ) -> Result<u64, memory::MemoryError> {
+        Err(memory::MemoryError::Backend(
+            "validated S0 code cannot access data memory".into(),
+        ))
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _address: u64,
+        _context: memory::AccessContext,
+        _size: OperandSize,
+        _addend: u64,
+    ) -> Result<u64, memory::MemoryError> {
+        Err(memory::MemoryError::Backend(
+            "validated S0 code cannot access data memory".into(),
+        ))
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _address: u64,
+        _context: memory::AccessContext,
+        _size: OperandSize,
+        _expected: u64,
+        _replacement: u64,
+    ) -> Result<u64, memory::MemoryError> {
+        Err(memory::MemoryError::Backend(
+            "validated S0 code cannot access data memory".into(),
+        ))
+    }
+
+    fn mfence(&mut self, _context: memory::AccessContext) -> Result<(), memory::MemoryError> {
+        Err(memory::MemoryError::Backend(
+            "validated S0 code has no memory fence backend".into(),
+        ))
+    }
 }
 
 #[cfg(test)]

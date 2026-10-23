@@ -1,0 +1,70 @@
+{
+  "schema": "open-desktop-stage2-baseline-v1",
+  "date": "2026-10-22",
+  "profile": "S0-09 register-only compatibility",
+  "scope": "Regression of the four-register S0 interpreter/JIT/native profile; does not verify new ISA forms, S2-06 or completion of stage 2.",
+  "build_profile": "debug",
+  "local": {
+    "cpu": "Apple M3 Max",
+    "os": "macOS 26.7.1 arm64",
+    "page_size": 16384,
+    "rustc": "1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "1.99.0 (5f94df478 2026-08-27)"
+  },
+  "oracle": {
+    "cpu": "Intel Core i5-3210M",
+    "os": "Ubuntu Linux 6.17.0-41-generic x86_64",
+    "page_size": 4096,
+    "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "1.99.1 (5f94df478 2026-08-27)",
+    "host": "192.168.1.14",
+    "checkout": "/home/senya/projects/open_desktop-stage1"
+  },
+  "corpus": {
+    "manual_cases": 10,
+    "generated_cases": 1000,
+    "seed": "0x5eedcafe",
+    "repeats": 2,
+    "native_results_per_run": 2020
+  },
+  "reproduce_from_project_root": "python3 tests/cpu/stage1_harness.py --suite oracle --generated-count 1000 --seed 0x5eedcafe --repeats 2",
+  "runs": [
+    {
+      "checkpoint": "before state changes",
+      "run_id": "stage1-20261022-200905-e2c490b4",
+      "started_utc": "2026-10-22T20:09:05Z",
+      "finished_utc": "2026-10-22T20:10:13Z",
+      "source_fingerprint": "0a7a30de39bf7e53c864c6a057508e405b5e1363790d9354748fa10a4e1889fe",
+      "status": "passed",
+      "interpreter_native_mismatches": 0,
+      "jit_native_mismatches": 0,
+      "repeat_mismatches": 0,
+      "manifest": "work/stage1-oracle/stage1-20261022-200905-e2c490b4/manifest.json"
+    },
+    {
+      "checkpoint": "after S2-02 state changes",
+      "run_id": "stage1-20261022-201334-89ff8bca",
+      "started_utc": "2026-10-22T20:13:34Z",
+      "finished_utc": "2026-10-22T20:14:39Z",
+      "source_fingerprint": "1c94edb7017ccf6c161a82579b8cc837e11b4a29a504e703158e3eb91c220ce2",
+      "status": "passed",
+      "interpreter_native_mismatches": 0,
+      "jit_native_mismatches": 0,
+      "repeat_mismatches": 0,
+      "manifest": "work/stage1-oracle/stage1-20261022-201334-89ff8bca/manifest.json"
+    },
+    {
+      "checkpoint": "after S2-05 core before S2-06 changes",
+      "run_id": "stage1-20261022-203239-2d50e862",
+      "started_utc": "2026-10-22T20:32:39Z",
+      "finished_utc": "2026-10-22T20:33:47Z",
+      "source_fingerprint": "39e0a6c8ac6de17594556e5923526d79bfef89bfe0c8fa38a68b474a6131a259",
+      "status": "passed",
+      "interpreter_native_mismatches": 0,
+      "jit_native_mismatches": 0,
+      "repeat_mismatches": 0,
+      "manifest": "work/stage1-oracle/stage1-20261022-203239-2d50e862/manifest.json",
+      "harness_summary": "work/stage1-harness/stage1-harness-20261022-203238-0e101c26/summary.json"
+    }
+  ]
+}

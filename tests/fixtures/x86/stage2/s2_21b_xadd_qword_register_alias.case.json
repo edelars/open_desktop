@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_21b_xadd_qword_register_alias",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten 48 0F C1 C0 bytes, register values, and literal expected state; tests/cpu/generate_stage2_xadd_qword_register.py only serializes these constants. No assembler, emulator, or semantic expected-value generator.",
+    "specification": "Intel SDM revision 093, Vol.2D XADD: REX.W + 0F C1 /r exchanges the source and destination values and stores their sum to the destination; CF, PF, AF, SF, ZF, and OF reflect the addition. This fixture uses the same RAX register in both ModR/M fields and is local-only.",
+    "specification_version": "Intel SDM Vol.2D revision 093 (334569-093US), XADD p.6-23; project S2-21b"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x7fffffffffffffff",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 4,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "480fc1c0",
+      "comparison_mask_hex": "ffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100004",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

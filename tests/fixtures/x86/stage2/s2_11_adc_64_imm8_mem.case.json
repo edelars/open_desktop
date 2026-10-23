@@ -1,0 +1,91 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_11_adc_64_imm8_mem",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten single-arithmetic byte template and literal boundary answer; adc_64_imm8_mem, width64. Materializer SHA256 c6fcf6d515d7331818687cdce0b4527ef83e324a734348091a218f0ee92cf2f2. No assembler, emulator or arithmetic reference evaluator. Exact addresses, nonzero untouched memory canaries and complete final state are compared.",
+    "specification": "Intel SDM 093 Vol.2A ADC3-9..11,ADD3-14..15,CMP3-161..162,DEC3-262..263,INC3-457..458; Vol.2B NEG4-158..159,SBB4-613..615,SUB4-685..686; Vol.1 Appendix A Table A-2 EFLAGS; Vol.2A sections2.1.5,2.2.1.6 ModR/M and REX",
+    "specification_version": "Intel SDM revision 093; project S2-11"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0xffffffffffffffff",
+      "0x0000000000000000",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200ffe",
+      "0x00000000003000f8",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 4,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "48831300",
+      "comparison_mask_hex": "ffffffff"
+    },
+    {
+      "region_id": "data_left",
+      "guest_address": "0x0000000000200ff6",
+      "length": 10,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "a5a5a5a5a5a5a5a5ffff",
+      "comparison_mask_hex": "ffffffffffffffffffff"
+    },
+    {
+      "region_id": "data_right",
+      "guest_address": "0x0000000000201000",
+      "length": 14,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "ffffffffffffa5a5a5a5a5a5a5a5",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffff"
+    },
+    {
+      "region_id": "stack",
+      "guest_address": "0x0000000000300000",
+      "length": 256,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100004",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

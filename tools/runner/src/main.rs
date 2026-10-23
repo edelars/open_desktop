@@ -27,6 +27,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--generate-corpus") => return test_cli::generate_corpus(&args[1..]),
+        Some("--convert-fixture-v1") => return test_cli::convert_fixture_v1(&args[1..]),
         Some("--minimize") => return test_cli::minimize_fixture(&args[1..]),
         Some("--fixture") => return test_cli::run_fixture(&args[1..]),
         Some("--compare-results") => return test_cli::compare_results(&args[1..]),

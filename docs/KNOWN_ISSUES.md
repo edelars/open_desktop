@@ -12,6 +12,71 @@
 
 ## Записи
 
+### ISSUE-017 — Нет полного x86 LOCK ordering для общего memory backend
+
+- **Дата обнаружения:** 2026-10-23.
+- **Компонент:** `od-isa::GuestMemory`, S2-21f `LOCK XADD qword [memory], register`.
+- **Статус:** открыта; S2-21f ограничен private synchronous RAM при последовательном исполнении. Shared/asynchronous memory, DMA, MMIO и SMP use остаются вне контракта.
+- **Суть и последствия:** `atomic_fetch_add_integer` задаёт один backend вызов, wrapping update и no-mutation-on-error, но не задаёт полного x86 LOCK ordering, alignment/split-lock policy и не проверяет capability backend. Это достаточно только при отсутствии внешних конкурентных читателей/писателей и отложенных эффектов; generic `GuestMemory` не может динамически гарантировать это precondition. Unaligned local fixture проверяет backend bytes, но не hardware `#AC`/split-lock behavior.
+- **Уточнение S2-21g:** обязательный `GuestMemory::mfence` completion call покрывает только явный MFENCE для opt-in private synchronous RAM. Он не служит ordering boundary для LOCK XADD и не закрывает эту проблему; S2-21f остаётся под тем же integration precondition.
+- **Основание:** архитектурный анализ S2-21f сопоставил [memory trait](../crates/od-isa/src/memory.rs), [архитектурный контракт памяти](ARCHITECTURE.md) и Intel SDM revision 093 LOCK/XADD semantics. `FlatMemory` тестирует local split-region behavior, но не подтверждает межпоточную, DMA, MMIO или hardware атомарность.
+- **Воспроизведение/условие:** использовать S2-21f `F0 48 0F C1 /r` через `GuestMemory`, который имеет concurrent readers/writers, shared aliases, DMA, MMIO или отложенные writes; interpreter не проверит backend capability и не обеспечивает требуемый ordering.
+- **Следующий шаг:** до подключения такого backend определить memory ownership/capability и complete x86 LOCK ordering contract, затем добавить concurrent/ordering tests и отдельную native/physical acceptance. До этого сохранять S2-21f integration precondition и не расширять LOCK формы.
+
+### ISSUE-015 — Разногласие SDM по NT для POPF word на CPL3/IOPL0
+
+- **Дата обнаружения:** 2026-10-23.
+- **Компонент:** `od-isa` S2-17r, long-mode word `POPF` (`66 9D`) в CPL3/IOPL0.
+- **Статус:** открыта; входное значение NT=1 возвращает `Unsupported`, архитектурное поведение не заявлено.
+- **Суть и последствия:** Intel SDM revision 093 Vol.2B Table 4-15 и Vol.1 §7.3.13.2 p.7-22 расходятся относительно загрузки NT bit для 16-bit POPF при CPL3/IOPL0. Чтобы не закреплять семантику на основании противоречащих нормативных разделов, реализация отклоняет до commit как source NT=1, так и начальное NT=1; NT=0 поддерживается. Это сужает принятый профиль и исключает физическое утверждение для NT=1.
+- **Основание:** сверка Intel SDM order number 253667-093US, revision 093, Vol.2B Table 4-15 с Vol.1 §7.3.13.2 p.7-22 при реализации S2-17r. Literal fixture `s2_17r_popfw_updates_allowed_flags` использует TF=0 и NT=0 и не разрешает разногласие.
+- **Следующий шаг:** найти авторитетную errata/уточнение Intel либо надёжное дополнительное нормативное свидетельство. До этого сохранять `Unsupported` для NT=1 и не расширять fixture/native profile.
+
+### ISSUE-016 — Не установлен restart state MOVS после destination fault
+
+- **Дата обнаружения:** 2026-10-23.
+- **Компонент:** `od-isa` S2-18a/S2-18b/S2-18c/S2-18d, long-mode non-REP `MOVSB` (`A4`), `MOVSW` (`66 A5`), `MOVSD` (`A5`) и `MOVSQ` (`REX.W A5`) с implicit `[RSI]` source и `[RDI]` destination; S2-18e non-REP `STOSB` (`AA`) with AL source and implicit `[RDI]` destination.
+- **Статус:** открыта только для non-REP destination-fault snapshots; это непроверенная архитектурная граница, а не подтверждённый дефект runtime.
+- **Основание и последствия:** Intel SDM revision 093, Vol.2B MOVS задаёт `DEST ← SRC`, RSI/RDI и шаг по DF (1/2/4/8), но не говорит, обязаны ли индексы/RIP оставаться прежними при non-REP destination `#PF` после успешного source read. STOSB задаёт `DEST ← AL` и шаг RDI на один, но не устанавливает post-fault snapshot для non-REP destination `#PF`. Executors commit the relevant index register(s) and common RIP only after a successful destination write; this bounded-memory no-commit behavior is local policy, not a hardware restart guarantee. REP suspension is separately specified in the SDM as preserving the next element, remaining count, and instruction RIP after completed iterations; S2-19a follows and tests that between-iteration restart contract. It does not infer fault priority. Fault-only fixtures remain local and are rejected by native admission.
+- **Воспроизведение/условие:** execute a locally supported non-REP MOVS form with readable `[RSI]` and unmapped `[RDI]`, or bare `AA` STOSB with unmapped `[RDI]`, then observe the `#PF` snapshot. Local replay: S2-18a–d `*_write_fault` fixtures or `s2_18e_stosb_write_fault` using an injected write fault in `FlatMemory`; the test result is not a physical expectation.
+- **Следующий шаг:** find an unambiguous normative/errata source or obtain a reliable post-fault snapshot during the shared final Mac mini acceptance substage. Until then, keep the local commit policy and do not claim the hardware RSI/RDI/RIP state after a string destination `#PF`.
+
+### ISSUE-014 — Не установлено состояние RSP после fault у memory-destination POP
+
+- **Дата обнаружения:** 2026-10-23.
+- **Компонент:** `od-isa` S2-17j/S2-17l, long-mode qword `POP r/m64` and word `POP r/m16` (`8F /0`) с ordinary memory destination.
+- **Статус:** открыта; нормативный post-fault CPU state не подтверждён, не установленный дефект runtime.
+- **Основание и последствия:** Intel SDM order number 253667-093US, revision 093, Vol.2B, `POP` pp. 4-398–4-402 описывает чтение значения со старого stack top, увеличение RSP на размер операнда до записи в memory destination и вычисление адреса destination после увеличения, если RSP используется как base. Раздел перечисляет `#PF` для memory destination, но не устанавливает, обязано ли увеличенное RSP сохраняться при fault destination store. Executor вычисляет EA на staged state после `RSP += 8` для qword и `RSP += 2` для word, публикуя staged state только после успешной записи; это локальная fault policy, не подтверждённое архитектурное postcondition. Store-`#PF` regressions намеренно проверяют exception и неизменившуюся RAM, но не сравнивают GPR/RIP; native admission отвергает fault-only fixtures.
+- **Воспроизведение/условие:** `8F /0` или `66 8F /0` с читаемым значением на старом `[RSP]` и memory destination, который вызывает store `#PF`. Вызвать `step` с инъекцией architectural write fault в `FlatMemory`; проверить #PF и неизменившуюся память. CPU post-state не сравнивать до уточнения нормативного поведения.
+- **Следующий шаг:** найти однозначное Intel/AMD normative или errata evidence либо получить надёжный физический x86 snapshot в общем финальном Mac mini substage. До проверки не закреплять архитектурное ожидание для RSP/RIP/GPR при destination-store fault. Успешный `[RSP]` путь использует post-increment EA согласно SDM; эта успешная семантика не затронута проблемой. Контекст реализации: [S2-17j report](reports/STAGE_2_REPORT.md#s2-17j--qword-memory-destination-pop-local), [S2-17l report](reports/STAGE_2_REPORT.md#s2-17l--16-bit-memory-destination-pop-local), [CPU contract](specs/CPU_CONTRACT.md) и [plan](plans/STAGE_2.md).
+
+### ISSUE-013 — Не подтверждён приоритет target `#GP` и stack fault для near CALL
+
+- **Дата обнаружения:** 2026-10-22.
+- **Компонент:** `od-isa` S2-17c/d/e, near relative `CALL rel32` (`E8`) и near indirect `CALL r/m64` (`FF /2`) с register или ordinary memory source, включая порядок source/target/stack fault checks.
+- **Статус:** открыта; непроверенный приоритет combined fault, не подтверждённый дефект.
+- **Основание и последствия:** executor проверяет canonicality target перед вызовом stack helper для `E8 rel32` и `FF /2`; memory `FF /2` перед этим читает qword source. Отдельные source-read fault, noncanonical-target `#GP` и stack-fault cases проходят. Для случая, когда near CALL получил noncanonical target и одновременно invalid/noncanonical guest stack, архитектурный победивший fault не установлен. Intel SDM revision 093, Vol.2A, `CALL` p.3-125 описывает operation pseudocode через временный RIP, stack capacity, push и обновление RIP, а `#GP` для target перечисляет отдельно; эта подача сама по себе не подтверждает приоритет combined fault для direct, register-indirect или memory-indirect формы. Independent Sol-medium reviews для S2-17d/e чистые; S2-17e локально проверяет отдельные source/target/stack faults без commit; combined dual-fault fixture и expected physical snapshot пока не созданы.
+- **Воспроизведение/условие:** выполнить `E8 rel32`, register-only `FF /2` или memory `FF /2` (читаемый source содержит noncanonical qword) при одновременно invalid/noncanonical guest stack. Для memory CALL текущий executor сначала читает source, затем проверяет target canonicality и stack helper; наблюдаемый порядок реализации не устанавливает нормативный expected winner.
+- **Следующий шаг:** найти нормативное или errata evidence; иначе проверить возможность надёжно захватить combined-fault result для direct/register/memory indirect CALL в harness, создать dual-fault fixture с expected state и включить её в общий финальный physical Mac mini acceptance evidence. До подтверждения не менять runtime по догадке. Контекст — [S2-17e report](reports/STAGE_2_REPORT.md#s2-17e--memory-near-indirect-call-local), [CPU contract](specs/CPU_CONTRACT.md) и [plan](plans/STAGE_2.md).
+
+### ISSUE-012 — Не подтверждена семантика operand range через верх u64
+
+- **Дата обнаружения:** 2026-10-22.
+- **Компонент:** `od-isa` S2-08, full-width address validation диагностического long-mode профиля.
+- **Статус:** открыта; непроверенная semantic boundary, не подтверждённый hardware bug.
+- **Основание и последствия:** проверка Intel SDM093 Vol.3A, §§4.5.1 и 6.15, не дала однозначного нормативного ответа для многобайтного доступа, у которого endpoint переполняет u64. Поэтому реализация возвращает `MemoryError::AddressOverflow` до backend и без commit; она не выдаёт неподтверждённый #GP. Это harness/memory-boundary error, не установленная x86 exception semantics.
+- **Воспроизведение:** в диагностическом long-mode профиле задать `RAX = 0xffffffffffffffff` и исполнить `MOV r64, [RAX]` (например `48 8b 08`, destination RCX); старт canonical, endpoint 8-byte operand непредставим u64. Проверить AddressOverflow, сохранённые RIP/GPR/flags и отсутствие обращения к backend.
+- **Следующий шаг:** найти точный нормативный источник или независимое подтверждение на физическом x86 для этого диапазона, затем закрепить architectural outcome и regression. Закрыть до полной приёмки этапа 2; локальная проверка выбранного boundary policy не заменяет hardware confirmation. Контекст — [CPU contract](specs/CPU_CONTRACT.md#исполнение-mov--s2-08).
+
+### ISSUE-011 — AMD APM 4.09 не прочитан через web fetch
+
+- **Дата обнаружения:** 2026-10-22.
+- **Компонент:** нормативные источники CPU, S2-00; проверка AMD semantics.
+- **Статус:** открыта; ограничение доступа к источнику в текущей среде.
+- **Основание и последствия:** повторный `web.run.open` вернул `Failed to fetch … (404) Not Found` для [страницы 40332 revision 4.09](https://docs.amd.com/v/u/en-US/40332_4.09_APM_PUB), [официального PDF](https://www.amd.com/content/dam/amd/en/documents/processor-tech-docs/programmer-references/40332.pdf) и [indexed content API](https://docs.amd.com/api/khub/documents/68GKiN0gMEd6bMddsmhPwg/content). Поиск показывает metadata/выдержки, но тело manual через этот инструмент не прочитано; они не считаются проверкой нормативной семантики. Наблюдение не доказывает общую недоступность сайта или отсутствие документа.
+- **Повторная ограниченная проверка:** 22 октября `web.run.open` снова вернул 404 для landing 4.09, khub content, отдельного официального Volume 3 `24594.pdf` и Volume 1 khub. Другой HTTP fetch получил для landing только SPA shell «Loading application…»; после загрузки в Chrome официальный портал показал «Content not found» с сообщением о перемещённом/удалённом документе именно по этому URL. Поиск портала `40332` результата в наблюдаемой странице не дал. Отдельный `urllib.request.urlopen` GET официального [24594.pdf](https://www.amd.com/content/dam/amd/en/documents/processor-tech-docs/programmer-references/24594.pdf), предназначенный для обработки bytes в памяти и `pdftotext - -`, завершился `TimeoutError: The read operation timed out` с лимитом 25 s до получения PDF. PDF bytes/hash и текст разделов не получены; search snippets не использованы вместо manual. Это разные наблюдаемые границы инструментов/URL, не вывод об универсальной недоступности AMD.
+- **Следующий шаг:** получить официальный AMD PDF revision 4.09 через доступный официальный канал, проверить титул/version и необходимые разделы, сохранить provenance/hash и обновить [CPU contract](specs/CPU_CONTRACT.md) и [отчёт](reports/STAGE_2_REPORT.md). До этого новые vendor-specific решения считать непроверенными по AMD; уже реализованный GPR contract подтверждён Intel SDM.
+
 ### ISSUE-010 — graphify не извлекает символы публичного C ABI header
 
 - **Дата обнаружения:** 2026-10-22.
@@ -104,3 +169,12 @@
 - **Суть и последствия:** unit test подтверждает fault в generated code внутри дочернего процесса, а protocol-level test helper подтверждает `SIGSEGV` диагностику launcher-а. Временная ad-hoc `.app` smoke-упаковка валидна и исполняет JIT, но не подтверждает Developer ID distribution или notarization. Владелец сообщает о наличии Developer ID certificate, но соответствующая signing identity (сертификат с доступным private key) не найдена в keychains проверенных M3 Max и M1 Pro. Членство Apple Developer Program не активно; Apple notary service недоступен до его возобновления.
 - **Основание:** проверки `generated_code_fault_is_confined_to_child_process`, `vmhost_generated_fault_smoke.py` и `vmhost_app_bundle_smoke.sh` прошли на M3 Max. Инвентаризация подписи и пределы теста записаны в [STAND.md](testing/STAND.md) и [отчёте этапа 0](reports/STAGE_0_REPORT.md).
 - **Следующий шаг:** установить на M3 Max действующую Developer ID Application identity вместе с соответствующим private key и проверить подписание конечного Open Desktop bundle. Если требуется проверить notarization, владелец должен возобновить членство Apple Developer Program и предоставить авторизацию для notary service; учетные данные не передавать через чат. Затем повторить S0-14 review. До появления доступной identity Developer ID signing не проверено, а без активного членства notarization недоступна. Ответственный: владелец конфигурации подписи совместно с инженером macOS.
+
+### ISSUE-018 — S2-22 покрывает только ограниченные selector/descriptor slices
+
+- **Дата обнаружения:** 2026-10-23.
+- **Компонент:** `od-isa` long-mode сегментная модель и S2-22.
+- **Статус:** открыта; это зарегистрированный остаток этапа, не подтверждённый дефект S2-22f.
+- **Суть и последствия:** S2-22a–f задают локальные профили для отдельных FS/GS base/selector операций, CPL3 VERW и одной `MOV FS, AX` загрузки из GDT. Они не реализуют LDT, null segment loads, accessed-bit updates, GS/SS loads, stack checks, другие CPL/modes или применение protected-mode limit/type checks. Поэтому Stage 2 не может объявить полную сегментную архитектуру или завершить S2-22 по результатам этих профилей.
+- **Основание:** ограничения зафиксированы в [плане S2-22](plans/STAGE_2.md), [CPU contract](specs/CPU_CONTRACT.md) и [отчёте этапа 2](reports/STAGE_2_REPORT.md). Локальные fixture/unit checks подтверждают только перечисленные формы.
+- **Следующий шаг:** после утверждения обязательного guest profile в S2-00 выбрать отдельные bounded slices с собственным fault/state matrix и review. Не расширять текущий профиль автоматически на перечисленные формы.

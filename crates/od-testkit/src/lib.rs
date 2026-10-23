@@ -7,8 +7,13 @@ pub mod compare;
 mod error;
 pub mod generate;
 mod hex_u64;
+pub mod memory;
 pub mod minimize;
 pub mod result;
+pub mod v2;
+
+#[cfg(test)]
+mod execution_tests;
 
 pub use error::FormatError;
 pub use hex_u64::HexU64;

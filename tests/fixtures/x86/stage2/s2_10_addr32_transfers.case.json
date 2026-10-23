@@ -1,0 +1,91 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_10_addr32_transfers",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Hand-authored address32 C6/C7 stores8/16/32/64 in isolated16-byte slots with nonzero canaries and all13 MOVZX/SX/SXD memory width combinations. RBX=0x1122334400200000 truncates to source0x200000 only through67. Every extension result saved before overwrite at0x210000; code1MiB,stack3MiB.",
+    "specification": "Intel SDM 093 Vol.2B MOVSX/MOVSXD pp.4-120ff, MOVZX pp.4-130ff; Vol.1 §3.4.1.1",
+    "specification_version": "Intel SDM revision 093; project S2-10"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x1122334400200000",
+      "0x00000000003000f8",
+      "0x0000000000210080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0xffffffffffffffff",
+      "0x9988776655443322",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 179,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "67c64320806667c74330018067c74340010000806748c74350010000800fb6cc48894d80670fb64b0148894d8867660fb60348894590674c0fb6034c89459867440fb74b024c894da0674c0fb753044c8955a867660fbe03488945b0670fbe4b0148894db8674c0fbe1b4c895dc0670fbf5302488955c8674c0fbf63044c8965d0674c636b064c896dd867637306488975e06766446373044c8975e80fbef4488975f0400fb6fc48897df8450fb6f84c897d00",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000200000",
+      "length": 96,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "80ff0180008000000080ffff5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    {
+      "region_id": "results",
+      "guest_address": "0x0000000000210000",
+      "length": 136,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    {
+      "region_id": "stack",
+      "guest_address": "0x0000000000300000",
+      "length": 256,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x00000000001000b3",
+  "instruction_budget": 64,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

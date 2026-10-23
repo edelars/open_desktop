@@ -1,0 +1,73 @@
+{
+  "schema": "open-desktop-s2-13-physical-evidence-v1",
+  "scope": "S2-13 SHL/SAL/SHR/SAR, ROL/ROR/RCL/RCR, SHLD/SHRD positive register and memory-RMW forms; semantic undefined outputs are not exact-compared. No physical fault-state snapshot, AMD, privileged, v2 JIT, or full-stage claim.",
+  "source_fingerprint": "e21944ca03541871fe6973bb7ccfb47307dd4963f91a1c7dee9262d1be46cfa2",
+  "legacy": {
+    "run_id": "stage1-20261022-223439-2d67338b",
+    "status": "passed",
+    "started_utc": "2026-10-22T22:34:39Z",
+    "finished_utc": "2026-10-22T22:35:44Z",
+    "repeats": 2,
+    "inputs": 1010,
+    "diffs": 0,
+    "errors": 0,
+    "manifest": "work/stage1-oracle/stage1-20261022-223439-2d67338b/manifest.json",
+    "manifest_sha256": "05b75f7874458a46138663d91d7892e8cbbeecb0a8550546dea1380e29ba91f2"
+  },
+  "stage2": {
+    "run_id": "stage2-20261022-223610-81d63d71",
+    "status": "passed",
+    "started_utc": "2026-10-22T22:36:10Z",
+    "finished_utc": "2026-10-22T22:37:59Z",
+    "repeats": 2,
+    "inputs": 662,
+    "native_snapshots": 1324,
+    "interpreter_native_diffs": 0,
+    "stable_repeat2_cases": 662,
+    "suite_cases": {
+      "S2-09": 3,
+      "S2-10": 5,
+      "S2-11": 313,
+      "S2-12": 197,
+      "S2-13": 144
+    },
+    "s2_13_physical_cases": {
+      "register": 142,
+      "memory_rmw": 2
+    },
+    "excluded_from_physical_exact_comparison": 2,
+    "all_gpr_per_snapshot": 16,
+    "rip_and_rflags_observed": true,
+    "rflags_defined_snapshots_per_backend": {
+      "0x00000000000004c6": 16,
+      "0x00000000000004c7": 12,
+      "0x00000000000004d7": 32,
+      "0x0000000000000cc7": 412,
+      "0x0000000000000cd7": 852
+    },
+    "manifest": "work/stage2-oracle/stage2-20261022-223610-81d63d71/manifest.json",
+    "manifest_sha256": "1962b53007d190bab22ee97037248f692224f84a43e486a859c8c69821ce23c3",
+    "linked_legacy_manifest_sha256": "05b75f7874458a46138663d91d7892e8cbbeecb0a8550546dea1380e29ba91f2"
+  },
+  "machines": {
+    "native_x86": {
+      "cpu_model": "Intel Core i5-3210M",
+      "host_os": "Linux",
+      "kernel": "6.17.0-41-generic",
+      "host_arch": "x86_64",
+      "rustc": "1.99.1"
+    },
+    "interpreter": {
+      "host_os": "macOS",
+      "host_arch": "arm64",
+      "cpu_model": "Apple M3 Max",
+      "rustc": "1.99.0"
+    }
+  },
+  "limits": [
+    "Native fixtures verify successful memory RMW only; range/permission rejects happen before execution.",
+    "The native harness cannot capture a post-host-signal CPU/RIP/definedness/RAM snapshot; physical fault-before-commit is not claimed.",
+    "Two 16-bit SHLD/SHRD raw17 cases have architecturally undefined destination and are not part of physical exact comparison; local od-isa tests check no panic and undefined arithmetic flags.",
+    "ISSUE-011 and ISSUE-012 remain open; AMD, privileged faults, v2 JIT, and full stage 2 are unverified."
+  ]
+}

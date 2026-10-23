@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_22a_fs_base_qword_load_alias",
+  "profile": "s2-long-fs-base-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten 64 48 8B 00 bytes, initial state and expected result. This generator serializes literals only; no assembler, emulator or semantic expected-value generator is used.",
+    "specification": "Intel SDM revision 093 (253665-093US), Vol.1 \u00a7\u00a73.3.7\u20133.3.7.1 pp.3-10\u20133-11 and \u00a73.4.2.1 p.3-15: effective offset is computed before adding the full 64-bit FS base; FS base participates in canonical-address checks. Vol.2B (253667-093US), MOV pp.4-28\u20134-31.",
+    "specification_version": "Intel SDM revision 093; Vol.1 PDF https://cdrdv2.intel.com/v1/dl/getContent/671436; Vol.2B PDF https://cdrdv2.intel.com/v1/dl/getContent/671241; project S2-22a."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000800000400000",
+      "0xdeadbeefcafebabe",
+      "0xdeadbeeffedcba98",
+      "0x1122334455667788",
+      "0x0000000000200080",
+      "0x0000000000200080",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7",
+    "fs_base": "0xffff800000000000"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 4,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "64488b00",
+      "comparison_mask_hex": "ffffffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000400000",
+      "length": 8,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "1122334455667788",
+      "comparison_mask_hex": "ffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100004",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

@@ -1,0 +1,142 @@
+{
+  "schema": "open-desktop-s2-09-physical-evidence-v1",
+  "scope": "Three positive MOV/memory v2 cases plus legacy S0 regression on one Intel CPU; not full stage 2, privileged faults, AMD or v2 JIT.",
+  "source_fingerprint": "bcade2e1c1282285f923e43e89dde2ffff7a70d900922022c3368f9aaf04cf5d",
+  "target": "senya@192.168.1.14",
+  "remote_root": "/home/senya/projects/open_desktop-stage1",
+  "build": {
+    "interpreter": {
+      "revision": "sha256:bcade2e1c1282285f923e43e89dde2ffff7a70d900922022c3368f9aaf04cf5d",
+      "target": "aarch64-apple-darwin",
+      "profile": "debug",
+      "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+    },
+    "native_x86": {
+      "revision": "sha256:bcade2e1c1282285f923e43e89dde2ffff7a70d900922022c3368f9aaf04cf5d",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "debug",
+      "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+    }
+  },
+  "machines": {
+    "interpreter": {
+      "host_os": "macos",
+      "host_arch": "aarch64",
+      "cpu_model": null,
+      "kernel": null,
+      "page_size": null
+    },
+    "native_x86": {
+      "host_os": "linux",
+      "host_arch": "x86_64",
+      "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+      "kernel": "6.17.0-41-generic",
+      "page_size": 4096
+    }
+  },
+  "toolchains": {
+    "remote_rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "remote_cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "remote_uname": "Linux mini 6.17.0-41-generic #41-Ubuntu SMP PREEMPT_DYNAMIC Sat Jun 20 18:01:40 UTC 2026 x86_64 GNU/Linux"
+  },
+  "limits": {
+    "wall_timeout": "per-fixture wall_timeout_ms",
+    "cpu_seconds": 2,
+    "address_space_bytes": 268435456,
+    "core_bytes": 0,
+    "native_mapping_endpoint_max": 2147483648,
+    "mapping_envelope_bytes_max": 67108864,
+    "writable_executable": false
+  },
+  "legacy": {
+    "run_id": "stage1-20261022-211911-7d05dd0b",
+    "status": "passed",
+    "started_utc": "2026-10-22T21:19:11Z",
+    "finished_utc": "2026-10-22T21:20:17Z",
+    "repeats": 2,
+    "inputs": 1010,
+    "native_results": 2020,
+    "interpreter_native_mismatches": 0,
+    "jit_native_mismatches": 0,
+    "stable_repeats": true,
+    "manifest": "work/stage1-oracle/stage1-20261022-211911-7d05dd0b/manifest.json",
+    "manifest_sha256": "2f22cc1fb7614c02ce497caac4d39821542c471c094b403103f1b0991a29d1ef"
+  },
+  "memory": {
+    "run_id": "stage2-20261022-212031-027fe280",
+    "status": "passed",
+    "started_utc": "2026-10-22T21:20:31Z",
+    "finished_utc": "2026-10-22T21:20:36Z",
+    "repeats": 2,
+    "inputs": 3,
+    "native_results": 6,
+    "interpreter_native_mismatches": 0,
+    "stable_repeats": true,
+    "gpr_including_rsp": 16,
+    "rip": true,
+    "rflags_defined": "0x0000000000000cd7",
+    "all_fixture_memory": true,
+    "exact_instruction_count_observed": true,
+    "manifest": "work/stage2-oracle/stage2-20261022-212031-027fe280/manifest.json",
+    "manifest_sha256": "114108ffd32ad24bc2defb76ec520935cbdbf99802849b49bd2901831248ef0c"
+  },
+  "harness_sha256": {
+    "stage1_oracle.py": "81017b89e2ccb36a31dace37780fcea7620645cb6de41b345b77cb890e72896e",
+    "stage2_oracle.py": "911f69bee5c2b403aa9737c71879f49f6e63a5d362dd0dcfb0f9848d8e81f845"
+  },
+  "fixture_archive_sha256": "8c8ddc21a73e5cbb15f64ee80ef638af8809278ffec97c8619b1074a295249ea",
+  "inputs": [
+    {
+      "case_id": "s2_09_hw_mov_load_add_store",
+      "filename": "hw_mov_load_add_store.case.json",
+      "fixture_sha256": "bd96b4780ed9d4b52dfdd853d23ab988019cf69fc1d7b8031279d9b2ae197dbd"
+    },
+    {
+      "case_id": "s2_09_hw_mov_width_aliasing",
+      "filename": "hw_mov_width_aliasing.case.json",
+      "fixture_sha256": "52a93b7cfbf8cced1e8594f0be056db9ad5e3ed50b2a8409567b6b2f661d44ff"
+    },
+    {
+      "case_id": "s2_09_hw_mov_rex_rip_relative",
+      "filename": "hw_mov_rex_rip_relative.case.json",
+      "fixture_sha256": "ea638f77c1f753cc9ec8d93ad9fe2911933dd08a723785c02bfbe973f0be53bc"
+    }
+  ],
+  "reproduce_argv": [
+    "/opt/homebrew/opt/python@3.15/bin/python3.15",
+    "tests/cpu/stage2_oracle.py",
+    "--host",
+    "192.168.1.14",
+    "--user",
+    "senya",
+    "--remote-root",
+    "/home/senya/projects/open_desktop-stage1",
+    "--repeats",
+    "2",
+    "--stage1-manifest",
+    "work/stage1-oracle/stage1-20261022-211911-7d05dd0b/manifest.json",
+    "work/stage2-oracle/stage2-20261022-212031-027fe280/fixtures/hw_mov_load_add_store.case.json",
+    "work/stage2-oracle/stage2-20261022-212031-027fe280/fixtures/hw_mov_width_aliasing.case.json",
+    "work/stage2-oracle/stage2-20261022-212031-027fe280/fixtures/hw_mov_rex_rip_relative.case.json"
+  ],
+  "fixture_limits": [
+    {
+      "case_id": "s2_09_hw_mov_load_add_store",
+      "instruction_budget": 32,
+      "wall_timeout_ms": 1000,
+      "rflags_mask": "0x0000000000000cd7"
+    },
+    {
+      "case_id": "s2_09_hw_mov_width_aliasing",
+      "instruction_budget": 32,
+      "wall_timeout_ms": 1000,
+      "rflags_mask": "0x0000000000000cd7"
+    },
+    {
+      "case_id": "s2_09_hw_mov_rex_rip_relative",
+      "instruction_budget": 32,
+      "wall_timeout_ms": 1000,
+      "rflags_mask": "0x0000000000000cd7"
+    }
+  ]
+}

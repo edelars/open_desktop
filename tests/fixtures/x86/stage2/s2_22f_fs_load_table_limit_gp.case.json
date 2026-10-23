@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_22f_fs_load_table_limit_gp",
+  "profile": "s2-long-fs-load-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten instruction bytes, GDT descriptor bytes, state, and expected exit. This generator serializes literals only; it does not assemble, emulate, or calculate CPU semantics.",
+    "specification": "Intel SDM revision 093 (253667-093US), Vol.2B MOV pp.4-28\u20134-31; Vol.3A (325384-093US) \u00a7\u00a73.4.3\u20133.4.5.1, 3.5.1, 6.4.1.1, 6.6\u20136.6.1, 6.11.5, 7.13.",
+    "specification_version": "Intel SDM revision 093; Vol.2B PDF https://cdrdv2.intel.com/v1/dl/getContent/671241; Vol.3A PDF https://cdrdv2.intel.com/v1/dl/getContent/671447; project S2-22f. full descriptor crosses GDTR limit and raises #GP(selector) before read"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0xaabbccddeeff000b",
+      "0x0102030405060708",
+      "0x1122334455667788",
+      "0x8877665544332211",
+      "0x0000000000200080",
+      "0x0000000000200081",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7",
+    "fs_base": "0xffff800000001000",
+    "fs_selector": "0x0000000000000033",
+    "gdtr_base": "0x0000000000200000",
+    "gdtr_limit": "0x000000000000000e",
+    "fs_cache_limit": "0x000000000000ffff",
+    "fs_cache_access": "0x00000000000000f3",
+    "fs_cache_flags": "0x0000000000000000"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 2,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "8ee0",
+      "comparison_mask_hex": "ffff"
+    },
+    {
+      "region_id": "gdt",
+      "guest_address": "0x0000000000200000",
+      "length": 16,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "00000000000000000000000000f30000",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100002",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "exception"
+}

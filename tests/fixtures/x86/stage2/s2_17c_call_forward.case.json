@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_17c_call_forward",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten x86 CALL/RET bytes and independent literal full-state answer; s2_17c_call_forward. Materializer SHA256 6282fb4af5cd3fb5c10dcb290bcb3379f12b3c47373c5770a3a2b1c8e21197d9; no assembler or emulator.",
+    "specification": "Intel SDM revision 093, Vol.2A CALL\u2014Call Procedure pp. 3-122\u20133-123 and Vol.2B RET\u2014Return From Procedure: E8 rel32 is sign-extended from the next RIP in 64-bit mode; near CALL pushes that next RIP as a 64-bit stack item, and C3 near RET pops a 64-bit target.",
+    "specification_version": "Intel SDM revision 093; project S2-17c"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300100",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000802"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 11,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "e8050000009090909090c3",
+      "comparison_mask_hex": "ffffffffffffffffffffff"
+    },
+    {
+      "region_id": "stack",
+      "guest_address": "0x0000000000300000",
+      "length": 256,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100005",
+  "instruction_budget": 2,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

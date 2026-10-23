@@ -5,7 +5,10 @@
 
 use std::collections::HashMap;
 
-use od_isa::{CpuState, DecodeError, Instruction, Operation, decode};
+use od_isa::{DecodeError, FragmentState as CpuState, Instruction, Operation, decode};
+
+const RIP_OFFSET: u32 = std::mem::offset_of!(CpuState, rip) as u32;
+const RFLAGS_OFFSET: u32 = std::mem::offset_of!(CpuState, rflags) as u32;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum JitError {
@@ -50,13 +53,13 @@ fn compile_decoded(
 
     let mut start_patches = Vec::with_capacity(instructions.len() + 1);
     for instruction in instructions {
-        emitter.emit(ldr_x(9, 19, 32));
+        emitter.emit(ldr_x(9, 19, RIP_OFFSET));
         emitter.emit_mov_imm64(10, instruction.offset as u64);
         emitter.emit(subs_x(31, 9, 10)); // CMP X9, X10
         let patch = emitter.emit(0x5400_0000); // B.EQ guest block
         start_patches.push((patch, instruction.offset));
     }
-    emitter.emit(ldr_x(9, 19, 32));
+    emitter.emit(ldr_x(9, 19, RIP_OFFSET));
     emitter.emit_mov_imm64(10, code_length as u64);
     emitter.emit(subs_x(31, 9, 10));
     let start_at_end = emitter.emit(0x5400_0000); // B.EQ complete
@@ -69,7 +72,7 @@ fn compile_decoded(
         let host_word = emitter.words.len();
         guest_to_host.push((instruction.offset, host_word));
         emitter.emit_mov_imm64(9, instruction.offset as u64);
-        emitter.emit(str_x(9, 19, 32)); // CpuState.rip
+        emitter.emit(str_x(9, 19, RIP_OFFSET));
         emitter.emit(subs_imm(15, 15, 1));
         let budget_patch = emitter.emit(0x5400_0003); // B.LO budget_exit
         branch_patches.push((budget_patch, PatchKind::Budget));
@@ -107,7 +110,7 @@ fn compile_decoded(
             }
             Operation::Jz { displacement } | Operation::Jnz { displacement } => {
                 let target = (instruction.next_offset() as i64 + i64::from(displacement)) as usize;
-                emitter.emit(ldr_x(9, 19, 40)); // CpuState.rflags
+                emitter.emit(ldr_x(9, 19, RFLAGS_OFFSET));
                 emitter.emit_mov_imm64(10, 1 << 6);
                 emitter.emit(and_x(9, 9, 10));
                 let is_jz = matches!(instruction.operation, Operation::Jz { .. });
@@ -119,7 +122,7 @@ fn compile_decoded(
 
     let complete = emitter.words.len();
     emitter.emit_mov_imm64(9, code_length as u64);
-    emitter.emit(str_x(9, 19, 32));
+    emitter.emit(str_x(9, 19, RIP_OFFSET));
     emitter.emit_mov_imm64(0, 0);
     emitter.emit(str_x(14, 21, 0));
     let epilogue = emitter.words.len();
@@ -365,6 +368,30 @@ pub unsafe fn execute_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fragment_layout_matches_generated_loads_and_stores() {
+        assert_eq!(std::mem::offset_of!(CpuState, gpr), 0);
+        assert_eq!(std::mem::size_of::<CpuState>(), 48);
+        assert_eq!(RIP_OFFSET, 32);
+        assert_eq!(RFLAGS_OFFSET, 40);
+        assert_eq!(std::mem::size_of::<usize>(), 8);
+        let output = compile(&[0x48, 0x03, 0xc1, 0x74, 0]).unwrap();
+        assert!(output.host_code.contains(&ldr_x(9, 19, RIP_OFFSET)));
+        assert!(output.host_code.contains(&str_x(9, 19, RIP_OFFSET)));
+        assert!(output.host_code.contains(&ldr_x(9, 19, RFLAGS_OFFSET)));
+    }
+
+    #[test]
+    fn extended_register_forms_are_still_outside_fragment_jit() {
+        for code in [
+            &[0x49, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0][..],
+            &[0x48, 0x03, 0xc4],
+        ] {
+            assert!(matches!(compile(code), Err(JitError::Decode(_))));
+        }
+        assert_eq!(CpuState::default().register(od_isa::Register::R15), None);
+    }
 
     #[test]
     fn emits_guest_offset_map_and_native_words() {

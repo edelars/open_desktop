@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_17p_pushfq_masked_rflags_image",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten bare PUSHFQ byte and independent literal full-state answer; s2_17p_pushfq_masked_rflags_image. Materializer SHA256 d98913fc1e96cb085277b0d809d110cdc25853d40aeb5c9b37d2d3fb2befc5be; no assembler or emulator.",
+    "specification": "Intel SDM revision 093, Vol.2B PUSHF/PUSHFD/PUSHFQ pp.4-528\u20134-529: in 64-bit mode PUSHFQ stores a qword RFLAGS image AND 00000000_00FCFFFFH; VM and RF are cleared in the image, and flags are not affected. The physical comparison mask covers modeled status flags, DF, fixed bit 1, and the required cleared RF/VM bits; IF/IOPL and other unmodeled bits are masked because the fixture runs in CPL3.",
+    "specification_version": "Intel SDM Vol.2B revision 093 (253667-093US); project S2-17p"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 1,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "9c",
+      "comparison_mask_hex": "ff"
+    },
+    {
+      "region_id": "stack",
+      "guest_address": "0x0000000000300000",
+      "length": 256,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd70c030000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100001",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

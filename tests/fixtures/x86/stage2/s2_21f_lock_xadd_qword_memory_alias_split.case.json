@@ -1,0 +1,79 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_21f_lock_xadd_qword_memory_alias_split",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten F0 48 0F C1 00 bytes, initial register/memory bytes and literal expected state; tests/cpu/generate_stage2_lock_xadd_qword_memory.py only serializes these constants. No assembler, emulator, or semantic expected-value generator.",
+    "specification": "Intel SDM revision 093, Vol.2D XADD plus Vol.2A LOCK prefix rules: the old memory destination is copied to the source register, the source is added to the destination, and arithmetic flags reflect the sum. LOCK is accepted only for a memory destination. The source register is also the effective-address base. This local-only fixture crosses two adjacent private-RAM regions; it makes no shared-memory, SMP, or host-atomicity claim.",
+    "specification_version": "Intel SDM revision 093 (334569-093US), Vol.2D XADD pp.6-23–6-24 and Vol.2A LOCK prefix; project S2-21f"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x00000000003000fb",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 5,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "f0480fc100",
+      "comparison_mask_hex": "ffffffffff"
+    },
+    {
+      "region_id": "data_left",
+      "guest_address": "0x00000000003000f8",
+      "length": 8,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "a5a5a5ffffffffff",
+      "comparison_mask_hex": "ffffffffffffffff"
+    },
+    {
+      "region_id": "data_right",
+      "guest_address": "0x0000000000300100",
+      "length": 8,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "ffffffa5a5a5a5a5",
+      "comparison_mask_hex": "ffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100005",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

@@ -1,0 +1,101 @@
+{
+  "schema": "open-desktop-s2-11-physical-evidence-v1",
+  "scope": "321 positive v2 cases on one Intel CPU, including313 literal arithmetic inputs, plus1010-case legacy regression. Injected local no-commit faults do not prove native guest #PF. No full stage2/AMD/privileged/v2JIT claim.",
+  "source_fingerprint": "db01a6db7b28c41c9fd21761f308a3ef8c60a61a808530bc73ac36525bd391ba",
+  "target": "senya@192.168.1.14",
+  "remote_root": "/home/senya/projects/open_desktop-stage1",
+  "build": {
+    "interpreter": {
+      "revision": "sha256:db01a6db7b28c41c9fd21761f308a3ef8c60a61a808530bc73ac36525bd391ba",
+      "target": "aarch64-apple-darwin",
+      "profile": "debug",
+      "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+    },
+    "native_x86": {
+      "revision": "sha256:db01a6db7b28c41c9fd21761f308a3ef8c60a61a808530bc73ac36525bd391ba",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "debug",
+      "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+    }
+  },
+  "machines": {
+    "interpreter": {
+      "host_os": "macos",
+      "host_arch": "aarch64",
+      "cpu_model": null,
+      "kernel": null,
+      "page_size": null
+    },
+    "native_x86": {
+      "host_os": "linux",
+      "host_arch": "x86_64",
+      "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+      "kernel": "6.17.0-41-generic",
+      "page_size": 4096
+    }
+  },
+  "local": {
+    "host_os": "macOS-26.7.1-arm64-arm-64bit-Mach-O",
+    "host_arch": "arm64",
+    "cpu_model": "Apple M3 Max",
+    "kernel": "Darwin 192.168.1.100 25.6.0 Darwin Kernel Version 25.6.0: Tue Aug 18 17:51:35 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6031 arm64",
+    "page_size": 16384,
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)"
+  },
+  "legacy": {
+    "run_id": "stage1-20261022-215743-751a2dd1",
+    "status": "passed",
+    "started_utc": "2026-10-22T21:57:43Z",
+    "finished_utc": "2026-10-22T21:58:43Z",
+    "repeats": 2,
+    "inputs": 1010,
+    "native_results": 2020,
+    "interpreter_native_mismatches": 0,
+    "jit_native_mismatches": 0,
+    "stable_repeats": true,
+    "manifest": "work/stage1-oracle/stage1-20261022-215743-751a2dd1/manifest.json",
+    "manifest_sha256": "006820aee22457fc54909c6fa5b7c8f6b699050eee688756d1eb5b27042df1fe"
+  },
+  "v2": {
+    "run_id": "stage2-20261022-215943-adeb1874",
+    "status": "passed",
+    "started_utc": "2026-10-22T21:59:43Z",
+    "finished_utc": "2026-10-22T22:00:21Z",
+    "repeats": 2,
+    "inputs": 321,
+    "native_results": 642,
+    "interpreter_native_mismatches": 0,
+    "stable_repeat2_cases": 321,
+    "gpr_including_rsp": 16,
+    "rip": true,
+    "rflags_defined": "0x0000000000000cd7",
+    "all_fixture_memory": true,
+    "exception_and_count_available": true,
+    "manifest": "work/stage2-oracle/stage2-20261022-215943-adeb1874/manifest.json",
+    "manifest_sha256": "335324281c00fd1546aa98f9a02e852e3a34e6fbd686a2342c66f8ea3a072320"
+  },
+  "harness_sha256": {
+    "stage1_oracle.py": "81017b89e2ccb36a31dace37780fcea7620645cb6de41b345b77cb890e72896e",
+    "stage2_oracle.py": "911f69bee5c2b403aa9737c71879f49f6e63a5d362dd0dcfb0f9848d8e81f845"
+  },
+  "fixture_archive_sha256": "9c501080a6e44445cc8516706e1268ad7387b18bdb1ce844f55150a029f00f70",
+  "input_groups": {
+    "S2-09_MOV": 3,
+    "transfer": 5,
+    "arithmetic": 313
+  },
+  "input_digest_index": {
+    "encoding": "UTF8 compactJSON sorted by case_id of objects {case_id,sha256}",
+    "sha256": "dcf2e400e57e87e07422d6fcf8f0f906390e6f07ec2fe18ee65cb88a11f77b5c"
+  },
+  "literal_sources_sha256": {
+    "tests/cpu/generate_stage2_arithmetic.py": "c6fcf6d515d7331818687cdce0b4527ef83e324a734348091a218f0ee92cf2f2",
+    "tests/fixtures/x86/stage2/s2_11_expected.json": "87111a017eed0d83f5c73ff161f38ac4375a73b9ff8f7184454834b8cda99636"
+  },
+  "reproduction": {
+    "argv_source": "work/stage2-oracle/stage2-20261022-215943-adeb1874/manifest.json",
+    "exact_argv_sha256": "8aa72e3b386d50f429754d7c740080b778abdcf947ff3765eaa04ac8a2ff95bd",
+    "command": "python3 tests/cpu/stage2_oracle.py --repeats 2 --stage1-manifest work/stage1-oracle/stage1-20261022-215743-751a2dd1/manifest.json tests/fixtures/x86/stage2/hw_*.case.json tests/fixtures/x86/stage2/s2_10_*.case.json tests/fixtures/x86/stage2/s2_11_*.case.json"
+  }
+}

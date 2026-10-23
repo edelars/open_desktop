@@ -1,7 +1,11 @@
 use std::process::ExitCode;
 
+mod rep_trace;
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod native;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod native_v2;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod supervisor;
 

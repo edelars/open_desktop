@@ -1,8 +1,31 @@
 # Карта проекта Open Desktop
 
-Это нормативная карта размещения файлов. Общие правила — в [AGENTS.md](../AGENTS.md), архитектура — в [ARCHITECTURE.md](ARCHITECTURE.md), текущий план — в [plans/STAGE_0.md](plans/STAGE_0.md).
+Это нормативная карта размещения файлов. Общие правила — в [AGENTS.md](../AGENTS.md), архитектура — в [ARCHITECTURE.md](ARCHITECTURE.md), текущий план — в [plans/STAGE_2.md](plans/STAGE_2.md).
 
 **Статус:** структура создана заранее по прямому поручению пользователя. Реализованы ограниченный CPU/JIT вертикальный срез, C ABI и smoke launcher ↔ VMHost; остальные каталоги остаются целевыми местами, а не подтверждёнными возможностями. Наличие каталога не означает готовность компонента и не расширяет задачу текущего этапа.
+
+В этапе 2 принят MOV/v2 interpreter срез S2-08 и физически проверен
+положительный memory oracle S2-09 (три programs ×2 и legacy 1010 cases ×2
+на одном Intel CPU); методика и точные
+границы — в [INTERPRETER](testing/INTERPRETER.md), фактические результаты —
+в [отчёте](reports/STAGE_2_REPORT.md). Собственные исполняемые программы
+нового среза находятся в [tests/fixtures/x86/stage2/](../tests/fixtures/x86/stage2/).
+В S2-10 дополнительно проверены пять transfer программ (всего восемь v2 cases ×2)
+и legacy 1010 cases ×2; [источники и evidence](reports/STAGE_2_REPORT.md#s2-10--transfer-extensions).
+Это не подтверждает полный CPU или остальные memory/privileged формы.
+S2-11 добавил arithmetic/eager flags: 313 новых cases, всего 321 v2 case ×2
+и legacy 1010×2 прошли на одном Intel; [результат](reports/STAGE_2_REPORT.md#s2-11--арифметика-и-eager-flags)
+отделяет положительный physical профиль от injected local fault checks.
+S2-12 logic/TEST/NOT и semantic flags masks проверены в 197 новых cases,
+всего 518×2; [результат](reports/STAGE_2_REPORT.md#s2-12--logic-testnot-и-semantic-definedness)
+не объявляет полный CPU или аппаратную доставку guest #PF.
+S2-13 shifts/rotates добавил 144 physical fixture inputs (142 register,
+2 memory RMW); S2-14 добавил 38 успешных multiply/divide cases. Итоговый
+корпус S2-09…14 прошёл 700 v2 inputs ×2 на Intel, без interpreter/native
+различий; faulting divide cases проверены локальными unit tests и не входят
+в physical fixtures. [S2-14 report](reports/STAGE_2_REPORT.md#s2-14--умножение-и-деление)
+и [evidence](reports/data/stage2/multiply-divide-2026-10-22.json) фиксируют
+результат и границу claim: physical `#DE` delivery/signal mapping не проверены.
 
 ## Куда класть изменение
 
@@ -181,7 +204,7 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets --offline
 ```
 
-Эти проверки подтверждают размещение файлов, форматирование и сборку существующих Rust-компонентов. Полный запуск приложения, Windows VM и готовность этапа 0 требуют отдельных критериев из [плана S0](plans/STAGE_0.md).
+Эти проверки подтверждают размещение файлов, форматирование и сборку существующих Rust-компонентов. Полный CPU, запуск гостевых ОС и готовность этапа 2 требуют отдельных критериев из [плана S2](plans/STAGE_2.md); незакрытые условия этапа 0 сохраняются в [плане S0](plans/STAGE_0.md).
 
 Корневой `AGENTS.md` обязателен; дополнительные инструкции находятся в каждом верхнеуровневом компоненте и отдельно в `guest/windows/` и `guest/linux/`. Пустые каталоги инструментов и приложений сохранены через `.gitkeep`.
 

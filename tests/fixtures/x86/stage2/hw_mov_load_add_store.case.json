@@ -1,0 +1,91 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_09_hw_mov_load_add_store",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Hand-authored hardware companion to stage2/mov_load_add_store.case.json. Explicit new layout: code 0x100000, data 0x200000+, stack 0x300000; RIP-relative displacement and pointer GPRs are fixed input values, without output normalization.",
+    "specification": "Intel SDM 093 Vol.2B MOV—Move; Vol.2A ADD—Add, §§2.1.5,2.2.1.2; Vol.1 §3.4.1.1",
+    "specification_version": "Intel SDM revision 093; project S2-09"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000000000",
+      "0x0000000000000005",
+      "0x0000000000000000",
+      "0x0000000000200ffd",
+      "0x00000000003000f8",
+      "0x0000000000300080",
+      "0x0000000000000006",
+      "0x0000000000000007",
+      "0x0000000000000008",
+      "0x0000000000000009",
+      "0x000000000000000a",
+      "0x000000000000000b",
+      "0x000000000000000c",
+      "0x000000000000000d",
+      "0x000000000000000e",
+      "0x000000000000000f"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000402"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 11,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "488b43014803c148894301",
+      "comparison_mask_hex": "ffffffffffffffffffffff"
+    },
+    {
+      "region_id": "data_left",
+      "guest_address": "0x0000000000200ffe",
+      "length": 2,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "0700",
+      "comparison_mask_hex": "ffff"
+    },
+    {
+      "region_id": "data_right",
+      "guest_address": "0x0000000000201000",
+      "length": 6,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "000000000000",
+      "comparison_mask_hex": "ffffffffffff"
+    },
+    {
+      "region_id": "stack",
+      "guest_address": "0x0000000000300000",
+      "length": 256,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x000000000010000b",
+  "instruction_budget": 32,
+  "wall_timeout_ms": 1000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

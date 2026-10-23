@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_18d_movsq_df1",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten REX.W+A5 bytes and literal state/memory answers; tests/cpu/generate_stage2_movsq.py serializes these constants. No assembler, emulator, or semantic expected-value generator.",
+    "specification": "Intel SDM revision 093, Vol.2B MOVS/MOVSB/MOVSW/MOVSD/MOVSQ: REX.W+A5 moves one qword from [RSI] to [RDI] in 64-bit mode; DF selects index increment or decrement by eight. Vol.2A §2.2.1.2 states effective REX.W overrides 66 for non-byte operations.",
+    "specification_version": "Intel SDM Vol.2A/2B revision 093 (253666-093US/253667-093US); project S2-18d"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200014",
+      "0x000000000020000c",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 2,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "48a5",
+      "comparison_mask_hex": "ffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000200000",
+      "length": 32,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100002",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

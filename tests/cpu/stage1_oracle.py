@@ -205,8 +205,10 @@ def compare(
     fixture_path: Path,
     output_path: Path,
     env: dict[str, str],
+    *,
+    process_runner=None,
 ) -> dict:
-    process = run(
+    process = (process_runner or run)(
         [
             str(runner),
             "--compare-results",
@@ -237,6 +239,8 @@ def run_remote_batch(
     fixture_dir: str,
     cases: list[tuple[Path, dict, str]],
     output_dir: Path,
+    *,
+    process_runner=None,
 ) -> dict[str, dict]:
     batch_code = """import json,os,subprocess,sys
 runner,fixture_dir=sys.argv[1:3]
@@ -250,7 +254,7 @@ print(json.dumps(results,separators=(',',':')))
 """
     argv = ["python3", "-c", batch_code, runner, fixture_dir]
     remote_command = f"cd {shlex.quote(remote_root)} && {shlex.join(argv)}"
-    process = run(ssh_argv(target, remote_command), timeout=1800.0)
+    process = (process_runner or run)(ssh_argv(target, remote_command), timeout=1800.0)
     (output_dir / "native-batch.stdout.json").write_text(process.stdout)
     (output_dir / "native-batch.stderr.log").write_text(process.stderr)
     require_success(process, "remote native batch")

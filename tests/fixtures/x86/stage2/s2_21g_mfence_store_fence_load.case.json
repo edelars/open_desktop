@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_21g_mfence_store_fence_load",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten 48 89 18 0F AE F0 48 8B 08 bytes, initial state and literal expected state; tests/cpu/generate_stage2_mfence.py only serializes these constants. No assembler, emulator or semantic expected-value generator.",
+    "specification": "Intel SDM revision 093 (253667-093US), Vol.2B MFENCE p.4-15: 0F AE F0 orders preceding loads/stores before following loads/stores and does not serialize the instruction stream. The fixture checks only explicit completion on private synchronous FlatMemory; it makes no shared-memory, SMP or physical ordering claim. Other 0F AE forms are outside this project profile, not claimed architecturally invalid.",
+    "specification_version": "Intel SDM revision 093 (253667-093US), Vol.2B MFENCE p.4-15; official Vol.2B PDF https://cdrdv2.intel.com/v1/dl/getContent/671241; official Intel SDM page https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html; project S2-21g"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000300000",
+      "0xdeadbeefcafebabe",
+      "0xdeadbeeffedcba98",
+      "0x1122334455667788",
+      "0x0000000000200080",
+      "0x0000000000200080",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 9,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "4889180faef0488b08",
+      "comparison_mask_hex": "ffffffffffffffffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000300000",
+      "length": 8,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "a1a2a3a4a5a6a7a8",
+      "comparison_mask_hex": "ffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100009",
+  "instruction_budget": 3,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

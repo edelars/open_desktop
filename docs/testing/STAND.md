@@ -2,6 +2,65 @@
 
 Состояние на 22 октября 2026 года. Это инвентаризация доступного окружения, а не подтверждение прохождения тестов.
 
+## S2-09: Linux native v2 проверен на Mac mini
+
+Подготовлены native v2 ptrace path, Python harness и три hardware-layout
+fixtures. Их [границы](CPU_ORACLE.md#native-v2-s2-09-границы-физического-подтверждения)
+включают full-GPR capture с RSP, actual memory, low readable mappings без W+X
+и точный count только по TRAP_TRACE. Host signals не трактуются как guest faults.
+Физическая машина ниже теперь проверила и положительный MOV/memory v2 срез.
+
+Локальные fmt/check/workspace tests и 17 Python harness tests прошли на M3 Max.
+На Mac mini прошли Linux workspace check all-targets и od-x86-runner tests
+(library 9, binary 22). Legacy run `stage1-20261022-211911-7d05dd0b` подтвердил
+1010 cases ×2, native v2 run `stage2-20261022-212031-027fe280` — три MOV/memory
+cases ×2 с full16/RSP/RIP, flags `0xcd7`, всей fixture memory и exact counts.
+Расхождений нет, повторы стабильны, общий fingerprint
+`bcade2e1c1282285f923e43e89dde2ffff7a70d900922022c3368f9aaf04cf5d`.
+S2-09 принят в этих границах; полный CPU и этап 2 не приняты.
+[Evidence](../reports/data/stage2/native-2026-10-22.json) фиксирует точные hashes,
+times, hosts/build/limits и команды; [отчёт](../reports/STAGE_2_REPORT.md#s2-09--native-v2-и-физическая-проверка)
+описывает результат. Предыдущий `39e0a6c8…` относится только к S2-05.
+
+## S2-10: Linux и transfer oracle прошли
+
+На том же Mac mini actual Linux workspace tests прошли, включая 39 od-isa,
+54 od-testkit и native 9 library/23 binary tests. Legacy run
+`stage1-20261022-213920-13e82953` подтвердил 1010 cases ×2; затем
+`stage2-20261022-214049-874a0bf0` подтвердил восемь v2 cases ×2, включая
+пять новых transfer программ. Full16/RSP/RIP, flags `0xcd7`, вся memory и
+exact counts совпали, повторы стабильны. Общий fingerprint
+`93ac5dfd316316cfc76f27d83fad993e3148ba6349ca77feede314da43e10d2c`;
+[evidence](../reports/data/stage2/transfers-2026-10-22.json) фиксирует exact
+hashes/times/build/limits и reproduction. S2-10 принят в
+[описанных границах](CPU_ORACLE.md#s2-10-дополнительные-transfer-формы-подтверждены),
+полный этап 2 и остальные CPU возможности этим не подтверждаются.
+
+## S2-11: Linux arithmetic oracle прошёл
+
+На том же Intel i5-3210M/kernel 6.17.0-41-generic прошли actual Linux workspace
+tests (154) и run `stage2-20261022-215943-adeb1874`: 321 v2 cases ×2,
+642 native snapshots, ноль различий и 321 стабильный repeat2. Full16/RIP,
+RFLAGS mask `0xcd7`, memory/exception/count доступны. Linked legacy
+`stage1-20261022-215743-751a2dd1` прошёл 1010 cases ×2 на том же fingerprint
+`db01a6db7b28c41c9fd21761f308a3ef8c60a61a808530bc73ac36525bd391ba`.
+На Mac прошли 135 workspace tests и Linux-target check; это отдельно от Linux
+execution. [Evidence](../reports/data/stage2/arithmetic-2026-10-22.json)
+не заявляет hardware guest #PF: no-commit проверен injected local faults,
+native profile положительный. Полный этап 2 остаётся открытым.
+
+## S2-12: logic oracle прошёл
+
+На том же Intel i5-3210M/Linux6.17.0-41-generic прошли 167 workspace tests,
+на Mac — 146. Run `stage2-20261022-221233-96c6116b` подтвердил 518 v2 cases
+×2, включая 197 logic/TEST/NOT cases: 1036 snapshots, ноль различий,
+518 стабильных repeat2. В обоих backend semantic masks распределены
+684×`0xcd7` и 352×`0xcc7` (undefined AF после logic/TEST), NOT сохраняет mask.
+Linked legacy `stage1-20261022-221121-5c3dfa43` прошёл 1010×2 на тех же
+исходниках. [Evidence](../reports/data/stage2/logic-2026-10-22.json)
+содержит exact fingerprint/hashes/times/build; injected local no-commit
+не выдан за physical guest #PF. Полный этап 2 и ISSUE-011/012 остаются открытыми.
+
 ## Основной host
 
 | Поле | Зафиксированное значение |
@@ -21,11 +80,11 @@
 | Роль | Доступность | Необходимо инвентаризировать |
 |---|---|---|
 | Контрольный Apple Silicon Mac | MacBook Pro с Apple M1 Pro, MacBookPro18,3, 16 GB RAM | Проверен 22 октября: macOS 14.6.1 (23G93), arm64, host page size 16,384 bytes. Swift 5.10, Apple clang 15.0, Xcode developer directory доступен; `rustc` не установлен. Минимальный ad-hoc JIT smoke выполнен; source rebuild на M1 не выполнялся |
-| Физический x86 oracle | Mac mini (Late 2012), 16 GB RAM; Ubuntu 25.10, Linux 6.17.0-41-generic, x86_64, page size 4096 bytes; Intel Core i5-3210M, family 6/model 58/stepping 9, microcode `0x21`, 2 cores/4 threads. SSH `senya@192.168.1.14` подтверждён с проверкой host key | GCC 15.2.0; Rust stable 1.99.1 установлен в пользовательский каталог 22 октября 2026 года. Текущий checkout передан в `~/projects/open_desktop-stage1`. Linux workspace check, тесты целевых crates и `od-x86-runner` build прошли. Native fixture execution ещё не проверено |
+| Физический x86 oracle | Mac mini (Late 2012), 16 GB RAM; Ubuntu 25.10, Linux 6.17.0-41-generic, x86_64, page size 4096 bytes; Intel Core i5-3210M, family 6/model 58/stepping 9, microcode `0x21`, 2 cores/4 threads. SSH `senya@192.168.1.14` подтверждён с проверкой host key | GCC 15.2.0; Rust stable 1.99.1 установлен в пользовательский каталог 22 октября 2026 года. Checkout — `~/projects/open_desktop-stage1`. Linux workspace check/build/tests прошли. V1/S0 подтверждён этапом 1 и последующими регрессиями; в S2-09 дополнительно прошли три native v2 MOV/memory cases ×2 и legacy 1010 cases ×2 на тех же исходниках, см. [отчёт](../reports/STAGE_2_REPORT.md#s2-09--native-v2-и-физическая-проверка) |
 
 Порядок подготовки этого Mac mini и физического сравнения описан в [плане этапа 1](../plans/STAGE_1.md). Адрес SSH записан со слов владельца 22 октября 2026 года; наличие адреса не подтверждает исполнение oracle-проверок.
 
-Open Desktop пока не загружает гостевые ОС; Windows ISO подтверждён владельцем как рабочий. По прежнему порядку проверка M1 Pro следовала после контрольного Windows запуска в стороннем гипервизоре, но по прямому запросу владельца минимальный smoke выполнен 22 октября до этого запуска. Инвентаризация и физический x86 oracle Mac mini относятся к S0-12/E03 следующего этапа. До соответствующего прогона совместимость физического x86 не подтверждена. Не записывать серийные номера, hardware UUID, учётные данные и другие секреты.
+Open Desktop пока не загружает гостевые ОС; Windows ISO подтверждён владельцем как рабочий. По прежнему порядку проверка M1 Pro следовала после контрольного Windows запуска в стороннем гипервизоре, но по прямому запросу владельца минимальный smoke выполнен 22 октября до этого запуска. Физический oracle Mac mini подтвердил ограниченный v1/S0 register-only профиль в [этапе 1](../reports/STAGE_1_REPORT.md) и [регрессии S2-05](../reports/STAGE_2_REPORT.md#s2-05--пошаговое-исполнение). Позднее [S2-09](../reports/STAGE_2_REPORT.md#s2-09--native-v2-и-физическая-проверка) отдельно подтвердил три положительные v2 MOV/memory программы ×2 и новую legacy регрессию 1010 cases ×2 на тех же исходниках. Это не подтверждает полную ISA или privileged faults. Не записывать серийные номера, hardware UUID, учётные данные и другие секреты.
 
 ## Гостевые образы и fixtures
 

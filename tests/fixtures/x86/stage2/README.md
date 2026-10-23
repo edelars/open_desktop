@@ -1,0 +1,965 @@
+# Собственные schema v2 fixtures этапа 2
+
+Байты написаны вручную по Intel SDM revision 093: Vol.2B `MOV—Move`,
+Vol.2A `ADD—Add`, Vol.2A §§2.1.5 и 2.2.1.2 (ModR/M/SIB и REX),
+Vol.1 §3.4.1.1 (GPR/subregister aliases). Нормативная ссылка:
+[Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+Это собственные короткие программы, а не вывод assembler/encoder или
+копия чужой CPU-реализации. Provenance записан также в каждом fixture.
+
+Базовые fixtures ниже используют strict schema v2 / `s2-long-integer-v1`;
+последующие local-only segment profiles описаны в отдельных разделах ниже.
+V1 fixtures не меняются.
+Начальные GPR/RIP/flags, memory bytes, permissions, comparison masks и
+stop address записаны lossless в `.case.json`. Digest вычисляется по
+точным JSON bytes при чтении; исторические v1 файлы и `SHA256SUMS` не
+изменены. Fixtures не являются результатами физического oracle.
+
+| Файл | Программа и ручной ожидаемый результат |
+|---|---|
+| [mov_load_add_store.case.json](mov_load_add_store.case.json) | `MOV RAX,[RBX+1]; ADD RAX,RCX; MOV [RBX+1],RAX`. При RBX=`0xffd` qword по `0xffe` пересекает 4 KiB и два смежных RAM regions. Из `7 + 5` получаются RAX=`12`, data=`0c00000000000000`, RFLAGS=`0x406`, RIP=`0x400b`, retired=`3`; остальные GPR не меняются. |
+| [mov_width_aliasing.case.json](mov_width_aliasing.case.json) | Loads/stores через AL/AH/AX/EAX. До EAX верхние биты RAX сохраняются; EAX zero-extends. Последовательные load values: RAX=`0x1122334455667711`, `0x1122334455662211`, `0x1122334455664433`, `0x0000000088776655`. Destination bytes `1122334455667788`, flags=`0x402`, RIP=`0x4019`, retired=`8`. |
+| [mov_rex_rip_relative.case.json](mov_rex_rip_relative.case.json) | RIP-relative load в R8D; register MOV в R9D; store через R12+disp; immediate в R10B; `MOV SPL,AL` с REX. Результат: R8=R9=`0x44332211`, R10=`0x112233445566777f`, RSP=`0x7034`, destination bytes=`0011223344`, flags=`0x402`, RIP=`0x4015`, retired=`5`. |
+
+Для каждого файла:
+
+```sh
+target/debug/od-runner --fixture tests/fixtures/x86/stage2/mov_load_add_store.case.json --engine interpreter --json
+```
+
+`tools/runner/tests/fixture_v2.rs` запускает настоящий CLI и проверяет
+перечисленные ручные результаты, все 16 GPR, digest и final memory.
+`crates/od-testkit/src/execution_tests.rs` отдельно проверяет промежуточные
+alias values и injected read/store faults: faulting инструкция не
+retire, предшествующие инструкции сохраняются, частичная запись в первый
+region при ошибке второго не допускается. Это локальные CPU/fixture-RAM
+проверки S2-08; физическая приёмка среза A требует S2-09.
+
+## Отдельные входы для физического Linux oracle S2-09
+
+`hw_*.case.json` — новые входы с новыми case IDs и digest. Они сохраняют
+темы S2-08, но явно задают пригодный для Linux layout: RX/readable code
+по `0x100000`, readable data от `0x200000`, RW stack по `0x300000`
+длиной 256 bytes и начальный RSP=`0x3000f8`. Старые fixtures выше не
+переписаны. Адреса и pointer-valued GPR/results сравниваются буквально;
+normalization и замена входов после исполнения не допускаются.
+
+| Новый fixture / case ID | Явные отличия layout и ручные ожидаемые значения |
+|---|---|
+| [hw_mov_load_add_store.case.json](hw_mov_load_add_store.case.json) / `s2_09_hw_mov_load_add_store` | RBX=`0x200ffd`, qword по `0x200ffe` пересекает 4 KiB и logical regions `data_left`/`data_right`. RAX=`12`, flags=`0x406`, RIP=`0x10000b`, retired=`3`; data bytes=`0c00000000000000`, stack не меняется. |
+| [hw_mov_width_aliasing.case.json](hw_mov_width_aliasing.case.json) / `s2_09_hw_mov_width_aliasing` | RBX=`0x200000`; destination по `0x200008`. RAX=`0x88776655`, flags=`0x402`, RIP=`0x100019`, retired=`8`; destination bytes=`1122334455667788`. |
+| [hw_mov_rex_rip_relative.case.json](hw_mov_rex_rip_relative.case.json) / `s2_09_hw_mov_rex_rip_relative` | RIP-relative displacement буквально `0x000ffff9` ведёт от следующего RIP=`0x100007` к source=`0x200000`; R12=`0x210000`. R8=R9=`0x44332211`, R10=`0x112233445566777f`, RSP после SPL write=`0x300034`, destination bytes=`0011223344`, flags=`0x402`, RIP=`0x100015`, retired=`5`. |
+
+Native profile ограничивает mappings low canonical addresses, readable
+regions и отсутствие W+X. Страничное округление не расширяет logical
+fixture ranges; snapshot содержит только записанные region bytes.
+Разные permissions у logical regions одной host page дают явный
+unsupported. Полный 16-GPR snapshot включает настоящий гостевой RSP.
+
+Для двух interpreter/native прогонов трёх новых cases:
+
+```sh
+python3 tests/cpu/stage2_oracle.py --host 192.168.1.14 --user senya \
+  --remote-root /home/senya/projects/open_desktop-stage1 --repeats 2
+```
+
+Harness требует одинаковые source fingerprints локально и на oracle;
+исходники сам не синхронизирует. Он замораживает точные JSON bytes до
+сборки, собирает local interpreter и remote native runner, передаёт
+только архив выбранных fixtures и сравнивает через существующий Rust
+v2 comparator. Повторы сравниваются отдельно для обоих engines. Raw
+stdout/stderr/return codes, batch payload, inputs/digests/seeds, build
+metadata, machine metadata, hashes harness/helper и reproduction argv
+сохраняются в `work/stage2-oracle/<run-id>/manifest.json` и соседних
+файлах. Любой SSH/build/unsupported/missing-result/mismatch проваливает
+выбранный suite с сохранённым failed manifest. JIT нового профиля не
+запускается. Запуск этой команды требует разрешённой передачи новых
+fixture payload на выбранный oracle.
+
+Старый v1 corpus (1010 cases дважды) по-прежнему запускается существующим
+stage1 harness. Его прошедший oracle manifest можно привязать через
+`--stage1-manifest work/.../manifest.json`; обязательны тот же Rust source
+fingerprint, ≥1010 уникальных inputs и все interpreter/JIT/native
+сравнения минимум двух повторов. Без этой опции результат обозначает
+только memory suite и явно записывает отсутствие legacy evidence;
+полная приёмка S2-09 всё равно требует старый corpus. Наличие команды и
+локальных unit tests не подтверждает физический прогон.
+
+Проверки самой orchestration без SSH:
+
+```sh
+python3 -m unittest discover -s tests/cpu -p 'test_stage*_harness.py' -v
+```
+
+## Data-transfer fixtures S2-10
+
+Пять новых `s2_10_*.case.json` — самостоятельные ручные входы с layout
+code=`0x100000`, data/results от `0x200000`, stack=`0x300000`.
+Intel SDM revision 093: Vol.2B MOV pp.4-28–4-31, MOVSX/MOVSXD
+pp.4-120–4-123 и MOVZX pp.4-130–4-131; Vol.2A LEA
+pp.3-547–3-548; Vol.2D XCHG pp.6-32–6-33. Точные ссылки на формы
+есть в provenance каждого входа. Все инструкции сохраняют исходные
+проверяемые flags=`0xcd7`. Ручные expected значения проверяются реальным
+interpreter в `crates/od-testkit/src/execution_tests.rs`; сами fixtures
+ещё не являются свидетельством физического прохождения.
+
+| Fixture | Наблюдаемая проверка |
+|---|---|
+| [s2_10_immediate_moffs.case.json](s2_10_immediate_moffs.case.json) | 34 инструкции, stop=`0x1000dc`. C6/C7 memory stores 8/16/32/64, AH/word/dword/qword register immediates и C7 RIP-relative с immediate внутри next RIP. Moffs A0–A3: все widths 8/16/32/64 при address32 и address64. Каждый load сохраняет полный RAX в отдельный qword results, каждый store пишет отдельный 16-byte slot с нетронутыми canaries `5a`/`a5`, поэтому последующая инструкция не скрывает ошибочную ширину записи. Итог RAX=R9=`0xffffffff80000001`, R8=`0x80000000`, RCX=`0xaabbccddeeff8000`; RIP-relative destination содержит `78563412`. |
+| [s2_10_extend.case.json](s2_10_extend.case.json) | 34 инструкции, stop=`0x100089`. MOVZX/MOVSX: source8→dest16/32/64 и source16→dest32/64; MOVSXD: 16→16, 32→32 и 32→64. Memory и register sources включают AH, REX SPL и R8B. После каждой формы полный destination сохраняется отдельным qword, включая верхние биты после narrow writes. |
+| [s2_10_addr32_transfers.case.json](s2_10_addr32_transfers.case.json) | 38 инструкций, stop=`0x1000b3`. Все memory extension формы предыдущего входа и четыре C6/C7 widths используют `67` с RBX=`0x1122334400200000`, то есть усечение до EBX=`0x200000` необходимо для успеха. Отдельные 16-byte canary slots различают ширину каждого store; промежуточные результаты extension сохраняются. |
+| [s2_10_lea_no_read.case.json](s2_10_lea_no_read.case.json) | 12 инструкций, stop=`0x10003b`. Все шесть destination16/32/64 × address32/64 сочетаний, SIB, signed displacement, RIP-relative unmapped result=`0x101020`. Noncanonical RBX=`0x0000800000000000` и отсутствие data mappings проверяют отсутствие чтения памяти. FS/GS-prefixed LEA оставляют R12=R15=`0x0000800000000000` без прибавления segment base. Каждый результат остаётся в отдельном GPR. |
+| [s2_10_xchg_aliases.case.json](s2_10_xchg_aliases.case.json) | 18 инструкций, stop=`0x10002c`. Register XCHG byte/word/dword/qword, AL/AH simultaneous old values, REX SPL, extended registers; `90`, `40 90`, `48 90` сохраняют верх RAX (checkpoint R10=`0x1122334455667788`), `41 90` и `87 c0` дают dword zero-extension. Промежуточные обмены наблюдаемы через RSP/RDX/R9–R13. Memory XCHG в этот срез не входит. |
+
+Для отдельного S2-10 suite (после разрешённой синхронизации исходников
+и передачи этих пяти fixtures):
+
+```sh
+python3 tests/cpu/stage2_oracle.py --host 192.168.1.14 --user senya \
+  --remote-root /home/senya/projects/open_desktop-stage1 --repeats 2 \
+  tests/fixtures/x86/stage2/s2_10_*.case.json
+```
+
+Default suite S2-09 остаётся прежним: три `hw_*` входа. Старые fixture
+bytes и исторический `SHA256SUMS` не изменяются. Для S2-10 нужно новое
+физическое evidence на точных новых JSON bytes и актуальном source
+fingerprint; прежний S2-09 manifest его не заменяет.
+
+## Arithmetic fixtures S2-11
+
+`s2_11_*.case.json` — 313 новых bounded входов. Каждый исполняет ровно
+одну арифметическую инструкцию и останавливается на следующем RIP:
+результат и все шесть arithmetic flags остаются наблюдаемы в final
+snapshot. Начальные DF=1 и reserved bit1=1 также проверяются; прежние
+OF/SF/ZF/AF/PF/CF намеренно задаются отличающимися от многих результатов.
+Expected literal sidecar [s2_11_expected.json](s2_11_expected.json)
+содержит полные 16 GPR, flags и точные изменяемые memory regions.
+Он не является альтернативным fixture format и не подаётся в runner.
+
+| Семья | Проверяемые формы и границы |
+|---|---|
+| ADD/ADC/SUB/SBB/CMP | widths8/16/32/64; оба ModR/M направления register/register, memory/register и register/memory; dedicated accumulator immediate; group80/81 register и memory; group83 register и memory для16/32/64. |
+| Carry и flags | Signed overflow каждого width, unsigned carry/borrow, ADC/SBB с обоими входными CF, auxiliary carry отдельно от whole-width carry, zero/nonzero, odd/even low-byte parity, sign. Negative imm8 проверяет sign-extension для16/32/64, negative imm32 — group81 и accumulator64. |
+| INC/DEC/NEG | FE/FF register и memory widths8/16/32/64, INC/DEC сохраняют оба входных CF, signed overflow и unsigned wrap/borrow. F6/F7 NEG проверяет zero, one и minimum signed operand каждого width. |
+| Aliases и адреса | AL/AH общего RAX, REX SPL и R8D/R9D с dword zero-extension. Каждая семья/ширина дополнительно использует address32 с RBX=`0x1122334400200ffe`, реально усечённым до EBX=`0x200ffe`. Это ограниченная явная матрица форм, а не исчерпывающий cross-product всех16 GPR и addressing encodings. |
+| Memory | Data access по `0x200ffe`, logical regions `data_left`/`data_right` стыкуются по `0x201000`: widths32/64 пересекают и logical границу, и host page. Вокруг operand находятся неизменяемые `a5` canaries. Memory sources и CMP destinations read-only; CMP не должен записывать даже прежнее значение. Full-byte masks покрывают весь logical region. |
+
+Это ручные opcode/ModR/M templates и literal input/output/flags tables,
+материализуемые [generate_stage2_arithmetic.py](../../../cpu/generate_stage2_arithmetic.py).
+Генератор упаковывает числа и JSON, не вычисляет арифметику, flags или
+CPU semantics и не использует assembler/encoder/emulator. Provenance
+каждого входа содержит SHA256 генератора. Нормативные формы: Intel SDM
+revision093, [Vol.2A](https://cdrdv2.intel.com/v1/dl/getContent/671199)
+ADC pp.3-9–3-11, ADD pp.3-14–3-15, CMP pp.3-161–3-162,
+DEC pp.3-262–3-263, INC pp.3-457–3-458;
+[Vol.2B](https://cdrdv2.intel.com/v1/dl/getContent/671241)
+NEG pp.4-158–4-159, SBB pp.4-613–4-615, SUB pp.4-685–4-686;
+Vol.1 AppendixA TableA-2 определяет affected flags.
+
+Локальная проверка точных materialized bytes и независимых expected:
+
+```sh
+python3 tests/cpu/generate_stage2_arithmetic.py --check
+cargo test -p od-testkit --offline arithmetic_
+```
+
+Testkit исполняет каждый checked-in input настоящим interpreter и
+сравнивает full state/RIP/count/flags/memory с literal sidecar. Отдельный
+тест инъецирует architectural read/write #PF и backend failures во
+второй logical region для ADD/ADC/SUB/SBB/INC/DEC/NEG: faulting instruction
+не retire, GPR/flags/RIP и весь RAM остаются прежними. Это локальный
+точный fault-state test. Native positive profile отклоняет недопустимые
+ranges/permissions до физической инструкции, а host signal не считается
+guest exception; физическое подтверждение guest #PF этим набором не
+заявляется. LOCK/REP и FS/GS data arithmetic остаются Unsupported.
+
+После отдельного разрешения передачи нового source/fixture payload:
+
+```sh
+python3 tests/cpu/stage2_oracle.py --host 192.168.1.14 --user senya \
+  --remote-root /home/senya/projects/open_desktop-stage1 --repeats 2 \
+  tests/fixtures/x86/stage2/s2_11_*.case.json
+```
+
+Runner использует реальные hardware GPR для admission адресов; arithmetic
+expected evaluator в physical runner отсутствует. Последующий manifest
+с точными digest/source fingerprint должен отдельно подтвердить
+физический результат; наличие fixtures и локальный interpreter PASS
+его не заменяют. Старые S2-08–10 inputs/default suite не изменяются.
+
+## Logic fixtures S2-12
+
+`s2_12_*.case.json` — 197 новых входов с отдельным literal sidecar
+[s2_12_expected.json](s2_12_expected.json). Все граничные формы имеют
+одну логическую инструкцию и stop на следующем RIP; два дополнительных
+сценария проверяют последовательное состояние definedness.
+
+| Семья | Матрица и наблюдаемый результат |
+|---|---|
+| AND/OR/XOR | Widths8/16/32/64, оба ModR/M направления для register/register и register/memory, memory destinations, accumulator immediate, group80/81 register/memory, group83 register/memory для16/32/64. Negative imm8 и64-bit negative imm32 проверяют sign-extension. Zero/nonzero, positive/negative и low-byte parity имеют независимые literal ответы; CF/OF из исходных1 сбрасываются в0. |
+| TEST | Только реальные формы84/85, A8/A9 иF6/F7 /0; register/register, read-only memory, register/memory immediate, address32. Destinations, включая полные верхние32 бита RAX после TEST EAX, остаются прежними. Negative imm32 с minimum qword различает sign-extension от zero-extension. |
+| NOT | F6/F7 /2 register/memory/address32 для8/16/32/64. Все flags сохраняются при исходных all-set modeled flags, CF0 и all-zero modeled flags (reserved bit1 остаётся1). 8/16-bit destination сохраняет верх GPR,32-bit destination zero-extends. |
+| Aliases/layout | Явные AL/AH общего RAX, REX SPL и R8D/R9D. Address32 требует усечения noncanonical RBX до EBX=`0x200ffe`. Widths32/64 пересекают logical regions и4KiB; `a5` canaries и полные memory masks делают ошибочную ширину записи наблюдаемой. Memory source/TEST read-only, изменяемые destinations R+W. |
+| Definedness | Для AND/OR/XOR/TEST AF архитектурно undefined: fixture value mask и final semantic `rflags_defined` равны `0xcc7` вместо `0xcd7`. Значение AF не является expected ответом. `XOR; MOV; NOT` сохраняет undefined AF; `XOR; ADD` вновь определяет AF и возвращает mask=`0xcd7`. NOT сохраняет mask. |
+
+[generate_stage2_logic.py](../../../cpu/generate_stage2_logic.py)
+упаковывает ручные byte templates и literal answers. Проверенные S2-11
+входы используются только как явный layout baseline; SHA256 baseline и
+самого генератора записаны в каждом новом provenance. Ни старые входы,
+ни их generator/expected bytes не изменяются. Logic/reference evaluator,
+assembler или сторонняя CPU реализация не используются. Нормативные
+формы и flags: Intel SDM revision093, Vol.2 instruction entries
+AND/OR/XOR/TEST/NOT и Vol.1 AppendixA TableA-2.
+
+```sh
+python3 tests/cpu/generate_stage2_logic.py --check
+cargo test -p od-testkit --offline logic_
+```
+
+Локальные tests сравнивают все197 actual interpreter runs с полными
+literal GPR/memory/RIP/count, semantic flags mask и только определёнными
+flags values. Injected read/write architectural/backend faults для
+AND/OR/XOR/NOT и read faults TEST подтверждают отсутствие retirement,
+изменения состояния, partial RAM write или definedness при ошибке.
+Native admission возвращает shared instruction flag effects без
+вычисления результата; tracer применяет их только после подтверждённого
+TRAP_TRACE. Linux native tests отдельно проверяют TEST readonly и
+preservation/restoration definedness. Они требуют реального Linux x86
+исполнения; host signals не заменяют guest exceptions.
+
+После отдельного разрешения передачи конкретных новых файлов:
+
+```sh
+python3 tests/cpu/stage2_oracle.py --host 192.168.1.14 --user senya \
+  --remote-root /home/senya/projects/open_desktop-stage1 --repeats 2 \
+  tests/fixtures/x86/stage2/s2_12_*.case.json
+```
+
+Это ограниченная явная матрица форм, не cross-product всех GPR/addressing
+encodings. Физическое evidence появляется только после реального
+native/interpreter сравнения exact bytes/source fingerprint. Ограничение
+positive native profile по проверке guest #PF остаётся тем же, что у
+S2-11; локальный injected fault test не выдаётся за физическое #PF.
+
+## Shift and rotate fixtures S2-13
+
+`s2_13_*.case.json` — 144 однокомандных сценария. Литеральная таблица
+[s2_13_answers.json](s2_13_answers.json) задаёт входы, результаты и defined
+flags; [generate_stage2_shifts.py](../../../cpu/generate_stage2_shifts.py)
+только упаковывает эти строки в schema-v2 fixtures и
+[s2_13_expected.json](s2_13_expected.json), не вычисляя сдвиги, вращения или
+flags. SHL/SAL, SHR, SAR, ROL, ROR, RCL и RCR покрывают widths8/16/32/64;
+SHLD/SHRD — widths16/32/64. Каждая пара kind/width проверяет raw counts 0,
+1, width и width+1, с immediate и CL формами, кроме SHLD/SHRD word count17.
+При этом count17 после маскирования превышает ширину слова, а результат
+назначения архитектурно неопределён; v2 сравнивает полный GPR и не может
+исключить эти биты. Эта пара остаётся в локальной no-panic/definedness проверке
+без сравнения destination. RCL/RCR count=1 проверяется с CF-in=0 и1 для каждой
+ширины. Для32/64 raw width и width+1 после архитектурной маски могут стать
+zero или one; эти случаи проверяют именно masked behavior.
+
+Две дополнительные memory fixtures выполняют SHL qword и SHLD qword с
+destination по `0x200ffe`, пересекая logical regions `data_left`/`data_right`.
+Native admission unit checks подтверждают, что RMW отклоняется без write
+permission или вне logical range. Это проверка границы harness, не результат
+физического guest page fault. Count-zero dword cases начинают с ненулевой
+верхней половиной RAX и проверяют, что запись в EAX zero-extends в RAX[63:32],
+даже когда эффективный count равен нулю; flags при этом остаются прежними.
+
+Нормативные формы и flags: Intel SDM revision093, Vol.2A SAL/SAR/SHL/SHR
+pp.4-582–4-585, Vol.2B RCL/RCR/ROL/ROR pp.4-521–4-524, SHLD pp.4-640–4-641,
+SHRD pp.4-643–4-644 и Vol.1 AppendixA TableA-2.
+
+```sh
+python3 tests/cpu/generate_stage2_shifts.py --check
+cargo test -p od-testkit --offline shift_rotate_fixtures
+```
+
+Физическое evidence требует native/interpreter сравнения этих точных JSON
+bytes и source fingerprint на Linux x86-64.
+
+## Direct control flow fixtures S2-16a
+
+`s2_16a_*.case.json` содержит 68 буквальных long-mode сценариев: все 16
+legacy condition codes для short и near Jcc в taken/fallthrough вариантах,
+плюс четыре direct JMP с forward/backward rel8/rel32. Generator
+[`generate_stage2_control_flow.py`](../../../cpu/generate_stage2_control_flow.py)
+упаковывает ручные opcode bytes, входные flags и literal full-state answers;
+условия и targets не вычисляются общей библиотекой или assembler. Provenance
+ссылается на Intel SDM revision 093 Vol.2A Jcc pp. 3-499–3-502 и JMP
+pp. 3-504–3-505.
+
+`od-isa` проверяет все 32 сочетания CF/PF/ZF/SF/OF против literal truth table,
+signed displacement от next RIP, 64-bit RIP wrap, canonical target fault,
+exact fetch boundaries и Unsupported prefixes. Testkit и CLI runner сверяют
+полное состояние и sidecar. Native-v2 admission проверяет только выбранный
+taken/fallthrough target. Физический mini-check отложен до общего финального
+подэтапа.
+
+```sh
+python3 tests/cpu/generate_stage2_control_flow.py --check
+cargo test -p od-isa -p od-testkit -p od-runner --offline direct_control_flow
+```
+
+## Memory stack `66` + `REX.W` fixtures S2-17m
+
+Four `.case.json` files cover `PUSH 66 48 FF /6` and `POP 66 48 8F /0`.
+`REX.W` selects qword width over the earlier `66` prefix. The inputs check
+ordinary memory source/destination and `[RSP]` alias ordering: PUSH reads from
+the pre-decrement address; POP computes its destination from post-increment
+RSP. Literal full-state answers are in
+[`s2_17m_memory_stack_rexw_expected.json`](s2_17m_memory_stack_rexw_expected.json)
+and are materialized by
+[`generate_stage2_stack_rexw_override.py`](../../../cpu/generate_stage2_stack_rexw_override.py).
+The native runner admission test accepts all four fixtures and checks that
+effective REX ordering is honored while LOCK and FS/GS-prefixed forms remain
+outside this profile. The fixtures await the shared final physical mini-check.
+
+```sh
+python3 tests/cpu/generate_stage2_stack_rexw_override.py --check
+cargo test -p od-isa -p od-testkit --offline memory_stack_rexw
+cargo test -p od-x86-runner --offline rexw_overrides_operand_override
+```
+
+## Register stack `66` + REX.W fixtures S2-17n
+
+Six literal fixtures cover register PUSH/POP with an operand-size override and
+an effective REX prefix. Qword forms confirm that REX.W overrides `66`; word
+forms place a REX prefix with W=1 before the final REX with W=0, confirming
+that only the final REX immediately before the opcode is effective. Extended
+R8/R9 forms cover REX.B, and POP fixtures check preservation of upper register
+bits for word destinations. Literal full-state answers are stored in
+[`s2_17n_register_stack_rexw_expected.json`](s2_17n_register_stack_rexw_expected.json)
+and materialized by
+[`generate_stage2_stack_rexw_register.py`](../../../cpu/generate_stage2_stack_rexw_register.py).
+The native admission test validates all bounded stack reads and writes. These
+fixtures await the shared final physical mini-check.
+
+Normative source: Intel SDM revision 093, Vol.2A §2.2.1.2 pp.2-8–2-9 and
+Vol.2B PUSH pp.4-522–4-523, POP pp.4-398–4-399.
+
+```sh
+python3 tests/cpu/generate_stage2_stack_rexw_register.py --check
+cargo test -p od-isa -p od-testkit --offline register_stack_rexw
+cargo test -p od-x86-runner --offline mixed_prefix_register_stack
+```
+## POPFQ fixtures S2-17o
+
+Two literal fixtures cover bare `POPFQ` (`9D`) under the native runner's
+default CPL3/IOPL0 context. Only CF/PF/AF/ZF/SF/DF/OF are writable in this
+profile; bit 1 is preserved by the literal fixtures. IF/IOPL and other
+out-of-mask preservation are asserted by unit tests. Inputs or initial state
+with TF, NT, or AC set are outside this slice and return `Unsupported` without committing CPU state. A stack access
+fault also leaves CPU state and RFLAGS definedness unchanged. The literal
+answers are materialized by
+[`generate_stage2_popfq.py`](../../../cpu/generate_stage2_popfq.py).
+
+Normative source: Intel SDM revision 093, Vol.2B POPF/POPFQ pp.4-407–4-410.
+The implemented CPL3/IOPL0 privilege contract is deliberately limited; other
+IOPL/CPL combinations, other POPF forms, and other PUSHF width/prefix variants remain open.
+
+## PUSHFQ fixture S2-17p
+
+One literal fixture covers bare long-mode `PUSHFQ` (`9C`). The instruction
+writes a qword `RFLAGS AND 00000000_00FCFFFFH` at `RSP - 8`, then commits RSP;
+RFLAGS is unchanged. The local full-state answer is literal. The memory
+comparison mask checks the profile status flags, DF, fixed bit 1, and cleared
+RF/VM bits, while ignoring IF/IOPL and other bits that the CPL3 fixture harness
+cannot set to arbitrary values. Unit tests separately exercise the exact mask
+for arbitrary interpreter state and no-commit on a bounded write failure.
+
+The answer is materialized by
+[`generate_stage2_pushfq.py`](../../../cpu/generate_stage2_pushfq.py).
+Normative source: Intel SDM revision 093, Vol.2B
+PUSHF/PUSHFD/PUSHFQ pp.4-528–4-529.
+
+```sh
+python3 tests/cpu/generate_stage2_pushfq.py --check
+cargo test -p od-isa -p od-testkit --offline pushfq
+cargo test -p od-x86-runner --offline pushfq_fixture_admits_only_a_bounded_writable_stack_slot
+```
+
+```sh
+python3 tests/cpu/generate_stage2_popfq.py --check
+cargo test -p od-isa -p od-testkit --offline popfq
+cargo test -p od-runner --offline popfq_cli_fixtures
+cargo test -p od-x86-runner --offline popfq_fixtures_admit
+```
+
+## POPFW fixture S2-17r
+
+One literal fixture covers exact long-mode `66 9D` POPFW at CPL3/IOPL0.
+The word loads CF/PF/AF/ZF/SF/DF/OF, while IF, IOPL, bit 1 and other
+unmodeled RFLAGS bits remain unchanged. A source/current TF bit or source/current NT
+bit returns `Unsupported` before CPU commit. Nonzero current IOPL also returns
+`Unsupported` before the stack read. NT=1 is kept outside the profile because Intel SDM revision 093 Vol.2B Table 4-15 and Vol.1 §7.3.13.2 p.7-22 conflict;
+see [ISSUE-015](../../../../docs/KNOWN_ISSUES.md#issue-015--разногласие-sdm-по-nt-для-popf-word-на-cpl3iopl0).
+The fixture uses TF=NT=0; its v2 literal comparison checks RFLAGS through mask
+`0xCD7`. A separate local testkit assertion checks exact preservation of
+unmasked IF, reserved, ID, and upper bits with current IOPL=0 and source IOPL=3.
+Native admission accepts only the bounded readable word stack input and rejects
+TF/NT profile violations and nonzero current IOPL.
+
+The answer is materialized by
+[`generate_stage2_popfw.py`](../../../cpu/generate_stage2_popfw.py).
+Normative source: Intel SDM revision 093, Vol.2B Table 4-15 pp.4-395–4-396
+and Vol.1 §7.3.13.2 p.7-22. The physical comparison remains deferred to common Mac mini
+acceptance.
+
+```sh
+python3 tests/cpu/generate_stage2_popfw.py --check
+cargo test -p od-isa -p od-testkit --offline popfw
+cargo test -p od-x86-runner --offline popfw_fixtures_admit
+```
+
+## PUSHFW fixture S2-17q
+
+One literal fixture covers the long-mode `66 9C` word-width form. It writes
+the low 16 bits of RFLAGS at `RSP - 2`, leaves RFLAGS unchanged, and commits
+the two-byte stack-pointer decrement only after the bounded write succeeds.
+The full local answer checks every register and byte; the physical memory mask
+checks the integer-profile flags and fixed bit 1. A misplaced REX before 66 is
+ignored by the shared decoder, while an effective REX and other prefixes are
+outside this slice. Unit tests cover a bounded write failure without CPU
+commit, and native admission requires a writable two-byte stack slot.
+
+The handwritten fixture and literal answer are materialized by
+[`generate_stage2_pushfw.py`](../../../cpu/generate_stage2_pushfw.py).
+Normative source: Intel SDM revision 093 (253667-093US), Vol.2B
+PUSHF/PUSHFD/PUSHFQ pp.4-528–4-529.
+
+```sh
+python3 tests/cpu/generate_stage2_pushfw.py --check
+cargo test -p od-isa -p od-testkit --offline pushfw
+cargo test -p od-runner --offline pushfw_cli_fixture
+cargo test -p od-x86-runner --offline pushf_fixtures_admit_only_a_bounded_writable_stack_slot
+```
+
+
+## PUSHFQ/POPFQ REX.W-over-66 fixture S2-17s
+
+One literal fixture executes `66 48 9C` followed by `66 48 9D`. Effective REX.W selects qword PUSHFQ/POPFQ semantics despite 66H; with effective REX.W clear, the existing word interpretation remains. PUSHFQ writes `RFLAGS AND 00000000_00FCFFFFH`; POPFQ restores the modeled flags. Input TF, NT and IOPL are zero to avoid combining this decode case with separate POPFQ restrictions. The fixture checks full RSP/RIP/flags state and the entire 8-byte stack slot with a canary mask.
+
+Generated by [`generate_stage2_stack_flags_rexw.py`](../../../cpu/generate_stage2_stack_flags_rexw.py). Normative source: Intel SDM revision 093, Vol.2A §2.2.1.2 pp.2-8–2-9 and Vol.2B PUSHF/PUSHFD/PUSHFQ, POPF/POPFD/POPFQ.
+
+```sh
+python3 tests/cpu/generate_stage2_stack_flags_rexw.py --check
+cargo test -p od-isa --offline pushf
+cargo test -p od-testkit --offline pushf_rexw
+```
+
+## Near RET with ignored operand-size prefix S2-17t
+
+The two literal fixtures execute `66 C3` and `48 66 C3` in long mode. Intel
+SDM revision 093 Vol.1 §6.4.7 pp.6-12–6-13 forces near-branch operation
+size to 64 bits and silently ignores operand-size prefixes. Vol.2A §2.2.1
+p.2-8 says REX is ignored unless it immediately precedes the opcode or 0F,
+so the REX before 66 is ineffective and is removed by prefix normalization.
+Vol.2B RET p.4-566 defines `C3` as near RET. Both fixtures check the qword
+return target, eight-byte RSP increment, full GPR/RIP/RFLAGS state, and
+unchanged code and stack memory. Effective REX, duplicate 66, and other
+effective prefix states remain outside this slice. Physical acceptance remains
+deferred.
+
+Generated by [`generate_stage2_ret66.py`](../../../cpu/generate_stage2_ret66.py)
+from handwritten opcode bytes and a literal expected result, without an
+assembler or emulator.
+
+```sh
+python3 tests/cpu/generate_stage2_ret66.py --check
+python3 -m unittest tests.cpu.test_stage2_ret66_generator
+cargo test -p od-isa --offline direct_call_and_ret_reject_prefixes_and_truncated_immediates
+cargo test -p od-runner --offline operand_size_prefixed_near_ret_keeps_qword_stack_semantics
+```
+
+## Single-iteration MOVSB fixtures S2-18a
+
+Three literal positive fixtures execute only bare `A4` MOVSB in long mode.
+They check RSI/RDI movement for DF=0 and DF=1, exact RSI=RDI source/destination
+aliasing for a one-byte self-copy, full GPR/RFLAGS/RIP, and all bytes in the data region.
+The interpreter reads `[RSI]`, writes `[RDI]`, and commits both indices only
+after the write succeeds. Flat DS/ES bases are zero in the modeled long-mode
+profile. REP, all prefixes, address-size changes, widths other than byte, and
+other string instructions remain unsupported.
+
+Two fault-only fixtures place the selected source or destination just beyond
+the bounded data mapping. The local test injects architectural #PF at each
+site and checks access order and the executor's current no-commit policy.
+Intel SDM 093 does not establish the CPU's index/RIP snapshot after a
+destination #PF; see [ISSUE-016](../../../../docs/KNOWN_ISSUES.md#issue-016--не-установлен-restart-state-movs-после-destination-fault).
+Native admission accepts the three fully mapped positive cases and rejects
+both fault-only cases. The deferred physical acceptance pool S2-15 onward
+contains 563 cases at the S2-18a boundary: 558 prior fixtures, these 3
+positive cases, and 2 local-only injected-fault cases. Other files in the
+fixture directory were not reclassified here; native admission determines
+the executable subset. No Mac mini execution has been performed for this
+slice.
+
+The handwritten bytes and expected state/memory constants are serialized by
+[`generate_stage2_movsb.py`](../../../cpu/generate_stage2_movsb.py). The script
+does not assemble instructions or calculate x86 results. Its SHA-256 is
+`2adc5c9a3507d2ca1f2c88e75bc688c992884c69bd69e01597aadb7c76d2337a`.
+Normative source: Intel SDM revision 093
+(253667-093US), Vol.2B MOVS/MOVSB/MOVSW/MOVSD/MOVSQ pp.4-107–4-109.
+
+```sh
+python3 tests/cpu/generate_stage2_movsb.py --check
+cargo test -p od-isa -p od-testkit --offline movsb
+cargo test -p od-x86-runner --offline movsb_native_admission
+```
+
+## Single-iteration MOVSW fixtures S2-18b
+
+Three literal positive fixtures execute `66 A5` MOVSW in long mode. They check
+RSI/RDI movement by two for DF=0 and DF=1, exact RSI=RDI aliasing for a
+two-byte self-copy, full GPR/RFLAGS/RIP, and the complete data region. The
+interpreter reads the word at `[RSI]`, writes it to `[RDI]`, and commits both
+indices only after the write succeeds. Three mapped raw fixtures pass native
+admission; the prior fixture pool is not reclassified in this slice.
+
+Two fault-only fixtures place the word source or destination outside the
+bounded mapping. Local injected-#PF checks verify Fetch→Read(2 bytes), or
+Fetch→Read→Write(2 bytes), and the executor's current no-commit policy. SDM
+093 does not establish the destination-fault restart snapshot; see
+[ISSUE-016](../../../../docs/KNOWN_ISSUES.md#issue-016--не-установлен-restart-state-movs-после-destination-fault).
+Native admission rejects both fault-only inputs. S2-18a's deferred pool was
+563 cases; this slice adds 5 cases (3 mapped positive, 2 local-only fault),
+bringing that pool to 568. No Mac mini execution has been performed for this
+slice.
+
+The handwritten bytes and expected answers are serialized by
+[`generate_stage2_movsw.py`](../../../cpu/generate_stage2_movsw.py). The
+script does not assemble instructions or calculate x86 results. Its SHA-256 is
+`b5f2702bbf3206870474e26f9814d42e7cf58069038035a1b6433c67d9eda4bc`.
+Normative source: Intel SDM revision 093 (253667-093US), Vol.2B
+MOVS/MOVSB/MOVSW/MOVSD/MOVSQ pp.4-107–4-109. The decoder normalizes away a
+misplaced REX before `66`; a local regression verifies `48 66 A5` has the same
+accepted word semantics as `66 A5`.
+
+```sh
+python3 tests/cpu/generate_stage2_movsw.py --check
+cargo test -p od-isa -p od-testkit --offline movsw
+cargo test -p od-x86-runner --offline movsw_native_admission
+```
+
+## Single-iteration MOVSD fixtures S2-18c
+
+Three literal positive fixtures execute bare `A5` MOVSD in long mode. They
+check four-byte RSI/RDI movement for DF=0 and DF=1, a four-byte overlapping
+copy, full GPR/RFLAGS/RIP, and every byte in the data region. This slice admits
+only the unprefixed dword form. Effective REX, REP, segment prefixes, and 67
+address-size override remain unsupported. `66 A5` selects the separate MOVSW
+slice. The decoder normalizes away a
+REX byte followed by a legacy prefix; the surviving legacy prefix still keeps
+such a sequence outside bare-A5 admission.
+
+Two fault-only fixtures place the dword source or destination outside the
+bounded mapping. Local injected-#PF checks verify Fetch→Read(4 bytes), or
+Fetch→Read→Write(4 bytes), and the executor's current no-commit policy. SDM
+093 does not establish the destination-fault restart snapshot; see
+[ISSUE-016](../../../../docs/KNOWN_ISSUES.md#issue-016--не-установлен-restart-state-movs-после-destination-fault).
+Native admission accepts the three mapped positive fixtures and rejects both
+fault-only cases. S2-18b's deferred pool was 568 cases; these five bring it to
+573. No Mac mini execution has been performed for this slice.
+
+Handwritten bytes and literal expected answers are serialized by
+[`generate_stage2_movsd.py`](../../../cpu/generate_stage2_movsd.py), which does
+not assemble instructions or calculate x86 results. Normative source: Intel
+SDM revision 093, Vol.2B MOVS/MOVSB/MOVSW/MOVSD/MOVSQ; bare `A5` is MOVSD in
+long mode, default address size uses RSI/RDI, and `67` selects ESI/EDI.
+
+```sh
+python3 tests/cpu/generate_stage2_movsd.py --check
+cargo test -p od-isa -p od-testkit --offline movsd
+cargo test -p od-x86-runner --offline movsd_native_admission
+```
+
+## Single-iteration STOSB fixtures S2-18e
+
+Four handwritten schema v2 cases use only bare `AA` STOSB in long mode. Three
+mapped cases cover DF=0, DF=1, and RSI=RDI aliasing with canary bytes around the
+single destination byte. The alias case also proves that STOSB performs no
+source memory read and leaves RSI unchanged. A fourth case points RDI exactly
+past the mapped data region; its injected write `#PF` is local-only and checks
+the executor's current no-commit policy. No hardware restart snapshot is
+asserted; see [ISSUE-016](../../../../docs/KNOWN_ISSUES.md#issue-016--не-установлен-restart-state-movs-после-destination-fault).
+
+Native admission accepts the three mapped cases and rejects the fault-only
+fixture because the implicit destination is not mapped. Prefixes, REP, and
+other STOS widths remain outside this slice. Literal bytes, full state, flags,
+and memory images are materialized by
+[`generate_stage2_stosb.py`](../../../cpu/generate_stage2_stosb.py),
+which contains no encoder or semantic expected-value calculation.
+
+The deferred S2-15-through-S2-18 physical pool was 580 cases after MOVSQ.
+These four cases bring it to 584: three native-admissible positive fixtures
+and one local-only fault fixture. Physical execution remains deferred to the
+single final Mac mini acceptance substage.
+
+```sh
+python3 tests/cpu/generate_stage2_stosb.py --check
+cargo test -p od-isa -p od-testkit --offline stosb
+cargo test -p od-x86-runner --offline stosb_native_admission
+```
+
+## Bounded REP STOSB fixtures S2-19a
+
+Five handwritten schema v2 fixtures cover exact `F3 AA`: zero count without a
+destination access, one forward store, three forward/backward stores, and an
+injected middle write fault after one committed iteration. The fault fixture is
+local-only and checks that the successful store remains visible while the
+faulting iteration leaves RCX/RDI at the next byte and RIP at `F3 AA`; this is
+the chosen executor contract and does not assert exception-priority behavior.
+Focused interpreter tests also stop after two stores, resume from the saved
+RCX/RDI state, and exercise the separate 1024-iteration work limit. That limit
+does not consume the one-instruction retirement budget.
+
+Native admission accepts the four complete mapped small-count fixtures,
+including zero count, and rejects the local-only fault, counts above eight,
+and extra prefixes. These are fixture-profile bounds, not interpreter
+semantics. Literal answers are serialized by
+[`generate_stage2_rep_stosb.py`](../../../cpu/generate_stage2_rep_stosb.py);
+the script does not assemble instructions or calculate expected results.
+
+The deferred S2-15-onward physical pool increases from 584 to 589 fixtures.
+Across string-operation slices S2-18a–S2-19a it now contains 21 mapped cases
+admitted by native profile and 10 local-only fault cases rejected by admission.
+Physical execution stays deferred to the single final Mac mini acceptance
+substage.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_stosb.py --check
+cargo test -p od-testkit --offline rep_stosb
+cargo test -p od-x86-runner --offline rep_stosb_native_admission
+```
+
+## Divide-error exit fixtures S2-20a
+
+Two local-only schema v2 fixtures use literal `F6 F3` (`DIV BL`) bytes and
+exercise its zero-divisor and byte-quotient-overflow `#DE` cases. The runner
+CLI checks vector 0, unavailable error code and fault address, faulting RIP at
+the instruction, zero retirements, and unchanged full GPR/RFLAGS/RIP and code
+memory. They do not establish conflicting-fault priority or native exception
+delivery. At S2-20a completion these two cases increased the deferred
+S2-15-onward pool from 589 to 591; the native acceptance-selected subset was
+unchanged. Across string-operation slices, native admission remains 21 mapped
+fixtures and rejects 10 local-only fault fixtures. Physical runs stay in the
+shared final Mac mini acceptance stage.
+
+Literal values are serialized by
+[`generate_stage2_divide_errors.py`](../../../cpu/generate_stage2_divide_errors.py).
+
+```sh
+python3 tests/cpu/generate_stage2_divide_errors.py --check
+cargo test -p od-runner --test fixture_v2 divide_error_fixtures_preserve_state_and_report_exact_de_metadata --offline
+```
+
+## Complete UD2 exit fixture S2-20b
+
+One local-only schema v2 fixture contains the complete `0F 0B` UD2 opcode. Its
+CLI test checks vector 6, unavailable error code and fault address, faulting
+RIP at the first byte, zero retired instructions, and unchanged full GPR,
+RFLAGS, RIP and code memory. This does not assert priority against an
+instruction-fetch fault, invalid-prefix behavior, native exception delivery,
+or a physical hardware result. The case was not included in native acceptance
+selection or execution. It brings the deferred S2-15-onward pool to 592 while
+the native acceptance-selected subset remains unchanged.
+
+The handwritten bytes and expected snapshot are serialized by
+[`generate_stage2_ud2.py`](../../../cpu/generate_stage2_ud2.py), using Intel SDM
+revision 093 Vol.2A UD2.
+
+```sh
+python3 tests/cpu/generate_stage2_ud2.py --check
+python3 tests/cpu/test_stage2_ud2_generator.py
+cargo test -p od-runner --test fixture_v2 complete_ud2_cli_fixture_reports_ud_without_state_commit --offline
+```
+
+## Qword IDIV divide-error exit fixture S2-20c
+
+One local-only schema v2 fixture contains literal `48 F7 F9` (`IDIV RCX`)
+with `RDX:RAX` equal to signed 128-bit minimum and `RCX=-1`, producing a
+signed quotient overflow. The CLI test checks vector 0, unavailable error code
+and fault address, faulting RIP at the instruction, zero retirements, and
+unchanged full GPR/RFLAGS/RIP and code memory. This is an isolated divide-error
+case; it does not claim fault-priority or native exception semantics. It is
+excluded from native acceptance selection and execution. The deferred
+S2-15-onward pool increases from 592 to 593 while the native-selected subset
+remains unchanged. Physical checks remain in the shared final acceptance stage.
+
+[`generate_stage2_idiv_qword_error.py`](../../../cpu/generate_stage2_idiv_qword_error.py)
+serializes the literal bytes and expected state from Intel SDM revision 093
+Vol.2A IDIV.
+
+```sh
+python3 tests/cpu/generate_stage2_idiv_qword_error.py --check
+python3 tests/cpu/test_stage2_idiv_qword_error_generator.py
+cargo test -p od-runner --test fixture_v2 qword_idiv_overflow_cli_fixture_reports_de_without_state_commit --offline
+```
+
+## Bare qword memory XCHG fixture S2-21a
+
+One local-only schema v2 case runs handwritten `48 87 00` (`XCHG [RAX], RAX`).
+RAX is both the memory base and source value; its unaligned qword crosses two
+adjacent data regions, whose exact post-state and canary bytes are checked by
+the public CLI test. This checks executor behavior through one
+`GuestMemory::atomic_exchange_integer` call and verifies that the old value is
+committed to RAX only on success. The GuestMemory contract requires the call to
+leave memory unchanged on error; this fixture does not claim SMP ordering,
+production-backend guarantees, native selection, or physical atomicity.
+
+The single case increases the deferred S2-15-onward pool from 593 to 594; the
+native-selected subset is unchanged. Physical checks remain in the common final
+Mac mini acceptance stage.
+
+[`generate_stage2_xchg_qword_memory.py`](../../../cpu/generate_stage2_xchg_qword_memory.py)
+serializes the handwritten bytes and literal initial memory with Intel SDM
+revision 093 Vol.2D XCHG provenance.
+
+```sh
+python3 tests/cpu/generate_stage2_xchg_qword_memory.py --check
+python3 tests/cpu/test_stage2_xchg_qword_memory_generator.py
+cargo test -p od-runner --test fixture_v2 qword_memory_xchg_fixture_matches_literal_alias_and_split_memory_result --offline
+```
+
+## Qword register-register XADD fixture S2-21b
+
+One local-only schema v2 fixture runs literal `48 0F C1 C0` (`XADD RAX, RAX`).
+With initial RAX `0x7fff_ffff_ffff_ffff`, the result is
+`0xffff_ffff_ffff_fffe`; the CLI test checks all GPRs, RIP, full arithmetic
+flags and one instruction retirement. The same register in both ModR/M fields
+checks alias behavior. The case does not cover memory XADD, LOCK, other widths,
+CMPXCHG, native admission or physical execution.
+
+The case increases the deferred S2-15-onward pool from 594 to 595; native
+selection is unchanged. Physical checks remain in the common final Mac mini
+acceptance stage.
+
+[`generate_stage2_xadd_qword_register.py`](../../../cpu/generate_stage2_xadd_qword_register.py)
+serializes handwritten bytes and literal state with provenance to Intel SDM
+revision 093 Vol.2D XADD p.6-23.
+
+```sh
+python3 tests/cpu/generate_stage2_xadd_qword_register.py --check
+python3 tests/cpu/test_stage2_xadd_qword_register_generator.py
+cargo test -p od-runner --test fixture_v2 qword_register_xadd_fixture_matches_alias_sum_and_arithmetic_flags --offline
+```
+
+## Qword register-register CMPXCHG fixtures S2-21c
+
+Two local-only schema-v2 fixtures cover bare `48 0F B1 /r` qword register
+CMPXCHG: the equal case compares RAX with RCX and copies RBX to RCX; the
+unequal case compares RAX with RCX while source and destination both name RCX,
+then copies the old RCX to RAX. Both include complete expected register and
+flag snapshots in the CLI oracle. Memory destinations, LOCK, other widths,
+native admission and physical execution are outside this slice.
+
+These cases increase the deferred S2-15-onward pool from 595 to 597. The native
+selection remains unchanged; physical checks remain in the common final Mac
+mini acceptance stage.
+
+[`generate_stage2_cmpxchg_qword_register.py`](../../../cpu/generate_stage2_cmpxchg_qword_register.py)
+serializes handwritten bytes and initial state with provenance to Intel SDM
+revision 093 Vol.2A CMPXCHG.
+
+```sh
+python3 tests/cpu/generate_stage2_cmpxchg_qword_register.py --check
+python3 tests/cpu/test_stage2_cmpxchg_qword_register_generator.py
+cargo test -p od-runner --test fixture_v2 qword_register_cmpxchg_fixtures_match_both_compare_branches --offline
+```
+
+## Qword memory XADD fixture S2-21d
+
+One local-only schema-v2 fixture executes literal `48 0F C1 00` (`XADD
+qword [RAX], RAX`). RAX is both the address base and source value. The unaligned
+qword spans two adjacent regions; adding it to `0xffffffffffffffff` wraps to
+`0x00000000003000fa`. The expected state checks the old memory value in RAX,
+arithmetic flags, RIP/retirement and every byte of both regions, including
+canaries. The generator provenance identifies Intel SDM revision 093 Vol.2D
+XADD p.6-23.
+
+The interpreter makes one `GuestMemory::atomic_fetch_add_integer` call. Local
+spy and fault tests prove one backend operation and no CPU/RAM commit on an
+error. This fixture is excluded from native admission; no production backend,
+LOCK/SMP, or hardware-atomicity claim is made. The deferred S2-15-onward pool
+increases from 597 to 598; the native-selected subset is unchanged. Physical
+validation remains in the shared final Mac mini acceptance stage.
+
+[`generate_stage2_xadd_qword_memory.py`](../../../cpu/generate_stage2_xadd_qword_memory.py)
+serializes literal bytes and expected state with Intel SDM provenance.
+
+```sh
+python3 tests/cpu/generate_stage2_xadd_qword_memory.py --check
+python3 tests/cpu/test_stage2_xadd_qword_memory_generator.py
+cargo test -p od-runner --test fixture_v2 qword_memory_xadd_fixture_matches_alias_sum_flags_and_split_canaries --offline
+```
+
+## Qword memory CMPXCHG fixtures S2-21e
+
+Two local-only schema-v2 fixtures execute bare effective REX.W `0F B1 /r`
+CMPXCHG with qword memory destinations. The equal and unequal cases both use an
+unaligned qword split across adjacent regions and check the complete register,
+flag, RIP, retirement, and region-byte snapshots. The unequal case uses RAX as
+the source and effective-address base; it verifies that the observed memory
+value replaces RAX while memory remains unchanged. The generator records Intel
+SDM revision 093 Vol.2A CMPXCHG provenance.
+
+The `GuestMemory::atomic_compare_exchange_integer` boundary is one operation,
+validates write access even on mismatch, and does not mutate memory on error.
+Spy/fault tests cover backend call count and commit behavior. Fixtures remain
+excluded from native admission; LOCK/SMP/production backend/physical claims
+are outside scope. Deferred S2-15-onward pool increases from 598 to 600; the
+native-selected subset is unchanged. Physical validation remains in the shared
+final Mac mini acceptance stage.
+
+[`generate_stage2_cmpxchg_qword_memory.py`](../../../cpu/generate_stage2_cmpxchg_qword_memory.py)
+serializes literal bytes and state with Intel SDM provenance.
+
+```sh
+python3 tests/cpu/generate_stage2_cmpxchg_qword_memory.py --check
+python3 tests/cpu/test_stage2_cmpxchg_qword_memory_generator.py
+cargo test -p od-runner --test fixture_v2 qword_memory_cmpxchg_fixtures_match_both_compare_branches_and_split_canaries --offline
+```
+
+## LOCK qword memory XADD fixture S2-21f
+
+One local-only schema-v2 fixture executes literal `F0 48 0F C1 00` (`LOCK XADD
+qword [RAX], RAX`). It checks the old destination in the aliased RAX source,
+wrapping sum, arithmetic flags, RIP/retirement, and all bytes/canaries across an
+unaligned qword spanning adjacent regions. Generator provenance references
+Intel SDM revision 093 Vol.2D XADD and Vol.2A LOCK prefix rules.
+
+This operation uses the existing `GuestMemory::atomic_fetch_add_integer` call.
+Its use is restricted to serial execution over private synchronous ordinary
+RAM with no concurrent readers/writers, DMA, shared aliases, delayed writes,
+or MMIO. No full x86 LOCK ordering, SMP, native admission, or physical claim is
+made. Other LOCK forms remain unsupported. Deferred S2-15-onward pool grows
+from 600 to 601; the native-selected subset is unchanged. Physical validation
+remains in the shared final Mac mini acceptance stage. The unaligned fixture
+checks backend bytes only and does not establish hardware #AC or split-lock
+behavior.
+
+[`generate_stage2_lock_xadd_qword_memory.py`](../../../cpu/generate_stage2_lock_xadd_qword_memory.py)
+serializes the literal code and state with Intel SDM provenance.
+
+```sh
+python3 tests/cpu/generate_stage2_lock_xadd_qword_memory.py --check
+python3 tests/cpu/test_stage2_lock_xadd_qword_memory_generator.py
+cargo test -p od-runner --test fixture_v2 locked_qword_memory_xadd_fixture_matches_alias_sum_flags_and_split_canaries --offline
+```
+
+## Bare MFENCE fixture S2-21g
+
+The local-only schema-v2 fixture executes `48 89 18 0F AE F0 48 8B 08`
+(`MOV [RAX], RBX; MFENCE; MOV RCX, [RAX]`). It verifies the store is committed
+before the later load, with GPRs, flags, RIP, retirement and the data bytes
+observed. `GuestMemory::mfence` is required and has no default no-op; only
+private synchronous `FlatMemory` opts in. The contract does not cover shared
+memory, asynchronous writes, MMIO, DMA, SMP or physical ordering. Alternate
+`0F AE` encodings and prefixes remain unsupported by this profile, without an
+architectural invalid-encoding claim. The native-selected subset is unchanged;
+the deferred S2-15-onward pool grows from 601 to 602. Physical validation
+remains in the shared final Mac mini acceptance stage.
+
+[`generate_stage2_mfence.py`](../../../cpu/generate_stage2_mfence.py) serializes
+the literal fixture with Intel SDM provenance.
+
+```sh
+python3 tests/cpu/generate_stage2_mfence.py --check
+python3 tests/cpu/test_stage2_mfence_generator.py
+cargo test -p od-runner --test fixture_v2 mfence_store_fence_load --offline
+```
+
+## FS selector MOV fixture S2-22c
+
+The local-only `s2-long-fs-selector-v1` fixture runs exactly `48 8C E0`
+(`MOV RAX, FS`). It checks zero-extension of `FS.selector=0xF123` into RAX,
+three-byte RIP advance, one retirement, and preservation of FS.base, selector,
+flags and all other GPRs. The selector profile includes both FS.base and
+FS.selector in initial/result state so independence and preservation are
+observable. This reads the selector only; it performs no descriptor lookup or
+validation and makes no claim about privilege or segment-load behavior.
+Native execution rejects the profile before mapping or tracee creation, and
+legacy native admission rejects this decoded form. The shared deferred pool
+increases by one; native-selected membership is unchanged, and physical
+validation remains in the shared final acceptance stage.
+
+[`generate_stage2_fs_selector.py`](../../../cpu/generate_stage2_fs_selector.py)
+serializes literal bytes and expected state from Intel SDM revision 093 Vol.1
+§3.4.2 and Vol.2B MOV pp.4-28–4-31 provenance.
+
+```sh
+python3 tests/cpu/generate_stage2_fs_selector.py --check
+python3 tests/cpu/test_stage2_fs_selector_generator.py
+cargo test -p od-runner --test fixture_v2 fs_selector_fixture_zero_extends_and_preserves_segment_state --offline
+```
+
+## GS selector MOV fixture S2-22d
+
+The local-only `s2-long-gs-selector-v1` fixture runs exactly `48 8C E8`
+(`MOV RAX, GS`). It checks zero-extension of `GS.selector=0xF123` into RAX,
+three-byte RIP advance, one retirement, and preservation of GS.base, selector,
+flags and all other GPRs. The profile exposes only GS.base and GS.selector;
+descriptor lookup/load and privilege checks are outside the slice. Native
+execution fails closed before mapping or tracee creation, and legacy native
+admission rejects the decoded form. The shared deferred pool grows by one;
+native-selected membership is unchanged, and physical validation remains in
+the shared final acceptance stage.
+
+[`generate_stage2_gs_selector.py`](../../../cpu/generate_stage2_gs_selector.py)
+serializes literal bytes and expected state with Intel SDM revision 093 Vol.1
+§3.4.2 and Vol.2B MOV pp.4-28–4-31 provenance.
+
+```sh
+python3 tests/cpu/generate_stage2_gs_selector.py --check
+python3 tests/cpu/test_stage2_gs_selector_generator.py
+cargo test -p od-runner --test fixture_v2 gs_selector_fixture_zero_extends_and_preserves_segment_state --offline
+```
+
+## CPL3 GDT-only VERW fixture S2-22e
+
+The local-only `s2-long-verw-gdt-v1` profile runs exactly bare `0F 00 E8`
+(`VERW AX`) at CPL3. Its GDTR base and 16-bit limit are explicit state. Literal
+cases cover writable data, read-only data, code, system, DPL/RPL mismatch,
+exact/short table bounds, null selector and RPL0 success. Each case checks the
+complete GPR state, flags, RIP/retirement, GDTR and unchanged descriptor bytes.
+The interpreter performs one read-only 8-byte GDT read for an in-bounds
+non-null selector; null and out-of-bounds selectors do not read. Descriptor
+table reads use supervisor page privilege while architectural CPL remains 3.
+Backend faults propagate without retirement or architectural commit. LDT/TI,
+other privilege levels, descriptor loading, hidden caches, native execution
+and physical validation remain outside this slice; physical validation is
+deferred to the shared final acceptance stage.
+
+Sources: Intel SDM revision 093, Vol.2C (326018-093US), VERR/VERW
+pp.5-162–5-163; Vol.3A (325384-093US), §§3.5.1, 6.10.2 and 6.11.5. The
+generator records these official sources alongside each literal case.
+
+```sh
+python3 tests/cpu/generate_stage2_verw_gdt.py --check
+python3 tests/cpu/test_stage2_verw_gdt_generator.py
+cargo test -p od-runner --test fixture_v2 verw_gdt_fixtures_check_literal_rights_flags_state_and_descriptor_bytes --offline
+```
+
+## CPL3 GDT-only `MOV FS, AX` fixture S2-22f
+
+The partial local-only `s2-long-fs-load-v1` profile runs only bare `8E E0`
+(`MOV FS, AX`) at Long64/CPL3. Literal inputs cover accessed writable/read-only
+data, readable conforming/nonconforming code, invalid system/execute-only and
+privilege cases, P=0 and a short GDTR limit. The runner checks the complete GPR
+array, RIP, FS base/selector/cache, unchanged GDTR/RFLAGS/GDT and exact #GP/#NP
+vectors/error codes. Unit coverage separately checks nonzero base32, G=0/G=1
+limit expansion, A=0 no-write, null/TI boundaries, truncated fetch and injected
+descriptor-read #PF/backend errors with no CPU or retirement commit. This is a
+local interpreter profile; native and physical execution are not claimed.
+
+Sources: Intel SDM revision 093, Vol.2B (253667-093US), MOV pp.4-28–4-31;
+Vol.3A (325384-093US), §§3.4.3–3.4.5.1, 3.5.1, 6.4.1.1, 6.6–6.6.1, 6.11.5,
+7.13 and Event 11. The generator records official PDF links and literal
+provenance with each case.
+
+```sh
+python3 tests/cpu/generate_stage2_fs_load.py --check
+python3 tests/cpu/test_stage2_fs_load_generator.py
+cargo test -p od-runner --test fixture_v2 fs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state --offline
+```

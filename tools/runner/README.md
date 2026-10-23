@@ -1,6 +1,6 @@
 # od-runner
 
-Headless runner for the limited S0-09 x86 fragment profile. It calls `od-isa` for interpretation and uses the macOS ARM64 host path for JIT execution. Instruction semantics and ARM64 translation remain in their owning libraries. Linux builds use the interpreter without linking `od-host`; JIT requests return an explicit `unsupported` JSON result.
+Headless runner for the limited S0-09 x86 fragment profile and the experimental S2 long-mode integer fixture profile. It calls `od-isa` for interpretation and uses the macOS ARM64 host path for S0 JIT execution. Instruction semantics and ARM64 translation remain in their owning libraries. Linux builds use the interpreter without linking `od-host`; JIT requests return an explicit `unsupported` JSON result. Schema v2 JIT execution is unsupported on every host.
 
 Example on macOS ARM64:
 
@@ -36,9 +36,48 @@ target/debug/od-runner --compare-results interpreter.json jit.json \
   --case tests/fixtures/x86/s0_09_add_overflow.case.json --json
 ```
 
-Comparison JSON contains `field`, optional `mask`, `expected`, `actual`, and fixture/backend `context` for every difference. Exit codes are `0` for a match, `2` for a mismatch, `3` for invalid input, `4` for an unsupported operation or host, and `5` for a harness failure. Unsupported engine results remain valid JSON and never appear as completed runs. Unknown CPU model, kernel, page size, compiler version, and source revision are represented as unavailable metadata; the CLI does not guess them.
+Schema v1 comparison JSON contains `field`, optional `mask`, `expected`, `actual`, and fixture/backend `context` for every difference. Schema v2 comparison reports contain `schema_version`, `case_id`, `input_sha256`, `matches`, and differing field names. Exit codes are `0` for a completed run or comparison match, `2` for a comparison mismatch, `3` for invalid input, `4` for an unsupported operation or host, and `5` for a harness failure or deadline. Unsupported engine results remain valid JSON and never appear as completed runs. Unknown CPU model, kernel, page size, compiler version, and source revision are represented as unavailable metadata; the CLI does not guess them.
 
-The fixture command accepts `interpreter` or `jit` per invocation. The current S0-09 fixture contract does not capture RAM or exceptions. This in-process path has no wall-time watchdog; the native x86 runner enforces its wall-time limit in an isolated process.
+The fixture command accepts `interpreter` or `jit` per invocation and dispatches strictly by schema version. The S0-09 v1 fixture contract and digests remain unchanged; it does not capture RAM or exceptions, and its in-process path has no wall-time watchdog. The native x86 runner enforces its wall-time limit in an isolated process.
+
+### Schema v2 memory execution
+
+```sh
+target/debug/od-runner --fixture tests/fixtures/x86/stage2/mov_load_add_store.case.json \
+  --engine interpreter --json
+```
+
+The three [hand-authored S2 fixtures](../../tests/fixtures/x86/stage2/README.md)
+exercise MOV load/store and register aliases, including a load → qword ADD →
+store across an unaligned 4 KiB/adjacent-region boundary. The v2 interpreter
+executes on-demand MOV B0–BF/88–8B byte/word/dword/qword forms with the full
+GPR set, plus the earlier S0 qword arithmetic and short JZ/JNZ slice.
+Unsupported forms remain explicit outcomes.
+
+Results bind to the exact fixture bytes and contain all 16 GPRs, architectural
+RIP, flags and definedness, retired instruction count, complete final memory
+regions, observed exception metadata, and build/host metadata. Initial memory
+is in the exact input fixture, so final memory is a real before/after pair.
+MOV/branches preserve the known input flags; the supported ADD/SUB/CMP forms
+define every arithmetic flag. The result therefore marks the current integer
+profile flags as defined. New instruction families must establish their own
+definedness before execution is enabled.
+
+Architectural exceptions retain faulting RIP and available error code/address;
+they are completed CPU outcomes, not host failures. Missing fixture mappings,
+permissions and backend errors produce `harness_error` rather than a fabricated
+guest page fault. A data access endpoint beyond `u64::MAX` is currently reported
+as a diagnostic address-overflow harness error; its architectural boundary is
+not yet established. Unsupported v2 JIT requests emit schema v2 `unsupported`
+with unavailable state/count and exit 4; they do not execute the interpreter.
+
+The v2 `wall_timeout_ms` is a cooperative execution deadline checked at each
+instruction boundary, before budget/fetch and after the stop-address check.
+Its expiry produces `timed_out` with the precise current snapshot/count and
+exit 5. This is not an isolated watchdog and cannot interrupt a stalled memory
+backend call. Budget exhaustion and stop address are separate architectural
+outcomes. These local execution checks do not establish physical x86 equivalence;
+the S2 oracle expansion remains a separate task.
 
 Generate a deterministic CPU corpus with a fixed seed and sequence count:
 

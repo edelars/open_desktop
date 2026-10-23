@@ -1,0 +1,705 @@
+use super::*;
+
+fn loaded() -> LoadedFixture {
+    let old = crate::case::Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/s0_09_mov_imm64.case.json"
+    ))
+    .unwrap();
+    let converted = Fixture::convert_v1(&old).unwrap();
+    Fixture::from_json(&converted.to_json().unwrap()).unwrap()
+}
+
+fn result(input: &LoadedFixture) -> RunResult {
+    let mut state = input.fixture.initial_state.clone();
+    state.rip = input.fixture.stop_rip.unwrap();
+    RunResult {
+        schema_version: 2,
+        case_id: input.fixture.case_id.clone(),
+        input_sha256: input.input_sha256.clone(),
+        profile: input.fixture.profile,
+        backend: Backend::Interpreter,
+        outcome: Outcome::StopAddress {},
+        instructions_executed: Observation::Available { value: HexU64(1) },
+        snapshot: Observation::Available {
+            value: Snapshot {
+                state,
+                rflags_defined: HexU64(INTEGER_FLAGS),
+                memory: input
+                    .fixture
+                    .memory
+                    .iter()
+                    .map(|r| MemoryRegionSnapshot {
+                        region_id: r.region_id.clone(),
+                        guest_address: r.guest_address,
+                        bytes_hex: r.initial_bytes_hex.clone(),
+                    })
+                    .collect(),
+                exception: Observation::Available { value: None },
+            },
+        },
+        build: BuildMetadata {
+            revision: "test-only".into(),
+            target: "test-only".into(),
+            profile: "test-only".into(),
+            compiler: "test-only".into(),
+        },
+        machine: MachineMetadata {
+            host_os: "test-only".into(),
+            host_arch: "test-only".into(),
+            cpu_model: None,
+            kernel: None,
+            page_size: None,
+        },
+    }
+}
+
+fn snapshot(result: &mut RunResult) -> &mut Snapshot {
+    match &mut result.snapshot {
+        Observation::Available { value } => value,
+        _ => panic!("test snapshot"),
+    }
+}
+
+#[test]
+fn conversion_is_explicit_and_has_its_own_digest() {
+    let raw = include_bytes!("../../../tests/fixtures/x86/s0_09_mov_imm64.case.json");
+    let old = crate::case::Fixture::from_json(raw).unwrap();
+    let converted = loaded();
+    assert_eq!(
+        converted.fixture.converted_from_v1_sha256,
+        Some(old.input_sha256.clone())
+    );
+    assert_ne!(converted.input_sha256, old.input_sha256);
+    assert_eq!(crate::case::Fixture::from_json(raw).unwrap(), old);
+    assert!(crate::case::Fixture::from_json(&converted.fixture.to_json().unwrap()).is_err());
+    let mut fixture = converted.fixture;
+    fixture.initial_state.gpr[15] = HexU64(u64::MAX);
+    fixture.initial_state.rip = HexU64(u64::MAX);
+    let roundtrip = Fixture::from_json(&fixture.to_json().unwrap()).unwrap();
+    assert_eq!(
+        roundtrip.fixture.initial_state.to_cpu().unwrap().gpr[15],
+        u64::MAX
+    );
+    assert_eq!(roundtrip.fixture.initial_state.rip.get(), u64::MAX);
+}
+
+#[test]
+fn malformed_versions_fields_profiles_and_state_are_rejected() {
+    let base = serde_json::to_value(loaded().fixture).unwrap();
+    for (path, value) in [
+        (vec!["schema_version"], serde_json::json!(3)),
+        (
+            vec!["profile"],
+            serde_json::json!("s0_09_register_subset_v1"),
+        ),
+        (vec!["initial_state", "mode"], serde_json::json!("real16")),
+        (
+            vec!["initial_state", "rflags"],
+            serde_json::json!("0x0000000000000202"),
+        ),
+        (
+            vec!["initial_state", "rip"],
+            serde_json::json!("0x10000000000000000"),
+        ),
+        (
+            vec!["initial_state", "gpr"],
+            serde_json::json!(["0x0000000000000000"]),
+        ),
+        (vec!["unknown"], serde_json::json!(0)),
+        (vec!["initial_state", "unknown"], serde_json::json!(0)),
+    ] {
+        let mut value_root = base.clone();
+        let mut field = &mut value_root;
+        for key in path {
+            field = &mut field[key];
+        }
+        *field = value;
+        assert!(Fixture::from_json(&serde_json::to_vec(&value_root).unwrap()).is_err());
+    }
+    let mut fixture = loaded().fixture;
+    fixture.memory.push(fixture.memory[0].clone());
+    assert!(fixture.validate().is_err());
+    fixture.memory.pop();
+    fixture.memory[0].guest_address = HexU64(u64::MAX);
+    assert!(fixture.validate().is_err());
+    assert!(Fixture::from_json(&vec![b' '; MAX_FIXTURE_JSON_BYTES + 1]).is_err());
+}
+
+#[test]
+fn fs_base_profile_is_required_and_old_wire_shape_stays_unchanged() {
+    let raw = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_21g_mfence_store_fence_load.case.json"
+    );
+    let old = Fixture::from_json(raw).unwrap();
+    assert_eq!(
+        old.input_sha256,
+        "8477721f18892e8115b7dcbfc9260d43446b815bbc528767e331d1293a2e49a4"
+    );
+    assert_eq!(old.fixture.to_json().unwrap(), raw[..raw.len() - 1]);
+    let old_json: serde_json::Value =
+        serde_json::from_slice(&old.fixture.to_json().unwrap()).unwrap();
+    assert!(old_json["initial_state"].get("fs_base").is_none());
+    assert!(old_json["initial_state"].get("fs_selector").is_none());
+    assert!(old_json["initial_state"].get("gs_selector").is_none());
+    assert_eq!(old.fixture.profile, Profile::LongIntegerV1);
+
+    let fs_fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22a_fs_base_qword_load_alias.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fs_fixture.profile, Profile::LongFsBaseV1);
+    assert!(fs_fixture.initial_state.fs_selector.is_none());
+    assert!(fs_fixture.initial_state.gs_selector.is_none());
+    assert_eq!(
+        fs_fixture
+            .initial_state
+            .to_cpu_for(fs_fixture.profile)
+            .unwrap()
+            .fs_base,
+        0xffff_8000_0000_0000
+    );
+    let mut missing = serde_json::to_value(&fs_fixture).unwrap();
+    missing["initial_state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("fs_base");
+    assert!(Fixture::from_json(&serde_json::to_vec(&missing).unwrap()).is_err());
+    let mut noncanonical = serde_json::to_value(&fs_fixture).unwrap();
+    noncanonical["initial_state"]["fs_base"] = serde_json::json!("0x0000800000000000");
+    assert!(Fixture::from_json(&serde_json::to_vec(&noncanonical).unwrap()).is_err());
+
+    let mut old_with_fs = serde_json::to_value(&old.fixture).unwrap();
+    old_with_fs["initial_state"]["fs_base"] = serde_json::json!("0x0000000000001000");
+    assert!(Fixture::from_json(&serde_json::to_vec(&old_with_fs).unwrap()).is_err());
+    old_with_fs["initial_state"]["fs_base"] = serde_json::Value::Null;
+    assert!(Fixture::from_json(&serde_json::to_vec(&old_with_fs).unwrap()).is_err());
+}
+
+#[test]
+fn result_rejects_observed_fs_base_different_from_initial() {
+    let input = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22a_fs_base_qword_load_alias.case.json"
+    ))
+    .unwrap();
+    let left = result(&input);
+    let mut right = result(&input);
+    snapshot(&mut right).state.fs_base = Some(HexU64(0xffff_8000_0000_0001));
+    assert_eq!(
+        right.validate_for(&input),
+        Err(FormatError::CaseMismatch("state.fs_base"))
+    );
+    assert_eq!(
+        compare(&input, &left, &right),
+        Err(FormatError::CaseMismatch("state.fs_base"))
+    );
+}
+
+#[test]
+fn gs_base_profile_is_required_and_result_compares_gs_base() {
+    let input = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22b_gs_base_qword_load_alias.case.json"
+    ))
+    .unwrap();
+    assert_eq!(input.fixture.profile, Profile::LongGsBaseV1);
+    assert_eq!(
+        input.fixture.initial_state.gs_base,
+        Some(HexU64(0xffff_8000_0000_0000))
+    );
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&input.fixture.to_json().unwrap()).unwrap();
+    json["initial_state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("gs_base");
+    assert!(Fixture::from_json(&serde_json::to_vec(&json).unwrap()).is_err());
+
+    let mut right = result(&input);
+    snapshot(&mut right).state.gs_base = Some(HexU64(0xffff_8000_0000_0001));
+    assert!(matches!(
+        right.validate_for(&input),
+        Err(FormatError::CaseMismatch("state.gs_base"))
+    ));
+}
+
+#[test]
+fn fs_selector_profile_requires_and_compares_selector_and_base() {
+    let input = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22c_fs_selector_to_rax.case.json"
+    ))
+    .unwrap();
+    assert_eq!(input.fixture.profile, Profile::LongFsSelectorV1);
+    assert_eq!(
+        input.fixture.initial_state.fs_selector,
+        Some(HexU64(0xf123))
+    );
+    let mut result = result(&input);
+    snapshot(&mut result).state.gpr[0] = HexU64(0xf123);
+    assert!(result.validate_for(&input).is_ok());
+
+    for field in ["fs_selector", "fs_base"] {
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&input.fixture.to_json().unwrap()).unwrap();
+        json["initial_state"].as_object_mut().unwrap().remove(field);
+        assert!(Fixture::from_json(&serde_json::to_vec(&json).unwrap()).is_err());
+    }
+    let mut too_wide: serde_json::Value =
+        serde_json::from_slice(&input.fixture.to_json().unwrap()).unwrap();
+    too_wide["initial_state"]["fs_selector"] = serde_json::json!("0x0000000000010000");
+    assert!(Fixture::from_json(&serde_json::to_vec(&too_wide).unwrap()).is_err());
+    let mut null_selector: serde_json::Value =
+        serde_json::from_slice(&input.fixture.to_json().unwrap()).unwrap();
+    null_selector["initial_state"]["fs_selector"] = serde_json::Value::Null;
+    assert!(Fixture::from_json(&serde_json::to_vec(&null_selector).unwrap()).is_err());
+
+    for field in ["fs_selector", "fs_base"] {
+        let mut changed = result.clone();
+        let state = &mut snapshot(&mut changed).state;
+        if field == "fs_selector" {
+            state.fs_selector = Some(HexU64(0xf122));
+        } else {
+            state.fs_base = Some(HexU64(0xffff_8000_0000_1001));
+        }
+        assert!(matches!(
+            changed.validate_for(&input),
+            Err(FormatError::CaseMismatch(_))
+        ));
+    }
+}
+
+#[test]
+fn gs_selector_profile_requires_and_compares_selector_and_base() {
+    let input = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22d_gs_selector_to_rax.case.json"
+    ))
+    .unwrap();
+    assert_eq!(input.fixture.profile, Profile::LongGsSelectorV1);
+    assert_eq!(
+        input.fixture.initial_state.gs_selector,
+        Some(HexU64(0xf123))
+    );
+    let mut result = result(&input);
+    snapshot(&mut result).state.gpr[0] = HexU64(0xf123);
+    assert!(result.validate_for(&input).is_ok());
+
+    for field in ["gs_selector", "gs_base"] {
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&input.fixture.to_json().unwrap()).unwrap();
+        json["initial_state"].as_object_mut().unwrap().remove(field);
+        assert!(Fixture::from_json(&serde_json::to_vec(&json).unwrap()).is_err());
+        json["initial_state"][field] = serde_json::Value::Null;
+        assert!(Fixture::from_json(&serde_json::to_vec(&json).unwrap()).is_err());
+    }
+    let mut too_wide: serde_json::Value =
+        serde_json::from_slice(&input.fixture.to_json().unwrap()).unwrap();
+    too_wide["initial_state"]["gs_selector"] = serde_json::json!("0x0000000000010000");
+    assert!(Fixture::from_json(&serde_json::to_vec(&too_wide).unwrap()).is_err());
+    let mut null_selector: serde_json::Value =
+        serde_json::from_slice(&input.fixture.to_json().unwrap()).unwrap();
+    null_selector["initial_state"]["gs_selector"] = serde_json::Value::Null;
+    assert!(Fixture::from_json(&serde_json::to_vec(&null_selector).unwrap()).is_err());
+
+    for field in ["gs_selector", "gs_base"] {
+        let mut changed = result.clone();
+        let state = &mut snapshot(&mut changed).state;
+        if field == "gs_selector" {
+            state.gs_selector = Some(HexU64(0xf122));
+        } else {
+            state.gs_base = Some(HexU64(0xffff_8000_0000_1001));
+        }
+        assert!(matches!(
+            changed.validate_for(&input),
+            Err(FormatError::CaseMismatch(_))
+        ));
+    }
+
+    let fs_selector = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22c_fs_selector_to_rax.case.json"
+    ))
+    .unwrap();
+    let old_fs_json: serde_json::Value =
+        serde_json::from_slice(&fs_selector.fixture.to_json().unwrap()).unwrap();
+    assert!(old_fs_json["initial_state"].get("gs_selector").is_none());
+}
+
+#[test]
+fn verw_gdt_profile_requires_canonical_gdtr_and_compares_both_fields() {
+    let input = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22e_verw_writable_dpl3.case.json"
+    ))
+    .unwrap();
+    assert_eq!(input.fixture.profile, Profile::LongVerwGdtV1);
+    assert_eq!(
+        input.fixture.initial_state.gdtr_base,
+        Some(HexU64(0x20_0000))
+    );
+    assert_eq!(input.fixture.initial_state.gdtr_limit, Some(HexU64(0x0f)));
+    let cpu = input
+        .fixture
+        .initial_state
+        .to_cpu_for(Profile::LongVerwGdtV1)
+        .unwrap();
+    assert_eq!(
+        cpu.gdtr,
+        Some(od_isa::state::Gdtr {
+            base: 0x20_0000,
+            limit: 0x0f,
+        })
+    );
+
+    for field in ["gdtr_base", "gdtr_limit"] {
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&input.fixture.to_json().unwrap()).unwrap();
+        json["initial_state"].as_object_mut().unwrap().remove(field);
+        assert!(Fixture::from_json(&serde_json::to_vec(&json).unwrap()).is_err());
+        json["initial_state"][field] = serde_json::Value::Null;
+        assert!(Fixture::from_json(&serde_json::to_vec(&json).unwrap()).is_err());
+    }
+    let mut too_wide: serde_json::Value =
+        serde_json::from_slice(&input.fixture.to_json().unwrap()).unwrap();
+    too_wide["initial_state"]["gdtr_limit"] = serde_json::json!("0x0000000000010000");
+    assert!(Fixture::from_json(&serde_json::to_vec(&too_wide).unwrap()).is_err());
+    for invalid_base in [0x0000_8000_0000_0000_u64, u64::MAX - 8] {
+        let mut invalid: serde_json::Value =
+            serde_json::from_slice(&input.fixture.to_json().unwrap()).unwrap();
+        invalid["initial_state"]["gdtr_base"] = serde_json::json!(format!("0x{invalid_base:016x}"));
+        assert!(Fixture::from_json(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    }
+
+    let mut result = result(&input);
+    assert!(result.validate_for(&input).is_ok());
+    let snapshot = snapshot(&mut result);
+    snapshot.state.gdtr_limit = Some(HexU64(0x10));
+    assert!(matches!(
+        result.validate_for(&input),
+        Err(FormatError::CaseMismatch("state.gdtr"))
+    ));
+
+    let old = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22d_gs_selector_to_rax.case.json"
+    ))
+    .unwrap();
+    let old_json: serde_json::Value =
+        serde_json::from_slice(&old.fixture.to_json().unwrap()).unwrap();
+    assert!(old_json["initial_state"].get("gdtr_base").is_none());
+    assert!(old_json["initial_state"].get("gdtr_limit").is_none());
+}
+
+#[test]
+fn fs_load_profile_has_an_isolated_wire_shape_and_observes_hidden_cache_state() {
+    let loaded = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22f_fs_load_writable_g0.case.json"
+    ))
+    .unwrap();
+    assert_eq!(loaded.fixture.profile, Profile::LongFsLoadV1);
+    let wire: serde_json::Value =
+        serde_json::from_slice(&loaded.fixture.to_json().unwrap()).unwrap();
+    for field in [
+        "fs_base",
+        "fs_selector",
+        "gdtr_base",
+        "gdtr_limit",
+        "fs_cache_limit",
+        "fs_cache_access",
+        "fs_cache_flags",
+    ] {
+        assert!(wire["initial_state"].get(field).is_some(), "{field}");
+    }
+
+    let mut result = result(&loaded);
+    let initial_snapshot = snapshot(&mut result);
+    initial_snapshot.state.fs_base = Some(HexU64(0x8123_4567));
+    initial_snapshot.state.fs_selector = Some(HexU64(0x0b));
+    initial_snapshot.state.fs_cache_limit = Some(HexU64(0x0000_ffff));
+    initial_snapshot.state.fs_cache_access = Some(HexU64(0xf3));
+    initial_snapshot.state.fs_cache_flags = Some(HexU64(0));
+    assert!(result.validate_for(&loaded).is_ok());
+
+    let baseline = result.clone();
+    let mut changed_cache = baseline.clone();
+    snapshot(&mut changed_cache).state.fs_cache_limit = Some(HexU64(0x10000));
+    assert_eq!(
+        compare(&loaded, &baseline, &changed_cache).unwrap(),
+        vec!["fs_cache_limit"]
+    );
+
+    for field in [
+        "fs_base",
+        "fs_selector",
+        "gdtr_base",
+        "gdtr_limit",
+        "fs_cache_limit",
+        "fs_cache_access",
+        "fs_cache_flags",
+    ] {
+        let mut malformed: serde_json::Value =
+            serde_json::from_slice(&loaded.fixture.to_json().unwrap()).unwrap();
+        malformed["initial_state"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err(),
+            "missing {field}"
+        );
+        malformed["initial_state"][field] = serde_json::Value::Null;
+        assert!(
+            Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err(),
+            "null {field}"
+        );
+    }
+
+    let mut too_wide_cache: serde_json::Value =
+        serde_json::from_slice(&loaded.fixture.to_json().unwrap()).unwrap();
+    too_wide_cache["initial_state"]["fs_cache_access"] = serde_json::json!("0x0000000000000100");
+    assert!(Fixture::from_json(&serde_json::to_vec(&too_wide_cache).unwrap()).is_err());
+    let mut selector_with_ti: serde_json::Value =
+        serde_json::from_slice(&loaded.fixture.to_json().unwrap()).unwrap();
+    selector_with_ti["initial_state"]["fs_selector"] = serde_json::json!("0x000000000000000c");
+    assert!(Fixture::from_json(&serde_json::to_vec(&selector_with_ti).unwrap()).is_ok());
+    selector_with_ti["initial_state"]["fs_selector"] = serde_json::json!("0x0000000000010000");
+    assert!(Fixture::from_json(&serde_json::to_vec(&selector_with_ti).unwrap()).is_err());
+
+    let old = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_21g_mfence_store_fence_load.case.json"
+    ))
+    .unwrap();
+    let old_wire: serde_json::Value =
+        serde_json::from_slice(&old.fixture.to_json().unwrap()).unwrap();
+    for field in ["fs_cache_limit", "fs_cache_access", "fs_cache_flags"] {
+        assert!(
+            old_wire["initial_state"].get(field).is_none(),
+            "legacy field {field}"
+        );
+    }
+}
+
+#[test]
+fn fs_load_state_change_is_allowed_after_retirement_independent_of_terminal_outcome() {
+    let loaded = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22f_fs_load_writable_g0.case.json"
+    ))
+    .unwrap();
+    let mut observed = result(&loaded);
+    let state = &mut snapshot(&mut observed).state;
+    state.fs_base = Some(HexU64(0x89ab_cdef));
+    state.fs_selector = Some(HexU64(0x0b));
+    state.fs_cache_limit = Some(HexU64(0));
+    state.fs_cache_access = Some(HexU64(0xf3));
+    state.fs_cache_flags = Some(HexU64(0));
+
+    for outcome in [
+        Outcome::Exception {},
+        Outcome::Unsupported {
+            reason: "later instruction is outside the profile".into(),
+        },
+        Outcome::HarnessError {
+            reason: "later backend operation failed".into(),
+        },
+    ] {
+        let mut after_mov = observed.clone();
+        after_mov.outcome = outcome;
+        after_mov.instructions_executed = Observation::Available { value: HexU64(1) };
+        if matches!(after_mov.outcome, Outcome::Exception {}) {
+            let faulting_rip = snapshot(&mut after_mov).state.rip;
+            snapshot(&mut after_mov).exception = Observation::Available {
+                value: Some(ExceptionSnapshot {
+                    vector: 6,
+                    error_code: Observation::Unavailable {
+                        reason: "exception has no error code".into(),
+                    },
+                    faulting_rip,
+                    fault_address: Observation::Unavailable {
+                        reason: "exception has no reported linear address".into(),
+                    },
+                }),
+            };
+        }
+        assert!(after_mov.validate_for(&loaded).is_ok());
+    }
+
+    let mut no_retired_instruction = observed;
+    no_retired_instruction.instructions_executed = Observation::Available { value: HexU64(0) };
+    assert_eq!(
+        no_retired_instruction.validate_for(&loaded),
+        Err(FormatError::CaseMismatch("state.fs_base"))
+    );
+}
+
+#[test]
+fn every_gpr_rip_flag_definedness_memory_and_outcome_mismatch_is_observed() {
+    let input = loaded();
+    let baseline = result(&input);
+    assert!(compare(&input, &baseline, &baseline).unwrap().is_empty());
+    for i in 0..16 {
+        let mut changed = baseline.clone();
+        snapshot(&mut changed).state.gpr[i].0 ^= 1;
+        assert_eq!(
+            compare(&input, &baseline, &changed).unwrap(),
+            vec![format!("gpr[{i}]")]
+        );
+    }
+    for kind in ["rip", "rflags", "rflags_defined", "memory"] {
+        let mut changed = baseline.clone();
+        let state = snapshot(&mut changed);
+        match kind {
+            "rip" => state.state.rip.0 ^= 1,
+            "rflags" => state.state.rflags.0 ^= 1,
+            "rflags_defined" => state.rflags_defined.0 ^= 1 << 10,
+            _ => state.memory[0].bytes_hex.replace_range(..2, "00"),
+        }
+        assert!(
+            !compare(&input, &baseline, &changed).unwrap().is_empty(),
+            "{kind}"
+        );
+    }
+    let mut changed = baseline.clone();
+    changed.outcome = Outcome::InstructionBudgetExhausted {};
+    assert!(!compare(&input, &baseline, &changed).unwrap().is_empty());
+    assert!(
+        !compare(&input, &changed, &changed).unwrap().is_empty(),
+        "same wrong exit is not success"
+    );
+    snapshot(&mut changed).rflags_defined = HexU64(0);
+    assert!(compare(&input, &baseline, &changed).is_err());
+}
+
+#[test]
+fn exact_input_and_layout_are_required_and_incomplete_results_never_match() {
+    let input = loaded();
+    let baseline = result(&input);
+    assert_eq!(
+        RunResult::from_json(&baseline.to_json().unwrap()).unwrap(),
+        baseline
+    );
+    for kind in ["digest", "case", "address", "length", "missing"] {
+        let mut changed = baseline.clone();
+        match kind {
+            "digest" => changed.input_sha256 = "0".repeat(64),
+            "case" => changed.case_id = "different_case".into(),
+            "address" => snapshot(&mut changed).memory[0].guest_address.0 += 1,
+            "length" => snapshot(&mut changed).memory[0].bytes_hex.push_str("00"),
+            _ => snapshot(&mut changed).memory.clear(),
+        }
+        assert!(compare(&input, &baseline, &changed).is_err(), "{kind}");
+    }
+    for outcome in [
+        Outcome::Unsupported {
+            reason: "not implemented".into(),
+        },
+        Outcome::TimedOut {
+            reason: "deadline".into(),
+        },
+        Outcome::HarnessError {
+            reason: "failed".into(),
+        },
+        Outcome::Signaled {
+            signal: 11,
+            reason: "host signal".into(),
+        },
+    ] {
+        let mut changed = baseline.clone();
+        changed.outcome = outcome;
+        changed.snapshot = Observation::Unavailable {
+            reason: "not observed".into(),
+        };
+        assert!(changed.validate().is_ok());
+        assert!(compare(&input, &changed, &changed).is_err());
+    }
+    let mut malformed = serde_json::to_value(&baseline).unwrap();
+    malformed["outcome"]["reason"] = serde_json::json!("hidden field");
+    assert!(RunResult::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err());
+    let mut absent = baseline.clone();
+    absent.snapshot = Observation::Unavailable {
+        reason: "missing".into(),
+    };
+    assert!(absent.validate().is_err());
+}
+
+#[test]
+fn exception_metadata_is_observed_without_substituting_zero_for_absence() {
+    let mut input = loaded();
+    input.fixture.expected_exit = ExpectedExit::Exception;
+    let mut baseline = result(&input);
+    baseline.outcome = Outcome::Exception {};
+    let rip = snapshot(&mut baseline).state.rip;
+    snapshot(&mut baseline).exception = Observation::Available {
+        value: Some(ExceptionSnapshot {
+            vector: 14,
+            error_code: Observation::Available { value: HexU64(5) },
+            faulting_rip: rip,
+            fault_address: Observation::Available {
+                value: HexU64(0x1234),
+            },
+        }),
+    };
+    for kind in ["vector", "error_code", "fault_address"] {
+        let mut changed = baseline.clone();
+        if let Observation::Available { value: Some(fault) } = &mut snapshot(&mut changed).exception
+        {
+            match kind {
+                "vector" => fault.vector = 13,
+                "error_code" => fault.error_code = Observation::Available { value: HexU64(0) },
+                _ => fault.fault_address = Observation::Available { value: HexU64(0) },
+            }
+        }
+        assert_eq!(
+            compare(&input, &baseline, &changed).unwrap(),
+            vec!["exception"]
+        );
+    }
+    snapshot(&mut baseline).exception = Observation::Unavailable {
+        reason: "host signal is not a guest exception".into(),
+    };
+    assert!(baseline.validate().is_err());
+}
+
+#[test]
+fn exception_comparison_ignores_unavailable_explanations_but_requires_architectural_fields() {
+    let mut input = loaded();
+    input.fixture.expected_exit = ExpectedExit::Exception;
+    let mut left = result(&input);
+    left.outcome = Outcome::Exception {};
+    let rip = snapshot(&mut left).state.rip;
+    snapshot(&mut left).exception = Observation::Available {
+        value: Some(ExceptionSnapshot {
+            vector: 13,
+            error_code: Observation::Available { value: HexU64(0) },
+            faulting_rip: rip,
+            fault_address: Observation::Unavailable {
+                reason: "GP has no fault address".into(),
+            },
+        }),
+    };
+    let mut right = left.clone();
+    if let Observation::Available { value: Some(fault) } = &mut snapshot(&mut right).exception {
+        fault.fault_address = Observation::Unavailable {
+            reason: "not applicable".into(),
+        };
+    }
+    assert!(compare(&input, &left, &right).unwrap().is_empty());
+    if let Observation::Available { value: Some(fault) } = &mut snapshot(&mut right).exception {
+        fault.fault_address = Observation::Available { value: HexU64(0) };
+    }
+    assert_eq!(compare(&input, &left, &right).unwrap(), ["exception"]);
+    for vector in [13, 14] {
+        let mut missing = left.clone();
+        if let Observation::Available { value: Some(fault) } = &mut snapshot(&mut missing).exception
+        {
+            fault.vector = vector;
+            if vector == 13 {
+                fault.error_code = Observation::Unavailable {
+                    reason: "not observed".into(),
+                };
+            }
+        }
+        assert!(compare(&input, &missing, &missing).is_err());
+    }
+    // An exception-free observation is distinct from an unknown exception observation.
+    snapshot(&mut right).exception = Observation::Available { value: None };
+    assert!(right.validate().is_err());
+    snapshot(&mut right).exception = Observation::Unavailable {
+        reason: "unknown".into(),
+    };
+    assert!(right.validate().is_err());
+}

@@ -24,6 +24,9 @@ const RESERVED_FLAG: u64 = 1 << 1;
 
 pub fn run_cli() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
+    if let Some(exit) = crate::native_v2::dispatch(&args) {
+        return exit;
+    }
     if args.first().map(String::as_str) == Some("--native-child") {
         return run_child_cli(&args[1..]);
     }
@@ -354,7 +357,7 @@ fn emit_result(result: RunResult, exit_code: u8) -> ExitCode {
     }
 }
 
-fn build_metadata() -> BuildMetadata {
+pub(crate) fn build_metadata() -> BuildMetadata {
     BuildMetadata {
         revision: option_env!("OPEN_DESKTOP_GIT_REVISION")
             .unwrap_or("unavailable")
@@ -371,7 +374,7 @@ fn build_metadata() -> BuildMetadata {
     }
 }
 
-fn machine_metadata() -> MachineMetadata {
+pub(crate) fn machine_metadata() -> MachineMetadata {
     let cpu_model = fs::read_to_string("/proc/cpuinfo")
         .ok()
         .and_then(|contents| {

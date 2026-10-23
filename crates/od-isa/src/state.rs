@@ -1,0 +1,424 @@
+//! Long-mode integer state and register aliases (Intel SDM 093, Vol.1 §3.4.1.1).
+//! This is not yet a system CPU: only selected FS/GS-base data forms are modeled;
+//! other segment, control and FP state remains outside this integer profile.
+
+use crate::{ARITHMETIC_FLAGS, FragmentState, Register};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperandSize {
+    Byte,
+    Word,
+    Dword,
+    Qword,
+}
+
+impl OperandSize {
+    pub const fn bytes(self) -> usize {
+        match self {
+            Self::Byte => 1,
+            Self::Word => 2,
+            Self::Dword => 4,
+            Self::Qword => 8,
+        }
+    }
+
+    pub const fn mask(self) -> u64 {
+        match self {
+            Self::Byte => 0xff,
+            Self::Word => 0xffff,
+            Self::Dword => 0xffff_ffff,
+            Self::Qword => u64::MAX,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegisterError {
+    InvalidEncoding(u8),
+    RexRequired,
+    HighByteWithRex,
+    NoHighByte(Register),
+}
+
+/// A validated alias; fields are private so an invalid high-byte view cannot occur.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegisterView {
+    register: Register,
+    size: OperandSize,
+    shift: u8,
+}
+
+impl RegisterView {
+    /// A semantic low alias. Instruction encoding validation belongs to decode.
+    pub const fn low(register: Register, size: OperandSize) -> Self {
+        Self {
+            register,
+            size,
+            shift: 0,
+        }
+    }
+
+    pub fn high_byte(register: Register, rex_present: bool) -> Result<Self, RegisterError> {
+        if rex_present {
+            return Err(RegisterError::HighByteWithRex);
+        }
+        if register as u8 >= 4 {
+            return Err(RegisterError::NoHighByte(register));
+        }
+        Ok(Self {
+            register,
+            size: OperandSize::Byte,
+            shift: 8,
+        })
+    }
+
+    /// `encoding` includes any REX extension bit, not just the three ModR/M bits.
+    pub fn decode_byte(encoding: u8, rex_present: bool) -> Result<Self, RegisterError> {
+        let register =
+            Register::from_encoding(encoding).ok_or(RegisterError::InvalidEncoding(encoding))?;
+        if encoding >= 8 && !rex_present {
+            return Err(RegisterError::RexRequired);
+        }
+        if !rex_present && (4..8).contains(&encoding) {
+            return Self::high_byte(Register::from_encoding(encoding - 4).unwrap(), false);
+        }
+        Ok(Self::low(register, OperandSize::Byte))
+    }
+
+    pub const fn register(self) -> Register {
+        self.register
+    }
+
+    pub const fn size(self) -> OperandSize {
+        self.size
+    }
+}
+
+/// Architectural integer values, independent of fragment/JIT/host layout.
+/// All accesses below apply the 64-bit instruction-mode aliasing rules.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LongModeState {
+    pub gpr: [u64; 16],
+    pub rip: u64,
+    pub rflags: u64,
+    /// FS base in the limited canonical48 data-address profile.
+    pub fs_base: u64,
+    /// GS base in the limited canonical48 data-address profile.
+    pub gs_base: u64,
+    /// FS selector in local selector/load profiles.
+    pub fs_selector: u16,
+    /// GS selector in the local selector-read profile; hidden descriptor state is not modeled.
+    pub gs_selector: u16,
+    /// Present only for the local GDT-only VERW profile; no LDTR is modeled.
+    pub gdtr: Option<Gdtr>,
+    /// Hidden FS descriptor cache only in the local MOV-FS-load profile.
+    pub fs_cache: Option<FsDescriptorCache>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Gdtr {
+    pub base: u64,
+    pub limit: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FsDescriptorCache {
+    /// Effective limit after applying descriptor granularity.
+    pub limit: u32,
+    /// Descriptor access byte (type, S, DPL, P, A).
+    pub access: u8,
+    /// Descriptor flag nibble (AVL, L, D/B, G).
+    pub flags: u8,
+}
+
+impl Default for LongModeState {
+    fn default() -> Self {
+        Self {
+            gpr: [0; 16],
+            rip: 0,
+            rflags: 2,
+            fs_base: 0,
+            gs_base: 0,
+            fs_selector: 0,
+            gs_selector: 0,
+            gdtr: None,
+            fs_cache: None,
+        }
+    }
+}
+
+impl LongModeState {
+    pub fn read(&self, view: RegisterView) -> u64 {
+        (self.gpr[view.register as usize] >> view.shift) & view.size.mask()
+    }
+
+    pub fn write(&mut self, view: RegisterView, value: u64) {
+        let destination = &mut self.gpr[view.register as usize];
+        let value = value & view.size.mask();
+        *destination = match view.size {
+            OperandSize::Dword | OperandSize::Qword => value,
+            OperandSize::Byte | OperandSize::Word => {
+                let mask = view.size.mask() << view.shift;
+                (*destination & !mask) | (value << view.shift)
+            }
+        };
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FragmentAdapterError {
+    ExtraRegister(Register),
+    UnsupportedFsBase(u64),
+    UnsupportedGsBase(u64),
+    UnsupportedFsSelector(u16),
+    UnsupportedGsSelector(u16),
+    UnsupportedGdtr(Gdtr),
+    UnsupportedFsCache(FsDescriptorCache),
+    InstructionPointerOutOfRange(u64),
+    UnsupportedFlags(u64),
+    ReservedFlagMissing,
+}
+
+impl From<&FragmentState> for LongModeState {
+    fn from(fragment: &FragmentState) -> Self {
+        let mut state = Self::default();
+        state.gpr[..4].copy_from_slice(&fragment.gpr);
+        state.rip = fragment.rip as u64;
+        state.rflags = fragment.rflags;
+        state
+    }
+}
+
+impl TryFrom<&LongModeState> for FragmentState {
+    type Error = FragmentAdapterError;
+
+    fn try_from(state: &LongModeState) -> Result<Self, Self::Error> {
+        if state.fs_base != 0 {
+            return Err(FragmentAdapterError::UnsupportedFsBase(state.fs_base));
+        }
+        if state.gs_base != 0 {
+            return Err(FragmentAdapterError::UnsupportedGsBase(state.gs_base));
+        }
+        if state.fs_selector != 0 {
+            return Err(FragmentAdapterError::UnsupportedFsSelector(
+                state.fs_selector,
+            ));
+        }
+        if state.gs_selector != 0 {
+            return Err(FragmentAdapterError::UnsupportedGsSelector(
+                state.gs_selector,
+            ));
+        }
+        if let Some(gdtr) = state.gdtr {
+            return Err(FragmentAdapterError::UnsupportedGdtr(gdtr));
+        }
+        if let Some(fs_cache) = state.fs_cache {
+            return Err(FragmentAdapterError::UnsupportedFsCache(fs_cache));
+        }
+        for encoding in 4..16 {
+            if state.gpr[encoding] != 0 {
+                return Err(FragmentAdapterError::ExtraRegister(
+                    Register::from_encoding(encoding as u8).unwrap(),
+                ));
+            }
+        }
+        let unsupported = state.rflags & !(ARITHMETIC_FLAGS | 2);
+        if unsupported != 0 {
+            return Err(FragmentAdapterError::UnsupportedFlags(unsupported));
+        }
+        if state.rflags & 2 == 0 {
+            return Err(FragmentAdapterError::ReservedFlagMissing);
+        }
+        Ok(Self {
+            gpr: state.gpr[..4].try_into().unwrap(),
+            rip: usize::try_from(state.rip)
+                .map_err(|_| FragmentAdapterError::InstructionPointerOutOfRange(state.rip))?,
+            rflags: state.rflags,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_register_obeys_long_mode_aliasing_and_preserves_other_state() {
+        for encoding in 0..16 {
+            let register = Register::from_encoding(encoding).unwrap();
+            for value in [0, 1, 0x80, 0xffff, 0x8000_0000, u64::MAX] {
+                for size in [
+                    OperandSize::Byte,
+                    OperandSize::Word,
+                    OperandSize::Dword,
+                    OperandSize::Qword,
+                ] {
+                    let mut state = LongModeState {
+                        gpr: [0x1234_5678_9abc_def0; 16],
+                        rip: u64::MAX,
+                        rflags: 0x8d7,
+                        fs_base: 0,
+                        gs_base: 0,
+                        fs_selector: 0,
+                        gs_selector: 0,
+                        gdtr: None,
+                        fs_cache: None,
+                    };
+                    let before = state.clone();
+                    let view = RegisterView::low(register, size);
+                    state.write(view, value);
+                    let expected = match size {
+                        OperandSize::Byte => 0x1234_5678_9abc_de00 | (value & 0xff),
+                        OperandSize::Word => 0x1234_5678_9abc_0000 | (value & 0xffff),
+                        OperandSize::Dword => value & 0xffff_ffff,
+                        OperandSize::Qword => value,
+                    };
+                    assert_eq!(state.gpr[encoding as usize], expected);
+                    assert_eq!(state.read(view), value & size.mask());
+                    state.gpr[encoding as usize] = before.gpr[encoding as usize];
+                    assert_eq!(state, before);
+                }
+            }
+        }
+        assert_eq!(Register::from_encoding(16), None);
+        assert_eq!(Register::from_encoding(u8::MAX), None);
+    }
+
+    #[test]
+    fn byte_encodings_distinguish_high_bytes_rex_low_bytes_and_extensions() {
+        for encoding in 0..16 {
+            let rex = RegisterView::decode_byte(encoding, true).unwrap();
+            assert_eq!(rex.register() as u8, encoding);
+            let mut state = LongModeState {
+                gpr: [u64::MAX; 16],
+                ..LongModeState::default()
+            };
+            state.write(rex, 0x12);
+            assert_eq!(state.gpr[encoding as usize], 0xffff_ffff_ffff_ff12);
+            if encoding < 8 {
+                let legacy = RegisterView::decode_byte(encoding, false).unwrap();
+                let target = if encoding < 4 { encoding } else { encoding - 4 };
+                assert_eq!(legacy.register() as u8, target);
+                state.gpr = [0x1122_3344_5566_7788; 16];
+                state.write(legacy, 0x1aa);
+                assert_eq!(
+                    state.gpr[target as usize],
+                    if encoding < 4 {
+                        0x1122_3344_5566_77aa
+                    } else {
+                        0x1122_3344_5566_aa88
+                    }
+                );
+                assert_eq!(state.read(legacy), 0xaa);
+            } else {
+                assert_eq!(
+                    RegisterView::decode_byte(encoding, false),
+                    Err(RegisterError::RexRequired)
+                );
+            }
+        }
+        for encoding in 0..16 {
+            let register = Register::from_encoding(encoding).unwrap();
+            assert_eq!(
+                RegisterView::high_byte(register, true),
+                Err(RegisterError::HighByteWithRex)
+            );
+            if encoding >= 4 {
+                assert_eq!(
+                    RegisterView::high_byte(register, false),
+                    Err(RegisterError::NoHighByte(register))
+                );
+            }
+        }
+        assert_eq!(
+            RegisterView::decode_byte(16, true),
+            Err(RegisterError::InvalidEncoding(16))
+        );
+    }
+
+    #[test]
+    fn fragment_adapter_roundtrips_without_truncating_new_state() {
+        let fragment = FragmentState {
+            gpr: [u64::MAX, 1, 2, 3],
+            rip: 42,
+            rflags: ARITHMETIC_FLAGS | 2,
+        };
+        let state = LongModeState::from(&fragment);
+        assert_eq!(FragmentState::try_from(&state), Ok(fragment));
+        let mut fs_state = state.clone();
+        fs_state.fs_base = 0x1000;
+        assert_eq!(
+            FragmentState::try_from(&fs_state),
+            Err(FragmentAdapterError::UnsupportedFsBase(0x1000))
+        );
+        let mut gs_state = state.clone();
+        gs_state.gs_base = 0x2000;
+        assert_eq!(
+            FragmentState::try_from(&gs_state),
+            Err(FragmentAdapterError::UnsupportedGsBase(0x2000))
+        );
+        let mut selector_state = state.clone();
+        selector_state.fs_selector = 0x33;
+        assert_eq!(
+            FragmentState::try_from(&selector_state),
+            Err(FragmentAdapterError::UnsupportedFsSelector(0x33))
+        );
+        let mut gs_selector_state = state.clone();
+        gs_selector_state.gs_selector = 0x53;
+        assert_eq!(
+            FragmentState::try_from(&gs_selector_state),
+            Err(FragmentAdapterError::UnsupportedGsSelector(0x53))
+        );
+        let mut gdtr_state = state.clone();
+        let gdtr = Gdtr {
+            base: 0x2000,
+            limit: 0x2f,
+        };
+        gdtr_state.gdtr = Some(gdtr);
+        assert_eq!(
+            FragmentState::try_from(&gdtr_state),
+            Err(FragmentAdapterError::UnsupportedGdtr(gdtr))
+        );
+        let mut cache_state = state.clone();
+        let cache = FsDescriptorCache {
+            limit: 0xffff,
+            access: 0xf3,
+            flags: 0,
+        };
+        cache_state.fs_cache = Some(cache);
+        assert_eq!(
+            FragmentState::try_from(&cache_state),
+            Err(FragmentAdapterError::UnsupportedFsCache(cache))
+        );
+        for encoding in 4..16 {
+            let mut extra = state.clone();
+            extra.gpr[encoding] = 1;
+            assert_eq!(
+                FragmentState::try_from(&extra),
+                Err(FragmentAdapterError::ExtraRegister(
+                    Register::from_encoding(encoding as u8).unwrap()
+                ))
+            );
+        }
+        let mut extra = state.clone();
+        extra.rflags |= 1 << 10;
+        assert_eq!(
+            FragmentState::try_from(&extra),
+            Err(FragmentAdapterError::UnsupportedFlags(1 << 10))
+        );
+        extra.rflags = 0;
+        assert_eq!(
+            FragmentState::try_from(&extra),
+            Err(FragmentAdapterError::ReservedFlagMissing)
+        );
+        #[cfg(target_pointer_width = "32")]
+        {
+            extra = state;
+            extra.rip = u64::MAX;
+            assert_eq!(
+                FragmentState::try_from(&extra),
+                Err(FragmentAdapterError::InstructionPointerOutOfRange(u64::MAX))
+            );
+        }
+    }
+}

@@ -1,0 +1,170 @@
+{
+  "schema": "open-desktop-s2-10-physical-evidence-v1",
+  "scope": "Eight positive v2 cases (three S2-09 plus five S2-10 transfer programs) and legacy S0 regression on one Intel CPU. Not full stage 2, AMD, privileged faults, memory XCHG or v2 JIT.",
+  "source_fingerprint": "93ac5dfd316316cfc76f27d83fad993e3148ba6349ca77feede314da43e10d2c",
+  "target": "senya@192.168.1.14",
+  "remote_root": "/home/senya/projects/open_desktop-stage1",
+  "build": {
+    "interpreter": {
+      "revision": "sha256:93ac5dfd316316cfc76f27d83fad993e3148ba6349ca77feede314da43e10d2c",
+      "target": "aarch64-apple-darwin",
+      "profile": "debug",
+      "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+    },
+    "native_x86": {
+      "revision": "sha256:93ac5dfd316316cfc76f27d83fad993e3148ba6349ca77feede314da43e10d2c",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "debug",
+      "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+    }
+  },
+  "machines": {
+    "interpreter": {
+      "host_os": "macos",
+      "host_arch": "aarch64",
+      "cpu_model": null,
+      "kernel": null,
+      "page_size": null
+    },
+    "native_x86": {
+      "host_os": "linux",
+      "host_arch": "x86_64",
+      "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+      "kernel": "6.17.0-41-generic",
+      "page_size": 4096
+    }
+  },
+  "limits": {
+    "cpu_seconds": 2,
+    "address_space_bytes": 268435456,
+    "core_bytes": 0,
+    "native_mapping_endpoint_max": 2147483648,
+    "mapping_envelope_bytes_max": 67108864,
+    "writable_executable": false
+  },
+  "legacy": {
+    "run_id": "stage1-20261022-213920-13e82953",
+    "status": "passed",
+    "started_utc": "2026-10-22T21:39:20Z",
+    "finished_utc": "2026-10-22T21:40:16Z",
+    "repeats": 2,
+    "inputs": 1010,
+    "native_results": 2020,
+    "interpreter_native_mismatches": 0,
+    "jit_native_mismatches": 0,
+    "stable_repeats": true,
+    "manifest": "work/stage1-oracle/stage1-20261022-213920-13e82953/manifest.json",
+    "manifest_sha256": "d3e8845dd420422385328551cab06c345fe3260fcf761ce6b0e89e275cb9a603"
+  },
+  "memory": {
+    "run_id": "stage2-20261022-214049-874a0bf0",
+    "status": "passed",
+    "started_utc": "2026-10-22T21:40:49Z",
+    "finished_utc": "2026-10-22T21:40:57Z",
+    "repeats": 2,
+    "inputs": 8,
+    "native_results": 16,
+    "interpreter_native_mismatches": 0,
+    "stable_repeats": true,
+    "gpr_including_rsp": 16,
+    "rip": true,
+    "rflags_defined": "0x0000000000000cd7",
+    "all_fixture_memory": true,
+    "exact_instruction_count_observed": true,
+    "manifest": "work/stage2-oracle/stage2-20261022-214049-874a0bf0/manifest.json",
+    "manifest_sha256": "d89e68407f7290b7705e88d13e6a361980ebf152c873a961c3274f1624c49631"
+  },
+  "harness_sha256": {
+    "stage1_oracle.py": "81017b89e2ccb36a31dace37780fcea7620645cb6de41b345b77cb890e72896e",
+    "stage2_oracle.py": "911f69bee5c2b403aa9737c71879f49f6e63a5d362dd0dcfb0f9848d8e81f845"
+  },
+  "fixture_archive_sha256": "8cac8d716d51f023988ad8c1551a550c5df3a2a946f591ec24aed5bb40c58aba",
+  "inputs": [
+    {
+      "case_id": "s2_09_hw_mov_load_add_store",
+      "filename": "hw_mov_load_add_store.case.json",
+      "fixture_sha256": "bd96b4780ed9d4b52dfdd853d23ab988019cf69fc1d7b8031279d9b2ae197dbd",
+      "instruction_budget": 32,
+      "wall_timeout_ms": 1000,
+      "rflags_mask": "0x0000000000000cd7"
+    },
+    {
+      "case_id": "s2_09_hw_mov_rex_rip_relative",
+      "filename": "hw_mov_rex_rip_relative.case.json",
+      "fixture_sha256": "ea638f77c1f753cc9ec8d93ad9fe2911933dd08a723785c02bfbe973f0be53bc",
+      "instruction_budget": 32,
+      "wall_timeout_ms": 1000,
+      "rflags_mask": "0x0000000000000cd7"
+    },
+    {
+      "case_id": "s2_09_hw_mov_width_aliasing",
+      "filename": "hw_mov_width_aliasing.case.json",
+      "fixture_sha256": "52a93b7cfbf8cced1e8594f0be056db9ad5e3ed50b2a8409567b6b2f661d44ff",
+      "instruction_budget": 32,
+      "wall_timeout_ms": 1000,
+      "rflags_mask": "0x0000000000000cd7"
+    },
+    {
+      "case_id": "s2_10_addr32_transfers",
+      "filename": "s2_10_addr32_transfers.case.json",
+      "fixture_sha256": "33828826eb0bfcfee6762b47ba2b4ead16d672a7ab5fd1d2537c9877d9161ac1",
+      "instruction_budget": 64,
+      "wall_timeout_ms": 2000,
+      "rflags_mask": "0x0000000000000cd7"
+    },
+    {
+      "case_id": "s2_10_extend",
+      "filename": "s2_10_extend.case.json",
+      "fixture_sha256": "ffd53286b13277a0a22fa850ffea7177450936e6c904a0a700cf1197cde6214b",
+      "instruction_budget": 64,
+      "wall_timeout_ms": 2000,
+      "rflags_mask": "0x0000000000000cd7"
+    },
+    {
+      "case_id": "s2_10_immediate_moffs",
+      "filename": "s2_10_immediate_moffs.case.json",
+      "fixture_sha256": "9cea1d4ecfebbd8eae17dc6982d6af30edc7b298b42ce6309152a539d36816d9",
+      "instruction_budget": 64,
+      "wall_timeout_ms": 2000,
+      "rflags_mask": "0x0000000000000cd7"
+    },
+    {
+      "case_id": "s2_10_lea_no_read",
+      "filename": "s2_10_lea_no_read.case.json",
+      "fixture_sha256": "c8248aef9ebd356dfc24e0fe3dbedb63b958fa3d0094605a87f55bab6d3a8b95",
+      "instruction_budget": 64,
+      "wall_timeout_ms": 2000,
+      "rflags_mask": "0x0000000000000cd7"
+    },
+    {
+      "case_id": "s2_10_xchg_aliases",
+      "filename": "s2_10_xchg_aliases.case.json",
+      "fixture_sha256": "3b7b10596288721b530984c413571b7700aadd723f2ea63c9ef98a572547ffa9",
+      "instruction_budget": 32,
+      "wall_timeout_ms": 2000,
+      "rflags_mask": "0x0000000000000cd7"
+    }
+  ],
+  "reproduce_argv": [
+    "/opt/homebrew/opt/python@3.15/bin/python3.15",
+    "tests/cpu/stage2_oracle.py",
+    "--host",
+    "192.168.1.14",
+    "--user",
+    "senya",
+    "--remote-root",
+    "/home/senya/projects/open_desktop-stage1",
+    "--repeats",
+    "2",
+    "--stage1-manifest",
+    "work/stage1-oracle/stage1-20261022-213920-13e82953/manifest.json",
+    "work/stage2-oracle/stage2-20261022-214049-874a0bf0/fixtures/hw_mov_load_add_store.case.json",
+    "work/stage2-oracle/stage2-20261022-214049-874a0bf0/fixtures/hw_mov_rex_rip_relative.case.json",
+    "work/stage2-oracle/stage2-20261022-214049-874a0bf0/fixtures/hw_mov_width_aliasing.case.json",
+    "work/stage2-oracle/stage2-20261022-214049-874a0bf0/fixtures/s2_10_addr32_transfers.case.json",
+    "work/stage2-oracle/stage2-20261022-214049-874a0bf0/fixtures/s2_10_extend.case.json",
+    "work/stage2-oracle/stage2-20261022-214049-874a0bf0/fixtures/s2_10_immediate_moffs.case.json",
+    "work/stage2-oracle/stage2-20261022-214049-874a0bf0/fixtures/s2_10_lea_no_read.case.json",
+    "work/stage2-oracle/stage2-20261022-214049-874a0bf0/fixtures/s2_10_xchg_aliases.case.json"
+  ]
+}

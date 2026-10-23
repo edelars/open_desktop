@@ -1,0 +1,53 @@
+{
+  "schema": "open-desktop.stage2-physical-evidence.v1",
+  "task": "S2-14",
+  "status": "passed",
+  "scope": "selected v2 CPU fixtures; interpreter compared with physical Linux x86 native execution; v2 JIT not included",
+  "run_id": "stage2-20261022-230853-3684f650",
+  "manifest": {
+    "path": "work/stage2-oracle/stage2-20261022-230853-3684f650/manifest.json",
+    "sha256": "1ce8d6ac41ca76ac8746dd60bb1618539af10ef270559c761d9adc790ad46e6b",
+    "source_fingerprint": "f9c90e6246c3bd40c9c51bdb2c0d62389d585cbe99f05a8bebca4963d37277fc"
+  },
+  "results": {
+    "inputs": 700,
+    "comparisons": 1400,
+    "interpreter_native_differences": 0,
+    "repeat_2_stable_inputs": 700,
+    "snapshot_fields": "all 16 GPR, RIP, RFLAGS",
+    "new_s2_14_successful_fixtures": 38,
+    "s2_14_comparisons": 76,
+    "physical_fault_cases": 0,
+    "v2_jit_cases": 0,
+    "definedness_masks_per_backend": {
+      "0x0402": 18,
+      "0x04c6": 16,
+      "0x04c7": 12,
+      "0x04d7": 32,
+      "0x0c03": 58,
+      "0x0cc7": 412,
+      "0x0cd7": 852
+    }
+  },
+  "target": {
+    "cpu": "Intel Core i5-3210M",
+    "os": "Ubuntu x86_64",
+    "kernel": "Linux 6.17.0-41-generic",
+    "rustc_cargo": "1.99.1"
+  },
+  "linked_legacy_run": {
+    "run_id": "stage1-20261022-230241-3b73e810",
+    "manifest_path": "work/stage1-oracle/stage1-20261022-230241-3b73e810/manifest.json",
+    "manifest_sha256": "cf2483245be2dd71cf956043c76cd7981cead0c654a01d85469ee543c0c471c8",
+    "status": "passed",
+    "inputs": 1010,
+    "comparisons": 2020,
+    "source_fingerprint": "f9c90e6246c3bd40c9c51bdb2c0d62389d585cbe99f05a8bebca4963d37277fc"
+  },
+  "limitations": [
+    "All S2-14 physical fixtures are successful operations; #DE fault cases are local od-isa unit tests only.",
+    "Physical #DE delivery and Linux host signal/context mapping to architectural #DE were not tested.",
+    "No v2 JIT comparison is included.",
+    "The run covers one Intel CPU and does not establish AMD or full Stage 2 support."
+  ]
+}

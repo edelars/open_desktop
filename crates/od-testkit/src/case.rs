@@ -434,7 +434,7 @@ fn decode_program(hex: &str) -> Result<Vec<u8>, FormatError> {
         .collect()
 }
 
-fn validate_hex_bytes(value: &str, field: &'static str) -> Result<(), FormatError> {
+pub(crate) fn validate_hex_bytes(value: &str, field: &'static str) -> Result<(), FormatError> {
     if value.len() % 2 != 0
         || !value
             .bytes()
@@ -448,7 +448,7 @@ fn validate_hex_bytes(value: &str, field: &'static str) -> Result<(), FormatErro
     Ok(())
 }
 
-fn validate_case_id(case_id: &str) -> Result<(), FormatError> {
+pub(crate) fn validate_case_id(case_id: &str) -> Result<(), FormatError> {
     if case_id.is_empty()
         || case_id.len() > 128
         || !case_id

@@ -1,0 +1,1819 @@
+//! Real CLI/interpreter checks; expected values are hand-calculated from Intel SDM 093.
+use od_testkit::HexU64;
+use od_testkit::result::Observation;
+use od_testkit::v2::{ExpectedExit, Fixture, LoadedFixture, Outcome, RunResult, Snapshot};
+use std::fs;
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const LOAD_ADD_STORE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json");
+const WIDTHS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/mov_width_aliasing.case.json");
+const REX_RIP: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/mov_rex_rip_relative.case.json");
+const RET66: &[u8] = include_bytes!("../../../tests/fixtures/x86/stage2/s2_17t_ret66.case.json");
+const RET66_IGNORED_REX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_17t_ret66_ignored_rex.case.json");
+const XCHG_QWORD_MEMORY_ALIAS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_21a_xchg_qword_memory_alias.case.json");
+const XADD_QWORD_REGISTER_ALIAS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_21b_xadd_qword_register_alias.case.json");
+const XADD_QWORD_MEMORY_ALIAS_SPLIT: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_21d_xadd_qword_memory_alias_split.case.json"
+);
+const LOCK_XADD_QWORD_MEMORY_ALIAS_SPLIT: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_21f_lock_xadd_qword_memory_alias_split.case.json"
+);
+const MFENCE_STORE_FENCE_LOAD: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_21g_mfence_store_fence_load.case.json");
+const GS_BASE_QWORD_LOAD: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_22b_gs_base_qword_load_alias.case.json");
+const FS_SELECTOR_TO_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_22c_fs_selector_to_rax.case.json");
+const GS_SELECTOR_TO_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_22d_gs_selector_to_rax.case.json");
+const VERW_GDT_CASES: &[(&str, &[u8], bool)] = &[
+    (
+        "s2_22e_verw_writable_dpl3",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22e_verw_writable_dpl3.case.json"),
+        true,
+    ),
+    (
+        "s2_22e_verw_readonly_dpl3",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22e_verw_readonly_dpl3.case.json"),
+        false,
+    ),
+    (
+        "s2_22e_verw_code_dpl3",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22e_verw_code_dpl3.case.json"),
+        false,
+    ),
+    (
+        "s2_22e_verw_system",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22e_verw_system.case.json"),
+        false,
+    ),
+    (
+        "s2_22e_verw_privilege",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22e_verw_privilege.case.json"),
+        false,
+    ),
+    (
+        "s2_22e_verw_table_limit",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22e_verw_table_limit.case.json"),
+        false,
+    ),
+    (
+        "s2_22e_verw_null",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22e_verw_null.case.json"),
+        false,
+    ),
+    (
+        "s2_22e_verw_rpl0",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22e_verw_rpl0.case.json"),
+        true,
+    ),
+];
+const FS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32)] = &[
+    (
+        "s2_22f_fs_load_writable_g0",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22f_fs_load_writable_g0.case.json"),
+        None,
+        0xf3,
+        0,
+        0,
+        0x89ab_cdef,
+    ),
+    (
+        "s2_22f_fs_load_readonly_g1",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22f_fs_load_readonly_g1.case.json"),
+        None,
+        0xf1,
+        0x0fff,
+        8,
+        0,
+    ),
+    (
+        "s2_22f_fs_load_readable_code",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22f_fs_load_readable_code.case.json"),
+        None,
+        0xfb,
+        0,
+        0,
+        0,
+    ),
+    (
+        "s2_22f_fs_load_conforming_code",
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_22f_fs_load_conforming_code.case.json"
+        ),
+        None,
+        0xff,
+        0,
+        0,
+        0,
+    ),
+    (
+        "s2_22f_fs_load_system_gp",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22f_fs_load_system_gp.case.json"),
+        Some((13, 8)),
+        0,
+        0,
+        0,
+        0,
+    ),
+    (
+        "s2_22f_fs_load_execute_only_gp",
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_22f_fs_load_execute_only_gp.case.json"
+        ),
+        Some((13, 8)),
+        0,
+        0,
+        0,
+        0,
+    ),
+    (
+        "s2_22f_fs_load_privilege_gp",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22f_fs_load_privilege_gp.case.json"),
+        Some((13, 8)),
+        0,
+        0,
+        0,
+        0,
+    ),
+    (
+        "s2_22f_fs_load_not_present_np",
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_22f_fs_load_not_present_np.case.json"
+        ),
+        Some((11, 8)),
+        0,
+        0,
+        0,
+        0,
+    ),
+    (
+        "s2_22f_fs_load_table_limit_gp",
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_22f_fs_load_table_limit_gp.case.json"
+        ),
+        Some((13, 8)),
+        0,
+        0,
+        0,
+        0,
+    ),
+];
+const CMPXCHG_QWORD_REGISTER_EQUAL: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_21c_cmpxchg_qword_register_equal.case.json"
+);
+const CMPXCHG_QWORD_REGISTER_UNEQUAL_ALIAS: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_21c_cmpxchg_qword_register_unequal_alias.case.json"
+);
+const CMPXCHG_QWORD_MEMORY_EQUAL: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_21e_cmpxchg_qword_memory_equal.case.json"
+);
+const CMPXCHG_QWORD_MEMORY_UNEQUAL_ALIAS: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_21e_cmpxchg_qword_memory_unequal_alias.case.json"
+);
+
+fn cli(bytes: &[u8], engine: &str) -> Output {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "od-runner-v2-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&dir).unwrap();
+    let path = dir.join("case.json");
+    fs::write(&path, bytes).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_od-runner"))
+        .arg("--fixture")
+        .arg(&path)
+        .args(["--engine", engine, "--json"])
+        .output()
+        .unwrap();
+    fs::remove_dir_all(dir).unwrap();
+    output
+}
+
+fn compare_cli(case: &[u8], result_bytes: &[u8]) -> Output {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "od-runner-v2-compare-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&dir).unwrap();
+    let case_path = dir.join("case.json");
+    let left_path = dir.join("left.json");
+    let right_path = dir.join("right.json");
+    fs::write(&case_path, case).unwrap();
+    fs::write(&left_path, result_bytes).unwrap();
+    fs::write(&right_path, result_bytes).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_od-runner"))
+        .arg("--compare-results")
+        .arg(&left_path)
+        .arg(&right_path)
+        .arg("--case")
+        .arg(&case_path)
+        .arg("--json")
+        .output()
+        .unwrap();
+    fs::remove_dir_all(dir).unwrap();
+    output
+}
+
+fn run(bytes: &[u8], engine: &str, exit: i32) -> (LoadedFixture, RunResult) {
+    let loaded = Fixture::from_json(bytes).unwrap();
+    let output = cli(bytes, engine);
+    assert_eq!(
+        output.status.code(),
+        Some(exit),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = RunResult::from_json(&output.stdout).unwrap();
+    result.validate_for(&loaded).unwrap();
+    (loaded, result)
+}
+
+fn snapshot(result: &RunResult) -> &Snapshot {
+    match &result.snapshot {
+        Observation::Available { value } => value,
+        _ => panic!("CPU execution must capture its final state"),
+    }
+}
+
+fn count(result: &RunResult) -> u64 {
+    match result.instructions_executed {
+        Observation::Available { value } => value.get(),
+        _ => panic!("interpreter count must be observed"),
+    }
+}
+
+#[test]
+fn operand_size_prefixed_near_ret_keeps_qword_stack_semantics() {
+    for (bytes, expected_code, expected_rip) in [
+        (RET66, "66c3", 0x0010_0002),
+        (RET66_IGNORED_REX, "4866c3", 0x0010_0003),
+    ] {
+        let (input, result) = run(bytes, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 1);
+        let observed = snapshot(&result);
+        let mut expected_gpr = input.fixture.initial_state.gpr.clone();
+        expected_gpr[4] = HexU64(0x0030_0088);
+        assert_eq!(observed.state.gpr, expected_gpr);
+        assert_eq!(observed.state.rip, HexU64(expected_rip));
+        assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+        assert_eq!(observed.rflags_defined, HexU64(0xcd7));
+        assert_eq!(observed.memory.len(), 2);
+        assert_eq!(observed.memory[0].bytes_hex, expected_code);
+        assert_eq!(
+            observed.memory[1].bytes_hex,
+            input.fixture.memory[1].initial_bytes_hex
+        );
+    }
+}
+
+#[test]
+fn qword_memory_xchg_fixture_matches_literal_alias_and_split_memory_result() {
+    let (input, result) = run(XCHG_QWORD_MEMORY_ALIAS, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, "s2_21a_xchg_qword_memory_alias");
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+
+    let observed = snapshot(&result);
+    let mut expected_gpr = input.fixture.initial_state.gpr;
+    expected_gpr[0] = HexU64(0x1122_3344_5566_7788);
+    assert_eq!(observed.state.gpr, expected_gpr);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0003));
+    assert_eq!(observed.state.rflags, HexU64(0x0cd7));
+    assert_eq!(observed.rflags_defined, HexU64(0x0cd7));
+    assert_eq!(observed.memory.len(), 3);
+    assert_eq!(observed.memory[0].region_id, "code");
+    assert_eq!(observed.memory[0].bytes_hex, "488700");
+    assert_eq!(observed.memory[1].region_id, "data_left");
+    assert_eq!(observed.memory[1].bytes_hex, "a5a5a5a5a5a5fe0f");
+    assert_eq!(observed.memory[2].region_id, "data_right");
+    assert_eq!(observed.memory[2].bytes_hex, "200000000000a5a5");
+    assert_eq!(observed.exception, Observation::Available { value: None });
+}
+
+#[test]
+fn qword_register_xadd_fixture_matches_alias_sum_and_arithmetic_flags() {
+    let (input, result) = run(XADD_QWORD_REGISTER_ALIAS, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, "s2_21b_xadd_qword_register_alias");
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+
+    let observed = snapshot(&result);
+    let mut expected_gpr = input.fixture.initial_state.gpr;
+    expected_gpr[0] = HexU64(0xffff_ffff_ffff_fffe);
+    assert_eq!(observed.state.gpr, expected_gpr);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0004));
+    assert_eq!(observed.state.rflags, HexU64(0x0c92));
+    assert_eq!(observed.rflags_defined, HexU64(0x0cd7));
+    assert_eq!(observed.memory.len(), 1);
+    assert_eq!(observed.memory[0].region_id, "code");
+    assert_eq!(observed.memory[0].bytes_hex, "480fc1c0");
+    assert_eq!(observed.exception, Observation::Available { value: None });
+}
+
+#[test]
+fn qword_memory_xadd_fixture_matches_alias_sum_flags_and_split_canaries() {
+    let (input, result) = run(XADD_QWORD_MEMORY_ALIAS_SPLIT, "interpreter", 0);
+    assert_eq!(
+        input.fixture.case_id,
+        "s2_21d_xadd_qword_memory_alias_split"
+    );
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+
+    let observed = snapshot(&result);
+    let mut expected_gpr = input.fixture.initial_state.gpr;
+    expected_gpr[0] = HexU64(u64::MAX);
+    assert_eq!(observed.state.gpr, expected_gpr);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0004));
+    assert_eq!(observed.state.rflags, HexU64(0x0417));
+    assert_eq!(observed.rflags_defined, HexU64(0x0cd7));
+    assert_eq!(observed.memory.len(), 3);
+    assert_eq!(observed.memory[0].region_id, "code");
+    assert_eq!(observed.memory[0].bytes_hex, "480fc100");
+    assert_eq!(observed.memory[1].region_id, "data_left");
+    assert_eq!(observed.memory[1].bytes_hex, "a5a5a5fa00300000");
+    assert_eq!(observed.memory[2].region_id, "data_right");
+    assert_eq!(observed.memory[2].bytes_hex, "000000a5a5a5a5a5");
+    assert_eq!(observed.exception, Observation::Available { value: None });
+}
+
+#[test]
+fn locked_qword_memory_xadd_fixture_matches_alias_sum_flags_and_split_canaries() {
+    let (input, result) = run(LOCK_XADD_QWORD_MEMORY_ALIAS_SPLIT, "interpreter", 0);
+    assert_eq!(
+        input.fixture.case_id,
+        "s2_21f_lock_xadd_qword_memory_alias_split"
+    );
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+
+    let observed = snapshot(&result);
+    let mut expected_gpr = input.fixture.initial_state.gpr;
+    expected_gpr[0] = HexU64(u64::MAX);
+    assert_eq!(observed.state.gpr, expected_gpr);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0005));
+    assert_eq!(observed.state.rflags, HexU64(0x0417));
+    assert_eq!(observed.rflags_defined, HexU64(0x0cd7));
+    assert_eq!(observed.memory.len(), 3);
+    assert_eq!(observed.memory[0].region_id, "code");
+    assert_eq!(observed.memory[0].bytes_hex, "f0480fc100");
+    assert_eq!(observed.memory[1].region_id, "data_left");
+    assert_eq!(observed.memory[1].bytes_hex, "a5a5a5fa00300000");
+    assert_eq!(observed.memory[2].region_id, "data_right");
+    assert_eq!(observed.memory[2].bytes_hex, "000000a5a5a5a5a5");
+    assert_eq!(observed.exception, Observation::Available { value: None });
+}
+
+#[test]
+fn mfence_store_fence_load_fixture_preserves_state_and_observes_completed_store() {
+    let (input, result) = run(MFENCE_STORE_FENCE_LOAD, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, "s2_21g_mfence_store_fence_load");
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 3);
+
+    let observed = snapshot(&result);
+    let mut expected_gpr = input.fixture.initial_state.gpr;
+    expected_gpr[1] = expected_gpr[3];
+    assert_eq!(observed.state.gpr, expected_gpr);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0009));
+    assert_eq!(observed.state.rflags, HexU64(0x0cd7));
+    assert_eq!(observed.rflags_defined, HexU64(0x0cd7));
+    assert_eq!(observed.memory.len(), 2);
+    assert_eq!(observed.memory[0].region_id, "code");
+    assert_eq!(observed.memory[0].bytes_hex, "4889180faef0488b08");
+    assert_eq!(observed.memory[1].region_id, "data");
+    assert_eq!(observed.memory[1].bytes_hex, "8877665544332211");
+    assert_eq!(observed.exception, Observation::Available { value: None });
+}
+
+#[test]
+fn gs_base_qword_load_fixture_uses_base_and_rax_alias() {
+    let (input, result) = run(GS_BASE_QWORD_LOAD, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, "s2_22b_gs_base_qword_load_alias");
+    assert_eq!(input.fixture.profile, od_testkit::v2::Profile::LongGsBaseV1);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.gpr[0], HexU64(0x8877_6655_4433_2211));
+    assert_eq!(observed.state.gs_base, Some(HexU64(0xffff_8000_0000_0000)));
+    assert_eq!(observed.state.rip, HexU64(0x0010_0004));
+    assert_eq!(observed.memory[0].bytes_hex, "65488b00");
+    assert_eq!(observed.exception, Observation::Available { value: None });
+}
+
+#[test]
+fn fs_selector_fixture_zero_extends_and_preserves_segment_state() {
+    let (input, result) = run(FS_SELECTOR_TO_RAX, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, "s2_22c_fs_selector_to_rax");
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongFsSelectorV1
+    );
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.gpr[0], HexU64(0xf123));
+    assert_eq!(observed.state.fs_selector, Some(HexU64(0xf123)));
+    assert_eq!(observed.state.fs_base, Some(HexU64(0xffff_8000_0000_1000)));
+    assert_eq!(observed.state.rip, HexU64(0x0010_0003));
+    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    assert_eq!(observed.memory[0].bytes_hex, "488ce0");
+    assert_eq!(observed.exception, Observation::Available { value: None });
+}
+
+#[test]
+fn gs_selector_fixture_zero_extends_and_preserves_segment_state() {
+    let (input, result) = run(GS_SELECTOR_TO_RAX, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, "s2_22d_gs_selector_to_rax");
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongGsSelectorV1
+    );
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.gpr[0], HexU64(0xf123));
+    let mut expected_gpr = input.fixture.initial_state.gpr;
+    expected_gpr[0] = HexU64(0xf123);
+    assert_eq!(observed.state.gpr, expected_gpr);
+    assert_eq!(observed.state.gs_selector, Some(HexU64(0xf123)));
+    assert_eq!(observed.state.gs_base, Some(HexU64(0xffff_8000_0000_1000)));
+    assert_eq!(observed.state.rip, HexU64(0x0010_0003));
+    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    assert_eq!(observed.memory[0].bytes_hex, "488ce8");
+    assert_eq!(observed.exception, Observation::Available { value: None });
+}
+
+#[test]
+fn verw_gdt_fixtures_check_literal_rights_flags_state_and_descriptor_bytes() {
+    for (case_id, bytes, writable) in VERW_GDT_CASES {
+        let (input, result) = run(bytes, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, *case_id);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongVerwGdtV1
+        );
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 1);
+
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+        assert_eq!(observed.state.rip, HexU64(0x0010_0003));
+        let expected_flags = if *writable { 0x0cd7 } else { 0x0c97 };
+        assert_eq!(observed.state.rflags, HexU64(expected_flags));
+        assert_eq!(
+            observed.state.gdtr_base,
+            input.fixture.initial_state.gdtr_base
+        );
+        assert_eq!(
+            observed.state.gdtr_limit,
+            input.fixture.initial_state.gdtr_limit
+        );
+        assert_eq!(observed.memory.len(), 2);
+        assert_eq!(observed.memory[0].bytes_hex, "0f00e8");
+        assert_eq!(
+            observed.memory[1].bytes_hex,
+            input.fixture.memory[1].initial_bytes_hex
+        );
+        assert_eq!(observed.exception, Observation::Available { value: None });
+    }
+}
+
+#[test]
+fn fs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state() {
+    for (case_id, bytes, fault, expected_access, expected_limit, expected_flags, expected_base) in
+        FS_LOAD_CASES
+    {
+        let (input, result) = run(bytes, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, *case_id);
+        assert_eq!(input.fixture.profile, od_testkit::v2::Profile::LongFsLoadV1);
+        let observed = snapshot(&result);
+        assert_eq!(
+            observed.state.gdtr_base,
+            input.fixture.initial_state.gdtr_base
+        );
+        assert_eq!(
+            observed.state.gdtr_limit,
+            input.fixture.initial_state.gdtr_limit
+        );
+        assert_eq!(observed.memory.len(), 2);
+        assert_eq!(observed.memory[0].bytes_hex, "8ee0");
+        assert_eq!(
+            observed.memory[1].bytes_hex,
+            input.fixture.memory[1].initial_bytes_hex
+        );
+        assert_eq!(
+            observed.exception,
+            match fault {
+                Some((vector, code)) => Observation::Available {
+                    value: Some(od_testkit::result::ExceptionSnapshot {
+                        vector: *vector,
+                        error_code: Observation::Available {
+                            value: HexU64(u64::from(*code))
+                        },
+                        faulting_rip: HexU64(0x0010_0000),
+                        fault_address: Observation::Unavailable {
+                            reason: "exception has no reported linear address".into(),
+                        },
+                    })
+                },
+                None => Observation::Available { value: None },
+            }
+        );
+        let expected_exit = if fault.is_some() { 0 } else { 1 };
+        assert_eq!(count(&result), expected_exit);
+
+        let expected_gpr = input.fixture.initial_state.gpr;
+        if fault.is_none() {
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+            assert_eq!(
+                observed.state.fs_base,
+                Some(HexU64(u64::from(*expected_base)))
+            );
+            assert_eq!(
+                observed.state.fs_selector,
+                Some(HexU64(expected_gpr[0].get() & 0xffff))
+            );
+            assert_eq!(
+                observed.state.fs_cache_access,
+                Some(HexU64(u64::from(*expected_access)))
+            );
+            assert_eq!(
+                observed.state.fs_cache_limit,
+                Some(HexU64(u64::from(*expected_limit)))
+            );
+            assert_eq!(
+                observed.state.fs_cache_flags,
+                Some(HexU64(u64::from(*expected_flags)))
+            );
+        } else {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            assert_eq!(observed.state.rip, HexU64(0x0010_0000));
+            assert_eq!(observed.state.fs_base, input.fixture.initial_state.fs_base);
+            assert_eq!(
+                observed.state.fs_selector,
+                input.fixture.initial_state.fs_selector
+            );
+            assert_eq!(
+                observed.state.fs_cache_limit,
+                input.fixture.initial_state.fs_cache_limit
+            );
+            assert_eq!(
+                observed.state.fs_cache_access,
+                input.fixture.initial_state.fs_cache_access
+            );
+            assert_eq!(
+                observed.state.fs_cache_flags,
+                input.fixture.initial_state.fs_cache_flags
+            );
+        }
+        assert_eq!(
+            observed.state.gpr, expected_gpr,
+            "all GPRs remain unchanged: {case_id}"
+        );
+        assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    }
+}
+
+#[test]
+fn fs_load_commit_is_preserved_when_a_later_instruction_faults_and_self_compares() {
+    let mut fixture = Fixture::from_json(FS_LOAD_CASES[0].1).unwrap().fixture;
+    fixture.memory[0].length = 4;
+    fixture.memory[0].initial_bytes_hex = "8ee00f0b".into();
+    fixture.memory[0].comparison_mask_hex = "ffffffff".into();
+    fixture.stop_rip = Some(HexU64(0x0010_0004));
+    fixture.instruction_budget = 2;
+    fixture.expected_exit = ExpectedExit::Exception;
+    let case = fixture.to_json().unwrap();
+    let (loaded, result) = run(&case, "interpreter", 0);
+    assert_eq!(loaded.fixture.instruction_budget, 2);
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+    assert_eq!(observed.state.fs_base, Some(HexU64(0x89ab_cdef)));
+    assert_eq!(observed.state.fs_selector, Some(HexU64(0x0b)));
+    assert_eq!(observed.state.fs_cache_access, Some(HexU64(0xf3)));
+    assert_eq!(observed.state.fs_cache_limit, Some(HexU64(0)));
+    assert_eq!(observed.state.fs_cache_flags, Some(HexU64(0)));
+
+    let raw_result = cli(&case, "interpreter");
+    let compare = compare_cli(&case, &raw_result.stdout);
+    assert!(
+        compare.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&compare.stdout),
+        String::from_utf8_lossy(&compare.stderr)
+    );
+}
+
+#[test]
+fn qword_register_cmpxchg_fixtures_match_both_compare_branches() {
+    for (bytes, case_id, expected_rax, expected_rcx, expected_flags, expected_code) in [
+        (
+            CMPXCHG_QWORD_REGISTER_EQUAL,
+            "s2_21c_cmpxchg_qword_register_equal",
+            0x1122_3344_5566_7788,
+            0xaabb_ccdd_eeff_0011,
+            0x0446,
+            "480fb1d9",
+        ),
+        (
+            CMPXCHG_QWORD_REGISTER_UNEQUAL_ALIAS,
+            "s2_21c_cmpxchg_qword_register_unequal_alias",
+            7,
+            7,
+            0x0493,
+            "480fb1c9",
+        ),
+    ] {
+        let (input, result) = run(bytes, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, case_id);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 1);
+
+        let observed = snapshot(&result);
+        let mut expected_gpr = input.fixture.initial_state.gpr;
+        expected_gpr[0] = HexU64(expected_rax);
+        expected_gpr[1] = HexU64(expected_rcx);
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(observed.state.rip, HexU64(0x0010_0004), "{case_id}");
+        assert_eq!(observed.state.rflags, HexU64(expected_flags), "{case_id}");
+        assert_eq!(observed.rflags_defined, HexU64(0x0cd7), "{case_id}");
+        assert_eq!(observed.memory.len(), 1, "{case_id}");
+        assert_eq!(observed.memory[0].region_id, "code", "{case_id}");
+        assert_eq!(observed.memory[0].bytes_hex, expected_code, "{case_id}");
+        assert_eq!(observed.exception, Observation::Available { value: None });
+    }
+}
+
+#[test]
+fn qword_memory_cmpxchg_fixtures_match_both_compare_branches_and_split_canaries() {
+    let (equal_input, equal_result) = run(CMPXCHG_QWORD_MEMORY_EQUAL, "interpreter", 0);
+    assert_eq!(
+        equal_input.fixture.case_id,
+        "s2_21e_cmpxchg_qword_memory_equal"
+    );
+    assert!(matches!(equal_result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&equal_result), 1);
+    let equal = snapshot(&equal_result);
+    assert_eq!(equal.state.gpr, equal_input.fixture.initial_state.gpr);
+    assert_eq!(equal.state.rip, HexU64(0x0010_0004));
+    assert_eq!(equal.state.rflags, HexU64(0x0046));
+    assert_eq!(equal.rflags_defined, HexU64(0x0cd7));
+    assert_eq!(equal.memory.len(), 3);
+    assert_eq!(equal.memory[0].region_id, "code");
+    assert_eq!(equal.memory[0].bytes_hex, "480fb118");
+    assert_eq!(equal.memory[1].region_id, "data_left");
+    assert_eq!(equal.memory[1].bytes_hex, "a5a5a511223344");
+    assert_eq!(equal.memory[2].region_id, "data_right");
+    assert_eq!(equal.memory[2].bytes_hex, "55667788a5a5a5a5");
+    assert_eq!(equal.exception, Observation::Available { value: None });
+
+    let (unequal_input, unequal_result) = run(CMPXCHG_QWORD_MEMORY_UNEQUAL_ALIAS, "interpreter", 0);
+    assert_eq!(
+        unequal_input.fixture.case_id,
+        "s2_21e_cmpxchg_qword_memory_unequal_alias"
+    );
+    assert!(matches!(unequal_result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&unequal_result), 1);
+    let unequal = snapshot(&unequal_result);
+    let mut expected_gpr = unequal_input.fixture.initial_state.gpr;
+    expected_gpr[0] = HexU64(0x2004);
+    assert_eq!(unequal.state.gpr, expected_gpr);
+    assert_eq!(unequal.state.rip, HexU64(0x0010_0004));
+    assert_eq!(unequal.state.rflags, HexU64(0x0097));
+    assert_eq!(unequal.rflags_defined, HexU64(0x0cd7));
+    assert_eq!(unequal.memory.len(), 3);
+    assert_eq!(unequal.memory[0].region_id, "code");
+    assert_eq!(unequal.memory[0].bytes_hex, "480fb100");
+    assert_eq!(unequal.memory[1].region_id, "data_left");
+    assert_eq!(unequal.memory[1].bytes_hex, "a5a5a504200000");
+    assert_eq!(unequal.memory[2].region_id, "data_right");
+    assert_eq!(unequal.memory[2].bytes_hex, "00000000a5a5a5a5");
+    assert_eq!(unequal.exception, Observation::Available { value: None });
+}
+
+#[test]
+fn hand_authored_mov_fixtures_execute_with_full_snapshot_and_exact_input_digest() {
+    for (bytes, retired) in [(LOAD_ADD_STORE, 3), (WIDTHS, 8), (REX_RIP, 5)] {
+        let (input, result) = run(bytes, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), retired);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.rip, input.fixture.stop_rip.unwrap());
+        assert_eq!(observed.rflags_defined, HexU64(0xcd7));
+        assert_eq!(
+            observed.memory[0].bytes_hex,
+            input.fixture.memory[0].initial_bytes_hex
+        );
+        assert_eq!(observed.exception, Observation::Available { value: None });
+        let mut expected_gpr = input.fixture.initial_state.gpr;
+        if bytes == LOAD_ADD_STORE {
+            expected_gpr[0] = HexU64(12);
+            assert_eq!(observed.state.rflags, HexU64(0x406));
+            assert_eq!(observed.memory[1].bytes_hex, "0c00");
+            assert_eq!(observed.memory[2].bytes_hex, "000000000000");
+        } else if bytes == WIDTHS {
+            expected_gpr[0] = HexU64(0x8877_6655);
+            assert_eq!(observed.state.rflags, HexU64(0x402));
+            assert_eq!(
+                observed.memory[1].bytes_hex,
+                "11223344556677881122334455667788"
+            );
+        } else {
+            expected_gpr[4] = HexU64(0x7034);
+            expected_gpr[8] = HexU64(0x4433_2211);
+            expected_gpr[9] = HexU64(0x4433_2211);
+            expected_gpr[10] = HexU64(0x1122_3344_5566_777f);
+            assert_eq!(observed.state.rflags, HexU64(0x402));
+            assert_eq!(observed.memory[1].bytes_hex, "11223344");
+            assert_eq!(observed.memory[2].bytes_hex, "0011223344");
+        }
+        assert_eq!(observed.state.gpr, expected_gpr);
+    }
+}
+
+#[test]
+fn setcc_cli_fixtures_match_literal_full_state_and_preserve_flags() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(&fs::read(directory.join("s2_16b_setcc_expected.json")).unwrap())
+            .unwrap();
+    assert_eq!(answers.len(), 79);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let state = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        assert_eq!(state.state.gpr, expected_gpr, "{case_id}");
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        assert_eq!(state.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(state.rflags_defined, HexU64(0xcd7), "{case_id}");
+        assert_eq!(
+            state.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &state.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}: {}",
+                region.region_id
+            );
+        }
+    }
+}
+
+#[test]
+fn rep_stosb_cli_fixtures_preserve_full_state_and_one_instruction_retirement() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_19a_rep_stosb_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 5);
+    for (case_id, answer) in answers {
+        if answer.get("fault").is_some() {
+            continue;
+        }
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, HexU64(0xcd7), "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rep_iteration_work_limit_has_a_distinct_cli_outcome_and_restart_snapshot() {
+    let mut fixture: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_19a_rep_stosb_df0.case.json"
+    ))
+    .unwrap();
+    let iterations = 1025;
+    fixture["initial_state"]["gpr"][1] = serde_json::json!(format!("0x{iterations:016x}"));
+    fixture["initial_state"]["gpr"][7] = serde_json::json!("0x0000000000200000");
+    fixture["memory"][1]["length"] = serde_json::json!(iterations);
+    fixture["memory"][1]["initial_bytes_hex"] = serde_json::json!("00".repeat(iterations));
+    fixture["memory"][1]["comparison_mask_hex"] = serde_json::json!("ff".repeat(iterations));
+    fixture["expected_exit"] = serde_json::json!("rep_iteration_budget_exhausted");
+    let raw = serde_json::to_vec(&fixture).unwrap();
+    let (input, result) = run(&raw, "interpreter", 0);
+    assert_eq!(result.outcome, Outcome::RepIterationBudgetExhausted {});
+    assert_eq!(count(&result), 0);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, input.fixture.initial_state.rip);
+    assert_eq!(observed.state.gpr[1], HexU64(1));
+    assert_eq!(observed.state.gpr[7], HexU64(0x0020_0400));
+    let data = observed
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .unwrap();
+    assert_eq!(&data.bytes_hex[..1024 * 2], "88".repeat(1024));
+    assert_eq!(&data.bytes_hex[1024 * 2..], "00");
+}
+
+#[test]
+fn popfq_cli_fixtures_match_literal_flags_stack_pointer_and_memory() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(&fs::read(directory.join("s2_17o_popfq_expected.json")).unwrap())
+            .unwrap();
+    assert_eq!(answers.len(), 2);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pushfq_cli_fixture_matches_literal_masked_rflags_image() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(&fs::read(directory.join("s2_17p_pushfq_expected.json")).unwrap())
+            .unwrap();
+    assert_eq!(answers.len(), 1);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pushfw_cli_fixture_matches_literal_low_flags_word() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(&fs::read(directory.join("s2_17q_pushfw_expected.json")).unwrap())
+            .unwrap();
+    assert_eq!(answers.len(), 1);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn push_immediate_cli_fixtures_match_literal_signed_boundary_answers() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_17b_push_immediate_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 8);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, answer["memory"][&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn v2_jit_has_explicit_unsupported_result_without_interpreter_fallback() {
+    let (_, result) = run(LOAD_ADD_STORE, "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    assert!(matches!(
+        result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn budget_exit_records_committed_load_before_pending_add_and_store() {
+    let mut fixture = Fixture::from_json(LOAD_ADD_STORE).unwrap().fixture;
+    fixture.instruction_budget = 1;
+    fixture.expected_exit = ExpectedExit::InstructionBudgetExhausted;
+    let (_, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+    assert!(matches!(
+        result.outcome,
+        Outcome::InstructionBudgetExhausted {}
+    ));
+    assert_eq!(count(&result), 1);
+    let state = snapshot(&result);
+    assert_eq!(state.state.rip, HexU64(0x4004));
+    assert_eq!(state.state.gpr[0], HexU64(7));
+    for (actual, initial) in state.memory.iter().zip(&fixture.memory) {
+        assert_eq!(actual.bytes_hex, initial.initial_bytes_hex);
+    }
+}
+
+#[test]
+fn noncanonical_operand_is_guest_fault_but_unmapped_fixture_ram_is_harness_error() {
+    for (base, expected_exit) in [
+        (0x0000_7fff_ffff_fffc, 0),
+        (0x9000, 5),
+        // Endpoint overflow remains a diagnostic memory error until its
+        // architectural behavior is independently established.
+        (u64::MAX - 3, 5),
+    ] {
+        let mut fixture = Fixture::from_json(LOAD_ADD_STORE).unwrap().fixture;
+        fixture.initial_state.gpr[3] = HexU64(base);
+        fixture.expected_exit = ExpectedExit::Exception;
+        let (_, result) = run(&fixture.to_json().unwrap(), "interpreter", expected_exit);
+        let observed = snapshot(&result);
+        assert_eq!(count(&result), 0);
+        assert_eq!(observed.state, fixture.initial_state);
+        for (actual, initial) in observed.memory.iter().zip(&fixture.memory) {
+            assert_eq!(actual.bytes_hex, initial.initial_bytes_hex);
+        }
+        if expected_exit == 0 {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            let Observation::Available { value: Some(fault) } = &observed.exception else {
+                panic!("expected architectural #GP");
+            };
+            assert_eq!(fault.vector, 13);
+            assert_eq!(
+                fault.error_code,
+                Observation::Available { value: HexU64(0) }
+            );
+            assert_eq!(fault.faulting_rip, fixture.initial_state.rip);
+        } else {
+            assert!(matches!(result.outcome, Outcome::HarnessError { .. }));
+            assert_eq!(observed.exception, Observation::Available { value: None });
+        }
+    }
+}
+
+#[test]
+fn unsupported_encoding_and_cooperative_deadline_remain_distinct_from_cpu_faults() {
+    let mut fixture = Fixture::from_json(LOAD_ADD_STORE).unwrap().fixture;
+    fixture.memory[0].length = 2;
+    fixture.memory[0].initial_bytes_hex = "0f05".into();
+    fixture.memory[0].comparison_mask_hex = "ffff".into();
+    let (_, result) = run(&fixture.to_json().unwrap(), "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    assert_eq!(snapshot(&result).state, fixture.initial_state);
+
+    fixture.memory[0].length = 2;
+    fixture.memory[0].initial_bytes_hex = "75fe".into();
+    fixture.memory[0].comparison_mask_hex = "ffff".into();
+    fixture.stop_rip = None;
+    fixture.expected_exit = ExpectedExit::InstructionBudgetExhausted;
+    fixture.instruction_budget = 10_000_000;
+    fixture.wall_timeout_ms = 1;
+    let (_, result) = run(&fixture.to_json().unwrap(), "interpreter", 5);
+    assert!(matches!(result.outcome, Outcome::TimedOut { .. }));
+    assert!(count(&result) < fixture.instruction_budget);
+    assert_eq!(snapshot(&result).state, fixture.initial_state);
+}
+
+#[test]
+fn fixture_schema_dispatch_rejects_unknown_versions_and_keeps_legacy_execution() {
+    let legacy = cli(
+        include_bytes!("../../../tests/fixtures/x86/s0_09_mov_imm64.case.json"),
+        "interpreter",
+    );
+    assert!(legacy.status.success());
+    assert_eq!(
+        od_testkit::result::RunResult::from_json(&legacy.stdout)
+            .unwrap()
+            .schema_version,
+        1
+    );
+    let mut malformed: serde_json::Value = serde_json::from_slice(LOAD_ADD_STORE).unwrap();
+    for version in [
+        serde_json::json!(3),
+        serde_json::json!("2"),
+        serde_json::Value::Null,
+    ] {
+        malformed["schema_version"] = version;
+        let output = cli(&serde_json::to_vec(&malformed).unwrap(), "interpreter");
+        assert_eq!(output.status.code(), Some(3));
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn logic_cli_fixtures_emit_exact_observations_and_semantic_definedness() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let expected: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("s2_12_expected.json")).unwrap()).unwrap();
+    let answers = expected.as_object().unwrap();
+    assert_eq!(answers.len(), 197);
+    for (case_id, answer) in answers {
+        assert!(
+            case_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        );
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(
+            count(&result),
+            input.fixture.instruction_budget,
+            "{case_id}"
+        );
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(
+            observed.state.rflags.get() & input.fixture.rflags_mask.get(),
+            expected_flags.get() & input.fixture.rflags_mask.get(),
+            "{case_id}"
+        );
+        assert_eq!(observed.exception, Observation::Available { value: None });
+        for region in &observed.memory {
+            let before = input
+                .fixture
+                .memory
+                .iter()
+                .find(|r| r.region_id == region.region_id)
+                .unwrap();
+            let expected_bytes = answer["memory"]
+                .get(&region.region_id)
+                .map(|v| v.as_str().unwrap())
+                .unwrap_or(&before.initial_bytes_hex);
+            assert_eq!(
+                region.bytes_hex, expected_bytes,
+                "{case_id}: {}",
+                region.region_id
+            );
+        }
+        assert!(
+            od_testkit::v2::compare(&input, &result, &result)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn direct_control_flow_cli_fixtures_match_literal_branch_targets_and_state() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let expected: serde_json::Value = serde_json::from_slice(
+        &fs::read(directory.join("s2_16a_control_flow_expected.json")).unwrap(),
+    )
+    .unwrap();
+    let answers = expected.as_object().unwrap();
+    assert_eq!(answers.len(), 68);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}: {:?}",
+            result.outcome
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, answer["memory"][&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn multiply_divide_cli_fixtures_match_literal_full_state_and_flag_definedness() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let expected: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("s2_14_expected.json")).unwrap()).unwrap();
+    let answers = expected.as_object().unwrap();
+    assert_eq!(answers.len(), 38);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, *case_id);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(
+            observed.state.rflags.get() & input.fixture.rflags_mask.get(),
+            expected_flags.get() & input.fixture.rflags_mask.get(),
+            "{case_id}"
+        );
+        assert_eq!(
+            observed.exception,
+            Observation::Available { value: None },
+            "{case_id}"
+        );
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, answer["memory"][&region.region_id],
+                "{case_id}: {}",
+                region.region_id
+            );
+        }
+        assert!(
+            od_testkit::v2::compare(&input, &result, &result)
+                .unwrap()
+                .is_empty(),
+            "{case_id}"
+        );
+    }
+}
+
+#[test]
+fn divide_error_fixtures_preserve_state_and_report_exact_de_metadata() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_20a_divide_errors_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 2);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::Exception {}), "{case_id}");
+        assert_eq!(count(&result), 0, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(
+            observed.state.rip, input.fixture.initial_state.rip,
+            "{case_id}"
+        );
+        assert_eq!(observed.state.rip, HexU64(0x0010_0000), "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+        let Observation::Available {
+            value: Some(exception),
+        } = &observed.exception
+        else {
+            panic!("{case_id}: expected #DE snapshot");
+        };
+        assert_eq!(exception.vector, answer["exception"]["vector"], "{case_id}");
+        assert_eq!(
+            answer["exception"]["error_code"], "unavailable",
+            "{case_id}"
+        );
+        assert!(
+            matches!(exception.error_code, Observation::Unavailable { .. }),
+            "{case_id}"
+        );
+        let expected_faulting_rip: HexU64 =
+            serde_json::from_value(answer["exception"]["faulting_rip"].clone()).unwrap();
+        assert_eq!(exception.faulting_rip, expected_faulting_rip, "{case_id}");
+        assert_eq!(
+            exception.faulting_rip, input.fixture.initial_state.rip,
+            "{case_id}"
+        );
+        assert_eq!(
+            answer["exception"]["fault_address"], "unavailable",
+            "{case_id}"
+        );
+        assert!(
+            matches!(exception.fault_address, Observation::Unavailable { .. }),
+            "{case_id}"
+        );
+        assert_eq!(answer["instructions_executed"], count(&result), "{case_id}");
+    }
+}
+
+#[test]
+fn complete_ud2_cli_fixture_reports_ud_without_state_commit() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let case_id = "s2_20b_ud2";
+    let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+    let answer: serde_json::Value = serde_json::from_slice(
+        &fs::read(directory.join(format!("{case_id}_expected.json"))).unwrap(),
+    )
+    .unwrap();
+    let (input, result) = run(&raw, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, case_id);
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    assert_eq!(count(&result), answer["instructions_executed"]);
+    let observed = snapshot(&result);
+    let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+    let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+    let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+    let expected_defined: HexU64 =
+        serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+    assert_eq!(observed.state.gpr, expected_gpr);
+    assert_eq!(observed.state.rip, expected_rip);
+    assert_eq!(observed.state.rip, input.fixture.initial_state.rip);
+    assert_eq!(observed.state.rflags, expected_flags);
+    assert_eq!(observed.rflags_defined, expected_defined);
+    let expected_memory: std::collections::BTreeMap<String, String> =
+        serde_json::from_value(answer["memory"].clone()).unwrap();
+    for region in &observed.memory {
+        assert_eq!(region.bytes_hex, expected_memory[&region.region_id]);
+    }
+    let Observation::Available {
+        value: Some(exception),
+    } = &observed.exception
+    else {
+        panic!("complete UD2 must report an architectural #UD snapshot");
+    };
+    assert_eq!(exception.vector, answer["exception"]["vector"]);
+    assert_eq!(answer["exception"]["error_code"], "unavailable");
+    assert!(matches!(
+        exception.error_code,
+        Observation::Unavailable { .. }
+    ));
+    assert_eq!(exception.faulting_rip, expected_rip);
+    assert_eq!(answer["exception"]["fault_address"], "unavailable");
+    assert!(matches!(
+        exception.fault_address,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn qword_idiv_overflow_cli_fixture_reports_de_without_state_commit() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let case_id = "s2_20c_idiv_qword_quotient_overflow";
+    let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+    let answer: serde_json::Value = serde_json::from_slice(
+        &fs::read(directory.join(format!("{case_id}_expected.json"))).unwrap(),
+    )
+    .unwrap();
+    let (input, result) = run(&raw, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, case_id);
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    assert_eq!(count(&result), answer["instructions_executed"]);
+    let observed = snapshot(&result);
+    let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+    let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+    let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+    let expected_defined: HexU64 =
+        serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+    assert_eq!(observed.state.gpr, expected_gpr);
+    assert_eq!(observed.state.rip, expected_rip);
+    assert_eq!(observed.state.rip, input.fixture.initial_state.rip);
+    assert_eq!(observed.state.rflags, expected_flags);
+    assert_eq!(observed.rflags_defined, expected_defined);
+    let expected_memory: std::collections::BTreeMap<String, String> =
+        serde_json::from_value(answer["memory"].clone()).unwrap();
+    for region in &observed.memory {
+        assert_eq!(region.bytes_hex, expected_memory[&region.region_id]);
+    }
+    let Observation::Available {
+        value: Some(exception),
+    } = &observed.exception
+    else {
+        panic!("qword IDIV overflow must report an architectural #DE snapshot");
+    };
+    assert_eq!(exception.vector, answer["exception"]["vector"]);
+    assert_eq!(answer["exception"]["error_code"], "unavailable");
+    assert!(matches!(
+        exception.error_code,
+        Observation::Unavailable { .. }
+    ));
+    assert_eq!(exception.faulting_rip, expected_rip);
+    assert_eq!(answer["exception"]["fault_address"], "unavailable");
+    assert!(matches!(
+        exception.fault_address,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn sign_extension_cli_fixtures_match_literal_state_and_preserve_flag_definedness() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let expected: serde_json::Value = serde_json::from_slice(
+        &fs::read(directory.join("s2_15_sign_extension_expected.json")).unwrap(),
+    )
+    .unwrap();
+    let answers = expected.as_object().unwrap();
+    assert_eq!(answers.len(), 6);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, *case_id);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(
+            observed.exception,
+            Observation::Available { value: None },
+            "{case_id}"
+        );
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, answer["memory"][&region.region_id],
+                "{case_id}: {}",
+                region.region_id
+            );
+        }
+    }
+}
+
+#[test]
+fn bswap_cli_fixtures_match_literal_state_and_preserve_flag_definedness() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let expected: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("s2_15_bswap_expected.json")).unwrap())
+            .unwrap();
+    let answers = expected.as_object().unwrap();
+    assert_eq!(answers.len(), 7);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, *case_id);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, answer["memory"][&region.region_id],
+                "{case_id}"
+            );
+        }
+        assert!(
+            od_testkit::v2::compare(&input, &result, &result)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn bt_family_cli_fixtures_match_literal_state_and_flag_definedness() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let expected: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("s2_15_bitops_expected.json")).unwrap())
+            .unwrap();
+    let answers = expected.as_object().unwrap();
+    assert_eq!(answers.len(), 12);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, *case_id);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(
+            observed.exception,
+            Observation::Available { value: None },
+            "{case_id}"
+        );
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, answer["memory"][&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bt_family_immediate_cli_fixtures_match_literal_state_and_flag_definedness() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let expected: serde_json::Value = serde_json::from_slice(
+        &fs::read(directory.join("s2_15_bitops_immediate_expected.json")).unwrap(),
+    )
+    .unwrap();
+    let answers = expected.as_object().unwrap();
+    assert_eq!(answers.len(), 48);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, *case_id);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}: {:?}",
+            result.outcome
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(
+            observed.exception,
+            Observation::Available { value: None },
+            "{case_id}"
+        );
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, answer["memory"][&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bt_family_immediate_memory_cli_fixtures_match_literal_state_and_flag_definedness() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let expected: serde_json::Value = serde_json::from_slice(
+        &fs::read(directory.join("s2_15_bitops_immediate_memory_expected.json")).unwrap(),
+    )
+    .unwrap();
+    let answers = expected.as_object().unwrap();
+    assert_eq!(answers.len(), 48);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, *case_id);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}: {:?}",
+            result.outcome
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(
+            observed.exception,
+            Observation::Available { value: None },
+            "{case_id}"
+        );
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, answer["memory"][&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bt_family_register_memory_cli_fixtures_match_literal_state_and_flag_definedness() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let expected: serde_json::Value = serde_json::from_slice(
+        &fs::read(directory.join("s2_15_bitops_register_memory_expected.json")).unwrap(),
+    )
+    .unwrap();
+    let answers = expected.as_object().unwrap();
+    assert_eq!(answers.len(), 72);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, *case_id);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}: {:?}",
+            result.outcome
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(
+            observed.exception,
+            Observation::Available { value: None },
+            "{case_id}"
+        );
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, answer["memory"][&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bsf_bsr_cli_fixtures_match_literal_state_and_flag_definedness() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let expected: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("s2_15_scans_expected.json")).unwrap())
+            .unwrap();
+    let answers = expected.as_object().unwrap();
+    assert_eq!(answers.len(), 23);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, *case_id);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(
+            observed.state.rip,
+            input.fixture.stop_rip.unwrap(),
+            "{case_id}"
+        );
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(
+            observed.exception,
+            Observation::Available { value: None },
+            "{case_id}"
+        );
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, answer["memory"][&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn faulting_logic_cli_does_not_commit_undefined_flags_effect() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let raw = fs::read(directory.join("s2_12_and_64_mem_reg.case.json")).unwrap();
+    let mut fixture = Fixture::from_json(&raw).unwrap().fixture;
+    fixture.initial_state.gpr[3] = HexU64(0x0000_8000_0000_0000);
+    fixture.expected_exit = ExpectedExit::Exception;
+    let (_, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    assert_eq!(count(&result), 0);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state, fixture.initial_state);
+    assert_eq!(observed.rflags_defined, HexU64(0xcd7));
+    for (actual, initial) in observed.memory.iter().zip(&fixture.memory) {
+        assert_eq!(actual.bytes_hex, initial.initial_bytes_hex);
+    }
+}

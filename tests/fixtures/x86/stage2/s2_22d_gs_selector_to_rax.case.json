@@ -1,0 +1,57 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_22d_gs_selector_to_rax",
+  "profile": "s2-long-gs-selector-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten 48 8C E8 bytes, initial state and expected result. This generator serializes literals only; it does not assemble, emulate or calculate CPU semantics.",
+    "specification": "Intel SDM revision 093 (253665-093US), Vol.1 \u00a73.4.2 p.3-13: segment registers contain selectors; Vol.2B (253667-093US), MOV pp.4-28\u20134-31: REX.W + 8C /r zero-extends the selected segment selector into a r64 destination; ModR/M E8 selects GS and RAX.",
+    "specification_version": "Intel SDM revision 093; Vol.1 PDF https://cdrdv2.intel.com/v1/dl/getContent/671436; Vol.2B PDF https://cdrdv2.intel.com/v1/dl/getContent/671241; project S2-22d."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0xdeadbeefcafebabe",
+      "0x0102030405060708",
+      "0x1122334455667788",
+      "0x8877665544332211",
+      "0x0000000000200080",
+      "0x0000000000200080",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7",
+    "gs_base": "0xffff800000001000",
+    "gs_selector": "0x000000000000f123"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 3,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "488ce8",
+      "comparison_mask_hex": "ffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100003",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

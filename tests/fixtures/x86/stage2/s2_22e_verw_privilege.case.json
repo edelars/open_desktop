@@ -1,0 +1,69 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_22e_verw_privilege",
+  "profile": "s2-long-verw-gdt-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten instruction bytes, selector, descriptor bytes, state, and expected exit. This generator serializes literals only; it does not assemble, emulate, or calculate CPU semantics.",
+    "specification": "Intel SDM revision 093 (326018-093US), Vol.2C VERR/VERW pp.5-162\u20135-163; Vol.3A (325384-093US) \u00a76.10.2 p.6-25, \u00a76.11.5 p.6-29, and \u00a73.5.1.",
+    "specification_version": "Intel SDM revision 093; Vol.2C PDF https://cdrdv2.intel.com/v1/dl/getContent/671072; Vol.3A PDF https://cdrdv2.intel.com/v1/dl/getContent/671447; project S2-22e. writable data descriptor with DPL below CPL clears ZF"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0xaabbccddeeff000b",
+      "0x0102030405060708",
+      "0x1122334455667788",
+      "0x8877665544332211",
+      "0x0000000000200080",
+      "0x0000000000200081",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7",
+    "gdtr_base": "0x0000000000200000",
+    "gdtr_limit": "0x000000000000000f"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 3,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "0f00e8",
+      "comparison_mask_hex": "ffffff"
+    },
+    {
+      "region_id": "gdt",
+      "guest_address": "0x0000000000200000",
+      "length": 16,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "00000000000000000000000000d20000",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100003",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

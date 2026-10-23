@@ -1,0 +1,79 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_08_mov_rex_rip_relative",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Hand-authored RIP-relative MOV R8D; MOV R9D,R8D; R12+disp store; MOV R10B,imm8; MOV SPL,AL with REX.",
+    "specification": "Intel SDM 093 Vol.2B MOV—Move; Vol.2A §§2.1.5,2.2.1.2; Vol.1 §3.4.1.1",
+    "specification_version": "Intel SDM revision 093; project S2-08"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000000034",
+      "0x0000000000000001",
+      "0x0000000000000002",
+      "0x0000000000000003",
+      "0x0000000000007000",
+      "0x0000000000000005",
+      "0x0000000000000006",
+      "0x0000000000000007",
+      "0xffffffffffffffff",
+      "0xffffffffffffffff",
+      "0x1122334455667700",
+      "0x000000000000000b",
+      "0x0000000000006000",
+      "0x000000000000000d",
+      "0x000000000000000e",
+      "0x000000000000000f"
+    ],
+    "rip": "0x0000000000004000",
+    "rflags": "0x0000000000000402"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000004000",
+      "length": 21,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "448b05f90f00004589c145894c240141b27f4088c4",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffff"
+    },
+    {
+      "region_id": "source",
+      "guest_address": "0x0000000000005000",
+      "length": 4,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "11223344",
+      "comparison_mask_hex": "ffffffff"
+    },
+    {
+      "region_id": "destination",
+      "guest_address": "0x0000000000006000",
+      "length": 5,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "0000000000",
+      "comparison_mask_hex": "ffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000004015",
+  "instruction_budget": 32,
+  "wall_timeout_ms": 1000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

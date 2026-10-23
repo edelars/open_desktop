@@ -1,0 +1,33 @@
+{
+  "gpr": [
+    "0x0000000000000000",
+    "0xffffffffffffffff",
+    "0x8000000000000000",
+    "0x0000000000200000",
+    "0x0000000000300080",
+    "0x0000000000300080",
+    "0x0000000000200004",
+    "0x0000000000200010",
+    "0x0123456789abcdef",
+    "0xfedcba9876543210",
+    "0x8877665544332211",
+    "0xaabbccddeeff0011",
+    "0x1122112211221122",
+    "0x3344334433443344",
+    "0x778899aabbccddee",
+    "0xffffffffffffffff"
+  ],
+  "rip": "0x0000000000100000",
+  "rflags": "0x0000000000000cd7",
+  "rflags_defined": "0x0000000000000cd7",
+  "memory": {
+    "code": "48f7f9"
+  },
+  "exception": {
+    "vector": 0,
+    "error_code": "unavailable",
+    "faulting_rip": "0x0000000000100000",
+    "fault_address": "unavailable"
+  },
+  "instructions_executed": 0
+}
