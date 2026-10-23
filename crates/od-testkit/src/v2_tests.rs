@@ -168,6 +168,42 @@ fn x87_schema_admits_fdivr_forms_and_inexact_no_stop_case() {
 }
 
 #[test]
+fn x87_schema_admits_fabs_and_a_budget_one_source_rejection() {
+    let mut fixture = x87_fixture().fixture;
+    fixture.case_id = "local_fabs".into();
+    fixture.instruction_budget = 1;
+    fixture.stop_rip = Some(HexU64(0x1002));
+    fixture.expected_exit = ExpectedExit::StopAddress;
+    {
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = 2;
+        code.initial_bytes_hex = "d9e1".into();
+        code.comparison_mask_hex = "ffff".into();
+    }
+    for second in 0u8..=u8::MAX {
+        let mut candidate = fixture.clone();
+        candidate
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap()
+            .initial_bytes_hex = format!("d9{second:02x}");
+        let accepted = candidate.validate().is_ok();
+        assert_eq!(accepted, matches!(second, 0xe0 | 0xe1), "D9 {second:02x}");
+    }
+    assert!(Fixture::from_json(&fixture.to_json().unwrap()).is_ok());
+
+    fixture.case_id = "local_fabs_invalid_source".into();
+    fixture.stop_rip = None;
+    fixture.expected_exit = ExpectedExit::Unsupported;
+    assert!(Fixture::from_json(&fixture.to_json().unwrap()).is_ok());
+}
+
+#[test]
 fn conversion_is_explicit_and_has_its_own_digest() {
     let raw = include_bytes!("../../../tests/fixtures/x86/s0_09_mov_imm64.case.json");
     let old = crate::case::Fixture::from_json(raw).unwrap();

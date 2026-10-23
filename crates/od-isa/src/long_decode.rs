@@ -445,6 +445,8 @@ pub enum Operation {
     FnstswAx,
     /// Bare `D9 E0` FCHS, flipping the sign of canonical-Normal ST(0) only.
     Fchs,
+    /// Bare `D9 E1` FABS, clearing the sign of canonical-Normal ST(0) only.
+    Fabs,
     /// Bare `DD D8+i` FSTP ST(i), exact Normal source and physical TOP pop only.
     FstpSti {
         destination: u8,
@@ -1111,10 +1113,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Primary, 0xd9) => {
-                if prefixes != Prefixes::default() || self.byte()? != 0xe0 {
+                if prefixes != Prefixes::default() {
                     return Err(self.unsupported(opcode));
                 }
-                Operation::Fchs
+                match self.byte()? {
+                    0xe0 => Operation::Fchs,
+                    0xe1 => Operation::Fabs,
+                    _ => return Err(self.unsupported(opcode)),
+                }
             }
             (OpcodeMap::Primary, 0xdf) => {
                 if prefixes != Prefixes::default() || self.byte()? != 0xe0 {
@@ -2372,7 +2378,7 @@ mod tests {
     }
 
     #[test]
-    fn fchs_accepts_only_bare_d9_e0() {
+    fn d9_accepts_only_bare_fchs_and_fabs() {
         let mut memory = Memory::new(&[0xd9, 0xe0]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::Fchs);
@@ -2386,6 +2392,8 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 if second == 0xe0 {
                     Ok(Operation::Fchs)
+                } else if second == 0xe1 {
+                    Ok(Operation::Fabs)
                 } else {
                     Err(DecodeError::Unsupported {
                         opcode: Opcode {
@@ -2410,6 +2418,16 @@ mod tests {
             &[0x40, 0xd9, 0xe0],
             &[0x48, 0xd9, 0xe0],
             &[0x9b, 0xd9, 0xe0],
+            &[0xf0, 0xd9, 0xe1],
+            &[0xf2, 0xd9, 0xe1],
+            &[0xf3, 0xd9, 0xe1],
+            &[0x2e, 0xd9, 0xe1],
+            &[0x64, 0xd9, 0xe1],
+            &[0x66, 0xd9, 0xe1],
+            &[0x67, 0xd9, 0xe1],
+            &[0x40, 0xd9, 0xe1],
+            &[0x48, 0xd9, 0xe1],
+            &[0x9b, 0xd9, 0xe1],
         ] {
             assert!(
                 matches!(
@@ -2425,6 +2443,12 @@ mod tests {
                 address: 0x1000,
                 access: AccessKind::Fetch,
             }))
+        ));
+        let mut memory = Memory::new(&[0xd9, 0xe1]);
+        memory.fault_at = Some(1);
+        assert!(matches!(
+            memory.decode(),
+            Err(DecodeError::Memory(MemoryError::Architectural(_)))
         ));
     }
 

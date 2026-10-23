@@ -2255,3 +2255,30 @@ admission denies `D9 E0`.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FCHS—Change Sign,” p.3-318
 ([official PDF, Vol.2A p.3-318](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=436)).
+
+## Local S2-30z: bounded `FABS` (`D9 E1`)
+
+The interpreter accepts exactly bare `D9 E1` with an existing
+`Some(X87State)`. It reuses the bounded canonical-Normal ST(0) source gate:
+FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tag at old physical TOP, and canonical
+Normal binary80 source bytes. It snapshots all ten raw bytes and clears only
+the sign bit with `source[9] &= 0x7f` in old physical TOP. Success clears FSW
+C1 (bit 9), preserves TOP, tags and all other state, records start RIP in FIP,
+advances RIP by two, and retires once. Retention of C0/C2/C3 is the deterministic
+local snapshot policy.
+
+Missing/bad state, invalid control/status, non-Valid tag, non-Normal source,
+every other D9 second byte, prefixes/REX/WAIT, truncation, fetch failure, STOP
+and exhausted budget do not commit state. Zero/subnormal/special values,
+memory forms, CR0/#NM, exception delivery, native admission and FPU feature
+claims are excluded.
+
+Tests cover all TOP values, both source signs, minimum/maximum/full-significand
+Normal payloads, C1 initially clear/set, preserved C0/C2/C3, idempotence, full-
+state rejections and execution boundaries. Exhaustive D9 decoding accepts E0
+as FCHS and E1 as FABS only; fixture schema and CLI cover success plus a real
+Empty-tag rejection with `stop_rip: null` and budget one. Native x87 admission
+denies `D9 E1`.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FABS—Absolute Value,” p.3-309
+([official PDF, Vol.2A p.3-309](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=427)).

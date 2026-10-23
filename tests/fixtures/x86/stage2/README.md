@@ -1215,5 +1215,20 @@ admission explicitly denies `D9 E0`.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FCHS—Change Sign,” p.3-318 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=436)).
 
+### S2-30z x87 schema and fixture coverage
+
+The schema admits only bare `D9 E1` for the FABS slice. The positive literal
+fixture starts with a negative canonical-Normal ST(0), C1 set and C0/C2/C3 set;
+the CLI checks that only the raw sign bit clears, C1 clears, FIP/RIP update,
+and all other snapshot fields remain unchanged. The invalid-source fixture has
+the same Normal bytes with the physical TOP tag Empty, `stop_rip: null`, and
+budget one, so the CLI checks a genuine zero-retirement atomic rejection.
+Interpreter vectors cover all TOP values, both source signs, Normal boundaries,
+idempotence, undefined-condition-bit retention, exhaustive D9 second-byte
+decoding, prefixes and execution boundaries. Native x87 admission explicitly
+denies `D9 E1`.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FABS—Absolute Value,” p.3-309 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=427)).
+
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
 Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).

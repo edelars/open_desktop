@@ -3792,3 +3792,37 @@ the fix. The Linux-only native-denial test could not run on this arm64 macOS
 host; no `qemu-x86_64` is installed. Independent gpt-6.1-sol medium re-review
 verified the explicit native x87 denial for `Operation::Fchs` and reported no
 remaining findings.
+
+## S2-30z — bounded FABS sign-clear slice
+
+Added exactly bare `D9 E1` for an existing x87 snapshot with FCW `0x037f`,
+`FSW & 0x80ff == 0`, Valid old physical TOP tag and canonical-Normal ST(0).
+The shared bounded source gate validates before commit; success snapshots all
+ten bytes and clears only `source[9]` bit 7, clears C1, preserves TOP/tags and
+all remaining x87/CPU state, records starting RIP as FIP and retires once.
+C0/C2/C3 retention is the deterministic local snapshot policy.
+
+Literal interpreter vectors cover all eight TOPs, positive/negative minimum,
+maximum and full-significand Normal values, C1 initially clear/set, retention of
+C0/C2/C3 sentinels, and repeated FABS idempotence. Full-state rejects cover
+missing state, invalid FCW/FSW, invalid tag/class, truncation, fetch fault, STOP
+and zero budget. Exhaustive D9 second-byte decode admits E0→FCHS and E1→FABS
+only, with prefix/REX/WAIT/truncation rejection. The fixture schema admits the
+positive literal and a no-stop/budget-one invalid-source case; CLI checks the
+exact post-state and zero-retirement atomic rejection. Native admission
+explicitly denies `Operation::Fabs` and D9 E1.
+
+This bounded slice excludes zero/subnormal/special values, memory, CR0/#NM,
+exception delivery, native execution and FPU feature claims. General x87
+architectural behavior remains open.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FABS—Absolute Value,” p.3-309
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=427)).
+
+Validation passed: `cargo test --workspace --offline`, `cargo check --workspace
+--all-targets --offline`, focused fixture schema/CLI tests, Linux x86_64 runner
+all-targets compile-only check, `cargo fmt --all -- --check`, `git diff --check`
+and `graphify update .`. `python3 tools/check_layout.py` reports the pre-existing
+unmapped root `.serena/` directory; it was left untouched. The Linux native
+denial test was not run on this arm64 macOS host. No Mac mini, SSH or physical
+hardware checks were run. Independent gpt-6.1-sol review found no defects.

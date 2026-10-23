@@ -205,6 +205,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30w | Bare `DD D8+i` FSTP ST(i), canonical Normal source copy then physical TOP pop; native closed | S2-30v |
 | [x] | S2-30x | Bare `DD D0+i` FST ST(i), canonical Normal raw copy without TOP change; native closed | S2-30w |
 | [x] | S2-30y | Bare `D9 E0` FCHS, bounded canonical-Normal ST(0) sign-bit flip; native closed | S2-30x |
+| [x] | S2-30z | Bare `D9 E1` FABS, bounded canonical-Normal ST(0) sign-bit clear; native closed | S2-30y |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1931,6 +1932,32 @@ with no stop RIP and budget one. Native admission explicitly denies `D9 E0`.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FCHS—Change Sign,” p.3-318
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=436)).
+
+#### S2-30z. Bare bounded `FABS` (sign-bit-clear local slice)
+
+Accept exactly bare `D9 E1` with an existing `Some(X87State)`, using the same
+canonical-Normal ST(0) source gate as S2-30y: FCW `0x037f`, `FSW & 0x80ff == 0`,
+Valid tag at old physical TOP and canonical Normal binary80 bytes. Snapshot all
+ten source bytes and clear only `source[9] & 0x7f` in old physical TOP. Clear
+C1 while preserving TOP, tags and every other state field; retaining C0/C2/C3
+is the deterministic local snapshot policy. Set FIP to instruction-start RIP,
+advance RIP by two and retire once.
+
+Missing/bad state, environment, tag or class; every other D9 second byte,
+prefix/REX/WAIT, truncation, STOP and exhausted budget reject without state
+commit. Zero, subnormal and special values, memory, CR0/#NM, exception delivery,
+native x87 and FPU feature claims remain outside this slice.
+
+Coverage enumerates all 256 D9 second bytes, accepting E0 as FCHS and E1 as
+FABS, and checks prefix/REX/WAIT/truncation. Literal interpreter vectors cover
+all TOP values, positive and negative minimum/maximum/full-significand Normal
+values, C1 clear/set, C0/C2/C3 retention and idempotent repeated FABS. Full-state
+rejections cover invalid/missing environment, tag/class, fetch, STOP and budget.
+The schema/CLI includes a literal success fixture and a real Empty-tag rejection
+with no stop RIP and budget one. Native admission explicitly denies D9 E1.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FABS—Absolute Value,” p.3-309
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=427)).
 
 ### S2-31. x87 conversions, rounding и exceptions
 

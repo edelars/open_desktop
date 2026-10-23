@@ -161,3 +161,11 @@ tag is set Valid. TOP and the complete FSW are preserved, including for the
 environment and fetch/stop/budget boundaries preserve full state. Memory
 forms, exception delivery and native x87 admission remain outside this slice.
 See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30x-bounded-fst-sti-dd-d0i), [Stage 2 plan](../../docs/plans/STAGE_2.md#s2-30x-bare-bounded-fst-sti-local-raw-copy-slice), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+S2-30z adds bare `D9 E1` FABS through the same bounded canonical-Normal ST(0)
+source gate: it clears only the raw sign bit, clears C1, records FIP and retires
+once. Literal vectors cover every TOP, positive/negative Normal boundaries, C1
+and retained status sentinels, idempotence, and atomic state/fetch/stop/budget
+rejection. The schema and CLI include a success fixture and a real
+no-stop/budget-one source-tag rejection. Native x87 admission explicitly denies
+FABS; full x87 semantics remain open. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30z-bounded-fabs-d9-e1), [fixture notes](../../tests/fixtures/x86/stage2/README.md), and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
