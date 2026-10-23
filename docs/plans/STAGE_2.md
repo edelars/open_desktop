@@ -177,6 +177,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-29 | Собственное ядро extended precision | S2-28 |
 | [x] | S2-29a | Lossless binary80 raw fields and read-only raw encoding classification; no arithmetic or x87 execution | S2-28a |
 | [x] | S2-29b | Integer-only finite binary80 normalization with source-class provenance and right-shift-jam/GRS bit helpers; no rounding or arithmetic | S2-29a |
+| [x] | S2-29m | Bounded packing of already-rounded nonzero normal finite significands with one carry and finite normal exponent range; no subnormal/special packing or architectural effects | S2-29l |
 | [x] | S2-29c | Generic `u128` right-shift-jam preserving 64-bit significands plus three low GRS bits; literal boundary and normalized-finite bridge vectors; no rounding or arithmetic | S2-29b |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
@@ -1246,6 +1247,30 @@ This is mathematical precision rounding only: it does not implement x87 PC/RC
 or control-word values, exponent normalization/adjustment, subnormal/range
 handling, binary80 packing, flags/exceptions, signed-zero selection, or guest
 FDIV. S2-29 and S2-28 remain open.
+
+### S2-29m. Bounded normal finite binary80 packing (partial)
+
+`pack_normal_rounded_significand(sign, exponent, magnitude, precision)` packs
+an already-rounded nonzero magnitude representing
+`(-1)^sign * magnitude * 2^(exponent + 1 - precision)`. It accepts precision
+1–64 and a magnitude in `[2^(precision-1), 2^precision]`. Values below the
+carry boundary are shifted exactly into the explicit 64-bit significand; a
+magnitude equal to `2^precision` becomes `0x8000000000000000` and increments
+the exponent once. The final exponent must be in `[-16382, 16383]`; encoding is
+the little-endian significand followed by the little-endian sign/exponent word.
+No additional rounding occurs.
+
+Literal byte vectors cover positive and negative values, p=1/2/24/53/63/64,
+carry, the minimum normal exponent and carry into it, and the maximum finite
+exponent. Composition packs exact S2-29i 1/3 results at p=24/53/64 and packs
+negative p=24 directed-rounding results. Invalid precision, zero/out-of-range
+magnitudes, exponent endpoints outside the finite normal range, checked carry
+overflow, and integer exponent extremes return `None`.
+
+This is a bounded packing helper only. Subnormals, pseudo encodings, infinity,
+NaNs, overflow/underflow behavior, architectural rounding control, flags,
+exceptions, signed-zero selection, and guest instructions remain outside this
+slice; S2-29 and S2-28 remain open.
 
 ### S2-30. Основные x87 операции
 

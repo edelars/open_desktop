@@ -250,6 +250,54 @@ pub fn round_quotient_to_precision(
     Some(u128::from(t) + u128::from(increment))
 }
 
+/// Pack an already-rounded, nonzero normal significand into binary80.
+///
+/// The input represents `(-1)^sign * magnitude * 2^(exponent + 1 - precision)`.
+/// A carry to `2^precision` is normalized by incrementing the exponent once.
+/// This helper accepts only normal finite results, performs no rounding, and
+/// defines no architectural x87 range, status, or exception behavior.
+pub fn pack_normal_rounded_significand(
+    sign: bool,
+    exponent: i32,
+    magnitude: u128,
+    precision: u32,
+) -> Option<X87Binary80> {
+    if !(1..=64).contains(&precision) {
+        return None;
+    }
+
+    let precision_limit = 1_u128 << precision;
+    if magnitude < (precision_limit >> 1) || magnitude > precision_limit {
+        return None;
+    }
+
+    let (significand, exponent) = if magnitude == precision_limit {
+        (1_u64 << 63, exponent.checked_add(1)?)
+    } else {
+        ((magnitude << (64 - precision)) as u64, exponent)
+    };
+    if !(-16382..=16383).contains(&exponent) {
+        return None;
+    }
+
+    let biased_exponent = (exponent + 16383) as u16;
+    let sign_exponent = biased_exponent | if sign { 0x8000 } else { 0 };
+    let significand_bytes = significand.to_le_bytes();
+    let sign_exponent_bytes = sign_exponent.to_le_bytes();
+    Some(X87Binary80::from_bytes([
+        significand_bytes[0],
+        significand_bytes[1],
+        significand_bytes[2],
+        significand_bytes[3],
+        significand_bytes[4],
+        significand_bytes[5],
+        significand_bytes[6],
+        significand_bytes[7],
+        sign_exponent_bytes[0],
+        sign_exponent_bytes[1],
+    ]))
+}
+
 /// Round the unsigned rational value `q + r / d` to nearest with ties to even.
 ///
 /// This compatibility wrapper is equivalent to a positive coefficient using
@@ -554,10 +602,217 @@ mod tests {
         RationalRoundingMode, X87Binary80, X87Binary80Class, X87Finite, X87Grs,
         add_finite_same_exponent, align_finite_pair, divide_finite_significands,
         multiply_finite_significands, normalize_exact_coefficient, normalize_exact_magnitude,
-        round_quotient_magnitude, round_quotient_ties_even, round_quotient_to_precision,
-        shift_right_jam, shift_right_jam_u128,
+        pack_normal_rounded_significand, round_quotient_magnitude, round_quotient_ties_even,
+        round_quotient_to_precision, shift_right_jam, shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
+
+    #[test]
+    fn normal_significand_packing_matches_literal_binary80_encodings() {
+        let cases = [
+            (
+                false,
+                0,
+                1_u128,
+                1,
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x3f],
+            ),
+            (
+                true,
+                0,
+                3,
+                2,
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xff, 0xbf],
+            ),
+            (
+                false,
+                0,
+                2,
+                1,
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x40],
+            ),
+            (
+                false,
+                7,
+                0x00c0_1234,
+                24,
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0xc0, 0x06, 0x40],
+            ),
+            (
+                false,
+                0,
+                0x0010_0000_0000_0001,
+                53,
+                [0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x3f],
+            ),
+            (
+                false,
+                0,
+                0x4000_0000_0000_0001,
+                63,
+                [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x3f],
+            ),
+            (
+                false,
+                0,
+                0x8000_0000_0000_0001,
+                64,
+                [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x3f],
+            ),
+            (
+                true,
+                0,
+                1_u128 << 64,
+                64,
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0xc0],
+            ),
+            (
+                false,
+                -16382,
+                1_u128 << 23,
+                24,
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x01, 0x00],
+            ),
+            (
+                false,
+                -16383,
+                1_u128 << 24,
+                24,
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x01, 0x00],
+            ),
+            (
+                false,
+                16383,
+                (1_u128 << 64) - 1,
+                64,
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x7f],
+            ),
+        ];
+
+        for (sign, exponent, magnitude, precision, expected) in cases {
+            let packed = pack_normal_rounded_significand(sign, exponent, magnitude, precision)
+                .expect("literal normal value should pack");
+            assert_eq!(packed.to_bytes(), expected);
+            assert_eq!(packed.classify(), X87Binary80Class::Normal);
+        }
+    }
+
+    #[test]
+    fn normal_significand_packing_composes_with_one_third_rounding() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let numerator = finite(-1, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let denominator = finite(0, 0xc000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let quotient = divide_finite_significands(numerator, denominator).unwrap();
+        let cases = [
+            (
+                24,
+                0x00aa_aaab_u128,
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0xab, 0xaa, 0xaa, 0xfd, 0x3f],
+            ),
+            (
+                53,
+                0x0015_5555_5555_5555,
+                [0x00, 0xa8, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xfd, 0x3f],
+            ),
+            (
+                64,
+                0xaaaa_aaaa_aaaa_aaab,
+                [0xab, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xfd, 0x3f],
+            ),
+        ];
+        for (precision, magnitude, expected) in cases {
+            let rounded = round_quotient_to_precision(
+                quotient.sign(),
+                quotient.quotient(),
+                quotient.remainder(),
+                quotient.denominator(),
+                precision,
+                Nearest,
+            )
+            .unwrap();
+            assert_eq!(rounded, magnitude);
+            assert_eq!(
+                pack_normal_rounded_significand(
+                    quotient.sign(),
+                    quotient.exponent(),
+                    rounded,
+                    precision,
+                )
+                .unwrap()
+                .to_bytes(),
+                expected
+            );
+        }
+
+        let negative_numerator = finite(-1, 0x8000_0000_0000_0000, true, X87Binary80Class::Normal);
+        let negative_quotient =
+            divide_finite_significands(negative_numerator, denominator).unwrap();
+        for (mode, magnitude) in [
+            (Nearest, 0x00aa_aaab_u128),
+            (Zero, 0x00aa_aaaa),
+            (Up, 0x00aa_aaaa),
+            (Down, 0x00aa_aaab),
+        ] {
+            let rounded = round_quotient_to_precision(
+                negative_quotient.sign(),
+                negative_quotient.quotient(),
+                negative_quotient.remainder(),
+                negative_quotient.denominator(),
+                24,
+                mode,
+            )
+            .unwrap();
+            assert_eq!(rounded, magnitude);
+            let packed = pack_normal_rounded_significand(
+                negative_quotient.sign(),
+                negative_quotient.exponent(),
+                rounded,
+                24,
+            )
+            .unwrap();
+            assert_eq!(packed.sign(), true);
+            assert_eq!(packed.exponent(), 0x3ffd);
+            assert_eq!(packed.classify(), X87Binary80Class::Normal);
+        }
+    }
+
+    #[test]
+    fn normal_significand_packing_rejects_out_of_slice_inputs_and_exponents() {
+        for precision in [0, 65, u32::MAX] {
+            assert_eq!(
+                pack_normal_rounded_significand(false, 0, 1, precision),
+                None
+            );
+        }
+        for magnitude in [0, 1, 5] {
+            assert_eq!(
+                pack_normal_rounded_significand(false, 0, magnitude, 2),
+                None
+            );
+        }
+        assert_eq!(
+            pack_normal_rounded_significand(false, 0, (1_u128 << 24) + 1, 24),
+            None
+        );
+        for exponent in [i32::MIN, -16383, 16384, i32::MAX] {
+            assert_eq!(
+                pack_normal_rounded_significand(false, exponent, 1_u128 << 63, 64),
+                None
+            );
+        }
+        assert_eq!(
+            pack_normal_rounded_significand(false, i32::MAX, 1_u128 << 64, 64),
+            None
+        );
+        assert_eq!(
+            pack_normal_rounded_significand(false, 16383, 1_u128 << 64, 64),
+            None
+        );
+    }
 
     #[test]
     fn literal_encodings_preserve_fields_and_classification() {

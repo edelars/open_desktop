@@ -1297,6 +1297,27 @@ or adjustment, subnormal/range handling, binary80 packing, architectural
 flags/exceptions, signed-zero selection, or guest FDIV. S2-29 and S2-28 remain
 open.
 
+## Local S2-29m: bounded normal finite binary80 packing
+
+`od_isa::x87::pack_normal_rounded_significand(sign, exponent, magnitude,
+precision)` packs an already-rounded nonzero value
+`(-1)^sign * magnitude * 2^(exponent + 1 - precision)` for precision 1–64.
+The magnitude must be in `[2^(precision-1), 2^precision]`. For a magnitude
+below `2^precision`, packing shifts it exactly so its leading bit occupies the
+explicit binary80 integer bit and keeps the input exponent. At the carry value
+`2^precision`, packing uses significand `0x8000000000000000` and increments the
+exponent exactly once. The final exponent must be `[-16382, 16383]`; bytes are
+the little-endian 64-bit significand followed by the little-endian sign and
+biased-exponent word. Packing performs no rounding. `None` denotes only an
+invalid bounded input or unsupported normal exponent range.
+
+Literal vectors cover p=1/2/24/53/63/64, signs, carry, minimum normal and carry
+into it, and maximum finite. Composition uses exact S2-29i 1/3 quotient results
+at p=24/53/64 and negative p=24 directed-rounding values. Subnormal and special
+encodings, architectural overflow/underflow, x87 PC/RC, flags/exceptions,
+signed-zero selection, and guest instruction behavior remain open under
+S2-29/S2-28 and ISSUE-019.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

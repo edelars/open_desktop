@@ -2634,3 +2634,31 @@ directory, which was left untouched. `graphify update .` completed with the
 existing parser warning for `include/open_desktop/host_abi.h`. No physical Mac
 mini check was performed or required for this pure integer helper. S2-29 and
 S2-28 remain open under ISSUE-019.
+
+## S2-29m — bounded normal finite binary80 packing (partial)
+
+Added `pack_normal_rounded_significand(sign, exponent, magnitude, precision)`
+to encode an already-rounded nonzero magnitude as a normal finite binary80
+value. It validates precision 1–64 and the normalized magnitude interval
+`[2^(precision-1), 2^precision]`, shifts the significand exactly into the
+explicit integer bit, and handles the upper endpoint by setting the significand
+to `0x8000000000000000` and incrementing the exponent once. It accepts final
+exponents only in `[-16382, 16383]` and writes the eight significand bytes and
+two sign/exponent bytes in memory order. It performs no rounding.
+
+Literal raw-byte arrays cover positive one, negative 1.5 (the expected encoding
+is `[00,00,00,00,00,00,00,c0,ff,bf]`), a p=1 carry, p=24/53/63/64,
+negative p=64 carry, minimum normal, carry from `e=-16383` into minimum normal,
+and maximum finite. Composition vectors round exact 1/3 S2-29i results and pack
+them at p=24/53/64; negative p=24 nearest and directed modes are also passed
+through packing. Invalid precision, zero/out-of-range magnitudes, exponent
+range endpoints, carry overflow, and `i32` extremes return `None`.
+
+Verification: `cargo test -p od-isa x87 --offline` passed (39 tests),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+and `git diff --check` passed. `python3 tools/check_layout.py` stopped on the
+pre-existing unmapped `.serena/` directory; it was left untouched. `graphify
+update .` completed. No physical Mac mini check was required for this integer
+helper. Subnormals, NaNs/infinities, architectural overflow/underflow,
+architectural rounding/flags/exceptions, signed-zero selection, and guest x87
+instructions remain open; S2-29 and S2-28 remain open under ISSUE-019.
