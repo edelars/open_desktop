@@ -699,6 +699,41 @@ schema isolation, old FS-profile compatibility, and native/legacy rejection.
 This task reuses the Intel SDM revision 093 MOV and descriptor sources already
 recorded for S2-22f/g; no new independent PDF verification is claimed.
 
+### S2-22i — loaded GS.base composition fixture
+
+One additional local-only literal fixture uses the existing
+`s2-long-gs-load-v1` profile to run exactly `8E E8 65 48 8B 00`: load GS from
+the CPL3 GDT selector `0x000b`, then execute the already-supported
+`MOV RAX, qword ptr GS:[RAX]`. Profile validation admits the original one-
+instruction load fixtures and this exact two-instruction byte sequence with a
+two-instruction budget and matching stop RIP; it does not admit other program
+shapes. No opcode semantics or native/physical eligibility are added.
+
+The literal starts with `RAX=0x0b`, `GS.base=0x00400000`, GDTR at
+`0x00200000` with limit 15, and an A=0 writable DPL3 data descriptor at
+`0x00200008` encoding base32 `0x80000000`, limit 0 and flags 0. The first
+instruction changes only descriptor byte `0x0020000d` from F2 to F3 and loads
+the GS selector/base/cache; it retires once at RIP `0x00100002`. The second
+reads qword `0x1122334455667788` at `0x8000000b`, yielding RIP `0x00100006`
+and two total retirements. A contrasting canary at the old base address
+`0x0040000b` remains untouched. This deliberately uses offset `0x0b` beyond
+the cached limit 0; as defined for the existing Long64 GS memory form in
+S2-22b, long-mode FS/GS runtime segment limits are not checked. The descriptor
+is not reread by the ordinary data access.
+
+Unit trace evidence records the descriptor read8 and optional A-byte write1
+with descriptor-table origin, architectural CPL3 and page privilege Ring0,
+followed by only the explicit qword data read at `0x8000000b` with ordinary
+CPL3 context. A later data-read fault preserves the first instruction's GS
+cache, A-bit memory write and retirement while leaving the second instruction
+unretired. A canonicality case uses initial RAX `0x00007fff8000000b`: its low
+selector remains `0x000b`, the loaded base produces noncanonical
+`0x000080000000000b`, and the existing canonicality rule raises #GP(0) before
+any data callback while preserving the first instruction's committed effects.
+Canonicality and no-limit behavior reuse the checks already recorded for
+S2-22a/b; no independent manual verification is claimed.
+
+
 ### Арифметика и eager flags — S2-11
 
 Реализованы long-mode ADD/ADC/SUB/SBB/CMP widths 8/16/32/64: оба направления

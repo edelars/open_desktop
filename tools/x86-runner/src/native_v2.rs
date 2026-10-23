@@ -3601,6 +3601,14 @@ mod tests {
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
 
+        let composition = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_22i_gs_base_composition.case.json"
+        ))
+        .unwrap();
+        let result = execute(&composition);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+
         let old_profile = fixture(&[0x8e, 0xe8]);
         let actual = old_profile.fixture.initial_state.to_cpu().unwrap();
         let mut decoder = FlatMemory::from_fixture(&old_profile.fixture).unwrap();

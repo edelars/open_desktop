@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-**Дата:** 23 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–h add local-only FS/GS-base, selector, descriptor-load and VERW/GDT cases; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 new S2-22h fixtures are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b UD2 fixture are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Stage 2 remains open under broader roadmap criteria. ISSUE-011/012/013/014/015/016/017/018 remain open; acceptance criteria are unchanged.
+**Дата:** 23 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–i add local-only FS/GS-base, selector, descriptor-load, VERW/GDT and one exact GS.base composition case; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 S2-22h load fixtures and one S2-22i composition fixture are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b UD2 fixture are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Stage 2 remains open under broader roadmap criteria. ISSUE-011/012/013/014/015/016/017/018 remain open; acceptance criteria are unchanged.
 
 План рассчитан на модель, которой нужны небольшие последовательные задания, явные ограничения и проверяемый результат. Выполнять одну задачу `S2-NN` за раз. Большую группу внутри задачи делить на перечисленные подшаги; не реализовывать весь этап одним изменением.
 
@@ -165,6 +165,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-22f | Только bare `8E E0` (`MOV FS, AX`) в Long64/CPL3, AX non-null GDT selector; descriptor-origin read и точные #GP/#NP priorities/codes; A=0 пока не меняет состояние | S2-22e |
 | [x] | S2-22g | В том же local-only профиле для valid P=1/A=0 выполнить один byte write только по адресу access byte до CPU commit; A=1 не пишет; native profile остаётся fail-closed | S2-22f |
 | [x] | S2-22h | Только bare `8E E8` (`MOV GS, AX`) в отдельном `s2-long-gs-load-v1`: Long64/CPL3, non-null GDT selector, тот же упорядоченный GDT validation/A-write контракт, наблюдаемый GS cache; S2-22 остаётся открытым | S2-22g |
+| [x] | S2-22i | Один literal local-only composition case: exact `8E E8 65 48 8B 00`, loaded GS.base consumed by an already-supported GS qword load; bounded profile admits only existing `8E E8` and this exact two-instruction program | S2-22h |
 | [ ] | S2-23 | Real mode 16-bit, если нужен пути загрузки | S2-22 |
 | [ ] | S2-24 | Protected/compatibility mode | S2-22; S2-23 при необходимости |
 | [ ] | S2-25 | CR/MSR и переходы режима | S2-24 |
@@ -875,6 +876,30 @@ observer/writer, DMA, alias, delayed write or MMIO assumptions apply as to FS;
 no physical bus-width or SMP guarantee is made. S2-22 and ISSUE-017/018 remain
 open. Local verification and independent review are recorded in the Stage 2
 report; physical checks remain in the shared final acceptance substage.
+
+S2-22i adds one handwritten literal local-only composition fixture in the
+existing GS-load profile. The program is exactly `8E E8 65 48 8B 00`:
+`MOV GS, AX`, followed by the already-supported `MOV RAX, qword ptr GS:[RAX]`.
+Profile admission accepts only the existing bare two-byte GS load or this
+exact six-byte program, with matching instruction budget and stop RIP. The
+fixture starts at CPL3/Long64 with RAX `0x0b`, old GS.base `0x00400000`, and a
+GDT descriptor at `0x00200008` whose A=0 writable DPL3 data entry loads
+base32 `0x80000000` and limit 0. The first instruction sets only GDT byte
+`0x0020000d` from F2 to F3 and retires at RIP `0x00100002`; the second reads
+`0x1122334455667788` at `0x8000000b`, then stops at RIP `0x00100006` with two
+retirements. A canary at old-base address `0x0040000b` remains unchanged.
+The offset intentionally exceeds cache limit zero; S2-22b already records
+that Long64 FS/GS runtime limit checks are absent. Trace assertions prove one
+descriptor read8 at CPL3/pageRing0, the optional A-byte write1, then an
+ordinary CPL3 data read8 with no GDT reread. Unit faults verify later data
+read failure preserves the first instruction's state/write/retirement and
+that RAX `0x00007fff8000000b` still supplies selector `0x000b` before the
+loaded base creates noncanonical `0x000080000000000b`; the latter #GP(0) skips
+the data callback. Canonicality/no-limit evidence reuses S2-22a/b checks and
+does not claim new independent manual verification. The case is local-only;
+S2-22 and ISSUE-017/018 remain open.
+
+Local verification results for S2-22i are recorded in the Stage 2 report.
 
 ### S2-23. Real mode при необходимости
 

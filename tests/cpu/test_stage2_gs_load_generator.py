@@ -21,6 +21,7 @@ class GsLoadFixtureTests(unittest.TestCase):
         cases = {
             json.loads(raw)["case_id"]: json.loads(raw)
             for raw in GENERATOR.materialize().values()
+            if json.loads(raw)["case_id"].startswith("s2_22h_")
         }
         self.assertEqual(len(cases), 11)
         for case_id, value in cases.items():
@@ -66,6 +67,25 @@ class GsLoadFixtureTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_gs_base_composition_is_a_single_literal_exact_program(self) -> None:
+        case = json.loads(GENERATOR.materialize()["s2_22i_gs_base_composition.case.json"])
+        self.assertEqual(case["profile"], "s2-long-gs-load-v1")
+        self.assertEqual(case["initial_state"]["mode"], "long64")
+        self.assertEqual(case["initial_state"]["gpr"][0], "0x000000000000000b")
+        self.assertEqual(case["initial_state"]["gs_base"], "0x0000000000400000")
+        self.assertEqual(case["initial_state"]["gdtr_base"], "0x0000000000200000")
+        self.assertEqual(case["initial_state"]["gdtr_limit"], "0x000000000000000f")
+        self.assertEqual(case["memory"][0]["initial_bytes_hex"], "8ee865488b00")
+        self.assertEqual(case["memory"][1]["initial_bytes_hex"],
+                         "00000000000000000000000000f20080")
+        self.assertEqual(case["memory"][2]["guest_address"], "0x0000000000400000")
+        self.assertEqual(case["memory"][2]["initial_bytes_hex"][22:], "deadc0decafef00d")
+        self.assertEqual(case["memory"][3]["guest_address"], "0x0000000080000000")
+        self.assertEqual(case["memory"][3]["initial_bytes_hex"][22:], "8877665544332211")
+        self.assertEqual(case["stop_rip"], "0x0000000000100006")
+        self.assertEqual(case["instruction_budget"], 2)
+        self.assertIn("Rust tests hold literal expected", case["provenance"]["source"])
 
 
 if __name__ == "__main__":

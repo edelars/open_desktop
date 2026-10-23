@@ -1001,3 +1001,34 @@ python3 tests/cpu/generate_stage2_gs_load.py --check
 python3 tests/cpu/test_stage2_gs_load_generator.py
 cargo test -p od-runner --test fixture_v2 gs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state --offline
 ```
+
+## Loaded GS.base composition fixture S2-22i
+
+The one local-only composition case runs exactly `8E E8 65 48 8B 00` under
+`s2-long-gs-load-v1`: CPL3 loads GS from a literal GDT descriptor, then the
+existing `MOV RAX, qword ptr GS:[RAX]` consumes that cached base. The starting
+GS.base points at a contrasting canary; the loaded base `0x80000000` selects
+the qword at `0x8000000b`. Its offset `0x0b` exceeds the cached limit 0 by
+design, consistent with the existing Long64 GS memory contract. The fixture
+checks the one A-bit byte update, full state, both memory regions and final
+retirement count. Unit trace assertions prove descriptor-origin read8 and
+optional write1 at CPL3/pageRing0, followed by the explicit CPL3 data read8
+without a GDT reread. Separate unit cases verify later data-read fault
+persistence and noncanonical-result #GP(0) with no data callback.
+
+The profile admits the existing exact `8E E8` case and this exact
+two-instruction byte sequence with fixed budget/stop boundary; other sequences
+are rejected. Instruction bytes, initial state, descriptor/data/canary bytes
+and harness fields are handwritten literals. The generator serializes those
+fixture inputs; the expected post-state and memory answers are hard-coded in
+Rust unit and runner tests, not generated into the fixture. Canonicality and
+long-mode no-limit behavior reuse the checks already documented in
+CPU_CONTRACT, with no independent manual verification claimed. S2-22 and
+ISSUE-017/018 remain open.
+
+```sh
+python3 tests/cpu/generate_stage2_gs_load.py --check
+python3 tests/cpu/test_stage2_gs_load_generator.py
+cargo test -p od-testkit --offline s2_22i
+cargo test -p od-runner --test fixture_v2 --offline s2_22i_gs_base_composition_runs_the_literal_two_instruction_profile
+```

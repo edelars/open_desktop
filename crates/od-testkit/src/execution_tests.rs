@@ -5,7 +5,7 @@ use crate::memory::{FlatMemory, encode_bytes};
 use crate::v2::{Fixture, decode_bytes};
 use od_isa::execute::{REP_ITERATION_WORK_LIMIT, RunConfig, RunExit, StepOutcome, run, step};
 use od_isa::memory::{AccessContext, AccessKind, ArchitecturalFault, GuestMemory, MemoryError};
-use od_isa::{LongModeState, Register};
+use od_isa::{LongModeState, OperandSize, Register};
 
 fn memory(code: &[u8], base: u64) -> FlatMemory {
     let source = crate::case::Fixture::from_json(include_bytes!(
@@ -30,6 +30,78 @@ fn config(budget: u64, stop: Option<u64>) -> RunConfig {
         instruction_budget: budget,
         stop_rip: stop,
         context: AccessContext::default(),
+    }
+}
+
+struct AccessTraceMemory {
+    inner: FlatMemory,
+    accesses: Vec<(AccessKind, u64, usize, AccessContext)>,
+}
+
+impl GuestMemory for AccessTraceMemory {
+    fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        self.accesses.push((AccessKind::Fetch, address, 1, context));
+        self.inner.fetch(address, context)
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        destination: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        self.accesses
+            .push((AccessKind::Read, address, destination.len(), context));
+        self.inner.read(address, context, destination)
+    }
+
+    fn write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        source: &[u8],
+    ) -> Result<(), MemoryError> {
+        self.accesses
+            .push((AccessKind::Write, address, source.len(), context));
+        self.inner.write(address, context, source)
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: OperandSize,
+        replacement: u64,
+    ) -> Result<u64, MemoryError> {
+        self.inner
+            .atomic_exchange_integer(address, context, size, replacement)
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: OperandSize,
+        addend: u64,
+    ) -> Result<u64, MemoryError> {
+        self.inner
+            .atomic_fetch_add_integer(address, context, size, addend)
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: OperandSize,
+        expected: u64,
+        replacement: u64,
+    ) -> Result<u64, MemoryError> {
+        self.inner
+            .atomic_compare_exchange_integer(address, context, size, expected, replacement)
+    }
+
+    fn mfence(&mut self, context: AccessContext) -> Result<(), MemoryError> {
+        self.inner.mfence(context)
     }
 }
 
@@ -1427,6 +1499,170 @@ fn gs_load_accessed_byte_write_spans_adjacent_gdt_regions_without_full_descripto
     assert_eq!(denied.instructions_executed, 0);
     assert_eq!(denied_state, before_state);
     assert_eq!(denied_memory.snapshot(), before_memory);
+}
+
+#[test]
+fn s2_22i_loaded_gs_base_composes_with_exact_qword_load() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22i_gs_base_composition.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let mut memory = AccessTraceMemory {
+        inner: FlatMemory::from_fixture(&fixture).unwrap(),
+        accesses: Vec::new(),
+    };
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(
+            fixture.instruction_budget,
+            fixture.stop_rip.map(HexU64::get),
+        ),
+        || false,
+    );
+
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.rip, 0x0010_0006);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x1122_3344_5566_7788);
+    for register in 1..state.gpr.len() {
+        assert_eq!(
+            state.gpr[register],
+            fixture.initial_state.gpr[register].get(),
+            "non-destination GPR {register} is preserved"
+        );
+    }
+    assert_eq!(state.rflags, fixture.initial_state.rflags.get());
+    assert_eq!(
+        state.gdtr,
+        Some(od_isa::state::Gdtr {
+            base: 0x0020_0000,
+            limit: 15
+        })
+    );
+    assert_eq!(state.gs_selector, 0x0b);
+    assert_eq!(state.gs_base, 0x8000_0000);
+    assert_eq!(
+        state.gs_cache,
+        Some(od_isa::state::FsDescriptorCache {
+            limit: 0,
+            access: 0xf3,
+            flags: 0,
+        })
+    );
+    let observed = memory.inner.snapshot();
+    assert_eq!(observed[1].bytes_hex, "00000000000000000000000000f30080");
+    assert_eq!(
+        observed[2].bytes_hex,
+        "0000000000000000000000deadc0decafef00d"
+    );
+    assert_eq!(
+        observed[3].bytes_hex,
+        "00000000000000000000008877665544332211"
+    );
+
+    let descriptor_context = AccessContext::default().descriptor_table();
+    assert_eq!(
+        memory
+            .accesses
+            .iter()
+            .copied()
+            .filter(|(kind, _, _, _)| *kind != AccessKind::Fetch)
+            .collect::<Vec<_>>(),
+        vec![
+            (AccessKind::Read, 0x0020_0008, 8, descriptor_context),
+            (AccessKind::Write, 0x0020_000d, 1, descriptor_context),
+            (AccessKind::Read, 0x8000_000b, 8, AccessContext::default()),
+        ]
+    );
+    for (_, _, _, context) in memory
+        .accesses
+        .iter()
+        .filter(|(kind, _, _, _)| *kind != AccessKind::Fetch)
+    {
+        assert_eq!(context.privilege, od_isa::memory::PrivilegeLevel::Ring3);
+    }
+    assert_eq!(
+        descriptor_context.page_privilege(),
+        od_isa::memory::PrivilegeLevel::Ring0
+    );
+}
+
+#[test]
+fn s2_22i_later_gs_data_fault_preserves_load_and_canonicality_fault_skips_read() {
+    let source =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22i_gs_base_composition.case.json");
+    let mut canonical = Fixture::from_json(source).unwrap().fixture;
+    canonical.initial_state.gpr[Register::Rax as usize] = HexU64(0x0000_7fff_8000_000b);
+
+    for (fixture, data_fault) in [
+        (canonical, false),
+        (Fixture::from_json(source).unwrap().fixture, true),
+    ] {
+        let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+        let mut inner = FlatMemory::from_fixture(&fixture).unwrap();
+        if data_fault {
+            inner.inject_once(
+                0x8000_000b,
+                AccessKind::Read,
+                MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(0),
+                    linear_address: Some(0x8000_000b),
+                }),
+            );
+        }
+        let mut memory = AccessTraceMemory {
+            inner,
+            accesses: Vec::new(),
+        };
+        let original_rax = state.gpr[Register::Rax as usize];
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(
+                fixture.instruction_budget,
+                fixture.stop_rip.map(HexU64::get),
+            ),
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: if data_fault { 14 } else { 13 },
+                error_code: Some(0),
+                linear_address: if data_fault { Some(0x8000_000b) } else { None },
+            })
+        );
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.rip, 0x0010_0002);
+        assert_eq!(state.gpr[Register::Rax as usize], original_rax);
+        assert_eq!(state.gs_selector, 0x0b);
+        assert_eq!(state.gs_base, 0x8000_0000);
+        assert_eq!(state.gs_cache.unwrap().access, 0xf3);
+        assert_eq!(
+            memory.inner.snapshot()[1].bytes_hex,
+            "00000000000000000000000000f30080"
+        );
+        assert_eq!(
+            memory
+                .accesses
+                .iter()
+                .filter(|(kind, _, _, _)| *kind == AccessKind::Read)
+                .count(),
+            if data_fault { 2 } else { 1 },
+            "only descriptor read plus optional explicit data read are allowed"
+        );
+        if !data_fault {
+            assert!(!memory.accesses.iter().any(|(kind, address, _, context)| {
+                *kind == AccessKind::Read
+                    && *address == 0x0000_8000_0000_000b
+                    && context.origin == od_isa::memory::AccessOrigin::Explicit
+            }));
+        }
+    }
 }
 
 #[test]

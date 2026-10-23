@@ -17,6 +17,11 @@ selector/descriptor, privilege или paging semantics.
 добавляют только `48 8C E0` (`MOV RAX, FS`) и `48 8C E8` (`MOV RAX, GS`):
 каждый наблюдает свой 16-bit selector независимо от соответствующей base и
 не загружает или проверяет descriptor.
+Профиль `s2-long-gs-load-v1` admits the existing exact `8E E8` descriptor
+load and one local-only composition program `8E E8 65 48 8B 00`; its bounded
+fixture validator rejects other byte sequences and budgets. The composition
+proves that the loaded GS.base feeds the existing GS qword load form. It does
+not expand native admission or claim Linux readiness; S2-22 remains open.
 Сначала A (integer/memory/stack), затем B (strings/REP/exits), C (system/modes),
 D (x87/MMX/SSE/SSE2). CPUID не рекламирует незавершённые группы.
 

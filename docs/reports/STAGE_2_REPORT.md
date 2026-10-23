@@ -204,12 +204,53 @@ No SSH, Mac mini, native execution or physical check was performed; those remain
 in the shared final acceptance substage. This work uses the CPU_CONTRACT rev093
 references already checked in; no new independent PDF verification is claimed.
 
+## S2-22i — loaded GS.base composition
+
+Added one handwritten literal fixture to the existing local-only
+`s2-long-gs-load-v1` profile. It admits exactly the existing `8E E8` load or
+the new fixed two-instruction program `8E E8 65 48 8B 00` with budget and stop
+RIP matched to that program. The fixture loads GS.base `0x80000000` from the
+GDT selector `0x0b` at CPL3, applies the A=0 update only at byte
+`0x20000d`, and then reads qword `0x1122334455667788` from `0x8000000b` using
+the already-supported GS memory form. A canary at old-base address
+`0x40000b` remains unchanged. The operand offset `0x0b` exceeds descriptor
+limit zero intentionally; the existing S2-22b contract states that Long64
+FS/GS runtime limits are not checked. The second instruction uses the cached
+GS base and does not reread the descriptor.
+
+Trace tests assert descriptor read8 at architectural CPL3/page Ring0, optional
+access-byte write1, and one explicit CPL3 data read8. They also cover a later
+data-read #PF, which retains the first instruction's GS/cache, A-bit write and
+retirement, and a noncanonical result from RAX `0x00007fff8000000b`, which
+raises #GP(0) without a data callback while preserving the first instruction's
+effects. These canonicality and no-limit properties reuse the checks already
+recorded in the CPU contract; no independent manual verification is claimed.
+The fixture generator serializes the handwritten program, initial state,
+descriptor/data/canary bytes and harness fields. It does not put the expected
+post-state into the fixture: Rust unit and runner tests hold the expected
+register, cache, retirement and memory results as literals.
+S2-22 and ISSUE-017/018 remain open; native/physical execution and Linux
+readiness are not claimed.
+
+Local verification passed: `cargo check --workspace --all-targets --offline`,
+`cargo test --workspace --all-targets --offline` (377 tests passed),
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline` (compile-only), all 88 Python CPU tests, GS fixture freshness and
+generator provenance, `cargo fmt --all -- --check`,
+`python3 tools/check_layout.py`, and `git diff --check`. The listed S2-22h
+focused commands and the S2-22i unit/runner tests also passed.
+Independent `gpt-6.1-sol` medium review found no issues. The Linux-only native
+runner test was compiled for its target but not executed; no Mac mini, SSH,
+native or physical acceptance was performed.
+
 ```sh
 python3 tests/cpu/generate_stage2_gs_load.py --check
 python3 tests/cpu/test_stage2_gs_load_generator.py
 cargo test -p od-isa --offline mov_gs_ax
 cargo test -p od-testkit --offline gs_load_accessed_byte_write_spans_adjacent_gdt_regions_without_full_descriptor_writeback
 cargo test -p od-runner --test fixture_v2 --offline gs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state
+cargo test -p od-testkit --offline s2_22i
+cargo test -p od-runner --test fixture_v2 --offline s2_22i_gs_base_composition_runs_the_literal_two_instruction_profile
 ```
 
 ## S2-00 — профиль
