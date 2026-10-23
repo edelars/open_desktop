@@ -7,6 +7,11 @@ use crate::long_decode::{
     general_protection,
 };
 use crate::memory::{AccessContext, ArchitecturalFault, GuestMemory, MemoryError, PrivilegeLevel};
+use crate::state::X87Tag;
+use crate::x87::{
+    RationalRoundingMode, X87Binary80, X87Binary80Class, add_finite_same_exponent,
+    round_pack_exact_coefficient,
+};
 use crate::{FsDescriptorCache, LongModeState, OperandSize, Register, RegisterView};
 
 /// Maximum successful string iterations processed by one instruction invocation.
@@ -179,9 +184,14 @@ fn step_tracked_with_stop(
     }
     if matches!(
         instruction.operation,
-        Operation::Fninit | Operation::Fnclex | Operation::FnstswAx
+        Operation::Fninit | Operation::Fnclex | Operation::FnstswAx | Operation::FaddSt0St1
     ) && state.x87.is_none()
     {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
+    if instruction.operation == Operation::FaddSt0St1 && exact_fadd_result(state).is_none() {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
         });
@@ -222,6 +232,12 @@ fn step_tracked_with_stop(
             instruction.opcode.map == OpcodeMap::Escape0f
                 && instruction.opcode.byte == 0xae
                 && instruction.length == 3
+                && instruction.prefixes == Prefixes::default()
+        }
+        Operation::FaddSt0St1 => {
+            instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0xd8
+                && instruction.length == 2
                 && instruction.prefixes == Prefixes::default()
         }
         Operation::LoadFsSelector => {
@@ -449,6 +465,17 @@ fn step_tracked_with_stop(
                 RegisterView::low(Register::Rax, OperandSize::Word),
                 u64::from(status_word),
             );
+        }
+        Operation::FaddSt0St1 => {
+            // The complete bounded precondition and result check ran above, before mutation.
+            let result = exact_fadd_result(state).expect("FADD result was prevalidated");
+            let x87 = state.x87.as_mut().expect("FADD state was prevalidated");
+            let destination = x87
+                .physical_register_for_st(0)
+                .expect("ST(0) is a valid logical register") as usize;
+            x87.registers[destination] = result.to_bytes();
+            x87.status_word &= !(1 << 9);
+            x87.instruction_pointer = state.rip;
         }
         operation @ (Operation::MovImmediate { .. }
         | Operation::Mov { .. }
@@ -1253,6 +1280,42 @@ fn operand_width(size: OperandSize) -> u32 {
         OperandSize::Dword => 32,
         OperandSize::Qword => 64,
     }
+}
+
+/// Return the result only for the deliberately exact-only local FADD profile.
+/// The caller can use `None` as an atomic pre-commit rejection.
+fn exact_fadd_result(state: &LongModeState) -> Option<X87Binary80> {
+    let x87 = state.x87.as_ref()?;
+    if x87.control_word != 0x037f || x87.status_word & 0x80ff != 0 {
+        return None;
+    }
+    let destination = x87.physical_register_for_st(0)?;
+    let source = x87.physical_register_for_st(1)?;
+    if x87.tag(destination)? != X87Tag::Valid || x87.tag(source)? != X87Tag::Valid {
+        return None;
+    }
+    let lhs_raw = X87Binary80::from_bytes(x87.registers[destination as usize]);
+    let rhs_raw = X87Binary80::from_bytes(x87.registers[source as usize]);
+    if lhs_raw.classify() != X87Binary80Class::Normal
+        || rhs_raw.classify() != X87Binary80Class::Normal
+    {
+        return None;
+    }
+    let lhs = lhs_raw.normalize_finite()?;
+    let rhs = rhs_raw.normalize_finite()?;
+    if lhs.exponent() != rhs.exponent() {
+        return None;
+    }
+    let (exponent, coefficient) = add_finite_same_exponent(lhs, rhs)?;
+    let magnitude = coefficient.unsigned_abs();
+    // A 64-bit coefficient is directly representable. The only wider exact
+    // sum comes from a carry and is representable when its low bit is zero.
+    if magnitude > u64::MAX as u128 && (magnitude > (1_u128 << 65) - 2 || magnitude & 1 != 0) {
+        return None;
+    }
+    let result =
+        round_pack_exact_coefficient(exponent, coefficient, RationalRoundingMode::NearestTiesEven)?;
+    (result.classify() == X87Binary80Class::Normal).then_some(result)
 }
 
 fn verify_writable_gdt_selector(
@@ -8540,6 +8603,171 @@ mod tests {
         assert_eq!(x87.instruction_pointer, 0);
         assert_eq!(x87.data_pointer, 0);
         assert_eq!(x87.last_opcode, 0);
+    }
+
+    fn binary80_normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
+        let mut bytes = [0; 10];
+        bytes[..8].copy_from_slice(&significand.to_le_bytes());
+        let sign_exponent = exponent | if negative { 0x8000 } else { 0 };
+        bytes[8..].copy_from_slice(&sign_exponent.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn fadd_st0_st1_commits_exact_normal_sum_and_only_defined_state() {
+        for (top, lhs, rhs, expected) in [
+            (
+                0,
+                binary80_normal(0x8000_0000_0000_0000, 0x3fff, false),
+                binary80_normal(0x8000_0000_0000_0000, 0x3fff, false),
+                binary80_normal(0x8000_0000_0000_0000, 0x4000, false),
+            ),
+            (
+                0,
+                binary80_normal(0x8000_0000_0000_0000, 0x3fff, true),
+                binary80_normal(0x8000_0000_0000_0000, 0x3fff, true),
+                binary80_normal(0x8000_0000_0000_0000, 0x4000, true),
+            ),
+            (
+                0,
+                binary80_normal(0xc000_0000_0000_0000, 0x3fff, false),
+                binary80_normal(0x8000_0000_0000_0000, 0x3fff, true),
+                binary80_normal(0x8000_0000_0000_0000, 0x3ffe, false),
+            ),
+            (
+                7,
+                binary80_normal(0xc000_0000_0000_0000, 0x3fff, false),
+                binary80_normal(0xc000_0000_0000_0000, 0x3fff, false),
+                binary80_normal(0xc000_0000_0000_0000, 0x4000, false),
+            ),
+            (
+                0,
+                binary80_normal(u64::MAX, 0x3fff, false),
+                binary80_normal(u64::MAX, 0x3fff, false),
+                binary80_normal(u64::MAX, 0x4000, false),
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.gpr = std::array::from_fn(|index| 0xa1b2_c3d4_e5f6_0718 ^ index as u64);
+            state.rflags = 0xa55a_1234_5678_9abc;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = (u16::from(top) << 11) | 0x4700 | 0x0200;
+            x87.tag_word = 0;
+            x87.instruction_pointer = 0x0123_4567_89ab_cdef;
+            x87.data_pointer = 0xfedc_ba98_7654_3210;
+            x87.last_opcode = 0x05aa;
+            let destination = usize::from(top);
+            let source = usize::from((top + 1) & 7);
+            x87.registers[destination] = lhs;
+            x87.registers[source] = rhs;
+            state.x87 = Some(x87.clone());
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd8, 0xc1], 0x1000);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(state.rip, 0x1002);
+            assert_eq!(state.gpr, before.gpr);
+            assert_eq!(state.rflags, before.rflags);
+            let result = state.x87.as_ref().unwrap();
+            assert_eq!(result.registers[destination], expected);
+            for index in 0..8 {
+                if index != destination {
+                    assert_eq!(
+                        result.registers[index],
+                        before.x87.as_ref().unwrap().registers[index]
+                    );
+                }
+            }
+            assert_eq!(result.control_word, 0x037f);
+            assert_eq!(result.tag_word, before.x87.as_ref().unwrap().tag_word);
+            assert_eq!(result.top(), top);
+            assert_eq!(
+                result.status_word,
+                before.x87.as_ref().unwrap().status_word & !(1 << 9)
+            );
+            assert_eq!(result.status_word & 0x4500, 0x4500);
+            assert_eq!(result.instruction_pointer, 0x1000);
+            assert_eq!(
+                result.data_pointer,
+                before.x87.as_ref().unwrap().data_pointer
+            );
+            assert_eq!(result.last_opcode, before.x87.as_ref().unwrap().last_opcode);
+        }
+    }
+
+    #[test]
+    fn fadd_st0_st1_rejects_unsupported_inputs_without_any_state_commit() {
+        let normal = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+        let mut absent = LongModeState::default();
+        let before = absent.clone();
+        let mut memory = Memory::at(&[0xd8, 0xc1], 0);
+        assert_eq!(
+            step(&mut absent, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xd8 })
+        );
+        assert_eq!(absent, before);
+
+        let mut cases = Vec::new();
+        let mut add_case = |mut change: Box<dyn FnMut(&mut crate::state::X87State)>| {
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0;
+            x87.tag_word = 0;
+            x87.registers[0] = normal;
+            x87.registers[1] = normal;
+            change(&mut x87);
+            cases.push(x87);
+        };
+        add_case(Box::new(|x| {
+            x.registers[1] = binary80_normal(u64::MAX, 0x3fff, false)
+        }));
+        add_case(Box::new(|x| {
+            x.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, true)
+        }));
+        add_case(Box::new(|x| {
+            x.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0x4000, false)
+        }));
+        add_case(Box::new(|x| {
+            x.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0x7fff, false)
+        }));
+        add_case(Box::new(|x| {
+            x.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0, false)
+        }));
+        add_case(Box::new(|x| x.registers[1] = [0; 10]));
+        add_case(Box::new(|x| x.registers[1] = binary80_normal(1, 0, false)));
+        add_case(Box::new(|x| x.registers[1] = binary80_normal(0, 1, false)));
+        add_case(Box::new(|x| x.tag_word = 3));
+        add_case(Box::new(|x| x.tag_word = 2));
+        add_case(Box::new(|x| x.control_word = 0x027f));
+        add_case(Box::new(|x| x.status_word = 1));
+        add_case(Box::new(|x| x.status_word = 0x8000));
+        add_case(Box::new(|x| {
+            x.registers[0] = binary80_normal(0x8000_0000_0000_0001, 1, false);
+            x.registers[1] = binary80_normal(0x8000_0000_0000_0000, 1, true);
+        }));
+        add_case(Box::new(|x| {
+            x.registers[0] = binary80_normal(u64::MAX, 0x7ffe, false);
+            x.registers[1] = binary80_normal(u64::MAX, 0x7ffe, false);
+        }));
+
+        for x87 in cases {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.gpr = [0x0123_4567_89ab_cdef; 16];
+            state.rflags = 0xa55a_1234_5678_9abc;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd8, 0xc1], 0x1000);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xd8 })
+            );
+            assert_eq!(state, before);
+        }
     }
 
     #[test]

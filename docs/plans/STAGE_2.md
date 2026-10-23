@@ -184,6 +184,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
 | [x] | S2-30c | Bare `DB E2` FNCLEX with existing x87 state; clear FSW[0:7] and FSW[15], preserve C0–C3 by local policy, native closed | S2-28a |
+| [x] | S2-30d | Bare `D8 C1` FADD ST(0), ST(1), exact same-exponent canonical normal results only; native closed | S2-29q, S2-28a |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1423,6 +1424,29 @@ check, or floating-point exception delivery. Other `DB` encodings, all
 prefixes, `9B DB E2`, and missing state remain Unsupported. Fetch fault, STOP,
 and budget exhaustion must not commit. Native x87-profile execution and FNCLEX
 admission remain closed.
+
+#### S2-30d. Bare exact-only FADD ST(0), ST(1) (bounded local slice)
+
+Implement only bare `D8 C1` with an existing `Some(X87State)`. Require FCW
+`0x037f`, a clean FSW exception/ES/B mask (`0x80ff`), Valid tags and canonical
+Normal binary80 payloads at physical TOP and TOP+1, and equal normalized
+exponents. Compute with `add_finite_same_exponent` and
+`round_pack_exact_coefficient` only after proving exact representability:
+coefficient magnitude at most `u64::MAX`, or a wider even 65-bit magnitude.
+Require the packed result to remain canonical Normal. Reject zero, cancellation,
+unequal exponents, specials, pseudo/denormal encodings, bad tags/environment,
+inexact coefficients, overflow and zero/subnormal results before any mutation.
+
+On success replace only the physical TOP payload, clear FSW.C1, set FIP to the
+instruction RIP, advance RIP by two and retire once. Preserve TOP, tags, source
+and other payloads, FCW, GPRs, RFLAGS and remaining FSW fields. C0/C2/C3 and FDP
+are retained only as local deterministic policy because the SDM leaves them
+undefined for this operation; FOP is unchanged on this no-exception path. The
+profile still assumes x87 availability and does not model CR0.EM/TS, #NM, FPU
+capability, general special values, or exception semantics. Tests use literal
+binary80 vectors for exact carry and 1+1, inexact 65-bit sums, cancellation,
+overflow and minimum-normal cancellation, plus TOP wrap, decode neighbors,
+prefixes, truncation, full-state rejection and native fail-closed admission.
 
 ### S2-31. x87 conversions, rounding и exceptions
 

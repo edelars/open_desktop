@@ -2872,6 +2872,53 @@ unmapped `.serena/` directory, which remains untouched. Physical acceptance
 remains deferred to the shared final acceptance substage. S2-29, S2-28, and
 architectural x87 behavior remain open under ISSUE-019.
 
+## S2-30d — exact-only FADD ST(0), ST(1) (bounded local slice)
+
+The decoder and interpreter accept only bare `D8 C1` with an existing
+`Some(X87State)`. Execution requires FCW `0x037f`, clear FSW exception/ES/B
+bits (`0x80ff`), Valid tags at physical TOP and TOP+1, two canonical Normal
+binary80 payloads and equal normalized exponents. It obtains the exact signed
+coefficient through `add_finite_same_exponent`, rejects coefficients wider
+than 64 bits unless their 65-bit magnitude is even, then calls
+`round_pack_exact_coefficient` once and requires a canonical Normal output.
+This proves exact representability before using the numeric helper. Inexact
+odd 65-bit results, zero/cancellation, unequal exponents, invalid encodings or
+tags, unsupported environment, overflow and zero/subnormal results return
+Unsupported without state commit.
+
+Success updates only the physical TOP payload, clears FSW.C1, sets FIP to the
+instruction RIP and advances RIP by two. GPRs, RFLAGS, FCW, TOP, tags, other
+payloads and all other FSW bits remain as before. C0/C2/C3 and FDP are retained
+as local policy because they are undefined after this register-only FADD form;
+these fields carry no native equality claim. FOP is unchanged on the exact
+no-exception path. The profile assumes x87 availability and does not model
+CR0.EM/TS, #NM, FPU capability, general special values, or exception behavior.
+Native x87 profile and instruction admission remain closed.
+
+Independent literal tests cover exact 1+1, a 65-bit even carry, TOP wrap
+(TOP=7), FIP update, C1 clearing, undefined-field retention policy, and
+no-commit rejection for inexact sums, zero, cancellation, unequal exponents,
+special/pseudo/denormal/unnormal input, invalid tags, unsupported FCW/FSW,
+subnormal output and overflow. Decoder tests cover all D8 ModR/M neighbors,
+prefixes, `WAIT`, and truncation. Fixture schema, runner and native rejection
+checks cover the exact form. Normative sources are Intel SDM revision 093
+Vol.2A, “FADD/FADDP/FIADD—Add,” pp.3-311–3-313, and Vol.1
+§§8.1.5.2–8.1.9.1, pp.8-7–8-11 ([Vol.2A](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[Vol.1](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
+Validation passed: focused `od-isa` FADD tests, testkit exact-form profile
+tests, the fixture-runner success/rejection case, and
+`cargo test --workspace --offline` passed. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, and `git diff --check` passed. The
+Linux-specific native rejection test is compiled for that target but could not
+be executed on this macOS host; no physical hardware check was run. Graphify
+update completed. `python3 tools/check_layout.py` reported the pre-existing
+unmapped root `.serena/` directory, which remains untouched. Physical
+acceptance remains deferred to the shared final acceptance substage. S2-29,
+S2-28 and general x87 semantics remain open under ISSUE-019.
+
 ## S2-29q — compose same-exponent finite addition with one-round binary80 packing (partial)
 
 Added `add_finite_same_exponent_to_binary80(lhs, rhs, mode)`. It composes the

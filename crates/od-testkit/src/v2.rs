@@ -704,22 +704,20 @@ impl Fixture {
             let Some(code) = code else {
                 return Err(invalid("memory.code", "required by this profile"));
             };
-            let (expected_bytes, expected_length) = match code
-                .initial_bytes_hex
-                .to_ascii_lowercase()
-                .as_str()
-            {
-                "90" => ("90", 1),
-                "dbe3" => ("dbe3", 2),
-                "dbe2" => ("dbe2", 2),
-                "dfe0" => ("dfe0", 2),
-                _ => {
-                    return Err(invalid(
-                        "memory.code",
-                        "x87 state profile admits only one NOP, bare FNINIT, bare FNCLEX, or bare FNSTSW AX",
-                    ));
-                }
-            };
+            let (expected_bytes, expected_length) =
+                match code.initial_bytes_hex.to_ascii_lowercase().as_str() {
+                    "90" => ("90", 1),
+                    "dbe3" => ("dbe3", 2),
+                    "dbe2" => ("dbe2", 2),
+                    "dfe0" => ("dfe0", 2),
+                    "d8c1" => ("d8c1", 2),
+                    _ => {
+                        return Err(invalid(
+                            "memory.code",
+                            "x87 state profile admits one NOP or exact bare x87 instruction form",
+                        ));
+                    }
+                };
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length
                 || !code.permissions.execute

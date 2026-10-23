@@ -1130,6 +1130,48 @@ It specifies bare `DB E2` as the no-wait form, clears exception flags PE/UE/OE/
 ZE/DE/IE, ES, SF and B, leaves C0–C3 undefined, and specifies no floating-
 point exception delivery or MXCSR effect.
 
+## Local S2-30d: exact-only `FADD ST(0), ST(1)` (`D8 C1`)
+
+The local long-mode interpreter admits exactly bare `D8 C1` when
+`LongModeState.x87` already contains `Some(X87State)`. It requires FCW exactly
+`0x037f`, FSW exception/ES/B bits clear (`status_word & 0x80ff == 0`), Valid
+tags at physical TOP and `(TOP + 1) & 7`, canonical raw Normal binary80 values
+in both payloads, and equal normalized exponents. Zero operands, cancellation,
+unequal exponents, special, pseudo, subnormal or unnormal raw encodings,
+inconsistent tags/environment and any unsupported result are rejected as
+`Unsupported` before state mutation.
+
+The exact coefficient is obtained with `add_finite_same_exponent`. Before
+packing, its magnitude must be at most `u64::MAX`, or be an even 65-bit value;
+an odd wider coefficient would lose a real low bit and is rejected. The result
+uses `round_pack_exact_coefficient` in nearest-ties-even mode only after this
+exactness proof, and must classify as canonical Normal. This handles an exact
+carry without using rounding as a substitute for the proof. Overflow and
+zero/subnormal results are rejected with no commit.
+
+On success only the physical TOP 80-bit payload changes. FSW.C1 is cleared,
+FIP is set to the instruction's starting RIP, and RIP advances by two. TOP,
+tags, every other payload, FCW, the rest of FSW, FPR pointers except FIP, FOP,
+GPRs and RFLAGS are preserved. C0/C2/C3 are architecturally undefined after
+FADD; preserving their concrete values is a local deterministic policy. FDP is
+undefined for this register-only form; retaining it is also local policy and
+not a native equality claim. Modern FOP state is left untouched on this exact
+no-exception path.
+
+This local slice assumes x87 availability. It does not check CR0.EM/TS, deliver
+#NM, advertise an FPU capability, or model general x87 precision/rounding,
+special values, exceptions, stack faults or exception delivery. All other
+encodings, prefixes, missing state and unsupported operands/results remain
+Unsupported. Fetch faults, STOP and exhausted budget do not commit. Native x87
+profile execution and FADD admission remain closed.
+
+Normative source: Intel® 64 and IA-32 Architectures Software Developer's
+Manual, revision 093, Vol.2A, “FADD/FADDP/FIADD—Add,” pp.3-311–3-313, and Vol.1
+§§8.1.5.2–8.1.9.1, pp.8-7–8-11, for x87 state, precision control, rounding,
+tags and FIP/FDP/FOP ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+The local profile is narrower than the architectural instruction.
+
 ## Local S2-29a: raw binary80 representation and classification
 
 `od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory
