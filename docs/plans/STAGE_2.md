@@ -1142,6 +1142,24 @@ does not normalize, round, pack, define exceptions/status, architectural
 overflow/underflow, or execute guest instructions/native code. S2-29 and the
 S2-28 umbrella remain open.
 
+### S2-29h. Exact unsigned magnitude normalization (partial)
+
+`normalize_exact_magnitude(sign, exponent, magnitude)` interprets
+`(-1)^sign * magnitude * 2^(exponent - 127)`. For nonzero input it shifts
+the exact unsigned magnitude left until its leading one is at bit 127 and
+subtracts that shift from the exponent with checked `i32` arithmetic. Zero
+returns `(false, 0, 0)` for any sign and exponent. This helper accepts an
+exact `u128` magnitude directly and does not pass through the signed
+coefficient path.
+
+Independent literal vectors cover the bit-126 and bit-127 cases, `u128::MAX`,
+preservation of a low bit in `(2^64 + 1) << 63`, both signs, idempotence,
+zero at both exponent limits, and success/failure at the `i32` minimum for
+magnitudes 1 and `2^126`. Composition with S2-29g covers minimum-times-minimum,
+maximum-times-maximum, and minimum-times-maximum. Inputs and provenance remain
+unchanged. Division, rounding, GRS, packing, architectural flags, guest
+instructions, and native execution remain outside this partial slice.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.

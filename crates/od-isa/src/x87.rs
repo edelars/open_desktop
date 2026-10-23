@@ -126,6 +126,29 @@ pub fn multiply_finite_significands(lhs: X87Finite, rhs: X87Finite) -> Option<(b
     Some((lhs.sign ^ rhs.sign, exponent, magnitude))
 }
 
+/// Normalize an exact unsigned magnitude representing
+/// `(-1)^sign * magnitude * 2^(exponent - 127)`.
+///
+/// Nonzero results place the leading one at bit 127. This shifts only left
+/// and preserves every magnitude bit. A zero result has no architectural sign
+/// and returns `(false, 0, 0)`. `None` means only that the normalized exponent
+/// does not fit in `i32`.
+pub fn normalize_exact_magnitude(
+    sign: bool,
+    exponent: i32,
+    magnitude: u128,
+) -> Option<(bool, i32, u128)> {
+    if magnitude == 0 {
+        return Some((false, 0, 0));
+    }
+
+    let shift = magnitude.leading_zeros();
+    let normalized_exponent = exponent.checked_sub(shift as i32)?;
+    let normalized_magnitude = magnitude << shift;
+
+    Some((sign, normalized_exponent, normalized_magnitude))
+}
+
 fn signed_significand(value: X87Finite) -> i128 {
     let significand = value.significand as i128;
     if value.sign {
@@ -334,7 +357,7 @@ mod tests {
     use super::{
         X87Binary80, X87Binary80Class, X87Finite, X87Grs, add_finite_same_exponent,
         align_finite_pair, multiply_finite_significands, normalize_exact_coefficient,
-        shift_right_jam, shift_right_jam_u128,
+        normalize_exact_magnitude, shift_right_jam, shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -1265,6 +1288,133 @@ mod tests {
         assert_eq!((raw_pseudo, raw_normal), raw_before);
         assert_eq!(raw_pseudo.to_bytes(), [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0]);
         assert_eq!(raw_normal.to_bytes(), [1, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]);
+    }
+
+    #[test]
+    fn exact_unsigned_magnitude_normalization_preserves_bits_and_sign() {
+        assert_eq!(
+            normalize_exact_magnitude(false, 127, 1),
+            Some((false, 0, 1_u128 << 127))
+        );
+        assert_eq!(
+            normalize_exact_magnitude(true, 1, 1_u128 << 126),
+            Some((true, 0, 1_u128 << 127))
+        );
+        assert_eq!(
+            normalize_exact_magnitude(false, 0, 1_u128 << 127),
+            Some((false, 0, 1_u128 << 127))
+        );
+        assert_eq!(
+            normalize_exact_magnitude(true, 0, u128::MAX),
+            Some((true, 0, u128::MAX))
+        );
+        assert_eq!(
+            normalize_exact_magnitude(false, 63, (1_u128 << 64) + 1),
+            Some((false, 0, (1_u128 << 127) + (1_u128 << 63)))
+        );
+
+        for (sign, exponent, magnitude) in [
+            (false, 127, 1),
+            (true, 1, 1_u128 << 126),
+            (false, 0, 1_u128 << 127),
+            (true, 0, u128::MAX),
+            (false, 63, (1_u128 << 64) + 1),
+        ] {
+            let normalized = normalize_exact_magnitude(sign, exponent, magnitude).unwrap();
+            assert_eq!(
+                normalize_exact_magnitude(normalized.0, normalized.1, normalized.2),
+                Some(normalized)
+            );
+        }
+    }
+
+    #[test]
+    fn exact_unsigned_magnitude_normalization_handles_zero_and_exponent_boundaries() {
+        assert_eq!(
+            normalize_exact_magnitude(false, i32::MIN, 0),
+            Some((false, 0, 0))
+        );
+        assert_eq!(
+            normalize_exact_magnitude(true, i32::MAX, 0),
+            Some((false, 0, 0))
+        );
+        assert_eq!(
+            normalize_exact_magnitude(false, i32::MIN + 127, 1),
+            Some((false, i32::MIN, 1_u128 << 127))
+        );
+        assert_eq!(normalize_exact_magnitude(true, i32::MIN, 1), None);
+        assert_eq!(
+            normalize_exact_magnitude(true, i32::MIN + 1, 1_u128 << 126),
+            Some((true, i32::MIN, 1_u128 << 127))
+        );
+        assert_eq!(
+            normalize_exact_magnitude(false, i32::MIN, 1_u128 << 126),
+            None
+        );
+        assert_eq!(
+            normalize_exact_magnitude(false, i32::MAX, 1_u128 << 126),
+            Some((false, i32::MAX - 1, 1_u128 << 127))
+        );
+        assert_eq!(
+            normalize_exact_magnitude(true, i32::MAX, 1_u128 << 127),
+            Some((true, i32::MAX, 1_u128 << 127))
+        );
+    }
+
+    #[test]
+    fn exact_magnitude_normalization_composes_with_significand_product() {
+        let exponent = 31;
+        let minimum = finite(
+            exponent,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        let maximum = finite(exponent, u64::MAX, true, X87Binary80Class::PseudoDenormal);
+        let raw_before = (minimum, maximum);
+
+        let minimum_product = multiply_finite_significands(minimum, minimum).unwrap();
+        assert_eq!(minimum_product, (false, exponent * 2 + 1, 1_u128 << 126));
+        assert_eq!(
+            normalize_exact_magnitude(minimum_product.0, minimum_product.1, minimum_product.2),
+            Some((false, exponent * 2, 1_u128 << 127))
+        );
+
+        let maximum_product = multiply_finite_significands(maximum, maximum).unwrap();
+        assert_eq!(
+            maximum_product,
+            (
+                false,
+                exponent * 2 + 1,
+                0xffff_ffff_ffff_fffe_0000_0000_0000_0001
+            )
+        );
+        assert_eq!(
+            normalize_exact_magnitude(maximum_product.0, maximum_product.1, maximum_product.2),
+            Some(maximum_product)
+        );
+
+        let mixed_product = multiply_finite_significands(minimum, maximum).unwrap();
+        assert_eq!(
+            mixed_product,
+            (
+                true,
+                exponent * 2 + 1,
+                0x7fff_ffff_ffff_ffff_8000_0000_0000_0000
+            )
+        );
+        assert_eq!(
+            normalize_exact_magnitude(mixed_product.0, mixed_product.1, mixed_product.2),
+            Some((
+                true,
+                exponent * 2,
+                0xffff_ffff_ffff_ffff_0000_0000_0000_0000
+            ))
+        );
+
+        assert_eq!((minimum, maximum), raw_before);
+        assert_eq!(minimum.source_class(), X87Binary80Class::Normal);
+        assert_eq!(maximum.source_class(), X87Binary80Class::PseudoDenormal);
     }
 
     #[test]

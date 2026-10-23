@@ -2493,3 +2493,30 @@ documentation update. `python3 tools/check_layout.py` remains subject to the
 pre-existing unmapped root `.serena/` directory, which was left untouched. No
 physical Mac mini check was performed or required for this integer helper.
 S2-29 and the S2-28 umbrella remain open under ISSUE-019.
+
+## S2-29h — exact unsigned magnitude normalization (partial)
+
+Added `normalize_exact_magnitude(sign, exponent, magnitude)` for exact values
+of `(-1)^sign * magnitude * 2^(exponent - 127)`. Nonzero magnitudes are shifted
+left only until the leading one reaches bit 127; the same shift is subtracted
+from the exponent with checked `i32` arithmetic. Zero returns `(false, 0, 0)`
+for any sign and exponent. The helper consumes the unsigned `u128` directly,
+preserves all bits, and does not use the signed coefficient normalization
+path.
+
+Literal vectors cover magnitude 1, `2^126`, `2^127`, `u128::MAX`, a preserved
+low bit in `(2^64 + 1) << 63`, both signs, idempotence, signed-zero
+canonicalization at both exponent limits, and success/failure at the `i32`
+minimum for magnitudes 1 and `2^126`. Composition with S2-29g checks
+minimum-times-minimum (one-bit left normalization), maximum-times-maximum
+(already normalized), and minimum-times-maximum, including sign, exponent,
+and unchanged source-class provenance. Division, rounding, GRS, binary80
+packing, architectural flags/exceptions, instructions, and native execution
+remain outside this partial slice.
+
+`cargo test -p od-isa x87 --offline` passed (24 tests); `cargo fmt --all
+-- --check` and `cargo check --workspace --all-targets --offline` passed.
+`python3 tools/check_layout.py` stopped on the pre-existing unmapped root
+directory `.serena/`, which was left untouched. No physical Mac mini check was
+performed or required for this integer helper. S2-29 and the S2-28 umbrella
+remain open under ISSUE-019.

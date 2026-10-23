@@ -1186,6 +1186,25 @@ primitive does not normalize, round, pack binary80, set architectural
 overflow/underflow or exception/status state, or execute guest instructions.
 S2-29 and S2-28 remain open.
 
+## Local S2-29h: exact unsigned magnitude normalization
+
+`od_isa::x87::normalize_exact_magnitude(sign, exponent, magnitude)` interprets
+`(-1)^sign * magnitude * 2^(exponent - 127)`. For nonzero input it returns
+`(sign, normalized_exponent, normalized_magnitude)`, placing the magnitude's
+leading one at bit 127 by shifting left only. The normalized exponent is the
+input exponent minus that shift; `None` means only that this final exponent
+does not fit in `i32`. Zero returns `(false, 0, 0)` for any sign and exponent.
+The helper operates directly on `u128` and preserves all magnitude bits.
+
+Literal vectors cover bit 126/127 normalization, `u128::MAX`, low-bit
+preservation for `(2^64 + 1) << 63`, both signs, idempotence, zero at both
+exponent limits, and `i32` minimum boundary success/failure for magnitudes 1
+and `2^126`. Composition with S2-29g covers minimum-times-minimum,
+maximum-times-maximum, and minimum-times-maximum while preserving inputs and
+source-class provenance. This helper defines no division, rounding, GRS,
+binary80 packing, architectural flags/exceptions, guest instruction, or native
+execution behavior. S2-29 and S2-28 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.
