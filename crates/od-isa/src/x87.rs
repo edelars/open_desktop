@@ -82,6 +82,27 @@ pub fn add_finite_same_exponent(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, 
     }
 }
 
+/// Normalize the exact signed coefficient of `coefficient * 2^(exponent - 63)`.
+///
+/// Nonzero results place the leading one of the unsigned magnitude at bit 127.
+/// This operation shifts only left and preserves every coefficient bit. A zero
+/// result has no architectural sign and returns `(false, 0, 0)`. `None` means
+/// only that the normalized exponent does not fit in `i32`.
+pub fn normalize_exact_coefficient(exponent: i32, coefficient: i128) -> Option<(bool, i32, u128)> {
+    if coefficient == 0 {
+        return Some((false, 0, 0));
+    }
+
+    let sign = coefficient < 0;
+    let magnitude = coefficient.unsigned_abs();
+    let highest_bit = u128::BITS - 1 - magnitude.leading_zeros();
+    let exponent_adjustment = highest_bit as i32 - 63;
+    let normalized_exponent = exponent.checked_add(exponent_adjustment)?;
+    let normalized_magnitude = magnitude << (u128::BITS - 1 - highest_bit);
+
+    Some((sign, normalized_exponent, normalized_magnitude))
+}
+
 fn signed_significand(value: X87Finite) -> i128 {
     let significand = value.significand as i128;
     if value.sign {
@@ -289,7 +310,7 @@ impl X87Binary80 {
 mod tests {
     use super::{
         X87Binary80, X87Binary80Class, X87Finite, X87Grs, add_finite_same_exponent,
-        align_finite_pair, shift_right_jam, shift_right_jam_u128,
+        align_finite_pair, normalize_exact_coefficient, shift_right_jam, shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -1007,6 +1028,197 @@ mod tests {
             X87Binary80::from_bytes(raw_before.1.to_bytes()).classify(),
             X87Binary80Class::Normal
         );
+    }
+
+    #[test]
+    fn exact_coefficient_normalization_preserves_all_bits_and_sign() {
+        let cases = [
+            (
+                63,
+                1_i128,
+                (false, 0, 0x8000_0000_0000_0000_0000_0000_0000_0000),
+            ),
+            (
+                63,
+                -1_i128,
+                (true, 0, 0x8000_0000_0000_0000_0000_0000_0000_0000),
+            ),
+            (
+                63,
+                1_i128 << 63,
+                (false, 63, 0x8000_0000_0000_0000_0000_0000_0000_0000),
+            ),
+            (
+                63,
+                1_i128 << 64,
+                (false, 64, 0x8000_0000_0000_0000_0000_0000_0000_0000),
+            ),
+            (
+                63,
+                (1_i128 << 64) + 1,
+                (false, 64, 0x8000_0000_0000_0000_8000_0000_0000_0000),
+            ),
+            (
+                63,
+                (1_i128 << 65) - 2,
+                (false, 64, 0xffff_ffff_ffff_ffff_0000_0000_0000_0000),
+            ),
+            (
+                0,
+                i128::MAX,
+                (false, 63, 0xffff_ffff_ffff_ffff_ffff_ffff_ffff_fffe),
+            ),
+            (
+                0,
+                i128::MIN,
+                (true, 64, 0x8000_0000_0000_0000_0000_0000_0000_0000),
+            ),
+        ];
+
+        for (exponent, coefficient, expected) in cases {
+            assert_eq!(
+                normalize_exact_coefficient(exponent, coefficient),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn exact_coefficient_normalization_checks_only_final_exponent_overflow() {
+        assert_eq!(
+            normalize_exact_coefficient(i32::MAX, 1),
+            Some((
+                false,
+                i32::MAX - 63,
+                0x8000_0000_0000_0000_0000_0000_0000_0000
+            ))
+        );
+        assert_eq!(
+            normalize_exact_coefficient(i32::MIN, 1_i128 << 63),
+            Some((false, i32::MIN, 0x8000_0000_0000_0000_0000_0000_0000_0000))
+        );
+        assert_eq!(
+            normalize_exact_coefficient(i32::MIN, 1_i128 << 64),
+            Some((
+                false,
+                i32::MIN + 1,
+                0x8000_0000_0000_0000_0000_0000_0000_0000
+            ))
+        );
+        assert_eq!(normalize_exact_coefficient(i32::MAX, 1_i128 << 64), None);
+        assert_eq!(normalize_exact_coefficient(i32::MIN, 1), None);
+        assert_eq!(normalize_exact_coefficient(i32::MAX, i128::MIN), None);
+        assert_eq!(
+            normalize_exact_coefficient(i32::MIN, i128::MIN),
+            Some((true, i32::MIN + 64, 1_u128 << 127))
+        );
+        assert_eq!(
+            normalize_exact_coefficient(i32::MAX, 0),
+            Some((false, 0, 0))
+        );
+        assert_eq!(
+            normalize_exact_coefficient(i32::MIN, 0),
+            Some((false, 0, 0))
+        );
+    }
+
+    #[test]
+    fn exact_coefficient_normalization_composes_with_same_exponent_sum() {
+        let exponent = -16382;
+        let min_normal_raw = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]);
+        let adjacent_raw = X87Binary80::from_bytes([1, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]);
+        let min_normal = min_normal_raw.normalize_finite().unwrap();
+        let adjacent = adjacent_raw.normalize_finite().unwrap();
+        let raw_before = (min_normal_raw, adjacent_raw);
+        let finite_before = (min_normal, adjacent);
+        let (sum_exponent, coefficient) = add_finite_same_exponent(min_normal, adjacent).unwrap();
+        assert_eq!(coefficient, 0x1_0000_0000_0000_0001);
+        assert_eq!(
+            normalize_exact_coefficient(sum_exponent, coefficient),
+            Some((
+                false,
+                exponent + 1,
+                0x8000_0000_0000_0000_8000_0000_0000_0000
+            ))
+        );
+
+        let adjacent_negative_raw = X87Binary80::from_bytes([1, 0, 0, 0, 0, 0, 0, 0x80, 1, 0x80]);
+        let adjacent_negative = adjacent_negative_raw.normalize_finite().unwrap();
+        let raw_difference_before = (min_normal_raw, adjacent_negative_raw);
+        let (difference_exponent, difference) =
+            add_finite_same_exponent(min_normal, adjacent_negative).unwrap();
+        assert_eq!(difference, -1);
+        assert_eq!(
+            normalize_exact_coefficient(difference_exponent, difference),
+            Some((true, exponent - 63, 1_u128 << 127))
+        );
+        assert_eq!(
+            (min_normal_raw, adjacent_negative_raw),
+            raw_difference_before
+        );
+        assert_eq!(adjacent_negative.source_class(), X87Binary80Class::Normal);
+
+        let leading = finite(
+            exponent,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        let adjacent_large = finite(
+            exponent,
+            0x8000_0000_0000_0001,
+            false,
+            X87Binary80Class::Normal,
+        );
+        let leading_negative = finite(
+            exponent,
+            0x8000_0000_0000_0000,
+            true,
+            X87Binary80Class::Normal,
+        );
+        let (_, positive_one) = add_finite_same_exponent(adjacent_large, leading_negative).unwrap();
+        let adjacent_large_negative = finite(
+            exponent,
+            0x8000_0000_0000_0001,
+            true,
+            X87Binary80Class::Normal,
+        );
+        let (_, negative_one) = add_finite_same_exponent(leading, adjacent_large_negative).unwrap();
+        assert_eq!(positive_one, 1);
+        assert_eq!(negative_one, -1);
+        assert_eq!(
+            normalize_exact_coefficient(exponent, positive_one),
+            Some((false, exponent - 63, 1_u128 << 127))
+        );
+        assert_eq!(
+            normalize_exact_coefficient(exponent, negative_one),
+            Some((true, exponent - 63, 1_u128 << 127))
+        );
+
+        let opposite = finite(
+            exponent,
+            0x8000_0000_0000_0000,
+            true,
+            X87Binary80Class::Normal,
+        );
+        let (_, zero) = add_finite_same_exponent(leading, opposite).unwrap();
+        assert_eq!(zero, 0);
+        assert_eq!(
+            normalize_exact_coefficient(exponent, zero),
+            Some((false, 0, 0))
+        );
+
+        let maximum = finite(16383, u64::MAX, false, X87Binary80Class::Normal);
+        let (sum_exponent, coefficient) = add_finite_same_exponent(maximum, maximum).unwrap();
+        assert_eq!(
+            normalize_exact_coefficient(sum_exponent, coefficient),
+            Some((false, 16384, 0xffff_ffff_ffff_ffff_0000_0000_0000_0000))
+        );
+
+        assert_eq!((min_normal_raw, adjacent_raw), raw_before);
+        assert_eq!((min_normal, adjacent), finite_before);
+        assert_eq!(min_normal.source_class(), X87Binary80Class::Normal);
+        assert_eq!(adjacent.source_class(), X87Binary80Class::Normal);
     }
 
     #[test]

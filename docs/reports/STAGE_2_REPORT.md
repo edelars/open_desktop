@@ -2442,3 +2442,28 @@ Local verification passed: `cargo test -p od-isa x87 --offline` (16 tests),
 could not complete because the pre-existing untracked root directory `.serena/`
 is unmapped. No physical Mac mini check was performed or required for this
 integer helper. S2-29 and the S2-28 umbrella remain open under ISSUE-019.
+
+## S2-29f — exact coefficient normalization (partial)
+
+Added `normalize_exact_coefficient(exponent, coefficient)` for the exact value
+`coefficient * 2^(exponent - 63)`. A nonzero coefficient returns its sign,
+normalized exponent, and an exact `u128` magnitude whose leading one is at bit
+127. The helper uses the unsigned magnitude, including for `i128::MIN`, and
+only shifts left; `None` reports only final `i32` exponent overflow. Zero at
+any input exponent returns `(false, 0, 0)`.
+
+Literal vectors cover `+1`/`-1`, `2^63`, `2^64`, `2^64 + 1` with the low bit
+preserved, `2^65 - 2`, `i128::MAX`/`i128::MIN`, exponent-edge success and
+overflow, and zero at both exponent limits. Composition with S2-29e covers
+positive and negative adjacent cancellation, exact zero, the maximum-finite sum
+normalizing to exponent 16384, and adjacent-significand difference at the
+minimum-normal exponent. Source values, raw encodings, and provenance remain
+unchanged. Binary80 packing, GRS/rounding/clipping, flags, instructions, and
+CPUID remain outside this helper; ISSUE-019 remains open.
+
+Local verification passed: `cargo test -p od-isa x87 --offline` (19 tests),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check`, and `graphify update .`. `python3 tools/check_layout.py`
+stopped at the pre-existing unmapped root directory `.serena/`; it was left
+untouched. No physical Mac mini check was performed or required for this exact
+integer helper. S2-29 and the S2-28 umbrella remain open under ISSUE-019.

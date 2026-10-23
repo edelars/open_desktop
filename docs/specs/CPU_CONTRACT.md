@@ -1142,6 +1142,27 @@ binary80 packing, result normalization, unequal-exponent arithmetic,
 rounding/PC/RC, signed-zero selection, exceptions/flags, or instruction
 behavior. S2-29 and S2-28 remain open.
 
+## Local S2-29f: exact coefficient normalization
+
+`od_isa::x87::normalize_exact_coefficient(exponent, coefficient)` interprets
+`coefficient * 2^(exponent - 63)`. For nonzero input it returns
+`(sign, normalized_exponent, magnitude)`, where `magnitude` is the exact
+unsigned coefficient shifted left until its leading one is at bit 127. The
+normalized exponent is `exponent + (floor(log2(abs(coefficient))) - 63)`;
+`None` means only that this final exponent overflows `i32`. The unsigned
+magnitude operation handles `i128::MIN`. Zero returns `(false, 0, 0)` for any
+input exponent and does not preserve a sign.
+
+Literal vectors cover the signed and boundary coefficients, including
+`2^64 + 1` low-bit preservation, exponent-edge success/overflow, and zero at
+both exponent limits. Composition with S2-29e covers adjacent cancellation,
+exact zero, maximum-finite sum with normalized exponent 16384, and adjacent
+significand difference at the minimum-normal exponent; the inputs, raw values,
+and source-class provenance stay unchanged. This integer helper consumes no
+jammed alignment data and defines no binary80 packing, GRS/rounding, clipping,
+exceptions/flags, guest instruction, or CPUID behavior. S2-29 and S2-28 remain
+open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

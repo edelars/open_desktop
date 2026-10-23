@@ -1100,6 +1100,28 @@ packing, result normalization, unequal-exponent arithmetic, rounding/PC/RC,
 signed-zero selection, exceptions/flags, and instruction behavior remain
 outside this partial slice. S2-29 and the S2-28 umbrella remain open.
 
+### S2-29f. Exact coefficient normalization (partial)
+
+`normalize_exact_coefficient(exponent, coefficient)` interprets the exact value
+`coefficient * 2^(exponent - 63)` and returns `(sign, normalized_exponent,
+magnitude)` with the magnitude's leading one at bit 127. For nonzero input,
+`unsigned_abs` preserves the full `i128::MIN` magnitude, and normalization shifts
+only left, so no coefficient bits are discarded or jammed. The normalized
+exponent is `exponent + (floor(log2(abs(coefficient))) - 63)`; `None` means that
+this final exponent does not fit `i32`. Zero returns `(false, 0, 0)` for any
+input exponent and has no architectural sign.
+
+Literal vectors cover `+1`/`-1`, `2^63`, `2^64`, `2^64 + 1` with its low bit
+preserved, `2^65 - 2`, `i128::MAX`/`i128::MIN`, exponent boundary success and
+overflow, and zero at both exponent limits. Composition vectors use
+S2-29e's exact same-exponent sum for positive and negative adjacent
+cancellation, exact zero, the maximum-finite sum with normalized exponent
+16384, and the difference between adjacent significands at the minimum-normal
+exponent. Inputs, raw encodings, and provenance remain unchanged. This helper
+does not define x87 arithmetic, binary80 packing, GRS/rounding, clipping,
+exceptions/flags, instructions, or CPUID behavior. S2-29 and the S2-28 umbrella
+remain open.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.
