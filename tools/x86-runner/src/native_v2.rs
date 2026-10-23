@@ -567,6 +567,7 @@ fn admission_with_tracee_memory(
             | Operation::FsubrStSt0 { .. }
             | Operation::FaddStSt0 { .. }
             | Operation::FaddpStSt0 { .. }
+            | Operation::FmulpStSt0 { .. }
             | Operation::FsubpStSt0 { .. }
             | Operation::FsubrpStSt0 { .. }
     ) {
@@ -3726,6 +3727,14 @@ mod tests {
             [0xde, 0xc5],
             [0xde, 0xc6],
             [0xde, 0xc7],
+            [0xde, 0xc8],
+            [0xde, 0xc9],
+            [0xde, 0xca],
+            [0xde, 0xcb],
+            [0xde, 0xcc],
+            [0xde, 0xcd],
+            [0xde, 0xce],
+            [0xde, 0xcf],
             [0xde, 0xe0],
             [0xde, 0xe1],
             [0xde, 0xe2],
@@ -3763,6 +3772,7 @@ mod tests {
                     | [0xdc, 0xe0]
                     | [0xdc, 0xe8]
                     | [0xde, 0xe0]
+                    | [0xde, 0xc8]
                     | [0xde, 0xe8]
             ) {
                 input.expected_exit = v2::ExpectedExit::Unsupported;

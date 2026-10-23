@@ -194,6 +194,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30l | Bare `DC E0+i` FSUBR ST(i), ST(0), exact-only ST(0)−ST(i) into physical ST(i), no pop; i=0 alias unsupported; native closed | S2-30i |
 | [x] | S2-30m | Bare `DE E0+i` FSUBRP ST(i), ST(0), exact-only ST(0)−ST(i) into old ST(i), then physical TOP pop; i=0 alias unsupported; native closed | S2-30l |
 | [x] | S2-30n | Bare `D8 C8+i` FMUL ST(0), ST(i), exact binary80 result only, no pop; native closed | S2-30m, S2-29 |
+| [x] | S2-30o | Bare `DC C8+i` FMUL ST(i), ST(0), exact binary80 result only, no pop; native closed | S2-30n |
+| [x] | S2-30p | Bare `DE C8+i` FMULP ST(i), ST(0), exact binary80 result then physical TOP pop; native closed | S2-30o |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1675,6 +1677,30 @@ runner cover all eight indices; native x87 admission stays closed. Native
 rejection also explicitly covers the existing DE E0..E7 FSUBRP form.
 Normative source: Intel SDM revision 093, Vol.2A pp.3-360–3-362, “FMUL/FIMUL—
 Multiply”.
+
+#### S2-30p. Bare exact-only FMULP ST(i), ST(0) (bounded local slice)
+
+Accept exactly bare `DE C8+i`, `i=0..7`, as `FMULP ST(i), ST(0)`. Reuse
+S2-30n's exact multiplication gate: existing x87 state, FCW `0x037f`,
+`FSW & 0x80ff == 0`, Valid tags for used physical operands, canonical Normal
+binary80 inputs, exact normalized product with zero low 64 bits, and canonical
+Normal packed output. Exponents may differ. `i=0` is a valid square and needs
+one Valid tag; capture the product before marking that same old TOP tag Empty.
+The no-operand `DE C9` encoding is the `i=1` form,
+`FMULP ST(1), ST(0)`.
+Reject inexact/range/environment/tag/raw-class failures before mutation.
+
+Success writes the product to old physical `(TOP+i)&7`, marks old physical TOP
+Empty while retaining its payload, increments TOP, clears C1, records starting
+RIP as FIP, advances RIP by two and retires once. Preserve other tags,
+payloads, x87 fields, GPRs and RFLAGS. Decoder coverage enumerates DE ModR/M,
+prefixes, WAIT and truncation while preserving FADDP DE C0..C7, FSUBRP DE
+E0..E7 and FSUBP DE E8..EF. The fixture schema and runner cover DE C8..CF,
+including exact i=0 square success and an inexact `DE C8` Unsupported fixture
+with no stop RIP and budget one. Native x87 admission stays closed. Normative
+source: Intel SDM revision 093, Vol.2A pp.3-360–3-362, “FMUL/FIMUL—Multiply”;
+DE C8+i computes old `ST(i)*ST(0)` before the pop, exact results clear C1 and
+C0/C2/C3 are undefined.
 
 ### S2-31. x87 conversions, rounding и exceptions
 

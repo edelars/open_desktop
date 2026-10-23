@@ -3356,3 +3356,46 @@ found no production defects or remaining coverage findings after the final
 prefix, missing-state and alias-wording corrections. No Mac mini, SSH, hardware
 execution or commit was performed; physical acceptance remains reserved for
 the shared final acceptance stage.
+
+## S2-30p — exact-only FMULP ST(i), ST(0) (bounded local slice)
+
+Added bare `DE C8+i`, `i=0..7`, as exact-only `FMULP ST(i), ST(0)`. Execution
+reuses the S2-30n exact multiplication gate, calculates old `ST(i)*ST(0)`,
+writes old physical `(TOP+i)&7`, then marks old physical TOP Empty and
+increments TOP. For `i=0`, the valid square is calculated and written before
+the same old TOP tag is emptied. Exact success clears C1, records starting RIP
+as FIP, advances RIP by two and retires once. Native x87 admission remains
+closed. The no-operand `DE C9` encoding is the supported `i=1` form,
+`FMULP ST(1), ST(0)`.
+
+Interpreter literal vectors cover all 64 TOP×i pairs, including the i=0
+`1.5*1.5 = 2.25` square, physical placement, TOP wrap, payload retention and
+all unrelated state. Separate vectors cover all sign combinations, differing
+exponents, and a full-width significand multiplied by a power of two. A
+full-state rejection matrix covers inexact products, overflow, subnormal
+results, bad FCW/FSW, invalid tags, non-Normal raw classes and missing state;
+i=0 inexact and exact-overflow squares are rejected atomically. Truncation,
+injected fetch fault, stop address and zero budget preserve state. Decoder
+enumeration checks all DE ModR/M bytes, bare
+prefix rules, WAIT and truncation while preserving DE C0..C7 FADDP, E0..E7
+FSUBRP and E8..EF FSUBP. Fixture schema and runner cover all eight FMULP
+encodings, every TOP×i success and an inexact `DE C8` Unsupported case with no
+stop RIP and budget one. Native admission remains closed for all eight bytes.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FMUL/FIMUL—Multiply,”
+pp.3-360–3-362 ([official PDF, Vol.2A p.3-360](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=478)).
+It specifies the old `ST(i)*ST(0)` product before pop; exact results clear C1,
+and C0/C2/C3 are undefined. General rounding, exceptions, special values,
+CR0/#NM, native x87 execution and hardware state comparison remain outside
+this local profile.
+
+Focused interpreter, decoder, fixture-schema and runner tests passed during
+implementation. Full workspace tests, workspace check, Linux-target runner
+check, formatting and diff check passed. The layout check reports only the
+pre-existing unmapped `.serena/` root directory, left untouched. Linux native
+rejection tests are compile-only on this macOS host. Independent review found
+one initial i=0 overflow vector that was inexact before reaching range packing;
+it was corrected to use an exact power-of-two significand at exponent `0x7ffe`
+and re-reviewed. Graphify update completed. No Mac mini, SSH, hardware
+execution or commit was performed; physical acceptance remains reserved for
+the shared final acceptance stage.

@@ -1303,6 +1303,140 @@ mod tests {
     }
 
     #[test]
+    fn x87_fmulp_fixture_runner_covers_every_index_top_and_square_alias() {
+        fn normal(significand: u64, exponent: u16) -> [u8; 10] {
+            let mut bytes = [0; 10];
+            bytes[..8].copy_from_slice(&significand.to_le_bytes());
+            bytes[8..].copy_from_slice(&exponent.to_le_bytes());
+            bytes
+        }
+
+        let one_and_half = normal(0xc000_0000_0000_0000, 0x3fff);
+        let two = normal(0x8000_0000_0000_0000, 0x4000);
+        let three = normal(0xc000_0000_0000_0000, 0x4000);
+        let two_and_quarter = normal(0x9000_0000_0000_0000, 0x4000);
+        for top in 0u8..=7 {
+            for destination in 0u8..=7 {
+                let old_top = usize::from(top);
+                let physical_destination = usize::from((top + destination) & 7);
+                let mut input = v2::Fixture::from_json(include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json"
+                ))
+                .unwrap()
+                .fixture;
+                input.case_id = format!("local_fmulp_st{destination}_top{top}");
+                input.profile = v2::Profile::LongX87StateV1;
+                input.instruction_budget = 1;
+                input.initial_state.rip = HexU64(0x5300);
+                input.stop_rip = Some(HexU64(0x5302));
+                input.expected_exit = v2::ExpectedExit::StopAddress;
+                let code = input
+                    .memory
+                    .iter_mut()
+                    .find(|region| region.region_id == "code")
+                    .unwrap();
+                code.guest_address = HexU64(0x5300);
+                code.length = 2;
+                code.initial_bytes_hex = format!("de{:x}", 0xc8 | destination);
+                code.comparison_mask_hex = "ffff".into();
+
+                let mut x87 = od_isa::state::X87State::fixture_seed();
+                x87.control_word = 0x037f;
+                x87.status_word = (u16::from(top) << 11) | 0x4700 | (1 << 9);
+                x87.tag_word = u16::MAX;
+                for physical in 0..8 {
+                    x87.registers[physical] = [0x20 + physical as u8; 10];
+                }
+                x87.registers[old_top] = one_and_half;
+                x87.set_tag(top, od_isa::state::X87Tag::Valid);
+                if destination != 0 {
+                    x87.registers[physical_destination] = two;
+                    x87.set_tag(physical_destination as u8, od_isa::state::X87Tag::Valid);
+                }
+                x87.instruction_pointer = 0x1234;
+                x87.data_pointer = 0x5678;
+                x87.last_opcode = 0x05aa;
+                input.initial_state.x87 = Some(v2::X87Snapshot::from(&x87));
+
+                let loaded = v2::Fixture::from_json(&input.to_json().unwrap()).unwrap();
+                let mut memory =
+                    od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                let result = execute_fixture_v2(&loaded, &mut memory);
+                result.validate_for(&loaded).unwrap();
+                assert!(
+                    matches!(result.outcome, v2::Outcome::StopAddress {}),
+                    "ST({destination}), TOP={top}: {:?}",
+                    result.outcome
+                );
+                assert_eq!(
+                    result.instructions_executed,
+                    Observation::Available { value: HexU64(1) }
+                );
+                let Observation::Available { value } = result.snapshot else {
+                    panic!("x87 FMULP result must be observable");
+                };
+                let observed = value.state.x87.unwrap();
+                let mut expected = x87;
+                expected.registers[physical_destination] = if destination == 0 {
+                    two_and_quarter
+                } else {
+                    three
+                };
+                expected.set_tag(top, od_isa::state::X87Tag::Empty);
+                let new_top = top.wrapping_add(1) & 7;
+                expected.status_word =
+                    (expected.status_word & !((7 << 11) | (1 << 9))) | (u16::from(new_top) << 11);
+                expected.instruction_pointer = 0x5300;
+                assert_eq!(observed, v2::X87Snapshot::from(&expected));
+            }
+        }
+
+        // The fixture schema accepts DE C8 with an explicit unsupported exit
+        // and no stop address. This instance rejects atomically because the
+        // finite product is inexact; the i=0 exact square succeeds above.
+        let mut input = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json"
+        ))
+        .unwrap()
+        .fixture;
+        input.case_id = "local_fmulp_i0_inexact_rejection".into();
+        input.profile = v2::Profile::LongX87StateV1;
+        input.instruction_budget = 1;
+        input.initial_state.rip = HexU64(0x5400);
+        input.stop_rip = None;
+        input.expected_exit = v2::ExpectedExit::Unsupported;
+        let code = input
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.guest_address = HexU64(0x5400);
+        code.length = 2;
+        code.initial_bytes_hex = "dec8".into();
+        code.comparison_mask_hex = "ffff".into();
+        let mut x87 = od_isa::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0;
+        x87.tag_word = 0xfff0;
+        x87.registers[0] = normal(0x8000_0000_0000_0001, 0x3fff);
+        x87.set_tag(0, od_isa::state::X87Tag::Valid);
+        input.initial_state.x87 = Some(v2::X87Snapshot::from(&x87));
+        let loaded = v2::Fixture::from_json(&input.to_json().unwrap()).unwrap();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        let result = execute_fixture_v2(&loaded, &mut memory);
+        result.validate_for(&loaded).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::Unsupported { .. }));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(0) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("unsupported x87 square rejection must be observable");
+        };
+        assert_eq!(value.state, loaded.fixture.initial_state);
+    }
+
+    #[test]
     fn x87_fsubrp_fixture_runner_covers_every_index_top_and_alias_rejection() {
         let normal = |significand: u64, exponent: u16| {
             let mut bytes = [0; 10];

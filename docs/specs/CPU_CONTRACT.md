@@ -1536,6 +1536,35 @@ pp.3-360–3-362 ([official PDF, Vol.2A p.3-360](https://cdrdv2-public.intel.com
 and C0/C2/C3 are undefined. General rounding, special values, exception
 delivery, CR0/#NM and native x87 behavior are not implemented.
 
+## Local S2-30p: exact-only `FMULP ST(i), ST(0)` (`DE C8+i`)
+
+The interpreter accepts exactly bare `DE C8` through `DE CF` with an existing
+`Some(X87State)`. It reuses the S2-30n exact FMUL gate: FCW `0x037f`,
+`FSW & 0x80ff == 0`, Valid tags for used physical operands, canonical Normal
+binary80 inputs, and a normalized product whose low 64 bits are zero. Exponents
+may differ. The precision-64 result must remain canonical Normal. `i=0` reads
+the old TOP value once, computes its square and requires only that one Valid
+tag. Numeric, environment, tag, raw-class and missing-state rejects occur
+before commit. The no-operand `DE C9` encoding is the `i=1` form,
+`FMULP ST(1), ST(0)`.
+
+Success writes the product to old physical `(TOP+i)&7`, then marks old physical
+TOP Empty while retaining that register payload. It increments TOP, clears C1,
+sets FIP to starting RIP, advances RIP by two and retires once. All other tags,
+payloads, x87 fields, GPRs and RFLAGS remain unchanged. For `i=0`, the square is
+written into old TOP before that same register is emptied. The decoder accepts
+DE C8..CF while preserving FADDP DE C0..C7, FSUBRP DE E0..E7 and FSUBP DE
+E8..EF; prefixes, WAIT and truncated encodings remain unsupported. Fixture
+schema accepts all eight encodings, including a `DE C8` Unsupported/no-stop
+case with budget one, and the runner checks every TOP×i pair including exact
+square success. Native x87 admission remains closed.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FMUL/FIMUL—Multiply,”
+pp.3-360–3-362 ([official PDF, Vol.2A p.3-360](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=478)).
+`DE C8+i` computes old `ST(i) * ST(0)` before popping old `ST(0)`; exact
+results clear C1, and C0/C2/C3 are undefined. General rounding, special values,
+exception delivery, CR0/#NM and native x87 behavior are not implemented.
+
 ## Local S2-29a: raw binary80 representation and classification
 
 `od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory

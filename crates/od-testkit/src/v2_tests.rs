@@ -482,7 +482,6 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         ("66d8e1", 3, 0x1003),
         ("9bd8e1", 3, 0x1003),
         ("d8", 1, 0x1001),
-        ("dec8", 2, 0x1002),
         ("de00", 2, 0x1002),
         ("66dec1", 3, 0x1003),
         ("9bdec1", 3, 0x1003),
