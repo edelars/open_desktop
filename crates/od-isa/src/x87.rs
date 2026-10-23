@@ -103,6 +103,29 @@ pub fn normalize_exact_coefficient(exponent: i32, coefficient: i128) -> Option<(
     Some((sign, normalized_exponent, normalized_magnitude))
 }
 
+/// Multiply two finite significands without alignment, jam bits, or
+/// normalization.
+///
+/// For nonzero inputs, the result `(sign, exponent, magnitude)` represents
+/// `(-1)^sign * magnitude * 2^(exponent - 127)`, where `sign` is the XOR of
+/// the input signs and `magnitude` is the full unsigned 128-bit product. The
+/// leading one may be at bit 126 or 127. `None` means only that the summed
+/// exponent does not fit in `i32`. Any zero pair returns `(false, 0, 0)` with
+/// no architectural signed-zero choice.
+pub fn multiply_finite_significands(lhs: X87Finite, rhs: X87Finite) -> Option<(bool, i32, u128)> {
+    if lhs.is_zero() || rhs.is_zero() {
+        return Some((false, 0, 0));
+    }
+
+    let exponent = i64::from(lhs.exponent)
+        .checked_add(i64::from(rhs.exponent))?
+        .checked_add(1)?;
+    let exponent = i32::try_from(exponent).ok()?;
+    let magnitude = (lhs.significand as u128) * (rhs.significand as u128);
+
+    Some((lhs.sign ^ rhs.sign, exponent, magnitude))
+}
+
 fn signed_significand(value: X87Finite) -> i128 {
     let significand = value.significand as i128;
     if value.sign {
@@ -310,7 +333,8 @@ impl X87Binary80 {
 mod tests {
     use super::{
         X87Binary80, X87Binary80Class, X87Finite, X87Grs, add_finite_same_exponent,
-        align_finite_pair, normalize_exact_coefficient, shift_right_jam, shift_right_jam_u128,
+        align_finite_pair, multiply_finite_significands, normalize_exact_coefficient,
+        shift_right_jam, shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -1120,6 +1144,127 @@ mod tests {
             normalize_exact_coefficient(i32::MIN, 0),
             Some((false, 0, 0))
         );
+    }
+
+    #[test]
+    fn exact_finite_significand_product_preserves_full_u128_magnitude_and_sign() {
+        let exponent = 17;
+        let minimum = finite(
+            exponent,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        let minimum_negative = finite(
+            exponent,
+            0x8000_0000_0000_0000,
+            true,
+            X87Binary80Class::Subnormal,
+        );
+        let maximum = finite(exponent, u64::MAX, false, X87Binary80Class::Normal);
+        let mixed = finite(
+            exponent,
+            0x8000_0000_0000_0001,
+            true,
+            X87Binary80Class::PseudoDenormal,
+        );
+
+        assert_eq!(
+            multiply_finite_significands(minimum, minimum),
+            Some((false, 35, 0x4000_0000_0000_0000_0000_0000_0000_0000))
+        );
+        assert_eq!(
+            multiply_finite_significands(maximum, maximum),
+            Some((false, 35, 0xffff_ffff_ffff_fffe_0000_0000_0000_0001))
+        );
+        assert_eq!(
+            multiply_finite_significands(minimum, maximum),
+            Some((false, 35, 0x7fff_ffff_ffff_ffff_8000_0000_0000_0000))
+        );
+        assert_eq!(
+            multiply_finite_significands(minimum, mixed),
+            Some((true, 35, 0x4000_0000_0000_0000_8000_0000_0000_0000))
+        );
+        assert_eq!(
+            multiply_finite_significands(mixed, minimum),
+            Some((true, 35, 0x4000_0000_0000_0000_8000_0000_0000_0000))
+        );
+        assert_eq!(
+            multiply_finite_significands(minimum_negative, mixed),
+            Some((false, 35, 0x4000_0000_0000_0000_8000_0000_0000_0000))
+        );
+        assert_eq!(
+            multiply_finite_significands(mixed, minimum_negative),
+            Some((false, 35, 0x4000_0000_0000_0000_8000_0000_0000_0000))
+        );
+
+        assert_eq!(maximum.source_class(), X87Binary80Class::Normal);
+        assert_eq!(minimum_negative.source_class(), X87Binary80Class::Subnormal);
+        assert_eq!(mixed.source_class(), X87Binary80Class::PseudoDenormal);
+    }
+
+    #[test]
+    fn exact_finite_significand_product_handles_zero_and_exponent_boundaries() {
+        let positive_zero = finite(0, 0, false, X87Binary80Class::Zero);
+        let negative_zero = finite(0, 0, true, X87Binary80Class::Zero);
+        let minimum = finite(
+            i32::MIN,
+            0x8000_0000_0000_0000,
+            true,
+            X87Binary80Class::Normal,
+        );
+        let maximum = finite(i32::MAX, u64::MAX, false, X87Binary80Class::Normal);
+        let negative_one_exponent =
+            finite(-1, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+
+        assert_eq!(
+            multiply_finite_significands(positive_zero, maximum),
+            Some((false, 0, 0))
+        );
+        assert_eq!(
+            multiply_finite_significands(minimum, negative_zero),
+            Some((false, 0, 0))
+        );
+        assert_eq!(
+            multiply_finite_significands(negative_zero, positive_zero),
+            Some((false, 0, 0))
+        );
+        assert_eq!(
+            multiply_finite_significands(minimum, minimum),
+            None,
+            "i32::MIN + i32::MIN + 1 underflows"
+        );
+        assert_eq!(
+            multiply_finite_significands(maximum, maximum),
+            None,
+            "i32::MAX + i32::MAX + 1 overflows"
+        );
+        assert_eq!(
+            multiply_finite_significands(minimum, maximum),
+            Some((true, 0, 0x7fff_ffff_ffff_ffff_8000_0000_0000_0000))
+        );
+        assert_eq!(
+            multiply_finite_significands(minimum, negative_one_exponent),
+            Some((true, i32::MIN, 0x4000_0000_0000_0000_0000_0000_0000_0000))
+        );
+
+        let raw_pseudo = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0]);
+        let raw_normal = X87Binary80::from_bytes([1, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]);
+        let pseudo = raw_pseudo.normalize_finite().unwrap();
+        let normal = raw_normal.normalize_finite().unwrap();
+        let finite_before = (pseudo, normal);
+        let raw_before = (raw_pseudo, raw_normal);
+        assert_eq!(pseudo.exponent(), normal.exponent());
+        assert_eq!(pseudo.source_class(), X87Binary80Class::PseudoDenormal);
+        assert_eq!(normal.source_class(), X87Binary80Class::Normal);
+        assert_eq!(
+            multiply_finite_significands(pseudo, normal),
+            Some((false, -32763, 0x4000_0000_0000_0000_8000_0000_0000_0000))
+        );
+        assert_eq!((pseudo, normal), finite_before);
+        assert_eq!((raw_pseudo, raw_normal), raw_before);
+        assert_eq!(raw_pseudo.to_bytes(), [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0]);
+        assert_eq!(raw_normal.to_bytes(), [1, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]);
     }
 
     #[test]

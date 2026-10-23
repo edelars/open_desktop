@@ -1122,6 +1122,26 @@ does not define x87 arithmetic, binary80 packing, GRS/rounding, clipping,
 exceptions/flags, instructions, or CPUID behavior. S2-29 and the S2-28 umbrella
 remain open.
 
+### S2-29g. Exact finite significand product (partial)
+
+`multiply_finite_significands(lhs, rhs)` multiplies the original normalized
+finite significands directly as unsigned `u128` values. For nonzero operands,
+the result `(sign, exponent, magnitude)` represents
+`(-1)^sign * magnitude * 2^(exponent - 127)`, where `sign` is the XOR and
+`exponent = lhs.exponent + rhs.exponent + 1`. The exact product can have its
+leading one at bit 126 or 127; it is not normalized or narrowed through `i128`.
+Checked exponent overflow returns `None`. Any zero pair returns
+`(false, 0, 0)` with no architectural signed-zero choice. Inputs, raw values,
+and source-class provenance are unchanged; jammed alignment data is not used.
+
+Independent literal vectors cover minimum-significand squared (`2^126`),
+maximum-significand squared, mixed boundary patterns, signs, commutativity,
+signed zeros, exponent underflow/overflow/success boundaries, and composition
+with normalized raw finite values that have distinct provenance. This helper
+does not normalize, round, pack, define exceptions/status, architectural
+overflow/underflow, or execute guest instructions/native code. S2-29 and the
+S2-28 umbrella remain open.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.

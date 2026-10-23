@@ -2467,3 +2467,29 @@ Local verification passed: `cargo test -p od-isa x87 --offline` (19 tests),
 stopped at the pre-existing unmapped root directory `.serena/`; it was left
 untouched. No physical Mac mini check was performed or required for this exact
 integer helper. S2-29 and the S2-28 umbrella remain open under ISSUE-019.
+
+## S2-29g — exact finite significand product (partial)
+
+Added `multiply_finite_significands(lhs, rhs)`, which multiplies the original
+finite significands as unsigned `u128` values and returns the XOR sign, checked
+scale exponent `lhs.exponent + rhs.exponent + 1`, and the full exact product.
+The result represents `(-1)^sign * magnitude * 2^(exponent - 127)`; its leading
+one may be at bit 126 or 127, and it is neither normalized nor narrowed
+through `i128`. A zero input returns `(false, 0, 0)`; `None` reports only scale
+exponent overflow. Jammed alignment is not consumed and source values,
+encodings, and provenance remain unchanged.
+
+Independent literal vectors cover minimum significand squared, maximum squared,
+mixed boundary products, sign combinations, commutativity, signed zero pairs,
+exponent min/max overflow and successful cancellation of the exponents, plus
+products from normalized raw pseudo-denormal and normal values with preserved
+provenance. No normalization, rounding, packing, architectural overflow or
+underflow, exceptions/status, instructions, or native execution is included.
+
+Local verification passed: `cargo test -p od-isa x87 --offline` (21 tests),
+`cargo fmt --all -- --check`, and `cargo check --workspace --all-targets
+--offline`. `git diff --check` and `graphify update .` are recorded after the
+documentation update. `python3 tools/check_layout.py` remains subject to the
+pre-existing unmapped root `.serena/` directory, which was left untouched. No
+physical Mac mini check was performed or required for this integer helper.
+S2-29 and the S2-28 umbrella remain open under ISSUE-019.

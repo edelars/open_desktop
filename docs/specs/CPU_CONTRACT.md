@@ -1163,6 +1163,29 @@ jammed alignment data and defines no binary80 packing, GRS/rounding, clipping,
 exceptions/flags, guest instruction, or CPUID behavior. S2-29 and S2-28 remain
 open.
 
+## Local S2-29g: exact finite significand product
+
+`od_isa::x87::multiply_finite_significands(lhs, rhs)` multiplies the original
+finite normalized significands as unsigned `u128` operands. For nonzero inputs,
+it returns `(sign, exponent, magnitude)` representing
+`(-1)^sign * magnitude * 2^(exponent - 127)`, with
+`sign = lhs.sign XOR rhs.sign` and `exponent = lhs.exponent + rhs.exponent + 1`.
+The product remains exact;
+its leading one may be at bit 126 or 127, and the result is not normalized or
+narrowed through `i128`. `None` reports only checked `i32` exponent overflow.
+Any zero input returns `(false, 0, 0)` with no architectural signed-zero
+selection. The helper reads original significands directly, never consumes
+jammed alignment, and leaves finite values, raw encodings and source-class
+provenance unchanged.
+
+Independent literal vectors cover minimum and maximum significands, mixed
+boundary patterns, sign XOR and both operand orders, signed-zero pairs,
+exponent underflow/overflow and a successful boundary sum, plus multiplication
+of normalized raw finite values with pseudo-denormal/normal provenance. This
+primitive does not normalize, round, pack binary80, set architectural
+overflow/underflow or exception/status state, or execute guest instructions.
+S2-29 and S2-28 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.
