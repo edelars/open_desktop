@@ -253,6 +253,50 @@ cargo test -p od-testkit --offline s2_22i
 cargo test -p od-runner --test fixture_v2 --offline s2_22i_gs_base_composition_runs_the_literal_two_instruction_profile
 ```
 
+## S2-22j — loaded FS.base composition
+
+Added the literal local-only counterpart using exact bytes
+`8E E0 64 48 8B 00` under the existing `s2-long-fs-load-v1` profile. The
+profile now accepts only the existing exact `8E E0` load or this exact
+two-instruction sequence with a matching code mapping, budget and stop RIP.
+The fixture loads FS.base `0x80000000` through selector `0x0b`, updates only
+GDT access byte `0x20000d` from F2 to F3, then reads the literal qword
+`0x1122334455667788` at `0x8000000b`; a canary at the previous FS.base remains
+unchanged. The generator serializes handwritten input bytes/state/descriptor
+and data; Rust tests hold expected registers, hidden cache, memory and
+retirement values as literals.
+
+Unit traces assert descriptor read8 and optional A-byte write1 in descriptor
+context at architectural CPL3/pageRing0, then one explicit CPL3 qword data
+read with no GDT reread. A later data-read #PF keeps the load, descriptor
+update and first retirement. A noncanonical address raises #GP(0) before the
+data callback while preserving those earlier effects. This reuses the existing
+FS/GS canonicality and Long64 no-limit contract; no new independent manual
+verification is claimed. The physical x86 runner still returns Unsupported
+before tracee creation for FS/GS profiles, and the fixture is not in native
+selection. The Mac-only execution of the Linux-gated native rejection test is
+deferred to the shared final Mac mini acceptance substage.
+
+Local verification passed: `cargo test --offline -p od-testkit -p od-runner
+-p od-x86-runner` (141, 55, and 9 tests respectively),
+`cargo check --workspace --all-targets --offline`, and Linux target
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline` (compile-only). The GS/FS load fixture generator freshness check
+and all three provenance tests passed. `cargo fmt --all -- --check`,
+`python3 tools/check_layout.py`, and `git diff --check` passed. A cross-target
+`cargo test --no-run` attempt reached the linker but could not link Linux ELF
+tests with this macOS host linker; the cross-target `cargo check --all-targets`
+above verifies compilation only. No Mac mini, SSH or physical test was run.
+S2-22 and ISSUE-017/018 remain open.
+
+```sh
+python3 tests/cpu/generate_stage2_gs_load.py --check
+python3 tests/cpu/test_stage2_gs_load_generator.py
+cargo test -p od-testkit --offline s2_22j
+cargo test -p od-runner --test fixture_v2 --offline s2_22j_fs_base_composition_runs_the_literal_two_instruction_profile
+cargo test --offline -p od-testkit -p od-runner -p od-x86-runner
+```
+
 ## S2-00 — профиль
 
 Принят диагностический `s2-long-integer-v1`, объём A и обязательные решения для

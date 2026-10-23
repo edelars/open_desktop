@@ -13,6 +13,7 @@ RIP = 0x00100000
 GDTR_BASE = 0x00200000
 CODE = "8ee8"  # MOV GS, AX
 COMPOSITION_CODE = "8ee865488b00"  # MOV GS, AX; MOV RAX, qword ptr GS:[RAX]
+FS_COMPOSITION_CODE = "8ee064488b00"  # MOV FS, AX; MOV RAX, qword ptr FS:[RAX]
 GPRS = [
     0xAABBCCDDEEFF000B, 0x0102030405060708,
     0x1122334455667788, 0x8877665544332211,
@@ -222,6 +223,88 @@ def make_composition_case() -> dict:
     }
 
 
+def make_fs_composition_case() -> dict:
+    """Literal oracle for consuming the descriptor-loaded FS.base."""
+    gprs = [0] * 16
+    gprs[0] = 0x000000000000000B
+    gprs[1] = 0x0102030405060708
+    gprs[2] = 0x1122334455667788
+    gprs[3] = 0x8877665544332211
+    gprs[4] = 0x0000000000200080
+    gprs[5] = 0x0000000000200081
+    gprs[6] = 0x0000000000200004
+    gprs[7] = 0x0000000000200010
+    gprs[8:] = [0x0123456789ABCDEF, 0xFEDCBA9876543210,
+                0x8877665544332211, 0xAABBCCDDEEFF0011,
+                0x1122112211221122, 0x3344334433443344,
+                0x778899AABBCCDDEE, 0xFFFFFFFFFFFFFFFF]
+    return {
+        "schema_version": 2,
+        "case_id": "s2_22j_fs_base_composition",
+        "profile": "s2-long-fs-load-v1",
+        "provenance": {
+            "kind": "project_fixture",
+            "source": ("Handwritten 8E E0 64 48 8B 00 bytes, initial state, literal "+
+                       "descriptor/data/canary bytes, and harness fields. The generator "+
+                       "serializes fixture inputs only; Rust tests hold literal expected "+
+                       "post-state and memory answers. It does not assemble or emulate."),
+            "specification": ("Intel SDM revision 093 (253667-093US), Vol.2B MOV "+
+                              "pp.4-28–4-31; Vol.3A (325384-093US) §3.4.5.1, "+
+                              "§5.6.1, §5.7, and §11.1.2.1 Automatic Locking."),
+            "specification_version": (
+                "Intel SDM revision 093; Vol.2B PDF "
+                "https://cdrdv2.intel.com/v1/dl/getContent/671241; Vol.3A PDF "
+                "https://cdrdv2.intel.com/v1/dl/getContent/671447; project S2-22j. "
+                "Composition case proves the loaded FS.base selects the qword data."),
+        },
+        "seed": None,
+        "converted_from_v1_sha256": None,
+        "initial_state": {
+            "mode": "long64",
+            "gpr": [hx(value) for value in gprs],
+            "rip": hx(RIP),
+            "rflags": hx(0x0CD7),
+            "fs_base": hx(0x00400000),
+            "fs_selector": hx(0x0033),
+            "gdtr_base": hx(GDTR_BASE),
+            "gdtr_limit": hx(15),
+            "fs_cache_limit": hx(0x0000FFFF),
+            "fs_cache_access": hx(0x00F3),
+            "fs_cache_flags": hx(0),
+        },
+        "memory": [
+            {
+                "region_id": "code", "guest_address": hx(RIP), "length": 6,
+                "permissions": {"read": False, "write": False, "execute": True},
+                "initial_bytes_hex": FS_COMPOSITION_CODE, "comparison_mask_hex": "ff" * 6,
+            },
+            {
+                "region_id": "gdt", "guest_address": hx(GDTR_BASE), "length": 16,
+                "permissions": {"read": True, "write": True, "execute": False},
+                "initial_bytes_hex": "00000000000000000000000000f20080",
+                "comparison_mask_hex": "ff" * 16,
+            },
+            {
+                "region_id": "old_fs_canary", "guest_address": hx(0x00400000), "length": 19,
+                "permissions": {"read": True, "write": False, "execute": False},
+                "initial_bytes_hex": "00" * 11 + "deadc0decafef00d",
+                "comparison_mask_hex": "ff" * 19,
+            },
+            {
+                "region_id": "loaded_fs_data", "guest_address": hx(0x80000000), "length": 19,
+                "permissions": {"read": True, "write": False, "execute": False},
+                "initial_bytes_hex": "00" * 11 + "8877665544332211",
+                "comparison_mask_hex": "ff" * 19,
+            },
+        ],
+        "stop_rip": hx(RIP + 6),
+        "instruction_budget": 2,
+        "wall_timeout_ms": 2000,
+        "rflags_mask": hx(0x0CD7),
+        "expected_exit": "stop_address",
+    }
+
+
 def materialize() -> dict[str, bytes]:
     result = {
         f"{case_id}.case.json": (json.dumps(make_case(*case), indent=2) + "\n").encode()
@@ -230,6 +313,9 @@ def materialize() -> dict[str, bytes]:
     }
     result["s2_22i_gs_base_composition.case.json"] = (
         json.dumps(make_composition_case(), indent=2) + "\n"
+    ).encode()
+    result["s2_22j_fs_base_composition.case.json"] = (
+        json.dumps(make_fs_composition_case(), indent=2) + "\n"
     ).encode()
     return result
 
@@ -249,8 +335,8 @@ def main() -> int:
     if mismatches:
         print("stale generated files: " + ", ".join(mismatches))
         return 1
-    print("S2-22h MOV GS descriptor-load fixtures are fresh" if args.check
-          else "wrote S2-22h MOV GS descriptor-load fixtures")
+    print("S2-22h MOV GS load and S2-22i/j composition fixtures are fresh" if args.check
+          else "wrote S2-22h MOV GS load and S2-22i/j composition fixtures")
     return 0
 
 

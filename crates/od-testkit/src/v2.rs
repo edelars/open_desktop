@@ -554,20 +554,22 @@ impl Fixture {
         if self.expected_exit == ExpectedExit::StopAddress && self.stop_rip.is_none() {
             return Err(invalid("stop_rip", "required for stop_address"));
         }
-        if self.profile == Profile::LongGsLoadV1 {
+        if matches!(self.profile, Profile::LongFsLoadV1 | Profile::LongGsLoadV1) {
             let code = self.memory.iter().find(|region| region.region_id == "code");
             let Some(code) = code else {
                 return Err(invalid("memory.code", "required by this profile"));
             };
             let bytes = code.initial_bytes_hex.to_ascii_lowercase();
             let start = self.initial_state.rip.get();
-            let admitted = match bytes.as_str() {
-                "8ee8" => (1, 2),
-                "8ee865488b00" => (2, 6),
+            let admitted = match (self.profile, bytes.as_str()) {
+                (Profile::LongFsLoadV1, "8ee0") => (1, 2),
+                (Profile::LongFsLoadV1, "8ee064488b00") => (2, 6),
+                (Profile::LongGsLoadV1, "8ee8") => (1, 2),
+                (Profile::LongGsLoadV1, "8ee865488b00") => (2, 6),
                 _ => {
                     return Err(invalid(
                         "memory.code",
-                        "outside the bounded GS-load profile",
+                        "outside the bounded FS/GS-load profile",
                     ));
                 }
             };

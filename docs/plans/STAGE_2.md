@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-**Дата:** 23 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–i add local-only FS/GS-base, selector, descriptor-load, VERW/GDT and one exact GS.base composition case; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 S2-22h load fixtures and one S2-22i composition fixture are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b UD2 fixture are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Stage 2 remains open under broader roadmap criteria. ISSUE-011/012/013/014/015/016/017/018 remain open; acceptance criteria are unchanged.
+**Дата:** 23 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–j add local-only FS/GS-base, selector, descriptor-load, VERW/GDT and exact GS/FS.base composition cases; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 S2-22h load fixtures and two S2-22i/j composition fixtures are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b UD2 fixture are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Stage 2 remains open under broader roadmap criteria. ISSUE-011/012/013/014/015/016/017/018 remain open; acceptance criteria are unchanged.
 
 План рассчитан на модель, которой нужны небольшие последовательные задания, явные ограничения и проверяемый результат. Выполнять одну задачу `S2-NN` за раз. Большую группу внутри задачи делить на перечисленные подшаги; не реализовывать весь этап одним изменением.
 
@@ -166,6 +166,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-22g | В том же local-only профиле для valid P=1/A=0 выполнить один byte write только по адресу access byte до CPU commit; A=1 не пишет; native profile остаётся fail-closed | S2-22f |
 | [x] | S2-22h | Только bare `8E E8` (`MOV GS, AX`) в отдельном `s2-long-gs-load-v1`: Long64/CPL3, non-null GDT selector, тот же упорядоченный GDT validation/A-write контракт, наблюдаемый GS cache; S2-22 остаётся открытым | S2-22g |
 | [x] | S2-22i | Один literal local-only composition case: exact `8E E8 65 48 8B 00`, loaded GS.base consumed by an already-supported GS qword load; bounded profile admits only existing `8E E8` and this exact two-instruction program | S2-22h |
+| [x] | S2-22j | Один literal local-only composition case: exact `8E E0 64 48 8B 00`, loaded FS.base consumed by an already-supported FS qword load; bounded profile admits only existing `8E E0` and this exact two-instruction program | S2-22i |
 | [ ] | S2-23 | Real mode 16-bit, если нужен пути загрузки | S2-22 |
 | [ ] | S2-24 | Protected/compatibility mode | S2-22; S2-23 при необходимости |
 | [ ] | S2-25 | CR/MSR и переходы режима | S2-24 |
@@ -900,6 +901,15 @@ does not claim new independent manual verification. The case is local-only;
 S2-22 and ISSUE-017/018 remain open.
 
 Local verification results for S2-22i are recorded in the Stage 2 report.
+
+S2-22j adds the exact FS counterpart in the existing local-only
+`s2-long-fs-load-v1` profile. It uses bytes `8E E0 64 48 8B 00`, with the
+same descriptor, offset, GDT A-bit update, old-base canary and loaded-base
+qword as S2-22i. It admits only the original `8E E0` program or this exact
+six-byte composition with matching instruction budget and stop RIP. The
+fixture does not make FS or GS profiles native eligible. Unit trace and fault
+coverage, fixture provenance, and local verification are recorded in the
+Stage 2 report. S2-22, ISSUE-017 and ISSUE-018 remain open.
 
 ### S2-23. Real mode при необходимости
 

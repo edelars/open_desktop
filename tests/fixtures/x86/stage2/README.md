@@ -1032,3 +1032,33 @@ python3 tests/cpu/test_stage2_gs_load_generator.py
 cargo test -p od-testkit --offline s2_22i
 cargo test -p od-runner --test fixture_v2 --offline s2_22i_gs_base_composition_runs_the_literal_two_instruction_profile
 ```
+
+## Loaded FS.base composition fixture S2-22j
+
+The one local-only composition case runs exactly `8E E0 64 48 8B 00` under
+`s2-long-fs-load-v1`: CPL3 loads FS from a literal GDT descriptor, then the
+existing `MOV RAX, qword ptr FS:[RAX]` consumes that cached base. The original
+FS.base points to a contrasting canary; the descriptor-loaded base
+`0x80000000` selects the qword at `0x8000000b`. The fixture checks the one
+A-bit byte update, full state, both data regions and retirement count. Unit
+trace assertions prove descriptor read8 and optional write1 at CPL3/pageRing0,
+then an explicit CPL3 data read8 without a GDT reread. Separate cases verify
+that a later data-read fault retains the first instruction and that a
+noncanonical result raises #GP(0) before any data callback.
+
+The profile admits the existing exact `8E E0` case and this exact two-
+instruction program with fixed budget and stop boundary; other sequences are
+rejected. Fixture bytes, initial state, descriptor/data/canary bytes and
+harness fields are handwritten literals. The generator serializes inputs;
+expected CPU state and memory answers are literals in Rust tests. The existing
+CPU_CONTRACT entries support descriptor and canonicality semantics; no
+independent manual verification is claimed. S2-22 and ISSUE-017/018 remain
+open. This fixture is local-only and is excluded from native selection and
+execution.
+
+```sh
+python3 tests/cpu/generate_stage2_gs_load.py --check
+python3 tests/cpu/test_stage2_gs_load_generator.py
+cargo test -p od-testkit --offline s2_22j
+cargo test -p od-runner --test fixture_v2 --offline s2_22j_fs_base_composition_runs_the_literal_two_instruction_profile
+```

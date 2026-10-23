@@ -902,13 +902,53 @@ fn s2_22i_gs_base_composition_runs_the_literal_two_instruction_profile() {
 }
 
 #[test]
+fn s2_22j_fs_base_composition_runs_the_literal_two_instruction_profile() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22j_fs_base_composition.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, "s2_22j_fs_base_composition");
+    assert_eq!(input.fixture.profile, od_testkit::v2::Profile::LongFsLoadV1);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 2);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0006));
+    assert_eq!(observed.state.gpr[0], HexU64(0x1122_3344_5566_7788));
+    assert_eq!(observed.state.fs_base, Some(HexU64(0x8000_0000)));
+    assert_eq!(observed.state.fs_selector, Some(HexU64(0x0b)));
+    assert_eq!(observed.state.fs_cache_limit, Some(HexU64(0)));
+    assert_eq!(observed.state.fs_cache_access, Some(HexU64(0xf3)));
+    assert_eq!(observed.state.fs_cache_flags, Some(HexU64(0)));
+    assert_eq!(
+        observed.memory[1].bytes_hex,
+        "00000000000000000000000000f30080"
+    );
+    assert_eq!(
+        observed.memory[2].bytes_hex,
+        "0000000000000000000000deadc0decafef00d"
+    );
+    assert_eq!(
+        observed.memory[3].bytes_hex,
+        "00000000000000000000008877665544332211"
+    );
+
+    let mut unsupported = input.fixture.clone();
+    unsupported.memory[0]
+        .initial_bytes_hex
+        .replace_range(10..12, "01");
+    assert!(unsupported.validate().is_err());
+    let mut widened_budget = input.fixture;
+    widened_budget.instruction_budget = 3;
+    assert!(widened_budget.validate().is_err());
+}
+
+#[test]
 fn fs_load_commit_is_preserved_when_a_later_instruction_faults_and_self_compares() {
-    let mut fixture = Fixture::from_json(FS_LOAD_CASES[0].1).unwrap().fixture;
-    fixture.memory[0].length = 4;
-    fixture.memory[0].initial_bytes_hex = "8ee00f0b".into();
-    fixture.memory[0].comparison_mask_hex = "ffffffff".into();
-    fixture.stop_rip = Some(HexU64(0x0010_0004));
-    fixture.instruction_budget = 2;
+    let mut fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22j_fs_base_composition.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    fixture.initial_state.gpr[0] = HexU64(0x0000_7fff_8000_000b);
     fixture.expected_exit = ExpectedExit::Exception;
     let case = fixture.to_json().unwrap();
     let (loaded, result) = run(&case, "interpreter", 0);
@@ -917,7 +957,7 @@ fn fs_load_commit_is_preserved_when_a_later_instruction_faults_and_self_compares
     assert_eq!(count(&result), 1);
     let observed = snapshot(&result);
     assert_eq!(observed.state.rip, HexU64(0x0010_0002));
-    assert_eq!(observed.state.fs_base, Some(HexU64(0x89ab_cdef)));
+    assert_eq!(observed.state.fs_base, Some(HexU64(0x8000_0000)));
     assert_eq!(observed.state.fs_selector, Some(HexU64(0x0b)));
     assert_eq!(observed.state.fs_cache_access, Some(HexU64(0xf3)));
     assert_eq!(observed.state.fs_cache_limit, Some(HexU64(0)));

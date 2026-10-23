@@ -733,6 +733,36 @@ any data callback while preserving the first instruction's committed effects.
 Canonicality and no-limit behavior reuse the checks already recorded for
 S2-22a/b; no independent manual verification is claimed.
 
+### S2-22j — loaded FS.base composition fixture
+
+One additional local-only literal fixture uses `s2-long-fs-load-v1` for
+exactly `8E E0 64 48 8B 00`: load FS from the CPL3 GDT selector `0x000b`, then
+execute the already-supported `MOV RAX, qword ptr FS:[RAX]`. Profile
+validation admits the existing one-instruction `8E E0` fixtures and this
+exact two-instruction program only, with matching budget, code mapping and
+stop RIP. It does not add other byte shapes or native/physical eligibility.
+
+The literal starts with `RAX=0x0b`, `FS.base=0x00400000`, GDTR at
+`0x00200000` with limit 15, and an A=0 writable DPL3 data descriptor at
+`0x00200008` encoding base32 `0x80000000`, limit 0 and flags 0. The first
+instruction changes descriptor byte `0x0020000d` from F2 to F3 and loads the
+FS selector/base/cache; it retires at RIP `0x00100002`. The second reads qword
+`0x1122334455667788` at `0x8000000b`, reaches RIP `0x00100006`, and retires
+for a total of two instructions. The canary at old-base address
+`0x0040000b` remains unchanged. As in S2-22b, this uses offset `0x0b` past
+cache limit zero because Long64 FS/GS runtime limits are not checked. The
+ordinary data read uses loaded cached FS.base and does not reread the GDT.
+
+Unit traces assert descriptor read8 and optional A-byte write1 at CPL3 with
+descriptor-table origin/pageRing0, followed by exactly one explicit CPL3 data
+read8. Later data-read #PF preserves the first instruction's FS/cache,
+descriptor write and retirement. A noncanonical linear address raises
+#GP(0) without a data callback and preserves the same first-instruction
+effects. These canonicality/no-limit properties reuse S2-22a/b evidence; no
+independent manual verification is claimed. Fixture bytes/state/data are
+handwritten inputs; Rust tests keep expected post-state and memory answers as
+literals. S2-22 and ISSUE-017/018 remain open.
+
 
 ### Арифметика и eager flags — S2-11
 
