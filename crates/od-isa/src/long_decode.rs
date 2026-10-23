@@ -3994,6 +3994,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             let before = state.clone();
             assert_eq!(

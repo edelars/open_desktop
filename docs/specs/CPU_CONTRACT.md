@@ -994,6 +994,52 @@ Reachable ISA/переходы и полный профиль C/D не прин�
 критерии S2-44, не исключение C/D из этапа.
 Windows CPU profile также остаётся открытым.
 
+## Local profile S2-28a: `s2-long-x87-state-v1`
+
+This state-only profile is separate from the existing integer profiles. Its
+v2 fixture/result state contains an optional `x87` object only when this
+profile is selected; an absent object in older profiles means x87 state is
+outside that profile, not that the FPU was initialized. The object preserves
+eight physical 10-byte register payloads byte-for-byte, the full 16-bit
+physical tag word, FCW, FSW, FIP, FDP, and FOP. Register payload bytes are
+serialized in increasing memory-address order as exactly 20 lowercase hex
+digits per register. Tag values are the full-tag-word encodings 00 valid, 01
+zero, 10 special, and 11 empty, indexed by physical register. TOP is derived
+from FSW bits 13:11; logical ST(i) selects physical register `(TOP+i)&7`.
+Tag lookup remains physical, and empty registers retain their serialized
+payload bytes.
+
+For this Long64 contract FIP and FDP are 64-bit offsets, as Vol.1 §8.1.8
+specifies for processors supporting IA-32e mode. The profile includes no FCS
+or FDS selectors: the selected Long64 state image uses the 64-bit save form
+(REX.W), whose Vol.1 §8.1.8 rules say selectors are not saved. FOP is stored
+as its 11 architectural bits; values above `0x7ff` are rejected. FCW/FSW and
+pointer values otherwise remain raw, including status exception flags. There
+is no separate pending-exception boolean and this profile performs no x87
+exception delivery.
+
+`X87State::fixture_seed()` is deterministic test data, not an architectural
+reset. `X87State::fninit()` models the FNINIT state transition only: FCW becomes
+`0x037f`, FSW `0`, full FTW `0xffff`, FIP/FDP/FOP `0`, while all 80-bit data
+payloads remain unchanged. It does not model FINIT's pending-exception check
+or wait behavior. This is distinct from power-up/RESET/INIT: Vol.3A §11.1.1
+Table 11-1 note 5 says INIT leaves x87 FPU and MMX registers unchanged.
+
+The local fixture profile is restricted to one NOP with budget 1 and a stop
+RIP immediately after it. Fixture conversion loads the supplied x87 object
+into `LongModeState`, and result conversion observes that executed state;
+comparisons inspect the entire object. The fragment adapter explicitly rejects
+`Some(x87)`. Native x87 observation is unavailable, so native execution rejects
+this profile; no FPU CPUID feature or x87 instruction support is claimed.
+Remaining x87 semantics and integration stay open under S2-28–S2-39.
+
+Normative basis: Intel SDM revision 093, Vol.1 §§8.1.2, 8.1.3.1, 8.1.5,
+8.1.7–8.1.9 and 8.5; Vol.2A “FINIT/FNINIT—Initialize Floating-Point Unit,”
+pp.3-345–3-346; and Vol.3A §11.1.1 Table 11-1 note 5. Official manuals:
+[Vol.1 253665-093US](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol.2A 253666-093US](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[Vol.3A combined manual](https://cdrdv2.intel.com/v1/dl/getContent/671447).
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

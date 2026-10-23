@@ -2186,6 +2186,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0,
+
+            x87: None,
         };
         let mut defined = crate::ARITHMETIC_FLAGS;
         let mut memory = Memory::new(&[0x74, 0x02]); // JZ +2, target 4
@@ -2245,6 +2247,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0,
+
+            x87: None,
         };
         state.gpr[Register::R8 as usize] = 0xffff_8000_0000_1234;
         let before_flags = state.rflags;
@@ -2274,6 +2278,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
+
+            x87: None,
         };
         let mut state = before.clone();
         state.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
@@ -2311,6 +2317,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: base,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0x1008;
         let target = 0xffff_8000_0000_1234u64;
@@ -2334,6 +2342,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: base,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0x1000;
         let before = state.clone();
@@ -2381,6 +2391,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0x1008;
         state.gpr[Register::Rsp as usize] = 0x1018;
@@ -2437,6 +2449,8 @@ mod tests {
                 fs_cache: None,
                 gs_cache: None,
                 rip: 0x1000,
+
+                x87: None,
             };
             state.gpr[Register::Rax as usize] = 0x1008;
             state.gpr[Register::Rsp as usize] = 0x1018;
@@ -2463,6 +2477,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0x1008;
         state.gpr[Register::Rsp as usize] = 0x1018;
@@ -2494,6 +2510,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
+
+            x87: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1008;
         let mut memory = Memory::at(&[0x9d], 0x1000);
@@ -2534,6 +2552,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
+
+            x87: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1008;
         let before = state.clone();
@@ -2630,6 +2650,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
+
+            x87: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1010;
         let mut memory = Memory::at(&[0x9c], 0x1000);
@@ -2661,6 +2683,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
+
+            x87: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1010;
         let before = state.clone();
@@ -2695,6 +2719,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
+
+            x87: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1010;
         let mut memory = Memory::at(&[0x66, 0x9c], 0x1000);
@@ -2723,6 +2749,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
+
+            x87: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1010;
         let before = state.clone();
@@ -2758,6 +2786,8 @@ mod tests {
                 fs_cache: None,
                 gs_cache: None,
                 rip: 0x2000,
+
+                x87: None,
             };
             state.gpr[Register::Rsp as usize] = 0x1000;
             let mut memory = Memory::at(&[0xc2, immediate as u8, (immediate >> 8) as u8], 0x2000);
@@ -2786,6 +2816,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0x2000,
+
+            x87: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1000;
         let before = state.clone();
@@ -2846,6 +2878,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: base,
+
+            x87: None,
         };
         let mut memory = Memory::at(&[0x74, 0x01], base); // next RIP wraps to zero, target one
         assert_eq!(
@@ -2866,6 +2900,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: base,
+
+            x87: None,
         };
         let mut state = before.clone();
         let mut defined = 0x8d7;
@@ -2905,6 +2941,8 @@ mod tests {
                 fs_cache: None,
                 gs_cache: None,
                 rip: 0,
+
+                x87: None,
             };
             let before = state.clone();
             let mut memory = Memory::new(code);
@@ -2926,6 +2964,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0,
+
+            x87: None,
         };
         let before = state.clone();
         let mut memory = Memory::new(&[0x0f, 0x84, 0, 0, 0, 0]);
@@ -2988,6 +3028,8 @@ mod tests {
                 fs_cache: None,
                 gs_cache: None,
                 rip: 0,
+
+                x87: None,
             };
             if register == Register::R15 {
                 state.gpr[Register::R15 as usize] = 0x1122_3344_5566_77ff;
@@ -3026,6 +3068,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0,
+
+            x87: None,
         };
         state.gpr[Register::Rbp as usize] = 0x1000;
         let before = state.clone();
@@ -3105,6 +3149,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0,
+
+            x87: None,
         };
         state.gpr[Register::Rbx as usize] = 0x1_0000_1000;
         let mut memory = Memory::new(&[0x67, 0x0f, 0x94, 0x03]); // [EBX]
@@ -3131,6 +3177,8 @@ mod tests {
                 fs_cache: None,
                 gs_cache: None,
                 rip: 0,
+
+                x87: None,
             };
             let before = state.clone();
             let mut memory = Memory::new(code);
@@ -3157,6 +3205,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0,
+
+            x87: None,
         };
         state.gpr[Register::Rbx as usize] = 0x1000;
         let flags = state.rflags;
@@ -3189,6 +3239,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0,
+
+            x87: None,
         };
         state.gpr[Register::Rbx as usize] = 0x1000;
         let mut memory = Memory::new(&code);
@@ -3217,6 +3269,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0,
+
+            x87: None,
         };
         state.gpr[Register::Rbp as usize] = 0x1000;
         let before = state.clone();
@@ -3276,6 +3330,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0,
+
+            x87: None,
         };
         state.gpr[Register::Rbx as usize] = 0x1_0000_1000;
         let mut memory = Memory::new(&[0x67, 0x66, 0x0f, 0x44, 0x03]); // CMOVE AX, [EBX]
@@ -3304,6 +3360,8 @@ mod tests {
                 fs_cache: None,
                 gs_cache: None,
                 rip: 0,
+
+                x87: None,
             };
             let before = state.clone();
             let mut memory = Memory::new(code);
@@ -3355,6 +3413,8 @@ mod tests {
                         fs_cache: None,
                         gs_cache: None,
                         rip: 0,
+
+                        x87: None,
                     };
                     state.gpr[3] = 0x1000;
                     let before = state.clone();
@@ -3420,6 +3480,8 @@ mod tests {
             fs_cache: None,
             gs_cache: None,
             rip: 0,
+
+            x87: None,
         };
         state.gpr[0] = 0x1122_3344_5566_7788;
         state.gpr[3] = 0x1000;
@@ -3473,6 +3535,8 @@ mod tests {
                     fs_cache: None,
                     gs_cache: None,
                     rip: 0,
+
+                    x87: None,
                 };
                 let mut memory = Memory::new(&code);
                 assert_eq!(
@@ -3530,6 +3594,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0x1122_3344_5566_00f0;
         state.gpr[Register::Rbx as usize] = 2;
@@ -3652,6 +3718,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[Register::Rax as usize] = initial_rax;
             if target != Register::Rax {
@@ -3777,6 +3845,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0x100;
         state.gpr[Register::Rbx as usize] = 1;
@@ -3803,6 +3873,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0xff80; // signed AX dividend = -128
         state.gpr[Register::Rbx as usize] = 0xff; // signed BL divisor = -1
@@ -3828,6 +3900,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0x100;
         state.gpr[Register::Rbx as usize] = 1;
@@ -3863,6 +3937,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0;
         state.gpr[Register::Rdx as usize] = 0x8000_0000_0000_0000;
@@ -3888,6 +3964,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[Register::Rcx as usize] = 0;
         let before = state.clone();
@@ -3942,6 +4020,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[Register::Rbx as usize] = 0x1000;
         let before = state.clone();
@@ -4019,6 +4099,8 @@ mod tests {
                     gdtr: None,
                     fs_cache: None,
                     gs_cache: None,
+
+                    x87: None,
                 };
                 state.gpr[3] = 0x1000;
                 let before = state.clone();
@@ -4146,6 +4228,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[0] = 0x1122_3344_5566_7788;
             let mut memory = Memory::new(code);
@@ -4220,6 +4304,8 @@ mod tests {
                         gdtr: None,
                         fs_cache: None,
                         gs_cache: None,
+
+                        x87: None,
                     };
                     state.gpr[0] = 0x8877_6655_4433_2211;
                     let mut memory = Memory::new(&code);
@@ -4292,6 +4378,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[0] = 0x1122_3344_5566_7788;
             state.gpr[3] = source;
@@ -4349,6 +4437,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[0] = 0x1122_3344_5566_7788;
             state.gpr[3] = base;
@@ -4380,6 +4470,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             let before = state.clone();
             assert_eq!(
@@ -4422,6 +4514,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[0] = 0x1122_3344_5566_7788;
             let mut memory = Memory::new(code);
@@ -4450,6 +4544,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0x1008;
         let mut memory = Memory::new(&code);
@@ -4501,6 +4597,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[Register::Rax as usize] = 0x1008;
             let before_state = state.clone();
@@ -4548,6 +4646,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0x1007;
         let mut memory = Memory::new(&code);
@@ -4596,6 +4696,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[Register::Rax as usize] = 0x1007;
             let before_state = state.clone();
@@ -4644,6 +4746,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0x1007;
         let mut memory = Memory::new(&code);
@@ -4692,6 +4796,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[Register::Rax as usize] = 0x1007;
             let before_state = state.clone();
@@ -4740,6 +4846,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0x1007;
         let mut memory = Memory::new(&code);
@@ -4788,6 +4896,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[Register::Rax as usize] = 0x1007;
             let before_state = state.clone();
@@ -4836,6 +4946,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[Register::Rax as usize] = 0x7fff_ffff_ffff_ffff;
         let before = state.clone();
@@ -4873,6 +4985,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         extended_state.gpr[Register::R8 as usize] = 2;
         extended_state.gpr[Register::R9 as usize] = 3;
@@ -4909,6 +5023,8 @@ mod tests {
                         gdtr: None,
                         fs_cache: None,
                         gs_cache: None,
+
+                        x87: None,
                     };
                     let before = state.clone();
                     let mut memory = Memory::new(if architectural { code } else { &code[..cut] });
@@ -4961,6 +5077,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             let before = state.clone();
             let mut memory = Memory::new(code);
@@ -5160,6 +5278,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[0] = initial;
             state.gpr[1] = other;
@@ -5233,6 +5353,8 @@ mod tests {
                         gdtr: None,
                         fs_cache: None,
                         gs_cache: None,
+
+                        x87: None,
                     };
                     state.gpr[3] = 0x1000;
                     let before = state.clone();
@@ -5285,6 +5407,8 @@ mod tests {
                         gdtr: None,
                         fs_cache: None,
                         gs_cache: None,
+
+                        x87: None,
                     };
                     let before = state.clone();
                     let mut memory = Memory::new(if architectural { code } else { &code[..cut] });
@@ -5440,6 +5564,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[0] = input;
             state.gpr[1] = source;
@@ -5463,6 +5589,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[4] = 0x1122_3344_5566_77f0;
         state.gpr[1] = 0xff;
@@ -5497,6 +5625,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[3] = 0x1000;
             let before = state.gpr;
@@ -5536,6 +5666,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[0] = 0x8000_0000_0000_0000;
             assert_eq!(
@@ -5575,6 +5707,8 @@ mod tests {
                     gdtr: None,
                     fs_cache: None,
                     gs_cache: None,
+
+                    x87: None,
                 };
                 state.gpr[3] = 0x1000;
                 let before = state.clone();
@@ -5607,6 +5741,8 @@ mod tests {
                     gdtr: None,
                     fs_cache: None,
                     gs_cache: None,
+
+                    x87: None,
                 };
                 let before = state.clone();
                 let mut memory = Memory::new(&code[..cut]);
@@ -5661,6 +5797,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             let mut memory = Memory::new(code);
             let result = run(
@@ -5717,6 +5855,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[0] = initial;
             let mut memory = Memory::new(code);
@@ -5752,6 +5892,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[0] = 1;
         let mut flags_defined = 0;
@@ -5783,6 +5925,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[0] = 0x80;
         let mut flags_defined = 0;
@@ -5814,6 +5958,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[0] = 0x8000_0000_0000_0081;
         let mut flags_defined = 0;
@@ -5845,6 +5991,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[index] = 0xabcd_ef01_1234_5678;
             assert_eq!(
@@ -5867,6 +6015,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[3] = 0x1000;
             let before = state.clone();
@@ -5898,6 +6048,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[0] = 0x80;
         assert_eq!(
@@ -5923,6 +6075,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[0] = 0x8000_0000_0000_0001;
         state.gpr[1] = 0x8000_0000_0000_0000;
@@ -5955,6 +6109,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[0] = 0x8001;
             state.gpr[1] = 0x4003;
@@ -5987,6 +6143,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         state.gpr[0] = 0x1234;
         let before = state.clone();
@@ -6017,6 +6175,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[3] = 0x1000;
             let before = state.clone();
@@ -6112,6 +6272,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         let before = state.clone();
         assert!(matches!(
@@ -6293,6 +6455,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         let before = state.clone();
         let mut truncated = Memory::new(&[0x0f, 0xba, 0xe0]); // BT EAX, imm8 missing
@@ -6919,6 +7083,8 @@ mod tests {
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
+
+                x87: None,
             };
             state.gpr[dst as usize] = old_dst;
             state.gpr[src as usize] = source;
@@ -6968,6 +7134,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         let mut memory = Memory::new(&[0x48, 0x8c, 0xe0]);
         let before = state.clone();
@@ -6994,6 +7162,8 @@ mod tests {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+
+            x87: None,
         };
         let mut memory = Memory::new(&[0x48, 0x8c, 0xe8]);
         assert_eq!(

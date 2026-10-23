@@ -2258,3 +2258,60 @@ gpt-6.1-sol medium review found no remaining findings, including after the
 full-GPR assertion was added. No Linux native runtime, SSH, or physical Mac mini
 execution was performed; physical checks remain in the shared final acceptance
 substage.
+
+## S2-28a — lossless Long64 x87 state snapshot (partial)
+
+Added `od-isa::state::X87State` as an isolated raw state model: eight physical
+10-byte registers, full 16-bit physical tag word, control/status words, 64-bit
+FIP/FDP offsets, and the 11-bit FOP. Logical TOP is derived from FSW bits
+13:11; ST(i) maps to `(TOP+i)&7`; tags remain indexed by physical register.
+The snapshot wire object serializes each register as exactly 20 lowercase hex
+digits in increasing memory-address order and rejects out-of-width words or
+FOP. Empty tag values do not erase payload bytes.
+
+The new `s2-long-x87-state-v1` profile is isolated from existing integer
+profiles; `None` means the profile excludes x87, and old profiles continue to
+omit the x87 key. This profile admits only a one-byte NOP with budget 1 and a
+stop RIP immediately afterward. The fixture adapter loads the x87 image into
+`LongModeState`; the local interpreter executes the admitted NOP with that
+state, and the result adapter serializes the executed state. Comparison
+reports any x87 difference. The fragment adapter rejects `Some(x87)`, and
+native execution remains unsupported because its adapter cannot observe x87
+state. No x87 instruction semantics or FPU feature claim were added.
+
+`X87State::fixture_seed()` is deterministic non-architectural fixture data.
+`fninit()` is the separately named architectural transition: FCW `0x037f`, FSW
+`0`, FTW `0xffff`, FIP/FDP/FOP `0`, with all register payloads preserved. Raw
+FSW/FCW bits are the only pending-exception representation; delivery is not
+implemented. The Long64 wire contract omits FCS/FDS, following the SDM's
+64-bit save form with REX.W. INIT is kept distinct: Intel Vol.3A §11.1.1
+Table 11-1 note 5 says INIT does not change x87 FPU/MMX state.
+
+Local verification passed: TOP mapping across all eight values, tag encodings,
+FNINIT payload preservation, raw-state wire roundtrip and malformed rejection,
+mutation-sensitive comparison, `IntegerState`/`LongModeState` adapter
+roundtrip, explicit fragment rejection, legacy profile wire/digest
+compatibility, and one-NOP runner preservation through the executed
+`LongModeState`. Commands:
+
+```sh
+cargo test -p od-isa x87 --offline
+cargo test -p od-isa fninit_resets --offline
+cargo test -p od-testkit x87 --offline
+cargo test -p od-testkit fs_base_profile_is_required_and_old_wire_shape_stays_unchanged --offline
+cargo test -p od-runner --test fixture_v2 local_x87_state_profile_preserves_all_raw_state_across_one_nop --offline
+cargo check -p od-x86-runner --all-targets --offline
+cargo fmt --all -- --check
+cargo check --workspace --all-targets --offline
+cargo test --workspace --offline
+python3 tools/check_layout.py
+git diff --check
+```
+
+Normative basis: Intel SDM revision 093, Vol.1 §§8.1.2, 8.1.3.1, 8.1.5,
+8.1.7–8.1.9 and 8.5; Vol.2A “FINIT/FNINIT—Initialize Floating-Point Unit,”
+pp.3-345–3-346; Vol.3A §11.1.1 Table 11-1 note 5. Official manuals are linked
+in [CPU_CONTRACT](../specs/CPU_CONTRACT.md#local-profile-s2-28a-s2-long-x87-state-v1).
+The x87 umbrella remains open: the profile does not execute x87 operations,
+observe native FPU state, implement exception delivery, or integrate x87 with
+the fragment/JIT state contract. No physical or Mac mini check was performed.

@@ -22,6 +22,7 @@ pub const PROFILE_GS_SELECTOR: &str = "s2-long-gs-selector-v1";
 pub const PROFILE_VERW_GDT: &str = "s2-long-verw-gdt-v1";
 pub const PROFILE_FS_LOAD: &str = "s2-long-fs-load-v1";
 pub const PROFILE_GS_LOAD: &str = "s2-long-gs-load-v1";
+pub const PROFILE_X87_STATE: &str = "s2-long-x87-state-v1";
 /// Integer arithmetic flags, reserved bit 1 and DF. System flags are not yet modeled.
 pub const INTEGER_FLAGS: u64 = 0x8d7 | (1 << 10);
 
@@ -43,6 +44,8 @@ pub enum Profile {
     LongFsLoadV1,
     #[serde(rename = "s2-long-gs-load-v1")]
     LongGsLoadV1,
+    #[serde(rename = "s2-long-x87-state-v1")]
+    LongX87StateV1,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -141,6 +144,90 @@ pub struct IntegerState {
         skip_serializing_if = "Option::is_none"
     )]
     pub gs_cache_flags: Option<HexU64>,
+    /// Full x87 state only in `s2-long-x87-state-v1`; absent from older wire profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x87: Option<X87Snapshot>,
+}
+
+/// Lossless Long64 x87 observation. Register hex strings contain ten bytes in
+/// increasing memory-address order; FIP/FDP are 64-bit offsets, FOP is 11 bits.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct X87Snapshot {
+    pub registers: [String; 8],
+    pub control_word: HexU64,
+    pub status_word: HexU64,
+    pub tag_word: HexU64,
+    pub instruction_pointer: HexU64,
+    pub data_pointer: HexU64,
+    pub last_opcode: HexU64,
+}
+
+impl From<&od_isa::state::X87State> for X87Snapshot {
+    fn from(state: &od_isa::state::X87State) -> Self {
+        Self {
+            registers: state
+                .registers
+                .map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect()),
+            control_word: HexU64(u64::from(state.control_word)),
+            status_word: HexU64(u64::from(state.status_word)),
+            tag_word: HexU64(u64::from(state.tag_word)),
+            instruction_pointer: HexU64(state.instruction_pointer),
+            data_pointer: HexU64(state.data_pointer),
+            last_opcode: HexU64(u64::from(state.last_opcode)),
+        }
+    }
+}
+
+impl X87Snapshot {
+    pub fn to_cpu(&self) -> Result<od_isa::state::X87State, FormatError> {
+        self.validate()?;
+        let mut registers = [[0; 10]; 8];
+        for (source, destination) in self.registers.iter().zip(&mut registers) {
+            for (index, byte) in destination.iter_mut().enumerate() {
+                let pair = &source[index * 2..index * 2 + 2];
+                *byte = u8::from_str_radix(pair, 16)
+                    .map_err(|_| invalid("state.x87.registers", "invalid byte encoding"))?;
+            }
+        }
+        Ok(od_isa::state::X87State {
+            registers,
+            control_word: self.control_word.get() as u16,
+            status_word: self.status_word.get() as u16,
+            tag_word: self.tag_word.get() as u16,
+            instruction_pointer: self.instruction_pointer.get(),
+            data_pointer: self.data_pointer.get(),
+            last_opcode: self.last_opcode.get() as u16,
+        })
+    }
+
+    fn validate(&self) -> Result<(), FormatError> {
+        for register in &self.registers {
+            if register.len() != 20
+                || !register
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(invalid(
+                    "state.x87.registers",
+                    "each register must be exactly 20 lowercase hex digits",
+                ));
+            }
+        }
+        for (field, value) in [
+            ("state.x87.control_word", self.control_word),
+            ("state.x87.status_word", self.status_word),
+            ("state.x87.tag_word", self.tag_word),
+        ] {
+            if value.get() > u16::MAX as u64 {
+                return Err(invalid(field, "must fit in 16 bits"));
+            }
+        }
+        if self.last_opcode.get() > 0x7ff {
+            return Err(invalid("state.x87.last_opcode", "must fit in 11 bits"));
+        }
+        Ok(())
+    }
 }
 
 fn deserialize_present_hex_u64<'de, D>(deserializer: D) -> Result<Option<HexU64>, D::Error>
@@ -169,6 +256,7 @@ impl From<&LongModeState> for IntegerState {
             gs_cache_limit: None,
             gs_cache_access: None,
             gs_cache_flags: None,
+            x87: None,
         }
     }
 }
@@ -223,11 +311,20 @@ impl IntegerState {
                 }
                 _ => None,
             },
+            x87: match (profile, &self.x87) {
+                (Profile::LongX87StateV1, Some(x87)) => Some(x87.to_cpu()?),
+                _ => None,
+            },
         })
     }
 
     pub fn from_cpu_for(state: &LongModeState, profile: Profile) -> Self {
         let mut result = Self::from(state);
+        result.x87 = if profile == Profile::LongX87StateV1 {
+            state.x87.as_ref().map(X87Snapshot::from)
+        } else {
+            None
+        };
         if profile == Profile::LongFsBaseV1 {
             result.fs_base = Some(HexU64(state.fs_base));
         } else if profile == Profile::LongGsBaseV1 {
@@ -272,9 +369,14 @@ impl IntegerState {
     }
 
     fn validate_for(&self, profile: Profile) -> Result<(), FormatError> {
-        match (profile, self.fs_base) {
+        let state_profile = match profile {
+            Profile::LongX87StateV1 => Profile::LongIntegerV1,
+            other => other,
+        };
+        match (state_profile, self.fs_base) {
             (
                 Profile::LongIntegerV1
+                | Profile::LongX87StateV1
                 | Profile::LongGsBaseV1
                 | Profile::LongGsSelectorV1
                 | Profile::LongVerwGdtV1
@@ -285,6 +387,7 @@ impl IntegerState {
             (Profile::LongFsSelectorV1, Some(_)) => {}
             (
                 Profile::LongIntegerV1
+                | Profile::LongX87StateV1
                 | Profile::LongGsBaseV1
                 | Profile::LongGsSelectorV1
                 | Profile::LongVerwGdtV1
@@ -297,9 +400,10 @@ impl IntegerState {
                 return Err(invalid("state.fs_base", "required by this profile"));
             }
         }
-        match (profile, self.gs_base) {
+        match (state_profile, self.gs_base) {
             (
                 Profile::LongIntegerV1
+                | Profile::LongX87StateV1
                 | Profile::LongFsBaseV1
                 | Profile::LongFsSelectorV1
                 | Profile::LongVerwGdtV1
@@ -315,9 +419,10 @@ impl IntegerState {
                 return Err(invalid("state.gs_base", "required by this profile"));
             }
         }
-        match (profile, self.fs_selector) {
+        match (state_profile, self.fs_selector) {
             (
                 Profile::LongIntegerV1
+                | Profile::LongX87StateV1
                 | Profile::LongFsBaseV1
                 | Profile::LongGsBaseV1
                 | Profile::LongVerwGdtV1
@@ -339,7 +444,7 @@ impl IntegerState {
         {
             return Err(invalid("state.fs_selector", "must fit in 16 bits"));
         }
-        match (profile, self.gs_selector) {
+        match (state_profile, self.gs_selector) {
             (Profile::LongGsSelectorV1 | Profile::LongGsLoadV1, Some(_)) => {}
             (Profile::LongGsSelectorV1 | Profile::LongGsLoadV1, None) => {
                 return Err(invalid("state.gs_selector", "required by this profile"));
@@ -353,7 +458,7 @@ impl IntegerState {
         {
             return Err(invalid("state.gs_selector", "must fit in 16 bits"));
         }
-        match (profile, self.gdtr_base, self.gdtr_limit) {
+        match (state_profile, self.gdtr_base, self.gdtr_limit) {
             (
                 Profile::LongVerwGdtV1 | Profile::LongFsLoadV1 | Profile::LongGsLoadV1,
                 Some(_),
@@ -404,7 +509,7 @@ impl IntegerState {
             }
         }
         match (
-            profile,
+            state_profile,
             self.fs_cache_limit,
             self.fs_cache_access,
             self.fs_cache_flags,
@@ -430,7 +535,7 @@ impl IntegerState {
             _ => return Err(invalid("state.fs_cache", "not part of this profile")),
         }
         match (
-            profile,
+            state_profile,
             self.gs_cache_limit,
             self.gs_cache_access,
             self.gs_cache_flags,
@@ -460,6 +565,14 @@ impl IntegerState {
                 "state.rflags",
                 "outside the integer profile or missing reserved bit 1",
             ));
+        }
+        match (profile, &self.x87) {
+            (Profile::LongX87StateV1, Some(x87)) => x87.validate()?,
+            (Profile::LongX87StateV1, None) => {
+                return Err(invalid("state.x87", "required by this profile"));
+            }
+            (_, None) => {}
+            (_, Some(_)) => return Err(invalid("state.x87", "not part of this profile")),
         }
         Ok(())
     }
@@ -583,6 +696,26 @@ impl Fixture {
                 return Err(invalid(
                     "memory.code",
                     "address, budget and stop_rip must match the exact admitted program",
+                ));
+            }
+        }
+        if self.profile == Profile::LongX87StateV1 {
+            let code = self.memory.iter().find(|region| region.region_id == "code");
+            let Some(code) = code else {
+                return Err(invalid("memory.code", "required by this profile"));
+            };
+            let expected_stop = self.initial_state.rip.get().checked_add(1);
+            if code.guest_address != self.initial_state.rip
+                || code.length != 1
+                || !code.permissions.execute
+                || !code.initial_bytes_hex.eq_ignore_ascii_case("90")
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != expected_stop
+                || self.expected_exit != ExpectedExit::StopAddress
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "x87 state profile admits only one NOP with budget 1 and the following stop RIP",
                 ));
             }
         }
@@ -1030,6 +1163,9 @@ pub fn compare(
     }
     if a.state.gs_cache_flags != b.state.gs_cache_flags {
         differences.push("gs_cache_flags".into());
+    }
+    if a.state.x87 != b.state.x87 {
+        differences.push("x87".into());
     }
     if (a.state.rflags.get() ^ b.state.rflags.get()) & mask != 0 {
         differences.push("rflags".into());

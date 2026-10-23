@@ -173,6 +173,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-26 | CPUID, системные инструкции и время | S2-25 |
 | [ ] | S2-27 | Remaining descriptor/event/syscall CPU semantics; the bounded VERW/GDT check is extracted to S2-22e | S2-25, S2-26 |
 | [ ] | S2-28 | Представить x87 state | S2-20 |
+| [x] | S2-28a | Lossless Long64 x87 state and local NOP-only snapshot profile; no x87 execution or FPU feature claim | S2-28 |
 | [ ] | S2-29 | Собственное ядро extended precision | S2-28 |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
@@ -967,7 +968,26 @@ and transitions listed below.
 2. Определить reset/init, empty/full stack и pending exception state. Хранить исходные bits без преобразования в f64.
 3. Добавить snapshot/compare support с точной availability и definedness.
 
-**Готово:** stack mapping, reset и lossless serialization проверены. Это состояние без арифметики; CPUID FPU ещё не объявляется готовым.
+**Готово:** stack mapping, FNINIT transition и lossless serialization проверены. Это состояние без арифметики; CPUID FPU ещё не объявляется готовым.
+
+### S2-28a. Lossless Long64 x87 state snapshot (bounded local slice)
+
+Added raw physical-register storage (8 × 10 bytes), full physical tag word,
+control/status words, derived TOP and logical ST(i) mapping, plus Long64 FIP,
+FDP and 11-bit FOP fields. The local `s2-long-x87-state-v1` fixture profile
+admits exactly one NOP, allowing the fixture and result adapters to carry the
+complete x87 image through `LongModeState` and compare it without claiming x87
+instruction execution. The fragment adapter rejects `Some(x87)` explicitly.
+`None` means the profile does not include x87 state. A deterministic fixture
+seed is separate from the FNINIT transition; FNINIT resets FCW/FSW/FTW and
+pointer/opcode fields while retaining all register payload bytes. Raw FSW/FCW
+are the only pending-exception representation; this slice adds no delivery.
+Native admission remains closed and no CPUID feature is advertised.
+
+The exact Long64 pointer contract and selector omission are recorded in
+[CPU_CONTRACT](../specs/CPU_CONTRACT.md#local-profile-s2-28a-s2-long-x87-state-v1).
+The umbrella S2-28 remains open for state consumers, hardware observation,
+and integration with later x87 instruction slices.
 
 ### S2-29. Реализовать собственное extended-precision ядро
 

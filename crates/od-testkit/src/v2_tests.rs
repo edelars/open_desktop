@@ -60,6 +60,27 @@ fn snapshot(result: &mut RunResult) -> &mut Snapshot {
     }
 }
 
+fn x87_fixture() -> LoadedFixture {
+    let mut fixture = loaded().fixture;
+    fixture.case_id = "local_x87_state_nop".into();
+    fixture.profile = Profile::LongX87StateV1;
+    fixture.initial_state.rip = HexU64(0x1000);
+    fixture.initial_state.x87 = Some(X87Snapshot::from(&od_isa::state::X87State::fixture_seed()));
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.guest_address = HexU64(0x1000);
+    code.length = 1;
+    code.initial_bytes_hex = "90".into();
+    code.comparison_mask_hex = "ff".into();
+    fixture.instruction_budget = 1;
+    fixture.stop_rip = Some(HexU64(0x1001));
+    fixture.expected_exit = ExpectedExit::StopAddress;
+    Fixture::from_json(&fixture.to_json().unwrap()).unwrap()
+}
+
 #[test]
 fn conversion_is_explicit_and_has_its_own_digest() {
     let raw = include_bytes!("../../../tests/fixtures/x86/s0_09_mov_imm64.case.json");
@@ -141,6 +162,7 @@ fn fs_base_profile_is_required_and_old_wire_shape_stays_unchanged() {
     assert!(old_json["initial_state"].get("fs_base").is_none());
     assert!(old_json["initial_state"].get("fs_selector").is_none());
     assert!(old_json["initial_state"].get("gs_selector").is_none());
+    assert!(old_json["initial_state"].get("x87").is_none());
     assert_eq!(old.fixture.profile, Profile::LongIntegerV1);
 
     let fs_fixture = Fixture::from_json(include_bytes!(
@@ -174,6 +196,84 @@ fn fs_base_profile_is_required_and_old_wire_shape_stays_unchanged() {
     assert!(Fixture::from_json(&serde_json::to_vec(&old_with_fs).unwrap()).is_err());
     old_with_fs["initial_state"]["fs_base"] = serde_json::Value::Null;
     assert!(Fixture::from_json(&serde_json::to_vec(&old_with_fs).unwrap()).is_err());
+}
+
+#[test]
+fn x87_state_profile_roundtrips_raw_empty_register_payloads_and_compares_mutations() {
+    let input = x87_fixture();
+    assert_eq!(input.fixture.profile, Profile::LongX87StateV1);
+    let x87 = input.fixture.initial_state.x87.as_ref().unwrap();
+    let decoded = x87.to_cpu().unwrap();
+    assert_eq!(X87Snapshot::from(&decoded), *x87);
+    assert_eq!(
+        decoded.registers[0],
+        [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x10, 0x80]
+    );
+    assert_eq!(decoded.tag(7), Some(od_isa::state::X87Tag::Valid));
+
+    let cpu = input
+        .fixture
+        .initial_state
+        .to_cpu_for(Profile::LongX87StateV1)
+        .unwrap();
+    assert_eq!(cpu.x87.as_ref(), Some(&decoded));
+    let returned = IntegerState::from_cpu_for(&cpu, Profile::LongX87StateV1);
+    assert_eq!(returned.x87.as_ref(), Some(x87));
+    assert!(
+        IntegerState::from_cpu_for(&cpu, Profile::LongIntegerV1)
+            .x87
+            .is_none()
+    );
+
+    let mut incompatible_cpu = cpu.clone();
+    incompatible_cpu.x87 = None;
+    assert!(
+        IntegerState::from_cpu_for(&incompatible_cpu, Profile::LongX87StateV1)
+            .x87
+            .is_none()
+    );
+
+    let fixture_json = input.fixture.to_json().unwrap();
+    let roundtrip = Fixture::from_json(&fixture_json).unwrap();
+    assert_eq!(
+        roundtrip.fixture.initial_state.x87,
+        input.fixture.initial_state.x87
+    );
+
+    let mut missing_x87 = input.fixture.clone();
+    missing_x87.initial_state.x87 = None;
+    assert!(missing_x87.validate().is_err());
+    let mut old_profile_with_x87 = loaded().fixture;
+    old_profile_with_x87.initial_state.x87 = Some(x87.clone());
+    assert!(old_profile_with_x87.validate().is_err());
+    let mut widened = input.fixture.clone();
+    widened.memory[0].initial_bytes_hex = "0f0b".into();
+    widened.memory[0].length = 2;
+    widened.memory[0].comparison_mask_hex = "ffff".into();
+    assert!(widened.validate().is_err());
+
+    let mut value: serde_json::Value = serde_json::from_slice(&fixture_json).unwrap();
+    value["initial_state"]["x87"]["registers"][0] = serde_json::json!("0123456789abcdef108");
+    assert!(Fixture::from_json(&serde_json::to_vec(&value).unwrap()).is_err());
+    let mut value: serde_json::Value = serde_json::from_slice(&fixture_json).unwrap();
+    value["initial_state"]["x87"]["last_opcode"] = serde_json::json!("0x0000000000000800");
+    assert!(Fixture::from_json(&serde_json::to_vec(&value).unwrap()).is_err());
+
+    let left = result(&input);
+    let result_json = left.to_json().unwrap();
+    assert_eq!(RunResult::from_json(&result_json).unwrap(), left);
+    let mut right = left.clone();
+    let changed = match &mut right.snapshot {
+        Observation::Available { value } => value.state.x87.as_mut().unwrap(),
+        _ => unreachable!(),
+    };
+    changed.registers[0].replace_range(0..2, "fe");
+    assert!(
+        compare(&input, &left, &right)
+            .unwrap()
+            .iter()
+            .any(|field| field == "x87")
+    );
 }
 
 #[test]

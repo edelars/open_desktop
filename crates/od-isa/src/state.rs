@@ -4,6 +4,96 @@
 
 use crate::{ARITHMETIC_FLAGS, FragmentState, Register};
 
+/// Raw Long64 x87 state for local snapshot profiles. Register bytes are kept in
+/// architectural low-to-high memory order; no floating-point conversion occurs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct X87State {
+    pub registers: [[u8; 10]; 8],
+    pub control_word: u16,
+    pub status_word: u16,
+    pub tag_word: u16,
+    pub instruction_pointer: u64,
+    pub data_pointer: u64,
+    /// The architectural opcode register is 11 bits wide.
+    pub last_opcode: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum X87Tag {
+    Valid = 0b00,
+    Zero = 0b01,
+    Special = 0b10,
+    Empty = 0b11,
+}
+
+impl X87State {
+    /// A reproducible, non-architectural seed for local fixtures and tests.
+    pub const fn fixture_seed() -> Self {
+        Self {
+            registers: [
+                [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x10, 0x80],
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x3f],
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff],
+                [0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa],
+                [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa],
+                [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe, 0x01, 0x80],
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            ],
+            control_word: 0x027f,
+            status_word: 0x3805,
+            tag_word: 0x1be4,
+            instruction_pointer: 0x0123_4567_89ab_cdef,
+            data_pointer: 0xfedc_ba98_7654_3210,
+            last_opcode: 0x05aa,
+        }
+    }
+
+    pub const fn top(&self) -> u8 {
+        ((self.status_word >> 11) & 7) as u8
+    }
+
+    pub const fn physical_register_for_st(&self, logical_index: u8) -> Option<u8> {
+        if logical_index >= 8 {
+            None
+        } else {
+            Some((self.top() + logical_index) & 7)
+        }
+    }
+
+    pub const fn tag(&self, physical_index: u8) -> Option<X87Tag> {
+        if physical_index >= 8 {
+            return None;
+        }
+        Some(match (self.tag_word >> (physical_index * 2)) & 3 {
+            0 => X87Tag::Valid,
+            1 => X87Tag::Zero,
+            2 => X87Tag::Special,
+            _ => X87Tag::Empty,
+        })
+    }
+
+    pub fn set_tag(&mut self, physical_index: u8, tag: X87Tag) -> bool {
+        if physical_index >= 8 {
+            return false;
+        }
+        let shift = physical_index * 2;
+        self.tag_word = (self.tag_word & !(3 << shift)) | ((tag as u16) << shift);
+        true
+    }
+
+    /// Apply the architectural FNINIT transition. Data-register payloads survive.
+    pub fn fninit(&mut self) {
+        self.control_word = 0x037f;
+        self.status_word = 0;
+        self.tag_word = 0xffff;
+        self.instruction_pointer = 0;
+        self.data_pointer = 0;
+        self.last_opcode = 0;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperandSize {
     Byte,
@@ -115,6 +205,8 @@ pub struct LongModeState {
     pub fs_cache: Option<FsDescriptorCache>,
     /// Hidden GS descriptor cache only in the local MOV-GS-load profile.
     pub gs_cache: Option<FsDescriptorCache>,
+    /// Raw x87 state only for profiles that explicitly carry it.
+    pub x87: Option<X87State>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -146,6 +238,7 @@ impl Default for LongModeState {
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
+            x87: None,
         }
     }
 }
@@ -178,6 +271,7 @@ pub enum FragmentAdapterError {
     UnsupportedGdtr(Gdtr),
     UnsupportedFsCache(FsDescriptorCache),
     UnsupportedGsCache(FsDescriptorCache),
+    UnsupportedX87,
     InstructionPointerOutOfRange(u64),
     UnsupportedFlags(u64),
     ReservedFlagMissing,
@@ -197,6 +291,9 @@ impl TryFrom<&LongModeState> for FragmentState {
     type Error = FragmentAdapterError;
 
     fn try_from(state: &LongModeState) -> Result<Self, Self::Error> {
+        if state.x87.is_some() {
+            return Err(FragmentAdapterError::UnsupportedX87);
+        }
         if state.fs_base != 0 {
             return Err(FragmentAdapterError::UnsupportedFsBase(state.fs_base));
         }
@@ -250,6 +347,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn x87_top_maps_all_logical_registers_to_physical_slots() {
+        for top in 0..8u16 {
+            let state = X87State {
+                status_word: top << 11,
+                ..X87State::fixture_seed()
+            };
+            assert_eq!(state.top(), top as u8);
+            for logical in 0..8u8 {
+                assert_eq!(
+                    state.physical_register_for_st(logical),
+                    Some((top as u8 + logical) & 7)
+                );
+            }
+            assert_eq!(state.physical_register_for_st(8), None);
+        }
+    }
+
+    #[test]
+    fn x87_tags_are_two_bit_codes_on_physical_registers() {
+        let mut state = X87State::fixture_seed();
+        for (index, tag) in [
+            X87Tag::Valid,
+            X87Tag::Zero,
+            X87Tag::Special,
+            X87Tag::Empty,
+            X87Tag::Empty,
+            X87Tag::Special,
+            X87Tag::Zero,
+            X87Tag::Valid,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(state.tag(index as u8), Some(tag));
+            assert!(state.set_tag(index as u8, tag));
+            assert_eq!(state.tag(index as u8), Some(tag));
+        }
+        assert_eq!(state.tag(8), None);
+        assert!(!state.set_tag(8, X87Tag::Empty));
+    }
+
+    #[test]
+    fn fninit_resets_environment_and_preserves_every_raw_register_payload() {
+        let mut state = X87State::fixture_seed();
+        let payloads = state.registers;
+        state.fninit();
+        assert_eq!(state.registers, payloads);
+        assert_eq!(state.control_word, 0x037f);
+        assert_eq!(state.status_word, 0);
+        assert_eq!(state.top(), 0);
+        assert_eq!(state.tag_word, 0xffff);
+        assert_eq!(state.instruction_pointer, 0);
+        assert_eq!(state.data_pointer, 0);
+        assert_eq!(state.last_opcode, 0);
+        for index in 0..8 {
+            assert_eq!(state.tag(index), Some(X87Tag::Empty));
+        }
+    }
+
+    #[test]
+    fn fragment_adapter_rejects_x87_even_when_integer_state_fits() {
+        let mut state = LongModeState::default();
+        state.x87 = Some(X87State::fixture_seed());
+        assert!(matches!(
+            FragmentState::try_from(&state),
+            Err(FragmentAdapterError::UnsupportedX87)
+        ));
+    }
+
+    #[test]
     fn every_register_obeys_long_mode_aliasing_and_preserves_other_state() {
         for encoding in 0..16 {
             let register = Register::from_encoding(encoding).unwrap();
@@ -271,6 +438,8 @@ mod tests {
                         gdtr: None,
                         fs_cache: None,
                         gs_cache: None,
+
+                        x87: None,
                     };
                     let before = state.clone();
                     let view = RegisterView::low(register, size);

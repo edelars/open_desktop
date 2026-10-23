@@ -942,6 +942,39 @@ fn s2_22j_fs_base_composition_runs_the_literal_two_instruction_profile() {
 }
 
 #[test]
+fn local_x87_state_profile_preserves_all_raw_state_across_one_nop() {
+    let mut fixture = Fixture::from_json(MFENCE_STORE_FENCE_LOAD).unwrap().fixture;
+    fixture.case_id = "local_x87_state_nop".into();
+    fixture.profile = od_testkit::v2::Profile::LongX87StateV1;
+    fixture.initial_state.rip = HexU64(0x0010_0000);
+    let seed = od_isa::state::X87State::fixture_seed();
+    fixture.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&seed));
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.guest_address = HexU64(0x0010_0000);
+    code.length = 1;
+    code.initial_bytes_hex = "90".into();
+    code.comparison_mask_hex = "ff".into();
+    fixture.instruction_budget = 1;
+    fixture.stop_rip = Some(HexU64(0x0010_0001));
+    fixture.expected_exit = ExpectedExit::StopAddress;
+
+    let bytes = fixture.to_json().unwrap();
+    let (input, result) = run(&bytes, "interpreter", 0);
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0001));
+    assert_eq!(observed.state.x87, input.fixture.initial_state.x87);
+    assert_eq!(
+        observed.state.x87.as_ref().unwrap().registers[6],
+        "deadbeefcafebabe0180"
+    );
+}
+
+#[test]
 fn fs_load_commit_is_preserved_when_a_later_instruction_faults_and_self_compares() {
     let mut fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_22j_fs_base_composition.case.json"

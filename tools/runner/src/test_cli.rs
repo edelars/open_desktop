@@ -321,53 +321,11 @@ fn execute_fixture_v2(
     use od_testkit::v2;
     use std::time::{Duration, Instant};
 
-    // The typed fixture has already been validated, so these lossless fields
-    // can be copied without manufacturing a CPU state on conversion failure.
-    let initial = &loaded.fixture.initial_state;
-    let mut state = od_isa::LongModeState {
-        gpr: initial.gpr.map(HexU64::get),
-        rip: initial.rip.get(),
-        rflags: initial.rflags.get(),
-        fs_base: initial.fs_base.map_or(0, HexU64::get),
-        gs_base: initial.gs_base.map_or(0, HexU64::get),
-        fs_selector: initial
-            .fs_selector
-            .map_or(0, |selector| selector.get() as u16),
-        gs_selector: initial
-            .gs_selector
-            .map_or(0, |selector| selector.get() as u16),
-        gdtr: match (initial.gdtr_base, initial.gdtr_limit) {
-            (Some(base), Some(limit)) => Some(od_isa::state::Gdtr {
-                base: base.get(),
-                limit: limit.get() as u16,
-            }),
-            _ => None,
-        },
-        fs_cache: match (
-            initial.fs_cache_limit,
-            initial.fs_cache_access,
-            initial.fs_cache_flags,
-        ) {
-            (Some(limit), Some(access), Some(flags)) => Some(od_isa::FsDescriptorCache {
-                limit: limit.get() as u32,
-                access: access.get() as u8,
-                flags: flags.get() as u8,
-            }),
-            _ => None,
-        },
-        gs_cache: match (
-            initial.gs_cache_limit,
-            initial.gs_cache_access,
-            initial.gs_cache_flags,
-        ) {
-            (Some(limit), Some(access), Some(flags)) => Some(od_isa::FsDescriptorCache {
-                limit: limit.get() as u32,
-                access: access.get() as u8,
-                flags: flags.get() as u8,
-            }),
-            _ => None,
-        },
-    };
+    let mut state = loaded
+        .fixture
+        .initial_state
+        .to_cpu_for(loaded.fixture.profile)
+        .expect("validated fixture state converts to CPU state");
     let start = Instant::now();
     let limit = Duration::from_millis(u64::from(loaded.fixture.wall_timeout_ms));
     let mut timed_out = false;

@@ -428,6 +428,8 @@ fn state(regs: &libc::user_regs_struct) -> LongModeState {
         gdtr: None,
         fs_cache: None,
         gs_cache: None,
+
+        x87: None,
     }
 }
 
@@ -1314,11 +1316,14 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongVerwGdtV1
             | v2::Profile::LongFsLoadV1
             | v2::Profile::LongGsLoadV1
+            | v2::Profile::LongX87StateV1
     ) {
         return empty_result(
             loaded,
             Outcome::Unsupported {
-                reason: "FS/GS segment profiles are local-only; native state does not observe guest segment bases, selectors, or hidden descriptor caches".into(),
+                reason:
+                    "this profile is local-only; native state does not observe every profile field"
+                        .into(),
             },
         );
     }
