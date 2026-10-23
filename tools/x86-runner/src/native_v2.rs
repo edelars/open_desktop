@@ -560,6 +560,7 @@ fn admission_with_tracee_memory(
             | Operation::FnstswAx
             | Operation::FaddSt0St { .. }
             | Operation::FaddStSt0 { .. }
+            | Operation::FaddpStSt0 { .. }
     ) {
         return Err("x87 instruction is not admitted by the native backend".into());
     }
@@ -3661,6 +3662,14 @@ mod tests {
             [0xdc, 0xc5],
             [0xdc, 0xc6],
             [0xdc, 0xc7],
+            [0xde, 0xc0],
+            [0xde, 0xc1],
+            [0xde, 0xc2],
+            [0xde, 0xc3],
+            [0xde, 0xc4],
+            [0xde, 0xc5],
+            [0xde, 0xc6],
+            [0xde, 0xc7],
         ] {
             let mut input = fixture(&code).fixture;
             input.profile = v2::Profile::LongX87StateV1;

@@ -3001,6 +3001,45 @@ for physical checks. Independent `gpt-6.1-sol` medium review found no code
 defects; it identified one contradictory phrase in the new contract, which was
 corrected to “other D8 forms.”
 
+## S2-30g — exact-only FADDP ST(i), ST(0) (bounded local slice)
+
+Added bare `DE C0+i`, `i=0..7`, as exact-only `FADDP ST(i), ST(0)`. It reuses
+the S2-30d exact result helper with destination `i` and source zero, so all
+arithmetic and environment preconditions are checked before the first mutation.
+Success writes to old physical `(TOP+i)&7`, empties old physical TOP, increments
+TOP modulo eight, clears C1, records starting RIP in FIP, advances RIP by two,
+and retires once. The physical register array and tag word are not shifted. At
+`i=0`, the just-written bytes remain under Empty; at `i=1`, the result is new
+ST(0). Other payloads, tags, FCW, remaining FSW fields, FDP/FOP and integer
+state follow the specified preservation policy. Native admission stays closed.
+
+Independent byte/state vectors cover all 64 `(TOP,i)` pairs with unique physical
+payload sentinels, alias/pop behavior at `i=0`, new ST(0) at `i=1`, TOP wrap and
+the exact 1+1 carry result. Reject vectors compare full state for used bad tags,
+specials, unequal exponents, inexact coefficients and i=0 overflow. Additional
+checks cover missing x87 state, fetch fault, stop-before-execution and zero
+budget. Decoder exhaustively checks DE ModR/M, prefixes and truncation; the
+testkit schema accepts all eight bare encodings, and the native runner rejects
+all eight forms.
+
+Normative basis: Intel SDM revision 093, Vol.2A pp.3-311–3-313 and Vol.1
+§§8.1.7–8.1.9 ([Vol.2A](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[Vol.1](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+This does not claim general FADDP, special values, stack faults, exception
+delivery, CR0 behavior or native x87 execution.
+
+Focused `cargo test -p od-isa faddp_sti_st0 --offline` (4 tests), the testkit
+x87 schema test, and the fixture-runner matrix covering all 64 destination/TOP
+pairs passed. `cargo test --workspace --offline`, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, the Linux-target
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`, and `git diff --check` passed. The Linux-only native rejection test
+was not executed on this macOS host; physical acceptance remains in the final
+acceptance substage. `python3 tools/check_layout.py` reports the existing
+unmapped root `.serena/` directory, left untouched. `graphify update .`
+completed and refreshed the code graph. Independent `gpt-6.1-sol` medium
+review found no concrete defects; no hardware or SSH check was run.
+
 ## S2-29q — compose same-exponent finite addition with one-round binary80 packing (partial)
 
 Added `add_finite_same_exponent_to_binary80(lhs, rhs, mode)`. It composes the

@@ -1220,4 +1220,85 @@ mod tests {
         };
         assert_eq!(value.state.x87.unwrap(), v2::X87Snapshot::from(&x87));
     }
+
+    #[test]
+    fn x87_faddp_fixture_runner_covers_every_index_and_top() {
+        fn normal(significand: u64, exponent: u16) -> [u8; 10] {
+            let mut bytes = [0; 10];
+            bytes[..8].copy_from_slice(&significand.to_le_bytes());
+            bytes[8..].copy_from_slice(&exponent.to_le_bytes());
+            bytes
+        }
+
+        let one = normal(0x8000_0000_0000_0000, 0x3fff);
+        let two = "00000000000000800040";
+        for top in 0u8..=7 {
+            for destination in 0u8..=7 {
+                let old_top = top;
+                let physical_destination = top.wrapping_add(destination) & 7;
+                let mut input = v2::Fixture::from_json(include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json"
+                ))
+                .unwrap()
+                .fixture;
+                input.case_id = format!("local_faddp_st{destination}_top{top}");
+                input.profile = v2::Profile::LongX87StateV1;
+                input.instruction_budget = 1;
+                input.initial_state.rip = HexU64(0x5000);
+                input.stop_rip = Some(HexU64(0x5002));
+                input.expected_exit = v2::ExpectedExit::StopAddress;
+                let code = input
+                    .memory
+                    .iter_mut()
+                    .find(|region| region.region_id == "code")
+                    .unwrap();
+                code.guest_address = HexU64(0x5000);
+                code.length = 2;
+                code.initial_bytes_hex = format!("dec{destination:x}");
+                code.comparison_mask_hex = "ffff".into();
+
+                let mut x87 = od_isa::state::X87State::fixture_seed();
+                x87.control_word = 0x037f;
+                x87.status_word = (u16::from(top) << 11) | 0x4500 | 0x0200;
+                x87.tag_word = u16::MAX;
+                for physical in 0..8 {
+                    x87.registers[physical] = [physical as u8; 10];
+                }
+                x87.registers[usize::from(old_top)] = one;
+                x87.registers[usize::from(physical_destination)] = one;
+                x87.set_tag(old_top, od_isa::state::X87Tag::Valid);
+                x87.set_tag(physical_destination, od_isa::state::X87Tag::Valid);
+                input.initial_state.x87 = Some(v2::X87Snapshot::from(&x87));
+
+                let loaded = v2::Fixture::from_json(&input.to_json().unwrap()).unwrap();
+                let mut memory =
+                    od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                let result = execute_fixture_v2(&loaded, &mut memory);
+                result.validate_for(&loaded).unwrap();
+                assert!(
+                    matches!(result.outcome, v2::Outcome::StopAddress {}),
+                    "ST({destination}), TOP={top}: {:?}",
+                    result.outcome
+                );
+                assert_eq!(
+                    result.instructions_executed,
+                    Observation::Available { value: HexU64(1) }
+                );
+                let Observation::Available { value } = result.snapshot else {
+                    panic!("x87 FADDP result must be observable");
+                };
+                let observed = value.state.x87.unwrap();
+                let mut expected = x87;
+                expected.registers[usize::from(physical_destination)] =
+                    normal(0x8000_0000_0000_0000, 0x4000);
+                expected.set_tag(old_top, od_isa::state::X87Tag::Empty);
+                let new_top = old_top.wrapping_add(1) & 7;
+                expected.status_word =
+                    (expected.status_word & !((7 << 11) | (1 << 9))) | (u16::from(new_top) << 11);
+                expected.instruction_pointer = 0x5000;
+                assert_eq!(observed, v2::X87Snapshot::from(&expected));
+                assert_eq!(observed.registers[usize::from(physical_destination)], two);
+            }
+        }
+    }
 }

@@ -722,6 +722,12 @@ impl Fixture {
                 {
                     (code_bytes.as_str(), 2)
                 }
+                _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("dec")
+                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
                 _ => {
                     return Err(invalid(
                         "memory.code",

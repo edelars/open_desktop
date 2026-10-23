@@ -187,6 +187,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30d | Bare `D8 C1` FADD ST(0), ST(1), exact same-exponent canonical normal results only; native closed | S2-29q, S2-28a |
 | [x] | S2-30e | Bare `D8 C0+i` FADD ST(0), ST(i), i=0..7; same exact-only domain, native closed | S2-30d |
 | [x] | S2-30f | Bare `DC C0+i` FADD ST(i), ST(0), same exact-only domain, native closed | S2-30e |
+| [x] | S2-30g | Bare `DE C0+i` FADDP ST(i), ST(0), same exact-only domain plus physical TOP pop, native closed | S2-30f |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1491,6 +1492,26 @@ inexact coefficient input. Decoder tests enumerate the full DC ModR/M space,
 prefixes and truncation; testkit schema and native fail-closed admission cover
 all eight accepted byte encodings. This extends destination selection only;
 the exact-only numerical domain does not widen.
+
+#### S2-30g. Bare exact-only FADDP ST(i), ST(0) (bounded local slice)
+
+Accept only bare `DE C0+i`, `i=0..7`, as `FADDP ST(i), ST(0)`. Reuse the
+S2-30d exact FADD arithmetic and environment domain with logical destination
+`i` and source zero. Capture both inputs and validate the canonical Normal
+result before mutation. Success writes the result bytes to old physical
+`(TOP+i)&7`, marks old physical TOP Empty, increments TOP modulo eight, clears
+C1, records starting RIP as FIP, advances RIP by two, and retires once. Do not
+rotate the physical register array or tag word. For `i=0`, result bytes are
+written to old TOP before its tag is emptied and are no longer logically
+accessible; for `i=1`, the result becomes new ST(0). Preserve all other raw
+payloads, tags, FCW, other FSW bits, FDP/FOP and integer state under the local
+policy. Native admission remains closed.
+
+Independent vectors cover every `i` and TOP, physical payload sentinels,
+`i=0`, `i=1` new-ST(0), TOP wrap, exact carry, and full-state rejection
+including i=0 overflow. Decoder and fixture schema enumerate exactly the eight
+bare encodings. This slice does not claim general FADDP, special values, stack
+faults, exception delivery or CR0 behavior.
 
 ### S2-31. x87 conversions, rounding и exceptions
 

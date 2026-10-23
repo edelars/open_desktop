@@ -1233,6 +1233,42 @@ Manual, revision 093, Vol.2A, “FADD/FADDP/FIADD—Add,” pp.3-311–3-313, an
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 The local profile remains narrower than the architectural instruction.
 
+## Local S2-30g: exact-only `FADDP ST(i), ST(0)` (`DE C0+i`)
+
+The local long-mode interpreter accepts exactly bare `DE C0` through `DE C7`,
+mapping the low ModR/M bits to destination index `i`. It retains all S2-30d
+environment, operand and result restrictions: existing x87 state, FCW
+`0x037f`, clear FSW `0x80ff` mask, Valid tags for used physical operands,
+canonical Normal inputs, equal normalized exponents, exact coefficient
+representability and canonical Normal output. The destination is physical
+`(TOP+i)&7`; source ST(0) is physical TOP. For `i=0`, the shared register is
+captured once and requires only its single Valid tag. For `i!=0`, both used tags
+must be Valid. Both raw operands and the complete result are validated before
+the first state mutation.
+
+On success, write result bytes to the old physical destination, mark old
+physical TOP Empty, increment TOP modulo eight, clear FSW.C1, set FIP to the
+starting RIP, advance RIP by two and retire once. Do not rotate the physical
+register array or tag word. For `i=0`, writing then emptying old TOP leaves the
+new bytes beneath an Empty tag; they are not logically accessible after pop.
+For `i=1`, the destination is new ST(0). Preserve all other raw payloads and
+tags, FCW, remaining FSW bits, FDP, FOP, GPRs and RFLAGS. C0/C2/C3 and FDP
+retention are local deterministic policies; this slice does not model general
+x87 flags or exception delivery. Unsupported inputs and encodings return
+Unsupported without state commit.
+
+Prefixes, other DE ModR/M bytes, memory forms, WAIT, and native admission remain
+unsupported. Literal vectors cover every destination index and TOP, physical
+payload sentinels, `i=0` behavior, new ST(0) at `i=1`, TOP wrap, exact carry and
+full-state rejects including i=0 overflow. Fixture schema accepts only the
+eight bare encodings, and native x87 execution remains closed.
+
+Normative source: Intel® 64 and IA-32 Architectures Software Developer's
+Manual, revision 093, Vol.2A, “FADD/FADDP/FIADD—Add,” pp.3-311–3-313, and Vol.1
+§§8.1.7–8.1.9, pp.8-8–8-11 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+The local profile is narrower than the architectural instruction.
+
 ## Local S2-29a: raw binary80 representation and classification
 
 `od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory
