@@ -193,6 +193,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30j | Bare `DE E8+i` FSUBP ST(i), ST(0), same exact-only domain plus physical TOP pop; i=0 alias unsupported; native closed | S2-30i |
 | [x] | S2-30l | Bare `DC E0+i` FSUBR ST(i), ST(0), exact-only ST(0)−ST(i) into physical ST(i), no pop; i=0 alias unsupported; native closed | S2-30i |
 | [x] | S2-30m | Bare `DE E0+i` FSUBRP ST(i), ST(0), exact-only ST(0)−ST(i) into old ST(i), then physical TOP pop; i=0 alias unsupported; native closed | S2-30l |
+| [x] | S2-30n | Bare `D8 C8+i` FMUL ST(0), ST(i), exact binary80 result only, no pop; native closed | S2-30m, S2-29 |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1635,6 +1636,27 @@ and DE E8..EF FSUBP. Native admission stays closed. Normative source: Intel
 SDM revision 093, Vol.2A pp.3-397–3-399, “FSUBR/FSUBRP/FISUBR—Reverse
 Subtract”; FSUBRP computes ST(0)−ST(i) before
 pop; exact results clear C1 while C0/C2/C3 are undefined.
+
+#### S2-30n. Bare exact-only FMUL ST(0), ST(i) (bounded local slice)
+
+Accept exactly bare `D8 C8+i`, `i=0..7`, as `FMUL ST(0), ST(i)`. Require an
+existing x87 state, FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags for used
+physical registers, and canonical Normal raw operands. Exponents may differ.
+Use `normalize_finite`, `multiply_finite_significands`,
+`normalize_exact_magnitude`, and `pack_normal_rounded_significand`; accept only
+when the normalized exact product's low 64 bits are zero and the packed result
+is canonical Normal. Reject inexact results, zero/subnormal/overflow outputs,
+special or noncanonical inputs, bad environment/tags, and missing state before
+mutation. `i=0` is the valid `ST(0)*ST(0)` square and requires only one tag.
+
+Success writes only the ten-byte result to old physical TOP, clears C1, sets
+FIP to starting RIP, advances RIP by two, and retires once. Preserve TOP, tags,
+all other payloads, FCW, other FSW fields, FDP/FOP, GPRs, and RFLAGS. Retention
+of C0/C2/C3 is local deterministic policy because they are undefined. Decoder
+tests cover all D8 ModR/M values, prefixes, truncation and neighboring forms;
+schema/runner cover all eight indices and native x87 admission stays closed.
+Normative source: Intel SDM revision 093, Vol.2A pp.3-360–3-362, “FMUL/FIMUL—
+Multiply”.
 
 ### S2-31. x87 conversions, rounding и exceptions
 

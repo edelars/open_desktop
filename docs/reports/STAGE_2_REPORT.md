@@ -3280,3 +3280,51 @@ Graphify update completed. Independent gpt-6.1-sol medium review found no
 remaining defects or missing requested coverage. Physical acceptance remains
 reserved for the shared final acceptance substage; this report makes no
 hardware x87 claim.
+
+## S2-30n — exact-only FMUL ST(0), ST(i) (bounded local slice)
+
+Added exact bare `D8 C8+i`, `i=0..7`, as `FMUL ST(0), ST(i)`. Execution
+requires existing x87 state, FCW `0x037f`, a clean `FSW & 0x80ff` mask, Valid
+tags for used physical registers, and canonical Normal raw operands. It
+normalizes each operand, multiplies the full significands with integer
+arithmetic, normalizes the exact 128-bit magnitude, and accepts only a zero
+low 64-bit tail before packing the high 64 bits at precision 64. Unequal
+exponents are supported. Inexact results, zero/subnormal/overflow outputs,
+invalid input classes, bad environment/tags, and missing state reject before
+commit. `i=0` is a valid square and needs only the TOP tag.
+
+Success writes only the result into old physical TOP, clears C1, records the
+starting RIP in FIP, advances RIP by two and retires once. TOP, tags, other
+payloads, other x87 fields, GPRs and RFLAGS remain unchanged. C0/C2/C3 retain
+their concrete values only by local policy because the SDM marks them
+undefined. Native x87 profile and instruction admission stay closed.
+
+Literal execution tests cover every TOP×i pair with physical sentinels,
+including the i=0 `1.5*1.5 = 2.25` square, all four sign combinations,
+different exponents, a full-width 64-bit significand multiplied by a power of
+two, and full-state atomic rejection for `(1+2^-63)^2`, maximum-Normal
+overflow, minimum-Normal times one-half, raw special/noncanonical encodings,
+invalid tags/environment, and missing x87 state. Fetch fault, stop address,
+stop request and zero budget preserve state. Decoder tests enumerate all D8
+ModR/M bytes and prefixes; the fixture schema accepts all eight encodings, the
+runner checks all TOP×i state results, and the native test rejects every new
+encoding.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FMUL/FIMUL—Multiply,”
+pp.3-360–3-362 ([official PDF, Vol.2A p.3-360](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=478)).
+`D8 C8+i` computes old `ST(0) * ST(i)` without popping; exact results clear C1,
+and C0/C2/C3 are undefined.
+
+Focused `od-isa` FMUL tests, the testkit x87-profile schema test, and the
+fixture-runner TOP×i matrix passed. `cargo test --workspace --offline`,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+the Linux-target `od-x86-runner` all-target check, and `git diff --check` also
+passed. `python3 tools/check_layout.py` reports only the pre-existing unmapped
+root `.serena/` directory, which was left untouched. The Linux-target check
+compiled native rejection code; architecture-specific native tests did not
+execute on this arm64 macOS host. `graphify update .` completed and refreshed
+the code graph. No Mac mini, SSH, hardware execution or commit was performed;
+physical acceptance remains reserved for the shared final acceptance stage.
+Independent gpt-6.1-sol medium review found no production defect; it identified
+two test-coverage gaps (the baseline tag mask and an injected fetch fault that
+did not reach decode), both corrected and re-reviewed with no findings.

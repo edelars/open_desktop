@@ -1026,7 +1026,8 @@ or wait behavior. This is distinct from power-up/RESET/INIT: Vol.3A §11.1.1
 Table 11-1 note 5 says INIT leaves x87 FPU and MMX registers unchanged.
 
 The local fixture profile admits one exact instruction (`90` NOP, S2-30a
-`DB E3` FNINIT, or S2-30b `DF E0` FNSTSW AX) with budget 1 and a stop RIP
+`DB E3` FNINIT, S2-30b `DF E0` FNSTSW AX, or an explicitly listed S2-30 x87
+arithmetic encoding) with budget 1 and a stop RIP
 immediately afterward. Fixture
 conversion loads the supplied x87 object into `LongModeState`, and result
 conversion observes that executed state; comparisons inspect the entire
@@ -1484,6 +1485,32 @@ Subtract,” pp.3-397–3-399 ([official PDF,
 pp.3-397–3-399](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515));
 FSUBRP computes old `ST(0) − ST(i)` before pop, exact results clear C1, and
 C0/C2/C3 are undefined.
+
+## Local S2-30n: exact-only `FMUL ST(0), ST(i)` (`D8 C8+i`)
+
+The interpreter accepts exactly bare `D8 C8` through `D8 CF` with an existing
+`Some(X87State)`. It requires FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags
+for used physical operands, and raw canonical Normal binary80 operands. For
+`i=0`, the sole TOP register is read once and squared. Normalized exponents may
+differ. The integer product helpers compute the full exact 128-bit magnitude;
+after normalization the low 64 bits must be zero, then the retained high 64
+bits are packed at precision 64. The result must classify as canonical Normal.
+Inexact, zero/subnormal, overflow, missing/bad state, invalid tags or special/
+noncanonical encodings are Unsupported before commit.
+
+Success changes only the old physical TOP payload, clears C1, records starting
+RIP as FIP, advances RIP by two and retires once. TOP, tags, other payloads,
+FCW, other FSW fields, FDP/FOP, GPRs and RFLAGS are preserved. C0/C2/C3 remain
+concrete only by local deterministic policy; the SDM leaves them undefined.
+Decode coverage enumerates D8 ModR/M and prefix boundaries; fixture schema and
+runner cover all TOP×i pairs, including the i=0 square and physical sentinels.
+Native x87 profile and instruction admission remain closed.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FMUL/FIMUL—Multiply,”
+pp.3-360–3-362 ([official PDF, Vol.2A p.3-360](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=478)).
+`D8 C8+i` computes old `ST(0) * ST(i)` without popping; C1 is cleared for an
+exact result and C0/C2/C3 are undefined. This local profile implements no
+general rounding, special-value, exception, CR0/#NM, or native x87 behavior.
 
 ## Local S2-29a: raw binary80 representation and classification
 

@@ -1233,6 +1233,64 @@ fn local_x87_state_profile_runs_exact_fsub_sources_and_rejects_i0_atomically() {
 }
 
 #[test]
+fn local_x87_state_profile_runs_fmul_for_every_top_and_register_index() {
+    for top in 0u8..8 {
+        for source_index in 0u8..8 {
+            let mut fixture = Fixture::from_json(MFENCE_STORE_FENCE_LOAD).unwrap().fixture;
+            fixture.case_id = format!("local_x87_fmul_top{top}_i{source_index}");
+            fixture.profile = od_testkit::v2::Profile::LongX87StateV1;
+            fixture.initial_state.rip = HexU64(0x0010_0000);
+            let physical_top = usize::from(top);
+            let physical_source = usize::from((top + source_index) & 7);
+            let mut seed = od_isa::state::X87State::fixture_seed();
+            seed.control_word = 0x037f;
+            seed.status_word = (u16::from(top) << 11) | 0x4700 | (1 << 9);
+            seed.tag_word = u16::MAX;
+            seed.registers[physical_top] = [0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x3f]; // 1.5
+            seed.set_tag(top, od_isa::state::X87Tag::Valid);
+            if source_index != 0 {
+                seed.registers[physical_source] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0x00, 0x40]; // 2.0
+                seed.set_tag(physical_source as u8, od_isa::state::X87Tag::Valid);
+            }
+            seed.data_pointer = 0x5678;
+            seed.last_opcode = 0x05aa;
+            fixture.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&seed));
+            let code = fixture
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "code")
+                .unwrap();
+            code.guest_address = HexU64(0x0010_0000);
+            code.length = 2;
+            code.initial_bytes_hex = format!("d8c{:x}", 8 + source_index);
+            code.comparison_mask_hex = "ffff".into();
+            fixture.instruction_budget = 1;
+            fixture.stop_rip = Some(HexU64(0x0010_0002));
+            fixture.expected_exit = ExpectedExit::StopAddress;
+
+            let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+            assert_eq!(count(&result), 1, "TOP={top}, i={source_index}");
+            let observed = snapshot(&result);
+            let mut expected = seed;
+            expected.registers[physical_top] = if source_index == 0 {
+                [0, 0, 0, 0, 0, 0, 0, 0x90, 0x00, 0x40] // 2.25
+            } else {
+                [0, 0, 0, 0, 0, 0, 0, 0xc0, 0x00, 0x40] // 3.0
+            };
+            expected.status_word &= !(1 << 9);
+            expected.instruction_pointer = 0x0010_0000;
+            assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+            assert_eq!(
+                observed.state.x87,
+                Some(od_testkit::v2::X87Snapshot::from(&expected))
+            );
+            assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+            assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+        }
+    }
+}
+
+#[test]
 fn local_x87_state_profile_runs_exact_fsub_destinations_for_all_top_and_indices() {
     for top in 0u8..8 {
         for destination_index in 1u8..8 {

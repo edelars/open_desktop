@@ -713,7 +713,7 @@ impl Fixture {
                 "dfe0" => ("dfe0", 2),
                 _ if code_bytes.len() == 4
                     && code_bytes.starts_with("d8c")
-                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
+                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'f') =>
                 {
                     (code_bytes.as_str(), 2)
                 }

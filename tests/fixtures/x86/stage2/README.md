@@ -1086,3 +1086,11 @@ The schema validator admits all eight bare `DE E0+i` FSUBRP encodings.
 budget one. Local execution and fixture-runner tests check old ST(i)
 destination placement, retention of the popped payload under its Empty tag,
 TOP increment and alias atomicity. Native x87 admission stays closed.
+
+### S2-30n x87 schema coverage
+
+The schema validator admits all eight bare `D8 C8+i` FMUL encodings. Literal
+runner cases cover every TOP×i pair, including the valid i=0 square, differing
+exponents, physical payload sentinels, C1 clearing and preservation of tags and
+other state. Exact-only domain failures remain Unsupported atomically; native
+x87 admission stays closed.

@@ -443,6 +443,10 @@ pub enum Operation {
     Fnclex,
     /// Bare `DF E0` FNSTSW AX in the local profile with an existing x87 state.
     FnstswAx,
+    /// Bare `D8 C8+i` FMUL ST(0), ST(i), exact finite local profile only.
+    FmulSt0St {
+        source: u8,
+    },
     /// Bare `D8 C0+i` FADD ST(0), ST(i), exact finite local profile only.
     FaddSt0St {
         source: u8,
@@ -984,6 +988,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 match modrm {
                     0xc0..=0xc7 => Operation::FaddSt0St { source: modrm & 7 },
+                    0xc8..=0xcf => Operation::FmulSt0St { source: modrm & 7 },
                     0xe0..=0xe7 => Operation::FsubSt0St { source: modrm & 7 },
                     0xe8..=0xef => Operation::FsubrSt0St { source: modrm & 7 },
                     _ => return Err(self.unsupported(opcode)),
@@ -2205,6 +2210,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
+                    0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
                     0xe8..=0xef => Ok(Operation::FsubrSt0St { source: modrm & 7 }),
                     _ => Err(DecodeError::Unsupported {
@@ -2262,6 +2268,27 @@ mod tests {
                 Memory::new(&instruction[..1]).decode(),
                 Err(DecodeError::Memory(MemoryError::Unmapped { .. }))
             ));
+            let fmul = [0xd8, 0xc8 | source];
+            assert!(matches!(
+                Memory::new(&fmul).decode(),
+                Ok(Instruction {
+                    length: 2,
+                    operation: Operation::FmulSt0St { source: decoded },
+                    prefixes: Prefixes { .. },
+                    ..
+                }) if decoded == source
+            ));
+            for prefix in [
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            ]
+            .into_iter()
+            .chain(0x40..=0x4f)
+            {
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xd8, 0xc8 | source]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
         }
         let mut truncated_prefixed = Memory::new(&[0x66, 0xd8]);
         assert!(matches!(
@@ -2334,6 +2361,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
+                    0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
                     0xe8..=0xef => Ok(Operation::FsubrSt0St { source: modrm & 7 }),
                     _ => Err(DecodeError::Unsupported {
@@ -2398,6 +2426,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
+                    0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
                     0xe8..=0xef => Ok(Operation::FsubrSt0St { source: modrm & 7 }),
                     _ => Err(DecodeError::Unsupported {
