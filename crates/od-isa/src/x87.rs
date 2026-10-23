@@ -431,6 +431,21 @@ pub fn add_finite_same_exponent(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, 
     }
 }
 
+/// Add finite binary80 values with matching nonzero exponents and round once.
+///
+/// Zero operands are neutral; two zeros and exact cancellation are rejected
+/// because this helper does not choose an architectural zero sign. Unequal
+/// nonzero exponents are outside this exact, unaligned path. `None` means only
+/// bounded-helper rejection, not a guest exception or architectural result.
+pub fn add_finite_same_exponent_to_binary80(
+    lhs: X87Finite,
+    rhs: X87Finite,
+    mode: RationalRoundingMode,
+) -> Option<X87Binary80> {
+    let (exponent, coefficient) = add_finite_same_exponent(lhs, rhs)?;
+    round_pack_exact_coefficient(exponent, coefficient, mode)
+}
+
 /// Normalize the exact signed coefficient of `coefficient * 2^(exponent - 63)`.
 ///
 /// Nonzero results place the leading one of the unsigned magnitude at bit 127.
@@ -738,11 +753,12 @@ impl X87Binary80 {
 mod tests {
     use super::{
         RationalRoundingMode, X87Binary80, X87Binary80Class, X87Finite, X87Grs,
-        add_finite_same_exponent, align_finite_pair, divide_finite_significands,
-        divide_finite_to_binary80, multiply_finite_significands, normalize_exact_coefficient,
-        normalize_exact_magnitude, pack_normal_rounded_significand, round_pack_exact_coefficient,
-        round_pack_subnormal_quotient, round_quotient_magnitude, round_quotient_ties_even,
-        round_quotient_to_precision, shift_right_jam, shift_right_jam_u128,
+        add_finite_same_exponent, add_finite_same_exponent_to_binary80, align_finite_pair,
+        divide_finite_significands, divide_finite_to_binary80, multiply_finite_significands,
+        normalize_exact_coefficient, normalize_exact_magnitude, pack_normal_rounded_significand,
+        round_pack_exact_coefficient, round_pack_subnormal_quotient, round_quotient_magnitude,
+        round_quotient_ties_even, round_quotient_to_precision, shift_right_jam,
+        shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -1698,6 +1714,14 @@ mod tests {
         }
     }
 
+    fn raw_finite(exponent_field: u16, significand: u64, sign: bool) -> X87Binary80 {
+        let mut bytes = [0; 10];
+        bytes[..8].copy_from_slice(&significand.to_le_bytes());
+        let sign_exponent = exponent_field | if sign { 0x8000 } else { 0 };
+        bytes[8..].copy_from_slice(&sign_exponent.to_le_bytes());
+        X87Binary80::from_bytes(bytes)
+    }
+
     #[test]
     fn exact_finite_quotient_matches_literal_normalized_vectors() {
         let cases = [
@@ -2601,6 +2625,162 @@ mod tests {
             X87Binary80::from_bytes(raw_before.1.to_bytes()).classify(),
             X87Binary80Class::Normal
         );
+    }
+
+    #[test]
+    fn same_exponent_sum_composes_to_canonical_binary80() {
+        let add = |lhs: X87Binary80, rhs: X87Binary80| {
+            add_finite_same_exponent_to_binary80(
+                lhs.normalize_finite()?,
+                rhs.normalize_finite()?,
+                RationalRoundingMode::NearestTiesEven,
+            )
+        };
+        let one = raw_finite(0x3fff, 0x8000_0000_0000_0000, false);
+        let negative_one = raw_finite(0x3fff, 0x8000_0000_0000_0000, true);
+        assert_eq!(
+            add(one, one).unwrap().to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x40]
+        );
+        assert_eq!(
+            add(negative_one, negative_one).unwrap().to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0xc0]
+        );
+
+        let min_normal = raw_finite(1, 0x8000_0000_0000_0000, false);
+        let adjacent_min_normal = raw_finite(1, 0x8000_0000_0000_0001, false);
+        let negative_adjacent_min_normal = raw_finite(1, 0x8000_0000_0000_0001, true);
+        let minsub = X87Binary80::from_bytes([1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let negative_minsub = X87Binary80::from_bytes([1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]);
+        assert_eq!(
+            add(
+                adjacent_min_normal,
+                X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x80,])
+            )
+            .unwrap()
+            .to_bytes(),
+            minsub.to_bytes()
+        );
+        assert_eq!(
+            add(negative_adjacent_min_normal, min_normal)
+                .unwrap()
+                .to_bytes(),
+            negative_minsub.to_bytes()
+        );
+
+        let half_min_normal = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0]);
+        assert_eq!(
+            add(half_min_normal, half_min_normal).unwrap().to_bytes(),
+            min_normal.to_bytes()
+        );
+        let minsub_twice = X87Binary80::from_bytes([2, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            add(minsub, minsub).unwrap().to_bytes(),
+            minsub_twice.to_bytes()
+        );
+
+        let max_subnormal =
+            X87Binary80::from_bytes([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0, 0]);
+        let positive_zero = X87Binary80::from_bytes([0; 10]);
+        let negative_zero = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]);
+        let pseudo_denormal = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0]);
+        for (lhs, rhs, value) in [
+            (positive_zero, one, one),
+            (one, positive_zero, one),
+            (negative_zero, max_subnormal, max_subnormal),
+            (max_subnormal, negative_zero, max_subnormal),
+            (positive_zero, pseudo_denormal, pseudo_denormal),
+            (pseudo_denormal, positive_zero, pseudo_denormal),
+        ] {
+            let result = add(lhs, rhs).unwrap();
+            let normalized_value = value.normalize_finite().unwrap();
+            let expected = round_pack_exact_coefficient(
+                normalized_value.exponent(),
+                if normalized_value.sign() {
+                    -(normalized_value.significand() as i128)
+                } else {
+                    normalized_value.significand() as i128
+                },
+                RationalRoundingMode::NearestTiesEven,
+            )
+            .unwrap();
+            assert_eq!(result.to_bytes(), expected.to_bytes());
+        }
+
+        let max_finite = raw_finite(0x7ffe, u64::MAX, false);
+        assert_eq!(
+            add(positive_zero, max_finite).unwrap().to_bytes(),
+            max_finite.to_bytes()
+        );
+        assert_eq!(add(max_finite, max_finite), None);
+        assert_eq!(add(one, negative_one), None);
+        assert_eq!(
+            add(min_normal, raw_finite(0x4000, 0x8000_0000_0000_0000, false)),
+            None
+        );
+
+        for (left_sign, right_sign) in [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let left_zero = X87Binary80::from_bytes(if left_sign {
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]
+            } else {
+                [0; 10]
+            });
+            let right_zero = X87Binary80::from_bytes(if right_sign {
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]
+            } else {
+                [0; 10]
+            });
+            assert_eq!(add(left_zero, right_zero), None);
+        }
+    }
+
+    #[test]
+    fn same_exponent_sum_rounds_positive_and_negative_normal_ties_in_all_modes() {
+        let modes = [
+            RationalRoundingMode::NearestTiesEven,
+            RationalRoundingMode::TowardZero,
+            RationalRoundingMode::TowardPositive,
+            RationalRoundingMode::TowardNegative,
+        ];
+        let cases = [
+            (false, false, [0, 0, 1, 0]),
+            (false, true, [2, 1, 2, 1]),
+            (true, false, [0, 0, 0, 1]),
+            (true, true, [2, 1, 1, 2]),
+        ];
+
+        for (sign, odd_retained, expected_lsb) in cases {
+            let lhs_significand = if odd_retained {
+                0x8000_0000_0000_0001
+            } else {
+                0x8000_0000_0000_0000
+            };
+            let lhs = raw_finite(0x3fff, lhs_significand, sign)
+                .normalize_finite()
+                .unwrap();
+            let rhs_sig = if odd_retained {
+                0x8000_0000_0000_0002
+            } else {
+                0x8000_0000_0000_0001
+            };
+            let rhs = raw_finite(0x3fff, rhs_sig, sign)
+                .normalize_finite()
+                .unwrap();
+            let input_before = (lhs, rhs);
+            for (mode, lsb) in modes.into_iter().zip(expected_lsb) {
+                let result = add_finite_same_exponent_to_binary80(lhs, rhs, mode).unwrap();
+                let expected_sign_exponent: u16 = if sign { 0xc000 } else { 0x4000 };
+                let mut expected = [0; 10];
+                let significand = (0x8000_0000_0000_0000_u64 | lsb as u64).to_le_bytes();
+                expected[..8].copy_from_slice(&significand);
+                expected[8..].copy_from_slice(&expected_sign_exponent.to_le_bytes());
+                assert_eq!(result.to_bytes(), expected, "sign={sign} mode={mode:?}");
+            }
+            assert_eq!((lhs, rhs), input_before);
+            assert_eq!(lhs.source_class(), X87Binary80Class::Normal);
+            assert_eq!(rhs.source_class(), X87Binary80Class::Normal);
+        }
     }
 
     #[test]

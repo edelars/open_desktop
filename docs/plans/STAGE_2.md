@@ -1344,6 +1344,36 @@ does not implement x87 RC/PC, status, exceptions, instruction behavior,
 architectural signed zero, or special values; S2-29, S2-28, and ISSUE-019 remain
 open.
 
+### S2-29q. Compose same-exponent finite addition with one-round binary80 packing (partial)
+
+`add_finite_same_exponent_to_binary80(lhs, rhs, mode)` composes the exact
+same-exponent signed coefficient with `round_pack_exact_coefficient`. One zero
+operand is neutral in either order; two zeros and exact cancellation return
+`None`, because this helper does not select an architectural zero sign.
+Unequal nonzero normalized exponents return `None`; this slice does not align
+or jam operands. Output is canonical finite binary80. `None` is bounded helper
+rejection, including finite-range overflow, not a guest exception.
+
+Raw-byte vectors normalized through the finite decoder cover positive and
+negative `1+1`, positive and negative normal ties under all four mathematical
+rounding modes, adjacent minimum normals subtracting to either signed minimum
+subnormal, maximum subnormal, two half-minimum-normal values summing to minimum
+normal, minimum-subnormal addition, zero with normal/subnormal/pseudo-denormal
+in either order, maximum finite plus zero, upper-range rejection, cancellation,
+all four zero-sign pairs, and unequal exponents. Input bytes and finite
+provenance remain unchanged.
+
+Reachability limits: two 64-bit significands have exact signed-sum magnitude at
+most `2^65-2`; the synthetic `2^65-1` coefficient that can carry to four in a
+generic coefficient rounder cannot arise here. Every finite binary80 value is
+an integer multiple of minimum subnormal, so an exact sum in the subnormal
+range is also a minimum-subnormal multiple. Inexact subnormal tails,
+half-minimum-subnormal ties, and underflow-to-zero are therefore unreachable
+from this addition slice, though covered by the general coefficient helper.
+This does not implement FADD/FSUB decoding or execution, stack/control-word,
+flags, exceptions, or architectural zero selection. S2-29, S2-28, and ISSUE-019
+remain open.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.

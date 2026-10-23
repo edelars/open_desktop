@@ -2745,3 +2745,40 @@ unmapped root `.serena/` directory, which was left untouched. `graphify update .
 was run after the implementation. No physical Mac mini check was required for
 this integer helper. S2-29, S2-28, and architectural x87 behavior remain open
 under ISSUE-019.
+
+## S2-29q — compose same-exponent finite addition with one-round binary80 packing (partial)
+
+Added `add_finite_same_exponent_to_binary80(lhs, rhs, mode)`. It composes the
+exact signed coefficient returned by `add_finite_same_exponent` with one call
+to `round_pack_exact_coefficient`, so the sum is rounded and encoded once.
+Either single zero is neutral in either operand position. Two zeros and exact
+cancellation return `None` because no architectural zero sign is selected;
+unequal nonzero normalized exponents are rejected without alignment/jamming.
+The output is canonical finite binary80. `None` means only bounded helper
+rejection, including upper finite-range rejection, not a guest exception.
+
+Raw binary80 byte vectors normalized with `normalize_finite()` cover positive
+and negative `1+1`, positive/negative normal ties with even/odd retained bits
+in all four mathematical modes, adjacent minimum normals subtracting to ±minsub,
+maximum subnormal, two half-minimum-normal values summing to minimum normal,
+minsub+minsub, zero plus normal/subnormal/pseudo-denormal in either order,
+maxfinite plus zero, overflow rejection, exact cancellation, all four zero
+pairs, and unequal exponents. Input encodings and source-class provenance are
+preserved.
+
+Reachability is narrower than the generic coefficient rounder: two 64-bit
+significands give `abs(sum) <= 2^65-2`, so its synthetic `2^65-1` carry-to-four
+case is unreachable. Binary80 finite values are minimum-subnormal multiples;
+their exact sums in the subnormal range remain such multiples. Inexact
+subnormal tails, half-minsub ties and underflow-to-zero therefore cannot arise
+from this addition helper. No guest FADD/FSUB decode/execute, x87 stack or
+control-word behavior, flags, exceptions, or architectural zero selection was
+added.
+
+Verification: `cargo test -p od-isa x87 --offline` passed (50 tests), as did
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+`git diff --check`, and `graphify update .`. Graphify reported its existing
+parser warning for `include/open_desktop/host_abi.h` (tracked by ISSUE-010).
+`python3 tools/check_layout.py` stopped on the pre-existing unmapped root
+`.serena/` directory, which was left untouched. No physical Mac mini check is
+required for this integer helper. S2-29 and S2-28 remain open under ISSUE-019.

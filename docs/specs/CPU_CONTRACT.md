@@ -1407,6 +1407,36 @@ control-word behavior, architectural status/flags/exceptions, signed-zero
 selection, special values, or guest instructions. S2-29 and S2-28 remain open
 under ISSUE-019.
 
+## Local S2-29q: same-exponent finite addition to one rounded binary80 result
+
+`od_isa::x87::add_finite_same_exponent_to_binary80(lhs, rhs, mode)` composes
+`add_finite_same_exponent` with `round_pack_exact_coefficient`. Both operands
+are already-normalized `X87Finite` values. A single zero operand is neutral in
+either order and the output is canonical binary80. Two zeros and exact
+cancellation return `None` because no architectural zero sign is selected.
+Unequal nonzero normalized exponents also return `None`; this bounded path does
+not align or jam. Any other `None`, including a result above maximum finite,
+means helper rejection and is not a guest exception.
+
+Literal raw-byte vectors pass through `normalize_finite()` and cover ±1+±1,
+positive and negative normal ties with even and odd retained bits under all
+four mathematical modes, adjacent minimum normals subtracting to ±minimum
+subnormal, maximum subnormal, two half-minimum-normal inputs summing to minimum
+normal, minimum-subnormal addition, zero with normal/subnormal/pseudo-denormal
+in both operand orders, maximum finite plus zero, finite-range rejection,
+cancellation, all four signed-zero pairs, and unequal exponents. Inputs remain
+unchanged, including their original raw encodings and source-class provenance.
+
+For two significands no larger than `2^64-1`, the exact signed-sum magnitude is
+at most `2^65-2`; the generic coefficient rounder's synthetic `2^65-1`
+carry-to-four input is unreachable from this operation. Every finite binary80
+value is an integer multiple of minimum subnormal, so exact sums in the
+subnormal range are minimum-subnormal multiples as well. Inexact subnormal
+tails, half-minimum-subnormal ties, and underflow-to-zero cannot arise here.
+This helper does not implement FADD/FSUB decode or execution, stack behavior,
+x87 control-word mapping, flags, exceptions, special values, or architectural
+zero selection. S2-29, S2-28, and ISSUE-019 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.
