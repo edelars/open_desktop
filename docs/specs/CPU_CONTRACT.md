@@ -2168,3 +2168,30 @@ checks the modeled flags and the cleared RF/VM bits while masking IF/IOPL and
 other unmodeled fields. Other PUSHF widths and prefix variants remain open except the exact S2-17q `66 9C` word form.
 S2-17r adds only long-mode `66 9D` POPFW for CPL3/IOPL0: CF/PF/AF/ZF/SF/DF/OF are loaded from the word; IF, IOPL, bit 1, and all other unmodeled bits are preserved. Source or current TF=1 is Unsupported. Nonzero current IOPL returns Unsupported before stack access. NT=1 is also Unsupported for source and initial state because SDM 093 Vol.2B Table 4-15 pp.4-395–4-396 conflicts with Vol.1 §7.3.13.2 p.7-22; see [ISSUE-015](../KNOWN_ISSUES.md#issue-015--разногласие-sdm-по-nt-для-popf-word-на-cpl3iopl0). The literal v2 fixture compares RFLAGS only through mask `0xCD7`; a separate local test asserts exact preservation of unmasked IF, reserved, ID and upper bits while the source IOPL is 3 and current IOPL is 0. Native and interpreter admission reject nonzero current IOPL. Physical checking remains deferred to shared acceptance. S2-17s adds `66 48 9C` / `66 48 9D`: effective REX.W selects qword despite 66H, while `66` with effective REX.W=0 remains word. Its fixture checks PUSHFQ's SDM093 qword image and POPFQ with TF/NT/IOPL zero; local assertions verify the entire 8-byte stack write, canaries, unchanged RFLAGS, final RIP and full state. Other prefix combinations remain open. S2-17t covers the normalized prefix state for `66 C3` and `48 66 C3`: Vol.1 §6.4.7 forces near-branch operation-size effects to 64 bits in 64-bit mode and silently ignores operand-size prefixes; Vol.2A §2.2.1 says a REX byte is ignored unless it immediately precedes the opcode or 0F, so the leading 48 is ineffective before 66. Both literal fixtures check qword target/pop semantics and full state. Effective REX (`66 48 C3`), duplicate 66, and other effective prefix states remain outside this slice. Physical acceptance is deferred.
 The shared pool is 558.
+
+
+## Local S2-30w: bounded `FSTP ST(i)` (`DD D8+i`)
+
+The interpreter accepts exactly bare `DD D8` through `DD DF` with an existing
+`Some(X87State)`. It requires FCW `0x037f`, `FSW & 0x80ff == 0`, a Valid tag
+at old physical TOP, and a canonical Normal binary80 source. The source is
+captured as its original ten bytes before any mutation. No destination payload
+or old destination tag is read, so all four old destination tag values are
+accepted when `i != 0`.
+
+Success copies the exact bytes to old physical `(TOP+i)&7`, marks that physical
+tag Valid, then marks old TOP Empty and advances TOP modulo eight without
+rotating the physical register array. For `i=0`, the old TOP payload receives
+the source bytes and its final tag is Empty. For `i=1`, the old ST(1) destination
+becomes new ST(0). FIP is set to the instruction-start RIP and RIP advances by
+two. C1 is preserved as an explicit local policy; remaining FSW bits other than
+TOP, FCW, FDP, FOP, GPRs, RFLAGS and unrelated physical payloads/tags are
+preserved.
+
+Invalid source tag/class, invalid FCW/FSW, missing x87 state, unsupported
+encoding, fetch fault/truncation, STOP and exhausted budget do not commit state
+or retire. No memory form, numeric conversion/rounding, stack-fault or `#NM`
+delivery, or native x87 admission is modeled.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
+Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)). Intel defines `DD D8+i` as copying ST(0) to ST(i) and popping; this local contract narrows the accepted source/environment and preserves C1 concretely.

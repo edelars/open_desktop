@@ -587,6 +587,28 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         assert!(Fixture::from_json(&fsubrp.to_json().unwrap()).is_ok());
     }
 
+    for destination in 0u8..=7 {
+        let mut fstp = fixture.clone();
+        let code = fstp
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("ddd{:x}", 8 + destination);
+        assert!(Fixture::from_json(&fstp.to_json().unwrap()).is_ok());
+    }
+
+    let mut fstp_bad_source = fixture.clone();
+    fstp_bad_source
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap()
+        .initial_bytes_hex = "ddd9".into();
+    fstp_bad_source.stop_rip = None;
+    fstp_bad_source.expected_exit = ExpectedExit::Unsupported;
+    assert!(Fixture::from_json(&fstp_bad_source.to_json().unwrap()).is_ok());
+
     for (bytes, length, stop) in [
         ("db", 1, 0x1001),
         ("9bdbe3", 3, 0x1003),
@@ -613,6 +635,10 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         ("de00", 2, 0x1002),
         ("66dec1", 3, 0x1003),
         ("9bdec1", 3, 0x1003),
+        ("ddd0", 2, 0x1002),
+        ("66ddd9", 3, 0x1003),
+        ("9bddd9", 3, 0x1003),
+        ("dd", 1, 0x1001),
     ] {
         let mut unsupported = fixture.clone();
         let code = unsupported

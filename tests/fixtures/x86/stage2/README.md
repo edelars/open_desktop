@@ -1172,3 +1172,19 @@ compares the complete state. `od-isa` literal vectors additionally cover sign
 combinations and Normal-range edges. Exhaustive DC ModR/M and prefix checks
 preserve `DC F0..F7` FDIVR and adjacent groups. Native x87 admission explicitly
 rejects all eight new encodings.
+
+
+### S2-30w x87 schema and fixture coverage
+
+The schema admits all eight bare `DD D8+i` FSTP ST(i) encodings in the local
+interpreter profile. `s2_30w_fstp_invalid_source.case.json` is a literal
+`DD D9` rejection case with canonical-Normal ST(0) tagged Empty; it uses
+`stop_rip: null` and budget one and checks zero retirement plus
+full-state preservation through the CLI runner. Interpreter unit vectors cover
+all TOP×i pairs, each old destination tag state for `i!=0`, exact ten-byte
+source copies including signed and Normal-edge payloads, `i=0` and `i=1`, and
+atomic environment/source rejection. All DD ModR/M bytes and prefix/truncation
+cases are checked. Native x87 admission explicitly denies all eight forms.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
+Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).

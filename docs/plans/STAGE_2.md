@@ -202,6 +202,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30t | Bare `D8 F8+i` FDIVR ST(0), ST(i), exact `ST(i)/ST(0)` into old TOP without pop; native closed | S2-30s |
 | [x] | S2-30u | Bare `DC F0+i` FDIVR ST(i), ST(0), exact `ST(0)/ST(i)` into physical ST(i) without pop; native closed | S2-30t |
 | [x] | S2-30v | Bare `DC F8+i` FDIV ST(i), ST(0), exact `ST(i)/ST(0)` into physical ST(i) without pop; native closed | S2-30u |
+| [x] | S2-30w | Bare `DD D8+i` FSTP ST(i), canonical Normal source copy then physical TOP pop; native closed | S2-30v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1840,6 +1841,37 @@ Native admission explicitly denies all eight encodings and remains closed.
 
 Normative source: Intel SDM revision 093, Vol.2A pp.3-333–3-335,
 “FDIV/FIDIV—Divide” ([official PDF, Vol.2A p.3-333](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451)).
+
+#### S2-30w. Bare bounded `FSTP ST(i)` (local raw-copy slice)
+
+Accept only bare `DD D8+i`, `i=0..7`, with an existing x87 state. Require
+FCW `0x037f`, `FSW & 0x80ff == 0`, a Valid tag at old physical TOP, and a
+canonical Normal binary80 source. Capture the source's ten raw bytes and old
+TOP before mutation. Do not inspect the destination's old payload or tag.
+Success writes the exact bytes to old physical `(TOP+i)&7`, marks that tag
+Valid, then marks old TOP Empty and increments TOP modulo eight. This ordering
+means the `i=0` alias retains the copied bytes while the old TOP tag ends Empty;
+for `i=1`, the copied value is new ST(0). The physical register array is never
+rotated.
+
+FIP becomes the instruction-start RIP and RIP advances by two. C1 and every
+other FSW bit outside TOP are retained as an explicit local policy; FCW, FDP,
+FOP, GPRs, RFLAGS and all unrelated payloads/tags are unchanged. Missing state,
+bad environment, invalid source tag/class, fetch fault/truncation, STOP and
+exhausted budget preserve full state and do not retire. No memory form,
+rounding/conversion, exception delivery, `#NM`, stack-fault handling or native
+x87 admission is included.
+
+Decoder coverage enumerates the complete DD ModR/M byte space and rejects
+prefixes, REX, WAIT and truncation. Interpreter vectors cover every TOP/index
+pair, the destination's four previous tag values for `i!=0`, raw signed and
+Normal-edge copies, the `i=0`/`i=1` aliases, untouched sentinels and atomic
+rejection. The schema admits all eight encodings plus one source-tag rejection
+fixture (`DD D9`, no stop RIP, budget one). Native admission explicitly denies
+all eight forms.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
+Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
 
 ### S2-31. x87 conversions, rounding и exceptions
 

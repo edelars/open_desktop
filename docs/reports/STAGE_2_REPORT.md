@@ -3672,3 +3672,44 @@ gpt-6.1-sol high review found one documentation mismatch: signs and Normal
 range edges were attributed to the testkit runner instead of the `od-isa`
 literal vectors. The fixture notes were corrected and the re-review found no
 remaining findings.
+
+## S2-30w — bounded FSTP ST(i) local raw-copy slice
+
+Added only bare `DD D8+i`, `i=0..7`, as a bounded register-register
+`FSTP ST(i)` form. It requires an existing x87 snapshot, FCW `0x037f`,
+`FSW & 0x80ff == 0`, and a Valid canonical-Normal old ST(0). The interpreter
+captures old TOP and exact ten source bytes before mutation, copies those bytes
+to old physical `(TOP+i)&7`, marks that destination Valid, empties old TOP and
+advances TOP. It never rotates the physical register array and does not read
+the destination's previous payload or tag. For `i=0` the copied payload remains
+with an Empty tag; for `i=1` the copy is the new ST(0). FIP receives starting
+RIP, RIP advances by two, and the instruction retires once. C1 is preserved as
+the local deterministic policy; unrelated physical payloads/tags and FCW, FDP,
+FOP, GPRs and RFLAGS remain unchanged. Native execution admission denies all
+eight encodings.
+
+`od-isa` vectors cover all 64 TOP/index pairs and each old destination tag for
+`i!=0`, raw signed/minimum/maximum Normal payloads, unchanged sentinels, and
+alias/pop behavior. Invalid source tags/classes, FCW/FSW, missing x87, fetch
+faults/truncation, STOP and budget exhaustion reject atomically. Decoder tests
+enumerate DD ModR/M values and cover prefix, REX, WAIT and truncation rejection.
+The fixture schema admits all eight instructions; runner tests execute all
+indices and verify the full result. A dedicated no-stop/budget-one fixture
+rejects an Empty-tagged old ST(0), confirming source validation rather than
+destination validation.
+
+Normative source: Intel SDM revision 093, Vol.2A pp.3-386–3-387,
+“FST/FSTP—Store Floating-Point Value” ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
+This bounded slice does not implement memory forms, arithmetic, #NM/stack-fault
+delivery or broader x87 semantics.
+
+Validation passed: `cargo test --workspace --offline`, focused `od-isa`,
+`od-testkit` schema, and CLI runner tests, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, Linux x86_64 runner target
+compile (`cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`), `git diff --check`, and `graphify update .`.
+`python3 tools/check_layout.py` reports the pre-existing unmapped root
+`.serena/` directory; it was left untouched per task instructions. Linux-gated
+native-denial tests compiled but were not run on this arm64 macOS host. No Mac
+mini, SSH or physical-hardware checks were run; these remain in the shared
+acceptance stage. Independent review is pending.

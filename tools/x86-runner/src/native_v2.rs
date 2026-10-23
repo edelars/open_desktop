@@ -576,6 +576,7 @@ fn admission_with_tracee_memory(
             | Operation::FmulpStSt0 { .. }
             | Operation::FsubpStSt0 { .. }
             | Operation::FsubrpStSt0 { .. }
+            | Operation::FstpSti { .. }
     ) {
         return Err("x87 instruction is not admitted by the native backend".into());
     }
@@ -3661,6 +3662,14 @@ mod tests {
             [0xdb, 0xe3],
             [0xdb, 0xe2],
             [0xdf, 0xe0],
+            [0xdd, 0xd8],
+            [0xdd, 0xd9],
+            [0xdd, 0xda],
+            [0xdd, 0xdb],
+            [0xdd, 0xdc],
+            [0xdd, 0xdd],
+            [0xdd, 0xde],
+            [0xdd, 0xdf],
             [0xd8, 0xc0],
             [0xd8, 0xc1],
             [0xd8, 0xc2],

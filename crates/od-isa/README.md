@@ -143,3 +143,13 @@ invalid x87 environment/tags reject atomically; native x87 admission remains
 closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30v-exact-only-fdiv-sti-st0-dc-f8i),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md) and
 [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
+
+
+S2-30w adds only bare `DD D8+i` FSTP ST(i): a Valid canonical-Normal old
+ST(0) is copied byte-for-byte to old physical `(TOP+i)&7`, its destination tag
+is set Valid, old TOP is emptied, and TOP advances. Old destination tag/payload
+are ignored. The `i=0` alias ends with the copied payload and an Empty old TOP
+tag; `i=1` makes the copied value new ST(0). C1 is retained by local policy.
+Invalid source/environment and fetch/stop/budget boundaries preserve full state.
+Memory forms, exception delivery and native x87 admission remain outside this
+slice. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30w-bounded-fstp-sti-dd-d8i), [Stage 2 plan](../../docs/plans/STAGE_2.md#s2-30w-bare-bounded-fstp-sti-local-raw-copy-slice), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
