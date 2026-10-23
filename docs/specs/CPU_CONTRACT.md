@@ -1100,6 +1100,27 @@ vectors retaining sign and source-class metadata. This helper adds no
 rounding, arithmetic, exception/status behavior, instruction execution, or
 precision claim. S2-29 and S2-28 remain open.
 
+## Local S2-29d: ordered finite-pair alignment
+
+`od_isa::x87::align_finite_pair(lhs, rhs)` returns
+`(common_exponent, lhs_significand, rhs_significand)` and preserves operand
+order. Two nonzero inputs use the larger exponent; a zero paired with a
+nonzero value uses the nonzero exponent; two zeros use exponent zero. Zero
+operands align to zero. Each nonzero significand is converted to
+`(significand as u128) << 3` and passed to `shift_right_jam_u128` with the
+nonnegative exponent difference. The helper does not modify input sign,
+source class, or source values, and performs no magnitude sorting.
+
+The low jammed bit indicates only a nonzero discarded tail. It is not an
+exact magnitude comparison or architectural inexact status. A future
+subtraction or left renormalization requires a separate proof that this
+representation retains sufficient information. Literal unit vectors cover
+the required gap boundaries, finite endpoints, pseudo-denormal/normal
+provenance, signed zeros, negative exponents, and reversed input order. No
+addition/subtraction result, normalization, rounding, precision control,
+exception/status, special value, guest instruction, or native snapshot is
+defined. S2-29 and S2-28 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

@@ -2390,3 +2390,29 @@ negative pseudo-denormal with source-class metadata. The focused
 `git diff --check` passed. No physical Mac mini check was performed or
 required for this integer helper. ISSUE-019 remains open for arithmetic,
 rounding, exceptions, instructions, and state integration.
+
+## S2-29d — ordered finite-pair alignment (partial)
+
+Added `align_finite_pair(lhs, rhs)`, returning a shared exponent and two
+aligned `u128` significands in input order. Nonzero pairs use the larger
+exponent; one zero uses the other operand's exponent; two zeros use exponent
+zero. Zero contributes a zero significand. Nonzero operands use the existing
+three-bit significand bridge and `shift_right_jam_u128`. The helper preserves
+the input objects' signs, source classes, and source values; it neither sorts
+by magnitude nor changes either sign.
+
+Literal local vectors cover gaps 0/1/2/3/4/63/64/65/66/67/127/128/129,
+minimum subnormal against minimum normal and maximum finite, maximum subnormal
+against minimum normal, pseudo-denormal against its matching normal with
+distinct provenance, both operand orders, negative exponents, and signed-zero
+pairs. The jammed bit is only lost-tail information; it is not exact magnitude
+or architectural inexact status. Future subtraction or left renormalization
+requires a separate information-retention proof. Addition/subtraction,
+result normalization, rounding, precision control, exceptions/status, special
+values, guest instructions, and native snapshot remain excluded.
+
+Local verification passed: `cargo test -p od-isa x87 --offline`,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, `git diff --check`, and `graphify update .`.
+No physical Mac mini check was performed or required for this integer helper.
+S2-29 and the S2-28 umbrella remain open under ISSUE-019.

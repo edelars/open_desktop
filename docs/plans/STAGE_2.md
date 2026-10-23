@@ -1058,6 +1058,27 @@ bridge for signed zero, negative subnormal, normal, and negative
 pseudo-denormal while preserving source-class metadata. S2-29 and S2-28 remain
 open.
 
+### S2-29d. Ordered finite-pair alignment to a common exponent (partial)
+
+`align_finite_pair(lhs, rhs)` returns a common `i32` exponent and two `u128`
+significands in the same order as its inputs. For two nonzero values the
+common exponent is the larger input exponent; with one zero it is the
+nonzero exponent, and two zeros use exponent zero. A zero aligns to zero.
+Each nonzero significand is extended by three low GRS positions and shifted
+right with `shift_right_jam_u128` by the exponent difference. Sign, source
+class, and source values are unchanged; the operation does not sort operands.
+
+Independent literal vectors cover exponent gaps 0/1/2/3/4/63/64/65/66/67/127/
+128/129, minimum subnormal against minimum normal and maximum finite, maximum
+subnormal against minimum normal, pseudo-denormal against a matching normal
+with distinct provenance, negative exponents, both operand orders, and all
+signed-zero pairs. A jammed low bit means only that a discarded tail was
+nonzero. It does not identify exact magnitude or architectural inexact status.
+Any later subtraction or left renormalization needs a separate information-
+retention proof. Addition/subtraction, result normalization, rounding,
+precision control, exceptions/status, special values, guest instructions, and
+native snapshot remain outside this partial slice; S2-29 and S2-28 remain open.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.

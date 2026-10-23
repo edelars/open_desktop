@@ -62,6 +62,35 @@ impl X87Finite {
     }
 }
 
+/// Align two finite values to a shared exponent without changing their order
+/// or metadata. Nonzero significands are extended with three low GRS bits and
+/// right-shift-jammed to `max(lhs.exponent, rhs.exponent)`. Zero operands
+/// contribute a zero significand; two zeros use exponent zero.
+///
+/// The jammed low bit records lost-tail information. It is not an exact
+/// magnitude comparison or an architectural inexact indication. Any future
+/// subtraction or left renormalization must separately prove that this
+/// representation retains the information that operation needs.
+pub fn align_finite_pair(lhs: X87Finite, rhs: X87Finite) -> (i32, u128, u128) {
+    let common_exponent = match (lhs.is_zero(), rhs.is_zero()) {
+        (true, true) => 0,
+        (true, false) => rhs.exponent,
+        (false, true) => lhs.exponent,
+        (false, false) => lhs.exponent.max(rhs.exponent),
+    };
+
+    let align = |value: X87Finite| {
+        if value.is_zero() {
+            0
+        } else {
+            let significand = (value.significand as u128) << 3;
+            shift_right_jam_u128(significand, (common_exponent - value.exponent) as u32)
+        }
+    };
+
+    (common_exponent, align(lhs), align(rhs))
+}
+
 /// The three low-order bits used as guard, round, and sticky information.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct X87Grs {
@@ -229,7 +258,10 @@ impl X87Binary80 {
 
 #[cfg(test)]
 mod tests {
-    use super::{X87Binary80, X87Binary80Class, X87Grs, shift_right_jam, shift_right_jam_u128};
+    use super::{
+        X87Binary80, X87Binary80Class, X87Finite, X87Grs, align_finite_pair, shift_right_jam,
+        shift_right_jam_u128,
+    };
     use crate::state::{X87State, X87Tag};
 
     #[test]
@@ -570,6 +602,191 @@ mod tests {
             [0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
         ] {
             assert!(X87Binary80::from_bytes(bytes).normalize_finite().is_none());
+        }
+    }
+
+    fn finite(
+        exponent: i32,
+        significand: u64,
+        sign: bool,
+        source_class: X87Binary80Class,
+    ) -> X87Finite {
+        X87Finite {
+            sign,
+            exponent,
+            significand,
+            source_class,
+        }
+    }
+
+    #[test]
+    fn finite_pair_alignment_matches_literal_shift_gap_vectors_in_input_order() {
+        let lhs = finite(
+            -16445,
+            0x8000_0000_0000_0001,
+            true,
+            X87Binary80Class::Normal,
+        );
+        let gaps = [
+            (0, 0x0000_0000_0000_0004_0000_0000_0000_0008),
+            (1, 0x0000_0000_0000_0002_0000_0000_0000_0004),
+            (2, 0x0000_0000_0000_0001_0000_0000_0000_0002),
+            (3, 0x0000_0000_0000_0000_8000_0000_0000_0001),
+            (4, 0x0000_0000_0000_0000_4000_0000_0000_0001),
+            (63, 0x0000_0000_0000_0000_0000_0000_0000_0009),
+            (64, 0x0000_0000_0000_0000_0000_0000_0000_0005),
+            (65, 0x0000_0000_0000_0000_0000_0000_0000_0003),
+            (66, 0x0000_0000_0000_0000_0000_0000_0000_0001),
+            (67, 0x0000_0000_0000_0000_0000_0000_0000_0001),
+            (127, 0x0000_0000_0000_0000_0000_0000_0000_0001),
+            (128, 0x0000_0000_0000_0000_0000_0000_0000_0001),
+            (129, 0x0000_0000_0000_0000_0000_0000_0000_0001),
+        ];
+
+        for (gap, expected_lhs) in gaps {
+            let rhs = finite(
+                lhs.exponent() + gap,
+                0x8000_0000_0000_0001,
+                false,
+                X87Binary80Class::Subnormal,
+            );
+            assert_eq!(
+                align_finite_pair(lhs, rhs),
+                (
+                    rhs.exponent(),
+                    expected_lhs,
+                    0x0000_0000_0000_0004_0000_0000_0000_0008,
+                ),
+                "gap={gap}"
+            );
+            assert_eq!(
+                align_finite_pair(rhs, lhs),
+                (
+                    rhs.exponent(),
+                    0x0000_0000_0000_0004_0000_0000_0000_0008,
+                    expected_lhs,
+                ),
+                "reversed gap={gap}"
+            );
+            assert!(lhs.sign());
+            assert!(!rhs.sign());
+            assert_eq!(lhs.source_class(), X87Binary80Class::Normal);
+            assert_eq!(rhs.source_class(), X87Binary80Class::Subnormal);
+            assert_eq!(lhs.significand(), 0x8000_0000_0000_0001);
+            assert_eq!(rhs.significand(), 0x8000_0000_0000_0001);
+        }
+    }
+
+    #[test]
+    fn finite_pair_alignment_covers_finite_boundaries_and_provenance() {
+        let min_subnormal = finite(
+            -16445,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Subnormal,
+        );
+        let min_normal = finite(
+            -16382,
+            0x8000_0000_0000_0000,
+            true,
+            X87Binary80Class::Normal,
+        );
+        assert_eq!(
+            align_finite_pair(min_subnormal, min_normal),
+            (
+                -16382,
+                0x0000_0000_0000_0000_0000_0000_0000_0008,
+                0x0000_0000_0000_0004_0000_0000_0000_0000,
+            )
+        );
+
+        let max_finite = finite(16383, u64::MAX, true, X87Binary80Class::Normal);
+        assert_eq!(
+            align_finite_pair(min_subnormal, max_finite),
+            (16383, 1, 0x0000_0000_0000_0007_ffff_ffff_ffff_fff8,)
+        );
+
+        let max_subnormal = finite(
+            -16383,
+            0xffff_ffff_ffff_fffe,
+            false,
+            X87Binary80Class::Subnormal,
+        );
+        assert_eq!(
+            align_finite_pair(max_subnormal, min_normal),
+            (
+                -16382,
+                0x0000_0000_0000_0000_0003_ffff_ffff_ffff_fff8,
+                0x0000_0000_0000_0004_0000_0000_0000_0000,
+            )
+        );
+
+        let pseudo_denormal = finite(
+            -16382,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::PseudoDenormal,
+        );
+        assert_eq!(
+            align_finite_pair(pseudo_denormal, min_normal),
+            (
+                -16382,
+                0x0000_0000_0000_0004_0000_0000_0000_0000,
+                0x0000_0000_0000_0004_0000_0000_0000_0000,
+            )
+        );
+        assert_eq!(
+            pseudo_denormal.source_class(),
+            X87Binary80Class::PseudoDenormal
+        );
+        assert!(!pseudo_denormal.sign());
+        assert_eq!(pseudo_denormal.significand(), 0x8000_0000_0000_0000);
+        assert_eq!(min_normal.source_class(), X87Binary80Class::Normal);
+        assert!(min_normal.sign());
+        assert_eq!(min_normal.significand(), 0x8000_0000_0000_0000);
+    }
+
+    #[test]
+    fn finite_pair_alignment_handles_signed_zeros_and_negative_exponents() {
+        let positive_zero = finite(0, 0, false, X87Binary80Class::Zero);
+        let negative_zero = finite(0, 0, true, X87Binary80Class::Zero);
+        let negative_exponent = finite(-7, 0x8000_0000_0000_0000, true, X87Binary80Class::Normal);
+        assert_eq!(align_finite_pair(positive_zero, negative_zero), (0, 0, 0));
+        assert_eq!(align_finite_pair(negative_zero, positive_zero), (0, 0, 0));
+        assert_eq!(
+            align_finite_pair(positive_zero, negative_exponent),
+            (-7, 0, 0x0000_0000_0000_0004_0000_0000_0000_0000)
+        );
+        assert_eq!(
+            align_finite_pair(negative_exponent, negative_zero),
+            (-7, 0x0000_0000_0000_0004_0000_0000_0000_0000, 0)
+        );
+
+        let negative_nonzero = finite(-3, 0x8000_0000_0000_0000, true, X87Binary80Class::Subnormal);
+        assert_eq!(
+            align_finite_pair(negative_nonzero, negative_exponent),
+            (
+                -3,
+                0x0000_0000_0000_0004_0000_0000_0000_0000,
+                0x4000_0000_0000_0000
+            )
+        );
+        assert_eq!(
+            align_finite_pair(negative_exponent, negative_nonzero),
+            (
+                -3,
+                0x4000_0000_0000_0000,
+                0x0000_0000_0000_0004_0000_0000_0000_0000
+            )
+        );
+
+        for (lhs, rhs) in [
+            (positive_zero, positive_zero),
+            (positive_zero, negative_zero),
+            (negative_zero, positive_zero),
+            (negative_zero, negative_zero),
+        ] {
+            assert_eq!(align_finite_pair(lhs, rhs), (0, 0, 0));
         }
     }
 
