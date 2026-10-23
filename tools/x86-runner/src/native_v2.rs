@@ -560,6 +560,7 @@ fn admission_with_tracee_memory(
             | Operation::FnstswAx
             | Operation::FmulSt0St { .. }
             | Operation::FdivSt0St { .. }
+            | Operation::FdivrSt0St { .. }
             | Operation::FdivpStSt0 { .. }
             | Operation::FdivrpStSt0 { .. }
             | Operation::FmulStSt0 { .. }
@@ -3698,6 +3699,14 @@ mod tests {
             [0xd8, 0xf5],
             [0xd8, 0xf6],
             [0xd8, 0xf7],
+            [0xd8, 0xf8],
+            [0xd8, 0xf9],
+            [0xd8, 0xfa],
+            [0xd8, 0xfb],
+            [0xd8, 0xfc],
+            [0xd8, 0xfd],
+            [0xd8, 0xfe],
+            [0xd8, 0xff],
             [0xdc, 0xc0],
             [0xdc, 0xc1],
             [0xdc, 0xc2],
@@ -3796,6 +3805,7 @@ mod tests {
                 code,
                 [0xd8, 0xe0]
                     | [0xd8, 0xf1]
+                    | [0xd8, 0xf9]
                     | [0xd8, 0xe8]
                     | [0xdc, 0xe0]
                     | [0xdc, 0xe8]

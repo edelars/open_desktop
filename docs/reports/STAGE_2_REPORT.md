@@ -3538,3 +3538,46 @@ review found two test/documentation issues, both corrected; re-review found no
 remaining findings. No Mac mini, SSH, physical hardware execution or commit
 was used; physical acceptance remains reserved for the shared acceptance
 stage.
+
+## S2-30t — exact-only FDIVR ST(0), ST(i) (bounded local slice)
+
+Added bare `D8 F8+i`, `i=0..7`, as exact-only `FDIVR ST(0), ST(i)`. It reuses
+the ordered exact-division gate with old `ST(i)` as numerator and old `ST(0)`
+as denominator. The gate requires zero normalized quotient remainder before
+precision-64 packing and accepts only a canonical Normal result. It retains
+the established environment, tag and canonical Normal input requirements;
+unequal exponents are allowed. Zero, special/noncanonical inputs, inexact
+quotients, overflow and subnormal/zero outputs reject before mutation.
+
+Success overwrites old physical TOP without changing tags or TOP, clears C1,
+records starting RIP as FIP, advances RIP by two and retires once. The `i=0`
+alias computes exact `+1` into the same payload while retaining its Valid tag.
+The decoder covers all D8 ModR/M bytes and preserves neighboring groups;
+prefixes, REX, WAIT and truncated fetch remain unsupported. Schema and runner
+coverage admits all eight encodings and represents inexact `D8 F9` as
+Unsupported with no stop RIP and budget one. Native admission stays closed.
+
+Interpreter and testkit vectors cover every TOP×i placement, ordered
+`ST(i)=15 / ST(0)=3 => 5`, signs, differing exponents, a full-width
+significand, i=0, and full-state atomic rejection of actual inexact `1/3`,
+overflow, subnormal output, invalid environment/tags/classes and missing x87
+state. Truncated and faulted fetches, stop-at-RIP and zero-budget boundaries
+preserve state. Schema tests admit all eight encodings and select the no-stop
+Unsupported fixture shape; testkit execution confirms the `D8 F9` operands
+really are inexact. Native x87 denial was compiled for the Linux runner target
+but was not executed on this arm64 macOS host.
+
+Normative source: Intel SDM revision 093, Vol.2A pp.3-336–3-338,
+“FDIVR/FDIVRP/FIDIVR—Reverse Divide” ([official PDF, Vol.2A p.3-336](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=454)).
+General rounding, architectural exception effects, special values, CR0/#NM,
+native x87 state observation and full x87 behavior remain outside this slice.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`git diff --check`, and `graphify update .`. The layout checker reports only
+the pre-existing unmapped `.serena/` root directory; it was left untouched.
+The Linux native-denial tests compiled but were not executed on this arm64
+macOS host. No Mac mini, SSH, physical hardware execution or commit was used.
+Independent gpt-6.1-sol medium review found and corrected D8 F9 terminology in
+the plan, contract and fixture notes; the updated wording is under re-review.

@@ -1653,6 +1653,34 @@ exact results clear C1, while C0/C2/C3 are undefined. General rounding,
 architectural exceptions, special values, CR0/#NM and native x87 behavior are
 not modeled.
 
+## Local S2-30t: exact-only `FDIVR ST(0), ST(i)` (`D8 F8+i`)
+
+The interpreter accepts exactly bare `D8 F8` through `D8 FF` with an existing
+`Some(X87State)`. It requires FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags
+for the used physical operands and canonical Normal binary80 inputs. The
+ordered exact division gate computes old `ST(i)/ST(0)`: it normalizes both
+significands, requires zero quotient remainder before packing, packs at
+precision 64 and accepts only canonical Normal output. Unequal exponents are
+allowed. Zero operands, specials, noncanonical raw values, inexact quotients,
+overflow and subnormal/zero output reject before mutation. `D8 F9` encodes
+`FDIVR ST(0), ST(1)`; `i=0` reads one Valid physical TOP
+tag and yields exact `+1` for either sign without popping or changing TOP/tag.
+
+Success writes the result to old physical TOP, clears C1, records starting RIP
+as FIP, advances RIP by two and retires once; all other tags, payloads, x87
+fields, GPRs and RFLAGS remain unchanged. The decoder accepts D8 F8..FF while
+preserving the other D8 register ranges; prefixes, REX, WAIT and truncation
+remain unsupported. The fixture schema and runner cover all eight encodings
+and atomic inexact `D8 F9` rejection with no stop RIP and budget one. Native
+admission remains closed.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FDIVR/FDIVRP/FIDIVR—Reverse Divide,”
+pp.3-336–3-338 ([official PDF, Vol.2A p.3-336](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=454)).
+`D8 F8+i` divides old `ST(i)` by old `ST(0)` without popping; exact results
+clear C1, while C0/C2/C3 are undefined. General rounding, architectural
+exceptions, special values, CR0/#NM and native x87 behavior are not modeled.
+
 ## Local S2-29a: raw binary80 representation and classification
 
 `od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory

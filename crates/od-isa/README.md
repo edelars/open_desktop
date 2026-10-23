@@ -119,3 +119,12 @@ non-Normal inputs/results and invalid x87 environment/tags reject atomically;
 native x87 admission remains closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30s-exact-only-fdivrp-sti-st0-de-f0i),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md) and
 [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
+
+
+S2-30t adds exact-only bare `D8 F8+i` FDIVR: old `ST(i)/ST(0)` overwrites
+old physical TOP without popping. The `i=0` alias writes exact `+1` while
+retaining its tag and TOP. Inexact quotients, non-Normal inputs/results and
+invalid x87 environment/tags reject atomically; native x87 admission remains
+closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30t-exact-only-fdivr-st0-sti-d8-f8i),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md) and
+[Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).

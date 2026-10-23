@@ -451,6 +451,10 @@ pub enum Operation {
     FdivSt0St {
         source: u8,
     },
+    /// Bare `D8 F8+i` FDIVR ST(0), ST(i), exact finite local profile only.
+    FdivrSt0St {
+        source: u8,
+    },
     /// Bare `DE F8+i` FDIVP ST(i), ST(0), exact finite local profile only.
     FdivpStSt0 {
         destination: u8,
@@ -1012,6 +1016,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xe0..=0xe7 => Operation::FsubSt0St { source: modrm & 7 },
                     0xe8..=0xef => Operation::FsubrSt0St { source: modrm & 7 },
                     0xf0..=0xf7 => Operation::FdivSt0St { source: modrm & 7 },
+                    0xf8..=0xff => Operation::FdivrSt0St { source: modrm & 7 },
                     _ => return Err(self.unsupported(opcode)),
                 }
             }
@@ -2247,6 +2252,7 @@ mod tests {
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
                     0xe8..=0xef => Ok(Operation::FsubrSt0St { source: modrm & 7 }),
                     0xf0..=0xf7 => Ok(Operation::FdivSt0St { source: modrm & 7 }),
+                    0xf8..=0xff => Ok(Operation::FdivrSt0St { source: modrm & 7 }),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
@@ -2400,6 +2406,7 @@ mod tests {
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
                     0xe8..=0xef => Ok(Operation::FsubrSt0St { source: modrm & 7 }),
                     0xf0..=0xf7 => Ok(Operation::FdivSt0St { source: modrm & 7 }),
+                    0xf8..=0xff => Ok(Operation::FdivrSt0St { source: modrm & 7 }),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
@@ -2476,6 +2483,7 @@ mod tests {
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
                     0xe8..=0xef => Ok(Operation::FsubrSt0St { source: modrm & 7 }),
                     0xf0..=0xf7 => Ok(Operation::FdivSt0St { source: modrm & 7 }),
+                    0xf8..=0xff => Ok(Operation::FdivrSt0St { source: modrm & 7 }),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
@@ -2498,6 +2506,19 @@ mod tests {
             Memory::new(&[0x9b, 0xd8, 0xf1]).decode(),
             Err(DecodeError::Unsupported { .. })
         ));
+        for source in 0u8..=7 {
+            for prefix in [
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            ]
+            .into_iter()
+            .chain(0x40..=0x4f)
+            {
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xd8, 0xf8 | source]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
+        }
     }
 
     #[test]
@@ -2521,6 +2542,7 @@ mod tests {
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
                     0xe8..=0xef => Ok(Operation::FsubrSt0St { source: modrm & 7 }),
                     0xf0..=0xf7 => Ok(Operation::FdivSt0St { source: modrm & 7 }),
+                    0xf8..=0xff => Ok(Operation::FdivrSt0St { source: modrm & 7 }),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,

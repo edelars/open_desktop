@@ -1141,3 +1141,13 @@ tag is emptied, TOP wrap, C1 clearing and unchanged unrelated state. An
 inexact `DE F1` case uses `stop_rip: null` and budget one and verifies that
 the full x87 state is unchanged. `DE F8..FF` FDIVP and adjacent DE groups keep
 their existing meanings; native x87 admission stays closed.
+
+
+### S2-30t x87 schema coverage
+
+The schema validator admits all eight bare `D8 F8+i` FDIVR encodings;
+`D8 F9` is `FDIVR ST(0), ST(1)`. Runner cases check every TOP×i
+destination, ordered `15/3 = 5`, exact `+1` alias behavior, C1 clearing and
+preservation of tags/TOP and unrelated raw state. An inexact `D8 F9` case uses
+`stop_rip: null` and budget one and verifies the full state is unchanged.
+`D8 F0..F7` FDIV remains distinct; native x87 admission stays closed.

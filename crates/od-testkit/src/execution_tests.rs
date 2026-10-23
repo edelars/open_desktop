@@ -152,6 +152,27 @@ fn fdiv_st0_sti_runner_checks_every_top_and_source_and_inexact_rejection() {
     assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xd8 });
     assert_eq!(result.instructions_executed, 0);
     assert_eq!(state, before);
+
+    let mut state = LongModeState::default();
+    state.rip = 0x1200;
+    let mut x87 = od_isa::state::X87State::fixture_seed();
+    x87.control_word = 0x037f;
+    x87.status_word = 0;
+    x87.tag_word = 0xfff0;
+    x87.registers[0] = three;
+    x87.registers[1] = fifteen;
+    state.x87 = Some(x87);
+    for (run_config, expected_exit) in [
+        (config(1, Some(state.rip)), RunExit::StopAddress),
+        (config(0, None), RunExit::InstructionBudgetExhausted),
+    ] {
+        let before = state.clone();
+        let mut code = memory(&[0xd8, 0xf9], state.rip);
+        let result = run(&mut state, &mut code, run_config, || false);
+        assert_eq!(result.exit, expected_exit);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
 }
 
 #[test]
@@ -213,6 +234,71 @@ fn fdivrp_runner_checks_every_top_and_index_and_atomic_inexact_rejection() {
     let mut code = memory(&[0xde, 0xf1], state.rip);
     let result = run(&mut state, &mut code, config(1, None), || false);
     assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xde });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn fdivr_runner_checks_every_top_and_index_and_atomic_inexact_rejection() {
+    fn normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
+        let mut bytes = [0; 10];
+        bytes[..8].copy_from_slice(&significand.to_le_bytes());
+        bytes[8..].copy_from_slice(&(exponent | if negative { 0x8000 } else { 0 }).to_le_bytes());
+        bytes
+    }
+    let one = normal(0x8000_0000_0000_0000, 0x3fff, false);
+    let fifteen = normal(0xf000_0000_0000_0000, 0x4002, false);
+    let three = normal(0xc000_0000_0000_0000, 0x4000, false);
+    let five = normal(0xa000_0000_0000_0000, 0x4001, false);
+
+    for top in 0u8..8 {
+        for index in 0u8..8 {
+            let old_top = usize::from(top);
+            let source = usize::from((top + index) & 7);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            let mut x87 = od_isa::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = (u16::from(top) << 11) | (1 << 9);
+            x87.tag_word = u16::MAX;
+            x87.registers[old_top] = if index == 0 { one } else { three };
+            x87.set_tag(top, od_isa::state::X87Tag::Valid);
+            if index != 0 {
+                x87.registers[source] = fifteen;
+                x87.set_tag(source as u8, od_isa::state::X87Tag::Valid);
+            }
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut code = memory(&[0xd8, 0xf8 | index], state.rip);
+            let result = run(&mut state, &mut code, config(1, Some(0x1002)), || false);
+            assert_eq!(result.exit, RunExit::StopAddress, "TOP={top}, i={index}");
+            assert_eq!(result.instructions_executed, 1);
+            let after = state.x87.as_ref().unwrap();
+            assert_eq!(
+                after.registers[old_top],
+                if index == 0 { one } else { five }
+            );
+            assert_eq!(after.top(), top);
+            assert_eq!(after.tag_word, before.x87.as_ref().unwrap().tag_word);
+            assert_eq!(after.status_word & (1 << 9), 0);
+            assert_eq!(after.instruction_pointer, 0x1000);
+            assert_eq!(state.rip, 0x1002);
+        }
+    }
+
+    let mut state = LongModeState::default();
+    state.rip = 0x1100;
+    let mut x87 = od_isa::state::X87State::fixture_seed();
+    x87.control_word = 0x037f;
+    x87.status_word = 0;
+    x87.tag_word = 0xfff0;
+    x87.registers[0] = three;
+    x87.registers[1] = one;
+    state.x87 = Some(x87);
+    let before = state.clone();
+    let mut code = memory(&[0xd8, 0xf9], state.rip);
+    let result = run(&mut state, &mut code, config(1, None), || false);
+    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xd8 });
     assert_eq!(result.instructions_executed, 0);
     assert_eq!(state, before);
 }

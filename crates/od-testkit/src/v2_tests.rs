@@ -82,6 +82,46 @@ fn x87_fixture() -> LoadedFixture {
 }
 
 #[test]
+fn x87_schema_admits_fdivr_forms_and_inexact_no_stop_case() {
+    let mut fixture = x87_fixture().fixture;
+    fixture.case_id = "local_fdivr_exact".into();
+    fixture.instruction_budget = 1;
+    fixture.stop_rip = Some(HexU64(0x1002));
+    fixture.expected_exit = ExpectedExit::StopAddress;
+    {
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = 2;
+        code.comparison_mask_hex = "ffff".into();
+    }
+    for index in 0xF8u8..=0xFF {
+        fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap()
+            .initial_bytes_hex = format!("d8{index:02x}");
+        fixture.validate().unwrap();
+    }
+
+    fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap()
+        .initial_bytes_hex = "d8f9".into();
+    fixture.stop_rip = None;
+    fixture.expected_exit = ExpectedExit::Unsupported;
+    fixture.validate().unwrap();
+    fixture.stop_rip = Some(HexU64(0x1002));
+    fixture.expected_exit = ExpectedExit::Unsupported;
+    assert!(fixture.validate().is_err());
+}
+
+#[test]
 fn conversion_is_explicit_and_has_its_own_digest() {
     let raw = include_bytes!("../../../tests/fixtures/x86/s0_09_mov_imm64.case.json");
     let old = crate::case::Fixture::from_json(raw).unwrap();
@@ -515,7 +555,6 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         ("66dbe2", 3, 0x1003),
         ("f3dbe2", 3, 0x1003),
         ("d8e8", 2, 0x1002),
-        ("d8f8", 2, 0x1002),
         ("d8d0", 2, 0x1002),
         ("d8b1", 2, 0x1002),
         ("d800", 2, 0x1002),

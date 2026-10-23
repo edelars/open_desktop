@@ -199,6 +199,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30q | Bare `D8 F0+i` FDIV ST(0), ST(i), exact canonical Normal quotient only; native closed | S2-30p, S2-29 |
 | [x] | S2-30r | Bare `DE F8+i` FDIVP ST(i), ST(0), exact canonical Normal quotient then physical TOP pop; native closed | S2-30q |
 | [x] | S2-30s | Bare `DE F0+i` FDIVRP ST(i), ST(0), exact `ST(0)/ST(i)` into old ST(i), then physical TOP pop; native closed | S2-30r |
+| [x] | S2-30t | Bare `D8 F8+i` FDIVR ST(0), ST(i), exact `ST(i)/ST(0)` into old TOP without pop; native closed | S2-30s |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1766,6 +1767,27 @@ preserve adjacent groups. Fixture schema and runner cover all eight forms and
 atomic inexact `DE F1` rejection with no stop RIP and budget one. Native
 admission remains closed. Normative source: Intel SDM revision 093, Vol.2A
 pp.3-336–3-338, “FDIVR/FDIVRP/FIDIVR—Reverse Divide.”
+
+#### S2-30t. Bare exact-only FDIVR ST(0), ST(i) (bounded local slice)
+
+Accept exactly bare `D8 F8+i`, `i=0..7`, as `FDIVR ST(0), ST(i)`; `D8 F9`
+encodes `FDIVR ST(0), ST(1)`. Require existing x87 state, FCW
+`0x037f`, `FSW & 0x80ff == 0`, Valid tags for used physical registers,
+canonical Normal binary80 operands and an exactly divisible normalized
+significand quotient. Compute old `ST(i)/ST(0)` with the shared ordered exact
+divide gate. Require a canonical Normal precision-64 result; reject zero,
+specials, noncanonical raw inputs, nonzero quotient remainder, overflow and
+subnormal/zero output before mutation. Exponents may differ. `i=0` reads one
+Valid tag and computes self-division as exact `+1`, writing old physical TOP
+without a pop or tag/TOP changes. `D8 F0..F7` FDIV remains distinct; DC/DE
+reverse divide forms and memory/integer forms remain outside this slice.
+
+Exact success clears C1, sets FIP to starting RIP, advances RIP by two and
+retires once. Enumerate every D8 ModR/M byte, prefixes, REX, WAIT and
+truncation; preserve adjacent groups. Fixture schema and runner cover all
+eight forms and atomic inexact `D8 F9` rejection with no stop RIP and budget
+one. Native admission remains closed. Normative source: Intel SDM revision
+093, Vol.2A pp.3-336–3-338, “FDIVR/FDIVRP/FIDIVR—Reverse Divide.”
 
 ### S2-31. x87 conversions, rounding и exceptions
 
