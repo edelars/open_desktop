@@ -447,6 +447,10 @@ pub enum Operation {
     FmulSt0St {
         source: u8,
     },
+    /// Bare `D8 F0+i` FDIV ST(0), ST(i), exact finite local profile only.
+    FdivSt0St {
+        source: u8,
+    },
     /// Bare `D8 C0+i` FADD ST(0), ST(i), exact finite local profile only.
     FaddSt0St {
         source: u8,
@@ -999,6 +1003,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xc8..=0xcf => Operation::FmulSt0St { source: modrm & 7 },
                     0xe0..=0xe7 => Operation::FsubSt0St { source: modrm & 7 },
                     0xe8..=0xef => Operation::FsubrSt0St { source: modrm & 7 },
+                    0xf0..=0xf7 => Operation::FdivSt0St { source: modrm & 7 },
                     _ => return Err(self.unsupported(opcode)),
                 }
             }
@@ -2227,6 +2232,7 @@ mod tests {
                     0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
                     0xe8..=0xef => Ok(Operation::FsubrSt0St { source: modrm & 7 }),
+                    0xf0..=0xf7 => Ok(Operation::FdivSt0St { source: modrm & 7 }),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
@@ -2379,6 +2385,7 @@ mod tests {
                     0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
                     0xe8..=0xef => Ok(Operation::FsubrSt0St { source: modrm & 7 }),
+                    0xf0..=0xf7 => Ok(Operation::FdivSt0St { source: modrm & 7 }),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
@@ -2425,6 +2432,61 @@ mod tests {
     }
 
     #[test]
+    fn fdiv_st0_sti_accepts_only_bare_d8_f0_through_f7() {
+        for source in 0u8..=7 {
+            let mut memory = Memory::new(&[0xd8, 0xf0 | source]);
+            let instruction = memory.decode().unwrap();
+            assert_eq!(instruction.operation, Operation::FdivSt0St { source });
+            assert_eq!(instruction.length, 2);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+            assert_eq!(memory.fetched, [0xfff, 0x1000]);
+            for prefix in [
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            ]
+            .into_iter()
+            .chain(0x40..=0x4f)
+            {
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xd8, 0xf0 | source]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
+        }
+        for modrm in 0u8..=u8::MAX {
+            let decoded = Memory::new(&[0xd8, modrm]).decode();
+            assert_eq!(
+                decoded.map(|instruction| instruction.operation),
+                match modrm {
+                    0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
+                    0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
+                    0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
+                    0xe8..=0xef => Ok(Operation::FsubrSt0St { source: modrm & 7 }),
+                    0xf0..=0xf7 => Ok(Operation::FdivSt0St { source: modrm & 7 }),
+                    _ => Err(DecodeError::Unsupported {
+                        opcode: Opcode {
+                            map: OpcodeMap::Primary,
+                            byte: 0xd8,
+                        },
+                        length: 2,
+                    }),
+                },
+                "D8 {modrm:02x}"
+            );
+        }
+        assert!(matches!(
+            Memory::new(&[0xd8]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                address: 0x1000,
+                access: AccessKind::Fetch,
+            }))
+        ));
+        assert!(matches!(
+            Memory::new(&[0x9b, 0xd8, 0xf1]).decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
     fn fsubr_st0_sti_accepts_only_bare_d8_e8_through_ef() {
         for source in 0u8..=7 {
             let mut memory = Memory::new(&[0xd8, 0xe8 | source]);
@@ -2444,6 +2506,7 @@ mod tests {
                     0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
                     0xe8..=0xef => Ok(Operation::FsubrSt0St { source: modrm & 7 }),
+                    0xf0..=0xf7 => Ok(Operation::FdivSt0St { source: modrm & 7 }),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,

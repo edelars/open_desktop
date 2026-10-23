@@ -1565,6 +1565,34 @@ pp.3-360–3-362 ([official PDF, Vol.2A p.3-360](https://cdrdv2-public.intel.com
 results clear C1, and C0/C2/C3 are undefined. General rounding, special values,
 exception delivery, CR0/#NM and native x87 behavior are not implemented.
 
+## Local S2-30q: exact-only `FDIV ST(0), ST(i)` (`D8 F0+i`)
+
+The interpreter accepts exactly bare `D8 F0` through `D8 F7` with an existing
+`Some(X87State)`. Require FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags for the
+used physical operands and canonical Normal binary80 encodings. Normalize the
+two significands and use integer division; the raw quotient remainder must be
+zero before packing. The quotient is packed at precision 64 and must classify
+as canonical Normal. This permits unequal exponents and both quotient
+normalization branches, while rejecting zero operands, specials, noncanonical
+raw inputs, inexact quotients, overflow and subnormal/zero results before
+commit. For `i=0`, read one Valid tag and return exact `+1` for either operand
+sign. No rounded-division helper is used as an exactness test.
+
+Success replaces only old physical TOP's payload, clears C1, records starting
+RIP as FIP, advances RIP by two and retires once. TOP, tags and all other x87
+fields, registers, GPRs and RFLAGS stay unchanged. Decoder coverage enumerates
+all D8 ModR/M values and rejects prefixes, WAIT and truncation; adjacent D8
+groups retain their prior meanings. The fixture schema and runner cover all
+eight encodings and an inexact Unsupported case. Native admission remains
+closed. Other FDIV directions, DC/DE forms, and memory/integer forms remain
+unsupported.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FDIV/FIDIV—Divide,”
+pp.3-333–3-335 ([official PDF, Vol.2A p.3-333](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451)).
+`D8 F0+i` divides old `ST(0)` by old `ST(i)` without popping; successful exact
+results clear C1, while C0/C2/C3 are undefined. General rounding, architectural
+exceptions, special values, CR0/#NM and native x87 behavior are not modeled.
+
 ## Local S2-29a: raw binary80 representation and classification
 
 `od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory

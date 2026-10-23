@@ -196,6 +196,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30n | Bare `D8 C8+i` FMUL ST(0), ST(i), exact binary80 result only, no pop; native closed | S2-30m, S2-29 |
 | [x] | S2-30o | Bare `DC C8+i` FMUL ST(i), ST(0), exact binary80 result only, no pop; native closed | S2-30n |
 | [x] | S2-30p | Bare `DE C8+i` FMULP ST(i), ST(0), exact binary80 result then physical TOP pop; native closed | S2-30o |
+| [x] | S2-30q | Bare `D8 F0+i` FDIV ST(0), ST(i), exact canonical Normal quotient only; native closed | S2-30p, S2-29 |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1701,6 +1702,25 @@ with no stop RIP and budget one. Native x87 admission stays closed. Normative
 source: Intel SDM revision 093, Vol.2A pp.3-360–3-362, “FMUL/FIMUL—Multiply”;
 DE C8+i computes old `ST(i)*ST(0)` before the pop, exact results clear C1 and
 C0/C2/C3 are undefined.
+
+#### S2-30q. Bare exact-only FDIV ST(0), ST(i) (bounded local slice)
+
+Accept exactly bare `D8 F0+i`, `i=0..7`, as `FDIV ST(0), ST(i)`. Require
+existing x87 state, FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags for the used
+physical operands, canonical Normal binary80 inputs and an exactly divisible
+normalized significand quotient. Require a canonical Normal precision-64
+result; reject zero, specials, noncanonical raw inputs, nonzero quotient
+remainder, overflow and subnormal/zero output before mutation. Exponents may
+differ. `i=0` reads one Valid operand and yields exact `+1`, including for a
+negative operand. Other D8 division directions, DC/DE register forms and
+memory/integer forms remain unsupported.
+
+Success writes only old physical TOP, clears C1, sets FIP to starting RIP,
+advances RIP by two and retires once; preserve tags, TOP and every other field.
+Enumerate all D8 ModR/M bytes, prefixes, WAIT and truncation; preserve adjacent
+D8 groups. Fixture schema and runner cover the eight forms and atomic inexact
+rejection. Native admission remains closed. Normative source: Intel SDM
+revision 093, Vol.2A pp.3-333–3-335, “FDIV/FIDIV—Divide.”
 
 ### S2-31. x87 conversions, rounding и exceptions
 

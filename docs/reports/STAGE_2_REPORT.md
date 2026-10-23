@@ -3357,6 +3357,50 @@ prefix, missing-state and alias-wording corrections. No Mac mini, SSH, hardware
 execution or commit was performed; physical acceptance remains reserved for
 the shared final acceptance stage.
 
+## S2-30q — exact-only FDIV ST(0), ST(i) (bounded local slice)
+
+Added bare `D8 F0+i`, `i=0..7`, as exact-only `FDIV ST(0), ST(i)`. The
+pre-commit gate requires an existing x87 state, FCW `0x037f`, `FSW & 0x80ff ==
+0`, Valid tags for the used physical registers, canonical Normal inputs and
+zero remainder from `divide_finite_significands`. It packs the normalized
+quotient at precision 64 and accepts only canonical Normal output. The gate
+rejects zero operands, specials, noncanonical raw values, inexact quotients,
+overflow and subnormal/zero results before changing state. It permits unequal
+exponents and the quotient path where the lhs significand is smaller. `i=0`
+reads a single Valid physical TOP operand and produces exact `+1`, including
+for negative inputs.
+
+Success changes only the old physical TOP payload, clears C1, records starting
+RIP as FIP, advances RIP by two and retires once. TOP, tags and the rest of
+machine/x87 state are preserved. Literal checks cover all 64 TOP×i placements,
+`15/3 = 5`, `1/3` rejection, all signs, `lhs_significand < rhs_significand`,
+full-width significand divided by one, minimum/maximum Normal self-division to
+`+1`, exact overflow (`2^16383 / 0.5`), and exact subnormal (`2^-16382 / 2`).
+Full-state equality is checked for every numeric/environment/tag/class reject
+and for absent x87 state. Fetch fault, stop address and zero budget do not
+commit. Decoder coverage enumerates every D8 ModR/M byte and prefixes, WAIT
+and truncation while retaining neighbor groups. Fixture schema and runner
+cover all eight encodings, the TOP×i matrix and inexact Unsupported behavior.
+Native x87 admission remains closed.
+
+Normative source: Intel SDM revision 093, Vol.2A pp.3-333–3-335,
+“FDIV/FIDIV—Divide” ([official PDF, Vol.2A p.3-333](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451)).
+It specifies the old `ST(0)/ST(i)` quotient without a pop, C1 clearing for an
+exact result, and undefined C0/C2/C3. General rounding, exceptions, special
+values, CR0/#NM and native x87 behavior remain outside this profile.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+and `git diff --check`. `python3 tools/check_layout.py` reports only the
+pre-existing unmapped `.serena/` directory, left untouched. Linux native deny
+tests were compile-only on this arm64 macOS host. `graphify update .` completed.
+No physical hardware, SSH or commit was used; final acceptance remains reserved
+for the shared acceptance stage.
+Independent gpt-6.1-sol medium review found two test-isolation/schema-fixture
+gaps; both were corrected and the affected tests reran successfully. Re-review
+found no remaining findings.
+
 ## S2-30p — exact-only FMULP ST(i), ST(0) (bounded local slice)
 
 Added bare `DE C8+i`, `i=0..7`, as exact-only `FMULP ST(i), ST(0)`. Execution

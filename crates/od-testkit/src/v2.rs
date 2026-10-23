@@ -724,6 +724,12 @@ impl Fixture {
                     (code_bytes.as_str(), 2)
                 }
                 _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("d8f")
+                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
+                _ if code_bytes.len() == 4
                     && code_bytes.starts_with("dcc")
                     && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
                 {
@@ -779,12 +785,16 @@ impl Fixture {
                 || code_bytes == "dee0"
                 || code_bytes == "dee8";
             let is_fmulp_i0_unsupported = code_bytes == "dec8" && self.stop_rip.is_none();
+            let is_fdiv_inexact_unsupported = code_bytes == "d8f1" && self.stop_rip.is_none();
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length
                 || !code.permissions.execute
                 || !code.initial_bytes_hex.eq_ignore_ascii_case(expected_bytes)
                 || self.instruction_budget != 1
-                || if is_fsub_alias_unsupported || is_fmulp_i0_unsupported {
+                || if is_fsub_alias_unsupported
+                    || is_fmulp_i0_unsupported
+                    || is_fdiv_inexact_unsupported
+                {
                     self.stop_rip.is_some() || self.expected_exit != ExpectedExit::Unsupported
                 } else {
                     self.stop_rip.map(HexU64::get)

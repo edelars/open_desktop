@@ -1112,3 +1112,12 @@ of other raw state. An inexact `DE C8` fixture is Unsupported with
 `stop_rip: null` and budget one. `DE C9` is the supported no-operand
 `FMULP ST(1), ST(0)` form. FADDP DE C0..C7, FSUBRP E0..E7 and FSUBP E8..EF
 remain distinct; native x87 admission stays closed.
+
+### S2-30q x87 schema coverage
+
+The schema validator admits all eight bare `D8 F0+i` FDIV encodings. The
+runner checks each TOP×i placement, exact `+1` alias behavior, C1 clearing,
+tag/TOP preservation and atomic rejection of an inexact quotient. `D8 F1`
+with no stop RIP represents the inexact Unsupported case. Other D8 division
+directions, DC/DE forms and memory/integer forms remain unsupported; native
+x87 admission stays closed.
