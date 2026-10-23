@@ -443,8 +443,10 @@ pub enum Operation {
     Fnclex,
     /// Bare `DF E0` FNSTSW AX in the local profile with an existing x87 state.
     FnstswAx,
-    /// Bare `D8 C1` FADD ST(0), ST(1), exact finite local profile only.
-    FaddSt0St1,
+    /// Bare `D8 C0+i` FADD ST(0), ST(i), exact finite local profile only.
+    FaddSt0St {
+        source: u8,
+    },
     Nop,
     /// Long-mode 16- or 64-bit PUSH/POP of an opcode-encoded GPR.
     StackRegister {
@@ -944,10 +946,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Primary, 0xd8) => {
-                if prefixes != Prefixes::default() || self.byte()? != 0xc1 {
+                if prefixes != Prefixes::default() {
                     return Err(self.unsupported(opcode));
                 }
-                Operation::FaddSt0St1
+                let modrm = self.byte()?;
+                if !(0xc0..=0xc7).contains(&modrm) {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::FaddSt0St { source: modrm & 7 }
             }
             (OpcodeMap::Primary, 0xdf) => {
                 if prefixes != Prefixes::default() || self.byte()? != 0xe0 {
@@ -2113,20 +2119,22 @@ mod tests {
     }
 
     #[test]
-    fn fadd_st0_st1_accepts_only_bare_d8_c1() {
-        let mut memory = Memory::new(&[0xd8, 0xc1]);
-        let instruction = memory.decode().unwrap();
-        assert_eq!(instruction.operation, Operation::FaddSt0St1);
-        assert_eq!(instruction.length, 2);
-        assert_eq!(instruction.prefixes, Prefixes::default());
-        assert_eq!(memory.fetched, [0xfff, 0x1000]);
+    fn fadd_st0_sti_accepts_only_bare_d8_c0_through_c7() {
+        for source in 0u8..=7 {
+            let mut memory = Memory::new(&[0xd8, 0xc0 | source]);
+            let instruction = memory.decode().unwrap();
+            assert_eq!(instruction.operation, Operation::FaddSt0St { source });
+            assert_eq!(instruction.length, 2);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+            assert_eq!(memory.fetched, [0xfff, 0x1000]);
+        }
 
         for modrm in 0u8..=u8::MAX {
             let decoded = Memory::new(&[0xd8, modrm]).decode();
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
-                if modrm == 0xc1 {
-                    Ok(Operation::FaddSt0St1)
+                if (0xc0..=0xc7).contains(&modrm) {
+                    Ok(Operation::FaddSt0St { source: modrm & 7 })
                 } else {
                     Err(DecodeError::Unsupported {
                         opcode: Opcode {
@@ -2150,8 +2158,6 @@ mod tests {
             &[0x40, 0xd8, 0xc1][..],
             &[0x48, 0xd8, 0xc1][..],
             &[0x9b, 0xd8, 0xc1][..],
-            &[0xd8, 0xc0][..],
-            &[0xd8, 0xc2][..],
         ] {
             assert!(
                 matches!(
@@ -2167,6 +2173,45 @@ mod tests {
                 address: 0x1000,
                 access: AccessKind::Fetch,
             }))
+        ));
+        for source in 0u8..=7 {
+            let instruction = [0xd8, 0xc0 | source];
+            for prefix in [
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            ]
+            .into_iter()
+            .chain(0x40..=0x4f)
+            {
+                assert!(matches!(
+                    Memory::new(&[prefix, instruction[0], instruction[1]]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
+            assert!(matches!(
+                Memory::new(&instruction[..1]).decode(),
+                Err(DecodeError::Memory(MemoryError::Unmapped { .. }))
+            ));
+        }
+        let mut truncated_prefixed = Memory::new(&[0x66, 0xd8]);
+        assert!(matches!(
+            truncated_prefixed.decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
+        assert_eq!(truncated_prefixed.fetched, [0xfff, 0x1000]);
+        for opcode in [0xdc, 0xde] {
+            for modrm in 0u8..=u8::MAX {
+                assert!(
+                    matches!(
+                        Memory::new(&[opcode, modrm]).decode(),
+                        Err(DecodeError::Unsupported { .. })
+                    ),
+                    "{opcode:02x} {modrm:02x}"
+                );
+            }
+        }
+        assert!(matches!(
+            Memory::new(&[0x9b]).decode(),
+            Err(DecodeError::Unsupported { .. })
         ));
     }
 

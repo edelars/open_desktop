@@ -704,20 +704,25 @@ impl Fixture {
             let Some(code) = code else {
                 return Err(invalid("memory.code", "required by this profile"));
             };
-            let (expected_bytes, expected_length) =
-                match code.initial_bytes_hex.to_ascii_lowercase().as_str() {
-                    "90" => ("90", 1),
-                    "dbe3" => ("dbe3", 2),
-                    "dbe2" => ("dbe2", 2),
-                    "dfe0" => ("dfe0", 2),
-                    "d8c1" => ("d8c1", 2),
-                    _ => {
-                        return Err(invalid(
-                            "memory.code",
-                            "x87 state profile admits one NOP or exact bare x87 instruction form",
-                        ));
-                    }
-                };
+            let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let (expected_bytes, expected_length) = match code_bytes.as_str() {
+                "90" => ("90", 1),
+                "dbe3" => ("dbe3", 2),
+                "dbe2" => ("dbe2", 2),
+                "dfe0" => ("dfe0", 2),
+                _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("d8c")
+                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
+                _ => {
+                    return Err(invalid(
+                        "memory.code",
+                        "x87 state profile admits one NOP or exact bare x87 instruction form",
+                    ));
+                }
+            };
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length
                 || !code.permissions.execute

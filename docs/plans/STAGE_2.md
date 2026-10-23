@@ -185,6 +185,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
 | [x] | S2-30c | Bare `DB E2` FNCLEX with existing x87 state; clear FSW[0:7] and FSW[15], preserve C0–C3 by local policy, native closed | S2-28a |
 | [x] | S2-30d | Bare `D8 C1` FADD ST(0), ST(1), exact same-exponent canonical normal results only; native closed | S2-29q, S2-28a |
+| [x] | S2-30e | Bare `D8 C0+i` FADD ST(0), ST(i), i=0..7; same exact-only domain, native closed | S2-30d |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1447,6 +1448,26 @@ capability, general special values, or exception semantics. Tests use literal
 binary80 vectors for exact carry and 1+1, inexact 65-bit sums, cancellation,
 overflow and minimum-normal cancellation, plus TOP wrap, decode neighbors,
 prefixes, truncation, full-state rejection and native fail-closed admission.
+
+#### S2-30e. Extend exact-only FADD to every register source (bounded local slice)
+
+Accept only bare `D8 C0+i`, `i=0..7`, as `FADD ST(0), ST(i)`. Keep every
+S2-30d arithmetic and environment restriction unchanged: `Some(X87State)`, FCW
+`0x037f`, clean FSW mask `0x80ff`, Valid tags for used operands, canonical
+Normal payloads, equal normalized exponents, exact coefficient gate and Normal
+output. The destination remains physical TOP and source is `(TOP+i)&7`. For
+`i=0`, read TOP once as both operands and require no other tag. Read both
+operands before mutation and commit the destination payload exactly once.
+
+Success preserves S2-30d update behavior: clear C1, set FIP to RIP, retain
+TOP/tags/GPRs/RFLAGS/FCW/other payloads and fields; C0/C2/C3 and FDP follow
+the existing local deterministic policy, and FOP remains unchanged. Reject
+unsupported forms and inputs without commit. Prefixes, other D8 ModR/M values,
+memory/DC/DE/WAIT remain unsupported; native x87 admission stays closed.
+Independent literal vectors cover every i and varied TOP values, including
+`i=0` with empty unrelated tags, plus wrap coverage for `i=1, TOP=7` and `i=7, TOP=7`. Schema, runner and
+native rejection checks cover all eight encodings. This extends only source
+indexing, not the arithmetic domain or architectural x87 claims.
 
 ### S2-31. x87 conversions, rounding и exceptions
 

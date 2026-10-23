@@ -2919,6 +2919,47 @@ unmapped root `.serena/` directory, which remains untouched. Physical
 acceptance remains deferred to the shared final acceptance substage. S2-29,
 S2-28 and general x87 semantics remain open under ISSUE-019.
 
+## S2-30e — exact-only FADD ST(0), ST(i) register sources (bounded local slice)
+
+Extended the exact-only FADD decoder from bare `D8 C1` to bare `D8 C0`–`D8
+C7`. The decoded operation retains `i`; execution uses physical TOP as the
+destination and `(TOP+i)&7` as the source. The S2-30d arithmetic domain and
+environment checks remain unchanged. Both operands are loaded before the
+pre-commit result validation. For `i=0`, TOP is used as both operands and the
+result is committed exactly once. The tag check covers only the operands used,
+so the alias case accepts empty tags in unrelated physical registers. At `i=7, TOP=7`, the source wraps to physical register 6; this is not an alias.
+
+Literal expected-byte success vectors cover all eight indices and varied TOP
+values, including `i=0` with empty unrelated tags and wrap cases `i=1, TOP=7` and `i=7, TOP=7`. Reject vectors
+compare the full state after bad-tag rejection for each `i`, and retain the
+existing matrix for unsupported FCW/FSW, zero/cancellation, unequal exponents,
+special encodings, inexact coefficients, overflow and non-Normal results.
+Decoder checks enumerate all ModR/M bytes, every prefix for each accepted
+encoding, and truncation. Testkit schema accepts precisely the eight encodings;
+the native runner test checks all eight stay fail-closed. Native admission is
+unchanged.
+
+Success preserves the prior update contract: write only physical TOP, clear
+FSW.C1, set FIP to the instruction RIP, advance RIP by two, and preserve TOP,
+tags, GPRs, RFLAGS, FCW, remaining FSW fields, other payloads, FDP and FOP. The
+retention of undefined C0/C2/C3 and FDP remains local deterministic policy.
+Normative sources remain Intel SDM revision 093, Vol.2A pp.3-311–3-313 and
+Vol.1 §§8.1.5.2–8.1.9.1 ([Vol.2A](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[Vol.1](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
+Validation passed: focused `od-isa` decoder/executor FADD tests, the testkit
+x87 schema test, and the fixture-runner test for all eight source indices plus
+bad-tag no-commit. `cargo test --workspace --offline`, `cargo fmt --all --
+--check`, `cargo check --workspace --all-targets --offline`, the Linux-target
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`, and `git diff --check` passed. Linux-only native rejection tests
+were compiled for their target but not executed on this macOS host. Graphify
+update completed with the existing `include/open_desktop/host_abi.h` parser
+warning (tracked by ISSUE-010). `python3 tools/check_layout.py` reports the
+pre-existing unmapped root `.serena/` directory, left untouched. Physical
+acceptance remains deferred to the shared final acceptance substage; no Mac
+mini or SSH check was run.
+
 ## S2-29q — compose same-exponent finite addition with one-round binary80 packing (partial)
 
 Added `add_finite_same_exponent_to_binary80(lhs, rhs, mode)`. It composes the

@@ -1172,6 +1172,32 @@ tags and FIP/FDP/FOP ([official Vol.2A PDF](https://cdrdv2-public.intel.com/9293
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 The local profile is narrower than the architectural instruction.
 
+## Local S2-30e: exact-only `FADD ST(0), ST(i)` (`D8 C0+i`)
+
+The local long-mode interpreter accepts exactly the bare encodings `D8 C0`
+through `D8 C7`, mapping the low ModR/M bits to source index `i`. It retains
+every S2-30d precondition and result restriction: existing x87 state, FCW
+`0x037f`, clear FSW `0x80ff` mask, Valid tags for used operands, canonical
+Normal payloads, equal normalized exponents, exact coefficient representability
+and canonical Normal output. Destination is physical TOP; source is
+`(TOP+i)&7`.
+
+When `i=0`, physical TOP is read once and used for both operands. No tag outside
+the operands used by the instruction is required. Both raw inputs and the
+validated result are obtained before mutation; success writes the destination
+payload once. It clears FSW.C1, sets FIP to starting RIP and advances RIP by
+two. TOP, tags, all non-destination payloads, FCW, remaining FSW fields, FDP,
+FOP, GPRs and RFLAGS are retained. Preserving architecturally undefined C0/C2/C3
+and FDP is the same local deterministic policy as S2-30d; FOP is unchanged on
+the exact no-exception path. Unsupported input or encoding returns Unsupported
+without state commit.
+
+Prefixes, D8 ModR/M values outside C0–C7, memory forms, DC/DE and WAIT remain
+unsupported. Native x87 execution and admission remain closed. Literal vectors
+cover every source index at varied TOP values, including the `i=0` alias with
+empty unrelated tags, and wrap cases `i=1, TOP=7` and `i=7, TOP=7`. This only generalizes source
+selection; the equal-exponent exact-only arithmetic domain is unchanged.
+
 ## Local S2-29a: raw binary80 representation and classification
 
 `od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory

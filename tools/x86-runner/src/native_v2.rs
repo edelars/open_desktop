@@ -555,7 +555,7 @@ fn admission_with_tracee_memory(
         .map_err(|e| format!("native instruction outside admitted decode slice: {e:?}"))?;
     if matches!(
         instruction.operation,
-        Operation::Fninit | Operation::Fnclex | Operation::FnstswAx | Operation::FaddSt0St1
+        Operation::Fninit | Operation::Fnclex | Operation::FnstswAx | Operation::FaddSt0St { .. }
     ) {
         return Err("x87 instruction is not admitted by the native backend".into());
     }
@@ -3637,7 +3637,19 @@ mod tests {
 
     #[test]
     fn x87_instructions_are_rejected_by_native_profile_and_instruction_admission() {
-        for code in [[0xdb, 0xe3], [0xdb, 0xe2], [0xdf, 0xe0], [0xd8, 0xc1]] {
+        for code in [
+            [0xdb, 0xe3],
+            [0xdb, 0xe2],
+            [0xdf, 0xe0],
+            [0xd8, 0xc0],
+            [0xd8, 0xc1],
+            [0xd8, 0xc2],
+            [0xd8, 0xc3],
+            [0xd8, 0xc4],
+            [0xd8, 0xc5],
+            [0xd8, 0xc6],
+            [0xd8, 0xc7],
+        ] {
             let mut input = fixture(&code).fixture;
             input.profile = v2::Profile::LongX87StateV1;
             input.initial_state.x87 = Some(v2::X87Snapshot::from(

@@ -1111,4 +1111,113 @@ mod tests {
             Observation::Available { value: HexU64(1) }
         );
     }
+
+    #[test]
+    fn x87_fadd_fixture_runner_executes_all_register_sources_and_rejects_bad_tag() {
+        fn normal(significand: u64, exponent: u16) -> [u8; 10] {
+            let mut bytes = [0; 10];
+            bytes[..8].copy_from_slice(&significand.to_le_bytes());
+            bytes[8..].copy_from_slice(&exponent.to_le_bytes());
+            bytes
+        }
+
+        for source in 0u8..=7 {
+            let mut input = v2::Fixture::from_json(include_bytes!(
+                "../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json"
+            ))
+            .unwrap()
+            .fixture;
+            input.case_id = format!("local_fadd_st0_st{source}");
+            input.profile = v2::Profile::LongX87StateV1;
+            input.instruction_budget = 1;
+            input.initial_state.rip = HexU64(0x4000);
+            input.stop_rip = Some(HexU64(0x4002));
+            input.expected_exit = v2::ExpectedExit::StopAddress;
+            let code = input
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "code")
+                .unwrap();
+            code.guest_address = HexU64(0x4000);
+            code.length = 2;
+            code.initial_bytes_hex = format!("d8c{source:x}");
+            code.comparison_mask_hex = "ffff".into();
+
+            let top = if source == 7 || source == 1 {
+                7
+            } else {
+                (source + 2) & 7
+            };
+            let mut x87 = od_isa::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = (u16::from(top) << 11) | 0x0400;
+            x87.tag_word = 0;
+            let one = normal(0x8000_0000_0000_0000, 0x3fff);
+            x87.registers[usize::from(top)] = one;
+            x87.registers[usize::from((top + source) & 7)] = one;
+            input.initial_state.x87 = Some(v2::X87Snapshot::from(&x87));
+
+            let loaded = v2::Fixture::from_json(&input.to_json().unwrap()).unwrap();
+            let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            let result = execute_fixture_v2(&loaded, &mut memory);
+            result.validate_for(&loaded).unwrap();
+            assert!(
+                matches!(result.outcome, v2::Outcome::StopAddress {}),
+                "source {source}, TOP {top}: {:?}",
+                result.outcome
+            );
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(1) }
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("x87 FADD result must be observable");
+            };
+            let observed_x87 = value.state.x87.unwrap();
+            assert_eq!(
+                observed_x87.registers[usize::from(top)],
+                "00000000000000800040"
+            );
+            assert_eq!((observed_x87.status_word.0 >> 11) & 7, u64::from(top));
+            assert_eq!(observed_x87.status_word.0 & (1 << 9), 0);
+            assert_eq!(observed_x87.instruction_pointer, HexU64(0x4000));
+        }
+
+        let mut rejected = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json"
+        ))
+        .unwrap()
+        .fixture;
+        rejected.profile = v2::Profile::LongX87StateV1;
+        rejected.instruction_budget = 1;
+        rejected.initial_state.rip = HexU64(0x4000);
+        rejected.stop_rip = Some(HexU64(0x4002));
+        rejected.expected_exit = v2::ExpectedExit::StopAddress;
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.guest_address = HexU64(0x4000);
+        code.length = 2;
+        code.initial_bytes_hex = "d8c7".into();
+        code.comparison_mask_hex = "ffff".into();
+        let mut x87 = od_isa::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0;
+        x87.tag_word = 0;
+        x87.registers[0] = normal(0x8000_0000_0000_0000, 0x3fff);
+        x87.registers[7] = normal(0x8000_0000_0000_0000, 0x3fff);
+        x87.tag_word |= 3 << (7 * 2);
+        rejected.initial_state.x87 = Some(v2::X87Snapshot::from(&x87));
+        let loaded = v2::Fixture::from_json(&rejected.to_json().unwrap()).unwrap();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        let result = execute_fixture_v2(&loaded, &mut memory);
+        result.validate_for(&loaded).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::Unsupported { .. }));
+        let Observation::Available { value } = result.snapshot else {
+            panic!("rejected x87 state must remain observable");
+        };
+        assert_eq!(value.state.x87.unwrap(), v2::X87Snapshot::from(&x87));
+    }
 }

@@ -184,14 +184,16 @@ fn step_tracked_with_stop(
     }
     if matches!(
         instruction.operation,
-        Operation::Fninit | Operation::Fnclex | Operation::FnstswAx | Operation::FaddSt0St1
+        Operation::Fninit | Operation::Fnclex | Operation::FnstswAx | Operation::FaddSt0St { .. }
     ) && state.x87.is_none()
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
         });
     }
-    if instruction.operation == Operation::FaddSt0St1 && exact_fadd_result(state).is_none() {
+    if let Operation::FaddSt0St { source } = instruction.operation
+        && exact_fadd_result(state, source).is_none()
+    {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
         });
@@ -234,11 +236,12 @@ fn step_tracked_with_stop(
                 && instruction.length == 3
                 && instruction.prefixes == Prefixes::default()
         }
-        Operation::FaddSt0St1 => {
+        Operation::FaddSt0St { source } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0xd8
                 && instruction.length == 2
                 && instruction.prefixes == Prefixes::default()
+                && source <= 7
         }
         Operation::LoadFsSelector => {
             instruction.opcode.map == OpcodeMap::Primary
@@ -466,9 +469,9 @@ fn step_tracked_with_stop(
                 u64::from(status_word),
             );
         }
-        Operation::FaddSt0St1 => {
+        Operation::FaddSt0St { source } => {
             // The complete bounded precondition and result check ran above, before mutation.
-            let result = exact_fadd_result(state).expect("FADD result was prevalidated");
+            let result = exact_fadd_result(state, source).expect("FADD result was prevalidated");
             let x87 = state.x87.as_mut().expect("FADD state was prevalidated");
             let destination = x87
                 .physical_register_for_st(0)
@@ -1284,18 +1287,24 @@ fn operand_width(size: OperandSize) -> u32 {
 
 /// Return the result only for the deliberately exact-only local FADD profile.
 /// The caller can use `None` as an atomic pre-commit rejection.
-fn exact_fadd_result(state: &LongModeState) -> Option<X87Binary80> {
+fn exact_fadd_result(state: &LongModeState, source_index: u8) -> Option<X87Binary80> {
     let x87 = state.x87.as_ref()?;
     if x87.control_word != 0x037f || x87.status_word & 0x80ff != 0 {
         return None;
     }
     let destination = x87.physical_register_for_st(0)?;
-    let source = x87.physical_register_for_st(1)?;
-    if x87.tag(destination)? != X87Tag::Valid || x87.tag(source)? != X87Tag::Valid {
+    let source = x87.physical_register_for_st(source_index)?;
+    if x87.tag(destination)? != X87Tag::Valid
+        || (source != destination && x87.tag(source)? != X87Tag::Valid)
+    {
         return None;
     }
     let lhs_raw = X87Binary80::from_bytes(x87.registers[destination as usize]);
-    let rhs_raw = X87Binary80::from_bytes(x87.registers[source as usize]);
+    let rhs_raw = if source == destination {
+        lhs_raw
+    } else {
+        X87Binary80::from_bytes(x87.registers[source as usize])
+    };
     if lhs_raw.classify() != X87Binary80Class::Normal
         || rhs_raw.classify() != X87Binary80Class::Normal
     {
@@ -8615,36 +8624,92 @@ mod tests {
 
     #[test]
     fn fadd_st0_st1_commits_exact_normal_sum_and_only_defined_state() {
-        for (top, lhs, rhs, expected) in [
+        for (top, source_index, lhs, rhs, expected) in [
             (
                 0,
+                1,
                 binary80_normal(0x8000_0000_0000_0000, 0x3fff, false),
                 binary80_normal(0x8000_0000_0000_0000, 0x3fff, false),
                 binary80_normal(0x8000_0000_0000_0000, 0x4000, false),
             ),
             (
                 0,
+                1,
                 binary80_normal(0x8000_0000_0000_0000, 0x3fff, true),
                 binary80_normal(0x8000_0000_0000_0000, 0x3fff, true),
                 binary80_normal(0x8000_0000_0000_0000, 0x4000, true),
             ),
             (
                 0,
+                1,
                 binary80_normal(0xc000_0000_0000_0000, 0x3fff, false),
                 binary80_normal(0x8000_0000_0000_0000, 0x3fff, true),
                 binary80_normal(0x8000_0000_0000_0000, 0x3ffe, false),
             ),
+            // TOP=7, i=1 wraps the logical source to physical register 0.
             (
                 7,
+                1,
                 binary80_normal(0xc000_0000_0000_0000, 0x3fff, false),
                 binary80_normal(0xc000_0000_0000_0000, 0x3fff, false),
                 binary80_normal(0xc000_0000_0000_0000, 0x4000, false),
             ),
             (
                 0,
+                1,
                 binary80_normal(u64::MAX, 0x3fff, false),
                 binary80_normal(u64::MAX, 0x3fff, false),
                 binary80_normal(u64::MAX, 0x4000, false),
+            ),
+            (
+                3,
+                0,
+                binary80_normal(0xc000_0000_0000_0001, 0x4000, true),
+                binary80_normal(0xc000_0000_0000_0001, 0x4000, true),
+                binary80_normal(0xc000_0000_0000_0001, 0x4001, true),
+            ),
+            // TOP=7, i=7 wraps to physical register 6; only i=0 aliases TOP.
+            (
+                7,
+                7,
+                binary80_normal(u64::MAX, 0x3fff, false),
+                binary80_normal(u64::MAX, 0x3fff, false),
+                binary80_normal(u64::MAX, 0x4000, false),
+            ),
+            (
+                4,
+                2,
+                binary80_normal(0x8000_0000_0000_0000, 0x4001, false),
+                binary80_normal(0x8000_0000_0000_0000, 0x4001, false),
+                binary80_normal(0x8000_0000_0000_0000, 0x4002, false),
+            ),
+            (
+                5,
+                3,
+                binary80_normal(0x8000_0000_0000_0000, 0x3fff, true),
+                binary80_normal(0x8000_0000_0000_0000, 0x3fff, true),
+                binary80_normal(0x8000_0000_0000_0000, 0x4000, true),
+            ),
+            (
+                6,
+                4,
+                binary80_normal(0xc000_0000_0000_0000, 0x3fff, false),
+                binary80_normal(0xc000_0000_0000_0000, 0x3fff, false),
+                binary80_normal(0xc000_0000_0000_0000, 0x4000, false),
+            ),
+            (
+                2,
+                5,
+                binary80_normal(0xa000_0000_0000_0000, 0x4000, false),
+                binary80_normal(0xa000_0000_0000_0000, 0x4000, false),
+                binary80_normal(0xa000_0000_0000_0000, 0x4001, false),
+            ),
+            (
+                1,
+                6,
+                binary80_normal(0xe000_0000_0000_0000, 0x3ffe, true),
+                binary80_normal(0xe000_0000_0000_0000, 0x3ffe, true),
+                binary80_normal(0xe000_0000_0000_0000, 0x3fff, true),
             ),
         ] {
             let mut state = LongModeState::default();
@@ -8654,17 +8719,22 @@ mod tests {
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = 0x037f;
             x87.status_word = (u16::from(top) << 11) | 0x4700 | 0x0200;
-            x87.tag_word = 0;
+            // The alias form needs only its one used physical register to be Valid.
+            x87.tag_word = if source_index == 0 {
+                u16::MAX & !(3 << (top * 2))
+            } else {
+                0
+            };
             x87.instruction_pointer = 0x0123_4567_89ab_cdef;
             x87.data_pointer = 0xfedc_ba98_7654_3210;
             x87.last_opcode = 0x05aa;
             let destination = usize::from(top);
-            let source = usize::from((top + 1) & 7);
+            let source = usize::from((top + source_index) & 7);
             x87.registers[destination] = lhs;
             x87.registers[source] = rhs;
             state.x87 = Some(x87.clone());
             let before = state.clone();
-            let mut memory = Memory::at(&[0xd8, 0xc1], 0x1000);
+            let mut memory = Memory::at(&[0xd8, 0xc0 | source_index], 0x1000);
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Advanced)
@@ -8767,6 +8837,30 @@ mod tests {
                 Ok(StepOutcome::Unsupported { opcode: 0xd8 })
             );
             assert_eq!(state, before);
+        }
+
+        for source_index in 0u8..=7 {
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0;
+            x87.tag_word = 0;
+            x87.registers[0] = normal;
+            x87.registers[usize::from(source_index)] = normal;
+            let top = x87.top();
+            let bad_tag_slot = usize::from((top + source_index) & 7);
+            x87.tag_word |= 3 << (bad_tag_slot * 2);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.gpr = [0x0123_4567_89ab_cdef; 16];
+            state.rflags = 0xa55a_1234_5678_9abc;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd8, 0xc0 | source_index], 0x1000);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xd8 })
+            );
+            assert_eq!(state, before, "source index {source_index}");
         }
     }
 
