@@ -1363,15 +1363,17 @@ mod tests {
 
     #[test]
     fn exact_magnitude_normalization_composes_with_significand_product() {
-        let exponent = 31;
-        let minimum = finite(
-            exponent,
-            0x8000_0000_0000_0000,
-            false,
-            X87Binary80Class::Normal,
-        );
-        let maximum = finite(exponent, u64::MAX, true, X87Binary80Class::PseudoDenormal);
-        let raw_before = (minimum, maximum);
+        let minimum_raw = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]);
+        let maximum_pseudo_raw =
+            X87Binary80::from_bytes([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0x80]);
+        let minimum = minimum_raw.normalize_finite().unwrap();
+        let maximum = maximum_pseudo_raw.normalize_finite().unwrap();
+        let exponent = minimum.exponent();
+        let raw_before = (minimum_raw, maximum_pseudo_raw);
+        let finite_before = (minimum, maximum);
+        assert_eq!(exponent, maximum.exponent());
+        assert_eq!(minimum.source_class(), X87Binary80Class::Normal);
+        assert_eq!(maximum.source_class(), X87Binary80Class::PseudoDenormal);
 
         let minimum_product = multiply_finite_significands(minimum, minimum).unwrap();
         assert_eq!(minimum_product, (false, exponent * 2 + 1, 1_u128 << 126));
@@ -1412,7 +1414,13 @@ mod tests {
             ))
         );
 
-        assert_eq!((minimum, maximum), raw_before);
+        assert_eq!((minimum_raw, maximum_pseudo_raw), raw_before);
+        assert_eq!((minimum, maximum), finite_before);
+        assert_eq!(minimum_raw.to_bytes(), [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]);
+        assert_eq!(
+            maximum_pseudo_raw.to_bytes(),
+            [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0x80]
+        );
         assert_eq!(minimum.source_class(), X87Binary80Class::Normal);
         assert_eq!(maximum.source_class(), X87Binary80Class::PseudoDenormal);
     }
