@@ -1205,6 +1205,29 @@ source-class provenance. This helper defines no division, rounding, GRS,
 binary80 packing, architectural flags/exceptions, guest instruction, or native
 execution behavior. S2-29 and S2-28 remain open.
 
+## Local S2-29i: exact normalized finite quotient and remainder
+
+`od_isa::x87::divide_finite_significands(lhs, rhs)` returns an
+`X87FiniteQuotient` for finite normalized significands. For nonzero operands,
+it represents
+`(-1)^sign * (quotient + remainder / denominator) * 2^(exponent - 63)`.
+With significands `a` and `d`, the helper uses `k = 63` if `a >= d`, else
+`k = 64`, computes `D = (a as u128) << k`, and returns the integer quotient
+and exact remainder of `D / d`. The original denominator is retained,
+`2^63 <= quotient < 2^64`, `remainder < denominator`, and exponent is
+`lhs.exponent - rhs.exponent + (63 - k)` if it fits in `i32`. Result sign is
+the input sign XOR. No source values or provenance are modified.
+
+A zero divisor returns `None`, including 0/0. A zero numerator with a
+nonzero divisor produces canonical unsigned zero fields while retaining the
+denominator; this does not decide architectural signed zero or define guest
+divide-by-zero delivery. Literal vectors cover normalized quotient and
+remainder boundaries, both sign combinations, zero precedence, raw subnormal
+and pseudo-denormal composition, input preservation, and synthetic exponent
+conversion limits. This primitive uses no alignment, jam, GRS, rounding,
+binary80 packing, architectural flags/exceptions, guest instruction, or native
+execution behavior. S2-29 and S2-28 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

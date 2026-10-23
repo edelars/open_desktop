@@ -1160,6 +1160,28 @@ maximum-times-maximum, and minimum-times-maximum. Inputs and provenance remain
 unchanged. Division, rounding, GRS, packing, architectural flags, guest
 instructions, and native execution remain outside this partial slice.
 
+### S2-29i. Exact normalized finite quotient and remainder (partial)
+
+`divide_finite_significands(lhs, rhs)` returns an `X87FiniteQuotient` that
+represents the exact value
+`(-1)^sign * (quotient + remainder / denominator) * 2^(exponent - 63)`.
+For nonzero normalized significands `a` and `d`, it chooses `k = 63` when
+`a >= d`, otherwise `k = 64`, then computes `D = (a as u128) << k`,
+`quotient = D / d`, and `remainder = D % d`. The result keeps the original
+denominator, has `2^63 <= quotient < 2^64` and `remainder < denominator`, and
+uses exponent `(lhs.exponent - rhs.exponent) + (63 - k)` with checked final
+`i32` conversion. The sign is the input sign XOR.
+
+A zero divisor returns `None`, including 0/0; zero numerator with a nonzero
+divisor returns unsigned zero fields and retains the denominator. This does
+not select architectural signed zero or define guest #Z behavior. Literal
+vectors cover equal-exponent quotient/remainder boundaries, both sign
+combinations, denominator retention, zero precedence, source/provenance
+preservation, raw subnormal and pseudo-denormal composition, and synthetic
+`i32` exponent boundaries. The calculation does not use alignment, jam, GRS,
+rounding, packing, architectural flags/exceptions, guest instruction
+execution, or native execution. S2-29 and S2-28 remain open.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.

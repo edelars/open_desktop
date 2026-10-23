@@ -2520,3 +2520,31 @@ remain outside this partial slice.
 directory `.serena/`, which was left untouched. No physical Mac mini check was
 performed or required for this integer helper. S2-29 and the S2-28 umbrella
 remain open under ISSUE-019.
+
+## S2-29i — exact normalized finite quotient and remainder (partial)
+
+Added `X87FiniteQuotient` and `divide_finite_significands(lhs, rhs)`. For
+nonzero normalized finite significands, it scales the numerator by 63 or 64
+bits to produce a quotient in `[2^63, 2^64)`, then retains the exact unsigned
+remainder and original denominator. The returned fields represent
+`(-1)^sign * (quotient + remainder / denominator) * 2^(exponent - 63)`; the
+exponent uses checked final `i32` conversion and the sign is XOR. A zero
+denominator, including 0/0, returns `None`; zero numerator returns unsigned
+zero fields and keeps the denominator. This does not choose architectural
+signed zero or define guest #Z behavior.
+
+Literal vectors cover the eight normalized quotient/remainder cases, sign
+combinations, denominator retention, zero precedence, raw subnormal and
+pseudo-denormal composition, source/input preservation, and synthetic
+exponent boundaries. The helper consumes no jammed alignment or GRS data and
+does not round, pack, set flags/exceptions, execute guest instructions, or
+claim native behavior.
+
+`cargo test -p od-isa x87 --offline` passed (27 tests), as did
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+`git diff --check`, and `graphify update .`. `python3 tools/check_layout.py`
+stopped on the pre-existing unmapped root `.serena/` directory, which was left
+untouched. Graphify reported its existing `include/open_desktop/host_abi.h`
+parse warning (tracked by ISSUE-010). No physical Mac mini check was performed
+or required for this integer helper. S2-29 and the S2-28 umbrella remain open
+under ISSUE-019.

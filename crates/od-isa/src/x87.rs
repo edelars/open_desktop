@@ -1,9 +1,11 @@
 //! Lossless binary80 fields, raw x87 encoding classification, and finite
 //! integer-only helper representations.
 //!
-//! This module does not execute x87 instructions or perform arithmetic. The
-//! byte array follows memory order, least significant byte first (Intel SDM
-//! revision 093, Vol. 1 §§4.2.2 and 8.2.2, Tables 4-3 and 8-3).
+//! This module does not execute x87 instructions. Its bounded integer helpers
+//! preserve exact intermediate values and do not define rounding, packing, or
+//! architectural exception behavior. The byte array follows memory order,
+//! least significant byte first (Intel SDM revision 093, Vol. 1 §§4.2.2 and
+//! 8.2.2, Tables 4-3 and 8-3).
 
 /// An immutable, lossless 80-bit x87 double-extended encoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,6 +39,42 @@ pub struct X87Finite {
     source_class: X87Binary80Class,
 }
 
+/// Exact quotient decomposition of two nonzero normalized finite significands.
+///
+/// The represented value is `(-1)^sign * (quotient + remainder / denominator)
+/// * 2^(exponent - 63)`. Keeping the original denominator makes the fractional
+/// tail exact; this is not a rounded or packed x87 result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct X87FiniteQuotient {
+    sign: bool,
+    exponent: i32,
+    quotient: u64,
+    remainder: u64,
+    denominator: u64,
+}
+
+impl X87FiniteQuotient {
+    pub const fn sign(self) -> bool {
+        self.sign
+    }
+
+    pub const fn exponent(self) -> i32 {
+        self.exponent
+    }
+
+    pub const fn quotient(self) -> u64 {
+        self.quotient
+    }
+
+    pub const fn remainder(self) -> u64 {
+        self.remainder
+    }
+
+    pub const fn denominator(self) -> u64 {
+        self.denominator
+    }
+}
+
 impl X87Finite {
     pub const fn sign(self) -> bool {
         self.sign
@@ -60,6 +98,52 @@ impl X87Finite {
             _ => false,
         }
     }
+}
+
+/// Divide finite significands exactly, retaining the quotient's fractional tail.
+///
+/// For nonzero inputs, the result satisfies
+/// `lhs / rhs = (-1)^sign * (quotient + remainder / denominator) *
+/// 2^(exponent - 63)`. The quotient is normalized to `[2^63, 2^64)`, and
+/// `remainder < denominator`. Zero numerator with a nonzero denominator
+/// canonicalizes to an unsigned zero decomposition. A zero denominator,
+/// including `0 / 0`, returns `None`; this helper defines no guest exception.
+/// No alignment, jam, GRS, rounding, or packing is performed.
+pub fn divide_finite_significands(lhs: X87Finite, rhs: X87Finite) -> Option<X87FiniteQuotient> {
+    if rhs.is_zero() {
+        return None;
+    }
+
+    let denominator = rhs.significand;
+    if lhs.is_zero() {
+        return Some(X87FiniteQuotient {
+            sign: false,
+            exponent: 0,
+            quotient: 0,
+            remainder: 0,
+            denominator,
+        });
+    }
+
+    let lhs_significand = lhs.significand;
+    let (shift, exponent_adjustment) = if lhs_significand >= denominator {
+        (63, 0)
+    } else {
+        (64, -1)
+    };
+    let dividend = (lhs_significand as u128) << shift;
+    let quotient = (dividend / denominator as u128) as u64;
+    let remainder = (dividend % denominator as u128) as u64;
+    let exponent = i64::from(lhs.exponent) - i64::from(rhs.exponent) + exponent_adjustment;
+    let exponent = i32::try_from(exponent).ok()?;
+
+    Some(X87FiniteQuotient {
+        sign: lhs.sign ^ rhs.sign,
+        exponent,
+        quotient,
+        remainder,
+        denominator,
+    })
 }
 
 /// Add two finite values exactly when their nonzero exponents match.
@@ -356,8 +440,9 @@ impl X87Binary80 {
 mod tests {
     use super::{
         X87Binary80, X87Binary80Class, X87Finite, X87Grs, add_finite_same_exponent,
-        align_finite_pair, multiply_finite_significands, normalize_exact_coefficient,
-        normalize_exact_magnitude, shift_right_jam, shift_right_jam_u128,
+        align_finite_pair, divide_finite_significands, multiply_finite_significands,
+        normalize_exact_coefficient, normalize_exact_magnitude, shift_right_jam,
+        shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -714,6 +799,184 @@ mod tests {
             significand,
             source_class,
         }
+    }
+
+    #[test]
+    fn exact_finite_quotient_matches_literal_normalized_vectors() {
+        let cases = [
+            (
+                0x8000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+                0,
+                0,
+            ),
+            (
+                0xc000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+                0xc000_0000_0000_0000,
+                0,
+                0,
+            ),
+            (
+                0x8000_0000_0000_0000,
+                0xc000_0000_0000_0000,
+                0xaaaa_aaaa_aaaa_aaaa,
+                0x8000_0000_0000_0000,
+                -1,
+            ),
+            (
+                0x8000_0000_0000_0000,
+                0xffff_ffff_ffff_ffff,
+                0x8000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+                -1,
+            ),
+            (
+                0xffff_ffff_ffff_ffff,
+                0x8000_0000_0000_0000,
+                0xffff_ffff_ffff_ffff,
+                0,
+                0,
+            ),
+            (
+                0xffff_ffff_ffff_ffff,
+                0xc000_0000_0000_0000,
+                0xaaaa_aaaa_aaaa_aaaa,
+                0,
+                0,
+            ),
+            (
+                0xffff_ffff_ffff_ffff,
+                0x8000_0000_0000_0001,
+                0xffff_ffff_ffff_fffd,
+                3,
+                0,
+            ),
+            (
+                0x8000_0000_0000_0001,
+                0x8000_0000_0000_0002,
+                0xffff_ffff_ffff_fffe,
+                4,
+                -1,
+            ),
+        ];
+
+        for (lhs_sig, rhs_sig, quotient, remainder, exponent) in cases {
+            let lhs = finite(0, lhs_sig, false, X87Binary80Class::Normal);
+            let rhs = finite(0, rhs_sig, false, X87Binary80Class::Normal);
+            let result = divide_finite_significands(lhs, rhs).unwrap();
+            assert_eq!(result.sign(), false);
+            assert_eq!(result.exponent(), exponent);
+            assert_eq!(result.quotient(), quotient);
+            assert_eq!(result.remainder(), remainder);
+            assert_eq!(result.denominator(), rhs_sig);
+            assert!(result.quotient() >= (1_u64 << 63));
+            assert!(result.remainder() < result.denominator());
+            assert_eq!(
+                (lhs_sig as u128) << if lhs_sig >= rhs_sig { 63 } else { 64 },
+                result.quotient() as u128 * rhs_sig as u128 + result.remainder() as u128
+            );
+        }
+    }
+
+    #[test]
+    fn exact_finite_quotient_handles_sign_zero_denominator_and_exponent_boundaries() {
+        let lhs = finite(7, 0xc000_0000_0000_0000, true, X87Binary80Class::Normal);
+        let rhs = finite(2, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let result = divide_finite_significands(lhs, rhs).unwrap();
+        assert!(result.sign());
+        assert_eq!(result.exponent(), 5);
+        assert_eq!(result.quotient(), 0xc000_0000_0000_0000);
+        assert_eq!(result.remainder(), 0);
+        assert_eq!(result.denominator(), rhs.significand());
+        let negative_rhs = finite(2, rhs.significand(), true, X87Binary80Class::Normal);
+        assert!(
+            !divide_finite_significands(lhs, negative_rhs)
+                .unwrap()
+                .sign()
+        );
+
+        for sign in [false, true] {
+            let zero = finite(123, 0, sign, X87Binary80Class::Zero);
+            let result = divide_finite_significands(zero, rhs).unwrap();
+            assert_eq!(
+                (
+                    result.sign(),
+                    result.exponent(),
+                    result.quotient(),
+                    result.remainder()
+                ),
+                (false, 0, 0, 0)
+            );
+            assert_eq!(result.denominator(), rhs.significand());
+        }
+        let zero = finite(0, 0, false, X87Binary80Class::Zero);
+        assert_eq!(divide_finite_significands(lhs, zero), None);
+        assert_eq!(divide_finite_significands(zero, zero), None);
+
+        let min = finite(
+            i32::MIN,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        let max = finite(
+            i32::MAX,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        assert_eq!(divide_finite_significands(min, max), None);
+        assert_eq!(divide_finite_significands(max, min), None);
+        assert_eq!(
+            divide_finite_significands(
+                finite(
+                    i32::MAX,
+                    0x8000_0000_0000_0000,
+                    false,
+                    X87Binary80Class::Normal
+                ),
+                finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal)
+            )
+            .unwrap()
+            .exponent(),
+            i32::MAX
+        );
+        assert_eq!(
+            divide_finite_significands(
+                finite(
+                    i32::MIN + 1,
+                    0x8000_0000_0000_0000,
+                    false,
+                    X87Binary80Class::Normal
+                ),
+                finite(0, 0xffff_ffff_ffff_ffff, false, X87Binary80Class::Normal)
+            )
+            .unwrap()
+            .exponent(),
+            i32::MIN
+        );
+    }
+
+    #[test]
+    fn exact_finite_quotient_composes_with_raw_finite_values_without_mutation() {
+        let raw_subnormal = X87Binary80::from_bytes([1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let raw_pseudo = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x80]);
+        let numerator = raw_subnormal.normalize_finite().unwrap();
+        let denominator = raw_pseudo.normalize_finite().unwrap();
+        let before = (raw_subnormal, raw_pseudo, numerator, denominator);
+        assert_eq!(numerator.source_class(), X87Binary80Class::Subnormal);
+        assert_eq!(denominator.source_class(), X87Binary80Class::PseudoDenormal);
+        let result = divide_finite_significands(numerator, denominator).unwrap();
+        assert_eq!(result.sign(), true);
+        assert_eq!(result.exponent(), -63);
+        assert_eq!(result.quotient(), 1_u64 << 63);
+        assert_eq!(result.remainder(), 0);
+        assert_eq!(result.denominator(), denominator.significand());
+        assert_eq!((raw_subnormal, raw_pseudo, numerator, denominator), before);
+        assert_eq!(raw_subnormal.to_bytes(), [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(raw_pseudo.to_bytes(), [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x80]);
     }
 
     #[test]
