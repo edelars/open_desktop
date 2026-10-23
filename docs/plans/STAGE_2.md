@@ -204,6 +204,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30v | Bare `DC F8+i` FDIV ST(i), ST(0), exact `ST(i)/ST(0)` into physical ST(i) without pop; native closed | S2-30u |
 | [x] | S2-30w | Bare `DD D8+i` FSTP ST(i), canonical Normal source copy then physical TOP pop; native closed | S2-30v |
 | [x] | S2-30x | Bare `DD D0+i` FST ST(i), canonical Normal raw copy without TOP change; native closed | S2-30w |
+| [x] | S2-30y | Bare `D9 E0` FCHS, bounded canonical-Normal ST(0) sign-bit flip; native closed | S2-30x |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1903,6 +1904,33 @@ explicitly denies all eight forms.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
 Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
+
+#### S2-30y. Bare bounded `FCHS` (sign-bit-only local slice)
+
+Accept exactly bare `D9 E0` with an existing `Some(X87State)`. Reuse the
+canonical-Normal ST(0) source gate: FCW `0x037f`, `FSW & 0x80ff == 0`, Valid
+tag at old physical TOP and canonical Normal binary80 bytes. Snapshot all ten
+source bytes, then flip only `bytes[9] ^= 0x80` in old physical TOP. Clear C1
+while preserving TOP, tags and all other fields; C0/C2/C3 retention is the
+deterministic local snapshot policy. FIP becomes instruction-start RIP and RIP
+advances by two, with exactly one retirement.
+
+Missing/bad state, tag, class or environment; unsupported D9 bytes, every
+prefix/REX/WAIT, truncation, STOP and budget exhaustion leave state unchanged.
+This slice excludes zero/subnormal/special values, memory forms, CR0/#NM,
+exception delivery, native admission and FPU feature claims.
+
+Decoder coverage checks all 256 second bytes with only E0 accepted, plus
+prefix, REX, WAIT and truncation. Literal vectors cover all TOP positions,
+positive and negative minimum/maximum/full-significand Normal encodings,
+exactly one sign-bit change, C1 initially clear/set, and two FCHS executions
+that restore the payload while C1 remains clear. Rejection vectors compare full
+state across environment/tag/class, missing-state, STOP and budget boundaries.
+The schema/CLI includes a successful case and a genuine source-tag rejection
+with no stop RIP and budget one. Native admission explicitly denies `D9 E0`.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FCHS—Change Sign,” p.3-318
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=436)).
 
 ### S2-31. x87 conversions, rounding и exceptions
 

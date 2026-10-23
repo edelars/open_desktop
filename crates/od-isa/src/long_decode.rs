@@ -443,6 +443,8 @@ pub enum Operation {
     Fnclex,
     /// Bare `DF E0` FNSTSW AX in the local profile with an existing x87 state.
     FnstswAx,
+    /// Bare `D9 E0` FCHS, flipping the sign of canonical-Normal ST(0) only.
+    Fchs,
     /// Bare `DD D8+i` FSTP ST(i), exact Normal source and physical TOP pop only.
     FstpSti {
         destination: u8,
@@ -980,7 +982,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let known = (opcode.map == OpcodeMap::Primary
             && (direct_arithmetic(opcode.byte).is_some() || direct_logic(opcode.byte).is_some()))
             || matches!((opcode.map, opcode.byte),
-            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa5 | 0xa8 | 0xa9 | 0xaa | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xd0..=0xd3 | 0xd8 | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf6 | 0xf7)
+            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa5 | 0xa8 | 0xa9 | 0xaa | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf6 | 0xf7)
             | (OpcodeMap::Escape0f, 0x00 | 0x40..=0x4f | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
@@ -1107,6 +1109,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         destination: modrm & 7,
                     }
                 }
+            }
+            (OpcodeMap::Primary, 0xd9) => {
+                if prefixes != Prefixes::default() || self.byte()? != 0xe0 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Fchs
             }
             (OpcodeMap::Primary, 0xdf) => {
                 if prefixes != Prefixes::default() || self.byte()? != 0xe0 {
@@ -2361,6 +2369,63 @@ mod tests {
                 Err(DecodeError::Memory(MemoryError::Architectural(_)))
             ));
         }
+    }
+
+    #[test]
+    fn fchs_accepts_only_bare_d9_e0() {
+        let mut memory = Memory::new(&[0xd9, 0xe0]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Fchs);
+        assert_eq!(instruction.length, 2);
+        assert_eq!(instruction.prefixes, Prefixes::default());
+        assert_eq!(memory.fetched, [0xfff, 0x1000]);
+
+        for second in 0u8..=u8::MAX {
+            let decoded = Memory::new(&[0xd9, second]).decode();
+            assert_eq!(
+                decoded.map(|instruction| instruction.operation),
+                if second == 0xe0 {
+                    Ok(Operation::Fchs)
+                } else {
+                    Err(DecodeError::Unsupported {
+                        opcode: Opcode {
+                            map: OpcodeMap::Primary,
+                            byte: 0xd9,
+                        },
+                        length: 2,
+                    })
+                },
+                "D9 {second:02x}"
+            );
+        }
+
+        for bytes in [
+            &[0xf0, 0xd9, 0xe0][..],
+            &[0xf2, 0xd9, 0xe0],
+            &[0xf3, 0xd9, 0xe0],
+            &[0x2e, 0xd9, 0xe0],
+            &[0x64, 0xd9, 0xe0],
+            &[0x66, 0xd9, 0xe0],
+            &[0x67, 0xd9, 0xe0],
+            &[0x40, 0xd9, 0xe0],
+            &[0x48, 0xd9, 0xe0],
+            &[0x9b, 0xd9, 0xe0],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        assert!(matches!(
+            Memory::new(&[0xd9]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                address: 0x1000,
+                access: AccessKind::Fetch,
+            }))
+        ));
     }
 
     #[test]

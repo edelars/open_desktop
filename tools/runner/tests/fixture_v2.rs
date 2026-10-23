@@ -31,6 +31,10 @@ const FSTP_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30w_fstp_invalid_source.case.json");
 const FST_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30x_fst_invalid_source.case.json");
+const FCHS_NORMAL: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30y_fchs_normal.case.json");
+const FCHS_INVALID_SOURCE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30y_fchs_invalid_source.case.json");
 const GS_BASE_QWORD_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_22b_gs_base_qword_load_alias.case.json");
 const FS_SELECTOR_TO_RAX: &[u8] =
@@ -1211,6 +1215,33 @@ fn local_x87_fst_fixture_runner_admits_every_destination_index() {
         expected.instruction_pointer = input.fixture.initial_state.rip;
         assert_eq!(observed.state.x87.as_ref(), Some(&expected));
     }
+}
+
+#[test]
+fn local_x87_fchs_fixture_cli_flips_only_the_st0_sign_and_clears_c1() {
+    let (input, result) = run(FCHS_NORMAL, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0002);
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.registers[0] = "0000000000000080ffbf".into();
+    expected_x87.status_word = HexU64(0x4500);
+    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+    assert_eq!(observed.state, expected);
+}
+
+#[test]
+fn local_x87_fchs_invalid_source_fixture_is_atomic_in_the_cli_runner() {
+    let (input, result) = run(FCHS_INVALID_SOURCE, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, input.fixture.initial_state.rip);
+    assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    assert_eq!(observed.state.x87, input.fixture.initial_state.x87);
 }
 
 #[test]

@@ -1201,5 +1201,19 @@ and all old destination tags for i!=0. All DD ModR/M values and prefix,
 REX, WAIT and truncation behavior are checked; `DD D8..DF` remains FSTP.
 Native x87 admission explicitly denies all eight FST encodings.
 
+### S2-30y x87 schema and fixture coverage
+
+The schema admits the bare `D9 E0` FCHS success fixture with canonical-Normal
+ST(0), C1 set, and a stop address after one instruction. The CLI verifies that
+only the raw ST(0) sign bit changes, C1 clears, FIP/RIP update, and the rest of
+the snapshot stays intact. `s2_30y_fchs_invalid_source.case.json` contains a
+canonical-Normal payload with an Empty source tag; it has `stop_rip: null` and
+budget one, so the CLI confirms a real zero-retirement atomic rejection.
+Interpreter vectors separately cover all TOPs, both signs, Normal range edges,
+double FCHS, all D9 second bytes, prefixes and execution boundaries. Native x87
+admission explicitly denies `D9 E0`.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FCHS—Change Sign,” p.3-318 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=436)).
+
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
 Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).

@@ -2228,3 +2228,30 @@ indices. Native admission explicitly denies all eight encodings.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
 Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)). Intel defines `DD D0+i` as copying ST(0) to ST(i); this local slice narrows accepted source/environment and preserves all FSW bits concretely.
+
+## Local S2-30y: bounded `FCHS` (`D9 E0`)
+
+The interpreter accepts exactly bare `D9 E0` with an existing `Some(X87State)`.
+It requires FCW `0x037f`, `FSW & 0x80ff == 0`, a Valid tag at old physical
+TOP, and canonical Normal binary80 ST(0). Before mutation it snapshots the
+source's ten bytes; success changes only `bytes[9] ^= 0x80` in old physical
+TOP. It clears FSW C1 (bit 9) while preserving TOP, all tags and every other
+state field. C0/C2/C3 retention is a deterministic local snapshot policy.
+FIP receives the instruction-start RIP, RIP advances by two, and the operation
+retires once.
+
+Invalid/missing environment, tag or source class, every other D9 second byte,
+prefix/REX/WAIT, truncation, STOP and exhausted budget do not commit state.
+Zero, subnormal and special values are unsupported. No memory form, CR0/#NM,
+exception delivery, native admission or FPU feature claim is included.
+
+Local coverage enumerates all 256 second bytes with only E0 accepted and checks
+all TOP positions, literal positive/negative minimum/maximum/full-significand
+Normal payloads, exact sign-bit-only changes, initial C1 clear/set, and double
+FCHS payload restoration with C1 remaining clear. Rejection tests compare full
+state. The schema and CLI have one success fixture and one actual source-tag
+rejection with `stop_rip: null` and instruction budget one. Native x87
+admission denies `D9 E0`.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FCHS—Change Sign,” p.3-318
+([official PDF, Vol.2A p.3-318](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=436)).

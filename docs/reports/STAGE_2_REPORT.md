@@ -3752,3 +3752,43 @@ runner target compiled, but its native-denial test was not run on this arm64
 macOS host. No Mac mini, SSH or physical-hardware checks were run; those remain
 in the shared acceptance stage. Independent gpt-6.1-sol medium review completed
 with no findings.
+
+## S2-30y — bounded FCHS sign-bit slice
+
+Added only bare `D9 E0` for an existing x87 snapshot with FCW `0x037f`,
+`FSW & 0x80ff == 0`, Valid old physical TOP tag and canonical-Normal ST(0).
+The interpreter snapshots the ten source bytes, flips only byte 9's sign bit,
+clears C1, records starting RIP as FIP and retires once. TOP, tags, C0/C2/C3
+and other state are preserved; retaining C0/C2/C3 is the local deterministic
+snapshot policy. The shared bounded source gate now has an operation-neutral
+name and is reused by FST/FSTP and FCHS.
+
+Literal interpreter vectors cover all TOP values, positive and negative
+minimum/maximum/full-significand Normal payloads, initial C1 clear/set and two
+FCHS operations restoring the payload while C1 stays cleared. Full-state rejects
+cover zero, subnormal and special encodings, non-Valid tags, invalid control or
+status, absent state, truncation, fetch fault, STOP and exhausted budget. The
+decoder enumerates all 256 D9 second bytes, accepting only E0, and checks prefix,
+REX, WAIT and truncation rejection. Schema and CLI fixtures cover successful
+sign-flip behavior and a genuine Empty-tag rejection with no stop RIP and budget
+one. Native x87 admission explicitly denies `D9 E0`.
+
+This local slice excludes zero/subnormal/special FCHS semantics, all other D9
+forms, memory, CR0/#NM, exception delivery, native execution and FPU feature
+claims. It is not hardware validation of general x87 behavior.
+
+Validation passed: `cargo test --workspace --offline`, focused FCHS decoder and
+interpreter vectors, schema/CLI success and rejection fixtures, `cargo check
+--workspace --all-targets --offline`, Linux x86_64 runner compile-only check,
+`cargo fmt --all -- --check`, `git diff --check`, and `graphify update .`.
+`python3 tools/check_layout.py` reports the pre-existing unmapped root
+`.serena/` directory; it was left untouched. The Linux runner target compiled
+but was not executed. No Mac mini, SSH or physical-hardware checks were run.
+The first gpt-6.1-sol medium review found that the new `D9 E0` test vector was
+missing `Operation::Fchs` from the native backend's explicit x87-denial arm.
+That guard now rejects FCHS with the same x87-specific admission error as the
+other bounded x87 operations. The Linux x86_64 all-target compile passed after
+the fix. The Linux-only native-denial test could not run on this arm64 macOS
+host; no `qemu-x86_64` is installed. Independent gpt-6.1-sol medium re-review
+verified the explicit native x87 denial for `Operation::Fchs` and reported no
+remaining findings.

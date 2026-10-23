@@ -558,6 +558,7 @@ fn admission_with_tracee_memory(
         Operation::Fninit
             | Operation::Fnclex
             | Operation::FnstswAx
+            | Operation::Fchs
             | Operation::FmulSt0St { .. }
             | Operation::FdivSt0St { .. }
             | Operation::FdivrSt0St { .. }
@@ -3663,6 +3664,7 @@ mod tests {
             [0xdb, 0xe3],
             [0xdb, 0xe2],
             [0xdf, 0xe0],
+            [0xd9, 0xe0],
             [0xdd, 0xd0],
             [0xdd, 0xd1],
             [0xdd, 0xd2],
