@@ -2346,3 +2346,26 @@ Normative basis: Intel SDM revision 093, Vol. 1 §4.2.2/Table 4-3 and
 §8.2.2/Table 8-3 ([253665-093US](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
 S2-29 and the S2-28 umbrella remain open; this slice makes no physical or
 performance claim. The follow-up scope is recorded as [ISSUE-019](../KNOWN_ISSUES.md).
+
+## S2-29b — finite normalization and shift-jam primitives (partial)
+
+Added `X87Finite`, returned only for raw zero, subnormal, pseudo-denormal and
+normal classes. Nonzero significands have their leading bit at bit 63, with
+the associated exponent adjusted during subnormal normalization. The view
+retains sign and original raw class, so pseudo-denormal and subnormal
+provenance remains available while the `X87Binary80` bytes and classifier stay
+unchanged. Zero retains its sign and uses zero exponent/significand. Added
+integer-only `shift_right_jam()` and low-bit `X87Grs` extraction. No arithmetic,
+rounding, exception/status mutation, instruction execution, host floating
+point, dependencies, or performance claim was added.
+
+Literal unit tests cover signed zero, smallest/largest subnormal,
+pseudo-denormal, minimum normal, maximum finite, rejected nonfinite/unnormal
+classes, shift distances 0/1/63/64/65, sticky behavior and GRS bit extraction.
+`cargo test -p od-isa x87 --offline` passed (8 tests).
+`cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, `python3 tools/check_layout.py`, and
+`git diff --check` passed. `graphify update .` completed after the source and
+documentation updates. No physical CPU check was required or performed; no
+performance result is claimed. The umbrella S2-29/S2-28 remain open, and
+ISSUE-019 tracks the remaining work.

@@ -1,4 +1,5 @@
-//! Lossless binary80 fields and raw x87 encoding classification.
+//! Lossless binary80 fields, raw x87 encoding classification, and finite
+//! integer-only helper representations.
 //!
 //! This module does not execute x87 instructions or perform arithmetic. The
 //! byte array follows memory order, least significant byte first (Intel SDM
@@ -22,6 +23,88 @@ pub enum X87Binary80Class {
     PseudoInfinity,
     PseudoQuietNaN,
     PseudoSignalingNaN,
+}
+
+/// A finite binary80 value expressed with its leading significand bit at bit
+/// 63. `exponent` is the power of two associated with that bit. For zero,
+/// `significand` and `exponent` are both zero. `source_class` retains the raw
+/// encoding class, including subnormal and pseudo-denormal provenance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct X87Finite {
+    sign: bool,
+    exponent: i32,
+    significand: u64,
+    source_class: X87Binary80Class,
+}
+
+impl X87Finite {
+    pub const fn sign(self) -> bool {
+        self.sign
+    }
+
+    pub const fn exponent(self) -> i32 {
+        self.exponent
+    }
+
+    pub const fn significand(self) -> u64 {
+        self.significand
+    }
+
+    pub const fn source_class(self) -> X87Binary80Class {
+        self.source_class
+    }
+
+    pub const fn is_zero(self) -> bool {
+        match self.source_class {
+            X87Binary80Class::Zero => true,
+            _ => false,
+        }
+    }
+}
+
+/// The three low-order bits used as guard, round, and sticky information.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct X87Grs {
+    guard: bool,
+    round: bool,
+    sticky: bool,
+}
+
+impl X87Grs {
+    /// Interpret bits 2, 1, and 0 as guard, round, and sticky respectively.
+    pub const fn from_low_bits(value: u64) -> Self {
+        Self {
+            guard: value & 0b100 != 0,
+            round: value & 0b010 != 0,
+            sticky: value & 0b001 != 0,
+        }
+    }
+
+    pub const fn guard(self) -> bool {
+        self.guard
+    }
+
+    pub const fn round(self) -> bool {
+        self.round
+    }
+
+    pub const fn sticky(self) -> bool {
+        self.sticky
+    }
+}
+
+/// Shift right while OR-ing every discarded one bit into the result's least
+/// significant bit. Shifts at least the word width produce only that sticky
+/// bit. This helper performs no rounding.
+pub const fn shift_right_jam(value: u64, distance: u32) -> u64 {
+    if distance == 0 {
+        value
+    } else if distance < u64::BITS {
+        let discarded_mask = (1_u64 << distance) - 1;
+        (value >> distance) | if value & discarded_mask != 0 { 1 } else { 0 }
+    } else {
+        if value != 0 { 1 } else { 0 }
+    }
 }
 
 impl X87Binary80 {
@@ -100,11 +183,35 @@ impl X87Binary80 {
             X87Binary80Class::Unnormal
         }
     }
+
+    /// Normalize a finite raw encoding into a 64-bit significand and an
+    /// associated binary exponent. Nonfinite and unsupported encodings return
+    /// `None`; the raw wrapper is never modified.
+    pub fn normalize_finite(self) -> Option<X87Finite> {
+        let source_class = self.classify();
+        let (exponent, significand) = match source_class {
+            X87Binary80Class::Zero => (0, 0),
+            X87Binary80Class::Subnormal => {
+                let significand = self.significand();
+                let shift = significand.leading_zeros();
+                (-16382 - shift as i32, significand << shift)
+            }
+            X87Binary80Class::PseudoDenormal => (-16382, self.significand()),
+            X87Binary80Class::Normal => (self.exponent() as i32 - 16383, self.significand()),
+            _ => return None,
+        };
+        Some(X87Finite {
+            sign: self.sign(),
+            exponent,
+            significand,
+            source_class,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{X87Binary80, X87Binary80Class};
+    use super::{X87Binary80, X87Binary80Class, X87Grs, shift_right_jam};
     use crate::state::{X87State, X87Tag};
 
     #[test]
@@ -370,5 +477,103 @@ mod tests {
         assert_eq!(state.tag(0), Some(X87Tag::Zero));
         assert_eq!(state.tag(1), Some(X87Tag::Valid));
         assert_eq!(state.tag(7), Some(X87Tag::Empty));
+    }
+
+    #[test]
+    fn finite_normalization_preserves_raw_class_and_provenance() {
+        let cases = [
+            (
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                X87Binary80Class::Zero,
+                0,
+                0,
+                true,
+            ),
+            (
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                X87Binary80Class::Subnormal,
+                -16445,
+                1 << 63,
+                false,
+            ),
+            (
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0, 0],
+                X87Binary80Class::Subnormal,
+                -16383,
+                u64::MAX << 1,
+                false,
+            ),
+            (
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0],
+                X87Binary80Class::PseudoDenormal,
+                -16382,
+                1 << 63,
+                false,
+            ),
+            (
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0],
+                X87Binary80Class::Normal,
+                -16382,
+                1 << 63,
+                false,
+            ),
+            (
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x7f],
+                X87Binary80Class::Normal,
+                16383,
+                u64::MAX,
+                false,
+            ),
+        ];
+
+        for (bytes, expected_class, expected_exponent, expected_significand, expected_sign) in cases
+        {
+            let raw = X87Binary80::from_bytes(bytes);
+            let before = raw.to_bytes();
+            let finite = raw.normalize_finite().expect("finite encoding");
+            assert_eq!(finite.source_class(), expected_class);
+            assert_eq!(finite.exponent(), expected_exponent);
+            assert_eq!(finite.significand(), expected_significand);
+            assert_eq!(finite.sign(), expected_sign);
+            assert_eq!(finite.is_zero(), expected_class == X87Binary80Class::Zero);
+            assert_eq!(raw.classify(), expected_class);
+            assert_eq!(raw.to_bytes(), before);
+        }
+
+        let signed_subnormal = X87Binary80::from_bytes([1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]);
+        let negative_pseudo_denormal =
+            X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x80]);
+        assert!(signed_subnormal.normalize_finite().unwrap().sign());
+        assert!(negative_pseudo_denormal.normalize_finite().unwrap().sign());
+
+        for bytes in [
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
+            [1, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x7f],
+            [0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+        ] {
+            assert!(X87Binary80::from_bytes(bytes).normalize_finite().is_none());
+        }
+    }
+
+    #[test]
+    fn right_shift_jam_covers_word_boundaries_and_sticky_bits() {
+        assert_eq!(shift_right_jam(0, 0), 0);
+        assert_eq!(shift_right_jam(0x35, 0), 0x35);
+        assert_eq!(shift_right_jam(0b1101, 1), 0b0111);
+        assert_eq!(shift_right_jam(1_u64 << 63, 63), 1);
+        assert_eq!(shift_right_jam(1_u64 << 63, 64), 1);
+        assert_eq!(shift_right_jam(1_u64 << 63, 65), 1);
+        assert_eq!(shift_right_jam(0, 64), 0);
+        assert_eq!(shift_right_jam(0, 65), 0);
+        assert_eq!(shift_right_jam(1_u64 << 63, 1), 1_u64 << 62);
+
+        let grs = X87Grs::from_low_bits(0b101);
+        assert!(grs.guard());
+        assert!(!grs.round());
+        assert!(grs.sticky());
+        let exact = X87Grs::from_low_bits(0b010);
+        assert!(!exact.guard());
+        assert!(exact.round());
+        assert!(!exact.sticky());
     }
 }

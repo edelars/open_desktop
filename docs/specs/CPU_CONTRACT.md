@@ -1059,6 +1059,29 @@ This raw representation and classification do not provide arithmetic,
 normalization, rounding, exceptions or x87 instruction execution. S2-29 and
 the S2-28 umbrella remain open.
 
+## Local S2-29b: finite normalization and shift-jam helpers
+
+`X87Binary80::normalize_finite()` accepts only raw zero, subnormal,
+pseudo-denormal and normal classes. It returns sign, a 64-bit significand with
+the leading one at bit 63 for nonzero values, the binary exponent associated
+with that bit, and the original `X87Binary80Class`. Zero retains its sign and
+has zero exponent/significand. A subnormal is left-shifted to bit 63 with the
+exponent reduced by that shift. A pseudo-denormal uses the minimum normal
+exponent but retains its `PseudoDenormal` source class. The raw 10 bytes and
+classification remain unchanged. Infinity, NaNs, unnormal, and pseudo-special
+encodings return `None`.
+
+`shift_right_jam()` shifts an unsigned 64-bit integer right and ORs any
+discarded one bits into the least significant bit; distances at or above 64
+return 1 for nonzero input and 0 otherwise. `X87Grs::from_low_bits()` exposes
+bits 2/1/0 as guard/round/sticky when a caller has reserved those positions.
+These are integer helpers only: no rounding decision, arithmetic result,
+status/exception mutation, or x87 instruction semantics are defined. They use
+no host floating point. Manual result vectors and unit tests cover signed
+zero, subnormal endpoints, pseudo-denormal provenance, normal/minimum and
+maximum finite values, rejected classes, and shift boundaries/sticky state.
+S2-29 and S2-28 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

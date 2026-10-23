@@ -176,6 +176,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-28a | Lossless Long64 x87 state and local NOP-only snapshot profile; no x87 execution or FPU feature claim | S2-28 |
 | [ ] | S2-29 | Собственное ядро extended precision | S2-28 |
 | [x] | S2-29a | Lossless binary80 raw fields and read-only raw encoding classification; no arithmetic or x87 execution | S2-28a |
+| [x] | S2-29b | Integer-only finite binary80 normalization with source-class provenance and right-shift-jam/GRS bit helpers; no rounding or arithmetic | S2-29a |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
@@ -1010,12 +1011,34 @@ or state. Literal hand-authored byte vectors include signed forms, payload
 boundaries and unsupported encodings, with an 80-bit walking-one extraction
 check.
 
-This is only the encoding layer. There are no arithmetic, normalization,
-rounding, exception or instruction semantics, and no `X87Tag` inference from
-the raw payload. S2-29 and S2-28 remain open.
+This is only the encoding layer; finite normalization is separately bounded
+in S2-29b. There are no arithmetic, rounding, exception or instruction
+semantics, and no `X87Tag` inference from the raw payload. S2-29 and S2-28
+remain open.
 
 Normative basis: Intel SDM revision 093, Vol. 1 §4.2.2/Table 4-3 and
 §8.2.2/Table 8-3 ([253665-093US](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+
+### S2-29b. Finite normalization and shift-jam primitives (partial)
+
+`X87Binary80::normalize_finite()` returns an integer-only finite view for
+zero, subnormal, pseudo-denormal and normal encodings. Nonfinite and unsupported
+classes return `None`. The view carries sign, a normalized 64-bit significand,
+the exponent associated with its leading bit, and the original raw class.
+Subnormals are shifted until their leading one reaches bit 63 with the exponent
+adjusted by the same amount. Pseudo-denormals use the minimum normal exponent
+while retaining `PseudoDenormal` provenance; raw bytes and `classify()` are
+unchanged. Zero retains its sign and uses zero significand/exponent.
+
+`shift_right_jam()` preserves discarded nonzero information in bit zero,
+including shifts at and beyond the 64-bit width. `X87Grs` exposes low bits 2/1/0
+as guard/round/sticky after callers reserve those bit positions. These helpers
+do not round, mutate x87 status, execute instructions, or use host floating
+point. Tests cover signed zero, smallest/largest subnormal, pseudo-denormal,
+minimum normal, maximum finite, unsupported encodings, and shift distances
+0/1/63/64/65 with sticky and GRS cases. This is a primitive slice only:
+rounding modes, arithmetic, exception behavior, and the S2-29/S2-28 umbrellas
+remain open.
 
 ### S2-30. Основные x87 операции
 
