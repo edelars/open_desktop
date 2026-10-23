@@ -1554,4 +1554,131 @@ mod tests {
             assert_eq!(value.state, loaded.fixture.initial_state);
         }
     }
+
+    #[test]
+    fn x87_fdivp_fixture_runner_covers_every_index_top_and_inexact_rejection() {
+        fn normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
+            let mut bytes = [0; 10];
+            bytes[..8].copy_from_slice(&significand.to_le_bytes());
+            bytes[8..]
+                .copy_from_slice(&(exponent | if negative { 0x8000 } else { 0 }).to_le_bytes());
+            bytes
+        }
+        let fifteen = normal(0xf000_0000_0000_0000, 0x4002, false);
+        let three = normal(0xc000_0000_0000_0000, 0x4000, false);
+        let five = normal(0xa000_0000_0000_0000, 0x4001, false);
+        let one = normal(0x8000_0000_0000_0000, 0x3fff, false);
+
+        for top in 0u8..8 {
+            for destination in 0u8..8 {
+                let old_top = usize::from(top);
+                let physical_destination = usize::from((top + destination) & 7);
+                let mut input = v2::Fixture::from_json(include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json"
+                ))
+                .unwrap()
+                .fixture;
+                input.case_id = format!("local_fdivp_st{destination}_top{top}");
+                input.profile = v2::Profile::LongX87StateV1;
+                input.instruction_budget = 1;
+                input.initial_state.rip = HexU64(0x5500);
+                input.stop_rip = Some(HexU64(0x5502));
+                input.expected_exit = v2::ExpectedExit::StopAddress;
+                let code = input
+                    .memory
+                    .iter_mut()
+                    .find(|region| region.region_id == "code")
+                    .unwrap();
+                code.guest_address = HexU64(0x5500);
+                code.length = 2;
+                code.initial_bytes_hex = format!("de{:x}", 0xf8 | destination);
+                code.comparison_mask_hex = "ffff".into();
+
+                let mut x87 = od_isa::state::X87State::fixture_seed();
+                x87.control_word = 0x037f;
+                x87.status_word = (u16::from(top) << 11) | 0x4700 | (1 << 9);
+                x87.tag_word = u16::MAX;
+                for physical in 0..8 {
+                    x87.registers[physical] = [0x30 + physical as u8; 10];
+                }
+                if destination == 0 {
+                    x87.registers[old_top] = normal(0xd123_4567_89ab_cdef, 0x4000, top & 1 != 0);
+                } else {
+                    x87.registers[physical_destination] = fifteen;
+                    x87.set_tag((top + destination) & 7, od_isa::state::X87Tag::Valid);
+                    x87.registers[old_top] = three;
+                }
+                x87.set_tag(top, od_isa::state::X87Tag::Valid);
+                x87.instruction_pointer = 0x1234;
+                x87.data_pointer = 0x5678;
+                x87.last_opcode = 0x05aa;
+                input.initial_state.x87 = Some(v2::X87Snapshot::from(&x87));
+
+                let loaded = v2::Fixture::from_json(&input.to_json().unwrap()).unwrap();
+                let mut memory =
+                    od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                let result = execute_fixture_v2(&loaded, &mut memory);
+                result.validate_for(&loaded).unwrap();
+                assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+                assert_eq!(
+                    result.instructions_executed,
+                    Observation::Available { value: HexU64(1) }
+                );
+                let Observation::Available { value } = result.snapshot else {
+                    panic!("x87 FDIVP result must be observable");
+                };
+                let observed = value.state.x87.unwrap();
+                let mut expected = x87;
+                expected.registers[physical_destination] =
+                    if destination == 0 { one } else { five };
+                expected.set_tag(top, od_isa::state::X87Tag::Empty);
+                let new_top = top.wrapping_add(1) & 7;
+                expected.status_word =
+                    (expected.status_word & !((7 << 11) | (1 << 9))) | (u16::from(new_top) << 11);
+                expected.instruction_pointer = 0x5500;
+                assert_eq!(observed, v2::X87Snapshot::from(&expected));
+            }
+        }
+
+        let mut input = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json"
+        ))
+        .unwrap()
+        .fixture;
+        input.case_id = "local_fdivp_inexact_rejection".into();
+        input.profile = v2::Profile::LongX87StateV1;
+        input.instruction_budget = 1;
+        input.initial_state.rip = HexU64(0x5600);
+        input.stop_rip = None;
+        input.expected_exit = v2::ExpectedExit::Unsupported;
+        let code = input
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.guest_address = HexU64(0x5600);
+        code.length = 2;
+        code.initial_bytes_hex = "def9".into();
+        code.comparison_mask_hex = "ffff".into();
+        let mut x87 = od_isa::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0;
+        x87.tag_word = 0xfff0;
+        x87.registers[0] = normal(0xc000_0000_0000_0000, 0x4000, false);
+        x87.registers[1] = normal(0x8000_0000_0000_0000, 0x3fff, false);
+        input.initial_state.x87 = Some(v2::X87Snapshot::from(&x87));
+        let loaded = v2::Fixture::from_json(&input.to_json().unwrap()).unwrap();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        let result = execute_fixture_v2(&loaded, &mut memory);
+        result.validate_for(&loaded).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::Unsupported { .. }));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(0) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("inexact FDIVP state must remain observable");
+        };
+        assert_eq!(value.state, loaded.fixture.initial_state);
+    }
 }

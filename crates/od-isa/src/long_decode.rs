@@ -451,6 +451,10 @@ pub enum Operation {
     FdivSt0St {
         source: u8,
     },
+    /// Bare `DE F8+i` FDIVP ST(i), ST(0), exact finite local profile only.
+    FdivpStSt0 {
+        destination: u8,
+    },
     /// Bare `D8 C0+i` FADD ST(0), ST(i), exact finite local profile only.
     FaddSt0St {
         source: u8,
@@ -1044,6 +1048,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         destination: modrm & 7,
                     },
                     0xe8..=0xef => Operation::FsubpStSt0 {
+                        destination: modrm & 7,
+                    },
+                    0xf8..=0xff => Operation::FdivpStSt0 {
                         destination: modrm & 7,
                     },
                     _ => return Err(self.unsupported(opcode)),
@@ -2741,6 +2748,9 @@ mod tests {
                     0xe8..=0xef => Ok(Operation::FsubpStSt0 {
                         destination: modrm & 7,
                     }),
+                    0xf8..=0xff => Ok(Operation::FdivpStSt0 {
+                        destination: modrm & 7,
+                    }),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
@@ -2802,6 +2812,9 @@ mod tests {
                     0xe8..=0xef => Ok(Operation::FsubpStSt0 {
                         destination: modrm & 7
                     }),
+                    0xf8..=0xff => Ok(Operation::FdivpStSt0 {
+                        destination: modrm & 7
+                    }),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
@@ -2833,6 +2846,66 @@ mod tests {
         assert!(matches!(
             Memory::new(&[0x9b]).decode(),
             Err(DecodeError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn fdivp_sti_st0_accepts_only_bare_de_f8_through_ff() {
+        for destination in 0u8..=7 {
+            let mut memory = Memory::new(&[0xde, 0xf8 | destination]);
+            let instruction = memory.decode().unwrap();
+            assert_eq!(instruction.operation, Operation::FdivpStSt0 { destination });
+            assert_eq!(instruction.length, 2);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+            assert_eq!(memory.fetched, [0xfff, 0x1000]);
+        }
+        for destination in 0u8..=7 {
+            for prefix in [
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            ]
+            .into_iter()
+            .chain(0x40..=0x4f)
+            {
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xde, 0xf8 | destination]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
+        }
+        for modrm in 0u8..=u8::MAX {
+            let decoded = Memory::new(&[0xde, modrm]).decode();
+            assert_eq!(
+                decoded.map(|instruction| instruction.operation),
+                match modrm {
+                    0xc0..=0xc7 => Ok(Operation::FaddpStSt0 {
+                        destination: modrm & 7
+                    }),
+                    0xc8..=0xcf => Ok(Operation::FmulpStSt0 {
+                        destination: modrm & 7
+                    }),
+                    0xe0..=0xe7 => Ok(Operation::FsubrpStSt0 {
+                        destination: modrm & 7
+                    }),
+                    0xe8..=0xef => Ok(Operation::FsubpStSt0 {
+                        destination: modrm & 7
+                    }),
+                    0xf8..=0xff => Ok(Operation::FdivpStSt0 {
+                        destination: modrm & 7
+                    }),
+                    _ => Err(DecodeError::Unsupported {
+                        opcode: Opcode {
+                            map: OpcodeMap::Primary,
+                            byte: 0xde,
+                        },
+                        length: 2,
+                    }),
+                },
+                "DE {modrm:02x}"
+            );
+        }
+        assert!(matches!(
+            Memory::new(&[0xde]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped { .. }))
         ));
     }
 

@@ -1121,3 +1121,13 @@ tag/TOP preservation and atomic rejection of an inexact quotient. `D8 F1`
 with no stop RIP represents the inexact Unsupported case. Other D8 division
 directions, DC/DE forms and memory/integer forms remain unsupported; native
 x87 admission stays closed.
+
+### S2-30r x87 schema coverage
+
+The schema validator admits all eight bare `DE F8+i` FDIVP encodings, including
+the no-operand `DE F9` alias. Runner cases check every TOP×i destination,
+ordered `15/3 = 5`, exact `+1` alias payload before the old TOP tag is emptied,
+TOP wrap, C1 clearing and full x87 snapshot preservation. An inexact `DE F9`
+fixture uses `stop_rip: null` and budget one, and verifies that the full state
+is unchanged. `DE F0..F7` FDIVRP remains unsupported; native x87 admission
+stays closed.

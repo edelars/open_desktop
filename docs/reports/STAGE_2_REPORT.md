@@ -3443,3 +3443,49 @@ it was corrected to use an exact power-of-two significand at exponent `0x7ffe`
 and re-reviewed. Graphify update completed. No Mac mini, SSH, hardware
 execution or commit was performed; physical acceptance remains reserved for
 the shared final acceptance stage.
+
+## S2-30r — exact-only FDIVP ST(i), ST(0) (bounded local slice)
+
+Added exact-only bare `DE F8+i`, `i=0..7`, as `FDIVP ST(i), ST(0)` using the
+shared ordered FDIV result gate. It computes old `ST(i)/ST(0)`, requires zero
+normalized quotient remainder before precision-64 packing, and accepts only a
+canonical Normal result. The gate requires x87 state, FCW `0x037f`,
+`FSW & 0x80ff == 0`, Valid tags for used operands and canonical Normal input
+encodings. Unequal exponents are supported. Zero, special/noncanonical inputs,
+inexact quotient, overflow and subnormal/zero output reject before mutation.
+For `i=0`, one Valid tag is sufficient and self-division yields exact `+1`.
+
+Success writes to old physical `(TOP+i)&7`, empties old physical TOP, advances
+TOP, clears C1, records starting RIP as FIP, advances RIP by two and retires
+once. In the i=0 alias case, `+1` is written into old TOP before its tag is
+emptied. All other x87 state, GPRs and RFLAGS are preserved. The decoder accepts
+all DE F8..FF bytes, leaves DE F0..F7 unsupported and preserves the existing
+FADDP/FSUBRP/FSUBP neighbors. Prefixes, REX, WAIT and truncation remain
+unsupported. The fixture schema and runner cover all TOP×i successful forms
+plus an atomic inexact `DE F9` Unsupported case with no stop RIP and budget one.
+Native x87 admission remains closed.
+
+Literal interpreter coverage checks every TOP×i physical result and complete
+post-state using `15/3 = 5` to catch operand reversal. Additional vectors cover
+all sign combinations, unequal exponents, full-width significands, alias
+payload/tag order, inexact `1/3` and `2/3`, exact overflow, subnormal output,
+bad FCW/FSW, bad tags, raw non-Normal operands, missing state, and fetch/STOP/
+budget boundaries. D8 FDIV acceptance and rejection tests still pass after
+generalizing the shared helper to ordered logical indices.
+
+Normative source: Intel SDM revision 093, Vol.2A pp.3-333–3-335,
+“FDIV/FIDIV—Divide” ([official PDF, Vol.2A p.3-333](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451)).
+It specifies old `ST(i)/ST(0)` before popping old `ST(0)`, clears C1 for an
+exact result, and leaves C0/C2/C3 undefined. General rounding, exceptions,
+special values, CR0/#NM, hardware state observation and native x87 behavior
+remain outside this local profile.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+and `git diff --check`. The Linux target compiled native deny coverage; it could
+not run on this arm64 macOS host. `python3 tools/check_layout.py` reports only
+the pre-existing unmapped `.serena/` root directory, left untouched.
+`graphify update .` completed. Independent gpt-6.1-sol medium review reported
+no findings. No Mac mini, SSH, physical hardware execution or commit was used;
+hardware acceptance remains reserved for the shared acceptance stage.

@@ -197,6 +197,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30o | Bare `DC C8+i` FMUL ST(i), ST(0), exact binary80 result only, no pop; native closed | S2-30n |
 | [x] | S2-30p | Bare `DE C8+i` FMULP ST(i), ST(0), exact binary80 result then physical TOP pop; native closed | S2-30o |
 | [x] | S2-30q | Bare `D8 F0+i` FDIV ST(0), ST(i), exact canonical Normal quotient only; native closed | S2-30p, S2-29 |
+| [x] | S2-30r | Bare `DE F8+i` FDIVP ST(i), ST(0), exact canonical Normal quotient then physical TOP pop; native closed | S2-30q |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1721,6 +1722,27 @@ Enumerate all D8 ModR/M bytes, prefixes, WAIT and truncation; preserve adjacent
 D8 groups. Fixture schema and runner cover the eight forms and atomic inexact
 rejection. Native admission remains closed. Normative source: Intel SDM
 revision 093, Vol.2A pp.3-333–3-335, “FDIV/FIDIV—Divide.”
+
+#### S2-30r. Bare exact-only FDIVP ST(i), ST(0) (bounded local slice)
+
+Accept exactly bare `DE F8+i`, `i=0..7`, as `FDIVP ST(i), ST(0)`, including
+the no-operand `DE F9` alias for `i=1`. Require existing x87 state, FCW
+`0x037f`, `FSW & 0x80ff == 0`, Valid tags for the used physical operands,
+canonical Normal binary80 inputs and an exactly divisible normalized
+significand quotient. Require a canonical Normal precision-64 result; reject
+zero, specials, noncanonical raw inputs, nonzero quotient remainder, overflow
+and subnormal/zero output before mutation. Exponents may differ. `i=0` uses
+one Valid tag and computes self-division as exact `+1`, writes the payload to
+old TOP, then marks that tag Empty and increments TOP. `i>0` computes old
+`ST(i)/ST(0)`, writes old physical `(TOP+i)&7`, empties old TOP and increments
+TOP. Other DE groups retain their meanings; `DE F0..F7` FDIVRP and all other
+FDIV directions/memory/integer forms remain unsupported.
+
+Exact success clears C1, sets FIP to starting RIP, advances RIP by two and
+retires once. Enumerate every DE ModR/M byte, prefixes, WAIT and truncation;
+preserve adjacent groups. Fixture schema and runner cover all eight forms and
+atomic inexact `DE F9` rejection. Native admission remains closed. Normative
+source: Intel SDM revision 093, Vol.2A pp.3-333–3-335, “FDIV/FIDIV—Divide.”
 
 ### S2-31. x87 conversions, rounding и exceptions
 

@@ -771,6 +771,12 @@ impl Fixture {
                 {
                     (code_bytes.as_str(), 2)
                 }
+                _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("def")
+                    && matches!(code_bytes.as_bytes()[3], b'8'..=b'f') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
                 _ => {
                     return Err(invalid(
                         "memory.code",
@@ -786,6 +792,7 @@ impl Fixture {
                 || code_bytes == "dee8";
             let is_fmulp_i0_unsupported = code_bytes == "dec8" && self.stop_rip.is_none();
             let is_fdiv_inexact_unsupported = code_bytes == "d8f1" && self.stop_rip.is_none();
+            let is_fdivp_inexact_unsupported = code_bytes == "def9" && self.stop_rip.is_none();
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length
                 || !code.permissions.execute
@@ -794,6 +801,7 @@ impl Fixture {
                 || if is_fsub_alias_unsupported
                     || is_fmulp_i0_unsupported
                     || is_fdiv_inexact_unsupported
+                    || is_fdivp_inexact_unsupported
                 {
                     self.stop_rip.is_some() || self.expected_exit != ExpectedExit::Unsupported
                 } else {
