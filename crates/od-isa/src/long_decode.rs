@@ -439,6 +439,8 @@ pub enum Operation {
     Mfence,
     /// Bare `DB E3` FNINIT in the local profile with an existing x87 state.
     Fninit,
+    /// Bare `DB E2` FNCLEX in the local profile with an existing x87 state.
+    Fnclex,
     /// Bare `DF E0` FNSTSW AX in the local profile with an existing x87 state.
     FnstswAx,
     Nop,
@@ -930,10 +932,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let rex = prefixes.rex.unwrap_or(0);
         let operation = match (opcode.map, opcode.byte) {
             (OpcodeMap::Primary, 0xdb) => {
-                if prefixes != Prefixes::default() || self.byte()? != 0xe3 {
+                if prefixes != Prefixes::default() {
                     return Err(self.unsupported(opcode));
                 }
-                Operation::Fninit
+                match self.byte()? {
+                    0xe2 => Operation::Fnclex,
+                    0xe3 => Operation::Fninit,
+                    _ => return Err(self.unsupported(opcode)),
+                }
             }
             (OpcodeMap::Primary, 0xdf) => {
                 if prefixes != Prefixes::default() || self.byte()? != 0xe0 {
@@ -1960,8 +1966,14 @@ mod tests {
         assert_eq!(instruction.prefixes, Prefixes::default());
         assert_eq!(memory.fetched, [0xfff, 0x1000]);
 
+        let mut fnclex_memory = Memory::new(&[0xdb, 0xe2]);
+        let fnclex = fnclex_memory.decode().unwrap();
+        assert_eq!(fnclex.operation, Operation::Fnclex);
+        assert_eq!(fnclex.length, 2);
+        assert_eq!(fnclex.prefixes, Prefixes::default());
+        assert_eq!(fnclex_memory.fetched, [0xfff, 0x1000]);
+
         for bytes in [
-            &[0xdb, 0xe2][..],
             &[0xdb, 0xe0][..],
             &[0xf0, 0xdb, 0xe3][..],
             &[0xf2, 0xdb, 0xe3][..],
@@ -1986,21 +1998,39 @@ mod tests {
                 "{bytes:02x?}"
             );
         }
+        for bytes in [
+            &[0x9b, 0xdb, 0xe2][..],
+            &[0x66, 0xdb, 0xe2][..],
+            &[0x67, 0xdb, 0xe2][..],
+            &[0x26, 0xdb, 0xe2][..],
+            &[0xf0, 0xdb, 0xe2][..],
+            &[0xf2, 0xdb, 0xe2][..],
+            &[0xf3, 0xdb, 0xe2][..],
+            &[0x48, 0xdb, 0xe2][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
         for modrm in 0u8..=u8::MAX {
             let bytes = [0xdb, modrm];
             let decoded = Memory::new(&bytes).decode();
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
-                if modrm == 0xe3 {
-                    Ok(Operation::Fninit)
-                } else {
-                    Err(DecodeError::Unsupported {
+                match modrm {
+                    0xe2 => Ok(Operation::Fnclex),
+                    0xe3 => Ok(Operation::Fninit),
+                    _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
                             byte: 0xdb,
                         },
                         length: 2,
-                    })
+                    }),
                 },
                 "DB {modrm:02x}"
             );

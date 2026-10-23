@@ -92,6 +92,12 @@ impl X87State {
         self.data_pointer = 0;
         self.last_opcode = 0;
     }
+
+    /// Apply the bounded FNCLEX status-word transition. C0/C1/C2/C3 retain
+    /// their concrete local values although Intel leaves them undefined.
+    pub fn fnclex(&mut self) {
+        self.status_word &= !0x80ff;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

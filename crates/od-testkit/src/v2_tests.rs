@@ -299,15 +299,28 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     code.initial_bytes_hex = "dfe0".into();
     assert!(Fixture::from_json(&fnstsw.to_json().unwrap()).is_ok());
 
+    let mut fnclex = fixture.clone();
+    let code = fnclex
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "dbe2".into();
+    assert!(Fixture::from_json(&fnclex.to_json().unwrap()).is_ok());
+
     for (bytes, length, stop) in [
         ("db", 1, 0x1001),
         ("9bdbe3", 3, 0x1003),
         ("66dbe3", 3, 0x1003),
-        ("dbe2", 2, 0x1002),
+        ("dbe0", 2, 0x1002),
+        ("dbe4", 2, 0x1002),
         ("dfe1", 2, 0x1002),
         ("df00", 2, 0x1002),
         ("9bdfe0", 3, 0x1003),
         ("66dfe0", 3, 0x1003),
+        ("9bdbe2", 3, 0x1003),
+        ("66dbe2", 3, 0x1003),
+        ("f3dbe2", 3, 0x1003),
     ] {
         let mut unsupported = fixture.clone();
         let code = unsupported

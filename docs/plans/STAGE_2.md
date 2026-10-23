@@ -173,7 +173,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-26 | CPUID, системные инструкции и время | S2-25 |
 | [ ] | S2-27 | Remaining descriptor/event/syscall CPU semantics; the bounded VERW/GDT check is extracted to S2-22e | S2-25, S2-26 |
 | [ ] | S2-28 | Представить x87 state | S2-20 |
-| [x] | S2-28a | Lossless Long64 x87 state and local NOP/FNINIT/FNSTSW AX-only state profile; no general x87 execution or FPU feature claim | S2-28 |
+| [x] | S2-28a | Lossless Long64 x87 state and local NOP/FNINIT/FNCLEX/FNSTSW AX-only state profile; no general x87 execution or FPU feature claim | S2-28 |
 | [ ] | S2-29 | Собственное ядро extended precision | S2-28 |
 | [x] | S2-29a | Lossless binary80 raw fields and read-only raw encoding classification; no arithmetic or x87 execution | S2-28a |
 | [x] | S2-29b | Integer-only finite binary80 normalization with source-class provenance and right-shift-jam/GRS bit helpers; no rounding or arithmetic | S2-29a |
@@ -183,6 +183,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
+| [x] | S2-30c | Bare `DB E2` FNCLEX with existing x87 state; clear FSW[0:7] and FSW[15], preserve C0–C3 by local policy, native closed | S2-28a |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1409,6 +1410,19 @@ Unsupported. The local profile continues to assume x87 availability without
 CR0.EM/TS checks, #NM delivery, or WAIT. Fetch fault, STOP and exhausted budget
 must not commit. Native x87-profile execution and FNSTSW admission remain
 closed. Do not synthesize x87 state or advertise an FPU feature.
+
+#### S2-30c. Bare FNCLEX (bounded local slice)
+
+Implement only exact unprefixed `DB E2` with an already-present
+`Some(X87State)`. Clear FSW[0:7] and FSW[15], preserving TOP and the concrete
+C0/C1/C2/C3 values only as a deterministic local policy; Intel leaves C0–C3
+undefined. Preserve FCW, FTW, all data payloads and pointer/opcode fields,
+GPRs, RFLAGS, and MXCSR. Advance RIP by two and retire once. The local profile
+assumes x87 availability and adds no CR0.EM/TS, #NM, WAIT, pending-exception
+check, or floating-point exception delivery. Other `DB` encodings, all
+prefixes, `9B DB E2`, and missing state remain Unsupported. Fetch fault, STOP,
+and budget exhaustion must not commit. Native x87-profile execution and FNCLEX
+admission remain closed.
 
 ### S2-31. x87 conversions, rounding и exceptions
 

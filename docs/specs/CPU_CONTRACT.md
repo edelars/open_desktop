@@ -1104,6 +1104,32 @@ The instruction reference specifies AX as the destination for `DF E0`, marks
 C0/C1/C2/C3 undefined, and states that FNSTSW does not generate floating-point
 exceptions.
 
+## Local S2-30c: bare `FNCLEX` (`DB E2`)
+
+The local long-mode interpreter accepts exactly unprefixed `DB E2` when
+`LongModeState.x87` already contains `Some(X87State)`. It clears FSW[0:7]
+and FSW[15] with the mask `0x80ff`, preserving TOP and the concrete C0/C1/C2/C3
+values only as deterministic local policy. Intel leaves C0/C1/C2/C3 undefined
+after FNCLEX, so their local retention is not an architectural preservation
+claim or a native-equality requirement. FCW, FTW, all eight raw data payloads,
+instruction/data pointers, last opcode, GPRs, RFLAGS, and MXCSR are untouched.
+RIP advances by two and one instruction retires.
+
+This existing local state profile assumes x87 is available. It does not check
+CR0.EM/TS, deliver #NM, insert WAIT, check pending unmasked exceptions, or
+deliver floating-point exceptions. FNCLEX is a no-wait instruction and raises
+no floating-point exception in this slice. All prefixes, other `DB` second
+bytes and `9B DB E2` remain Unsupported; missing state is Unsupported. Fetch
+faults, STOP and exhausted budget do not commit. Native x87-profile execution
+and FNCLEX admission remain closed; no FPU feature is advertised.
+
+Normative source: Intel® 64 and IA-32 Architectures Software Developer's
+Manual, revision 093, Vol.2A, “FCLEX/FNCLEX—Clear Exceptions,” pp.3-320–3-321,
+[official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf).
+It specifies bare `DB E2` as the no-wait form, clears exception flags PE/UE/OE/
+ZE/DE/IE, ES, SF and B, leaves C0–C3 undefined, and specifies no floating-
+point exception delivery or MXCSR effect.
+
 ## Local S2-29a: raw binary80 representation and classification
 
 `od-isa::x87::X87Binary80` is an immutable wrapper for ten bytes in memory

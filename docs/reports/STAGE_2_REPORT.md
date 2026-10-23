@@ -2838,6 +2838,40 @@ was run after the implementation. No physical Mac mini check was required for
 this integer helper. S2-29, S2-28, and architectural x87 behavior remain open
 under ISSUE-019.
 
+## S2-30c — bare FNCLEX (bounded local slice)
+
+The decoder and local interpreter accept only exact unprefixed `DB E2` with
+an existing `Some(X87State)`. Execution clears status bits 0–7 and 15 using
+the `0x80ff` mask, advances RIP by two, and retires once. TOP and the current
+concrete C0/C1/C2/C3 values remain as a deterministic local policy; Intel
+defines those condition bits as undefined after FNCLEX. FCW, FTW, all raw
+register payloads, instruction/data pointers, last opcode, GPRs, RFLAGS and
+MXCSR are unchanged. The profile assumes x87 availability and performs no
+CR0.EM/TS check, #NM delivery, WAIT, pending-exception check, or floating-point
+exception delivery. Missing state and every other/prefixed form are
+Unsupported; fetch fault, STOP and budget exhaustion commit no state. The
+testkit fixture profile accepts one FNCLEX instruction. Native profile and
+instruction admission remain closed and no FPU feature is advertised.
+
+Normative source: Intel SDM revision 093 Vol.2A, “FCLEX/FNCLEX—Clear
+Exceptions,” pp.3-320–3-321, [official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf).
+The reference specifies the no-wait `DB E2` form, clears PE/UE/OE/ZE/DE/IE,
+ES, SF and B, marks C0–C3 undefined, and has no floating-point exception or
+MXCSR effect.
+
+Validation passed: the focused FNCLEX interpreter tests, exhaustive DB-second-
+byte decoder test, testkit x87-profile tests, and local fixture-runner FNCLEX
+case passed. `cargo test --workspace --offline`, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, and `git diff --check` passed. The
+Linux-only native rejection test was not executed on this macOS host; its
+target was included in the Linux-target all-target compile check. Graphify
+update completed. `python3 tools/check_layout.py` reported the pre-existing
+unmapped `.serena/` directory, which remains untouched. Physical acceptance
+remains deferred to the shared final acceptance substage. S2-29, S2-28, and
+architectural x87 behavior remain open under ISSUE-019.
+
 ## S2-29q — compose same-exponent finite addition with one-round binary80 packing (partial)
 
 Added `add_finite_same_exponent_to_binary80(lhs, rhs, mode)`. It composes the

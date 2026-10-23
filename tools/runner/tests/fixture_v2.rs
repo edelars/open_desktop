@@ -1059,6 +1059,47 @@ fn local_x87_state_profile_runs_fnstsw_ax_from_raw_status_word() {
 }
 
 #[test]
+fn local_x87_state_profile_runs_fnclex_and_preserves_unaffected_fields() {
+    let mut fixture = Fixture::from_json(MFENCE_STORE_FENCE_LOAD).unwrap().fixture;
+    fixture.case_id = "local_x87_fnclex".into();
+    fixture.profile = od_testkit::v2::Profile::LongX87StateV1;
+    fixture.initial_state.rip = HexU64(0x0010_0000);
+    let mut seed = od_isa::state::X87State::fixture_seed();
+    seed.control_word = 0x0072;
+    seed.status_word = 0xa5c3;
+    seed.tag_word = 0x1234;
+    seed.instruction_pointer = 0x1234_5678_9abc_def0;
+    seed.data_pointer = 0xfedc_ba98_7654_3210;
+    seed.last_opcode = 0x0567;
+    fixture.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&seed));
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.guest_address = HexU64(0x0010_0000);
+    code.length = 2;
+    code.initial_bytes_hex = "dbe2".into();
+    code.comparison_mask_hex = "ffff".into();
+    fixture.instruction_budget = 1;
+    fixture.stop_rip = Some(HexU64(0x0010_0002));
+    fixture.expected_exit = ExpectedExit::StopAddress;
+
+    let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+    assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    let mut expected = seed;
+    expected.status_word = 0x2500;
+    assert_eq!(
+        observed.state.x87.as_ref(),
+        Some(&od_testkit::v2::X87Snapshot::from(&expected))
+    );
+}
+
+#[test]
 fn fs_load_commit_is_preserved_when_a_later_instruction_faults_and_self_compares() {
     let mut fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_22j_fs_base_composition.case.json"
