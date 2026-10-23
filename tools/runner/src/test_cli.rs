@@ -355,6 +355,18 @@ fn execute_fixture_v2(
             }),
             _ => None,
         },
+        gs_cache: match (
+            initial.gs_cache_limit,
+            initial.gs_cache_access,
+            initial.gs_cache_flags,
+        ) {
+            (Some(limit), Some(access), Some(flags)) => Some(od_isa::FsDescriptorCache {
+                limit: limit.get() as u32,
+                access: access.get() as u8,
+                flags: flags.get() as u8,
+            }),
+            _ => None,
+        },
     };
     let start = Instant::now();
     let limit = Duration::from_millis(u64::from(loaded.fixture.wall_timeout_ms));

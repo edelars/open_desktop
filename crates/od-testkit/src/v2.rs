@@ -21,6 +21,7 @@ pub const PROFILE_FS_SELECTOR: &str = "s2-long-fs-selector-v1";
 pub const PROFILE_GS_SELECTOR: &str = "s2-long-gs-selector-v1";
 pub const PROFILE_VERW_GDT: &str = "s2-long-verw-gdt-v1";
 pub const PROFILE_FS_LOAD: &str = "s2-long-fs-load-v1";
+pub const PROFILE_GS_LOAD: &str = "s2-long-gs-load-v1";
 /// Integer arithmetic flags, reserved bit 1 and DF. System flags are not yet modeled.
 pub const INTEGER_FLAGS: u64 = 0x8d7 | (1 << 10);
 
@@ -40,6 +41,8 @@ pub enum Profile {
     LongVerwGdtV1,
     #[serde(rename = "s2-long-fs-load-v1")]
     LongFsLoadV1,
+    #[serde(rename = "s2-long-gs-load-v1")]
+    LongGsLoadV1,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -119,6 +122,25 @@ pub struct IntegerState {
         skip_serializing_if = "Option::is_none"
     )]
     pub fs_cache_flags: Option<HexU64>,
+    /// Present only in the local MOV-GS-load profile.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub gs_cache_limit: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub gs_cache_access: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub gs_cache_flags: Option<HexU64>,
 }
 
 fn deserialize_present_hex_u64<'de, D>(deserializer: D) -> Result<Option<HexU64>, D::Error>
@@ -144,6 +166,9 @@ impl From<&LongModeState> for IntegerState {
             fs_cache_limit: None,
             fs_cache_access: None,
             fs_cache_flags: None,
+            gs_cache_limit: None,
+            gs_cache_access: None,
+            gs_cache_flags: None,
         }
     }
 }
@@ -174,6 +199,20 @@ impl IntegerState {
                 self.fs_cache_limit,
                 self.fs_cache_access,
                 self.fs_cache_flags,
+            ) {
+                (Some(limit), Some(access), Some(flags)) => {
+                    Some(od_isa::state::FsDescriptorCache {
+                        limit: limit.get() as u32,
+                        access: access.get() as u8,
+                        flags: flags.get() as u8,
+                    })
+                }
+                _ => None,
+            },
+            gs_cache: match (
+                self.gs_cache_limit,
+                self.gs_cache_access,
+                self.gs_cache_flags,
             ) {
                 (Some(limit), Some(access), Some(flags)) => {
                     Some(od_isa::state::FsDescriptorCache {
@@ -216,6 +255,18 @@ impl IntegerState {
                 result.fs_cache_access = Some(HexU64(u64::from(cache.access)));
                 result.fs_cache_flags = Some(HexU64(u64::from(cache.flags)));
             }
+        } else if profile == Profile::LongGsLoadV1 {
+            result.gs_base = Some(HexU64(state.gs_base));
+            result.gs_selector = Some(HexU64(u64::from(state.gs_selector)));
+            if let Some(gdtr) = state.gdtr {
+                result.gdtr_base = Some(HexU64(gdtr.base));
+                result.gdtr_limit = Some(HexU64(u64::from(gdtr.limit)));
+            }
+            if let Some(cache) = state.gs_cache {
+                result.gs_cache_limit = Some(HexU64(u64::from(cache.limit)));
+                result.gs_cache_access = Some(HexU64(u64::from(cache.access)));
+                result.gs_cache_flags = Some(HexU64(u64::from(cache.flags)));
+            }
         }
         result
     }
@@ -226,7 +277,8 @@ impl IntegerState {
                 Profile::LongIntegerV1
                 | Profile::LongGsBaseV1
                 | Profile::LongGsSelectorV1
-                | Profile::LongVerwGdtV1,
+                | Profile::LongVerwGdtV1
+                | Profile::LongGsLoadV1,
                 None,
             )
             | (Profile::LongFsBaseV1 | Profile::LongFsLoadV1, Some(_)) => {}
@@ -235,7 +287,8 @@ impl IntegerState {
                 Profile::LongIntegerV1
                 | Profile::LongGsBaseV1
                 | Profile::LongGsSelectorV1
-                | Profile::LongVerwGdtV1,
+                | Profile::LongVerwGdtV1
+                | Profile::LongGsLoadV1,
                 Some(_),
             ) => {
                 return Err(invalid("state.fs_base", "not part of this profile"));
@@ -253,9 +306,12 @@ impl IntegerState {
                 | Profile::LongFsLoadV1,
                 None,
             )
-            | (Profile::LongGsBaseV1 | Profile::LongGsSelectorV1, Some(_)) => {}
+            | (
+                Profile::LongGsBaseV1 | Profile::LongGsSelectorV1 | Profile::LongGsLoadV1,
+                Some(_),
+            ) => {}
             (_, Some(_)) => return Err(invalid("state.gs_base", "not part of this profile")),
-            (Profile::LongGsBaseV1 | Profile::LongGsSelectorV1, None) => {
+            (Profile::LongGsBaseV1 | Profile::LongGsSelectorV1 | Profile::LongGsLoadV1, None) => {
                 return Err(invalid("state.gs_base", "required by this profile"));
             }
         }
@@ -264,7 +320,8 @@ impl IntegerState {
                 Profile::LongIntegerV1
                 | Profile::LongFsBaseV1
                 | Profile::LongGsBaseV1
-                | Profile::LongVerwGdtV1,
+                | Profile::LongVerwGdtV1
+                | Profile::LongGsLoadV1,
                 None,
             )
             | (Profile::LongFsSelectorV1 | Profile::LongFsLoadV1, Some(_)) => {}
@@ -283,8 +340,8 @@ impl IntegerState {
             return Err(invalid("state.fs_selector", "must fit in 16 bits"));
         }
         match (profile, self.gs_selector) {
-            (Profile::LongGsSelectorV1, Some(_)) => {}
-            (Profile::LongGsSelectorV1, None) => {
+            (Profile::LongGsSelectorV1 | Profile::LongGsLoadV1, Some(_)) => {}
+            (Profile::LongGsSelectorV1 | Profile::LongGsLoadV1, None) => {
                 return Err(invalid("state.gs_selector", "required by this profile"));
             }
             (_, None) => {}
@@ -297,8 +354,12 @@ impl IntegerState {
             return Err(invalid("state.gs_selector", "must fit in 16 bits"));
         }
         match (profile, self.gdtr_base, self.gdtr_limit) {
-            (Profile::LongVerwGdtV1 | Profile::LongFsLoadV1, Some(_), Some(_)) => {}
-            (Profile::LongVerwGdtV1 | Profile::LongFsLoadV1, _, _) => {
+            (
+                Profile::LongVerwGdtV1 | Profile::LongFsLoadV1 | Profile::LongGsLoadV1,
+                Some(_),
+                Some(_),
+            ) => {}
+            (Profile::LongVerwGdtV1 | Profile::LongFsLoadV1 | Profile::LongGsLoadV1, _, _) => {
                 return Err(invalid(
                     "state.gdtr",
                     "base and limit are required by this profile",
@@ -367,6 +428,32 @@ impl IntegerState {
             }
             (_, None, None, None) => {}
             _ => return Err(invalid("state.fs_cache", "not part of this profile")),
+        }
+        match (
+            profile,
+            self.gs_cache_limit,
+            self.gs_cache_access,
+            self.gs_cache_flags,
+        ) {
+            (Profile::LongGsLoadV1, Some(limit), Some(access), Some(flags)) => {
+                if limit.get() > u32::MAX as u64 {
+                    return Err(invalid("state.gs_cache_limit", "must fit in 32 bits"));
+                }
+                if access.get() > u8::MAX as u64 {
+                    return Err(invalid("state.gs_cache_access", "must fit in 8 bits"));
+                }
+                if flags.get() > 0x0f {
+                    return Err(invalid("state.gs_cache_flags", "must fit in 4 bits"));
+                }
+            }
+            (Profile::LongGsLoadV1, _, _, _) => {
+                return Err(invalid(
+                    "state.gs_cache",
+                    "limit, access and flags are required by this profile",
+                ));
+            }
+            (_, None, None, None) => {}
+            _ => return Err(invalid("state.gs_cache", "not part of this profile")),
         }
         if self.rflags.get() & !INTEGER_FLAGS != 0 || self.rflags.get() & 2 == 0 {
             return Err(invalid(
@@ -736,10 +823,15 @@ impl RunResult {
                     self.instructions_executed,
                     Observation::Available { value } if value.get() > 0
                 );
+            let gs_load_retired = loaded.fixture.profile == Profile::LongGsLoadV1
+                && matches!(
+                    self.instructions_executed,
+                    Observation::Available { value } if value.get() > 0
+                );
             if !fs_load_retired && value.state.fs_base != loaded.fixture.initial_state.fs_base {
                 return Err(FormatError::CaseMismatch("state.fs_base"));
             }
-            if value.state.gs_base != loaded.fixture.initial_state.gs_base {
+            if !gs_load_retired && value.state.gs_base != loaded.fixture.initial_state.gs_base {
                 return Err(FormatError::CaseMismatch("state.gs_base"));
             }
             if !fs_load_retired
@@ -747,7 +839,9 @@ impl RunResult {
             {
                 return Err(FormatError::CaseMismatch("state.fs_selector"));
             }
-            if value.state.gs_selector != loaded.fixture.initial_state.gs_selector {
+            if !gs_load_retired
+                && value.state.gs_selector != loaded.fixture.initial_state.gs_selector
+            {
                 return Err(FormatError::CaseMismatch("state.gs_selector"));
             }
             if value.state.gdtr_base != loaded.fixture.initial_state.gdtr_base
@@ -761,6 +855,13 @@ impl RunResult {
                     || value.state.fs_cache_flags != loaded.fixture.initial_state.fs_cache_flags)
             {
                 return Err(FormatError::CaseMismatch("state.fs_cache"));
+            }
+            if !gs_load_retired
+                && (value.state.gs_cache_limit != loaded.fixture.initial_state.gs_cache_limit
+                    || value.state.gs_cache_access != loaded.fixture.initial_state.gs_cache_access
+                    || value.state.gs_cache_flags != loaded.fixture.initial_state.gs_cache_flags)
+            {
+                return Err(FormatError::CaseMismatch("state.gs_cache"));
             }
             if value.memory.len() != loaded.fixture.memory.len() {
                 return Err(FormatError::CaseMismatch("memory"));
@@ -888,6 +989,15 @@ pub fn compare(
     }
     if a.state.fs_cache_flags != b.state.fs_cache_flags {
         differences.push("fs_cache_flags".into());
+    }
+    if a.state.gs_cache_limit != b.state.gs_cache_limit {
+        differences.push("gs_cache_limit".into());
+    }
+    if a.state.gs_cache_access != b.state.gs_cache_access {
+        differences.push("gs_cache_access".into());
+    }
+    if a.state.gs_cache_flags != b.state.gs_cache_flags {
+        differences.push("gs_cache_flags".into());
     }
     if (a.state.rflags.get() ^ b.state.rflags.get()) & mask != 0 {
         differences.push("rflags".into());

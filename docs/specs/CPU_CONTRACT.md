@@ -653,6 +653,52 @@ p.3-15, 5.6.1 pp.5-33–5-35, 5.7 pp.5-37–5-38, 6.4.1.1 p.6-6,
 p.7-41, 11.1.2.1 p.11-3 Automatic Locking,
 [official combined Vol.3 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671447).
 
+### S2-22h — CPL3 GDT-only `MOV GS, AX`
+
+This partial local-only schema-v2 profile is `s2-long-gs-load-v1`. It admits
+only bare `8E E8` (`MOV GS, AX`) at Long64/CPL3, with AX as the source. Its
+wire state requires canonical48 `gs_base`, the visible 16-bit `gs_selector`,
+`gdtr_base`/`gdtr_limit`, and the explicit GS descriptor cache
+(`gs_cache_limit`, `gs_cache_access`, `gs_cache_flags`). Existing profiles,
+including `s2-long-fs-load-v1`, keep their existing wire shapes. FS state is
+preserved by the execution path; this profile does not add FS fields to its
+wire state.
+
+The selector must be non-null and use TI=0; null and LDT selectors, other CPLs,
+missing GDTR/cache state, prefixes, other source registers, memory sources,
+and other Sreg destinations remain Unsupported before descriptor access. For
+an admitted selector, the implementation applies the same bounded GDT checks
+as the FS load: full 8-byte bounds and canonical-address validation, one
+descriptor-origin read with architectural CPL3 and page privilege Ring0, then
+S/type/readability, privilege, P and A checks in that order. Type/privilege and
+bounds faults raise #GP(selector); P=0 raises #NP(selector), with error code
+`selector & 0xfffc`. A=0 causes one byte write of `access | 1` at descriptor
+byte 5 using the same context; A=1 is read-only. Only after the final memory
+operation succeeds does the interpreter update GS selector, zero-extended
+base32 and effective limit/cache attributes, then advance RIP by two and
+retire once. GPRs, RFLAGS, all FS state and GDTR are preserved.
+
+The effective cached limit expands the 20-bit descriptor limit when G=1;
+cache attributes are observable state and do not gate ordinary GS memory
+accesses in this slice. A=0 writes are limited to private synchronous RAM with
+sequential execution and no concurrent GDT writer, shared alias, DMA, delayed
+write or MMIO. The byte-sized backend operation is the selected semantic access
+size; it does not claim physical transaction width. Native profile admission
+fails before mapping, and legacy native admission rejects the decoded form.
+Automatic LOCK ordering remains the general open ISSUE-017. This exact load
+does not close S2-22 or imply Linux user-profile support.
+
+Tests cover exact decode/truncation and rejected neighbors, A=0/A=1, high-bit
+base32, G=0/G=1 limits and cache attributes, full FS-state preservation,
+null/TI/CPL/missing-state no-read behavior, bounds and fault priority, one
+read8 then optional write1 trace with descriptor origin/CPL3/pageRing0,
+architectural/backend/permission errors without CPU commit, split GDT regions,
+repeated selectors, later-fault persistence, literal result comparison,
+schema isolation, old FS-profile compatibility, and native/legacy rejection.
+
+This task reuses the Intel SDM revision 093 MOV and descriptor sources already
+recorded for S2-22f/g; no new independent PDF verification is claimed.
+
 ### Арифметика и eager flags — S2-11
 
 Реализованы long-mode ADD/ADC/SUB/SBB/CMP widths 8/16/32/64: оба направления

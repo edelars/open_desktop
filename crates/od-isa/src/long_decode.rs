@@ -395,6 +395,8 @@ pub enum Operation {
     VerwGdt,
     /// The sole S2-22f selector load: bare `8E E0` (MOV FS, AX).
     LoadFsSelector,
+    /// The sole S2-22h selector load: bare `8E E8` (MOV GS, AX).
+    LoadGsSelector,
     Extend {
         dst: RegisterView,
         src: Operand,
@@ -1595,10 +1597,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Primary, 0x8e) => {
                 let modrm = self.byte()?;
-                if self.length != 2 || prefixes != Prefixes::default() || modrm != 0xe0 {
+                if self.length != 2
+                    || prefixes != Prefixes::default()
+                    || !matches!(modrm, 0xe0 | 0xe8)
+                {
                     return Err(self.unsupported(opcode));
                 }
-                Operation::LoadFsSelector
+                if modrm == 0xe0 {
+                    Operation::LoadFsSelector
+                } else {
+                    Operation::LoadGsSelector
+                }
             }
             (OpcodeMap::Primary, byte @ 0x70..=0x7f) => {
                 size = OperandSize::Qword;
@@ -1761,6 +1770,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::MovFsSelectorToRax => false,
                 Operation::MovGsSelectorToRax => false,
                 Operation::LoadFsSelector => false,
+                Operation::LoadGsSelector => false,
                 Operation::Extend { src, .. } => {
                     matches!(src, Operand::Memory(_))
                 }
@@ -3899,7 +3909,6 @@ mod tests {
         assert_eq!(decoded.length, 2);
         assert!(matches!(decoded.operation, Operation::LoadFsSelector));
         for bytes in [
-            &[0x8e, 0xe8][..], // GS
             &[0x8e, 0xd0][..], // SS
             &[0x8e, 0xc0][..], // ES
             &[0x8e, 0xc8][..], // CS is not a MOV destination
@@ -3922,6 +3931,36 @@ mod tests {
             let mut memory = Memory::new(&[0x8e, 0xe0][..length]);
             assert!(matches!(memory.decode(), Err(DecodeError::Memory(_))));
             assert_eq!(memory.fetched.len(), length + 1);
+        }
+        let mut truncated = Memory::new(&[0x8e]);
+        assert!(matches!(truncated.decode(), Err(DecodeError::Memory(_))));
+        assert_eq!(truncated.fetched, vec![0x0fff, 0x1000]);
+    }
+
+    #[test]
+    fn gs_selector_load_decodes_only_bare_8e_e8() {
+        let mut memory = Memory::new(&[0x8e, 0xe8]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 2);
+        assert!(matches!(decoded.operation, Operation::LoadGsSelector));
+        for bytes in [
+            &[0x8e, 0xd0][..],
+            &[0x8e, 0xc0][..],
+            &[0x8e, 0xc8][..],
+            &[0x8e, 0xd8][..],
+            &[0x8e, 0x28][..],
+            &[0x8e, 0xe9][..],
+            &[0x48, 0x8e, 0xe8][..],
+            &[0x66, 0x8e, 0xe8][..],
+            &[0x65, 0x8e, 0xe8][..],
+            &[0xf0, 0x8e, 0xe8][..],
+            &[0xf3, 0x8e, 0xe8][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(matches!(
+                memory.decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
         }
         let mut truncated = Memory::new(&[0x8e]);
         assert!(matches!(truncated.decode(), Err(DecodeError::Memory(_))));
@@ -3954,6 +3993,7 @@ mod tests {
                 gs_selector: 0,
                 gdtr: None,
                 fs_cache: None,
+                gs_cache: None,
             };
             let before = state.clone();
             assert_eq!(

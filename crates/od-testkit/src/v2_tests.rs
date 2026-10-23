@@ -475,6 +475,95 @@ fn fs_load_profile_has_an_isolated_wire_shape_and_observes_hidden_cache_state() 
 }
 
 #[test]
+fn gs_load_profile_has_an_isolated_wire_shape_and_observes_hidden_cache_state() {
+    let loaded = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22h_gs_load_writable_g0.case.json"
+    ))
+    .unwrap();
+    assert_eq!(loaded.fixture.profile, Profile::LongGsLoadV1);
+    let wire: serde_json::Value =
+        serde_json::from_slice(&loaded.fixture.to_json().unwrap()).unwrap();
+    for field in [
+        "gs_base",
+        "gs_selector",
+        "gdtr_base",
+        "gdtr_limit",
+        "gs_cache_limit",
+        "gs_cache_access",
+        "gs_cache_flags",
+    ] {
+        assert!(wire["initial_state"].get(field).is_some(), "{field}");
+    }
+
+    let mut result = result(&loaded);
+    let initial_snapshot = snapshot(&mut result);
+    initial_snapshot.state.gs_base = Some(HexU64(0x8123_4567));
+    initial_snapshot.state.gs_selector = Some(HexU64(0x0b));
+    initial_snapshot.state.gs_cache_limit = Some(HexU64(0x0000_ffff));
+    initial_snapshot.state.gs_cache_access = Some(HexU64(0xf3));
+    initial_snapshot.state.gs_cache_flags = Some(HexU64(0));
+    assert!(result.validate_for(&loaded).is_ok());
+
+    let baseline = result.clone();
+    let mut changed_cache = baseline.clone();
+    snapshot(&mut changed_cache).state.gs_cache_limit = Some(HexU64(0x10000));
+    assert_eq!(
+        compare(&loaded, &baseline, &changed_cache).unwrap(),
+        vec!["gs_cache_limit"]
+    );
+
+    for field in [
+        "gs_base",
+        "gs_selector",
+        "gdtr_base",
+        "gdtr_limit",
+        "gs_cache_limit",
+        "gs_cache_access",
+        "gs_cache_flags",
+    ] {
+        let mut malformed: serde_json::Value =
+            serde_json::from_slice(&loaded.fixture.to_json().unwrap()).unwrap();
+        malformed["initial_state"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err(),
+            "missing {field}"
+        );
+        malformed["initial_state"][field] = serde_json::Value::Null;
+        assert!(
+            Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err(),
+            "null {field}"
+        );
+    }
+
+    let mut too_wide_cache: serde_json::Value =
+        serde_json::from_slice(&loaded.fixture.to_json().unwrap()).unwrap();
+    too_wide_cache["initial_state"]["gs_cache_access"] = serde_json::json!("0x0000000000000100");
+    assert!(Fixture::from_json(&serde_json::to_vec(&too_wide_cache).unwrap()).is_err());
+    let mut selector_with_ti: serde_json::Value =
+        serde_json::from_slice(&loaded.fixture.to_json().unwrap()).unwrap();
+    selector_with_ti["initial_state"]["gs_selector"] = serde_json::json!("0x000000000000000c");
+    assert!(Fixture::from_json(&serde_json::to_vec(&selector_with_ti).unwrap()).is_ok());
+    selector_with_ti["initial_state"]["gs_selector"] = serde_json::json!("0x0000000000010000");
+    assert!(Fixture::from_json(&serde_json::to_vec(&selector_with_ti).unwrap()).is_err());
+
+    let old = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_21g_mfence_store_fence_load.case.json"
+    ))
+    .unwrap();
+    let old_wire: serde_json::Value =
+        serde_json::from_slice(&old.fixture.to_json().unwrap()).unwrap();
+    for field in ["gs_cache_limit", "gs_cache_access", "gs_cache_flags"] {
+        assert!(
+            old_wire["initial_state"].get(field).is_none(),
+            "legacy field {field}"
+        );
+    }
+}
+
+#[test]
 fn fs_load_state_change_is_allowed_after_retirement_independent_of_terminal_outcome() {
     let loaded = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_22f_fs_load_writable_g0.case.json"

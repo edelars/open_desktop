@@ -969,3 +969,35 @@ python3 tests/cpu/generate_stage2_fs_load.py --check
 python3 tests/cpu/test_stage2_fs_load_generator.py
 cargo test -p od-runner --test fixture_v2 fs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state --offline
 ```
+
+## CPL3 GDT-only `MOV GS, AX` fixture S2-22h
+
+The partial local-only `s2-long-gs-load-v1` profile runs only bare `8E E8`
+(`MOV GS, AX`) at Long64/CPL3. The 11 bounded literal fixtures cover accessed
+writable/read-only data, readable nonconforming code and a DPL0 conforming
+code descriptor loadable from CPL3, invalid
+system/execute-only and privilege cases, P=0, a short GDTR limit, and writable
+and read-only data with A=0. They compare full GPR/RFLAGS/RIP/GDTR and FS
+canaries, GS selector/base/cache, descriptor bytes and exact #GP/#NP
+error codes. Unit tests additionally cover upper base32 bits, limit expansion,
+A=1 without write permission, descriptor access ordering and context, read and
+write faults without CPU commit, repeated selectors, and split adjacent GDT
+regions. A=0 writes are one semantic byte write at descriptor+5 after the
+8-byte read; the backend width does not assert physical bus width. Like the FS
+slice, writes require private synchronous RAM and serial execution without
+external observers/writers, DMA, shared aliases, delayed writes or MMIO. This
+is a local interpreter profile; native and physical execution are not claimed.
+
+The generator takes the opcode bytes and selector/access/flags/base fields as
+handwritten literals, then serializes descriptor fields into the architectural
+eight-byte layout. It does not derive expected CPU results. Sources: Intel
+SDM revision 093, Vol.2B (253667-093US), MOV pp.4-28–4-31;
+Vol.3A (325384-093US), §3.4.3–§3.4.5.1, §5.6.1, §5.7, and §11.1.2.1
+Automatic Locking, as referenced by the checked-in CPU contract. The generator
+records the same official PDF links and literal field provenance.
+
+```sh
+python3 tests/cpu/generate_stage2_gs_load.py --check
+python3 tests/cpu/test_stage2_gs_load_generator.py
+cargo test -p od-runner --test fixture_v2 gs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state --offline
+```

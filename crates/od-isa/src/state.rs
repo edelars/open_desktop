@@ -113,6 +113,8 @@ pub struct LongModeState {
     pub gdtr: Option<Gdtr>,
     /// Hidden FS descriptor cache only in the local MOV-FS-load profile.
     pub fs_cache: Option<FsDescriptorCache>,
+    /// Hidden GS descriptor cache only in the local MOV-GS-load profile.
+    pub gs_cache: Option<FsDescriptorCache>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -143,6 +145,7 @@ impl Default for LongModeState {
             gs_selector: 0,
             gdtr: None,
             fs_cache: None,
+            gs_cache: None,
         }
     }
 }
@@ -174,6 +177,7 @@ pub enum FragmentAdapterError {
     UnsupportedGsSelector(u16),
     UnsupportedGdtr(Gdtr),
     UnsupportedFsCache(FsDescriptorCache),
+    UnsupportedGsCache(FsDescriptorCache),
     InstructionPointerOutOfRange(u64),
     UnsupportedFlags(u64),
     ReservedFlagMissing,
@@ -214,6 +218,9 @@ impl TryFrom<&LongModeState> for FragmentState {
         }
         if let Some(fs_cache) = state.fs_cache {
             return Err(FragmentAdapterError::UnsupportedFsCache(fs_cache));
+        }
+        if let Some(gs_cache) = state.gs_cache {
+            return Err(FragmentAdapterError::UnsupportedGsCache(gs_cache));
         }
         for encoding in 4..16 {
             if state.gpr[encoding] != 0 {
@@ -263,6 +270,7 @@ mod tests {
                         gs_selector: 0,
                         gdtr: None,
                         fs_cache: None,
+                        gs_cache: None,
                     };
                     let before = state.clone();
                     let view = RegisterView::low(register, size);

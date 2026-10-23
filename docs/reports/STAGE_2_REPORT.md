@@ -1,6 +1,6 @@
 # Этап 2 — ход реализации
 
-**Дата:** 22 октября 2026 года. Этап не принят; S2-00–14 приняты в указанных
+**Дата:** 23 октября 2026 года. Этап не принят; S2-00–14 приняты в указанных
 границах, включая положительный physical slice S2-14.
 ISSUE-011/012 остаются открытыми; наличие нового состояния или local instruction
 slice не означает завершение этапа.
@@ -165,6 +165,51 @@ python3 tests/cpu/test_stage2_fs_load_generator.py
 cargo test -p od-isa --offline mov_fs_ax
 cargo test -p od-testkit --offline fs_load_accessed_byte_write_spans_adjacent_gdt_regions_without_full_descriptor_writeback
 cargo test -p od-runner --test fixture_v2 --offline fs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state
+```
+
+## S2-22h — CPL3 GDT-only `MOV GS, AX`
+
+Added the separate local-only `s2-long-gs-load-v1` profile for exactly bare
+`8E E8` at Long64/CPL3. The visible GS selector, canonical48 GS base, GDTR and
+GS descriptor cache have independent schema-v2 fields; the FS profile wire
+shape remains unchanged. The interpreter reuses the bounded FS validator and
+descriptor executor, committing only GS selector/base/cache after successful
+memory operations. It reads one 8-byte descriptor with descriptor-table origin
+and architectural CPL3/page privilege Ring0, checks bounds/canonicality and
+S/type/readability → privilege → P → A, writes `access | 1` to descriptor byte
+5 only for A=0, and commits RIP+2/retirement only after success. Full FS state,
+all GPRs, RFLAGS and GDTR remain unchanged. Null/TI, other CPLs, other source
+registers, prefixes and other Sreg destinations are Unsupported. Native profile
+admission remains fail-closed; S2-22, ISSUE-017 and ISSUE-018 remain open.
+
+Eleven handwritten literal fixtures cover A=1 success with a read-only GDT,
+A=0 writable/read-only descriptor paths, high-bit base32, G=0/G=1 limits and
+attributes, descriptor type/privilege/presence faults, and GDTR bounds. The
+runner checks literal full GPR/RFLAGS/RIP/GDTR results, GS base/selector/cache,
+fault codes and descriptor bytes. Unit tests additionally check CPL/null/TI/
+missing-state no-read cases, exact read8 and read8/write1 traces and contexts,
+architectural/backend/permission errors without CPU commit, split GDT regions,
+repeat-selector behavior, later-fault persistence, and an FS-state canary. The
+fixture generator serializes handwritten bytes/state and does not calculate
+instruction semantics.
+
+Local verification passed: `cargo test -p od-isa -p od-testkit -p od-runner
+-p od-x86-runner --offline` (all targets; 364 tests passed),
+`cargo check --workspace --all-targets --offline`, all 87 Python CPU tests,
+GS fixture generation/freshness and provenance tests, `cargo fmt --all -- --check`,
+`python3 tools/check_layout.py`, and `git diff --check`. Independent Sol-medium
+review found no remaining issues after adding explicit missing-state no-read
+coverage and a DPL0 conforming-code fixture that exercises the privilege rule.
+No SSH, Mac mini, native execution or physical check was performed; those remain
+in the shared final acceptance substage. This work uses the CPU_CONTRACT rev093
+references already checked in; no new independent PDF verification is claimed.
+
+```sh
+python3 tests/cpu/generate_stage2_gs_load.py --check
+python3 tests/cpu/test_stage2_gs_load_generator.py
+cargo test -p od-isa --offline mov_gs_ax
+cargo test -p od-testkit --offline gs_load_accessed_byte_write_spans_adjacent_gdt_regions_without_full_descriptor_writeback
+cargo test -p od-runner --test fixture_v2 --offline gs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state
 ```
 
 ## S2-00 — профиль

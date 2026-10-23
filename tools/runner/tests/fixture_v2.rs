@@ -195,6 +195,126 @@ const FS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32, bool)]
         true,
     ),
 ];
+const GS_LOAD_CASES: &[(&str, &[u8], Option<(u8, u32)>, u8, u32, u8, u32, bool)] = &[
+    (
+        "s2_22h_gs_load_writable_g0",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22h_gs_load_writable_g0.case.json"),
+        None,
+        0xf3,
+        0,
+        0,
+        0x89ab_cdef,
+        false,
+    ),
+    (
+        "s2_22h_gs_load_readonly_g1",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22h_gs_load_readonly_g1.case.json"),
+        None,
+        0xf1,
+        0x0fff,
+        8,
+        0,
+        false,
+    ),
+    (
+        "s2_22h_gs_load_readable_code",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22h_gs_load_readable_code.case.json"),
+        None,
+        0xfb,
+        0,
+        0,
+        0,
+        false,
+    ),
+    (
+        "s2_22h_gs_load_conforming_code",
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_22h_gs_load_conforming_code.case.json"
+        ),
+        None,
+        0x9f,
+        0,
+        0,
+        0,
+        false,
+    ),
+    (
+        "s2_22h_gs_load_system_gp",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22h_gs_load_system_gp.case.json"),
+        Some((13, 8)),
+        0,
+        0,
+        0,
+        0,
+        false,
+    ),
+    (
+        "s2_22h_gs_load_execute_only_gp",
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_22h_gs_load_execute_only_gp.case.json"
+        ),
+        Some((13, 8)),
+        0,
+        0,
+        0,
+        0,
+        false,
+    ),
+    (
+        "s2_22h_gs_load_privilege_gp",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22h_gs_load_privilege_gp.case.json"),
+        Some((13, 8)),
+        0,
+        0,
+        0,
+        0,
+        false,
+    ),
+    (
+        "s2_22h_gs_load_not_present_np",
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_22h_gs_load_not_present_np.case.json"
+        ),
+        Some((11, 8)),
+        0,
+        0,
+        0,
+        0,
+        false,
+    ),
+    (
+        "s2_22h_gs_load_table_limit_gp",
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_22h_gs_load_table_limit_gp.case.json"
+        ),
+        Some((13, 8)),
+        0,
+        0,
+        0,
+        0,
+        false,
+    ),
+    (
+        "s2_22h_gs_load_a0_writable",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22h_gs_load_a0_writable.case.json"),
+        None,
+        0xf3,
+        0,
+        0,
+        0x89ab_cdef,
+        true,
+    ),
+    (
+        "s2_22h_gs_load_a0_readonly",
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_22h_gs_load_a0_readonly.case.json"),
+        None,
+        0xf1,
+        0,
+        0,
+        0,
+        true,
+    ),
+];
 const CMPXCHG_QWORD_REGISTER_EQUAL: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_21c_cmpxchg_qword_register_equal.case.json"
 );
@@ -625,6 +745,112 @@ fn fs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state(
             assert_eq!(
                 observed.state.fs_cache_flags,
                 input.fixture.initial_state.fs_cache_flags
+            );
+        }
+        assert_eq!(
+            observed.state.gpr, expected_gpr,
+            "all GPRs remain unchanged: {case_id}"
+        );
+        assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    }
+}
+
+#[test]
+fn gs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state() {
+    for (
+        case_id,
+        bytes,
+        fault,
+        expected_access,
+        expected_limit,
+        expected_flags,
+        expected_base,
+        accessed_update,
+    ) in GS_LOAD_CASES
+    {
+        let (input, result) = run(bytes, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, *case_id);
+        assert_eq!(input.fixture.profile, od_testkit::v2::Profile::LongGsLoadV1);
+        let observed = snapshot(&result);
+        assert_eq!(
+            observed.state.gdtr_base,
+            input.fixture.initial_state.gdtr_base
+        );
+        assert_eq!(
+            observed.state.gdtr_limit,
+            input.fixture.initial_state.gdtr_limit
+        );
+        assert_eq!(observed.memory.len(), 2);
+        assert_eq!(observed.memory[0].bytes_hex, "8ee8");
+        let mut expected_gdt = input.fixture.memory[1].initial_bytes_hex.clone();
+        if *accessed_update {
+            expected_gdt.replace_range(26..28, &format!("{expected_access:02x}"));
+        }
+        assert_eq!(observed.memory[1].bytes_hex, expected_gdt);
+        assert_eq!(
+            observed.exception,
+            match fault {
+                Some((vector, code)) => Observation::Available {
+                    value: Some(od_testkit::result::ExceptionSnapshot {
+                        vector: *vector,
+                        error_code: Observation::Available {
+                            value: HexU64(u64::from(*code))
+                        },
+                        faulting_rip: HexU64(0x0010_0000),
+                        fault_address: Observation::Unavailable {
+                            reason: "exception has no reported linear address".into(),
+                        },
+                    })
+                },
+                None => Observation::Available { value: None },
+            }
+        );
+        let expected_exit = if fault.is_some() { 0 } else { 1 };
+        assert_eq!(count(&result), expected_exit);
+
+        let expected_gpr = input.fixture.initial_state.gpr;
+        if fault.is_none() {
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+            assert_eq!(
+                observed.state.gs_base,
+                Some(HexU64(u64::from(*expected_base)))
+            );
+            assert_eq!(
+                observed.state.gs_selector,
+                Some(HexU64(expected_gpr[0].get() & 0xffff))
+            );
+            assert_eq!(
+                observed.state.gs_cache_access,
+                Some(HexU64(u64::from(*expected_access)))
+            );
+            assert_eq!(
+                observed.state.gs_cache_limit,
+                Some(HexU64(u64::from(*expected_limit)))
+            );
+            assert_eq!(
+                observed.state.gs_cache_flags,
+                Some(HexU64(u64::from(*expected_flags)))
+            );
+        } else {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            assert_eq!(observed.state.rip, HexU64(0x0010_0000));
+            assert_eq!(observed.state.gs_base, input.fixture.initial_state.gs_base);
+            assert_eq!(
+                observed.state.gs_selector,
+                input.fixture.initial_state.gs_selector
+            );
+            assert_eq!(
+                observed.state.gs_cache_limit,
+                input.fixture.initial_state.gs_cache_limit
+            );
+            assert_eq!(
+                observed.state.gs_cache_access,
+                input.fixture.initial_state.gs_cache_access
+            );
+            assert_eq!(
+                observed.state.gs_cache_flags,
+                input.fixture.initial_state.gs_cache_flags
             );
         }
         assert_eq!(

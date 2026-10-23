@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_22h_gs_load_a0_readonly",
+  "profile": "s2-long-gs-load-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten instruction bytes, selector/access/flags/base fields, state, and expected exit. The generator lays the literal descriptor fields out in the architectural eight-byte encoding; it does not assemble the instruction, emulate, or calculate CPU semantics.",
+    "specification": "Intel SDM revision 093 (253667-093US), Vol.2B MOV pp.4-28\u20134-31; Vol.3A (325384-093US) \u00a73.4.5.1 pp.3-12\u20133-13, \u00a75.6.1 pp.5-33\u20135-35, \u00a75.7 pp.5-37\u20135-38, \u00a711.1.2.1 p.11-3 Automatic Locking.",
+    "specification_version": "Intel SDM revision 093; Vol.2B PDF https://cdrdv2.intel.com/v1/dl/getContent/671241; Vol.3A PDF https://cdrdv2.intel.com/v1/dl/getContent/671447; project S2-22h. present read-only data descriptor starts with A=0; one byte write sets A"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0xaabbccddeeff000b",
+      "0x0102030405060708",
+      "0x1122334455667788",
+      "0x8877665544332211",
+      "0x0000000000200080",
+      "0x0000000000200081",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7",
+    "gs_base": "0xffff800000001000",
+    "gs_selector": "0x0000000000000033",
+    "gdtr_base": "0x0000000000200000",
+    "gdtr_limit": "0x000000000000000f",
+    "gs_cache_limit": "0x000000000000ffff",
+    "gs_cache_access": "0x00000000000000f3",
+    "gs_cache_flags": "0x0000000000000000"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 2,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "8ee8",
+      "comparison_mask_hex": "ffff"
+    },
+    {
+      "region_id": "gdt",
+      "guest_address": "0x0000000000200000",
+      "length": 16,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "00000000000000000000000000f00000",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100002",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

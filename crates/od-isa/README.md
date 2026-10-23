@@ -94,3 +94,12 @@ Vol.2B MOV pp.4-28–4-31 and Vol.3A §3.4.5.1 pp.3-12–3-13, §5.6.1
 pp.5-33–5-35, §5.7 pp.5-37–5-38, §11.1.2.1 p.11-3 Automatic Locking. See
 the [CPU contract](../../docs/specs/CPU_CONTRACT.md) and
 [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
+
+S2-22h adds one local-only Long64/CPL3 `MOV GS, AX` form for exact bare
+`8E E8` and a non-null GDT selector. It shares the bounded descriptor
+validation and A-bit update semantics above, but maps only GS state in the
+new `s2-long-gs-load-v1` profile; FS state remains a canary and existing wire
+profiles are unchanged. Native admission fails closed. No physical execution
+or general GS/SS, LDT, other-CPL or prefixed form is claimed. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md), [fixtures](../../tests/fixtures/x86/stage2/README.md)
+and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).

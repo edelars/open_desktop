@@ -427,6 +427,7 @@ fn state(regs: &libc::user_regs_struct) -> LongModeState {
         gs_selector: 0,
         gdtr: None,
         fs_cache: None,
+        gs_cache: None,
     }
 }
 
@@ -554,6 +555,7 @@ fn admission_with_tracee_memory(
         instruction.operation,
         Operation::MovFsLoad { .. }
             | Operation::LoadFsSelector
+            | Operation::LoadGsSelector
             | Operation::MovFsSelectorToRax
             | Operation::MovGsSelectorToRax
             | Operation::VerwGdt
@@ -1311,6 +1313,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongGsSelectorV1
             | v2::Profile::LongVerwGdtV1
             | v2::Profile::LongFsLoadV1
+            | v2::Profile::LongGsLoadV1
     ) {
         return empty_result(
             loaded,
@@ -3582,6 +3585,23 @@ mod tests {
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
 
         let old_profile = fixture(&code);
+        let actual = old_profile.fixture.initial_state.to_cpu().unwrap();
+        let mut decoder = FlatMemory::from_fixture(&old_profile.fixture).unwrap();
+        let error = admission(&old_profile.fixture, &mut decoder, &actual).unwrap_err();
+        assert!(error.contains("FS/GS segment form is not admitted"));
+    }
+
+    #[test]
+    fn gs_load_profile_fails_closed_before_tracee_and_legacy_decode_is_rejected() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_22h_gs_load_writable_g0.case.json"
+        ))
+        .unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+
+        let old_profile = fixture(&[0x8e, 0xe8]);
         let actual = old_profile.fixture.initial_state.to_cpu().unwrap();
         let mut decoder = FlatMemory::from_fixture(&old_profile.fixture).unwrap();
         let error = admission(&old_profile.fixture, &mut decoder, &actual).unwrap_err();
