@@ -188,6 +188,7 @@ fn step_tracked_with_stop(
             | Operation::Fnclex
             | Operation::FnstswAx
             | Operation::FaddSt0St { .. }
+            | Operation::FsubSt0St { .. }
             | Operation::FaddStSt0 { .. }
             | Operation::FaddpStSt0 { .. }
     ) && state.x87.is_none()
@@ -198,6 +199,13 @@ fn step_tracked_with_stop(
     }
     if let Operation::FaddSt0St { source } = instruction.operation
         && exact_fadd_result(state, 0, source).is_none()
+    {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
+    if let Operation::FsubSt0St { source } = instruction.operation
+        && exact_fsub_result(state, 0, source).is_none()
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
@@ -256,6 +264,13 @@ fn step_tracked_with_stop(
                 && instruction.prefixes == Prefixes::default()
         }
         Operation::FaddSt0St { source } => {
+            instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0xd8
+                && instruction.length == 2
+                && instruction.prefixes == Prefixes::default()
+                && source <= 7
+        }
+        Operation::FsubSt0St { source } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0xd8
                 && instruction.length == 2
@@ -506,6 +521,17 @@ fn step_tracked_with_stop(
             // The complete bounded precondition and result check ran above, before mutation.
             let result = exact_fadd_result(state, 0, source).expect("FADD result was prevalidated");
             let x87 = state.x87.as_mut().expect("FADD state was prevalidated");
+            let destination = x87
+                .physical_register_for_st(0)
+                .expect("ST(0) is a valid logical register") as usize;
+            x87.registers[destination] = result.to_bytes();
+            x87.status_word &= !(1 << 9);
+            x87.instruction_pointer = state.rip;
+        }
+        Operation::FsubSt0St { source } => {
+            // The complete bounded precondition and result check ran above, before mutation.
+            let result = exact_fsub_result(state, 0, source).expect("FSUB result was prevalidated");
+            let x87 = state.x87.as_mut().expect("FSUB state was prevalidated");
             let destination = x87
                 .physical_register_for_st(0)
                 .expect("ST(0) is a valid logical register") as usize;
@@ -1349,6 +1375,28 @@ fn exact_fadd_result(
     destination_index: u8,
     source_index: u8,
 ) -> Option<X87Binary80> {
+    exact_same_exponent_binary_result(state, destination_index, source_index, false)
+}
+
+/// Return an exact-only local FSUB result. ST(0)-ST(0) cancellation is
+/// deliberately outside this bounded profile, including the i=0 encoding.
+fn exact_fsub_result(
+    state: &LongModeState,
+    destination_index: u8,
+    source_index: u8,
+) -> Option<X87Binary80> {
+    if source_index == 0 {
+        return None;
+    }
+    exact_same_exponent_binary_result(state, destination_index, source_index, true)
+}
+
+fn exact_same_exponent_binary_result(
+    state: &LongModeState,
+    destination_index: u8,
+    source_index: u8,
+    subtract: bool,
+) -> Option<X87Binary80> {
     let x87 = state.x87.as_ref()?;
     if x87.control_word != 0x037f || x87.status_word & 0x80ff != 0 {
         return None;
@@ -1372,7 +1420,17 @@ fn exact_fadd_result(
         return None;
     }
     let lhs = lhs_raw.normalize_finite()?;
-    let rhs = rhs_raw.normalize_finite()?;
+    // FSUB is implemented by toggling the sign in a local raw copy only after
+    // the original source has passed the canonical-Normal gate. The guest
+    // source register and its raw payload are never modified.
+    let rhs_for_sum = if subtract {
+        let mut bytes = rhs_raw.to_bytes();
+        bytes[9] ^= 0x80;
+        X87Binary80::from_bytes(bytes)
+    } else {
+        rhs_raw
+    };
+    let rhs = rhs_for_sum.normalize_finite()?;
     if lhs.exponent() != rhs.exponent() {
         return None;
     }
@@ -8923,6 +8981,405 @@ mod tests {
             );
             assert_eq!(state, before, "source index {source_index}");
         }
+    }
+
+    #[test]
+    fn fsub_st0_sti_commits_literal_exact_results_for_all_top_and_indices() {
+        let vectors = [
+            // 1.5 - 1 = 0.5
+            (
+                0xc000_0000_0000_0000,
+                0x3fff,
+                false,
+                0x8000_0000_0000_0000,
+                0x3fff,
+                false,
+                0x8000_0000_0000_0000,
+                0x3ffe,
+                false,
+            ),
+            // 1 - 1.5 = -0.5
+            (
+                0x8000_0000_0000_0000,
+                0x3fff,
+                false,
+                0xc000_0000_0000_0000,
+                0x3fff,
+                false,
+                0x8000_0000_0000_0000,
+                0x3ffe,
+                true,
+            ),
+            // -1.5 - (-1) = -0.5
+            (
+                0xc000_0000_0000_0000,
+                0x3fff,
+                true,
+                0x8000_0000_0000_0000,
+                0x3fff,
+                true,
+                0x8000_0000_0000_0000,
+                0x3ffe,
+                true,
+            ),
+            // -1 - (-1.5) = 0.5
+            (
+                0x8000_0000_0000_0000,
+                0x3fff,
+                true,
+                0xc000_0000_0000_0000,
+                0x3fff,
+                true,
+                0x8000_0000_0000_0000,
+                0x3ffe,
+                false,
+            ),
+            // 1 - (-1) = 2
+            (
+                0x8000_0000_0000_0000,
+                0x3fff,
+                false,
+                0x8000_0000_0000_0000,
+                0x3fff,
+                true,
+                0x8000_0000_0000_0000,
+                0x4000,
+                false,
+            ),
+            // -1 - 1 = -2
+            (
+                0x8000_0000_0000_0000,
+                0x3fff,
+                true,
+                0x8000_0000_0000_0000,
+                0x3fff,
+                false,
+                0x8000_0000_0000_0000,
+                0x4000,
+                true,
+            ),
+            // 1.0000000000000002 - 1 = 2^-63
+            (
+                0x8000_0000_0000_0001,
+                0x3fff,
+                false,
+                0x8000_0000_0000_0000,
+                0x3fff,
+                false,
+                0x8000_0000_0000_0000,
+                0x3fc0,
+                false,
+            ),
+            // 1 - 1.0000000000000002 = -2^-63
+            (
+                0x8000_0000_0000_0000,
+                0x3fff,
+                false,
+                0x8000_0000_0000_0001,
+                0x3fff,
+                false,
+                0x8000_0000_0000_0000,
+                0x3fc0,
+                true,
+            ),
+            // max coefficient - negative max coefficient = max coefficient * 2
+            (
+                u64::MAX,
+                0x3fff,
+                false,
+                u64::MAX,
+                0x3fff,
+                true,
+                u64::MAX,
+                0x4000,
+                false,
+            ),
+            // 3 * minimum normal - 2 * minimum normal = minimum normal
+            (
+                0xc000_0000_0000_0000,
+                0x0002,
+                false,
+                0x8000_0000_0000_0000,
+                0x0002,
+                false,
+                0x8000_0000_0000_0000,
+                0x0001,
+                false,
+            ),
+        ];
+        for (lhs_sig, lhs_exp, lhs_neg, rhs_sig, rhs_exp, rhs_neg, out_sig, out_exp, out_neg) in
+            vectors
+        {
+            let lhs = binary80_normal(lhs_sig, lhs_exp, lhs_neg);
+            let rhs = binary80_normal(rhs_sig, rhs_exp, rhs_neg);
+            let expected = binary80_normal(out_sig, out_exp, out_neg);
+            for top in 0u8..8 {
+                for source_index in 1u8..8 {
+                    let mut state = LongModeState::default();
+                    state.rip = 0x2000;
+                    state.gpr = std::array::from_fn(|index| 0x1122_3344_5566_7788 ^ index as u64);
+                    state.rflags = 0xa55a_1234_5678_9abc;
+                    let destination = usize::from(top);
+                    let source = usize::from((top + source_index) & 7);
+                    let mut x87 = crate::state::X87State::fixture_seed();
+                    x87.control_word = 0x037f;
+                    x87.status_word = (u16::from(top) << 11) | 0x4700;
+                    x87.tag_word = u16::MAX & !(3 << (destination * 2)) & !(3 << (source * 2));
+                    x87.registers = std::array::from_fn(|physical| {
+                        std::array::from_fn(|byte| {
+                            0x60u8.wrapping_add((physical * 13 + byte) as u8)
+                        })
+                    });
+                    x87.registers[destination] = lhs;
+                    x87.registers[source] = rhs;
+                    x87.instruction_pointer = 0x0123_4567_89ab_cdef;
+                    x87.data_pointer = 0xfedc_ba98_7654_3210;
+                    x87.last_opcode = 0x05aa;
+                    state.x87 = Some(x87);
+                    let before = state.clone();
+                    let mut memory = Memory::at(&[0xd8, 0xe0 | source_index], 0x2000);
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced),
+                        "TOP={top}, i={source_index}"
+                    );
+                    assert_eq!(state.rip, 0x2002);
+                    assert_eq!(state.gpr, before.gpr);
+                    assert_eq!(state.rflags, before.rflags);
+                    let result = state.x87.as_ref().unwrap();
+                    assert_eq!(result.registers[destination], expected);
+                    for physical in 0..8 {
+                        if physical == destination {
+                            continue;
+                        }
+                        assert_eq!(
+                            result.registers[physical],
+                            before.x87.as_ref().unwrap().registers[physical]
+                        );
+                    }
+                    assert_eq!(result.control_word, 0x037f);
+                    assert_eq!(result.tag_word, before.x87.as_ref().unwrap().tag_word);
+                    assert_eq!(result.top(), top);
+                    assert_eq!(
+                        result.status_word,
+                        before.x87.as_ref().unwrap().status_word & !(1 << 9)
+                    );
+                    assert_eq!(result.instruction_pointer, 0x2000);
+                    assert_eq!(
+                        result.data_pointer,
+                        before.x87.as_ref().unwrap().data_pointer
+                    );
+                    assert_eq!(result.last_opcode, before.x87.as_ref().unwrap().last_opcode);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fsub_st0_sti_rejects_i0_and_unsupported_domains_atomically() {
+        let one = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+        for top in 0u8..8 {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = (u16::from(top) << 11) | 0x0200;
+            x87.tag_word = u16::MAX & !(3 << (usize::from(top) * 2));
+            x87.registers[usize::from(top)] = one;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd8, 0xe0], 0x1000);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xd8 })
+            );
+            assert_eq!(state, before, "TOP={top}");
+        }
+
+        let mut invalid_states = Vec::new();
+        let make_state = || {
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0;
+            x87.tag_word = 0;
+            x87.registers[0] = one;
+            x87.registers[1] = one;
+            x87
+        };
+        invalid_states.push(make_state());
+        let mut x = make_state();
+        x.control_word = 0x027f;
+        invalid_states.push(x);
+        let mut x = make_state();
+        x.status_word = 1;
+        invalid_states.push(x);
+        let mut x = make_state();
+        x.status_word = 0x8000;
+        invalid_states.push(x);
+        let mut x = make_state();
+        x.tag_word = 3;
+        invalid_states.push(x);
+        let mut x = make_state();
+        x.tag_word = 2;
+        invalid_states.push(x);
+        let mut x = make_state();
+        x.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0x4000, false);
+        invalid_states.push(x);
+        for bad in [
+            binary80_normal(0, 0, false),
+            binary80_normal(1, 0, false),
+            binary80_normal(0x8000_0000_0000_0000, 0, false),
+            binary80_normal(0, 1, false),
+            binary80_normal(0x8000_0000_0000_0000, 0x7fff, false),
+            binary80_normal(0xc000_0000_0000_0000, 0x7fff, false),
+            binary80_normal(0x8000_0000_0000_0001, 0x7fff, false),
+            binary80_normal(0x8000_0000_0000_0000, 1, false),
+            binary80_normal(0, 0x7fff, false),
+            binary80_normal(0x4000_0000_0000_0000, 0x7fff, false),
+            binary80_normal(1, 0x7fff, false),
+            binary80_normal(0x4000_0000_0000_0000, 1, false),
+        ] {
+            let mut x = make_state();
+            x.registers[1] = bad;
+            invalid_states.push(x);
+        }
+        let mut odd_65 = make_state();
+        odd_65.registers[0] = one;
+        odd_65.registers[1] = binary80_normal(0x8000_0000_0000_0001, 0x3fff, true);
+        invalid_states.push(odd_65);
+        let mut overflow = make_state();
+        overflow.registers[0] = binary80_normal(u64::MAX, 0x7ffe, false);
+        overflow.registers[1] = binary80_normal(u64::MAX, 0x7ffe, true);
+        invalid_states.push(overflow);
+        let mut subnormal_result = make_state();
+        subnormal_result.registers[0] = binary80_normal(0xc000_0000_0000_0000, 1, false);
+        subnormal_result.registers[1] = binary80_normal(0x8000_0000_0000_0000, 1, false);
+        invalid_states.push(subnormal_result);
+
+        for x87 in invalid_states {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.gpr = [0x0123_4567_89ab_cdef; 16];
+            state.rflags = 0xa55a_1234_5678_9abc;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd8, 0xe1], 0x1000);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xd8 })
+            );
+            assert_eq!(state, before);
+        }
+
+        let mut absent = LongModeState::default();
+        let absent_before = absent.clone();
+        let mut memory = Memory::at(&[0xd8, 0xe1], 0);
+        assert_eq!(
+            step(&mut absent, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xd8 })
+        );
+        assert_eq!(absent, absent_before);
+    }
+
+    #[test]
+    fn fsub_fetch_fault_stop_and_budget_preserve_atomic_retirement_rules() {
+        let mut fault_state = LongModeState::default();
+        fault_state.rip = 0x1000;
+        let mut fault_x87 = crate::state::X87State::fixture_seed();
+        fault_x87.control_word = 0x037f;
+        fault_x87.tag_word = 0;
+        fault_x87.registers[0] = binary80_normal(0xc000_0000_0000_0000, 0x3fff, false);
+        fault_x87.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+        fault_state.x87 = Some(fault_x87);
+        let before_fault = fault_state.clone();
+        let mut fault_memory = Memory::at(&[0xd8], 0x1000);
+        fault_memory.fetch_error = Some((
+            0x1001,
+            MemoryError::Unmapped {
+                address: 0x1001,
+                access: AccessKind::Fetch,
+            },
+        ));
+        let result = run(
+            &mut fault_state,
+            &mut fault_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(
+            result.exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                address: 0x1001,
+                access: AccessKind::Fetch
+            })
+        );
+        assert_eq!(fault_state, before_fault);
+
+        let mut stopped = LongModeState::default();
+        stopped.rip = 0x1000;
+        let stopped_before = stopped.clone();
+        let mut memory = Memory::at(&[0xd8, 0xe1], 0x1000);
+        let result = run(
+            &mut stopped,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x1000),
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(stopped, stopped_before);
+
+        let mut budget = LongModeState::default();
+        budget.rip = 0x1000;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0x0200;
+        x87.tag_word = 0xfff0;
+        x87.registers[0] = binary80_normal(0xc000_0000_0000_0000, 0x3fff, false);
+        x87.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+        budget.x87 = Some(x87);
+        let before = budget.clone();
+        let mut memory = Memory::at(&[0xd8, 0xe1], 0x1000);
+        let result = run(
+            &mut budget,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 0,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(budget, before);
+
+        let result = run(
+            &mut budget,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x1002),
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(budget.rip, 0x1002);
+        assert_eq!(
+            budget.x87.as_ref().unwrap().registers[0],
+            binary80_normal(0x8000_0000_0000_0000, 0x3ffe, false)
+        );
     }
 
     #[test]

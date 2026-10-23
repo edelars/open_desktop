@@ -319,6 +319,21 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         assert!(Fixture::from_json(&fadd.to_json().unwrap()).is_ok());
     }
 
+    for source in 0u8..=7 {
+        let mut fsub = fixture.clone();
+        let code = fsub
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("d8e{source:x}");
+        if source == 0 {
+            fsub.stop_rip = None;
+            fsub.expected_exit = ExpectedExit::Unsupported;
+        }
+        assert!(Fixture::from_json(&fsub.to_json().unwrap()).is_ok());
+    }
+
     for destination in 0u8..=7 {
         let mut fadd = fixture.clone();
         let code = fadd
@@ -355,12 +370,18 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         ("66dbe2", 3, 0x1003),
         ("f3dbe2", 3, 0x1003),
         ("d8c8", 2, 0x1002),
+        ("d8e8", 2, 0x1002),
+        ("d8f0", 2, 0x1002),
         ("d8c9", 2, 0x1002),
         ("d8b1", 2, 0x1002),
         ("d800", 2, 0x1002),
         ("66d8c1", 3, 0x1003),
         ("48d8c1", 3, 0x1003),
         ("9bd8c1", 3, 0x1003),
+        ("66d8e1", 3, 0x1003),
+        ("9bd8e1", 3, 0x1003),
+        ("dce1", 2, 0x1002),
+        ("dee1", 2, 0x1002),
         ("d8", 1, 0x1001),
         ("dec8", 2, 0x1002),
         ("de00", 2, 0x1002),

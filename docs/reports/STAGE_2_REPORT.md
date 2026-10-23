@@ -3040,6 +3040,45 @@ unmapped root `.serena/` directory, left untouched. `graphify update .`
 completed and refreshed the code graph. Independent `gpt-6.1-sol` medium
 review found no concrete defects; no hardware or SSH check was run.
 
+
+## S2-30h — exact-only FSUB ST(0), ST(i) (bounded local slice)
+
+Added bare `D8 E0+i`, `i=0..7`, as `FSUB ST(0), ST(i)`. Execution shares
+S2-30d's exact same-exponent addition/packing path after validating both raw
+operands; it toggles the sign only in a local copy of the Normal-validated
+source. `i=0` always returns Unsupported because it aliases TOP and cancels.
+Success updates only physical TOP payload, clears C1, records the old RIP in
+FIP, advances RIP by two and retires once. Native/CPUID feature admission is
+unchanged and remains closed.
+
+Literal vectors cover all eight TOP values and i=1..7, both subtraction
+orders and signs, ±2^-63, minimum Normal and maximum-coefficient carry. Full
+state is compared on rejects for every i=0/TOP pair, odd 65-bit coefficient,
+unequal exponent, invalid environment/tags/classes, exact subnormal and
+overflow. Decoder checks all D8 ModR/M bytes, prefixes, WAIT, truncation and
+reverse/memory/DC/DE neighbors. The v2 schema admits all eight encodings with
+i=0 represented as Unsupported; the CLI runner confirms i=1..7 success and
+full-state i=0 rejection. The native test names all eight new encodings in its
+fail-closed profile/admission set.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FSUB/FSUBP/FISUB—Subtract,”
+pp.3-394–3-396 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=512)).
+It specifies `DEST − SRC`, `D8 E0+i` as FSUB ST(0), ST(i), C1 cleared when no
+round-up occurred, and C0/C2/C3 undefined. Undefined condition-code and FDP
+retention is explicitly local deterministic policy.
+
+Focused `od-isa` FSUB tests (4), the testkit x87 schema test, and the runner
+fixture test passed. `cargo test --workspace --offline` passed (all workspace
+tests); `cargo fmt --all -- --check`, `cargo check --workspace --all-targets
+--offline`, the Linux-target `cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, and `git diff --check` passed. The
+Linux-only native rejection test is compiled by the target check but was not
+executed on this macOS host. `python3 tools/check_layout.py` reports only the
+pre-existing unmapped root `.serena/` directory; it was left untouched.
+`graphify update .` refreshed the graph after source edits. No Mac mini/SSH
+check or commit was performed; physical acceptance remains for the shared
+final acceptance substage.
+
 ## S2-29q — compose same-exponent finite addition with one-round binary80 packing (partial)
 
 Added `add_finite_same_exponent_to_binary80(lhs, rhs, mode)`. It composes the

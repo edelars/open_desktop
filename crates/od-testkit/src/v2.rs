@@ -582,6 +582,7 @@ impl IntegerState {
 #[serde(rename_all = "snake_case")]
 pub enum ExpectedExit {
     StopAddress,
+    Unsupported,
     InstructionBudgetExhausted,
     RepIterationBudgetExhausted,
     StopRequested,
@@ -717,6 +718,12 @@ impl Fixture {
                     (code_bytes.as_str(), 2)
                 }
                 _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("d8e")
+                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
+                _ if code_bytes.len() == 4
                     && code_bytes.starts_with("dcc")
                     && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
                 {
@@ -735,18 +742,23 @@ impl Fixture {
                     ));
                 }
             };
+            let is_fsub_i0_unsupported = code_bytes == "d8e0";
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length
                 || !code.permissions.execute
                 || !code.initial_bytes_hex.eq_ignore_ascii_case(expected_bytes)
                 || self.instruction_budget != 1
-                || self.stop_rip.map(HexU64::get)
-                    != self
-                        .initial_state
-                        .rip
-                        .get()
-                        .checked_add(u64::from(expected_length))
-                || self.expected_exit != ExpectedExit::StopAddress
+                || if is_fsub_i0_unsupported {
+                    self.stop_rip.is_some() || self.expected_exit != ExpectedExit::Unsupported
+                } else {
+                    self.stop_rip.map(HexU64::get)
+                        != self
+                            .initial_state
+                            .rip
+                            .get()
+                            .checked_add(u64::from(expected_length))
+                        || self.expected_exit != ExpectedExit::StopAddress
+                }
             {
                 return Err(invalid(
                     "memory.code",
@@ -1144,6 +1156,7 @@ pub fn compare(
                 )
                 | (ExpectedExit::StopRequested, Outcome::StopRequested {})
                 | (ExpectedExit::Exception, Outcome::Exception {})
+                | (ExpectedExit::Unsupported, Outcome::Unsupported { .. })
         );
         if !matches {
             differences.push(side.into());

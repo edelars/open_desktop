@@ -447,6 +447,10 @@ pub enum Operation {
     FaddSt0St {
         source: u8,
     },
+    /// Bare `D8 E0+i` FSUB ST(0), ST(i), exact finite local profile only.
+    FsubSt0St {
+        source: u8,
+    },
     /// Bare `DC C0+i` FADD ST(i), ST(0), exact finite local profile only.
     FaddStSt0 {
         destination: u8,
@@ -958,10 +962,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 let modrm = self.byte()?;
-                if !(0xc0..=0xc7).contains(&modrm) {
-                    return Err(self.unsupported(opcode));
+                match modrm {
+                    0xc0..=0xc7 => Operation::FaddSt0St { source: modrm & 7 },
+                    0xe0..=0xe7 => Operation::FsubSt0St { source: modrm & 7 },
+                    _ => return Err(self.unsupported(opcode)),
                 }
-                Operation::FaddSt0St { source: modrm & 7 }
             }
             (OpcodeMap::Primary, 0xdc) => {
                 if prefixes != Prefixes::default() {
@@ -2165,16 +2170,16 @@ mod tests {
             let decoded = Memory::new(&[0xd8, modrm]).decode();
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
-                if (0xc0..=0xc7).contains(&modrm) {
-                    Ok(Operation::FaddSt0St { source: modrm & 7 })
-                } else {
-                    Err(DecodeError::Unsupported {
+                match modrm {
+                    0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
+                    0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
+                    _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
                             byte: 0xd8,
                         },
                         length: 2,
-                    })
+                    }),
                 },
                 "D8 {modrm:02x}"
             );
@@ -2241,6 +2246,69 @@ mod tests {
         }
         assert!(matches!(
             Memory::new(&[0x9b]).decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn fsub_st0_sti_accepts_only_bare_d8_e0_through_e7() {
+        for source in 0u8..=7 {
+            let mut memory = Memory::new(&[0xd8, 0xe0 | source]);
+            let instruction = memory.decode().unwrap();
+            assert_eq!(instruction.operation, Operation::FsubSt0St { source });
+            assert_eq!(instruction.length, 2);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+            assert_eq!(memory.fetched, [0xfff, 0x1000]);
+        }
+
+        for modrm in 0u8..=u8::MAX {
+            let decoded = Memory::new(&[0xd8, modrm]).decode();
+            assert_eq!(
+                decoded.map(|instruction| instruction.operation),
+                match modrm {
+                    0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
+                    0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
+                    _ => Err(DecodeError::Unsupported {
+                        opcode: Opcode {
+                            map: OpcodeMap::Primary,
+                            byte: 0xd8,
+                        },
+                        length: 2,
+                    }),
+                },
+                "D8 {modrm:02x}"
+            );
+        }
+        for source in 0u8..=7 {
+            for prefix in [
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            ]
+            .into_iter()
+            .chain(0x40..=0x4f)
+            {
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xd8, 0xe0 | source]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
+        }
+        assert!(matches!(
+            Memory::new(&[0xd8]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                address: 0x1000,
+                access: AccessKind::Fetch,
+            }))
+        ));
+        assert!(matches!(
+            Memory::new(&[0x9b]).decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            Memory::new(&[0xdc, 0xe0]).decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            Memory::new(&[0xde, 0xe0]).decode(),
             Err(DecodeError::Unsupported { .. })
         ));
     }

@@ -559,6 +559,7 @@ fn admission_with_tracee_memory(
             | Operation::Fnclex
             | Operation::FnstswAx
             | Operation::FaddSt0St { .. }
+            | Operation::FsubSt0St { .. }
             | Operation::FaddStSt0 { .. }
             | Operation::FaddpStSt0 { .. }
     ) {
@@ -3654,6 +3655,14 @@ mod tests {
             [0xd8, 0xc5],
             [0xd8, 0xc6],
             [0xd8, 0xc7],
+            [0xd8, 0xe0],
+            [0xd8, 0xe1],
+            [0xd8, 0xe2],
+            [0xd8, 0xe3],
+            [0xd8, 0xe4],
+            [0xd8, 0xe5],
+            [0xd8, 0xe6],
+            [0xd8, 0xe7],
             [0xdc, 0xc0],
             [0xdc, 0xc1],
             [0xdc, 0xc2],
@@ -3684,7 +3693,12 @@ mod tests {
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>();
             input.memory[0].comparison_mask_hex = "ffff".into();
-            input.stop_rip = Some(HexU64(0x1002));
+            if code == [0xd8, 0xe0] {
+                input.expected_exit = v2::ExpectedExit::Unsupported;
+                input.stop_rip = None;
+            } else {
+                input.stop_rip = Some(HexU64(0x1002));
+            }
             let loaded = Fixture::from_json(&input.to_json().unwrap()).unwrap();
             assert!(matches!(
                 execute(&loaded).outcome,

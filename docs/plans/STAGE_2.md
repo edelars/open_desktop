@@ -188,6 +188,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30e | Bare `D8 C0+i` FADD ST(0), ST(i), i=0..7; same exact-only domain, native closed | S2-30d |
 | [x] | S2-30f | Bare `DC C0+i` FADD ST(i), ST(0), same exact-only domain, native closed | S2-30e |
 | [x] | S2-30g | Bare `DE C0+i` FADDP ST(i), ST(0), same exact-only domain plus physical TOP pop, native closed | S2-30f |
+| [x] | S2-30h | Bare `D8 E0+i` FSUB ST(0), ST(i), exact-only same-exponent normal results; i=0 unsupported; native closed | S2-30e |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1512,6 +1513,31 @@ Independent vectors cover every `i` and TOP, physical payload sentinels,
 including i=0 overflow. Decoder and fixture schema enumerate exactly the eight
 bare encodings. This slice does not claim general FADDP, special values, stack
 faults, exception delivery or CR0 behavior.
+
+#### S2-30h. Bare exact-only FSUB ST(0), ST(i) (bounded local slice)
+
+Accept only bare `D8 E0+i`, `i=0..7`, as `FSUB ST(0), ST(i)`. Retain the
+S2-30d environment and canonical Normal input gates, Valid tags for physical
+TOP and `(TOP+i)&7`, equal normalized exponents, exact coefficient gate, and
+canonical Normal output. Compute `ST(0) - ST(i)` by inverting the sign in a
+local copy of the already-validated source; never rewrite the source payload.
+Reject `i=0` unconditionally because it aliases the destination and every
+result is exact cancellation. Reject all unsupported values before mutation.
+
+On success replace only physical TOP payload, clear C1, set FIP to old RIP,
+advance RIP by two and retire once. Preserve TOP, FTW, FCW, FDP, FOP, other
+FSW bits, all other payloads, GPRs and RFLAGS. Retaining undefined C0/C2/C3
+and FDP is local policy. Native admission remains closed and CPUID/features do
+not change.
+
+Literal vectors cover both signs, positive and negative differences, the
+smallest normal boundary, a 64-bit carry and exact `2^-63`; odd 65-bit exact
+coefficients, exact subnormal output and overflow reject atomically. All TOP
+and `i=1..7` pairs verify physical placement and sentinels. i=0 rejects for
+all TOP. Decoder coverage includes complete D8 ModR/M space, prefixes, WAIT,
+truncated fetch and reverse/memory subtraction neighbors; schema/runner cover
+all seven successes and the i=0 Unsupported outcome. Native profile/admission
+rejects all eight encodings.
 
 ### S2-31. x87 conversions, rounding и exceptions
 
