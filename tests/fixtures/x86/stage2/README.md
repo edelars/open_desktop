@@ -1342,3 +1342,20 @@ outside this Normal-only slice.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+### S2-30ah FUCOMP schema and literal CLI coverage
+
+[s2_30ah_fucomp_equal_fnstsw.case.json](s2_30ah_fucomp_equal_fnstsw.case.json)
+runs bare `DD E9` followed by `DF E0` with equal canonical-Normal operands.
+FUCOMP reports equality, empties only old physical TOP, advances TOP once, and
+FNSTSW copies the resulting status to AX. Raw physical register payloads and
+the old ST(1) Valid tag remain unchanged.
+[s2_30ah_fucomp_invalid_rhs_tag.case.json](s2_30ah_fucomp_invalid_rhs_tag.case.json)
+has a Valid lhs and Empty old physical ST(1), no stop RIP, and budget one; the
+instruction must reject without retiring or changing state. Schema and
+interpreter CLI tests load both literal files. FUCOMP's QNaN behavior remains
+outside the canonical-Normal-only slice.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

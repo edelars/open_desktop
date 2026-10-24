@@ -4102,3 +4102,34 @@ ordering coverage corrections; no remaining findings.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## S2-30ah — bounded FUCOMP ST(0), ST(1) compare and one-entry pop
+
+Added exact bare `DD E9`, reusing `bounded_x87_fcom_result(state, 1)` for
+preflight and canonical-Normal ordering. Success commits greater `0`, less
+`0x0100`, or equal `0x4000`, clears C1 by the local deterministic policy,
+empties only old physical TOP, advances TOP once with wrap, records FIP and
+retires once. The raw physical register array and old ST(1) tag remain intact;
+all other state is preserved.
+
+Interpreter vectors cover every TOP × three relations × 16 incoming condition
+fields, TOP wrap, payload sentinels, invalid tags/classes/environment and
+fetch/truncation/STOP/budget atomicity. Schema and literal CLI fixtures cover
+`dde9`, `dde9dfe0`, and an actual invalid-old-ST(1)-tag no-stop/budget-one
+rejection. Exhaustive DD decode preserves FST/FSTP/FUCOM neighbors and leaves
+DD E8, DD EA..EF and other unsupported forms rejected. Native admission
+explicitly denies DD E9. FUCOMP QNaN semantics, exception delivery, stack
+faults and native x87 execution remain outside the bounded Normal-only slice.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+and compile-only `cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, plus `git diff --check` and graphify update.
+`python3 tools/check_layout.py` did not pass because the pre-existing untracked
+root directory `.serena/` is outside the allowed root-directory list; it was
+left untouched. No physical x86 run, SSH, or Mac mini acceptance was performed.
+Independent gpt-6.1-sol medium review completed with no findings.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

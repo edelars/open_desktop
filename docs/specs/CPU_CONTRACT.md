@@ -2529,3 +2529,36 @@ no-stop/budget-one rejection. Native admission explicitly denies the operation.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## Local S2-30ah: bounded `FUCOMP ST(0), ST(1)` (`DD E9`)
+
+Accept exactly bare `DD E9` with existing `Some(X87State)`. Before changing
+status, tags, or TOP, require FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags at
+old physical TOP and `(TOP+1)&7`, and canonical Normal binary80 operands using
+`bounded_x87_fcom_result(state, 1)`. Greater maps to `0`, less to `0x0100`, and
+equal to `0x4000`; commit the condition field as `(old_fsw & !0x4700) | result`.
+C1 is zero by explicit deterministic local policy for this bounded normal case.
+Then set only the old physical TOP tag to Empty and TOP to `(old+1)&7`. Preserve
+the physical register array byte-for-byte, including old ST(1), and preserve
+all other tags, FCW, unrelated FSW bits, FDP/FOP, GPRs and RFLAGS. FIP becomes
+instruction-start RIP, RIP advances by two, and one instruction retires.
+
+Any missing state, invalid environment/tag/class, fetch failure/truncation,
+STOP, or exhausted budget rejects without a state commit. Decoder acceptance
+adds only DD E9 and retains DD D0..D7 FST, DD D8..DF FSTP, and DD E1 FUCOM;
+DD E8, DD EA..EF, prefixes, REX and WAIT remain unsupported. Zero, subnormal,
+infinity, NaN, noncanonical encodings, memory forms, exception delivery, stack
+faults, `#NM`, native execution and FPU feature claims are excluded. In
+particular, FUCOM's distinct quiet-NaN behavior is outside the Normal-only
+domain.
+
+Literal fixtures cover exact `dde9`, `dde9dfe0`, and a genuine invalid-old-ST(1)
+tag rejection with no stop RIP and budget one. Interpreter vectors cover all
+TOP × relation × initial-condition combinations, TOP wrap, untouched physical
+payload sentinels, independent invalid operand tags/classes, environment and
+execution-boundary atomicity. The v2 schema ties the rejection rule to the
+actual old physical ST(1) tag, and native admission explicitly denies DD E9.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

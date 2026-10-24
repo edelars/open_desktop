@@ -213,6 +213,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30ae | Bare `D8 D8+i` FCOMP ST(i), exact compare then physical TOP pop for all indices; native closed | S2-30ad |
 | [x] | S2-30af | Bare `DE D9` FCOMPP, exact bounded ST(0)/ST(1) compare then two-entry physical TOP pop; native closed | S2-30ae |
 | [x] | S2-30ag | Bare `DD E1` FUCOM ST(0), ST(1), bounded canonical-Normal compare without pop; native closed | S2-30af |
+| [x] | S2-30ah | Bare `DD E9` FUCOMP ST(0), ST(1), bounded canonical-Normal compare then one physical TOP pop; native closed | S2-30ag |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -2203,6 +2204,39 @@ truncation, STOP and zero-budget rejects preserve full state. Exhaustive DD
 ModR/M checks add only E1 while retaining D0..D7 FST and D8..DF FSTP. Schema
 and CLI fixtures cover exact `dde1`, `dde1dfe0`, and an actual invalid-rhs-tag
 no-stop/budget-one rejection. Native admission explicitly denies `DD E1`.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+#### S2-30ah. Bare bounded `FUCOMP ST(0), ST(1)`
+
+Accept exactly bare `DD E9` with existing `Some(X87State)`. Preflight FCW
+`0x037f`, `FSW & 0x80ff == 0`, Valid tags at old physical TOP and
+`(TOP+1)&7`, and canonical-Normal binary80 values by calling
+`bounded_x87_fcom_result(state, 1)` before any status/tag/TOP mutation. Replace
+the condition-code field with greater `0`, less `0x0100`, or equal `0x4000`
+through `(old_fsw & !0x4700) | relation`; clear C1 as the bounded profile's
+deterministic policy. Then mark only the old physical TOP Empty and advance TOP
+to `(old+1)&7`. Preserve raw register payload bytes, old ST(1)'s Valid tag, and
+all other state. Set FIP to the instruction-start RIP, advance RIP by two, and
+retire exactly once.
+
+Missing state, invalid environment/tag/class, prefixes, REX, WAIT, unsupported
+DD bytes, fetch failure/truncation, STOP and exhausted budget reject atomically.
+Only DD E9 is added: DD D0..D7 FST, DD D8..DF FSTP and DD E1 FUCOM remain
+unchanged; DD E8, DD EA..EF and other unsupported forms remain rejected. The
+slice excludes zero, subnormal, infinity, NaN, noncanonical encodings, exception
+delivery, stack faults, `#NM` and native execution. FUCOM's QNaN behavior and
+general FUCOMP semantics remain outside this canonical-Normal domain.
+
+Literal schema and CLI fixtures cover `dde9`, `dde9dfe0`, and an actual
+invalid-old-ST(1)-tag no-stop/budget-one rejection. Interpreter vectors cover
+all TOP values, all three comparison relations, all 16 incoming condition
+fields, wrap, physical payload sentinels, independent operand tag/class and
+environment rejection, and fetch/truncation/STOP/budget atomicity. Exhaustive
+DD ModR/M decoding retains neighboring forms; native admission explicitly
+denies `Operation::Fucomp` and DD E9.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404

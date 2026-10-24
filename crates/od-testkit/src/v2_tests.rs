@@ -969,6 +969,76 @@ fn x87_fucom_schema_admits_exact_codes_and_actual_bad_rhs_rejection() {
 }
 
 #[test]
+fn x87_fucomp_schema_admits_exact_codes_and_actual_bad_rhs_rejection() {
+    let sequence = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30ah_fucomp_equal_fnstsw.case.json"
+    ))
+    .unwrap();
+    let sequence_code = sequence
+        .fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    assert_eq!(sequence_code.initial_bytes_hex, "dde9dfe0");
+    assert_eq!(sequence_code.length, 4);
+    assert_eq!(sequence.fixture.instruction_budget, 2);
+    assert_eq!(
+        sequence.fixture.stop_rip.map(HexU64::get),
+        Some(sequence.fixture.initial_state.rip.get() + 4)
+    );
+
+    let mut bare_success = sequence.fixture.clone();
+    bare_success.case_id = "s2_30ah_fucomp_equal_bare_schema".into();
+    bare_success.instruction_budget = 1;
+    bare_success.stop_rip = Some(HexU64(bare_success.initial_state.rip.get() + 2));
+    let code = bare_success
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "dde9".into();
+    code.length = 2;
+    code.comparison_mask_hex = "ffff".into();
+    assert!(Fixture::from_json(&bare_success.to_json().unwrap()).is_ok());
+
+    let rejected = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30ah_fucomp_invalid_rhs_tag.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let rejected_code = rejected
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    assert_eq!(rejected_code.initial_bytes_hex, "dde9");
+    assert_eq!(rejected.instruction_budget, 1);
+    assert_eq!(rejected.stop_rip, None);
+    let mut false_rejection = rejected.clone();
+    false_rejection.initial_state.x87.as_mut().unwrap().tag_word = HexU64(0);
+    assert!(false_rejection.validate().is_err());
+
+    for bytes in [
+        "66dde9", "9bdde9", "dde8", "ddea", "ddeb", "ddec", "dded", "ddee", "ddef",
+    ] {
+        let mut unsupported = sequence.fixture.clone();
+        unsupported.case_id = format!("s2_30ah_fucomp_reject_{bytes}");
+        unsupported.instruction_budget = 1;
+        unsupported.stop_rip = Some(HexU64(unsupported.initial_state.rip.get() + 2));
+        let code = unsupported
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = bytes.into();
+        code.length = (bytes.len() / 2) as u32;
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        assert!(unsupported.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
 fn result_rejects_observed_fs_base_different_from_initial() {
     let input = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_22a_fs_base_qword_load_alias.case.json"

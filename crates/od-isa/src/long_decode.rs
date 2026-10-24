@@ -461,6 +461,8 @@ pub enum Operation {
     Fcompp,
     /// Bare `DD E1` FUCOM ST(0), ST(1), bounded canonical-Normal comparison.
     Fucom,
+    /// Bare `DD E9` FUCOMP ST(0), ST(1), bounded compare then physical TOP pop.
+    Fucomp,
     /// Bare `DD D8+i` FSTP ST(i), exact Normal source and physical TOP pop only.
     FstpSti {
         destination: u8,
@@ -1118,6 +1120,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 if modrm == 0xe1 {
                     Operation::Fucom
+                } else if modrm == 0xe9 {
+                    Operation::Fucomp
                 } else if (0xd0..=0xd7).contains(&modrm) {
                     Operation::FstSti {
                         destination: modrm & 7,
@@ -2315,7 +2319,7 @@ mod tests {
     }
 
     #[test]
-    fn dd_accepts_only_bounded_fst_fstp_and_fucom_encodings() {
+    fn dd_accepts_only_bounded_fst_fstp_fucom_and_fucomp_encodings() {
         for index in 0u8..=7 {
             let bytes = [0xdd, 0xd0 | index];
             let mut memory = Memory::new(&bytes);
@@ -2354,6 +2358,8 @@ mod tests {
                     })
                 } else if modrm == 0xe1 {
                     Ok(Operation::Fucom)
+                } else if modrm == 0xe9 {
+                    Ok(Operation::Fucomp)
                 } else {
                     Err(DecodeError::Unsupported {
                         opcode: Opcode {

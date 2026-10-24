@@ -717,6 +717,8 @@ impl Fixture {
                 "ded9" => ("ded9", 2),
                 "dde1" => ("dde1", 2),
                 "dde1dfe0" => ("dde1dfe0", 4),
+                "dde9" => ("dde9", 2),
+                "dde9dfe0" => ("dde9dfe0", 4),
                 _ if code_bytes.len() == 4
                     && code_bytes.starts_with("d8d")
                     && matches!(code_bytes.as_bytes()[3], b'8'..=b'f') =>
@@ -897,6 +899,14 @@ impl Fixture {
                     let rhs = (top + 1) & 7;
                     (x87.tag_word.get() >> (u32::from(rhs) * 2)) & 3 != 0
                 });
+            let is_fucomp_source_rejected = code_bytes == "dde9"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
+                    let rhs = (top + 1) & 7;
+                    (x87.tag_word.get() >> (u32::from(rhs) * 2)) & 3 != 0
+                });
             let expected_budget = if code_bytes.len() == 8 { 2 } else { 1 };
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length
@@ -920,6 +930,7 @@ impl Fixture {
                     || is_fcomp_source_rejected
                     || is_fcompp_source_rejected
                     || is_fucom_source_rejected
+                    || is_fucomp_source_rejected
                 {
                     self.stop_rip.is_some() || self.expected_exit != ExpectedExit::Unsupported
                 } else {
