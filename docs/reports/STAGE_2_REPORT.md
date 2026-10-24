@@ -4616,3 +4616,38 @@ were not performed.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## S2-31g — bounded `FNSTCW m2byte [RAX]` partial slice
+
+Added exact bare `D9 38` in Long64 with an existing x87 snapshot. It stores the
+raw FCW as one little-endian Word write to `[RAX]`, with a full canonical48
+range check and no data read. It accepts any FCW and schema-valid FSW, including
+pending/status bits and an empty stack, without inspecting ST(0), tags or TOP.
+After the write succeeds, only RIP advances by two and the instruction retires
+once; the complete FPU snapshot, GPRs and RFLAGS remain unchanged. Write errors
+propagate unchanged and preserve CPU state. Prefixes and neighboring D9 forms
+remain unsupported, and native admission explicitly denies FNSTCW.
+The no-wait instruction does not check pending x87 exceptions; the waiting
+FSTCW `#MF` case is not applied here. Undefined C0-C3 bits are preserved
+deterministically by local policy without claiming native equality.
+
+Literal schema fixtures cover the four standard FCWs, arbitrary `0xa55a` FCW
+with `FSW=0xffff` and Empty tags, payload and pointer sentinels, unaligned Word
+canaries, exact `D9 38 DF E0` observation, and a canonical-boundary crossing
+reject. Interpreter tests cover second-byte write failure, canonical
+boundaries, no data reads, full snapshot preservation, and fetch/truncation,
+STOP and budget boundaries. The existing x87 schema admits only 16-bit FCW/FSW
+values; arbitrary values within that schema are accepted by this operation.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+and `git diff --check`. The graph was refreshed with `graphify update .`.
+`python3 tools/check_layout.py` reports the pre-existing unmapped root
+directory `.serena`; that directory was left untouched. No physical x86 or Mac
+mini checks were run. This does not complete S2-31 or establish general x87
+exception behavior, MMU translation, MMIO or SMP.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FSTCW/FNSTCW—Store x87 FPU
+Control Word,” pp.3-388–3-389 (`D9 /7`); Vol.1 §§8.1.8, 8.1.9 and §8.6 for
+x87 state and FIP/FDP context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).

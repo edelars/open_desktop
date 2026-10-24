@@ -168,7 +168,7 @@ fn x87_schema_admits_fdivr_forms_and_inexact_no_stop_case() {
 }
 
 #[test]
-fn x87_schema_admits_d9_ftst_and_a_budget_one_source_rejection() {
+fn x87_schema_admits_d9_ftst_fnstcw_and_a_budget_one_source_rejection() {
     let mut fixture = x87_fixture().fixture;
     fixture.case_id = "local_fabs".into();
     fixture.instruction_budget = 1;
@@ -195,7 +195,7 @@ fn x87_schema_admits_d9_ftst_and_a_budget_one_source_rejection() {
         let accepted = candidate.validate().is_ok();
         assert_eq!(
             accepted,
-            matches!(second, 0xe0 | 0xe1 | 0xe4 | 0xfc),
+            matches!(second, 0x38 | 0xe0 | 0xe1 | 0xe4 | 0xfc),
             "D9 {second:02x}"
         );
     }

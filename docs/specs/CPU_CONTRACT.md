@@ -2845,6 +2845,42 @@ slice, which does not complete S2-31.
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
 pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## Local S2-31g: bounded `FNSTCW m2byte [RAX]` (`D9 38`)
+
+The interpreter admits only exact bare `D9 38` in Long64 with an existing x87
+snapshot. It stores the raw 16-bit FCW little-endian to the fixed Word
+destination `[RAX]`. Any FCW and any FSW value admitted by the existing state
+schema are accepted, including pending/status bits and an empty x87 stack; the
+instruction does not inspect ST(0), tags or TOP. The no-wait `FNSTCW` form does
+not check for pending unmasked floating-point exceptions.
+
+Validate the entire canonical48 range `[RAX, RAX+1]` before issuing exactly one
+atomic `GuestMemory::write_integer` Word write. No data read occurs. On success,
+only RIP advances by two and the instruction retires once. Preserve the full
+x87 snapshot, including FCW, FSW, tags/TOP, payloads, FIP/FDP/FOP, as well as
+all GPRs and RFLAGS. Address errors and native backend write errors propagate
+with their original memory-error semantics; no CPU state commits on any write
+failure. Fetch, truncation, stop and budget boundaries also do not commit.
+
+The schema admits only exact `D9 38` and `D9 38 DF E0` composition. Literal
+fixtures cover the four standard FCWs, an arbitrary FCW with pending status
+bits, empty tags, raw payload/pointer sentinels, unaligned Word canaries and
+FNSTSW observation. Interpreter checks cover the complete canonical range,
+including a second-byte failure, and preserved CPU/FPU state. Prefixes and
+nearby D9 forms are unsupported; native x87 admission explicitly denies this
+operation. The no-wait `FNSTCW` form does not check pending x87 exceptions; the
+`#MF` behavior associated with waiting `FSTCW` is not applied to this opcode.
+Undefined C0-C3 status bits are preserved deterministically by the local
+snapshot contract without claiming native equality. The local profile does not
+model general x87 exception delivery, MMU translation, MMIO or physical x86
+behavior and does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FSTCW/FNSTCW—Store x87 FPU
+Control Word,” pp.3-388–3-389 (`D9 /7`); Vol.1 §§8.1.8, 8.1.9 and §8.6 for
+x87 state and instruction-pointer/data-pointer context ([official Vol.2A
+PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
 ## Local S2-31a: bounded `FRNDINT` (`D9 FC`)
 
 The interpreter admits only bare `D9 FC` in an existing x87-state snapshot.

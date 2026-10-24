@@ -1347,6 +1347,26 @@ physical x86 behavior.
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
 pp.3-347–3-349 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+### S2-31g FNSTCW m2byte schema and literal coverage
+
+The schema admits exact bare `D9 38` and exact `D9 38 DF E0` (FNSTSW AX);
+prefixed and neighboring D9 forms remain unsupported. Literal fixtures cover
+the four standard FCWs, arbitrary schema-valid FCW `0xa55a` with `FSW=0xffff`,
+Empty tags, payload and FPU pointer sentinels, an unaligned split-region Word
+store with canaries, and canonical48 crossing rejection. The composition case
+observes unchanged FSW through AX. Interpreter tests check that the store makes
+one Word write and no data read, preserves FCW/FSW/tags/TOP/payloads/FIP/FDP/FOP,
+GPRs and RFLAGS, and does not commit on second-byte write failure, fetch
+truncation, STOP or budget exhaustion. Native admission explicitly denies
+FNSTCW. The local profile preserves undefined C0-C3 deterministically but does
+not claim native equality; it does not model general x87 exception delivery,
+MMU translation, MMIO, SMP or physical x86 behavior.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FSTCW/FNSTCW—Store x87 FPU
+Control Word,” pp.3-388–3-389 (`D9 /7`); Vol.1 §§8.1.8, 8.1.9 and §8.6 for
+x87 state and FIP/FDP context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
 ### S2-31f FISTP m64int schema and literal coverage
 
 The schema admits exact `DF 38` and `DF 38 DF E0` (FNSTSW AX), with prefixes

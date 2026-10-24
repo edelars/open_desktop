@@ -188,6 +188,7 @@ fn step_tracked_with_stop(
         Operation::Fninit
             | Operation::Fnclex
             | Operation::FnstswAx
+            | Operation::FnstcwM16Rax
             | Operation::Fchs
             | Operation::Fabs
             | Operation::Ftst
@@ -459,6 +460,7 @@ fn step_tracked_with_stop(
         | Operation::Fninit
         | Operation::Fnclex
         | Operation::FnstswAx
+        | Operation::FnstcwM16Rax
         | Operation::Fchs
         | Operation::Fabs
         | Operation::Ftst
@@ -811,6 +813,28 @@ fn step_tracked_with_stop(
             opcode: instruction.opcode.byte,
         });
     }
+    if instruction.operation == Operation::FnstcwM16Rax {
+        let destination = MemoryOperand {
+            base: AddressBase::Register(Register::Rax),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: OperandSize::Qword,
+            size: OperandSize::Word,
+        };
+        let address = match destination.access_address_48(state, next_rip) {
+            Ok(address) => address,
+            Err(error) => return report_memory_error(error),
+        };
+        let control_word = state
+            .x87
+            .as_ref()
+            .expect("FNSTCW is admitted only when x87 state exists")
+            .control_word;
+        memory.write_integer(address, context, OperandSize::Word, u64::from(control_word))?;
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
     if let Some((value, inexact, incremented)) = fist_integer {
         // The bounded FIST forms share one admitted addressing shape. Validate
         // the complete canonical linear range after x87 preflight, then issue
@@ -881,6 +905,9 @@ fn step_tracked_with_stop(
                 RegisterView::low(Register::Rax, OperandSize::Word),
                 u64::from(status_word),
             );
+        }
+        Operation::FnstcwM16Rax => {
+            unreachable!("FNSTCW commits in its prevalidated store path")
         }
         Operation::Fchs => {
             let mut source =
@@ -18683,6 +18710,174 @@ mod tests {
             );
             assert_eq!(result.status_word & 0x0220, 0x0220);
             assert_eq!(state.rip, 0x8282);
+        }
+    }
+
+    #[test]
+    fn fnstcw_m16_stores_raw_control_word_and_preserves_the_entire_cpu_snapshot() {
+        for control_word in [0x037f, 0x077f, 0x0b7f, 0x0f7f, 0x0000, 0xffff] {
+            let mut state = LongModeState::default();
+            state.rip = 0x82b0;
+            state.gpr = [0xfeed_face_cafe_beef; 16];
+            state.gpr[Register::Rax as usize] = 0x1001;
+            state.rflags = 0x0bad_f00d_0123_4567;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = control_word;
+            x87.status_word = 0xffff; // pending/status bits and TOP are preserved.
+            x87.tag_word = 0xffff; // No stack classification is required.
+            x87.instruction_pointer = 0x1122_3344_5566_7788;
+            x87.data_pointer = 0x8877_6655_4433_2211;
+            x87.last_opcode = 0x05aa;
+            x87.registers = [[0x5a; 10]; 8];
+            state.x87 = Some(x87);
+            let before_x87 = state.x87.clone();
+            let before_gpr = state.gpr;
+            let before_rflags = state.rflags;
+            let mut memory = Memory::at(&[0xd9, 0x38], state.rip);
+            memory.bytes = vec![0xa5; 8];
+
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced),
+                "FCW={control_word:04x}"
+            );
+            assert_eq!(&memory.bytes[1..3], &control_word.to_le_bytes());
+            assert_eq!(memory.bytes[0], 0xa5);
+            assert_eq!(&memory.bytes[3..], &[0xa5; 5]);
+            assert_eq!(memory.accesses, vec![(AccessKind::Write, 0x1001, 2)]);
+            assert_eq!(state.x87, before_x87, "FCW={control_word:04x}");
+            assert_eq!(state.gpr, before_gpr);
+            assert_eq!(state.rflags, before_rflags);
+            assert_eq!(state.rip, 0x82b2);
+        }
+    }
+
+    #[test]
+    fn fnstcw_m16_store_failures_and_execution_boundaries_do_not_commit() {
+        let setup = |address| {
+            let mut state = LongModeState::default();
+            state.rip = 0x82b8;
+            state.gpr[Register::Rax as usize] = address;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0xa55a;
+            x87.status_word = 0xffff;
+            x87.tag_word = 0xffff;
+            x87.instruction_pointer = 0x1234;
+            x87.data_pointer = 0x5678;
+            state.x87 = Some(x87);
+            state
+        };
+
+        let mut missing_x87 = LongModeState::default();
+        missing_x87.rip = 0x82b8;
+        missing_x87.gpr[Register::Rax as usize] = 0x1000;
+        let before = missing_x87.clone();
+        let mut memory = Memory::at(&[0xd9, 0x38], missing_x87.rip);
+        assert_eq!(
+            step(&mut missing_x87, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xd9 })
+        );
+        assert_eq!(missing_x87, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut second_byte_fault = setup(0x1000);
+        let before = second_byte_fault.clone();
+        let mut memory = Memory::at(&[0xd9, 0x38], second_byte_fault.rip);
+        let before_bytes = memory.bytes.clone();
+        memory.error = Some(MemoryError::PermissionDenied {
+            address: 0x1001,
+            access: AccessKind::Write,
+        });
+        memory.error_kind = Some(AccessKind::Write);
+        assert_eq!(
+            step(
+                &mut second_byte_fault,
+                &mut memory,
+                AccessContext::default()
+            ),
+            Err(MemoryError::PermissionDenied {
+                address: 0x1001,
+                access: AccessKind::Write,
+            })
+        );
+        assert_eq!(second_byte_fault, before);
+        assert_eq!(memory.bytes, before_bytes);
+        assert_eq!(memory.accesses, vec![(AccessKind::Write, 0x1000, 2)]);
+
+        let mut canonical_crossing = setup(0x0000_7fff_ffff_ffff);
+        let before = canonical_crossing.clone();
+        let mut memory = Memory::at(&[0xd9, 0x38], canonical_crossing.rip);
+        assert_eq!(
+            step(
+                &mut canonical_crossing,
+                &mut memory,
+                AccessContext::default()
+            ),
+            Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }))
+        );
+        assert_eq!(canonical_crossing, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut canonical_boundary = setup(0xffff_8000_0000_0000);
+        let before = canonical_boundary.clone();
+        let mut memory = Memory::at(&[0xd9, 0x38], canonical_boundary.rip);
+        memory.error = Some(MemoryError::Unmapped {
+            address: 0xffff_8000_0000_0000,
+            access: AccessKind::Write,
+        });
+        memory.error_kind = Some(AccessKind::Write);
+        assert!(matches!(
+            step(
+                &mut canonical_boundary,
+                &mut memory,
+                AccessContext::default()
+            ),
+            Err(MemoryError::Unmapped {
+                address: 0xffff_8000_0000_0000,
+                access: AccessKind::Write,
+            })
+        ));
+        assert_eq!(canonical_boundary, before);
+        assert_eq!(
+            memory.accesses,
+            vec![(AccessKind::Write, 0xffff_8000_0000_0000, 2)]
+        );
+
+        for (bytes, stop_rip, budget, fetch_error) in [
+            (&[0xd9][..], None, 1, false),
+            (&[0xd9, 0x38][..], Some(0x82b8), 1, false),
+            (&[0xd9, 0x38][..], None, 0, false),
+            (&[0xd9, 0x38][..], None, 1, true),
+        ] {
+            let mut state = setup(0x1000);
+            let before = state.clone();
+            let mut memory = Memory::at(bytes, state.rip);
+            if fetch_error {
+                memory.fetch_error = Some((
+                    state.rip + 1,
+                    MemoryError::Unmapped {
+                        address: state.rip + 1,
+                        access: AccessKind::Fetch,
+                    },
+                ));
+            }
+            let outcome = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(outcome.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
         }
     }
 

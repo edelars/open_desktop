@@ -443,6 +443,8 @@ pub enum Operation {
     Fnclex,
     /// Bare `DF E0` FNSTSW AX in the local profile with an existing x87 state.
     FnstswAx,
+    /// Bare `D9 38` FNSTCW m2byte at [RAX], preserving the x87 snapshot.
+    FnstcwM16Rax,
     /// Bare `D9 E0` FCHS, flipping the sign of canonical-Normal ST(0) only.
     Fchs,
     /// Bare `D9 E1` FABS, clearing the sign of canonical-Normal ST(0) only.
@@ -1216,6 +1218,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 match self.byte()? {
+                    0x38 => Operation::FnstcwM16Rax,
                     0xe0 => Operation::Fchs,
                     0xe1 => Operation::Fabs,
                     0xe4 => Operation::Ftst,
@@ -2738,7 +2741,7 @@ mod tests {
     }
 
     #[test]
-    fn d9_accepts_only_bare_fchs_fabs_ftst_and_frndint() {
+    fn d9_accepts_only_bare_fchs_fabs_ftst_frndint_and_fnstcw_m16_rax() {
         let mut memory = Memory::new(&[0xd9, 0xe0]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::Fchs);
@@ -2750,7 +2753,9 @@ mod tests {
             let decoded = Memory::new(&[0xd9, second]).decode();
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
-                if second == 0xe0 {
+                if second == 0x38 {
+                    Ok(Operation::FnstcwM16Rax)
+                } else if second == 0xe0 {
                     Ok(Operation::Fchs)
                 } else if second == 0xe1 {
                     Ok(Operation::Fabs)
@@ -2811,6 +2816,13 @@ mod tests {
                     Err(DecodeError::Unsupported { .. })
                 ),
                 "prefix {prefix:02x}"
+            );
+            assert!(
+                matches!(
+                    Memory::new(&[prefix, 0xd9, 0x38]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "FNSTCW prefix {prefix:02x}"
             );
         }
         assert!(matches!(

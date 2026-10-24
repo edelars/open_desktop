@@ -2,7 +2,7 @@
 use crate::HexU64;
 use crate::case::MemoryPermissions;
 use crate::memory::{FlatMemory, encode_bytes};
-use crate::v2::{Fixture, decode_bytes};
+use crate::v2::{ExpectedExit, Fixture, decode_bytes};
 use od_isa::execute::{REP_ITERATION_WORK_LIMIT, RunConfig, RunExit, StepOutcome, run, step};
 use od_isa::memory::{AccessContext, AccessKind, ArchitecturalFault, GuestMemory, MemoryError};
 use od_isa::{LongModeState, OperandSize, Register};
@@ -677,6 +677,133 @@ fn config(budget: u64, stop: Option<u64>) -> RunConfig {
         stop_rip: stop,
         context: AccessContext::default(),
     }
+}
+
+#[test]
+fn fnstcw_literal_fixtures_check_raw_store_snapshot_and_fault_boundaries() {
+    let directory = arithmetic_fixture_directory();
+    for case_id in [
+        "s2_31g_fnstcw_m16int_rc0",
+        "s2_31g_fnstcw_m16int_rc1",
+        "s2_31g_fnstcw_m16int_rc2",
+        "s2_31g_fnstcw_m16int_rc3",
+        "s2_31g_fnstcw_m16int_arbitrary_state",
+        "s2_31g_fnstcw_m16int_fnstsw",
+        "s2_31g_fnstcw_m16int_noncanonical_crossing",
+    ] {
+        let raw = std::fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let input = Fixture::from_json(&raw).unwrap().fixture;
+        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+        let before_memory = memory.snapshot();
+        let mut state = input
+            .initial_state
+            .to_cpu_for(crate::v2::Profile::LongX87StateV1)
+            .unwrap();
+        let before = state.clone();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            || false,
+        );
+
+        match input.expected_exit {
+            ExpectedExit::StopAddress => {
+                assert_eq!(result.exit, RunExit::StopAddress, "{case_id}");
+                let composition = case_id.ends_with("fnstsw");
+                assert_eq!(
+                    result.instructions_executed,
+                    if composition { 2 } else { 1 }
+                );
+                let mut expected_state = before.clone();
+                expected_state.rip += if composition { 4 } else { 2 };
+                if composition {
+                    let status_word = before.x87.as_ref().unwrap().status_word;
+                    expected_state.gpr[Register::Rax as usize] =
+                        (expected_state.gpr[Register::Rax as usize] & !0xffff)
+                            | u64::from(status_word);
+                }
+                assert_eq!(state, expected_state, "{case_id}");
+                assert_eq!(state.x87, before.x87, "{case_id}");
+                let after_memory = memory.snapshot();
+                let left = after_memory
+                    .iter()
+                    .find(|region| region.region_id == "data_left")
+                    .unwrap();
+                let right = after_memory
+                    .iter()
+                    .find(|region| region.region_id == "data_right")
+                    .unwrap();
+                let control_word = input.initial_state.x87.as_ref().unwrap().control_word.get();
+                assert_eq!(
+                    left.bytes_hex,
+                    format!("{:02x}", control_word & 0xff),
+                    "{case_id}"
+                );
+                assert!(
+                    right
+                        .bytes_hex
+                        .starts_with(&format!("{:02x}", control_word >> 8)),
+                    "{case_id}: {right:?}"
+                );
+                assert!(right.bytes_hex.ends_with("ccddeeff11223344556677889900"));
+            }
+            ExpectedExit::Exception => {
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None,
+                    }),
+                    "{case_id}"
+                );
+                assert_eq!(result.instructions_executed, 0, "{case_id}");
+                assert_eq!(state, before, "{case_id}");
+                assert_eq!(memory.snapshot(), before_memory, "{case_id}");
+            }
+            other => panic!("unexpected exit in {case_id}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn fnstcw_second_byte_permission_failure_is_atomic_across_fixture_regions() {
+    let path =
+        arithmetic_fixture_directory().join("s2_31g_fnstcw_m16int_arbitrary_state.case.json");
+    let raw = std::fs::read(path).unwrap();
+    let mut input = Fixture::from_json(&raw).unwrap().fixture;
+    input
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "data_right")
+        .unwrap()
+        .permissions
+        .write = false;
+    let mut memory = FlatMemory::from_fixture(&input).unwrap();
+    let before_memory = memory.snapshot();
+    let mut state = input
+        .initial_state
+        .to_cpu_for(crate::v2::Profile::LongX87StateV1)
+        .unwrap();
+    let before = state.clone();
+
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+        || false,
+    );
+    assert_eq!(
+        result.exit,
+        RunExit::MemoryError(MemoryError::PermissionDenied {
+            address: 0x0000_0000_0030_0002,
+            access: AccessKind::Write,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(memory.snapshot(), before_memory);
 }
 
 struct AccessTraceMemory {

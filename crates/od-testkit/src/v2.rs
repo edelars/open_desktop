@@ -761,6 +761,8 @@ impl Fixture {
                 "ded9dfe0" => ("ded9dfe0", 4),
                 "d9fcdfe0" => ("d9fcdfe0", 4),
                 "d9fc" => ("d9fc", 2),
+                "d938" => ("d938", 2),
+                "d938dfe0" => ("d938dfe0", 4),
                 "db18" => ("db18", 2),
                 "db18dfe0" => ("db18dfe0", 4),
                 "db10" => ("db10", 2),
@@ -907,6 +909,10 @@ impl Fixture {
                     let top = ((x87.status_word.get() >> 11) & 7) as u8;
                     (x87.tag_word.get() >> (u32::from(top) * 2)) & 3 != 0
                 });
+            let is_fnstcw_noncanonical_range_exception = code_bytes == "d938"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.gpr[0].get() == 0x0000_7fff_ffff_ffff;
             let is_fistp_overflow_rejected = code_bytes == "db18"
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
@@ -1084,6 +1090,7 @@ impl Fixture {
                     || is_fabs_source_rejected
                     || is_ftst_source_rejected
                     || is_frndint_source_rejected
+                    || is_fnstcw_noncanonical_range_exception
                     || is_fistp_overflow_rejected
                     || is_fistp_tag_rejected
                     || is_fist_overflow_rejected
@@ -1105,7 +1112,13 @@ impl Fixture {
                     || is_fucomp_source_rejected
                     || is_fcomi_source_rejected
                 {
-                    self.stop_rip.is_some() || self.expected_exit != ExpectedExit::Unsupported
+                    self.stop_rip.is_some()
+                        || self.expected_exit
+                            != if is_fnstcw_noncanonical_range_exception {
+                                ExpectedExit::Exception
+                            } else {
+                                ExpectedExit::Unsupported
+                            }
                 } else {
                     self.stop_rip.map(HexU64::get)
                         != self
