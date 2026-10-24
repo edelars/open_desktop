@@ -35,3 +35,8 @@ after the atomic store succeeds. Native/JIT admission remains closed.
 Bounded `FSTP m80fp` (`DB 38`) also copies canonical signed binary80 infinity
 when tagged Special, preserving all ten bytes and popping only after the atomic
 store succeeds. Native/JIT admission remains closed.
+
+Bounded `FST/FSTP m64fp` (`DD 10`/`DD 18`) also stores canonical signed
+binary80 infinity from a Special-tagged TOP as exact binary64 infinity. The
+one-write/no-read and post-success-pop rules remain; native/JIT admission stays
+closed.

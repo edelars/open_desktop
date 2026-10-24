@@ -428,3 +428,15 @@ For exact `DB 38`, canonical binary80 infinity uses a Special tag, exponent
 source bytes and sign. Retain the S2-31an signed-zero and Normal cases.
 Unsupported test cases must use actual noncanonical classes or mismatched tags,
 not treat canonical infinity as rejected. See the [S2-31ao contract](../specs/CPU_CONTRACT.md#local-s2-31ao-signed-infinity-fstp-m80fp-rax-db-38), [plan](../plans/STAGE_2.md#s2-31ao-store-canonical-signed-binary80-infinity-through-bounded-fstp-m80fp), and [report](../reports/STAGE_2_REPORT.md#s2-31ao--signed-infinity-binary80-store-through-bounded-fstp-m80fp).
+
+
+## S2-31ap signed-infinity m64 stores
+
+Exact `DD 10`/`DD 18` fixtures may use a Special-tagged canonical binary80
+infinity source and literal binary64 infinity output. Do not classify canonical
+infinity as an unsupported source; rejection fixtures must use pseudo-infinity,
+NaNs, finite specials, mismatched tag/class pairs, or a forbidden environment.
+Positive bare and negative `DD 18 DF E0` fixtures are schema/CLI reachable and
+observe the FSTP status with FNSTSW. See the [S2-31ap contract](../specs/CPU_CONTRACT.md#local-s2-31ap-signed-infinity-fstfstp-m64fp-rax),
+[plan](../plans/STAGE_2.md#s2-31ap-store-canonical-signed-binary80-infinity-through-bounded-m64-fstfstp),
+and [report](../reports/STAGE_2_REPORT.md#s2-31ap--signed-infinity-stores-for-bounded-m64-fstfstp).

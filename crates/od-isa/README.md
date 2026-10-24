@@ -252,3 +252,9 @@ S2-31ao also admits canonical binary80 infinity with the Special tag for exact
 `DB 38`, preserving its raw sign and ten-byte payload. The prior Normal and
 signed-zero pairs are unchanged; malformed classes reject before access. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31ao-signed-infinity-fstp-m80fp-rax-db-38).
+
+
+S2-31ap extends exact DD10/DD18 m64 stores to Special-tagged canonical
+binary80 infinity, using integer fields to emit signed binary64 infinity with
+no new flags. Qword write ordering, FST/FSTP stack behavior, and native/JIT
+denial remain bounded. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31ap-signed-infinity-fstfstp-m64fp-rax).

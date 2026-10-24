@@ -256,6 +256,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31am | Extend exact DD10/DD18 m64 stores to canonical signed binary80 zero and atomic signed binary64 zero | S2-31al |
 | [x] | S2-31an | Extend exact DB38 FSTP m80fp to canonical signed binary80 zero with raw ten-byte store | S2-31am |
 | [x] | S2-31ao | Extend exact DB38 FSTP m80fp to canonical signed binary80 infinity with raw ten-byte store | S2-31an |
+| [x] | S2-31ap | Extend exact DD10/DD18 m64 stores to canonical signed binary80 infinity and binary64 infinity | S2-31am |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3396,4 +3397,23 @@ after successful write. Cover signed infinity across TOP×FCW×PE/C1, canaries,
 wrap, m32/m64/m80 infinity-load compositions, pseudo-infinity/NaN/other-class
 and mismatched-tag rejection before access, every forbidden status gate, normal
 and zero regressions, write/range atomicity, literal CLI/FNSTSW fixtures, and
+native/JIT denial.
+
+
+#### S2-31ap. Store canonical signed binary80 infinity through bounded m64 FST/FSTP
+
+Extend only exact bare `DD 10` (`FST m64fp [RAX]`) and `DD 18` (`FSTP
+m64fp [RAX]`) so physical TOP may be Special-tagged canonical binary80
+infinity (exponent `0x7fff`, integer bit one, fraction zero), either sign.
+Convert by integer fields to binary64 `+∞` (`000000000000f07f`) or `-∞`
+(`000000000000f0ff`) with exact-result indicators false. Do not use host
+floating point or set exception flags. Preserve PE, retain the existing FCWs and
+`FSW & 0x80df` gate, clear C1, and preserve the existing C0/C2/C3 policy.
+
+Preflight the full canonical48 Qword range; perform exactly one atomic write and
+no data read. FST preserves TOP/tags/payloads; FSTP pops only after successful
+write. Keep Normal conversion limits and signed-zero behavior unchanged. Cover
+both signs/opcodes over TOP×FCW×PE/C1, sentinels/wrap, all-width FLD-to-store
+compositions, invalid neighboring classes and tag mismatches, write/range
+atomicity, normal/zero regressions, literal CLI/FNSTSW fixtures, and
 native/JIT denial.

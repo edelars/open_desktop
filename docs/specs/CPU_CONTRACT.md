@@ -4223,3 +4223,27 @@ pointers, and retirement behavior. JIT/native admission remains denied. The
 canonical infinity field pattern follows Intel SDM Vol.1 §8.2.2/Table 8-3; raw
 FSTP m80fp store semantics are described in Vol.2A pp.3-386–3-387 ([official
 revision 093 PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=503)). See the [S2-31ao plan](../plans/STAGE_2.md#s2-31ao-store-canonical-signed-binary80-infinity-through-bounded-fstp-m80fp), [report](../reports/STAGE_2_REPORT.md#s2-31ao--signed-infinity-binary80-store-through-bounded-fstp-m80fp), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+## Local S2-31ap: signed-infinity `FST/FSTP m64fp [RAX]`
+
+Exact `DD 10` and `DD 18` accept a source infinity only when physical TOP has
+`Special` tag and canonical binary80 infinity fields (exponent `0x7fff`,
+explicit integer bit one, zero fraction). Convert integer fields to signed
+binary64 infinity: `+∞` bytes `000000000000f07f`, `-∞` bytes
+`000000000000f0ff`. The conversion is exact and sets neither PE nor any other
+new status flag. Preserve a preexisting PE; clear C1 under the local exact-store
+policy, with C0/C2/C3 unchanged.
+
+Retain the four admitted FCWs and `FSW & 0x80df == 0` gate. The complete
+canonical48 Qword range is checked before exactly one atomic write; no data read
+is performed. DD10 preserves TOP, tags and all raw payloads. DD18 empties old
+physical TOP and advances TOP only after successful write. Existing Normal
+rounding limits and signed-zero behavior remain unchanged. Reject pseudo-infinity,
+NaNs, finite specials and mismatched source tags before memory access. JIT/native
+admission stays closed. The canonical binary80 Infinity encoding is specified
+in Intel SDM revision 093 Vol.1 §8.2.2/Table 8-3; FST/FSTP m64fp behavior is
+listed in Vol.2A pp.3-386–3-387 ([official PDF, pp.3-386–3-387](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
+See the [S2-31ap plan](../plans/STAGE_2.md#s2-31ap-store-canonical-signed-binary80-infinity-through-bounded-m64-fstfstp),
+[report](../reports/STAGE_2_REPORT.md#s2-31ap--signed-infinity-stores-for-bounded-m64-fstfstp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

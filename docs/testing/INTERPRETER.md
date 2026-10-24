@@ -721,3 +721,13 @@ Exact `DB 38` additionally accepts Special-tagged canonical infinity and copies
 all ten raw bytes unchanged. The existing Normal and signed-zero source pairs,
 FCW/FSW gates, one-write/no-read, and post-success pop remain fixed. See the
 [S2-31ao contract](../specs/CPU_CONTRACT.md#local-s2-31ao-signed-infinity-fstp-m80fp-rax-db-38).
+
+
+## Local S2-31ap signed-infinity binary64 stores
+
+Exact DD10/DD18 stores accept canonical binary80 infinity with Special tag and
+emit signed binary64 infinity by integer-field conversion. Exact infinity adds
+no flags and preserves PE. One Qword write precedes any DD18 pop; DD10 retains
+the source stack. Normal and zero stores are unchanged. Tests cover TOP×FCW,
+signed values, fault/range atomicity, all-width loads, fixture/CLI reachability,
+and native/JIT denial. See the [S2-31ap contract](../specs/CPU_CONTRACT.md#local-s2-31ap-signed-infinity-fstfstp-m64fp-rax).

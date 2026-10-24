@@ -5888,3 +5888,25 @@ the combined final S2-31 substage. Independent `gpt-6.1-sol` review at medium
 reasoning found no concrete findings. The native admission test is excluded by
 this host configuration;
 native admission remains closed in the tested contract.
+
+
+## S2-31ap — signed-infinity stores for bounded m64 FST/FSTP
+
+Exact `DD 10` and `DD 18` now also accept physical TOP with Special tag and
+canonical binary80 infinity, converting by integer fields to the exact signed
+binary64 infinity bytes. Normal and signed-zero behavior remains unchanged. The
+existing FCW and `FSW & 0x80df` gates stay fixed; infinity creates no flags,
+preserves PE, and clears C1. FST preserves the source stack; FSTP pops only
+after its successful Qword write.
+
+Tests cover both signs and opcodes across TOP×FCW×PE/C1, sentinels, wrap,
+invalid classes/tags and forbidden-status pre-access rejection, Qword write and
+canonical-boundary atomicity, m32/m64/m80 FLD-to-store sequences, CLI/FNSTSW
+fixtures, and native/JIT denial. The full offline workspace suite passed (730
+tests); workspace all-target checks, Linux x86 runner all-target check,
+formatting, diff, and local documentation-link checks passed. Graphify rebuilt
+with 4005 nodes and 8332 edges. The layout checker reports the existing
+unmapped `.serena/` directory, left untouched. Native admission tests are
+architecture-gated and were not executed on this arm64 host; the x86 runner
+target compiled successfully. Physical validation remains deferred to the
+combined final S2-31 substage. Independent gpt-6.1-sol medium review is pending.

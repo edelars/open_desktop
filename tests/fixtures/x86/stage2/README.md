@@ -2128,3 +2128,16 @@ the ten literal bytes. Valid+Normal and Zero+Zero remain accepted. Pseudo-infini
 NaNs, and tag/class mismatches reject before the data write; fixture schema/CLI
 and native-denial checks include the signed-infinity cases. JIT/native execution
 remains closed. See [S2-31ao CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ao-signed-infinity-fstp-m80fp-rax-db-38), [plan](../../../../docs/plans/STAGE_2.md#s2-31ao-store-canonical-signed-binary80-infinity-through-bounded-fstp-m80fp), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ao--signed-infinity-binary80-store-through-bounded-fstp-m80fp).
+
+
+### S2-31ap signed-infinity m64 FST/FSTP fixtures
+
+Exact `DD 10`/`DD 18` accept canonical binary80 infinity only with Special
+tag, emitting `+∞` as `000000000000f07f` and `-∞` as
+`000000000000f0ff`. The positive bare FST and negative FSTP+FNSTSW fixtures
+exercise both operations through schema and CLI; both are included in native
+denial. Existing Normal and signed-zero behavior remains. Noncanonical
+specials, mismatched tags and forbidden status reject before the write. See the
+[S2-31ap CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ap-signed-infinity-fstfstp-m64fp-rax),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ap-store-canonical-signed-binary80-infinity-through-bounded-m64-fstfstp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ap--signed-infinity-stores-for-bounded-m64-fstfstp).
