@@ -5884,5 +5884,7 @@ and native/JIT denial. The full offline workspace suite passed (725 tests);
 workspace all-target checks, Linux x86 runner check, formatting, and diff checks
 passed. Graphify was updated. The layout checker reports the existing unmapped
 `.serena/` directory, left untouched. Physical x86 testing remains deferred to
-the combined final S2-31 substage. The explicitly requested Sol-medium review
-result will be recorded after review.
+the combined final S2-31 substage. Independent `gpt-6.1-sol` review at medium
+reasoning found no concrete findings. The native admission test is excluded by
+this host configuration;
+native admission remains closed in the tested contract.
