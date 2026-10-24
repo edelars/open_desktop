@@ -511,6 +511,30 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     code.initial_bytes_hex = "dfe0".into();
     assert!(Fixture::from_json(&fnstsw.to_json().unwrap()).is_ok());
 
+    let mut fild_m16 = fixture.clone();
+    let fild_code = fild_m16
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    fild_code.initial_bytes_hex = "df00".into();
+    fild_code.comparison_mask_hex = "ffff".into();
+    fild_m16.stop_rip = Some(HexU64(0x1002));
+    assert!(Fixture::from_json(&fild_m16.to_json().unwrap()).is_ok());
+
+    let mut fild_m16_fnstsw = fild_m16.clone();
+    let fild_code = fild_m16_fnstsw
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    fild_code.length = 4;
+    fild_code.initial_bytes_hex = "df00dfe0".into();
+    fild_code.comparison_mask_hex = "ffffffff".into();
+    fild_m16_fnstsw.instruction_budget = 2;
+    fild_m16_fnstsw.stop_rip = Some(HexU64(0x1004));
+    assert!(Fixture::from_json(&fild_m16_fnstsw.to_json().unwrap()).is_ok());
+
     let mut fldcw_old_environment_before_canonical_fault = fixture.clone();
     let code = fldcw_old_environment_before_canonical_fault
         .memory
@@ -903,7 +927,6 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         ("dbe0", 2, 0x1002),
         ("dbe4", 2, 0x1002),
         ("dfe1", 2, 0x1002),
-        ("df00", 2, 0x1002),
         ("9bdfe0", 3, 0x1003),
         ("66dfe0", 3, 0x1003),
         ("9bdbe2", 3, 0x1003),

@@ -2311,6 +2311,38 @@ pp.3-342–3-343.
 остаётся частичным. Финальные Mac mini/physical checks выполняются одним
 общим подэтапом после стабилизации серии, не в этом срезе.
 
+#### S2-31o. Bare bounded `FILD m16int [RAX]` (`DF 00`), partial slice
+
+Add exactly bare `DF 00` in Long64, preserving existing `DF 10`, `DF 18`,
+`DF 38`, `DF E0`, `DF E9`, `DF F1`, and all DB forms. Reuse the S2-31n
+preflight and push commit: existing x87 state, FCW `037f/077f/0b7f/0f7f`,
+`FSW & 0x80df == 0`, and Empty physical `(TOP+7)&7`; do not inspect old ST(0)
+or other tags/payloads. Validate the complete canonical48 Word range
+`[RAX,RAX+1]`, then issue one typed Word read and no writes. Sign-extend i16
+to i32 and reuse integer-only `pack_i32_binary80`; zero is all-zero payload
+with Zero tag. Commit only after a successful read, preserve PE and unrelated
+state, clear C1, update FIP/FDP/RIP, and retire once. C0/C2/C3 retention is a
+local deterministic policy. Guest faults use the guest path; backend failures
+remain diagnostics. Native admission stays denied.
+
+Literal vectors cover zero, ±1/2/3, 32767/-32768; all TOP × RC combinations,
+sign extension of `0x8000`/`0xffff`, TOP wrap, stale Empty payload, arbitrary
+unrelated tags/payloads, sticky PE/C1, old ST(0) Empty/occupied, unaligned
+Word access with canaries and no third-byte access, canonical range/faults,
+and fetch/truncation/STOP/zero-budget rejection. Exhaustive DF ModR/M and
+prefix checks add only `DF 00`, retaining existing DF forms. Schema and CLI
+fixtures cover exact `DF 00` and `DF 00 DF E0`; native x87 admission explicitly
+denies FILD m16. S2-31 remains partial. Final Mac mini/physical acceptance is
+reserved for the combined final substage.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
+pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
+[official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461)).
+
+**Результат:** локальная реализация и проверки фиксируются в отчёте; S2-31
+остаётся частичным. Финальные Mac mini/physical checks выполняются одним
+общим подэтапом после стабилизации серии, не в этом срезе.
+
 ### S2-32. Остальные обязательные x87 формы
 
 1. По матрице профиля отдельно реализовать нужные remainder, scale, square root, transcendental и прочие оставшиеся формы. Одно семейство — отдельное изменение.

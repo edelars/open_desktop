@@ -1509,6 +1509,25 @@ pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com
 [official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461));
 see the local bounded [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31n-bounded-fild-m32int-rax-db-00).
 
+### S2-31o FILD m16int schema and literal CLI coverage
+
+The schema admits exact bare `DF 00` and exact `DF 00 DF E0` (FNSTSW AX).
+Exhaustive decoder checks add only `DF 00`, while retaining `DF 10`, `DF 18`,
+`DF 38`, `DF E0`, `DF E9`, `DF F1`, and the existing DB forms; all prefixes
+remain rejected. Two handwritten fixtures read signed Word value 1 from an
+unaligned address crossing adjacent regions and observe the pushed status in
+the composition case. Runner checks compare binary80 payload/tag, TOP, FIP/FDP,
+status, and preserved state. Interpreter vectors cover zero, ±1/2/3,
+32767/-32768, all TOP×RC combinations, sign extension, stale Empty payload,
+unrelated tags/payloads, C1/PE policy, exact two-byte reads with canaries,
+canonical range/read faults, and fetch/truncation/STOP/budget boundaries.
+Native x87 admission remains closed.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
+pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
+[official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461));
+see the local bounded [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31o-bounded-fild-m16int-rax-df-00).
+
 ### S2-31f FISTP m64int schema and literal coverage
 
 The schema admits exact `DF 38` and `DF 38 DF E0` (FNSTSW AX), with prefixes

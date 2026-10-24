@@ -2873,6 +2873,45 @@ pp.3-342–3-343
 [official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 stack state and FIP/FDP.
 
+## Local S2-31o: bounded `FILD m16int [RAX]` (`DF 00`)
+
+The Long64 interpreter admits exactly bare `DF 00` with an existing x87
+snapshot. It uses the S2-31n gates: FCW exactly `0x037f`, `0x077f`,
+`0x0b7f`, or `0x0f7f`; `FSW & 0x80df == 0`; and Empty tag at physical
+destination `(old_TOP+7)&7`. It does not inspect old physical TOP, the stale
+destination payload, or any other tags/payloads. It validates the complete
+canonical48 Word range `[RAX,RAX+1]`, then issues exactly one typed Word read
+and no writes.
+
+Sign-extend the read `i16` through `i32`, then use the exact integer-only
+`pack_i32_binary80` conversion. Zero becomes ten zero bytes with a Zero tag;
+nonzero values become canonical binary80 with a Valid tag. After a successful
+read, write only the destination payload/tag, set TOP to that destination,
+clear C1, set FIP to instruction-start RIP and FDP to RAX, advance RIP by two,
+and retire once. Preserve PE, FCW/FOP, GPR/RFLAGS and every unrelated tag and
+payload. C0/C2/C3 retention is a deterministic local policy because they are
+undefined here. Existing Empty or occupied old ST(0) is permitted. Read
+architectural faults use the guest-fault path; backend failures remain
+diagnostics. Invalid preflight rejects before memory access.
+
+Literal vectors cover zero, ±1/2/3, 32767/-32768, every TOP and RC, sign
+extension of `0x8000` and `0xffff`, wrap, Empty stale payload, unrelated
+arbitrary tags/payloads, sticky PE and C1 clearing, occupied/Empty old ST(0),
+unaligned Word access with canaries and one exact two-byte read, canonical
+start/crossing, architectural/backend read failures, and fetch/truncation,
+STOP and zero-budget atomicity. Exhaustive DF ModR/M and prefix coverage admits
+only new `DF 00` while retaining `DF 10`, `DF 18`, `DF 38`, `DF E0`, `DF E9`,
+`DF F1`, and all existing DB forms. Exact fixtures are `DF 00` and
+`DF 00 DF E0`. Native x87 admission explicitly denies this form. The bounded
+profile does not model general x87 exceptions, `#NM`, MMU/MMIO, SMP, or
+physical x86 acceptance, and does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
+pp.3-342–3-343
+([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
+[official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 stack state and FIP/FDP.
+
 ## Local S2-31b: bounded `FISTP m32int [RAX]` (`DB 18`)
 
 The interpreter admits only bare `DB 18` in Long64: a Dword store through

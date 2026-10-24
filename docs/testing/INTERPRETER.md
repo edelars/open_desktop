@@ -381,3 +381,20 @@ The old ST(0) tag and all unrelated tags/payloads remain uninspected and
 unchanged. The `DB 00 DF E0` fixture observes the new status through FNSTSW AX.
 Native x87 admission stays closed; general exception delivery, hardware fault
 priority and physical x86 behavior remain open. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31n-bounded-fild-m32int-rax-db-00), [plan](../plans/STAGE_2.md#s2-31n-bare-bounded-fild-m32int-rax-db-00-partial-slice), and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31o x87 Word integer-load slice
+
+Exact bare `DF 00` (`FILD m16int [RAX]`) reuses the same FCW/FSW and Empty
+physical push-destination gates as S2-31n. It validates `[RAX,RAX+1]` as one
+canonical48 Word range, makes exactly one typed Word read, sign-extends i16 to
+i32, and uses the unchanged integer-only binary80 packer. A successful read
+pushes to `(TOP+7)&7`, clears C1, preserves PE and unrelated x87/CPU state, and
+updates FIP/FDP/RIP. Zero has an all-zero payload and Zero tag. Literal
+`DF 00` and `DF 00 DF E0` fixtures distinguish a Word read from a Dword read
+using a nonzero adjacent byte; interpreter vectors also cover all TOP×RC,
+signed-word extrema, sign extension, stale Empty payloads, canaries, canonical
+range/read failures, and execution boundaries. Native admission stays closed;
+general x87 exceptions and physical x86 behavior remain open. See the [CPU
+contract](../specs/CPU_CONTRACT.md#local-s2-31o-bounded-fild-m16int-rax-df-00),
+[plan](../plans/STAGE_2.md#s2-31o-bare-bounded-fild-m16int-rax-df-00-partial-slice),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).

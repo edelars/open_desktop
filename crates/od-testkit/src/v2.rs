@@ -781,6 +781,8 @@ impl Fixture {
                 "db10dfe0" => ("db10dfe0", 4),
                 "db00" => ("db00", 2),
                 "db00dfe0" => ("db00dfe0", 4),
+                "df00" => ("df00", 2),
+                "df00dfe0" => ("df00dfe0", 4),
                 "df18" => ("df18", 2),
                 "df18dfe0" => ("df18dfe0", 4),
                 "df38" => ("df38", 2),

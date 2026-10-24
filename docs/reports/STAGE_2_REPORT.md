@@ -4916,3 +4916,44 @@ Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
 pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
 [official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
+
+## S2-31o — bounded `FILD m16int` partial slice
+
+Added exact bare `DF 00` in Long64. It reuses the existing FILD push gates:
+existing x87 state, one of the four bounded FCW values, clear `FSW & 0x80df`,
+and Empty physical `(TOP+7)&7`. The executor validates the complete
+canonical48 Word range before one typed Word read. After success it sign-
+extends i16 to i32 and calls the unchanged integer-only binary80 packer, then
+commits the payload/tag, TOP, C1, FIP/FDP/RIP and retirement. PE and every
+unrelated CPU/x87 field remain unchanged. C0/C2/C3 retention is a local policy.
+
+Literal expected payloads cover zero, ±1/2/3 and 32767/-32768 across every TOP
+and RC, including explicit `0x8000` and `0xffff` sign extension. State checks
+cover wrap, stale Empty payload, arbitrary unrelated tags/payloads, sticky PE,
+C1 clearing and old ST(0) both Empty and occupied. The unaligned Word test
+records exactly one two-byte read and checks byte canaries. Canonical-start/
+crossing, injected architectural read fault/backend failure, fetch/truncation,
+STOP and zero-budget checks preserve state. Exhaustive DF decoding admits
+only the new DF 00 while preserving all pre-existing DF and DB forms. Two
+schema/CLI fixtures exercise exact `DF 00` and `DF 00 DF E0`; native admission
+explicitly denies FILD m16.
+
+Validation passed: focused S2-31o interpreter/decoder/schema/CLI checks, existing
+S2-31n regressions, `cargo test --workspace --offline`, `cargo check --workspace
+--all-targets --offline`, `cargo fmt --all -- --check`, and `git diff --check`.
+The Linux-gated x86 runner test code also passed `cargo check -p od-x86-runner
+--tests --target x86_64-unknown-linux-gnu --offline`; the native-deny test itself
+was not run on this macOS host.
+`graphify update .` refreshed the graph. `python3 tools/check_layout.py` reports
+only the pre-existing unmapped root `.serena/` directory; it was left untouched.
+Independent `gpt-6.1-sol` review caught incorrect DB00 bytes in the new fixtures
+and missing negative two/three vectors. Both fixtures now encode DF00/DF00DFE0,
+their adjacent third byte distinguishes Word from Dword, and the missing
+negative vectors are present; re-review found no remaining findings. No Mac
+mini or physical acceptance was run; it remains in the combined final S2-31
+substage.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
+pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
+[official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.

@@ -477,6 +477,8 @@ pub enum Operation {
     FistM32IntRax,
     /// Bare `DB 00` FILD dword integer at [RAX], bounded stack-push profile.
     FildM32IntRax,
+    /// Bare `DF 00` FILD word integer at [RAX], bounded stack-push profile.
+    FildM16IntRax,
     /// Bare `D8 D0+i` FCOM ST(i), bounded canonical-Normal register compare.
     FcomSt {
         source: u8,
@@ -1117,6 +1119,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 let modrm = self.byte()?;
                 match modrm {
+                    0x00 => Operation::FildM16IntRax,
                     0xe0 => Operation::FnstswAx,
                     0x10 => Operation::FistM16IntRax,
                     0x18 => Operation::FistpM16IntRax,
@@ -2427,6 +2430,15 @@ mod tests {
                 "DB {modrm:02x}"
             );
         }
+        for prefix in 0x40..=0x4f {
+            assert!(
+                matches!(
+                    Memory::new(&[prefix, 0xdf, 0x00]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "REX {prefix:02x}"
+            );
+        }
         assert!(matches!(
             Memory::new(&[0xdb]).decode(),
             Err(DecodeError::Memory(MemoryError::Unmapped {
@@ -2450,6 +2462,7 @@ mod tests {
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
+                    0x00 => Ok(Operation::FildM16IntRax),
                     0xe0 => Ok(Operation::FnstswAx),
                     0x38 => Ok(Operation::FistpM64IntRax),
                     0x18 => Ok(Operation::FistpM16IntRax),
@@ -2469,7 +2482,21 @@ mod tests {
             );
         }
         for bytes in [
-            &[0xf0, 0xdf, 0xe0][..],
+            &[0xf0, 0xdf, 0x00][..],
+            &[0xf2, 0xdf, 0x00],
+            &[0xf3, 0xdf, 0x00],
+            &[0x26, 0xdf, 0x00],
+            &[0x2e, 0xdf, 0x00],
+            &[0x36, 0xdf, 0x00],
+            &[0x3e, 0xdf, 0x00],
+            &[0x64, 0xdf, 0x00],
+            &[0x65, 0xdf, 0x00],
+            &[0x66, 0xdf, 0x00],
+            &[0x67, 0xdf, 0x00],
+            &[0x40, 0xdf, 0x00],
+            &[0x48, 0xdf, 0x00],
+            &[0x9b, 0xdf, 0x00],
+            &[0xf0, 0xdf, 0xe0],
             &[0xf2, 0xdf, 0xe0],
             &[0xf3, 0xdf, 0xe0],
             &[0x26, 0xdf, 0xe0],
@@ -2521,6 +2548,7 @@ mod tests {
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
+                    0x00 => Ok(Operation::FildM16IntRax),
                     0xe0 => Ok(Operation::FnstswAx),
                     0x38 => Ok(Operation::FistpM64IntRax),
                     0x18 => Ok(Operation::FistpM16IntRax),
@@ -2613,6 +2641,8 @@ mod tests {
                     Ok(Operation::Fninit)
                 } else if opcode == 0xdb && modrm == 0x00 {
                     Ok(Operation::FildM32IntRax)
+                } else if opcode == 0xdf && modrm == 0x00 {
+                    Ok(Operation::FildM16IntRax)
                 } else if opcode == 0xdb && modrm == 0x10 {
                     Ok(Operation::FistM32IntRax)
                 } else if opcode == 0xdb && modrm == 0x18 {
