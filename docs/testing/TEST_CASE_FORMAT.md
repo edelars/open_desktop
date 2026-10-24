@@ -187,3 +187,12 @@ RIP. The rejection fixture encodes an Empty tag at actual old physical
 RFLAGS bits, so `rflags_mask` includes `0x8d5`; the schema validates fixture
 structure and decoder/runner tests enforce the exact byte boundary and the
 one-entry physical TOP pop.
+
+## S2-30al literal FUCOMI fixture profile
+
+The S2-30al x87-state fixtures preserve exact local instruction bytes:
+success observes only `dbe9dfe0` (FUCOMI followed by FNSTSW AX), and atomic
+rejection uses `dbe9` with budget one and no stop RIP. The rejection fixture
+must encode an Empty tag at the actual old physical `(TOP+1)&7` while retaining
+a Valid old TOP. FUCOMI defines all six affected RFLAGS bits, so
+`rflags_mask` includes `0x8d5`. Schema/CLI tests reject `dbeadfe0`.

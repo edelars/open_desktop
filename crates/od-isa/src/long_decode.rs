@@ -455,6 +455,8 @@ pub enum Operation {
     },
     /// Bare `DB F1` FCOMI ST(0), ST(1), bounded canonical-Normal compare.
     Fcomi,
+    /// Bare `DB E9` FUCOMI ST(0), ST(1), bounded canonical-Normal compare.
+    Fucomi,
     /// Bare `DF F1` FCOMIP ST(0), ST(1), bounded compare then physical TOP pop.
     Fcomip,
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
@@ -757,7 +759,7 @@ impl Instruction {
                 defined: crate::ZF,
                 undefined: 0,
             },
-            Operation::Fcomi | Operation::Fcomip => FlagEffects {
+            Operation::Fcomi | Operation::Fcomip | Operation::Fucomi => FlagEffects {
                 defined: 0x8d5,
                 undefined: 0,
             },
@@ -1048,6 +1050,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 match self.byte()? {
                     0xe2 => Operation::Fnclex,
                     0xe3 => Operation::Fninit,
+                    0xe9 => Operation::Fucomi,
                     0xf1 => Operation::Fcomi,
                     _ => return Err(self.unsupported(opcode)),
                 }
@@ -2223,6 +2226,7 @@ mod tests {
                     0xe2 => Ok(Operation::Fnclex),
                     0xe3 => Ok(Operation::Fninit),
                     0xf1 => Ok(Operation::Fcomi),
+                    0xe9 => Ok(Operation::Fucomi),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
@@ -2241,10 +2245,12 @@ mod tests {
         .into_iter()
         .chain(0x40..=0x4f)
         {
-            assert!(matches!(
-                Memory::new(&[prefix, 0xdb, 0xf1]).decode(),
-                Err(DecodeError::Unsupported { .. })
-            ));
+            for second in [0xe2, 0xe3, 0xe9, 0xf1] {
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xdb, second]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
         }
 
         for bytes in [
@@ -2309,6 +2315,7 @@ mod tests {
                     0xe2 => Ok(Operation::Fnclex),
                     0xe3 => Ok(Operation::Fninit),
                     0xf1 => Ok(Operation::Fcomi),
+                    0xe9 => Ok(Operation::Fucomi),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,

@@ -1375,6 +1375,21 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+### S2-30al FUCOMI schema and literal CLI coverage
+
+[`s2_30al_fucomi_equal_fnstsw.case.json`](s2_30al_fucomi_equal_fnstsw.case.json)
+uses exact `dbe9dfe0`: ordered equal canonical-Normal operands set ZF, clear
+the other five affected RFLAGS bits and only FSW.C1, then FNSTSW copies
+`0x4500` to AX. FUCOMI leaves TOP, tags and payloads unchanged. The paired
+[`s2_30al_fucomi_invalid_rhs_tag.case.json`](s2_30al_fucomi_invalid_rhs_tag.case.json)
+uses exact `dbe9`, no stop RIP and budget one; the actual old physical ST(1)
+tag is Empty, so execution rejects without retirement or state mutation.
+Schema/CLI coverage rejects `dbeadfe0`. Native admission explicitly denies
+`Operation::Fucomi` and DB E9.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329.
+
 ### S2-30ah FUCOMP schema and literal CLI coverage
 
 [s2_30ah_fucomp_equal_fnstsw.case.json](s2_30ah_fucomp_equal_fnstsw.case.json)

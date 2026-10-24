@@ -710,6 +710,8 @@ impl Fixture {
                 "90" => ("90", 1),
                 "dbe3" => ("dbe3", 2),
                 "dbe2" => ("dbe2", 2),
+                "dbe9" => ("dbe9", 2),
+                "dbe9dfe0" => ("dbe9dfe0", 4),
                 "dbf1" => ("dbf1", 2),
                 "dbf1dfe0" => ("dbf1dfe0", 4),
                 "dff1" => ("dff1", 2),
@@ -929,6 +931,14 @@ impl Fixture {
                     let rhs = (top + 1) & 7;
                     (x87.tag_word.get() >> (u32::from(rhs) * 2)) & 3 != 0
                 });
+            let is_fucomi_source_rejected = code_bytes == "dbe9"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
+                    let rhs = (top + 1) & 7;
+                    (x87.tag_word.get() >> (u32::from(rhs) * 2)) & 3 != 0
+                });
             let is_fcomip_source_rejected = code_bytes == "dff1"
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
@@ -963,6 +973,7 @@ impl Fixture {
                     || is_fucom_source_rejected
                     || is_fucomp_source_rejected
                     || is_fcomi_source_rejected
+                    || is_fucomi_source_rejected
                     || is_fcomip_source_rejected
                 {
                     self.stop_rip.is_some() || self.expected_exit != ExpectedExit::Unsupported

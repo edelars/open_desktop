@@ -2662,3 +2662,35 @@ only E0/F1 and rejects every other ModR/M byte and all prefixes.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## Local S2-30al: bounded `FUCOMI ST(0), ST(1)` (`DB E9`)
+
+Accept exactly bare `DB E9`. Before mutation call
+`bounded_x87_fcom_result(state, 1)`, requiring an existing x87 snapshot, FCW
+`0x037f`, `FSW & 0x80ff == 0`, Valid tags at old physical TOP and
+`(TOP+1)&7`, and canonical-Normal binary80 values. The bounded comparator
+returns only ordered relations: greater clears all six affected RFLAGS bits,
+less sets CF, and equal sets ZF. `FlagEffects` defines CF/PF/AF/ZF/SF/OF
+(`0x8d5`) on successful retirement.
+
+Clear only FSW.C1; preserve C0/C2/C3, TOP, both physical tags, all ten-byte
+register payloads, FCW, FDP/FOP, other FSW bits, GPRs and memory. Set FIP to
+instruction-start RIP, advance RIP by two, and retire once. Reject missing
+state, bad environment, tags and classes atomically. No pop, unordered QNaN
+handling, x87 exception delivery, `#NM` handling or native x87 execution is
+modeled.
+
+The DB decoder admits only E2 FNCLEX, E3 FNINIT, F1 FCOMI and E9 FUCOMI as
+bare encodings. The existing DF E0 FNSTSW AX and DF F1 FCOMIP forms remain
+admitted; all other DB/DF forms, prefixes, REX, WAIT and memory operands are
+rejected. Literal schema/CLI fixtures use exact `dbe9dfe0` and `dbe9`; the
+no-stop/budget-one reject has Empty actual old physical ST(1). The schema
+rejects `dbeadfe0`. Decoder and interpreter tests cover every DB second byte
+and prefix, all TOP × ordered relations × initial FSW condition fields, all 64
+affected RFLAGS masks with definedness, invalid operand tags/classes and
+environment, and fetch/truncation/STOP/budget atomicity. Native admission
+explicitly denies `Operation::Fucomi` and DB E9.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

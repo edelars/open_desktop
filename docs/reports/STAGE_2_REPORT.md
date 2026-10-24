@@ -3854,8 +3854,9 @@ covered by its existing `D9 E0` vector and arm.
 Normative source: Intel SDM revision 093, Vol.2A, “FTST—Test,” pp.3-400–3-401
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
-Validation passed: `cargo test --workspace --offline`,
-`cargo check --workspace --all-targets --offline`, Linux x86_64 compile-only
+Validation passed: the full `cargo test --workspace --offline` suite completed
+successfully three times, including after the final shared FCOMI/FUCOMI commit
+arm; `cargo check --workspace --all-targets --offline` and Linux x86_64 compile-only
 `cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
 --offline`, focused FTST interpreter/decode/schema/CLI tests,
 `cargo fmt --all -- --check`, `git diff --check` and `graphify update .`.
@@ -4250,6 +4251,45 @@ graph with 3542 nodes and 7569 edges; the existing parser warning for
 `include/open_desktop/host_abi.h` remains. Linux x86_64 compile-only check
 passed; Linux native x87 execution, the Linux-only admission test and
 physical-x86 acceptance were not performed.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## S2-30al — bounded FUCOMI ST(0), ST(1) to RFLAGS
+
+Added exact bare `DB E9` as separate `Operation::Fucomi`. Before mutation it
+calls `bounded_x87_fcom_result(state, 1)`, requiring an existing x87 snapshot,
+FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags at old physical TOP and TOP+1,
+and canonical-Normal binary80 operands. Ordered greater maps the `0x8d5`
+RFLAGS mask to zero, less to CF, and equal to ZF; decoded `FlagEffects` defines
+all six affected bits. It clears only FSW.C1, records FIP, advances RIP by two
+and retires once. It preserves C0/C2/C3, TOP, tags, payloads, the rest of the
+x87 environment, GPRs and memory. It does not pop or process unordered
+QNaN/special values, deliver x87 exceptions, or enter native x87 execution.
+
+DB now admits only existing E2 FNCLEX, E3 FNINIT, F1 FCOMI and E9 FUCOMI.
+Exhaustive second-byte and prefix tests reject every other DB form; REX, WAIT,
+memory forms and all prefixes remain unsupported. Interpreter tests cover all
+TOP × three ordered relations × 16 initial FSW condition fields, all 64
+affected RFLAGS masks with definedness, both operands' invalid tags and raw
+classes, bad FCW/FSW, missing state, and fetch/truncation/STOP/budget
+atomicity. Literal schema/CLI fixtures use exact `dbe9dfe0` and `dbe9`, with
+the latter carrying an Empty actual old physical ST(1) tag and budget one/no
+stop; schema/CLI also reject the false unsupported variant `dbeadfe0`. Native
+admission explicitly denies `Operation::Fucomi` and DB E9.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, Linux x86_64 compile-only
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
+--offline`, `cargo fmt --all -- --check`, and `git diff --check`.
+`python3 tools/check_layout.py` reports the existing unmapped root `.serena/`
+directory; it was present before this task and remains untouched. The native
+admission regression is compile-covered but Linux-only and was not executed on
+this macOS host. Physical x86/native x87 acceptance was not performed.
+Independent Sol-medium review found no implementation defects; it identified a
+documentation ambiguity about neighboring DF forms, which was corrected and
+re-reviewed clean.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
