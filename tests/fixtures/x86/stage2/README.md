@@ -2293,3 +2293,16 @@ JIT and native admission. See the
 [S2-31bc CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bc-finite-exponent-1023-bounded-m64-stores),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bc-finite-exponent-1023-bounded-m64-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bc--finite-exponent-1023-bounded-m64-stores).
+
+
+### S2-31bd exact binary32 subnormal store fixtures
+
+The positive bare D910 fixture stores the minimum binary32 subnormal from its
+canonical binary80 source while retaining DE. The negative D918/DFE0 fixture
+stores the signed minimum subnormal and observes sticky DE after the pop.
+Both run through the schema/CLI interpreter path and are explicitly denied by
+JIT and native admission. A direct ISA composition test covers D900 minimum-
+subnormal FLD followed by D910, proving DE is retained without PE. See the
+[S2-31bd CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bd-exact-binary32-subnormal-results),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bd-exact-binary32-subnormal-results-through-m32-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bd--exact-binary32-subnormal-results-through-m32-stores).

@@ -4367,7 +4367,6 @@ slice. See the [plan](../plans/STAGE_2.md#s2-31au-store-canonical-binary80-quiet
 [report](../reports/STAGE_2_REPORT.md#s2-31au--canonical-quietnan-binary80-to-binary64-stores),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
 
-
 <a id="local-s2-31ay-admit-sticky-ie-fstfstp-m32-m64"></a>
 
 ## Local S2-31ay: masked sticky IE in m32/m64 `FST/FSTP [RAX]`
@@ -4417,8 +4416,6 @@ behavior follows Intel SDM revision 093 Vol. 2A FST/FSTP and Vol. 1 §8.5.1
 See the [plan](../plans/STAGE_2.md#s2-31aw-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m64fp),
 [report](../reports/STAGE_2_REPORT.md#s2-31aw--canonical-signalingnan-binary80-to-binary64-stores),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
-
-
 <a id="local-s2-31av-canonical-quietnan-fstfstp-m32fp-rax-d9-10-d9-18"></a>
 
 ## Local S2-31av: canonical QuietNaN `FST/FSTP m32fp [RAX]`
@@ -4591,4 +4588,36 @@ failures preserve full state and bytes. JIT/native admission remains closed;
 native runtime and physical acceptance remain deferred under ISSUE-019. See
 the [plan](../plans/STAGE_2.md#s2-31bc-finite-exponent-1023-bounded-m64-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31bc--finite-exponent-1023-bounded-m64-stores),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31bd-exact-binary32-subnormal-results"></a>
+
+## Local S2-31bd: exact subnormal results through bounded m32 `FST/FSTP [RAX]`
+
+For exact `D9 10` and `D9 18`, accept a canonical Normal binary80 source with
+unbiased exponent `-149..=-127` only when its exact value is representable as
+a binary32 subnormal. The integer conversion uses
+`shift = -exponent - 86` (41..63), requires all discarded significand bits to
+be zero, and requires the resulting fraction to be `1..=0x7fffff`. Preserve
+the source sign. This path does not depend on RC and does not set DE, UE or PE.
+
+An inexact subnormal result, source exponent below -149, invalid tag/class,
+pseudo-encoding or malformed source remains Unsupported before destination
+access. The existing FCWs, `FSW & 0x80dc == 0` gate, normal rounding path,
+minimum-normal result, canonical48 Dword preflight, atomic write, status/pointer
+behavior and FSTP pop ordering remain unchanged. Sticky IE/DE/PE are preserved;
+C1 follows the existing exact-store clear policy. A denied write or failed
+range check leaves CPU state and destination memory unchanged.
+
+Literal D910 and D918/DFE0 fixtures store positive and negative minimum
+subnormal binary32 values while retaining sticky DE; FNSTSW observes DE after
+the pop. Direct FLD subnormal→FST tests prove DE survives without PE. Boundary
+coverage includes all exact shift sizes, minimum and maximum subnormal,
+1.5-minimum-subnormal and half-step-above-maximum rejects, exponent -150 and
+minimum normal. This is a narrow local conversion policy; other widths and
+general unmasked exception delivery remain unchanged. JIT/native admission,
+native runtime and physical acceptance remain deferred under ISSUE-019. See
+the [plan](../plans/STAGE_2.md#s2-31bd-exact-binary32-subnormal-results-through-m32-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31bd--exact-binary32-subnormal-results-through-m32-stores),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).

@@ -6277,3 +6277,25 @@ verification covered 31 m64fp ISA cases, the maximum-finite CLI fixtures and
 JIT denial. Linux x86_64 target compilation passed; native runtime and physical
 behavior remain unverified and deferred under ISSUE-019. Executable Linux x86
 tests could not be linked on this macOS host.
+
+
+<a id="s2-31bd--exact-binary32-subnormal-results-through-m32-stores"></a>
+
+## S2-31bd — exact binary32 subnormal results through bounded m32 stores
+
+Exact D910/D918 stores now pack exactly representable binary32 subnormal
+results from canonical Normal binary80 sources with exponents -149 through
+-127. The integer downshift is independent of RC and requires every discarded
+bit to be zero. Inexact tiny results and values below the minimum subnormal
+remain Unsupported before memory access. No new DE, UE or PE is generated;
+sticky status, gates, normal rounding, addressing and store/pop ordering remain
+unchanged.
+
+Boundary vectors, D900 FLD→D910 composition, two CLI fixtures including DFE0
+FNSTSW, JIT/native denial, and write/range atomicity are covered. Focused
+verification passed 28 `od-isa` m32fp tests plus composition, CLI and JIT
+denial tests. The full offline workspace suite passed 795 tests; workspace
+all-target checks, Linux x86_64 runner cross-check and formatting passed.
+The layout checker reports the existing unmapped `.serena/` directory, which
+was left untouched. Native runtime and physical acceptance remain deferred
+under ISSUE-019.

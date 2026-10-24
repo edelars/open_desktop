@@ -444,3 +444,15 @@
   [plan](plans/STAGE_2.md#s2-31bc-finite-exponent-1023-bounded-m64-stores),
   [report](reports/STAGE_2_REPORT.md#s2-31bc--finite-exponent-1023-bounded-m64-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31bd evidence:** exact D910/D918 stores now accept only exactly
+  representable binary32 subnormal results from canonical Normal binary80
+  sources with unbiased exponents -149 through -127. Integer downshift checks
+  all discarded bits; inexact tiny results and sources below -149 remain
+  Unsupported before access. Sticky flags are retained without generating DE,
+  UE or PE. Boundary, FLD→store, write/range atomicity, CLI and JIT/native
+  denial coverage is included. Native runtime and physical acceptance remain
+  deferred under ISSUE-019. See [S2-31bd CPU contract](specs/CPU_CONTRACT.md#local-s2-31bd-exact-binary32-subnormal-results),
+  [plan](plans/STAGE_2.md#s2-31bd-exact-binary32-subnormal-results-through-m32-stores),
+  [report](reports/STAGE_2_REPORT.md#s2-31bd--exact-binary32-subnormal-results-through-m32-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

@@ -266,6 +266,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ba | Admit masked sticky IE/DE in exact raw DB38 FSTP m80fp stores; preserve bytes and pop atomically | S2-31az |
 | [x] | S2-31bb | Extend exact D910/D918 finite binary32 stores through exponent 127; reject rounded exponent 128 before access | S2-31az, S2-31av |
 | [x] | S2-31bc | Extend exact DD10/DD18 finite binary64 stores through exponent 1023; reject rounded exponent 1024 before access | S2-31ba, S2-31bb |
+| [x] | S2-31bd | Store exact m32 subnormal results from canonical Normal binary80 sources with integer downshift only | S2-31bb, S2-31bc |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3704,3 +3705,26 @@ fixture test, 790 workspace tests, workspace `cargo check`, Linux x86_64
 `cargo check --all-targets`, and `cargo fmt --all -- --check`. Linux x86 test
 binaries could not be linked on this macOS host; layout checking still reports
 the pre-existing unmapped `.serena` root, left untouched.
+
+
+<a id="s2-31bd-exact-binary32-subnormal-results-through-m32-stores"></a>
+
+#### S2-31bd. Store exact binary32 subnormal results through bounded m32 FST/FSTP
+
+Extend only exact D910/D918 m32 stores for a Valid-tagged canonical binary80
+Normal source with unbiased exponent `-149..=-127`. Convert the 64-bit
+significand by integer downshift `shift = -exponent - 86` (41..63); accept
+only when every discarded bit is zero and the resulting fraction is in
+`1..=0x7fffff`. Preserve sign. This path is independent of the FCW rounding
+mode and adds no DE, UE or PE. Inexact subnormal results, exponent below -149,
+other tags/classes and malformed encodings remain Unsupported before memory
+access. Keep normal conversion, minimum-normal behavior and all environment,
+addressing, store/pop and native/JIT gates unchanged.
+
+Cover minimum, adjacent and maximum subnormal fractions, both signs, both
+opcodes, all TOPs/FCWs and incoming IE/DE/PE. Exercise every discarded-shift
+boundary, 1.5 minimum subnormal, the half-step above maximum subnormal,
+exponent -150 and minimum normal. Include D900 subnormal FLD→D910/FSTP
+composition proving DE retention without PE, full-state write/range fault
+atomicity, CLI fixtures with FNSTSW, and explicit JIT/native denial. Native
+runtime and physical acceptance remain deferred under ISSUE-019.

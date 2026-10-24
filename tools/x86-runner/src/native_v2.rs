@@ -4244,4 +4244,17 @@ mod tests {
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
     }
+
+    #[test]
+    fn s2_31bd_exact_m32_subnormal_store_fixtures_remain_outside_native_admission() {
+        for bytes in [
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bd_fst_m32fp_positive_min_subnormal.case.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bd_fstp_m32fp_negative_min_subnormal_fnstsw.case.json").as_slice(),
+        ] {
+            let loaded = Fixture::from_json(bytes).unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
+        }
+    }
 }
