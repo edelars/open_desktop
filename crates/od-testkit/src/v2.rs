@@ -765,6 +765,8 @@ impl Fixture {
                 "db18dfe0" => ("db18dfe0", 4),
                 "db10" => ("db10", 2),
                 "db10dfe0" => ("db10dfe0", 4),
+                "df18" => ("df18", 2),
+                "df18dfe0" => ("df18dfe0", 4),
                 _ if code_bytes.len() == 4
                     && code_bytes.starts_with("d8c")
                     && matches!(code_bytes.as_bytes()[3], b'0'..=b'f') =>
@@ -935,6 +937,36 @@ impl Fixture {
                     let top = ((x87.status_word.get() >> 11) & 7) as u32;
                     (x87.tag_word.get() >> (top * 2)) & 3 != 0
                 });
+            let is_fistp_word_overflow_rejected = code_bytes == "df18"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
+                    let raw = &x87.registers[usize::from(top)];
+                    raw.eq_ignore_ascii_case("00000000000000800e40")
+                });
+            let is_fistp_word_exponent_rejected = code_bytes == "df18"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
+                    let raw = &x87.registers[usize::from(top)];
+                    raw.eq_ignore_ascii_case("00000000000000800f40")
+                });
+            let is_fistp_word_tag_rejected = code_bytes == "df18"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as u32;
+                    (x87.tag_word.get() >> (top * 2)) & 3 != 0
+                });
+            let is_fistp_word_environment_rejected = code_bytes == "df18"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
+                        || x87.status_word.get() & 0x80df != 0
+                });
             let is_fcom_source_rejected = code_bytes.len() == 4
                 && code_bytes.starts_with("d8d")
                 && matches!(code_bytes.as_bytes()[3], b'0'..=b'7')
@@ -1017,6 +1049,10 @@ impl Fixture {
                     || is_fistp_tag_rejected
                     || is_fist_overflow_rejected
                     || is_fist_tag_rejected
+                    || is_fistp_word_overflow_rejected
+                    || is_fistp_word_exponent_rejected
+                    || is_fistp_word_tag_rejected
+                    || is_fistp_word_environment_rejected
                     || is_fcom_source_rejected
                     || is_fcomp_source_rejected
                     || is_fcompp_source_rejected

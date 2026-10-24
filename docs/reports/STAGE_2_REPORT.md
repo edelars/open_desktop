@@ -4333,6 +4333,39 @@ not complete S2-31.
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer”
 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## S2-31d — bounded `FISTP m16int [RAX]` partial slice
+
+Added only bare `DF 18` as a fixed Word store through RAX in Long64. The
+executor reuses S2-31b/c's integer quotient/remainder RC conversion, with a
+canonical-Normal old physical TOP, exponent 0..15, exact all-masked PC64 FCW
+values, `FSW & 0x80df == 0`, and post-rounded signed-i16 bounds. The full
+canonical48 two-byte range is checked before one atomic Word write with no data
+read. Success empties old TOP and commits PE/C1, FIP/FDP, RIP and retirement
+only after the store; raw payloads and unrelated state remain unchanged.
+
+Literal fixtures cover all four RC modes with positive and negative ties,
+exact/rounded signed-word limits, overflow, invalid tag/status/control word and
+out-of-domain exponent, plus exact `DF 18 DF E0` status observation. The CLI
+checks written bytes, status/pop state and complete payload preservation, and
+checks zero-retirement rejections preserve CPU and memory. Interpreter tests
+also cover exact one-Word-write/no-read tracing, all RC/sign results, write
+permission failure, injected #PF, canonical-range rejection and failure
+atomicity. Exhaustive DF ModR/M tests and prefix rejection include `DF 18`;
+native admission remains fail-closed.
+
+Verification passed: `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+and `git diff --check`. The CLI fixture test covers all 18 literal inputs. The
+native admission code explicitly denies DF 18, but its platform-gated test did
+not execute on this macOS host. `graphify update .` rebuilt the graph to 3633
+nodes, 7745 edges and 177 communities; the existing parser warning for
+`include/open_desktop/host_abi.h` remains. No physical x86, MMU/page-walk,
+MMIO, SMP or general x87 exception behavior was tested. This does not complete
+S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
+pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ## S2-30ak — bounded FCOMIP ST(0), ST(1) to RFLAGS and pop
 
 Added exactly bare `DF F1` as `Operation::Fcomip`. DF decoding now admits

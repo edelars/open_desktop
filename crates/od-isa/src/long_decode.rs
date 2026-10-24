@@ -453,6 +453,8 @@ pub enum Operation {
     Frndint,
     /// Bare `DB 18` FISTP dword integer at [RAX], bounded finite profile.
     FistpM32IntRax,
+    /// Bare `DF 18` FISTP word integer at [RAX], bounded finite profile.
+    FistpM16IntRax,
     /// Bare `DB 10` FIST dword integer at [RAX], bounded finite profile.
     FistM32IntRax,
     /// Bare `D8 D0+i` FCOM ST(i), bounded canonical-Normal register compare.
@@ -1095,6 +1097,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 match modrm {
                     0xe0 => Operation::FnstswAx,
+                    0x18 => Operation::FistpM16IntRax,
                     _ => indexed_x87_compare(opcode.byte, modrm)
                         .ok_or_else(|| self.unsupported(opcode))?,
                 }
@@ -2259,6 +2262,11 @@ mod tests {
         assert_eq!(fist.length, 2);
         assert_eq!(fist.prefixes, Prefixes::default());
 
+        let fistp_word = Memory::new(&[0xdf, 0x18]).decode().unwrap();
+        assert_eq!(fistp_word.operation, Operation::FistpM16IntRax);
+        assert_eq!(fistp_word.length, 2);
+        assert_eq!(fistp_word.prefixes, Prefixes::default());
+
         for second in 0u8..=u8::MAX {
             let decoded = Memory::new(&[0xdb, second]).decode();
             assert_eq!(
@@ -2398,6 +2406,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0xe0 => Ok(Operation::FnstswAx),
+                    0x18 => Ok(Operation::FistpM16IntRax),
                     _ if indexed_x87_compare(0xdf, modrm).is_some() => {
                         Ok(indexed_x87_compare(0xdf, modrm).unwrap())
                     }
@@ -2466,6 +2475,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0xe0 => Ok(Operation::FnstswAx),
+                    0x18 => Ok(Operation::FistpM16IntRax),
                     _ if indexed_x87_compare(0xdf, modrm).is_some() => {
                         Ok(indexed_x87_compare(0xdf, modrm).unwrap())
                     }
@@ -2518,6 +2528,25 @@ mod tests {
                 undefined: 0
             }
         );
+
+        let instruction = Memory::new(&[0xdf, 0x18]).decode().unwrap();
+        assert_eq!(instruction.operation, Operation::FistpM16IntRax);
+        assert_eq!(instruction.length, 2);
+        assert_eq!(instruction.prefixes, Prefixes::default());
+        for prefix in [
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+        ]
+        .into_iter()
+        .chain(0x40..=0x4f)
+        {
+            assert!(
+                matches!(
+                    Memory::new(&[prefix, 0xdf, 0x18]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "prefix {prefix:02x}"
+            );
+        }
     }
 
     #[test]
@@ -2535,6 +2564,8 @@ mod tests {
                     Ok(Operation::FistpM32IntRax)
                 } else if opcode == 0xdf && modrm == 0xe0 {
                     Ok(Operation::FnstswAx)
+                } else if opcode == 0xdf && modrm == 0x18 {
+                    Ok(Operation::FistpM16IntRax)
                 } else if let Some(operation) = indexed_x87_compare(opcode, modrm) {
                     Ok(operation)
                 } else {

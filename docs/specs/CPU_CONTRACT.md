@@ -2699,7 +2699,7 @@ unmasked exceptions, deferred delivery, stack faults, CR0/#NM, MMIO, SMP,
 translation/page walks, or general x87 semantics. It does not complete S2-31.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
-pp.3-358–3-359 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
 ## Local S2-31c: bounded `FIST m32int [RAX]` (`DB 10`)
 
@@ -2730,7 +2730,44 @@ SMP, translation/page walks, or general x87 semantics and does not complete
 S2-31.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
-pp.3-358–3-359 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## Local S2-31d: bounded `FISTP m16int [RAX]` (`DF 18`)
+
+The interpreter admits only bare `DF 18` in Long64: a Word store through RAX,
+with address size 64, no index/displacement/segment override, and a full
+canonical48 check over both bytes. Preflight requires an existing x87 snapshot,
+FCW exactly `0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`, and
+`FSW & 0x80df == 0`; sticky PE is allowed. Only the old physical TOP tag and
+payload are inspected. The tag must be Valid, the raw binary80 value canonical
+Normal, and its unbiased exponent 0..15. Other physical tags and payloads
+remain unexamined.
+
+For significand `s`, exponent `e`, and `k=63-e`, compute `d=1<<k`,
+`q=s>>k`, and `r=s&(d-1)`, then use integer-only
+`round_quotient_magnitude(sign,q,r,d,RC)`. Accept a rounded magnitude at most
+`0x7fff` for positive inputs and `0x8000` for negative inputs. Encode the low
+16 bits with unsigned two's-complement arithmetic. Unsupported source,
+out-of-domain values and signed-i16 overflow return Unsupported before data
+access.
+
+After source preflight, validate the complete canonical48 range using
+`MemoryOperand::access_address_48`. Issue exactly one `GuestMemory::write_integer`
+Word store, with no data read. Store errors propagate unchanged, and CPU/x87
+state remains unchanged. Only after success, mark old physical TOP Empty,
+increment TOP modulo eight, set PE sticky iff `r != 0`, set C1 iff rounding
+increased magnitude, record FIP/FDP, advance RIP by two and retire once.
+Preserve every raw payload and unrelated state. Literal fixtures cover all RC
+modes with both signs, tie cases, exact and rounded signed-word boundaries,
+the exact `DF 18 DF E0` status composition, overflow and invalid tag/status/FCW
+cases. Interpreter checks cover no-read/single-Word-write behavior, complete
+state preservation, full-range canonical rejection, permission failure and
+injected architectural fault atomicity. Native x87 admission explicitly
+denies this operation. Flat fixture RAM does not establish MMU, MMIO, SMP,
+physical execution, exception delivery, or general x87 semantics.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
+pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
 ## Local S2-31a: bounded `FRNDINT` (`D9 FC`)
 

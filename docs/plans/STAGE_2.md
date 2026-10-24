@@ -2046,6 +2046,21 @@ literal `DB 10` and exact `DB 10 DF E0` fixtures, reject prefixes and nearby
 forms, and explicitly deny native admission. This local slice does not complete
 S2-31 or model general x87 exception delivery.
 
+#### S2-31d. Bare bounded `FISTP m16int [RAX]` (`DF 18`), partial slice
+
+Implement only bare `DF 18` in Long64 with a canonical Word destination
+`[RAX]` and an existing x87 snapshot. Reuse S2-31b/c's canonical-Normal old
+physical TOP, four exact all-masked PC64 FCW values, `FSW & 0x80df == 0`, and
+integer quotient/remainder RC rounding, with exponent 0..15 and post-rounded
+signed-i16 bounds. Validate the full canonical48 two-byte destination before
+exactly one atomic Word write. Only after success empty old TOP, advance TOP,
+update sticky PE/C1, record FIP/FDP, advance RIP and retire once; preserve raw
+x87 payloads and unrelated state. Add literal fixtures for `DF 18`, exact
+`DF 18 DF E0`, RC/sign/tie and signed-boundary cases, plus overflow, invalid
+tag/status/configuration and no-commit rejection. Decoder/schema coverage must
+reject prefixes and nearby forms, and native admission remains closed. This
+local slice does not model general x87 exception delivery or complete S2-31.
+
 ### S2-32. Остальные обязательные x87 формы
 
 1. По матрице профиля отдельно реализовать нужные remainder, scale, square root, transcendental и прочие оставшиеся формы. Одно семейство — отдельное изменение.

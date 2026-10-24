@@ -1965,4 +1965,128 @@ mod tests {
             "the schema must not classify exact negative 2^31 as an overflow rejection"
         );
     }
+
+    #[test]
+    fn fistp_m16int_literal_fixtures_cover_rounding_edges_and_rejections() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2");
+        let successful = [
+            ("rc0_positive", 2_i16, true, true),
+            ("rc0_negative", -2, true, true),
+            ("rc1_positive", 1, true, false),
+            ("rc1_negative", -2, true, true),
+            ("rc2_positive", 2, true, true),
+            ("rc2_negative", -1, true, false),
+            ("rc3_positive", 1, true, false),
+            ("rc3_negative", -1, true, false),
+            ("fnstsw_tie", -2, true, false),
+            ("exact_max", i16::MAX, false, false),
+            ("exact_min", i16::MIN, false, false),
+            ("rounded_max", 32767, true, false),
+            ("rounded_min", i16::MIN, true, false),
+        ];
+        for (suffix, expected, inexact, incremented) in successful {
+            let name = format!("s2_31d_fistp_m16int_{suffix}.case.json");
+            let bytes = std::fs::read(directory.join(&name)).unwrap();
+            let fixture = v2::Fixture::from_json(&bytes)
+                .unwrap_or_else(|error| panic!("{name} failed schema validation: {error}"));
+            let before = fixture.fixture.initial_state.clone();
+            let mut memory =
+                od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let initial_memory = memory.snapshot();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(
+                matches!(result.outcome, v2::Outcome::StopAddress {}),
+                "{name}"
+            );
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available {
+                    value: HexU64(if suffix == "fnstsw_tie" { 2 } else { 1 })
+                },
+                "{name}"
+            );
+            let left = memory
+                .snapshot()
+                .into_iter()
+                .find(|r| r.region_id == "data_left")
+                .unwrap();
+            let right = memory
+                .snapshot()
+                .into_iter()
+                .find(|r| r.region_id == "data_right")
+                .unwrap();
+            let bytes = expected.to_le_bytes();
+            assert_eq!(left.bytes_hex, format!("{:02x}", bytes[0]), "{name}");
+            assert_eq!(
+                right.bytes_hex,
+                format!("{:02x}{}", bytes[1], "ccddeeff11223344556677889900"),
+                "{name}"
+            );
+            assert_ne!(memory.snapshot(), initial_memory, "{name}");
+            let Observation::Available { value } = result.snapshot else {
+                panic!("{name} snapshot unavailable");
+            };
+            let before_x87 = before.x87.as_ref().unwrap();
+            let after = value.state.x87.as_ref().unwrap();
+            let expected_fsw = (before_x87.status_word.get() & !(7 << 11 | 1 << 9))
+                | (1 << 11)
+                | if inexact { 0x20 } else { 0 }
+                | if incremented { 0x200 } else { 0 };
+            assert_eq!(after.status_word, HexU64(expected_fsw), "{name}");
+            assert_eq!(after.tag_word.get() & 3, 3, "{name}");
+            assert_eq!(after.registers, before_x87.registers, "{name}");
+            assert_eq!(after.instruction_pointer, HexU64(0x100000), "{name}");
+            assert_eq!(after.data_pointer, HexU64(0x300001), "{name}");
+            let mut expected_state = before;
+            expected_state.rip = HexU64(if suffix == "fnstsw_tie" {
+                0x100004
+            } else {
+                0x100002
+            });
+            let expected_x87 = expected_state.x87.as_mut().unwrap();
+            expected_x87.status_word = HexU64(expected_fsw);
+            expected_x87.tag_word = HexU64((expected_x87.tag_word.get() & !3) | 3);
+            expected_x87.instruction_pointer = HexU64(0x100000);
+            expected_x87.data_pointer = HexU64(0x300001);
+            if suffix == "fnstsw_tie" {
+                expected_state.gpr[0] =
+                    HexU64((expected_state.gpr[0].get() & !0xffff) | u64::from(expected_fsw));
+            }
+            assert_eq!(value.state, expected_state, "{name}: full CPU state");
+        }
+
+        for suffix in [
+            "overflow",
+            "invalid_tag",
+            "invalid_status",
+            "invalid_control",
+            "invalid_exponent",
+        ] {
+            let name = format!("s2_31d_fistp_m16int_{suffix}.case.json");
+            let bytes = std::fs::read(directory.join(&name)).unwrap();
+            let fixture = v2::Fixture::from_json(&bytes)
+                .unwrap_or_else(|error| panic!("{name} failed schema validation: {error}"));
+            let mut memory =
+                od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let initial_memory = memory.snapshot();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(
+                matches!(result.outcome, v2::Outcome::Unsupported { .. }),
+                "{name}"
+            );
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(0) },
+                "{name}"
+            );
+            assert_eq!(memory.snapshot(), initial_memory, "{name}");
+            let Observation::Available { value } = result.snapshot else {
+                panic!("{name} snapshot unavailable");
+            };
+            assert_eq!(value.state, fixture.fixture.initial_state, "{name}");
+        }
+    }
 }
