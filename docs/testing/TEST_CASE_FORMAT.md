@@ -353,3 +353,16 @@ D900/budget-one/no-stop Unsupported exception now admits canonical SNaN only;
 QNaN, infinity, zero, Normal and subnormal sources do not match. The positive
 bare and negative payload-bearing D900/DFE0+FNSTSW fixtures run through CLI.
 JIT/native profiles continue to deny the load.
+
+## S2-31ai literal FLD m64fp canonical SNaN fixtures
+
+The current `s2-long-x87-state-v1` profile accepts canonical binary64 SNaNs
+for exact `dd00` successful fixtures. They are converted from integer fields
+to canonical binary80 Special with preserved sign/payload and a set quiet bit;
+IE is sticky, and `FSW & 0x80dd` is the preflight gate. Pre-existing IE remains
+an Unsupported environment case before operand access. Therefore, the exact
+DD00, one-instruction, no-stop Unsupported schema exception is environment-
+driven (invalid FCW or a set masked gate bit), independent of the operand
+class. The old SNaN-class rejection exception is superseded. Bare and
+`dd00dfe0`/FNSTSW fixtures assert output and IE. See the [S2-31ai CPU
+contract](../specs/CPU_CONTRACT.md#local-s2-31ai-bounded-fld-m64fp-rax-dd-00-canonical-snans), [plan](../plans/STAGE_2.md#s2-31ai-extend-bounded-fld-m64fp-rax-dd-00-to-canonical-snans), and [report](../reports/STAGE_2_REPORT.md#s2-31ai--bounded-fld-m64fp-canonical-snan-extension).

@@ -3872,7 +3872,7 @@ supported encodings handled as denormals; Vol.2A FLD m80fp specifies no `#D`
 for the m80fp form ([Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436),
 [Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
 The raw FXSAVE/FSAVE tag reconstruction assigns E=0,J=1 to Special (Vol.2A
-Table 3-47, official PDF page 532). No arithmetic or unmasked behavior is
+Table 3-47, official PDF page 533). No arithmetic or unmasked behavior is
 inferred. See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ad-extend-bounded-fld-m80fp-rax-db-28-to-pseudo-denormals),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31ad report](../reports/STAGE_2_REPORT.md#s2-31ad--bounded-fld-m80fp-pseudo-denormal-extension).
@@ -3905,10 +3905,10 @@ binary80 bytes, Special tags, status and retirement; signed QNaN/SNaN neighbors
 reject after one read. Intel SDM revision 093 Vol.1 Table 4-3 gives floating
 point encodings; Vol.2A FLD m64fp, pp.3-352–3-353 (official PDF p.470), is the
 instruction reference. The reconstructed x87 tag classification follows
-Vol.2A Table 3-47, “Recreating FSAVE Format” (official PDF p.532). See the
+Vol.2A Table 3-47, “Recreating FSAVE Format” (official PDF p.533). See the
 [Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436) and
 [Vol.2A PDF, FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
-[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=532).
+[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=533).
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ae-extend-bounded-fld-m64fp-rax-dd-00-to-infinities),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31ae report](../reports/STAGE_2_REPORT.md#s2-31ae--bounded-fld-m64fp-signed-infinity-extension).
@@ -3943,10 +3943,10 @@ reject after one read without CPU commit. Intel SDM revision 093 Vol.1 §8.5.2
 describes masked denormal-operand handling; Vol.1 Table 4-3 gives floating
 point encodings. Vol.2A FLD m32fp, pp.3-352–3-353 (official PDF p.470), is the
 instruction reference; reconstructed tag classification follows Vol.2A Table
-3-47, “Recreating FSAVE Format” (official PDF p.532). See the
+3-47, “Recreating FSAVE Format” (official PDF p.533). See the
 [Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436),
 [Vol.2A PDF, FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
-[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=532),
+[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=533),
 [Stage 2 plan](../plans/STAGE_2.md#s2-31af-extend-bounded-fld-m32fp-rax-d9-00-to-infinities),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31af report](../reports/STAGE_2_REPORT.md#s2-31af--bounded-fld-m32fp-signed-infinity-extension).
@@ -3981,10 +3981,10 @@ tests assert one Qword read and no CPU commit. Intel SDM revision 093 Vol.1
 Table 4-3 describes binary64 quiet-NaN encoding; Vol.2A FLD m64fp,
 pp.3-352–3-353 (official PDF p.470), specifies the load form. Reconstructed
 tag classification follows Vol.2A Table 3-47, “Recreating FSAVE Format”
-(official PDF p.532). This bounded all-masked profile makes no claim about
+(official PDF p.533). This bounded all-masked profile makes no claim about
 unmasked delivery. See the [Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436),
 [Vol.2A PDF, FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
-[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=532),
+[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=533),
 [Stage 2 plan](../plans/STAGE_2.md#s2-31ag-extend-bounded-fld-m64fp-rax-dd-00-to-canonical-qnans),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31ag report](../reports/STAGE_2_REPORT.md#s2-31ag--bounded-fld-m64fp-canonical-qnan-extension).
@@ -4019,10 +4019,52 @@ rejection tests assert one Dword read and no CPU commit. Intel SDM revision
 093 Vol.1 Table 4-3 describes binary32 quiet-NaN encoding; Vol.2A FLD m32fp,
 pp.3-352–3-353 (official PDF p.470), specifies the load form. Reconstructed
 tag classification follows Vol.2A Table 3-47, “Recreating FSAVE Format”
-(official PDF p.532). This bounded all-masked profile makes no claim about
+(official PDF p.533). This bounded all-masked profile makes no claim about
 unmasked delivery. See the [Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436),
 [Vol.2A PDF, FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
-[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=532),
+[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=533),
 [Stage 2 plan](../plans/STAGE_2.md#s2-31ah-extend-bounded-fld-m32fp-rax-d9-00-to-canonical-qnans),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31ah report](../reports/STAGE_2_REPORT.md#s2-31ah--bounded-fld-m32fp-canonical-qnan-extension).
+
+## Local S2-31ai: bounded `FLD m64fp [RAX]` (`DD 00`) canonical SNaNs
+
+S2-31ai extends exact bare `DD 00` to canonical binary64 signaling NaNs:
+exponent `0x7ff`, nonzero fraction, and quiet bit 51 clear, for either sign.
+After canonical48 eight-byte preflight and one Qword read, convert only integer
+fields to canonical binary80: significand
+`0xc000000000000000 | (fraction << 11)`, exponent `0x7fff`, and preserved
+sign. Store the resulting ten bytes and assign `X87Tag::Special`.
+
+The existing four FCWs, `FSW & 0x80dd == 0` entry gate, Empty push destination,
+C1-clear/TOP/pointer/retirement policy remain fixed. Set sticky IE only;
+preserve DE/PE and do not add ES, SF, B, or other exception/status flags.
+Pre-existing IE is rejected before the operand read. A successfully loaded
+SNaN leaves IE set, so another DD00 load is rejected at preflight until FNCLEX
+clears the status word; FNSTSW can observe IE. Faults and failed reads leave
+CPU state uncommitted. m32 SNaNs and raw m80 SNaNs retain their earlier
+operation-specific policies. Unmasked exception delivery, native/JIT
+execution, and physical behavior remain outside this slice.
+
+Independent signed low, middle and maximum-payload SNaN literals cover every
+TOP×FCW pair. Exact binary80 payload/tag and `FSW=0x3801` at clean TOP=0 are
+checked; sticky DE/PE sequences, one-read faults, pre-read IM=0/pre-existing
+IE rejection, subsequent-load rejection, FNCLEX recovery, and bare plus
+DD00/DFE0+FNSTSW CLI fixtures are covered. The exact Unsupported fixture is
+now environment-driven: exact DD00, one instruction, no stop RIP, and an
+invalid FCW or a status bit in `0x80dd`; its operand class is immaterial.
+Native and JIT profiles continue to reject this operation.
+
+Intel SDM revision 093 Vol.1 §4.8.3.5 and Table 4-8 describe SNaN quieting by
+setting the most-significant fraction bit and the masked-invalid response;
+§8.1.3.3 describes x87 invalid-operation status. Vol.2A FLD m64fp describes
+the load form and its invalid-operation source. Reconstructed tag
+classification follows Vol.2A Table 3-47, “Recreating FSAVE Format.” The local
+contract covers only the all-masked profile and makes no claim about unmasked
+delivery. See [Vol.1 §4.8.3.5/Table 4-8](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=105),
+[Vol.1 §8.1.3.3](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211),
+[Vol.2A PDF, FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
+[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=533),
+[Stage 2 plan](../plans/STAGE_2.md#s2-31ai-extend-bounded-fld-m64fp-rax-dd-00-to-canonical-snans),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[S2-31ai report](../reports/STAGE_2_REPORT.md#s2-31ai--bounded-fld-m64fp-canonical-snan-extension).

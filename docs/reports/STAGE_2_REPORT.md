@@ -5595,7 +5595,7 @@ pp.3-352–3-353 (official PDF p.470), specifies the load form. Table 3-47,
 p.532). This all-masked profile does not infer unmasked exception delivery.
 See the [Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436),
 [Vol.2A PDF, FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
-[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=532),
+[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=533),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31af-bounded-fld-m32fp-rax-d9-00-signed-infinities),
 [plan](../plans/STAGE_2.md#s2-31af-extend-bounded-fld-m32fp-rax-d9-00-to-infinities),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
@@ -5673,3 +5673,46 @@ JIT-denial checks; full offline workspace suite (697 tests);
 architecture-gated native runtime denial compiles for Linux x86 but is not
 executed on this local arm64 host. `python3 tools/check_layout.py` reports the
 pre-existing unmapped `.serena/` directory, which remains untouched.
+
+## S2-31ai — bounded `FLD m64fp` canonical SNaN extension
+
+Exact bare `DD 00` now accepts canonical binary64 SNaNs after one Qword read.
+Integer-only conversion sets the binary80 explicit integer and quiet bits,
+maps the source payload by eleven places, preserves sign, and assigns Special.
+The implementation sets sticky IE only; DE/PE remain sticky, and ES/SF/B and
+other flags are not introduced. Existing all-masked FCWs, `FSW & 0x80dd`
+gate, Empty destination, C1/TOP/pointers, and retirement behavior remain.
+Pre-existing IE is rejected before memory access. A later DD00 load is blocked
+while IE remains set; FNCLEX clears it. Binary32 SNaN and raw m80 SNaN behavior
+are unchanged. Native/JIT and unmasked delivery remain outside scope.
+
+Signed minimum, middle and maximum SNaN payload vectors cover every TOP×FCW
+pair; sticky DE/PE, exact FSW/FNSTSW, one-read fault atomicity, IM=0 and
+pre-existing-IE pre-read rejection, and FNCLEX recovery are covered. Positive
+bare and negative DD00/DFE0+FNSTSW CLI fixtures are included. The exact
+DD00/budget-one/no-stop Unsupported schema exception now describes an invalid
+FCW or pre-existing status gate, independent of source value. JIT/native
+denial fixture coverage includes both new fixtures.
+
+Validation passed: focused DD00 ISA/schema/CLI/JIT checks; the full offline
+workspace suite (699 tests); `cargo check --workspace --all-targets --offline`;
+Linux x86 `od-x86-runner` all-target check; `cargo fmt --all -- --check`;
+`git diff --check`; and relative Markdown link validation. Graphify refreshed
+to 3921 nodes and 8207 edges. `python3 tools/check_layout.py` reports the
+pre-existing unmapped `.serena/` directory, which remains untouched. The
+architecture-gated native denial compiles for Linux x86 but was not executed
+on this local arm64 host. Independent gpt-6.1-sol medium review found no
+remaining defects after correcting the report anchor; it rechecked conversion,
+gates, fixture/schema reachability, FNCLEX recovery, and native/JIT denial.
+
+Intel SDM revision 093 Vol.1 §4.8.3.5/Table 4-8 describe setting the SNaN
+quiet bit on masked invalid operation and §8.1.3.3 describes x87 status
+reporting; Vol.2A FLD m64fp (PDF p.470) identifies SNaN as #IA, and Table
+3-47 “Recreating FSAVE Format” (PDF p.533) supports the Special tag. See
+[Vol.1 §4.8.3.5/Table 4-8](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=105),
+[Vol.1 §8.1.3.3](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211),
+[Vol.2A FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470), and
+[Vol.2A Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=533).
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ai-bounded-fld-m64fp-rax-dd-00-canonical-snans),
+[plan](../plans/STAGE_2.md#s2-31ai-extend-bounded-fld-m64fp-rax-dd-00-to-canonical-snans),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

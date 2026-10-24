@@ -4,9 +4,9 @@
   "profile": "s2-long-x87-state-v1",
   "provenance": {
     "kind": "project_fixture",
-    "source": "Handwritten exact DD00 canonical binary64 SNaN rejection fixture, budget one and no stop RIP; updated for S2-31ag.",
-    "specification": "Intel SDM revision 093, Vol.2A FLD m64fp entry; local bounded S2-31ag contract.",
-    "specification_version": "Intel SDM revision 093; project S2-31ag"
+    "source": "Handwritten exact DD00 pre-read rejection fixture: pre-existing x87 IE with all-masked FCW, budget one and no stop RIP. Operand is an ordinary binary64 Normal; rejection is environment-driven under the local bounded S2-31ai contract.",
+    "specification": "Intel SDM revision 093, Vol.1 \u00a78.1.7 and Vol.2A FLD m64fp entry; local bounded S2-31ai contract.",
+    "specification_version": "Intel SDM revision 093; project S2-31ai"
   },
   "seed": null,
   "converted_from_v1_sha256": null,
@@ -44,7 +44,7 @@
         "00000000000000000000"
       ],
       "control_word": "0x000000000000037f",
-      "status_word": "0x0000000000004500",
+      "status_word": "0x0000000000004501",
       "tag_word": "0x000000000000fffc",
       "instruction_pointer": "0x0000000000001234",
       "data_pointer": "0x0000000000005678",
@@ -73,7 +73,7 @@
         "write": false,
         "execute": false
       },
-      "initial_bytes_hex": "010000000000f07f",
+      "initial_bytes_hex": "000000000000f03f",
       "comparison_mask_hex": "ffffffffffffffff"
     },
     {

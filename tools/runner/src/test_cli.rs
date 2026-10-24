@@ -2265,13 +2265,14 @@ mod tests {
 
     #[test]
     fn fld_m64fp_literal_fixtures_expand_binary64_and_reject_bad_class() {
-        for (bytes, retired, raw, expected_tag_word) in [
+        for (bytes, retired, raw, expected_tag_word, expected_status) in [
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp.case.json")
                     .as_slice(),
                 1,
                 "00000000000000000000",
                 0x7ffc,
+                0x7d00,
             ),
             (
                 include_bytes!(
@@ -2281,6 +2282,7 @@ mod tests {
                 2,
                 "00000000000000000000",
                 0x7ffc,
+                0x7d00,
             ),
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ae_fld_m64fp_infinity.case.json")
@@ -2288,6 +2290,7 @@ mod tests {
                 1,
                 "0000000000000080ff7f",
                 0xbffc,
+                0x7d00,
             ),
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ae_fld_m64fp_negative_infinity_fnstsw.case.json")
@@ -2295,6 +2298,7 @@ mod tests {
                 2,
                 "0000000000000080ffff",
                 0xbffc,
+                0x7d00,
             ),
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ag_fld_m64fp_qnan.case.json")
@@ -2302,6 +2306,7 @@ mod tests {
                 1,
                 "00000000000000c0ff7f",
                 0xbffc,
+                0x7d00,
             ),
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ag_fld_m64fp_negative_qnan_payload_fnstsw.case.json")
@@ -2309,6 +2314,23 @@ mod tests {
                 2,
                 "00e0d5c4b3a291c0ffff",
                 0xbffc,
+                0x7d00,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ai_fld_m64fp_snan.case.json")
+                    .as_slice(),
+                1,
+                "00080000000000c0ff7f",
+                0xbffc,
+                0x7d01,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ai_fld_m64fp_negative_snan_payload_fnstsw.case.json")
+                    .as_slice(),
+                2,
+                "00f8ffffffffffffffff",
+                0xbffc,
+                0x7d01,
             ),
         ] {
             let fixture = v2::Fixture::from_json(bytes).expect("S2-31ae fixture schema");
@@ -2332,10 +2354,10 @@ mod tests {
                 HexU64(if retired == 1 {
                     0x0030_0004
                 } else {
-                    0x0030_7d00
+                    0x0030_0000 | expected_status
                 })
             );
-            assert_eq!(after.status_word, HexU64(0x7d00));
+            assert_eq!(after.status_word, HexU64(expected_status));
             assert_eq!(after.tag_word, HexU64(expected_tag_word));
             assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
             assert_eq!(after.data_pointer, HexU64(0x0030_0004));
@@ -2375,9 +2397,14 @@ mod tests {
             .find(|region| region.region_id == "stack")
             .unwrap();
         assert_eq!(stack.bytes_hex, invalid.fixture.memory[1].initial_bytes_hex);
-        let mut rejected_qnan = invalid.fixture.clone();
-        rejected_qnan.memory[1].initial_bytes_hex = "000000000000f87f".into();
-        assert!(v2::Fixture::from_json(&serde_json::to_vec(&rejected_qnan).unwrap()).is_err());
+        let mut clean_environment = invalid.fixture.clone();
+        clean_environment
+            .initial_state
+            .x87
+            .as_mut()
+            .unwrap()
+            .status_word = HexU64(0x4500);
+        assert!(v2::Fixture::from_json(&serde_json::to_vec(&clean_environment).unwrap()).is_err());
         let template: serde_json::Value = serde_json::from_slice(include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp.case.json"
         ))
@@ -2401,6 +2428,8 @@ mod tests {
             "../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp_invalid_class.case.json"
         ))
         .unwrap();
+        rejected_subnormal["initial_state"]["x87"]["status_word"] =
+            serde_json::Value::String("0x0000000000004500".into());
         rejected_subnormal["memory"][1]["initial_bytes_hex"] =
             serde_json::Value::String("0100000000000000".into());
         assert!(v2::Fixture::from_json(&serde_json::to_vec(&rejected_subnormal).unwrap()).is_err());

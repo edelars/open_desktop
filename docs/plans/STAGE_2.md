@@ -249,6 +249,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31af | Extend exact D9 00 FLD m32fp to signed binary32 infinities with canonical binary80 Special; native closed | S2-31y |
 | [x] | S2-31ag | Extend exact DD 00 FLD m64fp to canonical binary64 QNaNs with binary80 payload-preserving Special; native/JIT closed | S2-31ae |
 | [x] | S2-31ah | Extend exact D9 00 FLD m32fp to canonical binary32 QNaNs with binary80 payload-preserving Special; native/JIT closed | S2-31af |
+| [x] | S2-31ai | Extend exact DD 00 FLD m64fp to canonical binary64 SNaNs with integer quieting and sticky IE; native/JIT closed | S2-31ag |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3265,3 +3266,21 @@ to canonical SNaN. Cover quiet-only, low/middle/max payloads of both signs
 across TOP×FCW, subnormal→QNaN sticky DE/PE, atomic SNaN rejection, positive
 bare and negative payload-bearing D900/DFE0+FNSTSW CLI fixtures, and native/
 JIT denial. See the [S2-31ah report](../reports/STAGE_2_REPORT.md#s2-31ah--bounded-fld-m32fp-canonical-qnan-extension).
+
+#### S2-31ai. Extend bounded `FLD m64fp [RAX]` (`DD 00`) to canonical SNaNs
+
+Accept binary64 signaling NaNs with exponent `0x7ff`, nonzero fraction and
+quiet bit 51 clear, for either sign. After the existing canonical48 Qword
+preflight and one Qword read, construct binary80 with significand
+`0xc000000000000000 | (fraction << 11)`, exponent `0x7fff`, preserved sign,
+and Special tag. Add sticky IE only; preserve DE/PE and other flags under the
+existing local status policy. Retain the four all-masked FCWs, `FSW & 0x80dd`
+entry gate, Empty destination, C1-clear/TOP/pointer/retirement behavior.
+Pre-existing IE remains Unsupported before the operand read; subsequent
+DD00 loads remain Unsupported while IE is set, and FNCLEX clears it. Keep
+m32 SNaNs and raw m80 SNaNs unchanged; unmasked delivery and native/JIT
+execution remain outside scope. Replace the exact DD00/budget-one/no-stop
+SNaN schema rejection with an environment/boundary predicate. Cover signed
+low/middle/maximum payloads across TOP×FCW, sticky DE/PE, exact FSW and
+FNSTSW, FNCLEX recovery, memory faults, pre-read gates, CLI fixtures and
+native/JIT denial. See the [S2-31ai report](../reports/STAGE_2_REPORT.md#s2-31ai--bounded-fld-m64fp-canonical-snan-extension).

@@ -1920,6 +1920,10 @@ mod tests {
                 .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ag_fld_m64fp_negative_qnan_payload_fnstsw.case.json")
                 .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ai_fld_m64fp_snan.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ai_fld_m64fp_negative_snan_payload_fnstsw.case.json")
+                .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31m_fst_m64fp.case.json")
                 .as_slice(),
             include_bytes!(

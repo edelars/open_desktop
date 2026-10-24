@@ -668,23 +668,32 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     invalid_fld_m64.stop_rip = None;
     invalid_fld_m64.expected_exit = ExpectedExit::Unsupported;
     invalid_fld_m64
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .control_word = HexU64(0x037f);
+    invalid_fld_m64
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .status_word = HexU64(1);
+    invalid_fld_m64
         .memory
         .iter_mut()
         .find(|region| region.region_id == "operand")
         .unwrap()
-        .initial_bytes_hex = "010000000000f07f".into();
+        .initial_bytes_hex = "000000000000f03f".into();
     assert!(Fixture::from_json(&invalid_fld_m64.to_json().unwrap()).is_ok());
-    for (raw, admitted) in [
-        ("000000000000f87f", false),
-        ("000000000000f8ff", false),
-        ("010000000000f87f", false),
-        ("010000000000f8ff", false),
-        ("000000000000f07f", false),
-        ("000000000000f0ff", false),
-        ("010000000000f07f", true),
-        ("010000000000f0ff", true),
-        ("bc9a78563412f0ff", true),
-        ("fffffffffffff07f", true),
+    for raw in [
+        "000000000000f03f",
+        "000000000000f87f",
+        "000000000000f07f",
+        "010000000000f07f",
+        "010000000000f0ff",
+        "bc9a78563412f0ff",
+        "fffffffffffff07f",
     ] {
         let mut neighbor = invalid_fld_m64.clone();
         neighbor
@@ -695,17 +704,25 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             .initial_bytes_hex = raw.into();
         assert_eq!(
             Fixture::from_json(&serde_json::to_vec(&neighbor).unwrap()).is_ok(),
-            admitted,
-            "DD00 SNaN Unsupported predicate raw={raw}"
+            true,
+            "DD00 invalid-environment predicate must not inspect source value {raw}"
         );
     }
-    invalid_fld_m64
+    let mut clean_environment = invalid_fld_m64.clone();
+    clean_environment
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .status_word = HexU64(0x4500);
+    assert!(Fixture::from_json(&serde_json::to_vec(&clean_environment).unwrap()).is_err());
+    clean_environment
         .memory
         .iter_mut()
         .find(|region| region.region_id == "operand")
         .unwrap()
         .initial_bytes_hex = "0100000000000000".into();
-    assert!(Fixture::from_json(&serde_json::to_vec(&invalid_fld_m64).unwrap()).is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&clean_environment).unwrap()).is_err());
 
     let mut invalid_fld_m80 = fixture.clone();
     let code = invalid_fld_m80

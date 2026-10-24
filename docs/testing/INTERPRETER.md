@@ -638,3 +638,18 @@ schema fixture uses SNaN. Signed quiet-only, low, middle and maximum payloads
 cover TOP×FCW; a subnormal→QNaN sequence checks sticky DE/PE. Bare positive
 and negative payload-bearing D900/DFE0+FNSTSW fixtures run through CLI. JIT
 and native admission remain closed. See the [S2-31ah CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ah-bounded-fld-m32fp-rax-d9-00-canonical-qnans).
+
+## Local S2-31ai `FLD m64fp` canonical signaling-NaN load
+
+Exact bare `DD 00` now accepts canonical binary64 SNaNs (exponent `0x7ff`,
+nonzero fraction, quiet bit clear) of either sign. One Qword read feeds
+integer-only binary80 construction with significand
+`0xc000000000000000 | (fraction << 11)`, exponent `0x7fff`, preserved sign,
+and Special tag. Sticky IE alone is added; DE/PE remain sticky, and ES/SF/B
+are not introduced under the admitted all-masked FCWs. Existing `FSW & 0x80dd`,
+Empty, push, C1/TOP/pointer/retirement and canonical48-read rules remain.
+Pre-existing IE rejects before reading; subsequent DD00 loads stay blocked
+until FNCLEX, and FNSTSW exposes IE. Signed low/middle/max vectors, DE/PE,
+fault atomicity, gates, recovery and bare/DFE0 CLI fixtures are covered.
+Binary32 SNaN and m80 raw-SNaN behavior are unchanged. Unmasked delivery and
+native/JIT execution remain outside scope. See the [S2-31ai CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ai-bounded-fld-m64fp-rax-dd-00-canonical-snans).

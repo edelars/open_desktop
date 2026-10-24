@@ -84,6 +84,11 @@ const FLD_M64_QNAN: &[u8] =
 const FLD_M64_NEGATIVE_QNAN_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31ag_fld_m64fp_negative_qnan_payload_fnstsw.case.json"
 );
+const FLD_M64_SNAN: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ai_fld_m64fp_snan.case.json");
+const FLD_M64_NEGATIVE_SNAN_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31ai_fld_m64fp_negative_snan_payload_fnstsw.case.json"
+);
 const FLD_M80_INFINITY: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aa_fld_m80fp_infinity.case.json");
 const FLD_M80_QNAN: &[u8] =
@@ -1499,8 +1504,14 @@ fn local_x87_fld_m64fp_subnormal_fixtures_normalize_and_set_de() {
 }
 
 #[test]
-fn v2_jit_denies_m64_infinity_and_qnan_loads_without_interpreter_fallback() {
-    for fixture in [FLD_M64_INFINITY, FLD_M64_QNAN, FLD_M64_NEGATIVE_QNAN_FNSTSW] {
+fn v2_jit_denies_m64_infinity_qnan_and_snan_loads_without_fallback() {
+    for fixture in [
+        FLD_M64_INFINITY,
+        FLD_M64_QNAN,
+        FLD_M64_NEGATIVE_QNAN_FNSTSW,
+        FLD_M64_SNAN,
+        FLD_M64_NEGATIVE_SNAN_FNSTSW,
+    ] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));

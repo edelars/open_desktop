@@ -2043,3 +2043,17 @@ schema exception is exact D900, budget one, no stop RIP and canonical SNaN
 only. SNaNs remain post-read Unsupported after one Dword read. JIT/native
 admission remains closed. See the [S2-31ah CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ah-bounded-fld-m32fp-rax-d9-00-canonical-qnans), [plan](../../../../docs/plans/STAGE_2.md#s2-31ah-extend-bounded-fld-m32fp-rax-d9-00-to-canonical-qnans), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ah--bounded-fld-m32fp-canonical-qnan-extension).
+
+### S2-31ai FLD m64fp canonical SNaN fixture coverage
+
+The positive bare `DD 00` fixture loads a low-payload SNaN; the negative
+`DD 00 DF E0` fixture loads a maximum-payload negative SNaN and observes IE
+through FNSTSW. Both quiet the source by integer bit mapping, preserve sign and
+payload, produce binary80 Special, and set sticky IE only. Interpreter vectors
+cover signed low/middle/maximum payloads across TOP×FCW, sticky DE/PE, exact
+FSW, one-read fault atomicity, pre-read IM=0/pre-existing-IE rejection, and
+FNCLEX recovery. Pre-existing IE blocks another DD00 until FNCLEX. The exact
+schema exception is DD00, budget one, no stop RIP, and an invalid FCW or
+`FSW & 0x80dd != 0`, independent of operand value. Native/JIT admission
+remains closed. See the [S2-31ai CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ai-bounded-fld-m64fp-rax-dd-00-canonical-snans), [plan](../../../../docs/plans/STAGE_2.md#s2-31ai-extend-bounded-fld-m64fp-rax-dd-00-to-canonical-snans), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ai--bounded-fld-m64fp-canonical-snan-extension).

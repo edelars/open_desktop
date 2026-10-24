@@ -1124,28 +1124,12 @@ impl Fixture {
                                 })
                         })
                 });
-            let is_fld_m64_snan_rejected = code_bytes == "dd00"
+            let is_fld_m64_environment_rejected = code_bytes == "dd00"
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
-                && self.memory.iter().any(|region| {
-                    let address = self.initial_state.gpr[0].get();
-                    address
-                        .checked_sub(region.guest_address.get())
-                        .and_then(|offset| usize::try_from(offset).ok())
-                        .and_then(|offset| offset.checked_mul(2))
-                        .and_then(|start| start.checked_add(16).map(|end| (start, end)))
-                        .is_some_and(|(start, end)| {
-                            region
-                                .initial_bytes_hex
-                                .get(start..end)
-                                .and_then(|source| {
-                                    u64::from_str_radix(source, 16).ok().map(u64::swap_bytes)
-                                })
-                                .is_some_and(|bits| {
-                                    bits & 0x7ff8_0000_0000_0000 == 0x7ff0_0000_0000_0000
-                                        && bits & 0x000f_ffff_ffff_ffff != 0
-                                })
-                        })
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
+                        || x87.status_word.get() & 0x80dd != 0
                 });
             let is_fcom_source_rejected = code_bytes.len() == 4
                 && code_bytes.starts_with("d8d")
@@ -1248,7 +1232,7 @@ impl Fixture {
                     || is_fist_word_environment_rejected
                     || is_fld_m80_pseudo_infinity_rejected
                     || is_fld_m32_snan_rejected
-                    || is_fld_m64_snan_rejected
+                    || is_fld_m64_environment_rejected
                     || is_fcom_source_rejected
                     || is_fcomp_source_rejected
                     || is_fcompp_source_rejected
