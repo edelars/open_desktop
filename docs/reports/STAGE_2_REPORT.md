@@ -4210,5 +4210,5 @@ before this task and remains untouched. Linux native x87 execution, physical
 x86 execution, SSH and Mac mini acceptance were not performed.
 
 Normative source: Intel SDM revision 093, Vol.2A,
-“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-334–3-336
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

@@ -2630,4 +2630,4 @@ tag. Exhaustive DB decoder tests admit only E2, E3 and F1 as bare forms, reject
 every other second byte, and reject every prefix for FCOMI.
 
 Normative source: Intel SDM revision 093, Vol.2A,
-“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-334–3-336.
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329.

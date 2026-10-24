@@ -2234,7 +2234,7 @@ environment and boundary atomicity, exhaustive DB decode/prefixes, exact
 and DB F1.
 
 Normative source: Intel SDM revision 093, Vol.2A,
-“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-334–3-336.
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329.
 
 #### S2-30ah. Bare bounded `FUCOMP ST(0), ST(1)`
 
