@@ -2267,3 +2267,16 @@ the x86 runner target. Native runtime and physical behavior remain deferred
 under ISSUE-019. See the [S2-31ba CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ba-sticky-ie-de-raw-fstp-m80fp-db-38),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31ba-admit-sticky-ie-de-to-raw-binary80-fstp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ba--sticky-ie-de-on-raw-binary80-fstp-m80fp).
+
+
+### S2-31bb maximum-finite binary32 FLD/store fixtures
+
+The positive bare D900 fixture loads binary32 maximum finite. A positive D910
+fixture stores the equivalent canonical binary80 value back to identical
+binary32 bytes, and a negative D918/DFE0 fixture does the same through the
+popping form and observes status after pop. Each fixture exercises exponent
+127 through the schema/CLI interpreter path and remains explicitly denied by
+JIT and native admission. See the
+[S2-31bb CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bb-finite-exponent-127-bounded-m32-stores),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bb-finite-exponent-127-bounded-m32-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bb--finite-exponent-127-bounded-m32-stores).

@@ -4525,3 +4525,37 @@ revision 093 Vol.2A pp.3-386–3-387 ([official PDF](https://cdrdv2-public.intel
 See the [plan](../plans/STAGE_2.md#s2-31ba-admit-sticky-ie-de-to-raw-binary80-fstp),
 [report](../reports/STAGE_2_REPORT.md#s2-31ba--sticky-ie-de-on-raw-binary80-fstp-m80fp),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31bb-finite-exponent-127-bounded-m32-stores"></a>
+
+## Local S2-31bb: finite exponent 127 through bounded m32 `FST/FSTP [RAX]`
+
+For exact `D9 10` and `D9 18`, extend only the finite canonical-Normal
+binary80 source exponent interval in `bounded_x87_m32fp_result` from
+`-126..=126` to `-126..=127`. Keep the existing integer significand rounding
+and all four FCWs. Normalize a rounded significand carry before checking the
+final exponent: a carry from 126 to 127 is a valid binary32 normal result, but
+a carry from 127 to 128 returns Unsupported before destination access. A
+source already at exponent 128 also remains Unsupported. This path does not
+deliver masked overflow or set OE.
+
+Keep the minimum exponent, subnormal-result rejection, `FSW & 0x80dc == 0`
+gate, FCW whitelist, source tags/classes, addressing, and post-write status,
+pointer and pop behavior unchanged. A rejected input leaves the full CPU state
+and destination memory unchanged. Successful stores retain the established
+sticky IE/DE/PE policy; no overflow flags are synthesized. D910 preserves TOP;
+D918 pops only after its atomic Dword write succeeds.
+
+Separate literal coverage includes a D900 FLD of positive maximum finite
+binary32, a D910 positive maximum-finite store, and a D918 negative
+maximum-finite store with DFE0 observing status after pop. ISA vectors cover
+both opcodes, all TOPs and FCWs, signs, all incoming IE/DE/PE combinations,
+exact maximum finite, ties and directed rounding at exponents 126/127, carry to
+valid exponent 127, carry to rejected exponent 128, and an exponent-128 source.
+Overflow rejects before memory access; denied writes and canonical-range
+failures preserve state and bytes. JIT and native admission remain closed.
+Native runtime and physical acceptance remain deferred under ISSUE-019. See
+the [plan](../plans/STAGE_2.md#s2-31bb-finite-exponent-127-bounded-m32-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31bb--finite-exponent-127-bounded-m32-stores),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).

@@ -6223,3 +6223,25 @@ Graphify updated successfully (4,143 nodes, 8,532 edges, 209 communities). The
 layout checker reports only the pre-existing
 unmapped `.serena/` directory, which was left untouched. Independent review is
 clean. Native runtime and physical acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31bb--finite-exponent-127-bounded-m32-stores"></a>
+
+## S2-31bb — finite exponent 127 for bounded binary32 stores
+
+Exact D910/D918 finite m32 stores now accept canonical Normal binary80 sources
+through unbiased exponent 127. Existing integer rounding is retained and a
+significand carry is normalized before the final exponent check, so carry from
+126 to 127 is accepted while carry to 128 and an input at exponent 128 reject
+before memory access without setting OE. Minimum exponent, subnormal-result
+rejection, status/control gates, source classes, addressing and atomic store/pop
+semantics remain unchanged.
+
+Separate maximum-finite FLD and store fixtures exercise the interpreter/schema
+path; explicit JIT denial remains covered. Validation passed: 16 focused
+`od-isa` m32 store tests, the CLI fixture test, JIT-denial fixture test, 786
+workspace tests, workspace `cargo check`, Linux x86_64 `cargo check
+--all-targets`, and `cargo fmt --all -- --check`. Linux x86 test binaries could
+not be linked on this macOS host; `tools/check_layout.py` reports the pre-existing
+unmapped `.serena` root, which was left untouched. Native runtime and physical
+acceptance remain deferred under ISSUE-019.

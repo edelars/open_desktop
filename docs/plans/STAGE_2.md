@@ -264,6 +264,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ay | Admit masked sticky IE only in exact D910/D918 and DD10/DD18 stores; preserve sticky IE/PE and successful SNaN status | S2-31ax |
 | [ ] | S2-31az | Admit masked sticky DE in the same bounded m32/m64 FST/FSTP helpers; retain IE/DE/PE and keep subnormal store results unsupported | S2-31ay |
 | [x] | S2-31ba | Admit masked sticky IE/DE in exact raw DB38 FSTP m80fp stores; preserve bytes and pop atomically | S2-31az |
+| [x] | S2-31bb | Extend exact D910/D918 finite binary32 stores through exponent 127; reject rounded exponent 128 before access | S2-31az, S2-31av |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3626,6 +3627,32 @@ SNaN FLD→narrow FST→DB38 retains its signaling bytes while carrying IE.
 Include forbidden environment gates, full-state write/range fault atomicity,
 FNSTSW, FNCLEX, literal interpreter fixtures, and explicit JIT/native denial.
 Native runtime and physical acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31bb-finite-exponent-127-bounded-m32-stores"></a>
+
+#### S2-31bb. Extend finite binary32 stores through unbiased exponent 127
+
+Extend only the finite Normal exponent interval in the exact D910/D918 m32
+conversion helper from `-126..=126` to `-126..=127`. Keep the existing integer
+significand rounding for all four FCWs. Normalize a rounded significand carry
+before the final exponent check: carry from 126 to 127 is valid; carry from 127
+to 128 returns Unsupported before memory access. A source already at exponent
+128 also remains Unsupported. Do not synthesize masked overflow or set OE.
+
+Keep the minimum exponent, subnormal-result rejection, FCW and FSW gates,
+accepted source classes/tags, addressing, atomic write, status and FSTP pop
+ordering unchanged. Cover maximum finite values of both signs, both opcodes,
+all TOPs and FCWs, ties and directed rounding, carry to 127 versus 128, source
+exponent 128, all incoming IE/DE/PE combinations, fault/range atomicity and
+separate maximum-finite FLD and store literal fixtures. Keep native/JIT
+admission closed; native runtime and physical acceptance remain deferred under
+ISSUE-019. Validation passed: 16 focused `od-isa` m32 store tests, the CLI
+fixture test, the JIT-denial fixture test, 786 workspace tests, workspace
+`cargo check`, Linux x86_64 `cargo check --all-targets`, and `cargo fmt --all
+-- --check`. Linux x86 test binaries could not be linked on this macOS host;
+`tools/check_layout.py` reports the pre-existing unmapped `.serena` root, which
+was left untouched.
 
 
 <a id="s2-31ax-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m32fp"></a>

@@ -176,6 +176,15 @@ const FSTP_M32_NEGATIVE_SNAN_FNSTSW: &[u8] = include_bytes!(
 const FST_M32_SNAN_STICKY_IE: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31ay_fst_m32fp_positive_snan_sticky_ie.case.json"
 );
+const FLD_M32_MAX_FINITE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31bb_fld_m32fp_positive_max_finite.case.json"
+);
+const FST_M32_MAX_FINITE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31bb_fst_m32fp_positive_max_finite.case.json"
+);
+const FSTP_M32_NEGATIVE_MAX_FINITE_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31bb_fstp_m32fp_negative_max_finite_fnstsw.case.json"
+);
 const FSTP_M64_NEGATIVE_SNAN_STICKY_IE_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31ay_fstp_m64fp_negative_snan_sticky_ie_fnstsw.case.json"
 );
@@ -3242,6 +3251,23 @@ fn v2_jit_denies_m32_snan_stores_without_interpreter_fallback() {
         FST_M32_SNAN,
         FSTP_M32_NEGATIVE_SNAN_FNSTSW,
         FST_M32_SNAN_STICKY_IE,
+    ] {
+        let (_, result) = run(fixture, "jit", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
+fn v2_jit_denies_m32_max_finite_fld_store_fixtures_without_fallback() {
+    for fixture in [
+        FLD_M32_MAX_FINITE,
+        FST_M32_MAX_FINITE,
+        FSTP_M32_NEGATIVE_MAX_FINITE_FNSTSW,
     ] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));

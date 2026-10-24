@@ -418,3 +418,17 @@
   [plan](plans/STAGE_2.md#s2-31ba-admit-sticky-ie-de-to-raw-binary80-fstp),
   [report](reports/STAGE_2_REPORT.md#s2-31ba--sticky-ie-de-on-raw-binary80-fstp-m80fp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31bb evidence:** exact D910/D918 finite m32 stores now admit canonical
+  Normal binary80 sources through unbiased exponent 127. Existing integer
+  rounding normalizes carry before the final range check: 126→127 is supported,
+  while 127→128 and an exponent-128 input reject before data access and do not
+  set OE. Sticky IE/DE/PE and all other gates remain unchanged; subnormal store
+  results remain Unsupported. Separate signed max-finite FLD and store fixtures
+  exercise exponent 127 through interpreter/schema, with JIT/native denial
+  coverage.
+  Native runtime and physical acceptance remain deferred under ISSUE-019. See
+  [S2-31bb CPU contract](specs/CPU_CONTRACT.md#local-s2-31bb-finite-exponent-127-bounded-m32-stores),
+  [plan](plans/STAGE_2.md#s2-31bb-finite-exponent-127-bounded-m32-stores),
+  [report](reports/STAGE_2_REPORT.md#s2-31bb--finite-exponent-127-bounded-m32-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).
