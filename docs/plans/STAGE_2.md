@@ -252,6 +252,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ai | Extend exact DD 00 FLD m64fp to canonical binary64 SNaNs with integer quieting and sticky IE; native/JIT closed | S2-31ag |
 | [x] | S2-31aj | Extend exact D9 00 FLD m32fp to canonical binary32 SNaNs with integer quieting and sticky IE; native/JIT closed | S2-31ah |
 | [x] | S2-31ak | Permit sticky IE/DE/PE only on exact D900/DD00 FLD gates; retain all other status gates | S2-31aj |
+| [x] | S2-31al | Extend exact D910/D918 m32 stores to canonical signed binary80 zero and atomic signed binary32 zero | S2-31ak |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3323,3 +3324,20 @@ second-load fault atomicity, each forbidden bit, occupied destinations,
 unmasked FCWs and FNCLEX recovery. The exact D900/DD00 budget-one/no-stop
 schema cases now require a forbidden status bit and use no source-class
 exception. Existing single-load CLI/FNSTSW fixtures continue to observe IE.
+
+#### S2-31al. Store signed binary80 zero through bounded m32 FST/FSTP
+
+Extend only exact `D9 10` (`FST m32fp [RAX]`) and `D9 18`
+(`FSTP m32fp [RAX]`) so the old physical TOP source may be canonical binary80
+zero (`exponent=0`, `significand=0`) with tag Zero. Preserve its sign as
+binary32 `+0`/`-0`. Retain the four admitted FCWs and `FSW & 0x80df == 0`
+store gate; sticky PE may remain set. Exact zero adds no status flags and
+clears C1 under the existing store policy.
+
+Keep the full canonical48 Dword check and one atomic Dword write with no data
+read. FST preserves TOP, all tags and payloads; FSTP empties old physical TOP
+and advances TOP only after the write succeeds. Reject mismatched tags and
+payloads before access; retain Normal conversion and other widths unchanged.
+Cover both signs across TOP×FCW×incoming PE/C1, FLD-zero compositions, precise
+source mismatches, store faults and range failures, literal CLI/FNSTSW fixtures,
+and explicit native/JIT denial.

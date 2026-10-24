@@ -1934,6 +1934,14 @@ mod tests {
                 "../../../tests/fixtures/x86/stage2/s2_31m_fst_m64fp_fnstsw.case.json"
             )
             .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31al_fst_m32fp_positive_zero.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31al_fst_m32fp_negative_zero_fnstsw.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31al_fstp_m32fp_positive_zero.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31al_fstp_m32fp_negative_zero_fnstsw.case.json")
+                .as_slice(),
         ] {
             let fixture = Fixture::from_json(bytes).unwrap();
             let actual = fixture.fixture.initial_state.to_cpu().unwrap();
@@ -3834,6 +3842,7 @@ mod tests {
             [0xd9, 0xe0],
             [0xd9, 0xfc],
             [0xd9, 0x10],
+            [0xd9, 0x18],
             [0xd9, 0x28],
             [0xdd, 0x38],
             [0xdd, 0xd0],

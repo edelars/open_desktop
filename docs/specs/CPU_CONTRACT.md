@@ -4138,3 +4138,27 @@ delivery. See [Vol.1 §4.8.3.5/Table 4-8](https://cdrdv2-public.intel.com/929351
 [Stage 2 plan](../plans/STAGE_2.md#s2-31ai-extend-bounded-fld-m64fp-rax-dd-00-to-canonical-snans),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31ai report](../reports/STAGE_2_REPORT.md#s2-31ai--bounded-fld-m64fp-canonical-snan-extension).
+
+## Local S2-31al: signed-zero `FST m32fp` and `FSTP m32fp`
+
+Extend only exact bare `D9 10` and `D9 18` in Long64. The old physical TOP
+source is accepted as zero only when its tag is Zero and the raw binary80 bytes
+classify as canonical Zero (`exponent=0`, significand=0). Preserve the sign bit
+when storing binary32 `+0` (`00000000`) or `-0` (`00000080`). The existing
+Normal conversion path is unchanged; a Zero tag with a nonzero/pseudo payload,
+or a non-Zero tag with a zero payload, remains Unsupported before data access.
+
+Retain the existing four FCWs and `FSW & 0x80df == 0` gate, which permits
+sticky PE and C1. An exact zero store adds no status flags, preserves PE, and
+clears C1 under the local exact-result policy. Check the full canonical48
+Dword range before exactly one atomic Dword write; do not read data memory.
+Only after a successful write may D918 empty old physical TOP and advance TOP.
+D910 preserves TOP, all tags and all raw payloads. Store faults and invalid
+ranges leave CPU and memory unchanged.
+
+Tests cover both signs for every TOP and FCW with incoming PE/C1 combinations,
+exact bytes, one-write/no-read behavior, and FLD-zero→FST/FSTP composition.
+Tag/payload mismatches, Empty source, pseudo-denormal payload, denied and
+architectural write failures, and canonical-range failure reject before
+commit. Literal CLI fixtures observe signed bytes and FNSTSW state. Native and
+JIT admission remain closed. See the [S2-31al plan](../plans/STAGE_2.md#s2-31al-store-signed-binary80-zero-through-bounded-m32-fstfstp), [report](../reports/STAGE_2_REPORT.md#s2-31al--signed-zero-stores-for-bounded-m32-fstfstp), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

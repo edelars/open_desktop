@@ -2082,3 +2082,15 @@ loads. The existing bare and DFE0/FNSTSW signaling-NaN fixtures verify the
 sticky IE result; interpreter tests cover repeated and cross-width sequences,
 all sticky IE/DE/PE combinations, and preserve the separate FILD/m80 gates.
 Native/JIT admission remains denied. See [S2-31ak CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ak-sticky-exception-flags-for-bounded-m32m64-fld), [plan](../../../../docs/plans/STAGE_2.md#s2-31ak-preserve-sticky-ie-de-pe-across-exact-m32m64-fld-loads), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ak--sticky-ie-de-pe-across-bounded-m32m64-fld).
+
+### S2-31al signed-zero m32 store fixtures
+
+Four literal fixtures cover positive and negative binary80 Zero through exact
+`D9 10` and `D9 18`; the negative cases compose with `DF E0` so FNSTSW exposes
+the final status. The source physical TOP tag is Zero, the ten-byte payload is
+canonical zero with the requested sign, and the destination bytes are literal
+`00000000` or `00000080`. Runner tests verify FST stack preservation and FSTP
+pop/tag updates after the write. Interpreter coverage spans all TOP×FCW values,
+incoming PE/C1 combinations, FLD-zero compositions, bad tag/payload pairs,
+store faults and canonical range rejection. JIT/native admission remains
+closed. See [S2-31al CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31al-signed-zero-fst-m32fp-and-fstp-m32fp), [plan](../../../../docs/plans/STAGE_2.md#s2-31al-store-signed-binary80-zero-through-bounded-m32-fstfstp), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31al--signed-zero-stores-for-bounded-m32-fstfstp).

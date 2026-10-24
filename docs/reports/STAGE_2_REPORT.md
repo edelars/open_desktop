@@ -5783,3 +5783,32 @@ unmasked-FCW controls, FNCLEX recovery, and the existing CLI/FNSTSW fixtures.
 The exact D900/DD00 budget-one/no-stop schema predicate now requires forbidden
 status rather than a source-class exception. Native/JIT remain closed, and no
 unmasked behavior is implied by the all-masked profile.
+
+## S2-31al — signed-zero stores for bounded m32 FST/FSTP
+
+Exact `D9 10` and `D9 18` now store a canonical binary80 Zero from physical
+TOP, preserving its sign as binary32 `+0` or `-0`. The source must have both
+the Zero tag and canonical zero payload; mismatched tags and nonzero or
+pseudo-zero payloads remain pre-access Unsupported. The existing four FCWs,
+`FSW & 0x80df` gate, PE preservation, and C1-clear policy are unchanged.
+D910 preserves the full stack. D918 advances TOP and empties the old physical
+TOP only after its one atomic Dword write succeeds; no data read is performed.
+
+Coverage includes both signs across TOP×FCW×PE×C1, FLD-zero roundtrips,
+literal output bytes, tag/payload mismatches, denied and architectural write
+faults, and canonical48 range failure. Positive bare and negative DFE0/FNSTSW
+fixtures cover each opcode through the CLI; JIT/native denial checks include
+both forms. Focused interpreter, runner/schema, CLI, and JIT tests passed.
+The full offline workspace suite passed (709 tests), as did
+`cargo check --workspace --all-targets --offline`, Linux x86 `od-x86-runner`
+all-target check, `cargo fmt --all -- --check`, and `git diff --check`.
+Graphify rebuilt with 3956 nodes and 8254 edges. The layout checker reports
+the existing unmapped `.serena/` directory, which remains untouched. The
+architecture-gated native denial compiles for Linux x86 but was not executed
+on this local arm64 host; physical x86 testing remains deferred to the
+combined final S2-31 substage. Independent `gpt-6.1-sol` medium review is
+pending.
+
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31al-signed-zero-fst-m32fp-and-fstp-m32fp),
+[plan](../plans/STAGE_2.md#s2-31al-store-signed-binary80-zero-through-bounded-m32-fstfstp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

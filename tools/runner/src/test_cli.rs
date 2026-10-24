@@ -2696,6 +2696,74 @@ mod tests {
     }
 
     #[test]
+    fn fst_m32fp_signed_zero_fixtures_preserve_or_pop_and_observe_fsw() {
+        for (name, bytes, expected_rax, expected_status, expected_tag_word, raw_zero) in [
+            (
+                "positive FST zero",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31al_fst_m32fp_positive_zero.case.json").as_slice(),
+                0x0030_0004,
+                0x4500,
+                0xfffd,
+                "00000000000000000000",
+            ),
+            (
+                "negative FST zero with FNSTSW",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31al_fst_m32fp_negative_zero_fnstsw.case.json").as_slice(),
+                0x0030_4500,
+                0x4500,
+                0xfffd,
+                "00000000000000000080",
+            ),
+            (
+                "positive FSTP zero",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31al_fstp_m32fp_positive_zero.case.json").as_slice(),
+                0x0030_0004,
+                0x4d00,
+                0xffff,
+                "00000000000000000000",
+            ),
+            (
+                "negative FSTP zero with FNSTSW",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31al_fstp_m32fp_negative_zero_fnstsw.case.json").as_slice(),
+                0x0030_4d00,
+                0x4d00,
+                0xffff,
+                "00000000000000000080",
+            ),
+        ] {
+            let fixture = v2::Fixture::from_json(bytes)
+                .unwrap_or_else(|error| panic!("{name}: invalid fixture schema: {error}"));
+            let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::StopAddress {}), "{name}");
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(fixture.fixture.instruction_budget) },
+                "{name}"
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("{name}: expected observable CPU state");
+            };
+            assert_eq!(value.state.gpr[0], HexU64(expected_rax), "{name}");
+            assert_eq!(value.state.rip, fixture.fixture.stop_rip.unwrap(), "{name}");
+            let x87 = value.state.x87.as_ref().unwrap();
+            assert_eq!(x87.status_word, HexU64(expected_status), "{name}");
+            assert_eq!(x87.tag_word, HexU64(expected_tag_word), "{name}");
+            assert_eq!(x87.registers[0], raw_zero, "{name}");
+            assert_eq!(x87.instruction_pointer, HexU64(0x0010_0000), "{name}");
+            assert_eq!(x87.data_pointer, HexU64(0x0030_0004), "{name}");
+            let stack = memory.snapshot().into_iter().find(|region| region.region_id == "stack").unwrap();
+            let expected_memory = if raw_zero.ends_with("80") {
+                "00000080"
+            } else {
+                "00000000"
+            };
+            assert_eq!(&stack.bytes_hex[8..16], expected_memory, "{name}");
+        }
+    }
+
+    #[test]
     fn fst_m64fp_literal_fixtures_store_without_pop_and_compose_with_fnstsw() {
         for (bytes, expected_rax, retired) in [
             (

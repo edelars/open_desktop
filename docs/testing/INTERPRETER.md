@@ -680,3 +680,15 @@ Tests cover every sticky-flag combination across source classes, FCWs and TOP,
 cross-width compositions, repeated SNaNs, fault atomicity, forbidden status
 bits, and FNCLEX recovery. The CLI/FNSTSW SNaN fixtures expose IE. See the
 [S2-31ak contract](../specs/CPU_CONTRACT.md#local-s2-31ak-sticky-exception-flags-for-bounded-m32m64-fld).
+
+## Local S2-31al signed-zero binary32 stores
+
+Exact `D9 10` and `D9 18` accept a source only when physical TOP is tagged Zero
+and its ten raw bytes are canonical binary80 zero. The stored Dword preserves
+its sign. The existing four FCWs and `FSW & 0x80df` gate remain; exact zero
+preserves PE, adds no flags, and clears C1. The complete canonical48 Dword
+range is checked before one write and no data read. FST preserves the full
+stack; FSTP updates the old TOP tag and TOP only after the write succeeds.
+Literal tests cover TOP×FCW×sign×PE/C1, FLD-zero compositions, mismatched
+payload/tag rejection, denied/#PF stores and canonical-range failure.
+See the [S2-31al contract](../specs/CPU_CONTRACT.md#local-s2-31al-signed-zero-fst-m32fp-and-fstp-m32fp).

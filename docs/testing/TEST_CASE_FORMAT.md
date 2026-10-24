@@ -389,3 +389,12 @@ preflight is `FSW & 0x80dc == 0`; those flags alone must not be used to make an
 Unsupported fixture valid. Rejected-environment fixtures should set ZE, OE,
 UE, SF, ES or B (or use an invalid FCW/boundary), independent of operand class.
 This predicate is local to D900/DD00; FILD and m80 retain their own x87 gates.
+
+## S2-31al signed-zero m32 stores
+
+The bounded `D9 10`/`D9 18` store profile admits a binary80 source tagged Zero
+only when its raw exponent and 64-bit significand are both zero. The sign is
+observable in the stored binary32 Dword. Fixtures should use the matching Zero
+tag; a zero payload under another tag or a Zero tag over a nonzero/pseudo
+payload is an interpreter rejection before the data write. The existing
+all-masked FCWs and `FSW & 0x80df` status predicate remain in force.
