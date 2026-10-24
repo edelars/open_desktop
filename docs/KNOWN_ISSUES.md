@@ -338,3 +338,14 @@
   [plan](plans/STAGE_2.md#s2-31au-store-canonical-binary80-quietnan-through-bounded-fstfstp-m64fp),
   [report](reports/STAGE_2_REPORT.md#s2-31au--canonical-quietnan-binary80-to-binary64-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31av evidence:** exact D910/D918 m32 stores now convert Special-tagged
+  canonical binary80 QuietNaNs to binary32, preserving sign and upper 23 payload
+  bits while truncating lower 40 without rounding or new flags. Existing gates and
+  atomic write/pop behavior remain. General x87 exception delivery, native
+  runtime admission and physical behavior remain open under ISSUE-019; physical
+  acceptance belongs to the final combined S2-31 substage. See [S2-31av CPU
+  contract](specs/CPU_CONTRACT.md#local-s2-31av-canonical-quietnan-fstfstp-m32fp-rax-d9-10-d9-18),
+  [plan](plans/STAGE_2.md#s2-31av-store-canonical-binary80-quietnan-through-bounded-fstfstp-m32fp),
+  [report](reports/STAGE_2_REPORT.md#s2-31av--canonical-quietnan-binary80-to-binary32-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

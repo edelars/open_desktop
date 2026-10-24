@@ -6054,3 +6054,25 @@ composition, interpreter fixture execution, and JIT denial. Native runtime and
 physical behavior were not verified on this macOS arm64 host and remain recorded
 under ISSUE-019; physical acceptance is deferred to the final combined S2-31
 substage.
+
+
+<a id="s2-31av--canonical-quietnan-binary80-to-binary32-stores"></a>
+
+## S2-31av — canonical QuietNaN binary80 to binary32 stores
+
+Exact D910/D918 now accept Special-tagged canonical binary80 QuietNaNs and
+convert by integer fields, preserving sign and the upper 23 fraction bits while
+truncating the lower 40. The path adds no flags, preserves PE, and clears C1.
+Existing FCW/FSW gates, one-write/no-read Dword access, D910 preservation and
+post-success D918 pop remain fixed. SNaNs and malformed/tag-mismatched classes
+reject before access; Normal, zero, infinity and native/JIT gates are unchanged.
+
+Focused QNaN conversion, cross-width FLD-to-store composition, rejection,
+fault/range atomicity, CLI/FNSTSW fixture, and JIT-denial tests passed. The full
+offline workspace suite passed (760 tests, zero failures); workspace all-target
+check and Linux x86_64 runner all-target check passed. Formatting, diff and
+fixture-link checks passed. Graphify updated successfully (4,081 nodes, 8,442
+edges, 174 communities); the layout checker reports only the pre-existing
+unmapped `.serena/` directory, which was left untouched. Native runtime and
+physical behavior remain unverified on this arm64 host and are deferred to the
+final combined acceptance substage (ISSUE-019). Independent review is pending.

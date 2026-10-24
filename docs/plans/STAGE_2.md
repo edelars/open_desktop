@@ -258,6 +258,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ao | Extend exact DB38 FSTP m80fp to canonical signed binary80 infinity with raw ten-byte store | S2-31an |
 | [x] | S2-31ap | Extend exact DD10/DD18 m64 stores to canonical signed binary80 infinity and binary64 infinity | S2-31am |
 | [x] | S2-31au | Convert Special-tagged canonical binary80 QuietNaN through exact DD10/DD18 stores with payload truncation | S2-31ap, S2-31at |
+| [x] | S2-31av | Convert Special-tagged canonical binary80 QuietNaN through exact D910/D918 stores with binary32 payload truncation | S2-31aq, S2-31au |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3514,3 +3515,22 @@ pseudo-NaNs, other special classes and mismatched tags before access. Cover
 both signs/opcodes across TOP×FCW×PE/C1 and payload boundaries, cross-width
 FLD-to-store composition, fault/range atomicity, CLI/FNSTSW fixtures, and
 native/JIT denial.
+
+
+<a id="s2-31av-store-canonical-binary80-quietnan-through-bounded-fstfstp-m32fp"></a>
+
+#### S2-31av. Store canonical binary80 QuietNaN through bounded m32 FST/FSTP
+
+Extend only exact `D9 10` (`FST m32fp [RAX]`) and `D9 18` (`FSTP
+m32fp [RAX]`) so a Special-tagged canonical binary80 QuietNaN converts to
+binary32 by integer fields. Preserve sign and the upper 23 fraction bits;
+truncate the lower 40 bits without rounding. Add no flags and preserve PE; clear
+C1 under the existing exact-store policy. Keep the current four FCWs and
+`FSW & 0x80df == 0` gate.
+
+Preflight the complete canonical48 Dword range, then issue exactly one atomic
+write/no read; D918 pops only after successful write while D910 preserves the
+stack. Keep Normal, signed-zero and Infinity behavior. Reject SNaNs, pseudo-NaNs,
+other special classes and mismatched tags before access. Cover signed values and
+payload boundaries across TOP×FCW×PE/C1, cross-width FLD-to-store composition,
+fault/range atomicity, CLI/FNSTSW fixtures, and native/JIT denial.

@@ -63,3 +63,8 @@ Bounded `FST/FSTP m64fp` (`DD 10`/`DD 18`) also converts canonical
 Special-tagged binary80 QuietNaNs to binary64 while preserving sign and the
 upper 52 payload bits and truncating the lower 11. It adds no flags; native/JIT
 admission remains closed.
+
+Bounded `FST/FSTP m32fp` (`D9 10`/`D9 18`) also converts canonical
+Special-tagged binary80 QuietNaNs to binary32, preserving sign and the upper 23
+payload bits while truncating the lower 40. It adds no flags; native/JIT
+admission remains closed.

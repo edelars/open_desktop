@@ -492,3 +492,13 @@ FNSTSW. Both are schema/CLI reachable and included in native/JIT denial. See
 the [S2-31au contract](../specs/CPU_CONTRACT.md#local-s2-31au-canonical-quietnan-fstfstp-m64fp-rax-dd-10-dd-18),
 [plan](../plans/STAGE_2.md#s2-31au-store-canonical-binary80-quietnan-through-bounded-fstfstp-m64fp),
 and [report](../reports/STAGE_2_REPORT.md#s2-31au--canonical-quietnan-binary80-to-binary64-stores).
+
+
+## S2-31av canonical QuietNaN m32 stores
+
+The positive bare D910 fixture stores a positive QuietNaN; the negative D918
+DFE0 fixture stores a payload-bearing negative QuietNaN and observes FSW with
+FNSTSW. Both are schema/CLI reachable and included in native/JIT denial. See
+the [S2-31av contract](../specs/CPU_CONTRACT.md#local-s2-31av-canonical-quietnan-fstfstp-m32fp-rax-d9-10-d9-18),
+[plan](../plans/STAGE_2.md#s2-31av-store-canonical-binary80-quietnan-through-bounded-fstfstp-m32fp),
+and [report](../reports/STAGE_2_REPORT.md#s2-31av--canonical-quietnan-binary80-to-binary32-stores).

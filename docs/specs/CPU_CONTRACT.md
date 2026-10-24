@@ -4360,3 +4360,26 @@ general x87 exception delivery and physical acceptance remain outside this
 slice. See the [plan](../plans/STAGE_2.md#s2-31au-store-canonical-binary80-quietnan-through-bounded-fstfstp-m64fp),
 [report](../reports/STAGE_2_REPORT.md#s2-31au--canonical-quietnan-binary80-to-binary64-stores),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31av-canonical-quietnan-fstfstp-m32fp-rax-d9-10-d9-18"></a>
+
+## Local S2-31av: canonical QuietNaN `FST/FSTP m32fp [RAX]`
+
+Exact `D9 10` and `D9 18` accept a canonical binary80 QuietNaN only when
+physical TOP has Special tag, exponent `0x7fff`, explicit integer bit one, and
+quiet fraction bit one. Convert with integer fields: preserve sign and fraction
+bits 62..40 as the binary32 23-bit fraction, truncating lower 40 bits without
+rounding. This bounded conversion adds no flags, including PE, and does not use
+host floating point. Preserve sticky PE and clear C1 under the existing exact
+store policy.
+
+Retain the four FCWs and `FSW & 0x80df == 0` gate. Preflight the full
+canonical48 Dword range and perform exactly one atomic write/no data read. D910
+preserves TOP/tags/payloads; D918 pops only after a successful write. Keep
+Normal, Zero and Infinity behavior. SNaNs, pseudo-NaNs, other special classes,
+and mismatched tags reject before access. JIT/native admission remains closed;
+general exception delivery and physical acceptance remain outside this slice.
+See the [plan](../plans/STAGE_2.md#s2-31av-store-canonical-binary80-quietnan-through-bounded-fstfstp-m32fp),
+[report](../reports/STAGE_2_REPORT.md#s2-31av--canonical-quietnan-binary80-to-binary32-stores),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).

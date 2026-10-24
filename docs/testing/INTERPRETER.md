@@ -773,3 +773,12 @@ by integer fields and truncating the lower 11 fraction bits without rounding or
 new flags. Cross-width values, payload boundaries, status preservation, atomic
 write/pop behavior, CLI/FNSTSW and JIT/native denial are covered. See the
 [S2-31au contract](../specs/CPU_CONTRACT.md#local-s2-31au-canonical-quietnan-fstfstp-m64fp-rax-dd-10-dd-18).
+
+
+## Local S2-31av canonical QuietNaN binary32 stores
+
+Exact D910/D918 accepts Special-tagged canonical binary80 QuietNaNs and
+truncates lower 40 fraction bits without rounding or new flags. Signed payload
+boundaries, all-width FLD-to-store sequences, status preservation, atomic
+write/pop behavior, CLI/FNSTSW and JIT/native denial are covered. See the
+[S2-31av contract](../specs/CPU_CONTRACT.md#local-s2-31av-canonical-quietnan-fstfstp-m32fp-rax-d9-10-d9-18).

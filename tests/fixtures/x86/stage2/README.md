@@ -2193,3 +2193,15 @@ SNaNs and malformed/tag-mismatched classes remain rejection neighbors. See the
 [S2-31au CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31au-canonical-quietnan-fstfstp-m64fp-rax-dd-10-dd-18),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31au-store-canonical-binary80-quietnan-through-bounded-fstfstp-m64fp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31au--canonical-quietnan-binary80-to-binary64-stores).
+
+
+### S2-31av canonical QuietNaN m32 FST/FSTP fixtures
+
+Exact D910/D918 accepts a Special-tagged canonical binary80 QuietNaN and emits
+binary32 with the same sign and upper 23 fraction bits, truncating the lower
+40. Positive bare FST and negative DFE0/FNSTSW FSTP fixtures exercise both
+operations through schema/CLI; both are explicitly denied by native and JIT.
+SNaNs and malformed/tag-mismatched classes remain rejection neighbors. See the
+[S2-31av CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31av-canonical-quietnan-fstfstp-m32fp-rax-d9-10-d9-18),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31av-store-canonical-binary80-quietnan-through-bounded-fstfstp-m32fp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31av--canonical-quietnan-binary80-to-binary32-stores).
