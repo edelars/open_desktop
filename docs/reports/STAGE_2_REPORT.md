@@ -6250,3 +6250,24 @@ Independent gpt-6.1-sol medium review of commit `aaf0d6f` was clean. Reviewer
 verification covered 26 m32fp ISA cases, the maximum-finite interpreter fixture,
 JIT denial and the Linux x86 target check. Native runtime and physical behavior
 remain unverified and deferred under ISSUE-019.
+
+
+<a id="s2-31bc--finite-exponent-1023-bounded-m64-stores"></a>
+
+## S2-31bc — finite exponent 1023 for bounded binary64 stores
+
+Exact DD10/DD18 finite m64 stores now accept canonical Normal binary80 sources
+through unbiased exponent 1023. Integer significand rounding normalizes a carry
+before the final check, so 1022→1023 is supported while 1023→1024 and an
+exponent-1024 source reject before memory access without setting OE. The
+minimum exponent, subnormal-result rejection, environment gates, source
+classes, and atomic store/pop behavior remain unchanged.
+
+Separate maximum-finite FLD/store fixtures, TOP×FCW signed rounding vectors,
+sticky IE/DE/PE combinations and write/range fault tests are covered here.
+Validation passed: 31 focused `od-isa` m64fp tests, the CLI fixture test, the
+JIT-denial fixture test, 790 workspace tests, workspace `cargo check`, Linux
+x86_64 `cargo check --all-targets`, and `cargo fmt --all -- --check`. Linux
+x86 test binaries could not be linked on this macOS host; layout checking still
+reports the pre-existing unmapped `.serena` root, left untouched. Native runtime
+and physical acceptance remain deferred under ISSUE-019.

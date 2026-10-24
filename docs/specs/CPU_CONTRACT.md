@@ -4559,3 +4559,36 @@ Native runtime and physical acceptance remain deferred under ISSUE-019. See
 the [plan](../plans/STAGE_2.md#s2-31bb-finite-exponent-127-bounded-m32-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31bb--finite-exponent-127-bounded-m32-stores),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31bc-finite-exponent-1023-bounded-m64-stores"></a>
+
+## Local S2-31bc: finite exponent 1023 through bounded m64 `FST/FSTP [RAX]`
+
+For exact `DD 10` and `DD 18`, extend only the finite canonical-Normal
+binary80 source exponent interval in `bounded_x87_m64fp_result` from
+`-1022..=1022` to `-1022..=1023`. Keep integer significand rounding and all
+four FCWs. Normalize rounded significand carry before checking the final
+exponent: carry from 1022 to 1023 is a valid binary64 normal result, but a
+carry from 1023 to 1024 returns Unsupported before destination access. A
+source already at exponent 1024 also remains Unsupported. This path does not
+deliver masked overflow or set OE.
+
+Keep the minimum exponent, subnormal-result rejection, `FSW & 0x80dc == 0`
+gate, source classes/tags, addressing, and post-write status/pointer/pop
+behavior unchanged. Rejected sources leave all CPU state and destination bytes
+unchanged. Successful stores retain sticky IE/DE/PE and only generate PE for
+inexact finite rounding; SNaN IE behavior remains unchanged. DD10 preserves
+TOP; DD18 pops only after its atomic Qword write succeeds.
+
+Separate maximum-finite fixtures exercise DD00 FLD, DD10 positive FST, and
+DD18 negative FSTP followed by FNSTSW. ISA vectors cover both signs, both
+opcodes, every TOP and FCW, all incoming IE/DE/PE combinations, exponent-1023
+maximum finite, ties and directed rounding at 1022/1023, carry to valid 1023,
+carry to rejected 1024, an exponent-1024 source and below-minimum rejection.
+Overflow rejects before memory access; denied writes and canonical-range
+failures preserve full state and bytes. JIT/native admission remains closed;
+native runtime and physical acceptance remain deferred under ISSUE-019. See
+the [plan](../plans/STAGE_2.md#s2-31bc-finite-exponent-1023-bounded-m64-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31bc--finite-exponent-1023-bounded-m64-stores),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).

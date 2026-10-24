@@ -432,3 +432,15 @@
   [plan](plans/STAGE_2.md#s2-31bb-finite-exponent-127-bounded-m32-stores),
   [report](reports/STAGE_2_REPORT.md#s2-31bb--finite-exponent-127-bounded-m32-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31bc evidence:** exact DD10/DD18 finite m64 stores now admit canonical
+  Normal binary80 sources through unbiased exponent 1023. Carry is normalized
+  before the final range check: 1022→1023 is supported, while 1023→1024 and a
+  source at exponent 1024 reject before access without setting OE. Subnormal
+  store results, minimum exponent and all existing gates remain unchanged.
+  Separate signed max-finite FLD and store fixtures exercise the interpreter
+  path, with JIT/native denial coverage. Native runtime and physical acceptance
+  remain deferred under ISSUE-019. See [S2-31bc CPU contract](specs/CPU_CONTRACT.md#local-s2-31bc-finite-exponent-1023-bounded-m64-stores),
+  [plan](plans/STAGE_2.md#s2-31bc-finite-exponent-1023-bounded-m64-stores),
+  [report](reports/STAGE_2_REPORT.md#s2-31bc--finite-exponent-1023-bounded-m64-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

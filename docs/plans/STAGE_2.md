@@ -265,6 +265,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-31az | Admit masked sticky DE in the same bounded m32/m64 FST/FSTP helpers; retain IE/DE/PE and keep subnormal store results unsupported | S2-31ay |
 | [x] | S2-31ba | Admit masked sticky IE/DE in exact raw DB38 FSTP m80fp stores; preserve bytes and pop atomically | S2-31az |
 | [x] | S2-31bb | Extend exact D910/D918 finite binary32 stores through exponent 127; reject rounded exponent 128 before access | S2-31az, S2-31av |
+| [x] | S2-31bc | Extend exact DD10/DD18 finite binary64 stores through exponent 1023; reject rounded exponent 1024 before access | S2-31ba, S2-31bb |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3677,3 +3678,29 @@ native runtime admission and physical acceptance remain outside this slice.
 The masked invalid-operation result follows Intel SDM revision 093 Vol. 2A
 FST/FSTP and Vol. 1 §8.5.1 ([official Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505),
 [official Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436#page=232)).
+
+
+<a id="s2-31bc-finite-exponent-1023-bounded-m64-stores"></a>
+
+#### S2-31bc. Extend finite binary64 stores through unbiased exponent 1023
+
+Extend only the finite Normal exponent interval in the exact DD10/DD18 m64
+conversion helper from `-1022..=1022` to `-1022..=1023`. Keep integer
+significand rounding and all four FCWs. Normalize a rounded significand carry
+before the final exponent check: carry from 1022 to 1023 is valid; carry from
+1023 to 1024 returns Unsupported before memory access. A source already at
+exponent 1024 also remains Unsupported. Do not synthesize masked overflow or
+set OE. Keep the minimum exponent, subnormal-result rejection, status/control
+gates, source classes/tags, addressing, status and FSTP pop ordering unchanged.
+
+Cover both signs and opcodes across TOPs, all FCWs and incoming IE/DE/PE;
+maximum finite, nearest/directed tie neighbors, carry to valid 1023 versus
+rejected 1024, source exponent 1024, below-minimum rejection, and write/range
+fault atomicity. Add separate maximum-finite m64 FLD, FST and FSTP/FNSTSW
+fixtures, plus CLI/schema reachability and explicit JIT/native denial. Native
+runtime and physical acceptance remain deferred under ISSUE-019. Validation
+passed: 31 focused `od-isa` m64fp tests, the CLI fixture test, the JIT-denial
+fixture test, 790 workspace tests, workspace `cargo check`, Linux x86_64
+`cargo check --all-targets`, and `cargo fmt --all -- --check`. Linux x86 test
+binaries could not be linked on this macOS host; layout checking still reports
+the pre-existing unmapped `.serena` root, left untouched.

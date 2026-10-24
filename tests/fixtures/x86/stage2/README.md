@@ -2280,3 +2280,16 @@ JIT and native admission. See the
 [S2-31bb CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bb-finite-exponent-127-bounded-m32-stores),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bb-finite-exponent-127-bounded-m32-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bb--finite-exponent-127-bounded-m32-stores).
+
+
+### S2-31bc maximum-finite binary64 FLD/store fixtures
+
+The positive bare DD00 fixture loads binary64 maximum finite. A positive DD10
+fixture stores the equivalent canonical binary80 value back to identical
+binary64 bytes, and a negative DD18/DFE0 fixture does the same through the
+popping form and observes status after pop. Each fixture exercises exponent
+1023 through the schema/CLI interpreter path and remains explicitly denied by
+JIT and native admission. See the
+[S2-31bc CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bc-finite-exponent-1023-bounded-m64-stores),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bc-finite-exponent-1023-bounded-m64-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bc--finite-exponent-1023-bounded-m64-stores).
