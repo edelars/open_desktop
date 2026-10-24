@@ -4613,7 +4613,9 @@ range check leaves CPU state and destination memory unchanged.
 Literal D910 and D918/DFE0 fixtures store positive and negative minimum
 subnormal binary32 values while retaining sticky DE; FNSTSW observes DE after
 the pop. Direct FLD subnormal→FST tests prove DE survives without PE. Boundary
-coverage includes all exact shift sizes, minimum and maximum subnormal,
+successful exact vectors cover shifts 63, 62 and 41; low-bit rejection
+vectors cover every shift from 41 through 63. Coverage also includes the
+minimum and maximum subnormal,
 1.5-minimum-subnormal and half-step-above-maximum rejects, exponent -150 and
 minimum normal. This is a narrow local conversion policy; other widths and
 general unmasked exception delivery remain unchanged. JIT/native admission,

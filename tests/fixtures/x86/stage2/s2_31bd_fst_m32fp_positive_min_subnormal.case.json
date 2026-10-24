@@ -6,7 +6,7 @@
     "kind": "project_fixture",
     "source": "Handwritten literal D9 10 bytes, canonical binary80 minimum binary32 subnormal source, and sticky DE x87 state; expected behavior follows local S2-31bd exact-only conversion.",
     "specification": "Intel SDM revision 093, Vol.2A, FST m32fp entry; local S2-31bd exact binary32 subnormal result policy.",
-    "specification_version": "Intel SDM revision 093; project S2-31bb"
+    "specification_version": "Intel SDM revision 093; project S2-31bd"
   },
   "seed": null,
   "converted_from_v1_sha256": null,
