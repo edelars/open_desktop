@@ -4836,6 +4836,32 @@ Point Value,” pp.3-386–3-387 (`DD /2`/`DD /3`)
 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
 
+## S2-31s — bounded `FLD m32fp` partial slice
+
+Added exact bare `D9 00` for Long64 `FLD m32fp [RAX]`, preserving all existing
+D9 forms. The operation uses the established FCW/FSW/Empty-destination gates,
+preflights the complete canonical48 Dword range, and makes one exact Dword
+read. Only binary32 Normal exponent fields 1..254 are accepted; integer field
+expansion preserves sign and maps directly to canonical binary80, including
+the full source exponent range. Zero, subnormal, infinity and NaN reject after
+the single read without CPU commit. Success writes the new physical slot,
+decrements TOP, clears C1 under the local push policy, retains PE and other
+condition bits, records FIP/FDP, advances RIP and retires once. Native admission
+explicitly denies the operation.
+
+Independent raw binary80 literals cover ±1, neighboring fractions, minimum
+and maximum Normal inputs, and exponent 127 for all TOP×RC combinations.
+Additional checks cover sticky PE and C1, unrelated tags/payloads, unaligned
+exact Dword read/canaries/no writes, invalid classes after one read, invalid
+gates before access, canonical range crossing and arithmetic overflow, read
+#PF/backend errors, and fetch/truncation/STOP/zero-budget boundaries. Exact
+`D9 00`, `D9 00 DF E0`, and invalid-class schema/CLI fixtures were added.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF p.470. The local slice excludes special
+source classes and general x87 exception behavior; native or physical x86
+acceptance was not performed. S2-31 and ISSUE-019 remain open.
+
 ## S2-31q — bounded FSTP m80fp partial slice
 
 Added exact bare `DB 38` (`FSTP m80fp [RAX]`) in Long64. The new path accepts

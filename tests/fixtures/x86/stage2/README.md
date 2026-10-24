@@ -1809,3 +1809,21 @@ x87 admission remains closed.
 Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
 Value,” pp.3-352–3-353, official PDF p.470
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+
+### S2-31s FLD m32fp schema and literal CLI coverage
+
+Fixtures contain exact literal `D9 00` and `D9 00 DF E0` instruction bytes,
+an unaligned four-byte binary32 source, full x87 state and an adjacent
+read-only canary. The composition case observes the pushed TOP and C1 clearing
+through FNSTSW AX. A third fixture supplies zero, expects Unsupported after
+the one Dword read, and keeps the CPU snapshot unchanged. The native admission
+tests explicitly deny all three fixtures. Interpreter checks cover the full
+TOP × FCW matrix using independent binary80 literals for signed one, adjacent
+fractions, minimum/maximum Normal values and exponent 127; they also cover
+special-class rejection, access width, canonical range failures, read
+#PF/backend errors, invalid push gates and execution boundaries. Exhaustive D9
+decode checks retain the existing forms and reject all prefix variants.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF p.470
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).

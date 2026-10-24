@@ -552,6 +552,61 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         fld_m80.stop_rip = Some(HexU64(stop_rip));
         assert!(Fixture::from_json(&fld_m80.to_json().unwrap()).is_ok());
     }
+
+    for (bytes, length, stop_rip, budget) in [
+        ("d900", 2_usize, 0x1002_u64, 1_u64),
+        ("d900dfe0", 4_usize, 0x1004, 2),
+    ] {
+        let mut fld_m32 = fixture.clone();
+        let code = fld_m32
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = length as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(length);
+        fld_m32.instruction_budget = budget;
+        fld_m32.stop_rip = Some(HexU64(stop_rip));
+        assert!(Fixture::from_json(&fld_m32.to_json().unwrap()).is_ok());
+    }
+    let mut invalid_fld_m32 = fixture.clone();
+    let code = invalid_fld_m32
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "d900".into();
+    code.comparison_mask_hex = "ffff".into();
+    invalid_fld_m32.initial_state.gpr[0] = HexU64(0x0000_0000_0030_0004);
+    invalid_fld_m32.memory.push(MemoryRegionSpec {
+        region_id: "operand".into(),
+        guest_address: HexU64(0x0000_0000_0030_0000),
+        length: 8,
+        permissions: MemoryPermissions {
+            read: true,
+            write: false,
+            execute: false,
+        },
+        initial_bytes_hex: "00".repeat(8),
+        comparison_mask_hex: "ff".repeat(8),
+    });
+    invalid_fld_m32.stop_rip = None;
+    invalid_fld_m32.expected_exit = ExpectedExit::Unsupported;
+    assert!(Fixture::from_json(&invalid_fld_m32.to_json().unwrap()).is_ok());
+    let mut wrong_fld_m32_budget = fixture.clone();
+    let code = wrong_fld_m32_budget
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.length = 4;
+    code.initial_bytes_hex = "d900dfe0".into();
+    code.comparison_mask_hex = "ffffffff".into();
+    wrong_fld_m32_budget.instruction_budget = 1;
+    wrong_fld_m32_budget.stop_rip = Some(HexU64(0x1004));
+    assert!(Fixture::from_json(&serde_json::to_vec(&wrong_fld_m32_budget).unwrap()).is_err());
+
     let mut invalid_fld_m80 = fixture.clone();
     let code = invalid_fld_m80
         .memory

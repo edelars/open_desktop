@@ -194,6 +194,7 @@ fn step_tracked_with_stop(
             | Operation::FildM32IntRax
             | Operation::FildM16IntRax
             | Operation::FildM64IntRax
+            | Operation::FldM32FpRax
             | Operation::FldM80FpRax
             | Operation::Fchs
             | Operation::Fabs
@@ -459,6 +460,7 @@ fn step_tracked_with_stop(
         Operation::FildM32IntRax
             | Operation::FildM16IntRax
             | Operation::FildM64IntRax
+            | Operation::FldM32FpRax
             | Operation::FldM80FpRax
     ) {
         match bounded_x87_fild_destination(state) {
@@ -538,6 +540,7 @@ fn step_tracked_with_stop(
         | Operation::Fabs
         | Operation::Ftst
         | Operation::Frndint
+        | Operation::FldM32FpRax
         | Operation::FstM32FpRax
         | Operation::FstpM32FpRax
         | Operation::FstM64FpRax
@@ -933,6 +936,44 @@ fn step_tracked_with_stop(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
+    if instruction.operation == Operation::FldM32FpRax {
+        let destination = fild_destination.expect("FLD m32 destination was prevalidated");
+        let address = state.gpr[Register::Rax as usize];
+        let last = match address.checked_add(3) {
+            Some(last) => last,
+            None => {
+                return Err(MemoryError::AddressOverflow { address, length: 4 });
+            }
+        };
+        if !canonical(address) || !canonical(last) {
+            return report_memory_error(general_protection());
+        }
+        let bits = match memory.read_integer(address, context, OperandSize::Dword) {
+            Ok(value) => value as u32,
+            Err(error) => return report_memory_error(error),
+        };
+        let source_exponent = (bits >> 23) & 0xff;
+        if !(1..=254).contains(&source_exponent) {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let significand = ((1_u64 << 23) | u64::from(bits & 0x7f_ffff)) << 40;
+        let binary80_exponent = (source_exponent as i32 - 127 + 16383) as u16;
+        let sign = if bits >> 31 != 0 { 0x8000 } else { 0 };
+        let mut raw = [0_u8; 10];
+        raw[..8].copy_from_slice(&significand.to_le_bytes());
+        raw[8..].copy_from_slice(&(binary80_exponent | sign).to_le_bytes());
+        let x87 = state.x87.as_mut().expect("FLD state was prevalidated");
+        let new_top = x87.top().wrapping_add(7) & 7;
+        x87.registers[destination] = raw;
+        x87.set_tag(destination as u8, X87Tag::Valid);
+        x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9))) | (u16::from(new_top) << 11);
+        x87.instruction_pointer = state.rip;
+        x87.data_pointer = address;
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
     if instruction.operation == Operation::FldM80FpRax {
         let destination = fild_destination.expect("FLD m80 destination was prevalidated");
         let address = state.gpr[Register::Rax as usize];
@@ -1253,6 +1294,7 @@ fn step_tracked_with_stop(
         Operation::FildM32IntRax
         | Operation::FildM16IntRax
         | Operation::FildM64IntRax
+        | Operation::FldM32FpRax
         | Operation::FldM80FpRax => {
             unreachable!("x87 memory loads commit in their prevalidated load path")
         }
@@ -22952,6 +22994,250 @@ mod tests {
             (&[0xdd, 0x10][..], None, 1, true),
         ] {
             let mut state = setup();
+            let before = state.clone();
+            let mut memory = Memory::at(bytes, state.rip);
+            if fetch_fault {
+                memory.fetch_error = Some((
+                    state.rip + 1,
+                    MemoryError::Unmapped {
+                        address: state.rip + 1,
+                        access: AccessKind::Fetch,
+                    },
+                ));
+            }
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn fld_m32fp_matches_raw_binary80_literals_for_every_top_and_control_word() {
+        let vectors: [([u8; 4], [u8; 10]); 6] = [
+            (
+                [0x00, 0x00, 0x80, 0x3f],
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+            ),
+            (
+                [0x00, 0x00, 0x80, 0xbf],
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xbf],
+            ),
+            (
+                [0x01, 0x00, 0x80, 0x3f],
+                [0, 0, 0, 0, 0, 1, 0, 0x80, 0xff, 0x3f],
+            ),
+            (
+                [0xff, 0xff, 0x7f, 0x7f],
+                [0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0x7e, 0x40],
+            ),
+            (
+                [0x00, 0x00, 0x80, 0x00],
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0x81, 0x3f],
+            ),
+            (
+                [0x00, 0x00, 0x00, 0x3f],
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xfe, 0x3f],
+            ),
+        ];
+        let control_words = [0x037f, 0x077f, 0x0b7f, 0x0f7f];
+        for top in 0..8_u8 {
+            for (case, (source, expected)) in vectors.into_iter().enumerate() {
+                for control_word in control_words {
+                    let destination = top.wrapping_add(7) & 7;
+                    let mut state = LongModeState::default();
+                    state.rip = 0x8600;
+                    state.gpr[Register::Rax as usize] = 0x1003;
+                    state.gpr[Register::Rcx as usize] = 0x1234_5678_9abc_def0;
+                    state.rflags = 0x0bad_f00d_0123_4567;
+                    let mut x87 = crate::state::X87State::fixture_seed();
+                    x87.control_word = control_word;
+                    x87.status_word = (u16::from(top) << 11) | 0x4620 | 0x0200;
+                    for physical in 0..8_u8 {
+                        x87.registers[usize::from(physical)] = [0x31 + physical; 10];
+                        x87.set_tag(
+                            physical,
+                            if physical == destination {
+                                X87Tag::Empty
+                            } else if physical == top {
+                                X87Tag::Special
+                            } else if physical & 1 == 0 {
+                                X87Tag::Zero
+                            } else {
+                                X87Tag::Valid
+                            },
+                        );
+                    }
+                    let before = x87.clone();
+                    state.x87 = Some(x87);
+                    let mut memory = Memory::at(&[0xd9, 0x00], state.rip);
+                    memory.bytes = vec![0xa5; 12];
+                    memory.bytes[3..7].copy_from_slice(&source);
+
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced),
+                        "TOP={top}, case={case}, FCW={control_word:04x}"
+                    );
+                    let after = state.x87.as_ref().unwrap();
+                    assert_eq!(after.registers[usize::from(destination)], expected);
+                    assert_eq!(after.tag(destination), Some(X87Tag::Valid));
+                    assert_eq!(after.top(), destination);
+                    assert_eq!(
+                        after.status_word,
+                        (before.status_word & !(0x3800 | 0x0200)) | (u16::from(destination) << 11)
+                    );
+                    assert_eq!(after.instruction_pointer, 0x8600);
+                    assert_eq!(after.data_pointer, 0x1003);
+                    assert_eq!(after.control_word, before.control_word);
+                    assert_eq!(after.last_opcode, before.last_opcode);
+                    for physical in 0..8_u8 {
+                        if physical != destination {
+                            assert_eq!(
+                                after.registers[usize::from(physical)],
+                                before.registers[usize::from(physical)]
+                            );
+                            assert_eq!(after.tag(physical), before.tag(physical));
+                        }
+                    }
+                    assert_eq!(state.gpr[Register::Rcx as usize], 0x1234_5678_9abc_def0);
+                    assert_eq!(state.rflags, 0x0bad_f00d_0123_4567);
+                    assert_eq!(state.rip, 0x8602);
+                    assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1003, 4)]);
+                    assert_eq!(memory.bytes[3..7], source);
+                    assert_eq!(memory.bytes[..3], [0xa5; 3]);
+                    assert_eq!(memory.bytes[7..], [0xa5; 5]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fld_m32fp_rejects_invalid_values_gates_ranges_and_execution_boundaries_atomically() {
+        let setup = |address: u64| {
+            let mut state = LongModeState::default();
+            state.rip = 0x8650;
+            state.gpr[Register::Rax as usize] = address;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0x4620 | 0x0200;
+            x87.set_tag(7, X87Tag::Empty);
+            state.x87 = Some(x87);
+            state
+        };
+        for bits in [
+            0x0000_0000_u32,
+            0x007f_ffff,
+            0x7f80_0000,
+            0xff80_0000,
+            0x7fc0_0001,
+        ] {
+            let mut state = setup(0x1000);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd9, 0x00], state.rip);
+            memory.bytes[..4].copy_from_slice(&bits.to_le_bytes());
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xd9 })
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1000, 4)]);
+        }
+
+        let mut rejected = Vec::new();
+        let mut missing = setup(0x1000);
+        missing.x87 = None;
+        rejected.push(missing);
+        for control_word in [0x027f, 0x077e, 0x0bff, 0x1f7f] {
+            let mut state = setup(0x1000);
+            state.x87.as_mut().unwrap().control_word = control_word;
+            rejected.push(state);
+        }
+        for status_word in [0x0001, 0x0040, 0x0080, 0x8000, 0x0201] {
+            let mut state = setup(0x1000);
+            state.x87.as_mut().unwrap().status_word = status_word;
+            rejected.push(state);
+        }
+        let mut occupied = setup(0x1000);
+        occupied.x87.as_mut().unwrap().set_tag(7, X87Tag::Zero);
+        rejected.push(occupied);
+        for mut state in rejected {
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd9, 0x00], state.rip);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xd9 })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        for address in [
+            0x0000_8000_0000_0000,
+            0x0000_7fff_ffff_fffd,
+            0xffff_7fff_ffff_fffc,
+        ] {
+            let mut state = setup(address);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd9, 0x00], state.rip);
+            assert!(matches!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Fault(ArchitecturalFault { vector: 13, .. }))
+            ));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut overflow = setup(u64::MAX - 2);
+        let before = overflow.clone();
+        let mut memory = Memory::at(&[0xd9, 0x00], overflow.rip);
+        assert!(matches!(
+            step(&mut overflow, &mut memory, AccessContext::default()),
+            Err(MemoryError::AddressOverflow { address, length: 4 }) if address == u64::MAX - 2
+        ));
+        assert_eq!(overflow, before);
+        assert!(memory.accesses.is_empty());
+
+        for error in [
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(0x1003),
+            }),
+            MemoryError::Backend("injected Dword read failure".into()),
+        ] {
+            let mut state = setup(0x1000);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd9, 0x00], state.rip);
+            memory.error = Some(error.clone());
+            memory.error_kind = Some(AccessKind::Read);
+            let outcome = step(&mut state, &mut memory, AccessContext::default());
+            match error {
+                MemoryError::Architectural(fault) => {
+                    assert_eq!(outcome, Ok(StepOutcome::Fault(fault)))
+                }
+                backend @ MemoryError::Backend(_) => assert_eq!(outcome, Err(backend)),
+                other => panic!("unexpected injected error {other:?}"),
+            }
+            assert_eq!(state, before);
+            assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1000, 4)]);
+        }
+
+        for (bytes, stop_rip, budget, fetch_fault) in [
+            (&[0xd9][..], None, 1, false),
+            (&[0xd9, 0x00][..], Some(0x8650), 1, false),
+            (&[0xd9, 0x00][..], None, 0, false),
+            (&[0xd9, 0x00][..], None, 1, true),
+        ] {
+            let mut state = setup(0x1000);
             let before = state.clone();
             let mut memory = Memory::at(bytes, state.rip);
             if fetch_fault {

@@ -2742,6 +2742,52 @@ Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See the
 [Stage 2 plan](../plans/STAGE_2.md#s2-31r-bare-bounded-fld-m80fp-rax-db-28-partial-slice)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+## Local S2-31s: bounded `FLD m32fp [RAX]` (`D9 00`)
+
+The interpreter admits only exact bare `D9 00` in Long64 with existing x87
+state. It requires FCW `0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`,
+`FSW & 0x80df == 0`, and an Empty physical destination `(TOP+7)&7`. The old
+logical ST(0) is not inspected. Before memory access it checks the full
+canonical48 Dword range `[RAX,RAX+3]` and checked endpoint addition, then makes
+exactly one `GuestMemory::read_integer` Dword read. The resulting four little-
+endian source bytes are accepted only for exponent fields 1..254. Zero,
+subnormal, infinity and NaN return local Unsupported after that single read,
+without CPU commit.
+
+Conversion is an exact integer expansion. The binary80 significand is
+`((1<<23)|fraction)<<40`; the exponent is `source_exponent - 127 + 16383`; the
+source sign is preserved. All binary32 Normal values are included, including
+source exponent 127 and exponent fields 1 and 254. No host float or store-side
+conversion helper is used.
+
+On success, the destination receives the expanded raw payload and Valid tag,
+TOP becomes `(old_TOP+7)&7`, and C1 is cleared. PE and every other FSW bit
+except the TOP field are retained; retaining C0/C2/C3 is the local policy.
+FCW/FOP, unrelated slots, GPRs and RFLAGS are preserved. FIP/FDP are recorded,
+RIP advances by two, and the instruction retires once. Architectural read
+faults follow the guest-fault path and backend errors remain diagnostics.
+Every other D9 ModR/M value and every prefix/REX/WAIT encoding remains outside
+the admitted form. Native admission explicitly denies `Operation::FldM32FpRax`.
+
+Interpreter checks use independent literal binary80 payloads for ±1, adjacent
+fractions, minimum and maximum Normal inputs, and exponent 127, across all
+TOP×FCW settings. They also check sticky PE/C1 clearing, local condition-code
+retention, preserved unrelated slots and state, one unaligned four-byte read
+with no writes/canaries, special values rejected after one read, invalid gates
+before access, canonical crossing/overflow, injected #PF/backend errors, and
+fetch/truncation/STOP/zero-budget atomicity. Exact schema/CLI fixtures cover
+`D9 00`, `D9 00 DF E0`, and invalid-class no-commit behavior. Exhaustive D9
+decode coverage preserves the existing D9 forms and rejects all prefixes.
+Physical x86 behavior, general x87 exception delivery, MMU/MMIO/SMP and native
+x87 state remain unverified; S2-31 stays partial under ISSUE-019.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF p.470
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See the
+[Stage 2 plan](../plans/STAGE_2.md#s2-31s-bare-bounded-fld-m32fp-rax-d9-00-partial-slice)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
 ## Local S2-31j: bounded `FSTP m32fp [RAX]` (`D9 18`)
 
 The interpreter admits only exact bare `D9 18` in Long64 with an existing x87

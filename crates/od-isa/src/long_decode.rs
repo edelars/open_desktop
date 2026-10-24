@@ -467,6 +467,8 @@ pub enum Operation {
     Frndint,
     /// Bare `D9 18` FSTP m32fp at [RAX], bounded finite profile.
     FstpM32FpRax,
+    /// Bare `D9 00` FLD m32fp at [RAX], bounded Normal binary32 stack push.
+    FldM32FpRax,
     /// Bare `D9 10` FST m32fp at [RAX], bounded finite profile.
     FstM32FpRax,
     /// Bare `DB 18` FISTP dword integer at [RAX], bounded finite profile.
@@ -1251,6 +1253,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 match self.byte()? {
+                    0x00 => Operation::FldM32FpRax,
                     0x28 => Operation::FldcwM16Rax,
                     0x38 => Operation::FnstcwM16Rax,
                     0x10 => Operation::FstM32FpRax,
@@ -2909,7 +2912,9 @@ mod tests {
             let decoded = Memory::new(&[0xd9, second]).decode();
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
-                if second == 0x28 {
+                if second == 0x00 {
+                    Ok(Operation::FldM32FpRax)
+                } else if second == 0x28 {
                     Ok(Operation::FldcwM16Rax)
                 } else if second == 0x10 {
                     Ok(Operation::FstM32FpRax)
@@ -2944,10 +2949,12 @@ mod tests {
         .into_iter()
         .chain(0x40..=0x4f)
         {
-            assert!(matches!(
-                Memory::new(&[prefix, 0xd9, 0x10]).decode(),
-                Err(DecodeError::Unsupported { .. })
-            ));
+            for second in [0x00, 0x10, 0x18, 0x28, 0x38, 0xe0, 0xe1, 0xe4, 0xfc] {
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xd9, second]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
         }
 
         assert!(matches!(

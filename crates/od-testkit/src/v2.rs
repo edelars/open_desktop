@@ -781,6 +781,8 @@ impl Fixture {
                 "db38dfe0" => ("db38dfe0", 4),
                 "db28" => ("db28", 2),
                 "db28dfe0" => ("db28dfe0", 4),
+                "d900" => ("d900", 2),
+                "d900dfe0" => ("d900dfe0", 4),
                 "db10" => ("db10", 2),
                 "db10dfe0" => ("db10dfe0", 4),
                 "db00" => ("db00", 2),
@@ -1069,6 +1071,23 @@ impl Fixture {
                         })
                     })
                 });
+            let is_fld_m32_non_normal_rejected = code_bytes == "d900"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.memory.iter().any(|region| {
+                    let address = self.initial_state.gpr[0].get();
+                    address
+                        .checked_sub(region.guest_address.get())
+                        .and_then(|offset| usize::try_from(offset).ok())
+                        .and_then(|offset| offset.checked_mul(2))
+                        .and_then(|start| start.checked_add(8).map(|end| (start, end)))
+                        .is_some_and(|(start, end)| {
+                            region
+                                .initial_bytes_hex
+                                .get(start..end)
+                                .is_some_and(|source| source.eq_ignore_ascii_case("00000000"))
+                        })
+                });
             let is_fcom_source_rejected = code_bytes.len() == 4
                 && code_bytes.starts_with("d8d")
                 && matches!(code_bytes.as_bytes()[3], b'0'..=b'7')
@@ -1169,6 +1188,7 @@ impl Fixture {
                     || is_fist_word_tag_rejected
                     || is_fist_word_environment_rejected
                     || is_fld_m80_non_normal_rejected
+                    || is_fld_m32_non_normal_rejected
                     || is_fcom_source_rejected
                     || is_fcomp_source_rejected
                     || is_fcompp_source_rejected
