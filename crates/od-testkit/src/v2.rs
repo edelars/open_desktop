@@ -779,6 +779,8 @@ impl Fixture {
                 "db18dfe0" => ("db18dfe0", 4),
                 "db38" => ("db38", 2),
                 "db38dfe0" => ("db38dfe0", 4),
+                "db28" => ("db28", 2),
+                "db28dfe0" => ("db28dfe0", 4),
                 "db10" => ("db10", 2),
                 "db10dfe0" => ("db10dfe0", 4),
                 "db00" => ("db00", 2),
@@ -1048,6 +1050,25 @@ impl Fixture {
                     !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
                         || x87.status_word.get() & 0x80df != 0
                 });
+            let is_fld_m80_non_normal_rejected = code_bytes == "db28"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.memory.iter().any(|region| {
+                    let address = self.initial_state.gpr[0].get();
+                    let offset = address.checked_sub(region.guest_address.get());
+                    offset.is_some_and(|offset| {
+                        let start = usize::try_from(offset)
+                            .ok()
+                            .and_then(|offset| offset.checked_mul(2));
+                        start.is_some_and(|start| {
+                            start.checked_add(20).is_some_and(|end| {
+                                region.initial_bytes_hex.len() >= end
+                                    && region.initial_bytes_hex[start..end]
+                                        .eq_ignore_ascii_case("00000000000000000000")
+                            })
+                        })
+                    })
+                });
             let is_fcom_source_rejected = code_bytes.len() == 4
                 && code_bytes.starts_with("d8d")
                 && matches!(code_bytes.as_bytes()[3], b'0'..=b'7')
@@ -1147,6 +1168,7 @@ impl Fixture {
                     || is_fist_word_exponent_rejected
                     || is_fist_word_tag_rejected
                     || is_fist_word_environment_rejected
+                    || is_fld_m80_non_normal_rejected
                     || is_fcom_source_rejected
                     || is_fcomp_source_rejected
                     || is_fcompp_source_rejected

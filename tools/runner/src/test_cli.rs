@@ -2103,6 +2103,107 @@ mod tests {
     }
 
     #[test]
+    fn fld_m80fp_literal_fixtures_load_raw_binary80_and_reject_bad_class() {
+        for (bytes, expected_rax, retired) in [
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31r_fld_m80fp.case.json")
+                    .as_slice(),
+                0x0000_0000_0030_0004,
+                1,
+            ),
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31r_fld_m80fp_fnstsw.case.json"
+                )
+                .as_slice(),
+                0x0000_0000_0030_7d00,
+                2,
+            ),
+        ] {
+            let fixture = v2::Fixture::from_json(bytes).expect("S2-31r fixture schema");
+            let mut memory =
+                od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available {
+                    value: HexU64(retired)
+                }
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("S2-31r fixture must produce an observable state");
+            };
+            assert_eq!(value.state.gpr[0], HexU64(expected_rax));
+            let after = value.state.x87.as_ref().unwrap();
+            assert_eq!(after.status_word, HexU64(0x7d00));
+            assert_eq!(after.tag_word, HexU64(0x3ffc));
+            assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
+            assert_eq!(after.data_pointer, HexU64(0x0030_0004));
+            assert_eq!(after.registers[7], "0123456789abcdef0180");
+            for physical in 0..7 {
+                assert_eq!(
+                    after.registers[physical],
+                    fixture
+                        .fixture
+                        .initial_state
+                        .x87
+                        .as_ref()
+                        .unwrap()
+                        .registers[physical]
+                );
+            }
+            let regions = memory.snapshot();
+            assert_eq!(
+                regions
+                    .iter()
+                    .find(|region| region.region_id == "stack")
+                    .unwrap()
+                    .bytes_hex,
+                "0123456789abcdef0180"
+            );
+            assert_eq!(
+                regions
+                    .iter()
+                    .find(|region| region.region_id == "canary")
+                    .unwrap()
+                    .bytes_hex,
+                "a5"
+            );
+        }
+
+        let invalid = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31r_fld_m80fp_invalid_class.case.json"
+        ))
+        .expect("invalid-class fixture schema");
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&invalid.fixture).unwrap();
+        let result = execute_fixture_v2(&invalid, &mut memory);
+        result.validate_for(&invalid).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::Unsupported { .. }));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(0) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("invalid-class rejection must preserve an observable state");
+        };
+        assert_eq!(value.state, invalid.fixture.initial_state);
+        let stack = memory
+            .snapshot()
+            .into_iter()
+            .find(|region| region.region_id == "stack")
+            .unwrap();
+        assert_eq!(stack.bytes_hex, invalid.fixture.memory[1].initial_bytes_hex);
+        let canary = memory
+            .snapshot()
+            .into_iter()
+            .find(|region| region.region_id == "canary")
+            .unwrap();
+        assert_eq!(canary.bytes_hex, "a5");
+    }
+
+    #[test]
     fn fst_m64fp_literal_fixtures_store_without_pop_and_compose_with_fnstsw() {
         for (bytes, expected_rax, retired) in [
             (

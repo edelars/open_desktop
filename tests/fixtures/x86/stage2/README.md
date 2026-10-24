@@ -1789,3 +1789,23 @@ Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
 Point Value,” pp.3-386–3-387 (`DB /7`), official PDF p.504
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
+
+
+### S2-31r FLD m80fp schema and literal CLI coverage
+
+Fixtures contain exact literal `DB 28` and `DB 28 DF E0` bytes, a raw
+canonical-Normal ten-byte read-only memory region, full x87 state, and a
+non-readable adjacent byte-11 canary; independent code lengths/stop addresses
+keep both boundaries explicit. The status-composition case observes the pushed TOP and
+C1 policy through FNSTSW AX. A third fixture supplies binary80 zero, expects
+Unsupported, and verifies the CPU snapshot remains uncommitted after the single
+source read. CLI results check the expected exit and one/two retired
+instructions. Interpreter tests cover the full TOP × FCW matrix, literal raw
+sign/fraction/exponent vectors, unaligned exact-width access/no writes, invalid
+classes, canonical ranges, #PF/backend errors, and execution boundaries.
+DB ModR/M/prefix tests preserve all existing forms and reject DB 30. Native
+x87 admission remains closed.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF p.470
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).

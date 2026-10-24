@@ -210,3 +210,15 @@ canonical48 range, performs one raw slice write without a data read, then pops
 TOP and clears C1 only after success. Exact `DB 38`/`DB 38 DF E0` fixtures,
 atomicity checks and explicit native denial are documented in the [CPU
 contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31q-bounded-fstp-m80fp-rax-db-38).
+
+
+S2-31r adds exact bare `DB 28` (`FLD m80fp [RAX]`) in Long64. It checks an
+Empty physical destination and bounded x87 environment before one canonical48
+checked ten-byte read, then accepts only canonical-Normal binary80 and copies
+its raw bytes exactly while pushing TOP. Invalid classes reject after that read
+without CPU commit. PE and unrelated state are preserved, C1 clears, and C0/C2/C3
+retention follows the existing local FILD policy. `DB 30` and native x87
+admission remain unsupported; the broader S2-31 exception and physical scopes
+remain open. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31r-bounded-fld-m80fp-rax-db-28),
+[fixtures](../../tests/fixtures/x86/stage2/README.md), and
+[Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).

@@ -2702,6 +2702,46 @@ Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See also the
 [Stage 2 plan](../plans/STAGE_2.md#s2-31q-bare-bounded-fstp-m80fp-rax-db-38-partial-slice)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+## Local S2-31r: bounded `FLD m80fp [RAX]` (`DB 28`)
+
+The interpreter admits only exact bare `DB 28` in Long64 with existing x87
+state. It requires FCW `0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`,
+`FSW & 0x80df == 0`, and an Empty physical destination `(TOP+7)&7`. The old
+logical ST(0) tag and payload are not inspected. The full canonical48 range
+`[RAX,RAX+9]` and checked endpoint are validated before one
+`GuestMemory::read(address, context, &mut [u8; 10])`. After that read, only raw
+canonical-Normal binary80 is accepted. Its bytes are copied exactly to the new
+physical TOP; no numeric conversion occurs. Every other binary80 class returns
+local Unsupported after the single read, with CPU state unchanged.
+
+On success, write the new payload and Valid tag, set TOP to the destination,
+clear C1, preserve PE and every other FSW bit, preserve FCW/FOP and all other
+tags/payloads, record FIP/FDP, advance RIP by two and retire once. Retaining
+C0/C2/C3 is the deterministic local policy used by the existing bounded FILD
+pushes. Architectural faults use the guest-fault path; backend errors remain
+diagnostics. `DB 30`, all other unadmitted DB forms and every prefix/REX/WAIT
+encoding remain unsupported. Existing DB forms, including DB 38 FSTP and
+DB 00 FILD, retain their meanings. Native x87 execution and general exception
+delivery remain unavailable.
+
+Interpreter checks cover all TOP values and wrap; every accepted FCW; arbitrary
+unrelated tags/payloads and irrelevant old ST(0); sticky PE, incoming C1 and
+retained C0/C2/C3; independent raw positive/negative fractional and minimum/
+maximum exponent vectors; one unaligned exact ten-byte read/no writes; invalid
+classes after the one read; canonical start/end/crossing/overflow; injected
+architectural #PF/backend errors; invalid environment/destination/missing
+state; and fetch, truncation, STOP and zero-budget atomicity. Exhaustive DB
+ModR/M and prefix checks preserve existing forms and specifically reject DB30.
+Schema-v2 and CLI fixtures cover exact `DB 28`, exact `DB 28 DF E0`, and an
+invalid-class no-commit case. S2-31 remains partial.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF p.470
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See the
+[Stage 2 plan](../plans/STAGE_2.md#s2-31r-bare-bounded-fld-m80fp-rax-db-28-partial-slice)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
 ## Local S2-31j: bounded `FSTP m32fp [RAX]` (`D9 18`)
 
 The interpreter admits only exact bare `D9 18` in Long64 with an existing x87

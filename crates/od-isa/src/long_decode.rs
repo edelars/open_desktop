@@ -453,6 +453,8 @@ pub enum Operation {
     FstpM64FpRax,
     /// Bare `DB 38` FSTP m80fp at [RAX], bounded raw binary80 profile.
     FstpM80FpRax,
+    /// Bare `DB 28` FLD m80fp at [RAX], bounded Normal binary80 stack push.
+    FldM80FpRax,
     /// Bare `DD 10` FST m64fp at [RAX], bounded finite profile.
     FstM64FpRax,
     /// Bare `D9 E0` FCHS, flipping the sign of canonical-Normal ST(0) only.
@@ -1109,6 +1111,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 match modrm {
                     0x00 => Operation::FildM32IntRax,
+                    0x28 => Operation::FldM80FpRax,
                     0x38 => Operation::FstpM80FpRax,
                     0xe2 => Operation::Fnclex,
                     0xe3 => Operation::Fninit,
@@ -2292,6 +2295,11 @@ mod tests {
         assert_eq!(fstp_m80.prefixes, Prefixes::default());
         assert_eq!(fstp_m80_memory.fetched, [0xfff, 0x1000]);
 
+        let fld_m80 = Memory::new(&[0xdb, 0x28]).decode().unwrap();
+        assert_eq!(fld_m80.operation, Operation::FldM80FpRax);
+        assert_eq!(fld_m80.length, 2);
+        assert_eq!(fld_m80.prefixes, Prefixes::default());
+
         let mut fcomi_memory = Memory::new(&[0xdb, 0xf1]);
         let fcomi = fcomi_memory.decode().unwrap();
         assert_eq!(fcomi.operation, Operation::Fcomi { source: 1 });
@@ -2332,6 +2340,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match second {
                     0x00 => Ok(Operation::FildM32IntRax),
+                    0x28 => Ok(Operation::FldM80FpRax),
                     0x38 => Ok(Operation::FstpM80FpRax),
                     0xe2 => Ok(Operation::Fnclex),
                     0xe3 => Ok(Operation::Fninit),
@@ -2444,6 +2453,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0x00 => Ok(Operation::FildM32IntRax),
+                    0x28 => Ok(Operation::FldM80FpRax),
                     0x38 => Ok(Operation::FstpM80FpRax),
                     0x10 => Ok(Operation::FistM32IntRax),
                     0x18 => Ok(Operation::FistpM32IntRax),
@@ -2678,6 +2688,8 @@ mod tests {
                     Ok(Operation::FildM32IntRax)
                 } else if opcode == 0xdb && modrm == 0x38 {
                     Ok(Operation::FstpM80FpRax)
+                } else if opcode == 0xdb && modrm == 0x28 {
+                    Ok(Operation::FldM80FpRax)
                 } else if opcode == 0xdf && modrm == 0x00 {
                     Ok(Operation::FildM16IntRax)
                 } else if opcode == 0xdf && modrm == 0x28 {

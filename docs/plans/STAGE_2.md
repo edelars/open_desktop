@@ -234,6 +234,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31l | Bare bounded FSTP m64fp [RAX] DD 18, shared binary80-to-binary64 conversion and atomic Qword store with pop; native closed | S2-31k |
 | [x] | S2-31m | Bare bounded FST m64fp [RAX] DD 10, shared binary80-to-binary64 conversion and atomic Qword store without pop; native closed | S2-31l |
 | [x] | S2-31q | Bare bounded FSTP m80fp [RAX] DB 38, exact ten-byte binary80 store and pop; native closed | S2-31p |
+| [x] | S2-31r | Bare bounded FLD m80fp [RAX] DB 28, canonical-Normal ten-byte load and push; native closed | S2-31q |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2624,6 +2625,38 @@ Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
 Point Value,” pp.3-386–3-387 (`DB /7`), official PDF p.504
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
+
+#### S2-31r. Bare bounded `FLD m80fp [RAX]` (`DB 28`), partial slice
+
+Add only exact bare `DB 28` in Long64, preserving all existing DB forms and
+explicitly leaving `DB 30` unsupported. Require existing x87 state, FCW exactly
+`037f/077f/0b7f/0f7f`, `FSW & 0x80df == 0`, and Empty physical destination
+`(old_TOP+7)&7`; the old logical ST(0) tag/payload is irrelevant. Preflight the
+full canonical48 range `[RAX,RAX+9]` and checked endpoint arithmetic before
+exactly one `GuestMemory::read` into `[u8; 10]`. Accept only canonical Normal
+binary80 after that read; preserve all ten bytes exactly and reject every other
+class without CPU commit. Success writes payload and Valid tag to the physical
+destination, sets TOP to destination, clears C1, preserves PE/other status,
+FCW/FOP, other tags/payloads and unrelated state, records FIP/FDP, advances
+RIP by two and retires once. C0/C2/C3 retention is the existing local FILD
+policy. Architectural faults use the guest-fault path and backend failures stay
+diagnostic. Native admission remains denied.
+
+Literal tests cover all TOPs including wrap, all accepted FCWs, arbitrary
+unrelated state, sticky PE and C1 clearing, retained condition codes, raw
+positive/negative fractional and exponent-endpoint Normal values, one unaligned
+ten-byte read with no writes, invalid source classes after exactly one read,
+canonical start/end/crossing/overflow, read #PF/backend errors, missing state,
+invalid FCW/FSW/destination, and fetch/truncation/STOP/zero-budget boundaries.
+Exhaustive DB ModR/M and prefix checks admit only `DB 28` in addition to the
+existing DB forms and explicitly reject `DB 30`. Schema/CLI fixtures use exact
+`DB 28`, `DB 28 DF E0`, and an invalid-class no-commit case. S2-31 remains
+partial; native and physical acceptance remain reserved for the combined final
+S2-31 substage.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF p.470; Vol.1 §§8.1.8, 8.1.9 and §8.6 for
+x87 state and FIP/FDP.
 
 #### S2-30an. Bare indexed FCOMI-family register forms
 

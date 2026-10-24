@@ -5044,3 +5044,50 @@ Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
 pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
 [official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
+
+## S2-31r — bounded `FLD m80fp` partial slice
+
+Added exact bare `DB 28` for Long64 `FLD m80fp [RAX]`; existing DB forms remain
+unchanged and `DB 30` remains Unsupported. The operation reuses the bounded
+FILD push preflight, validates the entire canonical48 ten-byte address before
+memory access, and performs exactly one `GuestMemory::read` into a local
+`[u8; 10]`. It accepts canonical-Normal binary80 only, preserving all ten raw
+source bytes verbatim. Zero, subnormal, infinity, NaN and noncanonical classes
+are rejected after that single read without CPU commit. Success writes the
+new physical destination, sets its tag Valid, decrements TOP, clears C1 under
+the existing local policy, records FIP/FDP, advances RIP by two and retires
+once; all other payloads, tags, FSW bits and FCW are preserved. Native
+admission explicitly denies this operation.
+
+Tests cover all TOP values and FCW variants, every C0/C2/C3 retention case,
+sticky PE and incoming-C1 clearing, arbitrary unrelated tags/payloads, an
+irrelevant old ST(0), literal positive/negative Normal encodings and exponent
+endpoints, exact unaligned ten-byte read/no writes with byte-11 canary, and a
+read-only memory fixture. Atomic rejection coverage includes occupied physical
+destination, missing state/invalid environment, full-range noncanonicality,
+crossing and arithmetic overflow, backend read failure and guest #PF, all
+non-Normal classes, instruction fetch/truncation, STOP and zero budget.
+Exhaustive DB ModR/M and prefix checks admit only this exact new form while
+preserving all pre-existing DB cases and rejecting DB 30. Three handwritten
+literal fixtures check `db28`, `db28dfe0` composition, and invalid-class
+no-commit behavior.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline` (compile-only), the focused interpreter
+and CLI fixture tests, all 88 Python CPU/generator tests,
+`cargo fmt --all -- --check`, and `git diff --check`. Independent
+`gpt-6.1-sol` review found no remaining findings after the fixture source
+regions were made read-only. `python3 tools/check_layout.py` reports only the
+pre-existing unmapped `.serena/` directory; it was left untouched.
+`graphify update .` was run after code changes. No Mac mini, native execution,
+or physical acceptance was performed; those remain in the combined final
+S2-31 substage. The implemented Normal-only domain and C1 policy are local
+scope decisions; other binary80 classes, general x87 exception behavior, and
+native/physical behavior remain deferred.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353 ([official PDF, Vol.2A p.3-352](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
+[official PDF, Vol.2A p.3-353](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=471));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
