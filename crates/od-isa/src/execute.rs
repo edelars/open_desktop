@@ -22473,9 +22473,6 @@ mod tests {
         qnan[7] = 0xc0;
         qnan[8] = 0xff;
         qnan[9] = 0x7f;
-        let mut snan = qnan;
-        snan[0] = 1;
-        snan[7] = 0x80;
         let mut pseudo_denormal = [0; 10];
         pseudo_denormal[7] = 0x80;
         let mut unnormal = [0; 10];
