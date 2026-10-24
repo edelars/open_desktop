@@ -243,7 +243,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31z | Extend exact DD 00 FLD m64fp to masked binary64 subnormal sources with exact Normal expansion and sticky DE; native closed | S2-31u |
 | [x] | S2-31aa | Extend exact DB 28 FLD m80fp to canonical signed binary80 infinities with Special tag; native closed | S2-31x |
 | [x] | S2-31ab | Extend exact DB 28 FLD m80fp to canonical quiet binary80 NaNs with Special tag; native closed | S2-31aa |
-| [ ] | S2-31ac | Extend exact DB 28 FLD m80fp to canonical signaling binary80 NaNs under all-masked FCWs; native closed | S2-31ab |
+| [x] | S2-31ac | Extend exact DB 28 FLD m80fp to canonical signaling binary80 NaNs under all-masked FCWs; native closed | S2-31ab |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
