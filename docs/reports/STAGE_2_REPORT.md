@@ -5640,4 +5640,6 @@ compiles for Linux x86 but is not executed on this local arm64 host. The layout
 checker reports the pre-existing unmapped `.serena/` directory, which remains
 untouched.
 
-Independent gpt-6.1-sol medium review is pending.
+Independent gpt-6.1-sol medium review found no concrete defects. All six
+focused ISA/schema/CLI/JIT review checks passed; native runtime denial was not
+run on the local arm64 host.
