@@ -302,7 +302,7 @@
 
 - **S2-31ay evidence:** exact D910/D918 and DD10/DD18 conversion helpers now
   admit masked sticky IE by changing only their local FSW mask to `0x80de`.
-  ZE/OE/UE/SF/ES/B, FCW restrictions, source class/tag rules, canonical range
+  ZE/DE/OE/UE/SF/ES/B, FCW restrictions, source class/tag rules, canonical range
   checks, and all other x87 instruction gates remain unchanged. Incoming IE/PE
   is preserved; successful SNaN writes OR IE and inexact finite writes OR PE
   only after the atomic store. Repeated stores remain available with IE set;

@@ -4368,7 +4368,7 @@ and [fixtures](../../tests/fixtures/x86/stage2/README.md).
 
 Only the status gate in the exact D910/D918 m32 and DD10/DD18 m64 conversion
 helpers changes, from `FSW & 0x80df == 0` to `FSW & 0x80de == 0`. This admits
-sticky IE while still rejecting ZE, OE, UE, SF, ES, and B. The four admitted
+sticky IE while still rejecting ZE, DE, OE, UE, SF, ES, and B. The four admitted
 FCWs, source class/tag rules, full canonical48 range checks, memory access
 shape, and all other x87 status gates remain unchanged.
 

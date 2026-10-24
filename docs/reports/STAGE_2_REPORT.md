@@ -6144,7 +6144,7 @@ Native runtime and physical acceptance remain deferred under ISSUE-019.
 ## S2-31ay — sticky IE in bounded m32/m64 stores
 
 The exact D910/D918 and DD10/DD18 conversion helpers now admit masked sticky IE
-by changing only their FSW predicate from `0x80df` to `0x80de`. ZE/OE/UE/SF/ES/B
+by changing only their FSW predicate from `0x80df` to `0x80de`. ZE/DE/OE/UE/SF/ES/B
 remain rejected; FCWs, source classes/tags, address validation, memory shape,
 and all unrelated x87 gates remain unchanged. Successful SNaN stores preserve
 IE and PE and OR IE after the atomic write; inexact finite stores similarly

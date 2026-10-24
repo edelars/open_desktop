@@ -3570,7 +3570,7 @@ described in Vol. 1 §8.5.1 ([official Vol. 2A PDF](https://cdrdv2-public.intel.
 
 Relax only the status gate in the exact D910/D918 and DD10/DD18 conversion
 helpers from `FSW & 0x80df == 0` to `FSW & 0x80de == 0`. This admits an
-already-set masked IE while continuing to reject ZE, OE, UE, SF, ES, and B;
+already-set masked IE while continuing to reject ZE, DE, OE, UE, SF, ES, and B;
 the FCW whitelist, source classes/tags, range validation, and all other x87
 instruction gates remain unchanged. Successful stores preserve incoming IE and
 PE, set IE for a signaling NaN and PE for an inexact finite conversion only
