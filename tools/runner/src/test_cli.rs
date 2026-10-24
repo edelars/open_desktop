@@ -2376,6 +2376,26 @@ mod tests {
                 "ffffffffffffff7f0080",
                 0xbffc,
             ),
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31aa_fld_m80fp_infinity.case.json"
+                )
+                .as_slice(),
+                0x0000_0000_0030_0004,
+                1,
+                "0000000000000080ff7f",
+                0xbffc,
+            ),
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31aa_fld_m80fp_negative_infinity_fnstsw.case.json"
+                )
+                .as_slice(),
+                0x0000_0000_0030_7d00,
+                2,
+                "0000000000000080ffff",
+                0xbffc,
+            ),
         ] {
             let fixture = v2::Fixture::from_json(bytes).expect("S2-31x fixture schema");
             let mut memory =
@@ -2390,7 +2410,7 @@ mod tests {
                 }
             );
             let Observation::Available { value } = result.snapshot else {
-                panic!("S2-31r fixture must produce an observable state");
+            panic!("FLD m80fp fixture must produce an observable state");
             };
             assert_eq!(value.state.gpr[0], HexU64(expected_rax));
             let after = value.state.x87.as_ref().unwrap();
@@ -2473,11 +2493,15 @@ mod tests {
             ("01000000000000000080", false),
             ("00000000000000000000", false),
             ("00000000000000000080", false),
-            ("00000000000000800000", true),
+            ("00000000000000800000", false),
             ("00000000000000800080", false),
             ("ffffffffffffff7f0000", false),
             ("0000000000000080003f", false),
             ("0000000000000080ff7f", false),
+            ("0000000000000080ffff", false),
+            ("0100000000000080ff7f", false),
+            ("00000000000000c0ff7f", true),
+            ("0100000000000040ff7f", false),
         ] {
             let mut nearby = template.clone();
             nearby["memory"][1]["initial_bytes_hex"] = serde_json::Value::String(raw.into());

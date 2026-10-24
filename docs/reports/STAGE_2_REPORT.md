@@ -5388,3 +5388,43 @@ left untouched. Independent gpt-6.1-sol review found no functional defects or
 remaining link issues; the inherited S2-31u contract anchors were corrected.
 Mac mini and physical x86 tests were not run; physical acceptance remains
 deferred to the combined final S2-31 substage.
+
+## S2-31aa — bounded `FLD m80fp` canonical-infinity extension
+
+Extended exact bare `DB 28` to accept only canonical positive and negative
+binary80 infinities: exponent `0x7fff`, explicit integer bit set, and fraction
+zero. The path retains the S2-31x gates (`FSW & 0x80df == 0`, the supported
+masked FCWs, Empty destination, canonical48 ten-byte preflight and one raw
+read). It preserves the ten source bytes verbatim, pushes with Special tag,
+clears C1, and adds no status flags. Existing TOP, pointer, payload and
+retirement behavior remains unchanged. No exception delivery is inferred;
+native x87 admission remains closed.
+
+Signed-infinity literal vectors cover every TOP×FCW pair and verify exact raw
+payload, tag, status preservation, read count, and no writes. Canonical
+quiet/signaling NaNs, pseudo-infinities, pseudo-denormals, pseudo-NaNs and
+unnormals remain post-read Unsupported without CPU commit. The narrow
+Unsupported fixture/schema exception now uses canonical positive QNaN for
+exact `DB 28`, budget one and no stop RIP. Positive bare and negative
+`DB 28 DF E0` fixtures run through the CLI; an integration case checks that
+JIT/native admission denies the infinity load. The historical S2-31x report
+above records its original pseudo-denormal schema exception and subnormal-only
+extension.
+
+The canonical infinity encoding follows Intel SDM revision 093, Vol.1 Table
+4-3; Table 8-3 distinguishes pseudo-infinity and unsupported encodings
+([Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436#page=92)). The
+Vol.2A FLD m80fp entry, pp.3-352–3-353 (official PDF p.470), is retained as
+the instruction-form reference. See the [Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31aa-bounded-fld-m80fp-rax-db-28-canonical-infinities),
+[plan](../plans/STAGE_2.md#s2-31aa-extend-bounded-fld-m80fp-rax-db-28-to-canonical-infinities),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+Validation: focused `od-isa` DB28 tests (2), the exact schema predicate (1),
+the CLI fixture test (1), and the JIT-denial integration test (1) passed.
+`cargo test --workspace --all-targets --offline` passed (692 tests across the
+workspace); workspace and Linux x86 runner checks, `cargo fmt --all -- --check`,
+and `git diff --check` passed. `graphify update .` completed. The layout check
+reports the pre-existing unmapped `.serena/` directory; it was left untouched.
+Independent review is pending. Mac mini and physical x86 tests were not run;
+physical acceptance remains deferred to the combined final S2-31 substage.

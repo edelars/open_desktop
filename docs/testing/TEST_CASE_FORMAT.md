@@ -260,3 +260,14 @@ eight-byte source has exponent field 2047 (infinity or NaN). Zero, Normal and
 subnormal sources are excluded from this exception. Other x87 state, code
 bytes and instruction boundaries remain subject to the existing exact x87
 profile. This does not admit unmasked exception behavior.
+
+## S2-31aa literal FLD m80fp fixture profile
+
+The S2-31aa `s2-long-x87-state-v1` fixtures use exact `db28` or
+`db28dfe0`. Successful cases may provide canonical signed binary80 infinity
+(biased exponent `0x7fff`, explicit integer bit set, fraction zero); execution
+preserves the ten raw bytes and assigns Special. The no-stop, budget-one
+Unsupported exception admits canonical QNaN for exact `db28` only. It excludes
+infinity, sNaN, pseudo-infinity, pseudo-denormal, pseudo-NaN, unnormal and
+other encodings. This narrow schema rule does not admit other m80 forms,
+unmasked exception behavior, or native execution.

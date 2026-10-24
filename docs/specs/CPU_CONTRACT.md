@@ -2794,9 +2794,11 @@ The existing push, TOP wrap, C1 clear, sticky PE and unrelated status
 preservation, FCW/FOP, other tags/payloads, FIP/FDP/RIP update and one
 retirement remain unchanged. No DE, UE or PE status bit is added. A
 pseudo-denormal (exponent zero with explicit integer bit set), infinity, NaN,
-unnormal or pseudo-special remains Unsupported after exactly one read and
-without CPU commit. Faults/backend denial and fetch/truncation/STOP/budget
-behavior remain unchanged. Native x87 admission remains closed.
+unnormal or pseudo-special remained Unsupported in the S2-31x result after
+exactly one read and without CPU commit. S2-31aa supersedes only the canonical
+signed-infinity class while retaining the other rejection cases. Faults,
+backend denial and fetch/truncation/STOP/budget behavior remain unchanged.
+Native x87 admission remains closed.
 
 Independent literals cover positive/negative minimum, largest and interior
 subnormals across TOP×FCW with unrelated tags/payloads. CLI fixtures cover
@@ -3730,3 +3732,41 @@ official PDF p.470
 This local contract is limited to the all-masked profile and does not infer
 unmasked exception behavior. The separate binary80 m80fp subnormal behavior
 remains as documented in S2-31x.
+
+## Local S2-31aa: bounded `FLD m80fp [RAX]` (`DB 28`) canonical infinities
+
+S2-31aa extends exact bare `DB 28` to canonical positive and negative binary80
+infinities. It retains the S2-31x preflight: existing x87 state, FCW
+`0x037f`/`0x077f`/`0x0b7f`/`0x0f7f`, `FSW & 0x80df == 0`, Empty physical
+destination `(TOP+7)&7`, complete canonical48 ten-byte range and one raw
+read with no writes. After that read, accept only exponent `0x7fff`, explicit
+integer bit set, and zero fraction. Preserve the raw ten-byte payload and push
+with `X87Tag::Special`.
+
+The existing push/TOP, C1-clear, FCW/FOP, pointer and single-retirement
+behavior remains unchanged; the load adds no status flags. Normal, signed zero
+and canonical subnormal behavior remains as documented in S2-31t/w/x. Canonical
+quiet/signaling NaNs, pseudo-infinities, pseudo-denormals, pseudo-NaNs and
+unnormals remain Unsupported after one read without CPU commit. No x87
+exception delivery or unmasked behavior is implemented. Native x87 admission
+remains closed.
+
+Signed infinity literals cover all TOP×FCW pairs and assert exact payload,
+Special tag, status preservation, one ten-byte read, and no writes. CLI
+fixtures cover bare positive infinity and negative infinity followed by
+FNSTSW. The narrow Unsupported schema fixture now uses positive canonical
+QNaN and remains restricted to exact `DB 28`, budget one, and no stop RIP.
+Pseudo-denormals, infinities, and other neighboring encodings are excluded
+from that exception predicate. Memory faults, canonical-address preflight,
+fetch/truncation, STOP, budget and atomicity checks remain in force.
+
+Normative source: Intel SDM revision 093, Vol.1 Table 4-3 gives the canonical
+double-extended infinity encoding (all exponent bits set, integer bit set, zero
+fraction); Table 8-3 distinguishes pseudo-infinity and unsupported encodings
+([Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436#page=92)). Vol.2A
+FLD m80fp is the instruction reference and specifies no `#D`
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+No unmasked exception or physical-hardware behavior is inferred. See the
+[Stage 2 plan](../plans/STAGE_2.md#s2-31aa-extend-bounded-fld-m80fp-rax-db-28-to-canonical-infinities),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[S2-31aa report](../reports/STAGE_2_REPORT.md#s2-31aa--bounded-fld-m80fp-canonical-infinity-extension).

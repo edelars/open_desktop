@@ -514,3 +514,16 @@ Independent all-TOP×FCW literals cover signed minimum, interior and largest
 subnormals. The exact DD00 success fixture loads positive minimum subnormal;
 the DD00/DFE0 composition fixture loads negative minimum subnormal and checks
 DE through FNSTSW. See the [S2-31z CPU contract](../specs/CPU_CONTRACT.md#local-s2-31z-bounded-fld-m64fp-rax-dd-00-masked-subnormal-extension).
+
+## Local S2-31aa canonical binary80-infinity load
+
+Exact bare `DB 28` accepts only canonical signed binary80 infinities in this
+added class: exponent `0x7fff`, explicit integer bit set, fraction zero. The
+raw ten-byte encoding is preserved and the pushed tag is Special. The existing
+`0x80df` FSW/FCW gates, Empty destination, canonical48 preflight, one read,
+C1-clear, push/TOP and pointer/retirement behavior remain unchanged; no status
+flags are added. Normal, signed-zero and binary80-subnormal paths are
+unchanged. NaNs, pseudo-infinities, pseudo-denormals, pseudo-NaNs and unnormals
+remain post-read Unsupported without CPU commit. Tests cover both signs over
+all TOP×FCW pairs, invalid neighboring encodings, memory and execution-boundary
+atomicity, and explicit JIT denial. See the [S2-31aa CPU contract](../specs/CPU_CONTRACT.md#local-s2-31aa-bounded-fld-m80fp-rax-db-28-canonical-infinities), [plan](../plans/STAGE_2.md#s2-31aa-extend-bounded-fld-m80fp-rax-db-28-to-canonical-infinities), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

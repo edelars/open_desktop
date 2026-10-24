@@ -241,6 +241,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31x | Extend exact DB 28 FLD m80fp to canonical nonzero binary80 subnormals with Special tag; native closed | S2-31w |
 | [x] | S2-31y | Extend exact D9 00 FLD m32fp to masked binary32 subnormal sources with exact Normal expansion and sticky DE; native closed | S2-31v |
 | [x] | S2-31z | Extend exact DD 00 FLD m64fp to masked binary64 subnormal sources with exact Normal expansion and sticky DE; native closed | S2-31u |
+| [ ] | S2-31aa | Extend exact DB 28 FLD m80fp to canonical signed binary80 infinities with Special tag; native closed | S2-31x |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2895,6 +2896,33 @@ historical signed-zero/subnormal-rejection result. Intel SDM rev.093 Vol.1
 pp.3-352–3-353 (official PDF p.470) specifies the load format. This bounded
 all-masked profile does not infer unmasked exception/push behavior. Binary80
 m80 subnormal handling remains the separate S2-31x behavior.
+
+#### S2-31aa. Extend bounded `FLD m80fp [RAX]` (`DB 28`) to canonical infinities
+
+Keep exact bare `DB 28`, the S2-31x FCW/FSW gate `0x80df`, Empty
+`(TOP-1)&7`, canonical48 ten-byte preflight, one raw read and no writes. After
+the read, accept only canonical signed infinities: exponent `0x7fff`, explicit
+integer bit set, and fraction zero. Preserve all ten source bytes and push with
+the Special tag. Preserve the existing push/TOP, C1-clear, pointer, FOP and
+retirement policy; add no status flags. Normal, signed zero and canonical
+subnormal keep their existing S2-31t/w/x behavior. NaNs, pseudo-infinities,
+pseudo-denormals, unnormals and pseudo-NaNs remain Unsupported after one read
+without CPU commit. Do not model unmasked exception delivery. Native x87
+admission stays closed.
+
+Add positive/negative infinity literals over every TOP and supported FCW,
+checking raw bytes, Special tag, unchanged status except C1/TOP, and one exact
+read. Retain atomic rejection coverage for canonical quiet/signaling NaNs,
+pseudo-infinities of both signs, pseudo-denormals, pseudo-NaNs and unnormals,
+plus existing preflight, memory fault, truncation, STOP and budget cases. Move
+the exact `DB 28`, budget-one, no-stop Unsupported schema/CLI fixture from
+pseudo-denormal to canonical positive QNaN; adjacent classes must not use that
+narrow exception. Add CLI success fixtures for bare positive infinity and
+negative infinity composed with FNSTSW, and verify JIT/native denial remains
+explicit. Intel SDM revision 093 Vol.1 Table 4-3 defines the canonical
+double-extended infinity encoding and Table 8-3 distinguishes pseudo-infinity
+and other unsupported encodings; Vol.2A FLD m80fp remains the instruction
+reference. No physical or Mac mini acceptance is part of this slice.
 
 #### S2-30an. Bare indexed FCOMI-family register forms
 

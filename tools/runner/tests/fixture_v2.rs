@@ -67,6 +67,8 @@ const FLD_M64_SUBNORMAL: &[u8] =
 const FLD_M64_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31z_fld_m64fp_negative_min_subnormal_fnstsw.case.json"
 );
+const FLD_M80_INFINITY: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aa_fld_m80fp_infinity.case.json");
 const FABS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30z_fabs_normal.case.json");
 const FABS_INVALID_SOURCE: &[u8] =
@@ -2764,6 +2766,17 @@ fn v2_jit_has_explicit_unsupported_result_without_interpreter_fallback() {
 #[test]
 fn v2_jit_explicitly_denies_bounded_fldcw_without_interpreter_fallback() {
     let (_, result) = run(FLDCW_FRNDINT_FNSTSW, "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    assert!(matches!(
+        result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn v2_jit_denies_m80_infinity_load_without_interpreter_fallback() {
+    let (_, result) = run(FLD_M80_INFINITY, "jit", 4);
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
     assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
     assert!(matches!(

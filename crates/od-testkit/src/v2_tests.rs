@@ -670,21 +670,36 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     invalid_fld_m80.initial_state.gpr[0] = HexU64(0x0000_0000_0030_0004);
     invalid_fld_m80.memory.push(MemoryRegionSpec {
         region_id: "operand".into(),
-        guest_address: HexU64(0x0000_0000_0030_0000),
+        guest_address: HexU64(0x0000_0000_0030_0004),
         length: 16,
         permissions: MemoryPermissions {
             read: true,
             write: false,
             execute: false,
         },
-        initial_bytes_hex: "00000000000000000000008000000000".into(),
+        initial_bytes_hex: "00000000000000c0ff7f000000000000".into(),
         comparison_mask_hex: "ff".repeat(16),
     });
     invalid_fld_m80.stop_rip = None;
     invalid_fld_m80.expected_exit = ExpectedExit::Unsupported;
     assert!(Fixture::from_json(&invalid_fld_m80.to_json().unwrap()).is_ok());
 
-    // The pseudo-denormal binary80 schema gate must safely decline offsets whose doubled
+    for raw in ["00000000000000800000", "0000000000000080ff7f"] {
+        let mut not_the_supported_rejection_class = invalid_fld_m80.clone();
+        not_the_supported_rejection_class
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "operand")
+            .unwrap()
+            .initial_bytes_hex = format!("{raw}000000000000");
+        assert!(
+            Fixture::from_json(&serde_json::to_vec(&not_the_supported_rejection_class).unwrap())
+                .is_err(),
+            "unsupported FLD m80 exception predicate must not admit {raw}"
+        );
+    }
+
+    // The quiet-NaN binary80 schema gate must safely decline offsets whose doubled
     // byte index fits usize but leaves no room for the twenty-character slice.
     let mut overflowing_schema_offset = invalid_fld_m80.clone();
     overflowing_schema_offset.initial_state.gpr[0] = HexU64(

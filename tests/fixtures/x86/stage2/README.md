@@ -1859,19 +1859,38 @@ and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31w--bounded-fld-m80f
 
 ### S2-31x FLD m80fp canonical-subnormal coverage
 
-The new exact `DB 28` fixture supplies positive minimum binary80 subnormal;
+The S2-31x exact `DB 28` fixture supplies positive minimum binary80 subnormal;
 the `DB 28 DF E0` composition fixture supplies negative largest subnormal and
 checks that FNSTSW observes the pushed TOP/C1 result. Both assert preserved
 raw ten-byte payloads and the Special tag. Interpreter literals cover both
 signs of minimum, largest and interior subnormals for every TOP and accepted
 FCW, with one exact ten-byte read and preserved unrelated state. The invalid
-class fixture is now positive pseudo-denormal; the narrow schema exception is
-limited to that class for exact DB 28, budget one and no stop RIP. Negative
-pseudo-denormal and other special encodings remain rejected. Intel SDM
+class fixture used positive pseudo-denormal at the S2-31x stage; S2-31aa
+replaces it with positive canonical QNaN for the narrow exact-DB28,
+budget-one, no-stop schema exception. Negative pseudo-denormal and other
+special encodings remain rejected. Intel SDM
 revision 093, Vol.2A FLD m80fp (pp.3-352–3-353, official PDF p.470) defines no
 `#D` for this source format. See the [S2-31x CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31x-bounded-fld-m80fp-rax-db-28-canonical-subnormal-extension),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31x-extend-bounded-fld-m80fp-rax-db-28-to-canonical-subnormals),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31x--bounded-fld-m80fp-canonical-subnormal-extension).
+
+### S2-31aa FLD m80fp canonical-infinity coverage
+
+The positive bare `DB 28` fixture supplies canonical +infinity and expects the
+unchanged ten-byte payload with the Special tag. The negative infinity fixture
+executes `DB 28 DF E0`, preserving the sign and observing TOP/C1 through
+FNSTSW. Interpreter literals cover both signs across every TOP and supported
+FCW. Canonical NaNs, pseudo-infinities of both signs, pseudo-denormals,
+pseudo-NaNs and unnormals reject after one ten-byte read without CPU commit;
+memory preflight, read faults and execution-boundary atomicity remain covered.
+The narrow Unsupported fixture now supplies positive canonical QNaN and is
+limited to exact `DB 28`, budget one and no stop RIP. JIT/native admission
+continues to deny the operation. Intel SDM revision 093 Vol.1 Table 4-3 gives
+the canonical extended infinity encoding, while Table 8-3 distinguishes
+pseudo-infinity and unsupported encodings; Vol.2A FLD m80fp is the instruction
+reference. See the [S2-31aa CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31aa-bounded-fld-m80fp-rax-db-28-canonical-infinities),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31aa-extend-bounded-fld-m80fp-rax-db-28-to-canonical-infinities),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31aa--bounded-fld-m80fp-canonical-infinity-extension).
 
 ### S2-31s FLD m32fp schema and literal CLI coverage
 
