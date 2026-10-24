@@ -1086,7 +1086,9 @@ fn step_tracked_with_stop(
         let tag = match X87Binary80::from_bytes(raw).classify() {
             X87Binary80Class::Normal => X87Tag::Valid,
             X87Binary80Class::Zero => X87Tag::Zero,
-            X87Binary80Class::Subnormal | X87Binary80Class::Infinity => X87Tag::Special,
+            X87Binary80Class::Subnormal
+            | X87Binary80Class::Infinity
+            | X87Binary80Class::QuietNaN => X87Tag::Special,
             _ => {
                 return Ok(StepOutcome::Unsupported {
                     opcode: instruction.opcode.byte,
@@ -23813,6 +23815,8 @@ mod tests {
             [0x35, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80],
             [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x7f],
             [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xff],
+            [0x35, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xff, 0x7f],
+            [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xff, 0xff],
         ];
         for top in 0..8_u8 {
             for (index, raw) in literals.into_iter().enumerate() {
@@ -23868,6 +23872,8 @@ mod tests {
                         after.status_word,
                         (before.status_word & !(0x3800 | 0x0200)) | (u16::from(destination) << 11)
                     );
+                    assert_eq!(after.status_word & 0x0001, before.status_word & 0x0001);
+                    assert_eq!(after.status_word & 0x0020, before.status_word & 0x0020);
                     assert_eq!(after.instruction_pointer, 0x8600);
                     assert_eq!(after.data_pointer, 0x1003);
                     assert_eq!(after.control_word, before.control_word);
@@ -23964,9 +23970,7 @@ mod tests {
         let invalid_classes = [
             [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0],
             [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x80],
-            [0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x7f],
             [1, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
-            [0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0xff],
             [1, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xff],
             [0, 0, 0, 0, 0, 0, 0, 0x00, 0xff, 0x7f],
             [0, 0, 0, 0, 0, 0, 0, 0x00, 0xff, 0xff],

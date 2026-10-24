@@ -677,14 +677,22 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             write: false,
             execute: false,
         },
-        initial_bytes_hex: "00000000000000c0ff7f000000000000".into(),
+        initial_bytes_hex: "0100000000000080ff7f000000000000".into(),
         comparison_mask_hex: "ff".repeat(16),
     });
     invalid_fld_m80.stop_rip = None;
     invalid_fld_m80.expected_exit = ExpectedExit::Unsupported;
     assert!(Fixture::from_json(&invalid_fld_m80.to_json().unwrap()).is_ok());
 
-    for raw in ["00000000000000800000", "0000000000000080ff7f"] {
+    for raw in [
+        "00000000000000800000",
+        "0000000000000080ff7f",
+        "00000000000000c0ff7f",
+        "00000000000000c0ffff",
+        "0100000000000080ffff",
+        "0100000000000040ff7f",
+        "0100000000000040ffff",
+    ] {
         let mut not_the_supported_rejection_class = invalid_fld_m80.clone();
         not_the_supported_rejection_class
             .memory
@@ -699,7 +707,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         );
     }
 
-    // The quiet-NaN binary80 schema gate must safely decline offsets whose doubled
+    // The signaling-NaN binary80 schema gate must safely decline offsets whose doubled
     // byte index fits usize but leaves no room for the twenty-character slice.
     let mut overflowing_schema_offset = invalid_fld_m80.clone();
     overflowing_schema_offset.initial_state.gpr[0] = HexU64(

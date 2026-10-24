@@ -523,7 +523,28 @@ raw ten-byte encoding is preserved and the pushed tag is Special. The existing
 `0x80df` FSW/FCW gates, Empty destination, canonical48 preflight, one read,
 C1-clear, push/TOP and pointer/retirement behavior remain unchanged; no status
 flags are added. Normal, signed-zero and binary80-subnormal paths are
-unchanged. NaNs, pseudo-infinities, pseudo-denormals, pseudo-NaNs and unnormals
-remain post-read Unsupported without CPU commit. Tests cover both signs over
-all TOP×FCW pairs, invalid neighboring encodings, memory and execution-boundary
-atomicity, and explicit JIT denial. See the [S2-31aa CPU contract](../specs/CPU_CONTRACT.md#local-s2-31aa-bounded-fld-m80fp-rax-db-28-canonical-infinities), [plan](../plans/STAGE_2.md#s2-31aa-extend-bounded-fld-m80fp-rax-db-28-to-canonical-infinities), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+unchanged. At the S2-31aa stage NaNs, pseudo-infinities, pseudo-denormals,
+pseudo-NaNs and unnormals remained post-read Unsupported without CPU commit;
+S2-31ab adds canonical QuietNaNs. Tests cover both signs over all TOP×FCW
+pairs, invalid neighboring encodings, memory and execution-boundary atomicity,
+and explicit JIT denial. See the [S2-31aa CPU contract](../specs/CPU_CONTRACT.md#local-s2-31aa-bounded-fld-m80fp-rax-db-28-canonical-infinities), [plan](../plans/STAGE_2.md#s2-31aa-extend-bounded-fld-m80fp-rax-db-28-to-canonical-infinities), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31ab canonical binary80 QuietNaN load
+
+Exact bare `DB 28` additionally accepts canonical binary80 QuietNaN encodings:
+biased exponent `0x7fff`, explicit integer bit set, quiet bit set, and nonzero
+fraction. It preserves the raw ten-byte source and pushes with Special tag.
+The existing all-masked FCW and `FSW & 0x80df` gates, Empty destination,
+canonical48 preflight, one read, C1-clear and push/pointer/retirement policy
+remain unchanged. The load adds no status flags, including IE, and preserves
+sticky PE. Signed zero, Normal, subnormal and infinity paths are unchanged.
+Signaling NaNs, pseudo-NaNs, pseudo-denormals, pseudo-infinities, unnormals and
+other classes remain post-read Unsupported without CPU commit. Native/JIT
+admission and unmasked exception delivery remain outside the supported path.
+
+Independent payload/sign vectors cover all TOP×FCW pairs, including negative
+indefinite QNaN, exact raw payload, Special tag, PE retention and IE clear.
+The positive bare QNaN and negative-indefinite `DB 28 DF E0` fixtures run
+through the CLI and FNSTSW composition. The no-stop, budget-one Unsupported
+schema fixture uses canonical positive SNaN; QNaNs and neighboring classes do
+not match the narrow exception. See the [S2-31ab CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ab-bounded-fld-m80fp-rax-db-28-canonical-quietnans), [plan](../plans/STAGE_2.md#s2-31ab-extend-bounded-fld-m80fp-rax-db-28-to-canonical-qnans), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

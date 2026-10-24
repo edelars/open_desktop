@@ -242,6 +242,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31y | Extend exact D9 00 FLD m32fp to masked binary32 subnormal sources with exact Normal expansion and sticky DE; native closed | S2-31v |
 | [x] | S2-31z | Extend exact DD 00 FLD m64fp to masked binary64 subnormal sources with exact Normal expansion and sticky DE; native closed | S2-31u |
 | [x] | S2-31aa | Extend exact DB 28 FLD m80fp to canonical signed binary80 infinities with Special tag; native closed | S2-31x |
+| [ ] | S2-31ab | Extend exact DB 28 FLD m80fp to canonical quiet binary80 NaNs with Special tag; native closed | S2-31aa |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2923,6 +2924,29 @@ explicit. Intel SDM revision 093 Vol.1 Table 4-3 defines the canonical
 double-extended infinity encoding and Table 8-3 distinguishes pseudo-infinity
 and other unsupported encodings; Vol.2A FLD m80fp remains the instruction
 reference. No physical or Mac mini acceptance is part of this slice.
+
+#### S2-31ab. Extend bounded `FLD m80fp [RAX]` (`DB 28`) to canonical QNaNs
+
+Keep the S2-31aa gates: exact bare `DB 28`, supported all-masked FCWs,
+`FSW & 0x80df == 0`, Empty `(TOP-1)&7`, canonical48 ten-byte preflight and one
+raw read. Accept only canonical QuietNaN encodings: exponent `0x7fff`, explicit
+integer bit set, quiet bit set, and nonzero fraction. Preserve all ten source
+bytes and push with Special tag. Preserve push/TOP, C1-clear, FSW and PE, pointer
+and retirement behavior; do not set IE or any other new status bit. Signed zero,
+Normal, subnormal and infinity paths keep their existing behavior. Signaling
+NaNs, pseudo-NaNs, pseudo-denormals, pseudo-infinities, unnormals and all other
+classes remain post-read Unsupported without commit. Native x87 admission stays
+closed; do not add exception delivery or unmasked behavior.
+
+Add independent QNaN payload/sign literals across every TOP×FCW pair, including
+the canonical negative indefinite QNaN. Verify raw payload, Special tag,
+preserved sticky PE, no IE, one ten-byte read and no writes. Convert the exact
+`DB 28`, budget-one, no-stop Unsupported fixture/schema exception from positive
+canonical QNaN to positive canonical SNaN; other QNaN signs/payloads and
+neighbor classes must not match. Add bare positive QNaN and negative-indefinite
+`DB 28 DF E0` CLI fixtures, and keep interpreter/JIT/native denial tests. The
+Vol.1 binary80 special-value table is the encoding reference; no hardware or
+physical acceptance is claimed.
 
 #### S2-30an. Bare indexed FCOMI-family register forms
 

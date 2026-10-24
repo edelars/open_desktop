@@ -1883,14 +1883,28 @@ FNSTSW. Interpreter literals cover both signs across every TOP and supported
 FCW. Canonical NaNs, pseudo-infinities of both signs, pseudo-denormals,
 pseudo-NaNs and unnormals reject after one ten-byte read without CPU commit;
 memory preflight, read faults and execution-boundary atomicity remain covered.
-The narrow Unsupported fixture now supplies positive canonical QNaN and is
-limited to exact `DB 28`, budget one and no stop RIP. JIT/native admission
+At the S2-31aa stage the narrow Unsupported fixture supplied positive
+canonical QNaN; S2-31ab replaces it with positive canonical SNaN. JIT/native admission
 continues to deny the operation. Intel SDM revision 093 Vol.1 Table 4-3 gives
 the canonical extended infinity encoding, while Table 8-3 distinguishes
 pseudo-infinity and unsupported encodings; Vol.2A FLD m80fp is the instruction
 reference. See the [S2-31aa CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31aa-bounded-fld-m80fp-rax-db-28-canonical-infinities),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31aa-extend-bounded-fld-m80fp-rax-db-28-to-canonical-infinities),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31aa--bounded-fld-m80fp-canonical-infinity-extension).
+
+### S2-31ab FLD m80fp canonical-QuietNaN coverage
+
+The positive bare `DB 28` fixture supplies a canonical QNaN with an independent
+payload; the negative-indefinite fixture executes `DB 28 DF E0`, preserves its
+raw bytes and observes the resulting TOP through FNSTSW. Interpreter literals
+cover both signs/payloads across every TOP and supported FCW, retaining sticky
+PE without setting IE. The exact `DB 28`, budget-one, no-stop Unsupported
+fixture now supplies canonical positive SNaN. Schema/CLI neighbors reject
+positive and negative QNaNs from that narrow rejection exception, along with
+pseudo-NaNs and other unsupported classes. The JIT/native profile continues to
+deny `DB 28`. See the [S2-31ab CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ab-bounded-fld-m80fp-rax-db-28-canonical-quietnans),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ab-extend-bounded-fld-m80fp-rax-db-28-to-canonical-qnans),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ab--bounded-fld-m80fp-canonical-quietnan-extension).
 
 ### S2-31s FLD m32fp schema and literal CLI coverage
 

@@ -3745,19 +3745,21 @@ with `X87Tag::Special`.
 
 The existing push/TOP, C1-clear, FCW/FOP, pointer and single-retirement
 behavior remains unchanged; the load adds no status flags. Normal, signed zero
-and canonical subnormal behavior remains as documented in S2-31t/w/x. Canonical
-quiet/signaling NaNs, pseudo-infinities, pseudo-denormals, pseudo-NaNs and
-unnormals remain Unsupported after one read without CPU commit. No x87
+and canonical subnormal behavior remains as documented in S2-31t/w/x. At the
+S2-31aa stage, NaNs, pseudo-infinities, pseudo-denormals, pseudo-NaNs and
+unnormals remained Unsupported after one read without CPU commit; S2-31ab
+supersedes only canonical QuietNaNs. No x87
 exception delivery or unmasked behavior is implemented. Native x87 admission
 remains closed.
 
 Signed infinity literals cover all TOP×FCW pairs and assert exact payload,
 Special tag, status preservation, one ten-byte read, and no writes. CLI
 fixtures cover bare positive infinity and negative infinity followed by
-FNSTSW. The narrow Unsupported schema fixture now uses positive canonical
-QNaN and remains restricted to exact `DB 28`, budget one, and no stop RIP.
-Pseudo-denormals, infinities, and other neighboring encodings are excluded
-from that exception predicate. Memory faults, canonical-address preflight,
+FNSTSW. At the S2-31aa stage the narrow Unsupported schema fixture used
+positive canonical QNaN; S2-31ab changes the current fixture to positive
+canonical SNaN, still restricted to exact `DB 28`, budget one, and no stop RIP.
+Pseudo-denormals, infinities, QNaNs and other neighboring encodings are excluded
+from the rejection exception predicate. Memory faults, canonical-address preflight,
 fetch/truncation, STOP, budget and atomicity checks remain in force.
 
 Normative source: Intel SDM revision 093, Vol.1 Table 4-3 gives the canonical
@@ -3770,3 +3772,36 @@ No unmasked exception or physical-hardware behavior is inferred. See the
 [Stage 2 plan](../plans/STAGE_2.md#s2-31aa-extend-bounded-fld-m80fp-rax-db-28-to-canonical-infinities),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31aa report](../reports/STAGE_2_REPORT.md#s2-31aa--bounded-fld-m80fp-canonical-infinity-extension).
+
+## Local S2-31ab: bounded `FLD m80fp [RAX]` (`DB 28`) canonical QuietNaNs
+
+S2-31ab extends exact bare `DB 28` from the S2-31aa profile to canonical
+binary80 QuietNaN encodings: biased exponent `0x7fff`, explicit integer bit
+set, quiet bit set, and nonzero fraction. The source remains the raw ten-byte
+payload, and the pushed destination receives `X87Tag::Special`. The existing
+all-masked FCWs, `FSW & 0x80df == 0`, Empty physical destination `(TOP+7)&7`,
+canonical48 ten-byte range and one-read/no-write preflight are unchanged.
+
+The load sets no status flags, including IE; it preserves sticky PE and the
+existing C1-clear, TOP/push, FCW/FOP, pointer and retirement policy. Signed
+zero, Normal, subnormal and infinity behavior remains unchanged. Canonical
+signaling NaNs, pseudo-NaNs, pseudo-denormals, pseudo-infinities, unnormals and
+other classes remain post-read Unsupported without CPU commit. No exception
+delivery or unmasked behavior is added. Native x87 admission remains closed.
+
+Independent payload/sign literals cover the complete TOP×FCW matrix, including
+the negative indefinite QNaN. They assert raw payload, Special tag, preserved
+PE, no IE, exact read count and no writes. Bare positive-QNaN and negative
+indefinite `DB 28 DF E0` fixtures run through the CLI/FNSTSW path. The narrow
+Unsupported schema fixture now uses positive canonical SNaN for exact `DB 28`,
+budget one and no stop RIP; signed QNaNs, pseudo-NaNs and neighboring classes
+do not match it. JIT and native profiles continue to deny `DB 28`.
+
+Intel SDM revision 093 Vol.1 Table 8-3 distinguishes canonical quiet/signaling
+NaNs and pseudo-NaN encodings
+([Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); the
+Vol.2A FLD m80fp entry remains the form reference
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+No physical or Mac mini acceptance is claimed. See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ab-extend-bounded-fld-m80fp-rax-db-28-to-canonical-qnans),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[S2-31ab report](../reports/STAGE_2_REPORT.md#s2-31ab--bounded-fld-m80fp-canonical-quietnan-extension).

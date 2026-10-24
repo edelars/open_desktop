@@ -1054,7 +1054,7 @@ impl Fixture {
                     !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
                         || x87.status_word.get() & 0x80df != 0
                 });
-            let is_fld_m80_quiet_nan_rejected = code_bytes == "db28"
+            let is_fld_m80_signaling_nan_rejected = code_bytes == "db28"
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
                 && self.memory.iter().any(|region| {
@@ -1091,7 +1091,7 @@ impl Fixture {
                                                 let sign_exponent =
                                                     u16::from_le_bytes([bytes[8], bytes[9]]);
                                                 sign_exponent == 0x7fff
-                                                    && significand == 0xc000_0000_0000_0000
+                                                    && significand == 0x8000_0000_0000_0001
                                             }
                                         }
                                         None => false,
@@ -1242,7 +1242,7 @@ impl Fixture {
                     || is_fist_word_exponent_rejected
                     || is_fist_word_tag_rejected
                     || is_fist_word_environment_rejected
-                    || is_fld_m80_quiet_nan_rejected
+                    || is_fld_m80_signaling_nan_rejected
                     || is_fld_m32_infinity_or_nan_rejected
                     || is_fld_m64_infinity_or_nan_rejected
                     || is_fcom_source_rejected

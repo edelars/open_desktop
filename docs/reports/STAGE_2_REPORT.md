@@ -5431,3 +5431,43 @@ missing pseudo-signaling-NaN neighbor vectors; signed cases were added to the
 interpreter and schema/CLI checks, and the focused tests plus formatting/diff
 checks passed again. Mac mini and physical x86 tests were not run; physical
 acceptance remains deferred to the combined final S2-31 substage.
+
+## S2-31ab — bounded `FLD m80fp` canonical QuietNaN extension
+
+Extended exact bare `DB 28` to accept canonical binary80 QuietNaN values:
+biased exponent `0x7fff`, explicit integer bit set, quiet bit set, and nonzero
+fraction. Under the unchanged all-masked FCWs, `FSW & 0x80df` gate, Empty
+destination and canonical48 ten-byte one-read preflight, the load preserves all
+source bytes and pushes with Special tag. It adds no status flags, including
+IE, and retains sticky PE; the existing C1-clear, TOP, pointer and retirement
+policy remains unchanged. Signed zero, Normal, subnormal and infinity behavior
+is unchanged. Signaling NaNs, pseudo-NaNs, pseudo-denormals, pseudo-infinities,
+unnormals and other classes remain post-read Unsupported without CPU commit.
+Native x87/JIT admission remains closed; unmasked delivery is not implemented.
+
+Independent signed/payload QNaN literals cover every TOP×FCW pair, including
+negative indefinite. They check exact raw payload, Special tag, preserved PE,
+IE clear, one ten-byte read, no writes and unchanged unrelated state. Bare
+positive QNaN and negative-indefinite `DB 28 DF E0` fixtures run through the
+CLI, with FNSTSW observing the pushed TOP. The narrow exact-DB28, budget-one,
+no-stop Unsupported schema/CLI fixture changes from positive QNaN to positive
+canonical SNaN; signed QNaNs and other classes are rejected by the exception
+predicate. Native admission explicitly denies DB28.
+
+Intel SDM revision 093 Vol.1 Table 8-3 describes canonical and pseudo-NaN
+encodings ([Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436));
+Vol.2A FLD m80fp remains the instruction-form reference
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ab-bounded-fld-m80fp-rax-db-28-canonical-quietnans),
+[plan](../plans/STAGE_2.md#s2-31ab-extend-bounded-fld-m80fp-rax-db-28-to-canonical-qnans),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+Validation passed: focused schema, CLI fixture, and JIT/native-denial tests;
+`cargo test --workspace --all-targets --offline`;
+`cargo check --workspace --all-targets --offline`;
+`cargo check --target x86_64-unknown-linux-gnu -p od-x86-runner --all-targets --offline`;
+`cargo fmt --all -- --check`; and `git diff --check`. The native denial test is
+compiled for Linux x86; it is architecture-gated and did not execute on this
+local arm64 host. `python3 tools/check_layout.py` reports the pre-existing
+unmapped root `.serena` directory; it was left untouched. Independent review
+is pending.
