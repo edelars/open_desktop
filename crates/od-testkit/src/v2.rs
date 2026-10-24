@@ -714,7 +714,12 @@ impl Fixture {
                 "d9e0" => ("d9e0", 2),
                 "d9e1" => ("d9e1", 2),
                 "d9e4" => ("d9e4", 2),
-                "d8d9" => ("d8d9", 2),
+                _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("d8d")
+                    && matches!(code_bytes.as_bytes()[3], b'8'..=b'f') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
                 _ if code_bytes.len() == 4
                     && code_bytes.starts_with("d8d")
                     && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
@@ -723,12 +728,18 @@ impl Fixture {
                 }
                 _ if code_bytes.len() == 8
                     && code_bytes.starts_with("d8d")
+                    && matches!(code_bytes.as_bytes()[3], b'8'..=b'f')
+                    && code_bytes.ends_with("dfe0") =>
+                {
+                    (code_bytes.as_str(), 4)
+                }
+                _ if code_bytes.len() == 8
+                    && code_bytes.starts_with("d8d")
                     && matches!(code_bytes.as_bytes()[3], b'0'..=b'7')
                     && code_bytes.ends_with("dfe0") =>
                 {
                     (code_bytes.as_str(), 4)
                 }
-                "d8d9dfe0" => ("d8d9dfe0", 4),
                 _ if code_bytes.len() == 4
                     && code_bytes.starts_with("d8c")
                     && matches!(code_bytes.as_bytes()[3], b'0'..=b'f') =>
@@ -862,7 +873,10 @@ impl Fixture {
                 && code_bytes.starts_with("d8d")
                 && matches!(code_bytes.as_bytes()[3], b'0'..=b'7')
                 && self.stop_rip.is_none();
-            let is_fcomp_source_rejected = code_bytes == "d8d9" && self.stop_rip.is_none();
+            let is_fcomp_source_rejected = code_bytes.len() == 4
+                && code_bytes.starts_with("d8d")
+                && matches!(code_bytes.as_bytes()[3], b'8'..=b'f')
+                && self.stop_rip.is_none();
             let expected_budget = if code_bytes.len() == 8 { 2 } else { 1 };
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length

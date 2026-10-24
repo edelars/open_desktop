@@ -453,8 +453,10 @@ pub enum Operation {
     FcomSt {
         source: u8,
     },
-    /// Bare `D8 D9` FCOMP, popping the physical ST(0) after a bounded compare.
-    FcompSt1,
+    /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
+    FcompSt {
+        source: u8,
+    },
     /// Bare `DD D8+i` FSTP ST(i), exact Normal source and physical TOP pop only.
     FstpSti {
         destination: u8,
@@ -1039,8 +1041,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 let modrm = self.byte()?;
                 match modrm {
-                    0xd9 => Operation::FcompSt1,
                     0xd0..=0xd7 => Operation::FcomSt { source: modrm & 7 },
+                    0xd8..=0xdf => Operation::FcompSt { source: modrm & 7 },
                     0xc0..=0xc7 => Operation::FaddSt0St { source: modrm & 7 },
                     0xc8..=0xcf => Operation::FmulSt0St { source: modrm & 7 },
                     0xe0..=0xe7 => Operation::FsubSt0St { source: modrm & 7 },
@@ -2491,8 +2493,8 @@ mod tests {
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
-                    0xd9 => Ok(Operation::FcompSt1),
                     0xd0..=0xd7 => Ok(Operation::FcomSt { source: modrm & 7 }),
+                    0xd8..=0xdf => Ok(Operation::FcompSt { source: modrm & 7 }),
                     0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
                     0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
@@ -2626,29 +2628,17 @@ mod tests {
                 ));
             }
         }
-
-        for modrm in [0xd8, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf] {
-            assert!(matches!(
-                Memory::new(&[0xd8, modrm]).decode(),
-                Err(DecodeError::Unsupported { .. })
-            ));
-        }
     }
 
     #[test]
-    fn fcomp_st1_accepts_only_bare_d8_d9() {
-        let mut memory = Memory::new(&[0xd8, 0xd9]);
-        let instruction = memory.decode().unwrap();
-        assert_eq!(instruction.operation, Operation::FcompSt1);
-        assert_eq!(instruction.length, 2);
-        assert_eq!(instruction.prefixes, Prefixes::default());
-        assert_eq!(memory.fetched, [0xfff, 0x1000]);
-
-        for second in [0xd8, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf] {
-            assert!(matches!(
-                Memory::new(&[0xd8, second]).decode(),
-                Err(DecodeError::Unsupported { .. })
-            ));
+    fn fcomp_sti_accepts_only_bare_d8_d8_through_df() {
+        for source in 0u8..=7 {
+            let mut memory = Memory::new(&[0xd8, 0xd8 | source]);
+            let instruction = memory.decode().unwrap();
+            assert_eq!(instruction.operation, Operation::FcompSt { source });
+            assert_eq!(instruction.length, 2);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+            assert_eq!(memory.fetched, [0xfff, 0x1000]);
         }
         for prefix in [
             0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
@@ -2658,7 +2648,7 @@ mod tests {
         {
             assert!(
                 matches!(
-                    Memory::new(&[prefix, 0xd8, 0xd9]).decode(),
+                    Memory::new(&[prefix, 0xd8, 0xd8]).decode(),
                     Err(DecodeError::Unsupported { .. })
                 ),
                 "prefix {prefix:02x}"
@@ -2719,8 +2709,8 @@ mod tests {
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
-                    0xd9 => Ok(Operation::FcompSt1),
                     0xd0..=0xd7 => Ok(Operation::FcomSt { source: modrm & 7 }),
+                    0xd8..=0xdf => Ok(Operation::FcompSt { source: modrm & 7 }),
                     0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
                     0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
@@ -2798,8 +2788,8 @@ mod tests {
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
-                    0xd9 => Ok(Operation::FcompSt1),
                     0xd0..=0xd7 => Ok(Operation::FcomSt { source: modrm & 7 }),
+                    0xd8..=0xdf => Ok(Operation::FcompSt { source: modrm & 7 }),
                     0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
                     0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
@@ -2859,8 +2849,8 @@ mod tests {
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
-                    0xd9 => Ok(Operation::FcompSt1),
                     0xd0..=0xd7 => Ok(Operation::FcomSt { source: modrm & 7 }),
+                    0xd8..=0xdf => Ok(Operation::FcompSt { source: modrm & 7 }),
                     0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
                     0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),

@@ -59,6 +59,16 @@ const FCOM_ST7_INVALID_RHS_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ac_fcom_st7_invalid_rhs_tag.case.json");
 const FCOMP_ST1_EQUAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ad_fcomp_st1_equal.case.json");
+const FCOMP_STI_EQUAL: [&[u8]; 8] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ae_fcomp_st0_equal.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ae_fcomp_st1_equal.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ae_fcomp_st2_equal.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ae_fcomp_st3_equal.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ae_fcomp_st4_equal.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ae_fcomp_st5_equal.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ae_fcomp_st6_equal.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ae_fcomp_st7_equal.case.json"),
+];
 const FCOMP_ST1_INVALID_RHS_TAG: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_30ad_fcomp_st1_invalid_rhs_tag.case.json"
 );
@@ -1438,18 +1448,34 @@ fn local_x87_fcom_st7_literal_fixture_and_invalid_rhs_tag_are_handled() {
 }
 
 #[test]
-fn local_x87_fcomp_st1_literal_fixture_compares_then_pops_and_rejects_atomically() {
-    let (input, result) = run(FCOMP_ST1_EQUAL, "interpreter", 0);
-    assert!(matches!(result.outcome, Outcome::StopAddress {}));
-    assert_eq!(count(&result), 1);
-    let observed = snapshot(&result);
-    let mut expected = input.fixture.initial_state.clone();
-    expected.rip = HexU64(0x0010_0002);
-    let expected_x87 = expected.x87.as_mut().unwrap();
-    expected_x87.status_word = HexU64(0x4800);
-    expected_x87.tag_word = HexU64(0xfff3);
-    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
-    assert_eq!(observed.state, expected);
+fn local_x87_fcomp_sti_literal_fixtures_compare_then_pop_all_indices() {
+    for (source, fixture) in FCOMP_STI_EQUAL.into_iter().enumerate() {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "i={source}"
+        );
+        assert_eq!(count(&result), 1, "i={source}");
+        let observed = snapshot(&result);
+        let mut expected = input.fixture.initial_state.clone();
+        expected.rip = HexU64(0x0010_0002);
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.status_word = HexU64(0x4800);
+        expected_x87.tag_word = HexU64(
+            (input
+                .fixture
+                .initial_state
+                .x87
+                .as_ref()
+                .unwrap()
+                .tag_word
+                .get()
+                & !3)
+                | 3,
+        );
+        expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+        assert_eq!(observed.state, expected, "i={source}");
+    }
 
     let (input, result) = run(FCOMP_ST1_INVALID_RHS_TAG, "interpreter", 4);
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));

@@ -2390,6 +2390,43 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## Local S2-30ae: bounded `FCOMP ST(i)` (`D8 D8+i`)
+
+This local form admits exactly the eight bare two-byte encodings `D8 D8`
+through `D8 DF`. The left operand is old physical TOP (ST(0)); the right
+operand is old physical `(TOP+i)&7`. It reuses the bounded S2-30ac exact
+compare gate: x87 state must exist, FCW must be `0x037f`, `FSW & 0x80ff` must
+be clear, and both old physical operands must have Valid tags and
+canonical-Normal binary80 payloads. For `i=0`, validate the shared physical
+register before returning equality, then perform the same single pop.
+Comparison uses exact sign/exponent/full-64-bit-significand ordering.
+
+After full preflight, set FSW condition bits to `(old_fsw & !0x4700) | result`,
+with greater=`0`, less=`0x0100`, equal=`0x4000` (therefore C1 clears). Mark the
+old physical TOP tag Empty, advance TOP to `(old_top+1)&7`, and preserve every
+raw physical register payload without rotation or clearing. All other tags,
+FCW, remaining FSW fields, FDP/FOP and other CPU state remain unchanged. FIP
+receives instruction-start RIP, RIP advances by two and the instruction
+retires once. Missing state/environment, invalid tags/classes,
+fetch/truncation, STOP and budget rejection leave full state unchanged.
+
+The D8 map adds only `D8 D8..DF` for FCOMP; existing `D8 D0..D7` FCOM and D8
+arithmetic ranges remain intact. Prefixes, REX, WAIT, memory operands, other
+FCOMP/FCOMPP forms, special values, exception delivery, native execution and
+FPU feature claims are outside this slice. Literal and interpreter coverage
+includes all 64 TOP×i pairs (including i=0 and TOP=7 wrap), all 16 initial
+condition-code combinations, greater/less/equal, sign/exponent/low-significand
+distinctions, independent lhs/rhs tag and class rejection, environment gates,
+payload/tag sentinels, and fetch/truncation/STOP/budget atomicity. The fixture
+schema admits all eight encodings and each exact `D8 D8+i DF E0` FNSTSW AX
+observation sequence with budgets one and two. Literal success fixtures cover
+every index; the invalid-rhs fixture rejects with no stop RIP and budget one.
+Native admission explicitly denies all eight FCOMP forms.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ## Local S2-30ac: bounded `FCOM ST(i)` (`D8 D0+i`)
 
 This slice generalizes S2-30ab to exactly the eight bare two-byte encodings
@@ -2410,8 +2447,8 @@ Both operands are fully preflighted before commit; rejected inputs leave full
 state unchanged.
 
 Only `D8 D0..D7` are added to the D8 ModR/M map. Existing D8 arithmetic ranges
-remain intact, while `D8 D8..DF` remain unsupported. Prefixes,
-REX, WAIT, memory operands, pop forms, NaN/special/zero/subnormal inputs,
+remain intact, while at the S2-30ac stage `D8 D8..DF` were unsupported (S2-30ae
+adds the bounded FCOMP register forms below). Prefixes, REX, WAIT, memory operands, pop forms, NaN/special/zero/subnormal inputs,
 exception delivery, native execution and FPU feature claims are outside scope.
 
 Coverage includes all 64 TOP×i placements, i=0 alias and TOP wrap, all three

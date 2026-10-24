@@ -562,7 +562,7 @@ fn admission_with_tracee_memory(
             | Operation::Fabs
             | Operation::Ftst
             | Operation::FcomSt { .. }
-            | Operation::FcompSt1
+            | Operation::FcompSt { .. }
             | Operation::FmulSt0St { .. }
             | Operation::FdivSt0St { .. }
             | Operation::FdivrSt0St { .. }
@@ -3842,6 +3842,14 @@ mod tests {
             [0xd9, 0xe1],
             [0xd9, 0xe4],
             [0xd8, 0xd1],
+            [0xd8, 0xd8],
+            [0xd8, 0xd9],
+            [0xd8, 0xda],
+            [0xd8, 0xdb],
+            [0xd8, 0xdc],
+            [0xd8, 0xdd],
+            [0xd8, 0xde],
+            [0xd8, 0xdf],
         ] {
             let mut input = fixture(&code).fixture;
             input.profile = v2::Profile::LongX87StateV1;
@@ -3871,6 +3879,14 @@ mod tests {
                     | [0xde, 0xe8]
                     | [0xd9, 0xe4]
                     | [0xd8, 0xd1]
+                    | [0xd8, 0xd8]
+                    | [0xd8, 0xd9]
+                    | [0xd8, 0xda]
+                    | [0xd8, 0xdb]
+                    | [0xd8, 0xdc]
+                    | [0xd8, 0xdd]
+                    | [0xd8, 0xde]
+                    | [0xd8, 0xdf]
             ) {
                 input.expected_exit = v2::ExpectedExit::Unsupported;
                 input.stop_rip = None;

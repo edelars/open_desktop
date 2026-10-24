@@ -3958,7 +3958,8 @@ checks the shared Valid tag and canonical-Normal payload once and returns
 equality. For other indices it preflights both tags and both canonical-Normal
 payloads before any commit. Commit changes only FSW condition bits, writes
 instruction-start RIP to FIP, advances RIP by two, and retires once. The D8
-arithmetic ranges remain unchanged; `D8 D8..DF` remain unsupported.
+arithmetic ranges remain unchanged; `D8 D8..DF` were unsupported at this stage
+and are added by S2-30ae below.
 
 Interpreter vectors cover all 64 TOP×i placements, including alias and wrap,
 all 16 initial condition-code combinations, all three relations, signed order,
@@ -3987,6 +3988,46 @@ labels. Its parser warning for `include/open_desktop/host_abi.h` remains.
 
 Full x87 comparison behavior, special values, exceptions, native execution and
 FPU feature claims remain unverified; ISSUE-019 remains open.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## S2-30ae — bounded FCOMP ST(i) compare and physical TOP pop
+
+Generalized `FcompSt1` to `FcompSt { source }` and admits exactly bare
+`D8 D8+i` for i=0..7. The interpreter preflights both old physical operands
+with the existing exact canonical-Normal compare helper, replaces FSW condition
+bits, empties the old physical TOP tag, advances TOP with wrap and leaves all
+raw register payloads in place. The i=0 alias validates its shared operand
+before taking the equality fast path and still pops once. FIP records start RIP;
+RIP advances by two and retirement is once. Existing D8 D0..D7 FCOM and D8
+arithmetic decoding are preserved.
+
+Interpreter vectors cover all 64 TOP×i combinations, all 16 initial condition
+fields, greater/less/equal and exact signed/exponent/significand ordering,
+independent lhs/rhs tag and class rejects, environment rejects, payload/tag
+sentinels, and fetch/truncation/STOP/budget atomicity. Eight literal success
+fixtures exercise the CLI at every i. Schema tests admit all eight codes and
+each exact `D8 D8+i DF E0` observation sequence with budgets one and two; a
+no-stop/budget-one invalid-tag case remains covered. Native admission explicitly
+denies all eight `FcompSt { .. }` encodings.
+
+Validation passed: `cargo test --workspace --offline` (297 `od-isa` tests,
+155 `od-testkit` tests, 69 runner fixture tests, 8 x86-runner tests and all
+remaining workspace suites), `cargo check --workspace --all-targets --offline`,
+Linux x86_64 `cargo check -p od-x86-runner --target
+x86_64-unknown-linux-gnu --all-targets --offline`, `cargo fmt --all -- --check`,
+and `git diff --check`. `python3 tools/check_layout.py` reports the pre-existing
+unmapped root `.serena/` directory; it was left untouched. `graphify update .`
+rebuilt the graph (3475 nodes, 7438 edges); its existing parser warning for
+`include/open_desktop/host_abi.h` remains. Native deny vectors compile on this
+arm64 macOS host but were not executed on Linux; no SSH or physical-hardware
+checks were run.
+Independent gpt-6.1-sol medium review completed with no findings.
+
+Full x87 architectural behavior, special values, exception delivery, native
+execution and FPU feature claims remain unverified; ISSUE-019 remains open.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326

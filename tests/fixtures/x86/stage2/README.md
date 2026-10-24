@@ -1298,3 +1298,18 @@ Normative source: Intel SDM revision 093, Vol.2A, “FABS—Absolute Value,” p
 
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
 Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
+
+### S2-30ae FCOMP ST(i) schema and literal CLI coverage
+
+The schema admits every bare `D8 D8+i` form and each exact four-byte
+`D8 D8+i DF E0` status-observation sequence with instruction budgets one and
+two. Eight handwritten equality fixtures execute each FCOMP index through the
+CLI and verify that the old TOP tag becomes Empty, TOP advances once, the
+condition field reports equality, and all physical register bytes remain
+unchanged. The existing invalid-ST(1)-tag case rejects atomically with
+`stop_rip: null` and budget one. Interpreter vectors independently cover every
+TOP×i pair and lhs/rhs tag/class failures. Native admission explicitly denies
+all eight encodings.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326.
