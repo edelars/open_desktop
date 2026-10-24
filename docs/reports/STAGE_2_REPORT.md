@@ -4276,8 +4276,9 @@ affected RFLAGS masks with definedness, both operands' invalid tags and raw
 classes, bad FCW/FSW, missing state, and fetch/truncation/STOP/budget
 atomicity. Literal schema/CLI fixtures use exact `dbe9dfe0` and `dbe9`, with
 the latter carrying an Empty actual old physical ST(1) tag and budget one/no
-stop; schema/CLI also reject the false unsupported variant `dbeadfe0`. Native
-admission explicitly denies `Operation::Fucomi` and DB E9.
+stop; the S2-30an extension now admits `dbeadfe0` as FUCOMI ST(2); the exact indexed
+classifier and schema coverage are documented below. Native admission explicitly
+denies `Operation::Fucomi` and DB E9.
 
 Validation passed: `cargo test --workspace --offline`,
 `cargo check --workspace --all-targets --offline`, Linux x86_64 compile-only
@@ -4317,7 +4318,7 @@ condition fields, all 64 initial affected-RFLAGS masks with definedness, bad
 operand tags/classes, FCW/FSW, missing state, and fetch/truncation/STOP/budget
 atomicity. Literal fixtures use exact `dfe9dfe0` and `dfe9`; the latter sets
 TOP=5 and the actual physical RHS (slot 6) tag Empty with no stop RIP and budget
-one. Schema/CLI tests reject `dfeadfe0` and `66`/`48`/`9b` prefixes. Native
+one. Schema/CLI tests reject `dff8dfe0` (DF F8 remains outside the indexed group) and `66`/`48`/`9b` prefixes. Native
 admission explicitly rejects `Operation::Fucomip`; the Linux-only native
 admission regression was compile-checked but not executed on this macOS host.
 
@@ -4331,6 +4332,60 @@ test). `python3 tools/check_layout.py` reports the pre-existing unmapped root
 `graphify update .` completed with 3567 nodes, 7616 edges and 177 communities;
 the existing extractor warning for `include/open_desktop/host_abi.h` remains.
 Physical x86 execution and native x87 state comparison were not performed.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## S2-30an — indexed FCOMI-family register forms
+
+Generalized the four existing `i=1` instructions to all `i=0..7` encodings:
+`DB E8+i` FUCOMI, `DB F0+i` FCOMI, `DF E8+i` FUCOMIP, and `DF F0+i` FCOMIP.
+The exact-byte decoder carries the low ModR/M index in `source:u8`; DB E2/E3
+and DF E0 retain their previous operations. Every other DB/DF byte, all legacy
+and REX prefixes, WAIT, and memory forms remain rejected. Native execution is
+explicitly closed for all four indexed operation variants and all 32 encodings.
+
+Execution reuses `bounded_x87_fcom_result(state, i)`. It validates the x87
+snapshot, FCW/FSW, old physical TOP tag and canonical-Normal value. For nonzero
+i it also validates the actual physical `(TOP+i)&7` source; for `i=0` it returns
+Equal after validating old TOP without reading ST(1). The commit clears RFLAGS
+mask `0x8d5`, writes greater/less/equal as zero/CF/ZF, defines all six affected
+flags, and clears only FSW.C1. Nonpop forms preserve all tags and TOP. Pop
+forms empty old TOP and advance once with wrap, including self compare. Raw
+register payloads are preserved; FIP/RIP and retirement update normally.
+Rejects remain atomic.
+
+The x87 schema admits exactly 32 comparison instructions, alone or followed
+by DF E0 FNSTSW AX: 64 exact strings. It rejects near-miss bytes, prefixes,
+memory forms, and excess trailing instructions. Its no-stop/budget-one reject
+profile is restricted to a bad actual source with valid old TOP and environment;
+i=0 uses the exact all-zero payload class reject. The six new literal CLI
+fixtures cover FCOMI self compare at TOP=3 with only TOP Valid; FUCOMIP self
+compare/pop at TOP=7 with wrap and only TOP Valid; FUCOMI ST(7) at TOP=7 using
+physical slot 6 with old ST(1) Empty; FCOMIP ST(6) at TOP=6 using physical
+slot 4 while popping only old TOP; and standalone invalid-source cases for i=0
+and i=7 with unrelated ST(1) Valid. Existing i=1 fixtures are unchanged.
+
+Interpreter tests cover all TOP × source × three ordered relations × 16 initial
+FSW condition fields and all 64 initial affected-RFLAGS masks for each family
+and source. Additional vectors cover every invalid actual source, environment
+rejection, source physical placement, self aliases, Empty unrelated tags, pop
+wrap, payload/tag preservation, decode bytes/prefixes, and execution boundaries.
+Schema tests exhaust all 64 exact program strings and near misses. Runner CLI
+checks all six new fixtures.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, Linux x86_64 compile-only
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
+--offline`, `cargo fmt --all -- --check`, and `git diff --check`. The Linux-only
+native admission regression was compile-checked but could not be executed on
+this macOS host. `python3 tools/check_layout.py` reports only the pre-existing
+unmapped root `.serena/` directory, which was left untouched. `graphify update .`
+completed with 3586 nodes, 7653 edges and 174 communities; its existing
+extractor warning for `include/open_desktop/host_abi.h` remains. Physical x86
+execution, native x87 state comparison, special values, and exception delivery
+were not performed.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329

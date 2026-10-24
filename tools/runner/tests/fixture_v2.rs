@@ -96,6 +96,19 @@ const FUCOMIP_EQUAL_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30am_fucomip_equal_fnstsw.case.json");
 const FUCOMIP_INVALID_RHS_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30am_fucomip_invalid_rhs_tag.case.json");
+const S2_30AN_SELF_FCOMI: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30an_fcomi_st0_equal_fnstsw.case.json");
+const S2_30AN_SELF_FUCOMIP: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30an_fucomip_st0_wrap_fnstsw.case.json");
+const S2_30AN_FUCOMI_ST7: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30an_fucomi_st7_fnstsw.case.json");
+const S2_30AN_FCOMIP_ST6: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30an_fcomip_st6_wrap_fnstsw.case.json");
+const S2_30AN_INVALID_SELF: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30an_fcomi_st0_invalid_class.case.json");
+const S2_30AN_INVALID_ST7: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30an_fucomip_st7_invalid_actual_tag.case.json"
+);
 const GS_BASE_QWORD_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_22b_gs_base_qword_load_alias.case.json");
 const FS_SELECTOR_TO_RAX: &[u8] =
@@ -1582,7 +1595,7 @@ fn local_x87_fcomi_fixture_observes_flags_and_rejects_bad_rhs_atomically() {
     let (input, result) = run(FCOMI_EQUAL_FNSTSW, "interpreter", 0);
     assert_eq!(input.fixture.memory[0].initial_bytes_hex, "dbf1dfe0");
     let mut wrong_schema_program = input.fixture.clone();
-    wrong_schema_program.memory[0].initial_bytes_hex = "dbf2dfe0".into();
+    wrong_schema_program.memory[0].initial_bytes_hex = "dbf8dfe0".into();
     assert!(wrong_schema_program.to_json().is_err());
     assert!(matches!(result.outcome, Outcome::StopAddress {}));
     assert_eq!(count(&result), 2);
@@ -1610,7 +1623,7 @@ fn local_x87_fcomip_fixture_observes_flags_and_pop_and_rejects_bad_rhs_atomicall
     let (input, result) = run(FCOMIP_EQUAL_FNSTSW, "interpreter", 0);
     assert_eq!(input.fixture.memory[0].initial_bytes_hex, "dff1dfe0");
     let mut wrong_schema_program = input.fixture.clone();
-    wrong_schema_program.memory[0].initial_bytes_hex = "dff2dfe0".into();
+    wrong_schema_program.memory[0].initial_bytes_hex = "dff8dfe0".into();
     assert!(wrong_schema_program.to_json().is_err());
     assert!(matches!(result.outcome, Outcome::StopAddress {}));
     assert_eq!(count(&result), 2);
@@ -1639,9 +1652,9 @@ fn local_x87_fucomip_fixture_observes_flags_and_pop_and_rejects_bad_rhs_atomical
     let (input, result) = run(FUCOMIP_EQUAL_FNSTSW, "interpreter", 0);
     assert_eq!(input.fixture.memory[0].initial_bytes_hex, "dfe9dfe0");
     let mut wrong_schema_program = input.fixture.clone();
-    wrong_schema_program.memory[0].initial_bytes_hex = "dfeadfe0".into();
+    wrong_schema_program.memory[0].initial_bytes_hex = "dff8dfe0".into();
     assert!(wrong_schema_program.to_json().is_err());
-    for rejected in ["dfeadfe0", "66dfe9dfe0", "48dfe9dfe0", "9bdfe9dfe0"] {
+    for rejected in ["dff8dfe0", "66dfe9dfe0", "48dfe9dfe0", "9bdfe9dfe0"] {
         let mut wrong_schema_program = input.fixture.clone();
         wrong_schema_program.memory[0].initial_bytes_hex = rejected.into();
         assert!(wrong_schema_program.to_json().is_err(), "{rejected}");
@@ -1673,7 +1686,7 @@ fn local_x87_fucomi_fixture_observes_flags_and_rejects_bad_rhs_atomically() {
     let (input, result) = run(FUCOMI_EQUAL_FNSTSW, "interpreter", 0);
     assert_eq!(input.fixture.memory[0].initial_bytes_hex, "dbe9dfe0");
     let mut wrong_schema_program = input.fixture.clone();
-    wrong_schema_program.memory[0].initial_bytes_hex = "dbeadfe0".into();
+    wrong_schema_program.memory[0].initial_bytes_hex = "dbf8dfe0".into();
     assert!(wrong_schema_program.to_json().is_err());
     assert!(matches!(result.outcome, Outcome::StopAddress {}));
     assert_eq!(count(&result), 2);
@@ -1694,6 +1707,50 @@ fn local_x87_fucomi_fixture_observes_flags_and_rejects_bad_rhs_atomically() {
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
     assert_eq!(count(&result), 0);
     assert_eq!(snapshot(&result).state, input.fixture.initial_state);
+}
+
+#[test]
+fn local_x87_fcomi_indexed_fixtures_cover_self_alias_wrap_and_actual_source_rejects() {
+    for (bytes, top, expected_fsw, pop) in [
+        ("dbf0dfe0", 3u8, 0x1800u16, false),
+        ("dfe8dfe0", 7, 0, true),
+        ("dbefdfe0", 7, 0x3800, false),
+        ("dff6dfe0", 6, 0x3800, true),
+    ] {
+        let data = match bytes {
+            "dbf0dfe0" => S2_30AN_SELF_FCOMI,
+            "dfe8dfe0" => S2_30AN_SELF_FUCOMIP,
+            "dbefdfe0" => S2_30AN_FUCOMI_ST7,
+            "dff6dfe0" => S2_30AN_FCOMIP_ST6,
+            _ => unreachable!(),
+        };
+        let (input, result) = run(data, "interpreter", 0);
+        assert_eq!(input.fixture.memory[0].initial_bytes_hex, bytes);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 2);
+        let observed = snapshot(&result);
+        let mut expected = input.fixture.initial_state.clone();
+        expected.rip = HexU64(input.fixture.initial_state.rip.get() + 4);
+        expected.rflags = HexU64((expected.rflags.get() & !0x8d5) | 0x40);
+        expected.gpr[0] = HexU64((expected.gpr[0].get() & !0xffff) | u64::from(expected_fsw));
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.status_word = HexU64(u64::from(expected_fsw));
+        expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+        if pop {
+            expected_x87.tag_word = HexU64(
+                (expected_x87.tag_word.get() & !(3u64 << (u32::from(top) * 2)))
+                    | (3u64 << (u32::from(top) * 2)),
+            );
+        }
+        assert_eq!(observed.state, expected, "{bytes}");
+    }
+
+    for data in [S2_30AN_INVALID_SELF, S2_30AN_INVALID_ST7] {
+        let (input, result) = run(data, "interpreter", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert_eq!(count(&result), 0);
+        assert_eq!(snapshot(&result).state, input.fixture.initial_state);
+    }
 }
 
 #[test]

@@ -562,10 +562,10 @@ fn admission_with_tracee_memory(
             | Operation::Fabs
             | Operation::Ftst
             | Operation::FcomSt { .. }
-            | Operation::Fcomi
-            | Operation::Fcomip
-            | Operation::Fucomi
-            | Operation::Fucomip
+            | Operation::Fcomi { .. }
+            | Operation::Fcomip { .. }
+            | Operation::Fucomi { .. }
+            | Operation::Fucomip { .. }
             | Operation::FcompSt { .. }
             | Operation::Fcompp
             | Operation::Fucompp
@@ -3926,6 +3926,39 @@ mod tests {
             let mut decoder = FlatMemory::from_fixture(&old_profile.fixture).unwrap();
             let error = admission(&old_profile.fixture, &mut decoder, &actual).unwrap_err();
             assert!(error.contains("x87 instruction is not admitted"));
+        }
+        for opcode in [0xdb, 0xdf] {
+            for modrm in (0xe8u8..=0xef).chain(0xf0..=0xf7) {
+                let code = [opcode, modrm];
+                let mut input = fixture(&code).fixture;
+                input.profile = v2::Profile::LongX87StateV1;
+                input.instruction_budget = 1;
+                input.initial_state.x87 = Some(v2::X87Snapshot::from(
+                    &od_isa::state::X87State::fixture_seed(),
+                ));
+                input.initial_state.rip = HexU64(0x1000);
+                input.memory[0].guest_address = HexU64(0x1000);
+                input.memory[0].length = 2;
+                input.memory[0].initial_bytes_hex = code
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                input.memory[0].comparison_mask_hex = "ffff".into();
+                input.stop_rip = Some(HexU64(0x1002));
+                let loaded = Fixture::from_json(&input.to_json().unwrap())
+                    .unwrap_or_else(|error| panic!("{code:02x?}: {error:?}"));
+                assert!(matches!(
+                    execute(&loaded).outcome,
+                    Outcome::Unsupported { .. }
+                ));
+                let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+                let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                let error = admission(&loaded.fixture, &mut decoder, &actual).unwrap_err();
+                assert!(
+                    error.contains("x87 instruction is not admitted"),
+                    "{code:02x?}: {error}"
+                );
+            }
         }
     }
 }

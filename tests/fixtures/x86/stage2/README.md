@@ -1384,7 +1384,7 @@ the other five affected RFLAGS bits and only FSW.C1, then FNSTSW copies
 [`s2_30al_fucomi_invalid_rhs_tag.case.json`](s2_30al_fucomi_invalid_rhs_tag.case.json)
 uses exact `dbe9`, no stop RIP and budget one; the actual old physical ST(1)
 tag is Empty, so execution rejects without retirement or state mutation.
-Schema/CLI coverage rejects `dbeadfe0`. Native admission explicitly denies
+Schema/CLI coverage rejects `dbf8dfe0`. Native admission explicitly denies
 `Operation::Fucomi` and DB E9.
 
 Normative source: Intel SDM revision 093, Vol.2A,
@@ -1436,8 +1436,30 @@ tag remain preserved. The paired
 [s2_30am_fucomip_invalid_rhs_tag.case.json](s2_30am_fucomip_invalid_rhs_tag.case.json)
 uses exact `dfe9`, TOP=5, and Empty at actual physical `(TOP+1)&7`; with no stop
 RIP and budget one, it rejects without retirement or mutation. Schema/CLI
-reject `dfeadfe0` and 66/48/9B-prefixed variants. Native admission explicitly
+reject `dff8dfe0` and 66/48/9B-prefixed variants. Native admission explicitly
 denies `Operation::Fucomip` and DF E9.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+### S2-30an indexed FCOMI-family schema and literal CLI coverage
+
+The schema accepts the exact 32 bare forms `DB E8..EF` FUCOMI, `DB F0..F7`
+FCOMI, `DF E8..EF` FUCOMIP and `DF F0..F7` FCOMIP, either alone or followed
+by `DF E0` FNSTSW AX. Exhaustive schema tests cover all 64 strings and reject
+neighboring bytes, prefixes, memory forms and extra trailing bytes.
+
+Four literal success fixtures cover `DB F0` self-compare at TOP=3 with only
+old TOP Valid; `DF E8` self-compare/pop at TOP=7 with wrap and only old TOP
+Valid; `DB EF` source ST(7) at TOP=7 using physical slot 6 while old ST(1) is
+Empty; and `DF F6` source ST(6) at TOP=6 using physical slot 4, then popping
+only old TOP. Standalone budget-one rejects cover `i=0` with a Valid old TOP
+but all-zero payload and `i=7` with Empty actual physical `(TOP+7)&7` while the
+unrelated old ST(1) remains Valid. Every reject has no stop RIP and preserves
+full state. The existing `i=1` fixtures remain unchanged. Native admission
+explicitly denies all 32 indexed instruction encodings and all four operation
+families.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329

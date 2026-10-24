@@ -2685,7 +2685,7 @@ bare encodings. The existing DF E0 FNSTSW AX and DF F1 FCOMIP forms remain
 admitted; all other DB/DF forms, prefixes, REX, WAIT and memory operands are
 rejected. Literal schema/CLI fixtures use exact `dbe9dfe0` and `dbe9`; the
 no-stop/budget-one reject has Empty actual old physical ST(1). The schema
-rejects `dbeadfe0`. Decoder and interpreter tests cover every DB second byte
+rejects `dbf8dfe0`. Decoder and interpreter tests cover every DB second byte
 and prefix, all TOP × ordered relations × initial FSW condition fields, all 64
 affected RFLAGS masks with definedness, invalid operand tags/classes and
 environment, and fetch/truncation/STOP/budget atomicity. Native admission
@@ -2717,11 +2717,51 @@ E2 FNCLEX, E3 FNINIT, E9 FUCOMI and F1 FCOMI remain admitted; all other DB/DF
 forms, prefixes, REX, WAIT and memory operands reject. Exact literal schema/CLI
 programs are `dfe9dfe0` and `dfe9`; the no-stop/budget-one rejection sets TOP=5
 and the actual physical `(TOP+1)&7` tag to Empty. Schema and CLI reject
-`dfeadfe0` and the 66/48/9B-prefixed forms. Interpreter coverage spans every
+`dff8dfe0` and the 66/48/9B-prefixed forms. Interpreter coverage spans every
 TOP × ordered relation × 16 initial FSW condition fields and all 64 affected
 RFLAGS masks with definedness, including TOP wrap and atomic invalid-input and
 execution-boundary rejection. Native admission explicitly denies
 `Operation::Fucomip` and DF E9.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## Local S2-30an: indexed bounded FCOMI-family register forms
+
+Accept exactly the bare two-byte register forms `DB E8+i` FUCOMI,
+`DB F0+i` FCOMI, `DF E8+i` FUCOMIP, and `DF F0+i` FCOMIP for `i=0..7`.
+The decoder records the low three ModR/M bits as `source:u8`. Existing DB E2
+FNCLEX, DB E3 FNINIT, and DF E0 FNSTSW AX retain their behavior. Every other
+DB/DF byte, legacy or REX prefix, WAIT, and memory ModR/M form is Unsupported.
+
+Before mutation, preflight `bounded_x87_fcom_result(state, i)`: require an
+existing x87 snapshot, FCW `0x037f`, `FSW & 0x80ff == 0`, and Valid canonical-
+Normal old physical TOP. If `i != 0`, also require and read Valid canonical-
+Normal actual physical `(TOP+i)&7`. If `i=0`, compare TOP with itself and do
+not inspect ST(1) or any other register. The relation sets RFLAGS after
+clearing mask `0x8d5`: greater sets none, less sets CF, equal sets ZF; all six
+masked bits become defined on retirement. Clear only FSW.C1.
+
+FCOMI/FUCOMI preserve TOP, tags and all payloads. FCOMIP/FUCOMIP empty actual
+old TOP and advance TOP once with wrap, including the `i=0` alias. All payload
+arrays remain unchanged. Every family records FIP, advances RIP by two, and
+retires once. Used operand/environment failures and fetch/truncation/STOP/
+budget boundaries reject atomically. No unordered/special values, exception
+delivery, CR0/#NM, or native x87 execution are included.
+
+The schema accepts exactly 32 encodings alone or followed by DF E0, totaling
+64 exact program strings. Its budget-one/no-stop source rejection is narrow:
+for nonzero `i`, the actual encoded physical source tag must be invalid while
+the old TOP remains Valid; for `i=0`, the Valid old TOP uses an exact all-zero
+payload to exercise class rejection. Existing `i=1` cases remain accepted.
+Exhaustive decoder tests cover all second bytes and every legacy/REX/WAIT
+prefix. Interpreter matrices cover all TOP × source × ordered relation × 16
+initial FSW condition values and all 64 initial affected-RFLAGS masks for each
+family and source, including self compare with other tags Empty and physical
+slot/pop wrap behavior. Literal fixtures cover these boundaries and real
+actual-source rejects. Native instruction admission explicitly denies all
+four indexed `Operation` families.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329

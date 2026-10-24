@@ -195,7 +195,7 @@ success observes only `dbe9dfe0` (FUCOMI followed by FNSTSW AX), and atomic
 rejection uses `dbe9` with budget one and no stop RIP. The rejection fixture
 must encode an Empty tag at the actual old physical `(TOP+1)&7` while retaining
 a Valid old TOP. FUCOMI defines all six affected RFLAGS bits, so
-`rflags_mask` includes `0x8d5`. Schema/CLI tests reject `dbeadfe0`.
+`rflags_mask` includes `0x8d5`. Schema/CLI tests reject `dbf8dfe0`.
 
 ## S2-30am literal FUCOMIP fixture profile
 
@@ -205,4 +205,22 @@ observes `dfe9dfe0` (FUCOMIP followed by FNSTSW AX), and atomic rejection uses
 encodes Empty at the actual physical `(TOP+1)&7` tag while retaining a Valid
 old TOP. FUCOMIP defines all six affected RFLAGS bits, so `rflags_mask`
 includes `0x8d5`; successful execution also empties old TOP and advances TOP
-once. Schema/CLI reject `dfeadfe0` and 66/48/9B-prefixed variants.
+once. Schema/CLI reject `dff8dfe0` and 66/48/9B-prefixed variants.
+
+## S2-30an literal indexed FCOMI-family profile
+
+The x87 state profile accepts the exact 32 bare comparison encodings
+`DB E8..EF`, `DB F0..F7`, `DF E8..EF`, and `DF F0..F7`, either alone or
+followed by exact `DF E0` FNSTSW AX. This is a closed set of 64 program strings;
+prefixes, memory forms, other instructions, and extra trailing bytes are
+rejected. Successful comparisons define all six affected RFLAGS bits, so
+`rflags_mask` includes `0x8d5`.
+
+A no-stop, budget-one Unsupported case may exercise only the encoded physical
+source `(TOP+i)&7` with a clean x87 environment and a Valid old TOP. For `i=0`,
+the deterministic class-reject vector uses a Valid old TOP with its exact
+all-zero payload; the unrelated ST(1) can remain Valid. For nonzero indices,
+the actual source tag is invalid; when ST(1) is unrelated it stays Valid.
+Existing `i=1` invalid-RHS fixtures remain valid. Missing x87 state, arbitrary
+special values, unrelated invalid tags and non-exact code strings do not form
+part of this reject profile.

@@ -719,6 +719,9 @@ impl Fixture {
                 "dfe9" => ("dfe9", 2),
                 "dfe9dfe0" => ("dfe9dfe0", 4),
                 "dfe0" => ("dfe0", 2),
+                _ if fcomi_family_source(&code_bytes).is_some() => {
+                    (code_bytes.as_str(), (code_bytes.len() / 2) as u32)
+                }
                 "d9e0" => ("d9e0", 2),
                 "d9e1" => ("d9e1", 2),
                 "d9e4" => ("d9e4", 2),
@@ -925,38 +928,24 @@ impl Fixture {
                     let rhs = (top + 1) & 7;
                     (x87.tag_word.get() >> (u32::from(rhs) * 2)) & 3 != 0
                 });
-            let is_fcomi_source_rejected = code_bytes == "dbf1"
-                && self.stop_rip.is_none()
-                && self.instruction_budget == 1
-                && self.initial_state.x87.as_ref().is_some_and(|x87| {
-                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
-                    let rhs = (top + 1) & 7;
-                    (x87.tag_word.get() >> (u32::from(rhs) * 2)) & 3 != 0
-                });
-            let is_fucomi_source_rejected = code_bytes == "dbe9"
-                && self.stop_rip.is_none()
-                && self.instruction_budget == 1
-                && self.initial_state.x87.as_ref().is_some_and(|x87| {
-                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
-                    let rhs = (top + 1) & 7;
-                    (x87.tag_word.get() >> (u32::from(rhs) * 2)) & 3 != 0
-                });
-            let is_fcomip_source_rejected = code_bytes == "dff1"
-                && self.stop_rip.is_none()
-                && self.instruction_budget == 1
-                && self.initial_state.x87.as_ref().is_some_and(|x87| {
-                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
-                    let rhs = (top + 1) & 7;
-                    (x87.tag_word.get() >> (u32::from(rhs) * 2)) & 3 != 0
-                });
-            let is_fucomip_source_rejected = code_bytes == "dfe9"
-                && self.stop_rip.is_none()
-                && self.instruction_budget == 1
-                && self.initial_state.x87.as_ref().is_some_and(|x87| {
-                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
-                    let rhs = (top + 1) & 7;
-                    (x87.tag_word.get() >> (u32::from(rhs) * 2)) & 3 != 0
-                });
+            let is_fcomi_source_rejected = fcomi_family_source(&code_bytes).is_some_and(|source| {
+                self.stop_rip.is_none()
+                    && self.instruction_budget == 1
+                    && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                        let top = ((x87.status_word.get() >> 11) & 7) as u8;
+                        let actual = (top + source) & 7;
+                        let tag = |index: u8| (x87.tag_word.get() >> (u32::from(index) * 2)) & 3;
+                        x87.control_word.get() == 0x037f
+                            && x87.status_word.get() & 0x80ff == 0
+                            && tag(top) == 0
+                            && if source == 0 {
+                                x87.registers[usize::from(top)] == "00000000000000000000"
+                                    && tag((top + 1) & 7) == 0
+                            } else {
+                                tag(actual) != 0 && (source == 1 || tag((top + 1) & 7) == 0)
+                            }
+                    })
+            });
             let expected_budget = if code_bytes.len() == 8 { 2 } else { 1 };
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length
@@ -983,9 +972,6 @@ impl Fixture {
                     || is_fucom_source_rejected
                     || is_fucomp_source_rejected
                     || is_fcomi_source_rejected
-                    || is_fucomi_source_rejected
-                    || is_fcomip_source_rejected
-                    || is_fucomip_source_rejected
                 {
                     self.stop_rip.is_some() || self.expected_exit != ExpectedExit::Unsupported
                 } else {
@@ -1577,6 +1563,20 @@ fn invalid(field: &'static str, reason: &str) -> FormatError {
         field,
         reason: reason.into(),
     }
+}
+
+/// Exact DB/DF indexed register bytes, optionally followed by FNSTSW AX.
+/// Returns the encoded ST(i) source index for the bounded FCOMI profile.
+fn fcomi_family_source(code_bytes: &str) -> Option<u8> {
+    if !(code_bytes.len() == 4 || (code_bytes.len() == 8 && code_bytes.ends_with("dfe0"))) {
+        return None;
+    }
+    let opcode = u8::from_str_radix(&code_bytes[0..2], 16).ok()?;
+    let modrm = u8::from_str_radix(&code_bytes[2..4], 16).ok()?;
+    if !matches!(opcode, 0xdb | 0xdf) {
+        return None;
+    }
+    matches!(modrm, 0xe8..=0xef | 0xf0..=0xf7).then_some(modrm & 7)
 }
 
 #[cfg(test)]

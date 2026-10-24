@@ -219,6 +219,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30ak | Bare `DF F1` FCOMIP ST(0), ST(1), bounded canonical-Normal compare to RFLAGS and one physical TOP pop; native closed | S2-30aj |
 | [x] | S2-30al | Bare `DB E9` FUCOMI ST(0), ST(1), bounded canonical-Normal compare to RFLAGS; native closed | S2-30ak |
 | [x] | S2-30am | Bare `DF E9` FUCOMIP ST(0), ST(1), bounded canonical-Normal compare to RFLAGS and one physical TOP pop; native closed | S2-30al |
+| [x] | S2-30an | Bare indexed DB/DF register FCOMI-family forms for ST(i), bounded canonical-Normal compare and optional physical TOP pop; native closed | S2-30am |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -2214,6 +2215,45 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+#### S2-30an. Bare indexed FCOMI-family register forms
+
+Generalize the four existing `i=1` forms to exact bare DB/DF register bytes:
+`DB E8..EF` FUCOMI, `DB F0..F7` FCOMI, `DF E8..EF` FUCOMIP, and `DF F0..F7`
+FCOMIP. The low three ModR/M bits are the `source:u8` index. Preserve DB E2/E3
+and DF E0; reject every other DB/DF byte, every prefix including REX and WAIT,
+and memory ModR/M forms. The instruction remains exactly two bytes.
+
+Preflight `bounded_x87_fcom_result(state, i)`: require existing x87 state,
+FCW `0x037f`, `FSW & 0x80ff == 0`, and a Valid canonical-Normal old TOP. For
+`i != 0`, require and read actual physical `(TOP+i)&7`, also Valid and
+canonical Normal. For `i=0`, compare the old TOP to itself and do not read or
+require ST(1). On success map greater/less/equal to RFLAGS relation bits zero,
+CF, and ZF after clearing `0x8d5`; define all six affected flags and clear only
+FSW.C1. Nonpop forms preserve TOP/tags/payloads. Pop forms empty only the old
+TOP and increment TOP exactly once, including the self case. All physical
+register payloads stay unchanged. Update FIP/RIP and retire once.
+
+The schema admits exactly 32 comparison opcodes standalone or followed by DF
+E0, for 64 exact program strings total. Its no-stop/budget-one reject profile
+checks only the actual encoded physical source with a clean environment and a
+Valid old TOP; the `i=0` class reject uses the exact all-zero payload. Existing
+`i=1` rejection admission is preserved. Native profile and instruction
+admission explicitly deny all indexed operations. No unordered/special values,
+x87 exceptions, CR0/#NM, WAIT, memory forms, or native x87 execution are added.
+
+Coverage includes exhaustive DB/DF second-byte and prefix decoding, every
+TOP×source×ordered relation×16 FSW condition fields, all 64 initial affected
+RFLAGS masks for each family and source, TOP wrap, self compare with unrelated
+Empty tags, source-indexed physical slot distinctions, atomic invalid operand,
+environment and execution-boundary rejection, and exact schema acceptance and
+near-miss rejection. Literal CLI fixtures preserve existing `i=1` cases and
+add self compare, indexed wrap/pop, ST(7) mapping, and actual-source reject
+boundaries.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 #### S2-30aj. Bare bounded `FCOMI ST(0), ST(1)`
 
 Accept exactly bare `DB F1`. Before commit require an existing x87 snapshot,
@@ -2290,7 +2330,7 @@ DB/prefix decoding, all TOP × ordered relation × 16 initial FSW condition
 fields, all 64 affected RFLAGS masks with definedness, invalid classes/tags/
 environment and execution-boundary atomicity. Literal schema/CLI fixtures use
 exact `dbe9dfe0` and `dbe9`; the no-stop/budget-one rejection has Empty actual
-old ST(1). Reject the unsupported variant `dbeadfe0`. Native admission
+old ST(1). Reject the unsupported variant `dbf8dfe0`. Native admission
 explicitly denies `Operation::Fucomi` and DB E9.
 
 Normative source: Intel SDM revision 093, Vol.2A,
@@ -2317,7 +2357,7 @@ The exact DF allowlist is E0 FNSTSW AX, E9 FUCOMIP and F1 FCOMIP; DB continues
 to admit only E2 FNCLEX, E3 FNINIT, E9 FUCOMI and F1 FCOMI. Schema/CLI fixtures
 use exact `dfe9dfe0` and `dfe9`; the no-stop/budget-one rejection has an Empty
 tag at actual old physical `(TOP+1)&7` with TOP=5. Schema and CLI reject
-`dfeadfe0` and prefixed `66`, `48`, and `9b` variants. Coverage spans all TOP ×
+`dff8dfe0` and prefixed `66`, `48`, and `9b` variants. Coverage spans all TOP ×
 ordered relations × 16 initial FSW condition fields, all 64 affected RFLAGS
 masks with definedness, TOP wrap, payload preservation, invalid tags/classes,
 environment and instruction-boundary atomicity. Exhaustive DF decoding admits

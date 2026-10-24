@@ -187,3 +187,10 @@ relations, initial condition fields and 64 affected-flag masks; exact
 Native x87 admission explicitly denies FUCOMIP; unordered/special inputs and
 exception delivery remain outside this bounded profile. See the [CPU
 contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30am-bounded-fucomip-st0-st1-df-e9), [fixture notes](../../tests/fixtures/x86/stage2/README.md), and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30am--bounded-fucomip-st0-st1-to-rflags-and-pop).
+
+S2-30an generalizes FCOMI, FUCOMI, FCOMIP and FUCOMIP from `i=1` to all
+indexed register forms. The decoder carries `source:u8`; self compares only
+require/read old TOP, while nonzero indices use physical `(TOP+i)&7`. All four
+families define six RFLAGS bits and clear C1; the pop forms empty actual old
+TOP and advance once, including `i=0`. Exact DB/DF, prefix, schema, native
+deny and literal boundary coverage are recorded in the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30an-indexed-bounded-fcomi-family-register-forms), [fixture notes](../../tests/fixtures/x86/stage2/README.md), and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
