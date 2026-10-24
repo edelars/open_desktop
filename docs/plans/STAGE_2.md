@@ -248,6 +248,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ae | Extend exact DD 00 FLD m64fp to signed binary64 infinities with canonical binary80 Special; native closed | S2-31z |
 | [x] | S2-31af | Extend exact D9 00 FLD m32fp to signed binary32 infinities with canonical binary80 Special; native closed | S2-31y |
 | [x] | S2-31ag | Extend exact DD 00 FLD m64fp to canonical binary64 QNaNs with binary80 payload-preserving Special; native/JIT closed | S2-31ae |
+| [x] | S2-31ah | Extend exact D9 00 FLD m32fp to canonical binary32 QNaNs with binary80 payload-preserving Special; native/JIT closed | S2-31af |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3247,3 +3248,20 @@ low/middle/max payloads and both signs across TOP×FCW, sticky subnormal→QNaN
 DE/PE, atomic SNaN rejection, positive bare and negative payload-bearing
 DD00/DFE0+FNSTSW CLI fixtures, and explicit JIT/native denial. See the
 [S2-31ag report](../reports/STAGE_2_REPORT.md#s2-31ag--bounded-fld-m64fp-canonical-qnan-extension).
+
+#### S2-31ah. Extend bounded `FLD m32fp [RAX]` (`D9 00`) to canonical QNaNs
+
+[x] Accept canonical binary32 QNaNs only (exponent `0xff`, fraction bit 22
+set, arbitrary lower payload) after the existing one-Dword read. Construct
+binary80 by integer fields with significand
+`0x8000000000000000 | (fraction << 40)`, exponent `0x7fff`, preserved sign
+and Special tag. Add no exception flags, including IE, and preserve sticky
+DE/PE. Retain the four all-masked FCWs, `FSW & 0x80dd` gate, Empty destination,
+canonical48 four-byte preflight/read-once, and C1/TOP/pointer/retirement
+policy. SNaNs remain post-read Unsupported and atomic; m64 SNaNs, unmasked
+delivery, and JIT/native execution remain outside the slice. Change the exact
+D900/budget-one/no-stop Unsupported fixture and schema predicate from QNaN
+to canonical SNaN. Cover quiet-only, low/middle/max payloads of both signs
+across TOP×FCW, subnormal→QNaN sticky DE/PE, atomic SNaN rejection, positive
+bare and negative payload-bearing D900/DFE0+FNSTSW CLI fixtures, and native/
+JIT denial. See the [S2-31ah report](../reports/STAGE_2_REPORT.md#s2-31ah--bounded-fld-m32fp-canonical-qnan-extension).

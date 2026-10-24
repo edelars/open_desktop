@@ -984,15 +984,24 @@ fn step_tracked_with_stop(
                 (raw, X87Tag::Valid)
             } else if source_exponent == 255 {
                 if fraction != 0 {
-                    return Ok(StepOutcome::Unsupported {
-                        opcode: instruction.opcode.byte,
-                    });
+                    if fraction & (1 << 22) == 0 {
+                        return Ok(StepOutcome::Unsupported {
+                            opcode: instruction.opcode.byte,
+                        });
+                    }
+                    let significand = (1_u64 << 63) | (u64::from(fraction) << 40);
+                    let sign = if bits >> 31 != 0 { 0x8000 } else { 0 };
+                    let mut raw = [0_u8; 10];
+                    raw[..8].copy_from_slice(&significand.to_le_bytes());
+                    raw[8..].copy_from_slice(&(0x7fff_u16 | sign).to_le_bytes());
+                    (raw, X87Tag::Special)
+                } else {
+                    let sign = if bits >> 31 != 0 { 0x8000 } else { 0 };
+                    let mut raw = [0_u8; 10];
+                    raw[..8].copy_from_slice(&(1_u64 << 63).to_le_bytes());
+                    raw[8..].copy_from_slice(&(0x7fff_u16 | sign).to_le_bytes());
+                    (raw, X87Tag::Special)
                 }
-                let sign = if bits >> 31 != 0 { 0x8000 } else { 0 };
-                let mut raw = [0_u8; 10];
-                raw[..8].copy_from_slice(&(1_u64 << 63).to_le_bytes());
-                raw[8..].copy_from_slice(&(0x7fff_u16 | sign).to_le_bytes());
-                (raw, X87Tag::Special)
             } else {
                 let significand = ((1_u64 << 23) | u64::from(fraction)) << 40;
                 let binary80_exponent = (source_exponent as i32 - 127 + 16383) as u16;
@@ -23166,7 +23175,7 @@ mod tests {
 
     #[test]
     fn fld_m32fp_matches_raw_binary80_literals_for_every_top_and_control_word() {
-        let vectors: [([u8; 4], [u8; 10], X87Tag); 16] = [
+        let vectors: [([u8; 4], [u8; 10], X87Tag); 24] = [
             ([0x00, 0x00, 0x00, 0x00], [0; 10], X87Tag::Zero),
             (
                 [0x00, 0x00, 0x00, 0x80],
@@ -23241,6 +23250,46 @@ mod tests {
             (
                 [0x00, 0x00, 0x80, 0xff],
                 [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xff],
+                X87Tag::Special,
+            ),
+            (
+                [0x00, 0x00, 0xc0, 0x7f],
+                [0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x7f],
+                X87Tag::Special,
+            ),
+            (
+                [0x01, 0x00, 0xc0, 0x7f],
+                [0, 0, 0, 0, 0, 1, 0, 0xc0, 0xff, 0x7f],
+                X87Tag::Special,
+            ),
+            (
+                [0x45, 0x23, 0xc1, 0x7f],
+                [0, 0, 0, 0, 0, 0x45, 0x23, 0xc1, 0xff, 0x7f],
+                X87Tag::Special,
+            ),
+            (
+                [0xff, 0xff, 0xff, 0x7f],
+                [0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0x7f],
+                X87Tag::Special,
+            ),
+            (
+                [0x00, 0x00, 0xc0, 0xff],
+                [0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0xff],
+                X87Tag::Special,
+            ),
+            (
+                [0x01, 0x00, 0xc0, 0xff],
+                [0, 0, 0, 0, 0, 1, 0, 0xc0, 0xff, 0xff],
+                X87Tag::Special,
+            ),
+            (
+                [0x45, 0x23, 0xc1, 0xff],
+                [0, 0, 0, 0, 0, 0x45, 0x23, 0xc1, 0xff, 0xff],
+                X87Tag::Special,
+            ),
+            (
+                [0xff, 0xff, 0xff, 0xff],
+                [0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff],
                 X87Tag::Special,
             ),
         ];
@@ -23708,14 +23757,14 @@ mod tests {
     }
 
     #[test]
-    fn fld_m32fp_infinity_preserves_de_and_pe_after_a_subnormal_load() {
+    fn fld_m32fp_qnan_preserves_de_and_pe_after_a_subnormal_load() {
         for top in 0..8_u8 {
             for control_word in [0x037f, 0x077f, 0x0b7f, 0x0f7f] {
                 let mut state = LongModeState::default();
                 state.rip = 0x8640;
                 state.gpr[Register::Rax as usize] = 0x1000;
                 let first_destination = top.wrapping_add(7) & 7;
-                let infinity_destination = top.wrapping_add(6) & 7;
+                let qnan_destination = top.wrapping_add(6) & 7;
                 let mut x87 = crate::state::X87State::fixture_seed();
                 x87.control_word = control_word;
                 x87.status_word = (u16::from(top) << 11) | 0x0220;
@@ -23723,7 +23772,7 @@ mod tests {
                     x87.set_tag(physical, X87Tag::Special);
                 }
                 x87.set_tag(first_destination, X87Tag::Empty);
-                x87.set_tag(infinity_destination, X87Tag::Empty);
+                x87.set_tag(qnan_destination, X87Tag::Empty);
                 state.x87 = Some(x87);
 
                 let mut subnormal_memory = Memory::at(&[0xd9, 0x00], state.rip);
@@ -23736,37 +23785,31 @@ mod tests {
                     subnormal_memory.accesses,
                     vec![(AccessKind::Read, 0x1000, 4)]
                 );
-                let before_infinity = state.x87.as_ref().unwrap().clone();
-                assert_eq!(before_infinity.top(), first_destination);
-                assert_eq!(before_infinity.status_word & 0x0022, 0x0022);
+                let before_qnan = state.x87.as_ref().unwrap().clone();
+                assert_eq!(before_qnan.top(), first_destination);
+                assert_eq!(before_qnan.status_word & 0x0022, 0x0022);
 
-                let mut infinity_memory = Memory::at(&[0xd9, 0x00], state.rip);
-                infinity_memory.bytes[..4].copy_from_slice(&0x7f80_0000_u32.to_le_bytes());
+                let mut qnan_memory = Memory::at(&[0xd9, 0x00], state.rip);
+                qnan_memory.bytes[..4].copy_from_slice(&0xffc1_2345_u32.to_le_bytes());
                 assert_eq!(
-                    step(&mut state, &mut infinity_memory, AccessContext::default()),
+                    step(&mut state, &mut qnan_memory, AccessContext::default()),
                     Ok(StepOutcome::Advanced),
                     "TOP={top}, FCW={control_word:04x}"
                 );
-                let after_infinity = state.x87.as_ref().unwrap();
+                let after_qnan = state.x87.as_ref().unwrap();
                 assert_eq!(
-                    after_infinity.registers[usize::from(infinity_destination)],
-                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f]
+                    after_qnan.registers[usize::from(qnan_destination)],
+                    [0, 0, 0, 0, 0, 0x45, 0x23, 0xc1, 0xff, 0xff]
                 );
+                assert_eq!(after_qnan.tag(qnan_destination), Some(X87Tag::Special));
+                assert_eq!(after_qnan.top(), qnan_destination);
                 assert_eq!(
-                    after_infinity.tag(infinity_destination),
-                    Some(X87Tag::Special)
+                    after_qnan.status_word,
+                    (before_qnan.status_word & !(0x3800 | 0x0200))
+                        | (u16::from(qnan_destination) << 11)
                 );
-                assert_eq!(after_infinity.top(), infinity_destination);
-                assert_eq!(
-                    after_infinity.status_word,
-                    (before_infinity.status_word & !(0x3800 | 0x0200))
-                        | (u16::from(infinity_destination) << 11)
-                );
-                assert_eq!(after_infinity.status_word & 0x0022, 0x0022);
-                assert_eq!(
-                    infinity_memory.accesses,
-                    vec![(AccessKind::Read, 0x1000, 4)]
-                );
+                assert_eq!(after_qnan.status_word & 0x0022, 0x0022);
+                assert_eq!(qnan_memory.accesses, vec![(AccessKind::Read, 0x1000, 4)]);
             }
         }
     }
@@ -23785,12 +23828,12 @@ mod tests {
             state
         };
         for bits in [
-            0x7fc0_0000_u32,
-            0xffc0_0000,
-            0x7fc0_0001,
-            0xffc0_0001,
-            0x7f80_0001,
+            0x7f80_0001_u32,
             0xff80_0001,
+            0x7f80_0003,
+            0xff80_0003,
+            0x7fbf_ffff,
+            0xffbf_ffff,
         ] {
             let mut state = setup(0x1000);
             let before = state.clone();

@@ -341,3 +341,15 @@ DD00, budget-one, no-stop Unsupported exception now admits canonical SNaN
 only; QNaN, infinity, zero, Normal and subnormal sources do not match. The
 positive bare and negative payload-bearing DD00/DFE0+FNSTSW fixtures run
 through CLI. JIT/native profiles continue to deny the load.
+
+## S2-31ah literal FLD m32fp canonical QNaN fixtures
+
+The `s2-long-x87-state-v1` profile accepts canonical binary32 QNaNs for exact
+`d900` and `d900dfe0`. Fraction bit 22 is set, lower payload bits are
+arbitrary, and sign/payload map into canonical binary80 with Special tag. The
+four all-masked FCWs, `FSW & 0x80dd` gate, Empty destination, canonical48
+four-byte preflight and one-Dword-read rules remain unchanged. The exact
+D900/budget-one/no-stop Unsupported exception now admits canonical SNaN only;
+QNaN, infinity, zero, Normal and subnormal sources do not match. The positive
+bare and negative payload-bearing D900/DFE0+FNSTSW fixtures run through CLI.
+JIT/native profiles continue to deny the load.

@@ -5643,3 +5643,33 @@ untouched.
 Independent gpt-6.1-sol medium review found no concrete defects. All six
 focused ISA/schema/CLI/JIT review checks passed; native runtime denial was not
 run on the local arm64 host.
+
+## S2-31ah — bounded `FLD m32fp` canonical QNaN extension
+
+Exact bare `D9 00` accepts canonical binary32 QNaNs (exponent `0xff`, quiet
+bit 22 set) of either sign and any lower payload. After the existing
+canonical48 four-byte preflight and one Dword read, integer conversion forms
+binary80 significand `0x8000000000000000 | (fraction << 40)`, exponent
+`0x7fff`, preserves the sign and assigns Special. No exception flags are
+added, including IE; sticky DE/PE and existing C1-clear/TOP/pointer/retirement
+policy remain. The four FCWs, `FSW & 0x80dd`, Empty destination, and
+zero/Normal/subnormal/infinity behavior remain fixed. SNaNs still reject after
+one read without CPU commit. Native and JIT admission remain denied; unmasked
+behavior and m64 SNaN behavior are deferred.
+
+Independent quiet-only, low, middle and maximum payload literals of both
+signs cover TOP×FCW. A subnormal followed by a negative payload-bearing QNaN
+checks sticky DE/PE. Positive bare D900 and negative payload-bearing
+D900/DFE0+FNSTSW fixtures verify exact bytes and retirement through CLI. The
+exact D900/budget-one/no-stop schema exception now admits canonical SNaN only;
+the invalid-class CLI fixture was updated accordingly. Native/JIT denial
+coverage includes both QNaN fixtures.
+
+Validation passed: focused ISA, schema, CLI, SNaN atomic-rejection and
+JIT-denial checks; full offline workspace suite (697 tests);
+`cargo check --workspace --all-targets --offline`; Linux x86
+`od-x86-runner` all-target check; `cargo fmt --all -- --check`; and
+`git diff --check`. Graphify refreshed to 3911 nodes and 8193 edges. The
+architecture-gated native runtime denial compiles for Linux x86 but is not
+executed on this local arm64 host. `python3 tools/check_layout.py` reports the
+pre-existing unmapped `.serena/` directory, which remains untouched.

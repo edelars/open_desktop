@@ -3926,9 +3926,11 @@ Retain the four all-masked FCWs, D900-local `FSW & 0x80dd == 0` gate, Empty
 destination, C1-clear, TOP, FIP/FDP, and retirement policy. Sticky DE and PE
 are preserved. Existing zero and Normal behavior and S2-31y masked subnormal
 normalization/DE behavior remain unchanged. Binary32 QNaN and SNaN inputs stay
-post-read Unsupported after exactly one Dword read with no CPU commit. The
-schema Unsupported exception is limited to canonical QNaN, exact D900,
-budget-one and no stop RIP; infinity and SNaN do not match. FILD and m64/m80
+post-read Unsupported after exactly one Dword read with no CPU commit. At the
+S2-31af stage, the schema Unsupported exception was limited to canonical
+QNaN; S2-31ah supersedes it by accepting QNaNs and requiring canonical SNaN
+for the exact D900/budget-one/no-stop exception. Infinity, QNaN, zero, Normal
+and subnormal sources do not match that current predicate. FILD and m64/m80
 status gates remain unchanged. Unmasked exception delivery is deferred; FLD
 can push despite an unmasked exception, so no generic pre-read suppression is
 inferred. JIT/native admission remains closed.
@@ -3986,3 +3988,41 @@ unmasked delivery. See the [Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent
 [Stage 2 plan](../plans/STAGE_2.md#s2-31ag-extend-bounded-fld-m64fp-rax-dd-00-to-canonical-qnans),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31ag report](../reports/STAGE_2_REPORT.md#s2-31ag--bounded-fld-m64fp-canonical-qnan-extension).
+
+## Local S2-31ah: bounded `FLD m32fp [RAX]` (`D9 00`) canonical QNaNs
+
+S2-31ah extends exact bare `D9 00` to canonical binary32 quiet NaNs:
+exponent field `0xff`, fraction bit 22 set, and arbitrary lower payload bits,
+for either sign. After the existing canonical48 four-byte preflight and
+exactly one Dword read, construct binary80 using integer fields: significand
+`0x8000000000000000 | (fraction << 40)`, exponent `0x7fff`, and the source
+sign. Push with `X87Tag::Special`, preserving mapped payload bits. No host
+floating-point conversion is used.
+
+Retain the four all-masked FCWs, D900-local `FSW & 0x80dd == 0` gate, Empty
+destination, C1-clear/TOP, FIP/FDP, and one-retirement policy. Add no exception
+flags, including IE; sticky DE and PE are preserved. Existing zero, Normal,
+masked-subnormal, and signed-infinity paths remain unchanged. Binary32 SNaNs
+remain post-read Unsupported after one Dword read with no CPU commit. The
+exact D900/budget-one/no-stop Unsupported schema exception now requires a
+canonical SNaN; QNaNs, infinities, zero, Normal and subnormal inputs do not
+match. FILD and m64/m80 gates remain unchanged. Unmasked exception delivery
+and JIT/native execution remain outside this supported path; native/JIT
+profiles continue to deny D900 loads.
+
+Independent signed quiet-only, low-payload, middle-payload and maximum-payload
+vectors cover every TOP×FCW pair. A minimum-subnormal load followed by a
+negative payload-bearing QNaN verifies sticky DE/PE and unchanged status
+policy. Positive bare D900 and negative payload-bearing D900/DFE0+FNSTSW
+fixtures verify exact bytes, Special tag and retirement through CLI. SNaN
+rejection tests assert one Dword read and no CPU commit. Intel SDM revision
+093 Vol.1 Table 4-3 describes binary32 quiet-NaN encoding; Vol.2A FLD m32fp,
+pp.3-352–3-353 (official PDF p.470), specifies the load form. Reconstructed
+tag classification follows Vol.2A Table 3-47, “Recreating FSAVE Format”
+(official PDF p.532). This bounded all-masked profile makes no claim about
+unmasked delivery. See the [Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol.2A PDF, FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
+[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=532),
+[Stage 2 plan](../plans/STAGE_2.md#s2-31ah-extend-bounded-fld-m32fp-rax-d9-00-to-canonical-qnans),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[S2-31ah report](../reports/STAGE_2_REPORT.md#s2-31ah--bounded-fld-m32fp-canonical-qnan-extension).

@@ -65,6 +65,11 @@ const FLD_M32_INFINITY: &[u8] =
 const FLD_M32_INFINITY_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31af_fld_m32fp_negative_infinity_fnstsw.case.json"
 );
+const FLD_M32_QNAN: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ah_fld_m32fp_qnan.case.json");
+const FLD_M32_NEGATIVE_QNAN_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31ah_fld_m32fp_negative_qnan_payload_fnstsw.case.json"
+);
 const FLD_M32_INVALID_CLASS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp_invalid_class.case.json");
 const FLD_M64_SUBNORMAL: &[u8] =
@@ -1507,11 +1512,11 @@ fn v2_jit_denies_m64_infinity_and_qnan_loads_without_interpreter_fallback() {
 }
 
 #[test]
-fn local_x87_fld_m32fp_qnan_fixture_is_rejected_after_read_without_commit() {
-    let formerly_admitted_subnormal = String::from_utf8(FLD_M32_INVALID_CLASS.to_vec())
+fn local_x87_fld_m32fp_snan_fixture_is_rejected_after_read_without_commit() {
+    let formerly_admitted_qnan = String::from_utf8(FLD_M32_INVALID_CLASS.to_vec())
         .unwrap()
-        .replace("0000c07f", "01000000");
-    assert!(Fixture::from_json(formerly_admitted_subnormal.as_bytes()).is_err());
+        .replace("0100807f", "0000c07f");
+    assert!(Fixture::from_json(formerly_admitted_qnan.as_bytes()).is_err());
     let (input, result) = run(FLD_M32_INVALID_CLASS, "interpreter", 4);
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
     assert_eq!(count(&result), 0);
@@ -1534,6 +1539,11 @@ fn v2_jit_denies_m32_infinity_load_without_interpreter_fallback() {
     let (_, negative) = run(FLD_M32_INFINITY_FNSTSW, "jit", 4);
     assert!(matches!(negative.outcome, Outcome::Unsupported { .. }));
     assert!(matches!(negative.snapshot, Observation::Unavailable { .. }));
+    for fixture in [FLD_M32_QNAN, FLD_M32_NEGATIVE_QNAN_FNSTSW] {
+        let (_, result) = run(fixture, "jit", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    }
 }
 
 #[test]

@@ -2030,3 +2030,16 @@ schema exception is exact DD00, budget one, no stop RIP and canonical SNaN
 only. SNaNs remain post-read Unsupported after one Qword read. JIT/native
 admission remains closed. See the [S2-31ag CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ag-bounded-fld-m64fp-rax-dd-00-canonical-qnans), [plan](../../../../docs/plans/STAGE_2.md#s2-31ag-extend-bounded-fld-m64fp-rax-dd-00-to-canonical-qnans), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ag--bounded-fld-m64fp-canonical-qnan-extension).
+
+### S2-31ah FLD m32fp canonical QNaN fixture coverage
+
+The positive bare `D9 00` fixture supplies a quiet-only QNaN; the negative
+`D9 00 DF E0` fixture supplies a payload-bearing QNaN and observes the pushed
+state through FNSTSW. Both preserve sign/payload in canonical binary80 with
+Special tag and add no exception flags. Interpreter literals cover
+quiet-only, low, middle and maximum payloads of both signs across TOP×FCW; a
+minimum-subnormal load followed by QNaN verifies sticky DE/PE. The current
+schema exception is exact D900, budget one, no stop RIP and canonical SNaN
+only. SNaNs remain post-read Unsupported after one Dword read. JIT/native
+admission remains closed. See the [S2-31ah CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ah-bounded-fld-m32fp-rax-d9-00-canonical-qnans), [plan](../../../../docs/plans/STAGE_2.md#s2-31ah-extend-bounded-fld-m32fp-rax-d9-00-to-canonical-qnans), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ah--bounded-fld-m32fp-canonical-qnan-extension).
