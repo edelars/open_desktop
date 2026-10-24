@@ -562,6 +562,7 @@ fn admission_with_tracee_memory(
             | Operation::Fabs
             | Operation::Ftst
             | Operation::FcomSt { .. }
+            | Operation::Fcomi
             | Operation::FcompSt { .. }
             | Operation::Fcompp
             | Operation::Fucompp
@@ -3671,6 +3672,7 @@ mod tests {
         for code in [
             [0xdb, 0xe3],
             [0xdb, 0xe2],
+            [0xdb, 0xf1],
             [0xdf, 0xe0],
             [0xd9, 0xe0],
             [0xdd, 0xd0],

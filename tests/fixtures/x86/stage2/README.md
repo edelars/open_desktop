@@ -1343,6 +1343,21 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+### S2-30aj FCOMI schema and literal CLI coverage
+
+[`s2_30aj_fcomi_equal_fnstsw.case.json`](s2_30aj_fcomi_equal_fnstsw.case.json)
+uses exact `dbf1dfe0`: equal canonical-Normal operands set ZF, clear the other
+five affected RFLAGS bits, clear only FSW.C1, and let FNSTSW copy `0x4500` to
+AX. The fixture compares the six defined FCOMI flag bits. The paired
+[`s2_30aj_fcomi_invalid_rhs_tag.case.json`](s2_30aj_fcomi_invalid_rhs_tag.case.json)
+uses exact `dbf1`, no stop RIP and budget one; the actual old physical ST(1)
+tag is Empty, so the instruction must reject atomically without retirement.
+Schema loading and interpreter CLI coverage assert both exact byte strings.
+Native admission explicitly denies `Operation::Fcomi` and DB F1.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-334–3-336.
+
 ### S2-30ah FUCOMP schema and literal CLI coverage
 
 [s2_30ah_fucomp_equal_fnstsw.case.json](s2_30ah_fucomp_equal_fnstsw.case.json)

@@ -165,3 +165,14 @@ The v1 loader validates schema version, IDs, program digest, numeric formats, pr
 | `sha2` | 0.10.9 | SHA-256 for fixture program bytes and exact input files | MIT OR Apache-2.0 | default features (`std`) |
 
 The dependencies are confined to `od-testkit`; `od-isa`, JIT, machine and runtime crates do not depend on them. Source is crates.io and resolved packages are pinned in [`Cargo.lock`](../../Cargo.lock). The resolved transitive graph contains only serialization/proc-macro and digest infrastructure: `serde_core`, `serde_derive`, `syn`, `proc-macro2`, `quote`, `unicode-ident`, `digest`, `crypto-common`, `block-buffer`, `generic-array`, `typenum`, `version_check`, `cpufeatures`, `libc`, `cfg-if`, `itoa`, `memchr` and `zmij`. Cargo metadata reports MIT, Apache-2.0, Unicode-3.0, or Unlicense terms for these packages. No transitive package provides a CPU decoder, emulator, JIT, or guest/device semantics.
+
+## S2-30aj literal x87 fixture profile
+
+The S2-30aj x87-state fixtures preserve the project-local bounded instruction
+contract in their literal programs: success observes only `dbf1dfe0` (FCOMI
+followed by FNSTSW AX), and atomic rejection uses `dbf1` with budget one and no
+stop RIP. The rejection fixture must encode an Empty tag at the actual old
+physical `(TOP+1)&7` register while retaining a Valid old TOP. FCOMI defines
+all six affected RFLAGS bits, so the top-level `rflags_mask` includes `0x8d5`;
+the generic JSON schema validates the mask and fixture structure, while the
+instruction decoder and fixture tests enforce the exact byte boundary.

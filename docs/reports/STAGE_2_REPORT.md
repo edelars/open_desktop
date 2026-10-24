@@ -4172,3 +4172,43 @@ hardware acceptance was performed.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## S2-30aj — bounded FCOMI ST(0), ST(1) to RFLAGS
+
+Added exactly bare `DB F1` as `Operation::Fcomi`. Before commit it requires an
+existing x87 state, FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags at old
+physical TOP and `(TOP+1)&7`, and canonical-Normal binary80 operands via
+`bounded_x87_fcom_result(state, 1)`. Greater maps to cleared relation bits,
+less to CF, and equal to ZF. CF/PF/AF/ZF/SF/OF are all defined and set from the
+ordered result (AF/SF/OF/PF are zero for this bounded domain). Only FSW.C1 is
+cleared; C0/C2/C3/TOP, tags, physical register payloads, FCW/FDP/FOP and all
+unrelated state remain unchanged. FIP records instruction-start RIP; RIP
+advances by two and the instruction retires once. Exceptions and all other
+FCOMI-family forms remain unsupported.
+
+Coverage includes every TOP × relation × 16 initial FSW condition field,
+positive and negative ordering by sign/exponent/significand, all 64 initial
+subsets of the six changed RFLAGS bits with definedness, bad tags and classes
+on both operands, invalid environment, and fetch/truncation/STOP/budget
+atomicity. The DB decoder enumerates all second bytes and rejects prefixes,
+REX and WAIT. Literal schema/CLI fixtures use `dbf1` and `dbf1dfe0`; the
+no-stop/budget-one rejection fixture has an Empty tag at actual old physical
+ST(1). Native admission explicitly denies both `Operation::Fcomi` and DB F1.
+Independent gpt-6.1-sol review found no remaining findings after correcting
+two documentation wording issues. `graphify update .` completed with 3530
+nodes and 7545 edges; its existing parser warning for
+`include/open_desktop/host_abi.h` remains.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, Linux x86_64 compile-only
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
+--offline`, `cargo fmt --all -- --check`, `git diff --check`, and focused FCOMI
+interpreter/schema/runner tests. The full workspace suite also passed the
+explicit native admission denial regression. `python3 tools/check_layout.py`
+reports the pre-existing unmapped root `.serena/` directory; it was present
+before this task and remains untouched. Linux native x87 execution, physical
+x86 execution, SSH and Mac mini acceptance were not performed.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-334–3-336
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

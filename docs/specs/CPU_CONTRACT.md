@@ -2602,3 +2602,32 @@ accepted normal case.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## Local S2-30aj: bounded `FCOMI ST(0), ST(1)` (`DB F1`)
+
+Accept exactly bare `DB F1`. Before mutation, require `Some(X87State)`, FCW
+`0x037f`, `FSW & 0x80ff == 0`, Valid tags at old physical TOP and
+`(TOP+1)&7`, and canonical-Normal binary80 operands by
+`bounded_x87_fcom_result(state, 1)`. Greater sets relation flags to zero, less
+sets CF, and equal sets ZF. Clear CF/PF/AF/ZF/SF/OF before setting the relation;
+`FlagEffects` defines all six bits (`0x8d5`) on successful retirement.
+
+Clear only FSW.C1. Preserve C0/C2/C3, TOP, all physical tags and ten-byte
+payloads, FCW, FDP/FOP, every other FSW bit, all GPRs and memory. Set FIP to
+instruction-start RIP, advance RIP by two and retire once. Missing state,
+invalid environment/tag/class, other unadmitted DB encodings, prefixes, REX,
+WAIT, fetch/truncation, STOP and exhausted budget reject without a state commit.
+Existing DB E2 FNCLEX and DB E3 FNINIT remain admitted. Exceptions and the
+other FCOMI-family forms are excluded. Native admission explicitly denies
+`Operation::Fcomi` and DB F1.
+
+Interpreter coverage spans all TOP × three relations × 16 initial FSW
+condition fields, all 64 initial subsets of the affected RFLAGS bits with
+definedness, invalid tags/classes for both operands, invalid environment and
+execution-boundary atomicity. Literal fixture/schema coverage uses exact `dbf1`
+and `dbf1dfe0`, plus no-stop/budget-one rejection for an Empty actual old ST(1)
+tag. Exhaustive DB decoder tests admit only E2, E3 and F1 as bare forms, reject
+every other second byte, and reject every prefix for FCOMI.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-334–3-336.

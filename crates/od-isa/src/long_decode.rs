@@ -453,6 +453,8 @@ pub enum Operation {
     FcomSt {
         source: u8,
     },
+    /// Bare `DB F1` FCOMI ST(0), ST(1), bounded canonical-Normal compare.
+    Fcomi,
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
     FcompSt {
         source: u8,
@@ -753,6 +755,10 @@ impl Instruction {
                 defined: crate::ZF,
                 undefined: 0,
             },
+            Operation::Fcomi => FlagEffects {
+                defined: 0x8d5,
+                undefined: 0,
+            },
             _ => FlagEffects::default(),
         }
     }
@@ -1040,6 +1046,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 match self.byte()? {
                     0xe2 => Operation::Fnclex,
                     0xe3 => Operation::Fninit,
+                    0xf1 => Operation::Fcomi,
                     _ => return Err(self.unsupported(opcode)),
                 }
             }
@@ -2189,6 +2196,51 @@ mod tests {
         assert_eq!(fnclex.prefixes, Prefixes::default());
         assert_eq!(fnclex_memory.fetched, [0xfff, 0x1000]);
 
+        let mut fcomi_memory = Memory::new(&[0xdb, 0xf1]);
+        let fcomi = fcomi_memory.decode().unwrap();
+        assert_eq!(fcomi.operation, Operation::Fcomi);
+        assert_eq!(fcomi.length, 2);
+        assert_eq!(fcomi.prefixes, Prefixes::default());
+        assert_eq!(
+            fcomi.flag_effects(),
+            FlagEffects {
+                defined: 0x8d5,
+                undefined: 0
+            }
+        );
+
+        for second in 0u8..=u8::MAX {
+            let decoded = Memory::new(&[0xdb, second]).decode();
+            assert_eq!(
+                decoded.map(|instruction| instruction.operation),
+                match second {
+                    0xe2 => Ok(Operation::Fnclex),
+                    0xe3 => Ok(Operation::Fninit),
+                    0xf1 => Ok(Operation::Fcomi),
+                    _ => Err(DecodeError::Unsupported {
+                        opcode: Opcode {
+                            map: OpcodeMap::Primary,
+                            byte: 0xdb
+                        },
+                        length: 2
+                    }),
+                },
+                "DB {second:02x}"
+            );
+        }
+
+        for prefix in [
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+        ]
+        .into_iter()
+        .chain(0x40..=0x4f)
+        {
+            assert!(matches!(
+                Memory::new(&[prefix, 0xdb, 0xf1]).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+        }
+
         for bytes in [
             &[0xdb, 0xe0][..],
             &[0xf0, 0xdb, 0xe3][..],
@@ -2250,6 +2302,7 @@ mod tests {
                 match modrm {
                     0xe2 => Ok(Operation::Fnclex),
                     0xe3 => Ok(Operation::Fninit),
+                    0xf1 => Ok(Operation::Fcomi),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,

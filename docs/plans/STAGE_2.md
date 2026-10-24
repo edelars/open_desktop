@@ -215,6 +215,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30ag | Bare `DD E1` FUCOM ST(0), ST(1), bounded canonical-Normal compare without pop; native closed | S2-30af |
 | [x] | S2-30ah | Bare `DD E9` FUCOMP ST(0), ST(1), bounded canonical-Normal compare then one physical TOP pop; native closed | S2-30ag |
 | [x] | S2-30ai | Bare `DA E9` FUCOMPP, bounded canonical-Normal compare then two physical TOP pops; native closed | S2-30ah |
+| [x] | S2-30aj | Bare `DB F1` FCOMI ST(0), ST(1), bounded canonical-Normal compare to RFLAGS; native closed | S2-30ai |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -2209,6 +2210,31 @@ no-stop/budget-one rejection. Native admission explicitly denies `DD E1`.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+#### S2-30aj. Bare bounded `FCOMI ST(0), ST(1)`
+
+Accept exactly bare `DB F1`. Before commit require an existing x87 snapshot,
+FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags at old physical TOP and
+`(TOP+1)&7`, and canonical-Normal binary80 operands through
+`bounded_x87_fcom_result(state, 1)`. Greater sets RFLAGS relation bits to zero,
+less sets CF, and equal sets ZF. Clear CF/PF/AF/ZF/SF/OF before setting the
+relation; decoded `FlagEffects` marks all six bits defined. Preserve every
+other RFLAGS bit. Clear only FSW.C1; preserve C0/C2/C3, TOP, all tags and raw
+payloads, FCW, FDP/FOP, GPRs and memory. Set FIP to instruction-start RIP,
+advance RIP by two and retire once.
+
+Reject missing state, invalid FCW/FSW/tags/classes and every other unadmitted
+DB form; preserve the existing bare DB E2 FNCLEX and DB E3 FNINIT forms.
+Prefixes, REX, WAIT, fetch/truncation, STOP and exhausted budget reject without
+state commit. Exceptions and other FCOMI/FCOMIP/FUCOMI/FUCOMIP forms are excluded.
+Coverage includes all TOP × relation × 16 initial FSW condition fields, all 64
+initial six-flag masks with definedness, independent bad operand tags/classes,
+environment and boundary atomicity, exhaustive DB decode/prefixes, exact
+`dbf1` and `dbf1dfe0` fixtures, and explicit native denial of `Operation::Fcomi`
+and DB F1.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-334–3-336.
 
 #### S2-30ah. Bare bounded `FUCOMP ST(0), ST(1)`
 
