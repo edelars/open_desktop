@@ -1120,7 +1120,7 @@ impl Fixture {
                                 .is_some_and(|bits| bits & 0x7fc0_0000 == 0x7fc0_0000)
                         })
                 });
-            let is_fld_m64_qnan_rejected = code_bytes == "dd00"
+            let is_fld_m64_snan_rejected = code_bytes == "dd00"
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
                 && self.memory.iter().any(|region| {
@@ -1138,7 +1138,8 @@ impl Fixture {
                                     u64::from_str_radix(source, 16).ok().map(u64::swap_bytes)
                                 })
                                 .is_some_and(|bits| {
-                                    bits & 0x7ff8_0000_0000_0000 == 0x7ff8_0000_0000_0000
+                                    bits & 0x7ff8_0000_0000_0000 == 0x7ff0_0000_0000_0000
+                                        && bits & 0x000f_ffff_ffff_ffff != 0
                                 })
                         })
                 });
@@ -1243,7 +1244,7 @@ impl Fixture {
                     || is_fist_word_environment_rejected
                     || is_fld_m80_pseudo_infinity_rejected
                     || is_fld_m32_qnan_rejected
-                    || is_fld_m64_qnan_rejected
+                    || is_fld_m64_snan_rejected
                     || is_fcom_source_rejected
                     || is_fcomp_source_rejected
                     || is_fcompp_source_rejected

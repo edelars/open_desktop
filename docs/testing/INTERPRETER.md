@@ -507,9 +507,10 @@ preflight permits an existing DE (`FSW & 0x80dd == 0`); FILD and m80 load
 paths retain their stricter shared gate. UE and PE are not added, C1 is
 cleared, and other status/payload/TOP/pointer behavior follows the existing
 bounded load policy. All four FCWs are fully masked; unmasked behavior and
-exception delivery are not included. Signed zero and Normal are unchanged;
-infinity and NaN remain Unsupported post-read with no commit. Binary80
-`DB 28` subnormals retain their separate S2-31x behavior.
+exception delivery are not included. Signed zero and Normal are unchanged.
+At the S2-31z stage, infinity and NaN remained Unsupported post-read; S2-31ae
+added infinity and S2-31ag adds canonical QNaN. SNaN remains Unsupported.
+Binary80 `DB 28` subnormals retain their separate S2-31x behavior.
 
 Independent all-TOP×FCW literals cover signed minimum, interior and largest
 subnormals. The exact DD00 success fixture loads positive minimum subnormal;
@@ -590,7 +591,8 @@ Exact bare `DD 00` additionally accepts signed binary64 infinities, preserving
 the sign while constructing canonical binary80 infinity and a Special tag.
 It retains the four FCWs, `FSW & 0x80dd` gate, Empty destination, one Qword
 read and C1-clear/push/pointer policy. Sticky DE and PE survive the load.
-Signed QNaNs and SNaNs reject after one read without CPU commit. Independent
+At the S2-31ae stage, signed QNaNs and SNaNs rejected after one read without
+CPU commit; S2-31ag adds canonical QNaN. Independent
 literal vectors cover signs across TOP×FCW and a subnormal-to-infinity sequence;
 positive bare and negative DD00/DFE0+FNSTSW fixtures run through the CLI.
 Unmasked delivery and native/JIT execution remain outside scope. See the
@@ -608,3 +610,17 @@ cover both signs across TOP×FCW and subnormal-to-infinity sticky status. Bare
 positive D900 and negative D900/DFE0+FNSTSW fixtures run through CLI. Unmasked
 delivery and native/JIT execution remain outside this slice. See the
 [S2-31af CPU contract](../specs/CPU_CONTRACT.md#local-s2-31af-bounded-fld-m32fp-rax-d9-00-signed-infinities).
+
+## Local S2-31ag `FLD m64fp` canonical quiet-NaN load
+
+Exact bare `DD 00` accepts canonical binary64 QNaNs with the quiet bit set,
+converts the fraction by integer shift into canonical binary80 while
+preserving sign and payload, and pushes with Special tag. No exception status
+is added; sticky DE/PE and existing C1/TOP/pointer/retirement behavior remain.
+The all-masked FCWs, `FSW & 0x80dd` gate, Empty destination, canonical48
+eight-byte preflight and one Qword read are unchanged. SNaNs reject after one
+read without commit; the current exact DD00/budget-one/no-stop schema fixture
+uses SNaN. Signed quiet-only, low, middle and maximum payloads cover TOP×FCW;
+a subnormal→QNaN sequence checks sticky DE/PE. Bare positive and negative
+payload-bearing DD00/DFE0+FNSTSW fixtures run through CLI. JIT and native
+admission remain closed. See the [S2-31ag CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ag-bounded-fld-m64fp-rax-dd-00-canonical-qnans).

@@ -2277,6 +2277,20 @@ mod tests {
                 "0000000000000080ffff",
                 0xbffc,
             ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ag_fld_m64fp_qnan.case.json")
+                    .as_slice(),
+                1,
+                "00000000000000c0ff7f",
+                0xbffc,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ag_fld_m64fp_negative_qnan_payload_fnstsw.case.json")
+                    .as_slice(),
+                2,
+                "00e0d5c4b3a291c0ffff",
+                0xbffc,
+            ),
         ] {
             let fixture = v2::Fixture::from_json(bytes).expect("S2-31ae fixture schema");
             let mut memory =
@@ -2342,6 +2356,9 @@ mod tests {
             .find(|region| region.region_id == "stack")
             .unwrap();
         assert_eq!(stack.bytes_hex, invalid.fixture.memory[1].initial_bytes_hex);
+        let mut rejected_qnan = invalid.fixture.clone();
+        rejected_qnan.memory[1].initial_bytes_hex = "000000000000f87f".into();
+        assert!(v2::Fixture::from_json(&serde_json::to_vec(&rejected_qnan).unwrap()).is_err());
         let template: serde_json::Value = serde_json::from_slice(include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp.case.json"
         ))

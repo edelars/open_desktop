@@ -5610,3 +5610,34 @@ the pre-existing unmapped root `.serena` directory, which was left untouched.
 Independent gpt-6.1-sol medium review found no concrete findings. All nine
 focused ISA/schema/runner review checks passed; native runtime denial remains
 unexecuted on this local arm64 host.
+
+## S2-31ag — bounded `FLD m64fp` canonical QNaN extension
+
+Exact bare `DD 00` now accepts canonical binary64 QNaNs (exponent `0x7ff`,
+quiet bit set) of either sign and any lower payload. After the existing
+canonical48 eight-byte preflight and one Qword read, integer conversion forms
+binary80 significand `0x8000000000000000 | (fraction << 11)`, exponent
+`0x7fff`, preserves the sign, and assigns Special. No status flags are added,
+including IE; sticky DE/PE and existing C1-clear/TOP/pointer/retirement policy
+remain. FCWs, `FSW & 0x80dd`, Empty destination, and zero/Normal/subnormal/
+infinity behavior remain fixed. SNaNs still reject after one read without CPU
+commit. Native and JIT admission remain denied; unmasked behavior is deferred.
+
+Independent quiet-only, low, middle and max payload literals of both signs
+cover TOP×FCW. A subnormal followed by a negative payload-bearing QNaN checks
+sticky DE/PE. Positive bare DD00 and negative DD00/DFE0+FNSTSW fixtures assert
+payload preservation through CLI. The exact DD00/budget-one/no-stop schema
+exception now admits canonical SNaN only. The native runtime-denial check is
+architecture-gated and was not executed on the local arm64 host.
+
+Validation passed: focused DD00 conversion/rejection tests, the exact
+od-testkit schema test (and all 166 schema-crate tests), CLI fixtures, and JIT
+denial; full offline workspace suite (697 tests);
+`cargo check --workspace --all-targets --offline`; Linux x86 `od-x86-runner`
+check; `cargo fmt --all -- --check`; and `git diff --check`. Graphify refreshed
+to 3903 nodes and 8185 edges. The architecture-gated native runtime denial
+compiles for Linux x86 but is not executed on this local arm64 host. The layout
+checker reports the pre-existing unmapped `.serena/` directory, which remains
+untouched.
+
+Independent gpt-6.1-sol medium review is pending.

@@ -247,6 +247,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ad | Extend exact DB 28 FLD m80fp to raw pseudo-denormals with Special tag and no DE; native closed | S2-31ac |
 | [x] | S2-31ae | Extend exact DD 00 FLD m64fp to signed binary64 infinities with canonical binary80 Special; native closed | S2-31z |
 | [x] | S2-31af | Extend exact D9 00 FLD m32fp to signed binary32 infinities with canonical binary80 Special; native closed | S2-31y |
+| [x] | S2-31ag | Extend exact DD 00 FLD m64fp to canonical binary64 QNaNs with binary80 payload-preserving Special; native/JIT closed | S2-31ae |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3211,7 +3212,9 @@ sticky DE/PE, C1-clear, TOP, pointers and retirement behavior. Binary64 NaNs
 remain post-read Unsupported without CPU commit; unmasked exception delivery
 and native admission remain outside the slice. Add TOP×FCW signed vectors,
 subnormal-then-infinity sticky-flag coverage, exact DD00 / DD00-DFE0 CLI
-fixtures, and a narrow QNaN Unsupported fixture predicate. Keep m80fp
+fixtures, and a narrow QNaN Unsupported fixture predicate at this stage;
+S2-31ag supersedes it by accepting QNaNs and narrowing current rejection to
+SNaN. Keep m80fp
 subnormal semantics distinct (no DE). See the [S2-31ae report](../reports/STAGE_2_REPORT.md#s2-31ae--bounded-fld-m64fp-signed-infinity-extension).
 
 #### S2-31af. Extend bounded `FLD m32fp [RAX]` (`D9 00`) to infinities
@@ -3227,3 +3230,20 @@ the D900-only Unsupported fixture/schema exception from infinity to canonical
 QNaN, and add signed infinity TOP×FCW vectors, a subnormal→infinity sticky
 status sequence, bare and D900/DFE0 CLI fixtures, schema/CLI rejection
 neighbors, and JIT/native denial. See the [S2-31af report](../reports/STAGE_2_REPORT.md#s2-31af--bounded-fld-m32fp-signed-infinity-extension).
+
+#### S2-31ag. Extend bounded `FLD m64fp [RAX]` (`DD 00`) to canonical QNaNs
+
+[x] Accept canonical binary64 QNaNs only (exponent `0x7ff`, fraction bit 51
+set, arbitrary remaining payload) after the existing one-Qword read. Convert
+by integer fields to binary80 with significand `0x8000000000000000 | (fraction
+<< 11)`, exponent `0x7fff`, preserved sign and Special tag. Add no status
+flags, including IE, and preserve sticky DE/PE. Retain the four FCWs,
+`FSW & 0x80dd` gate, Empty destination, canonical48 preflight and push/C1/TOP/
+pointer/retirement behavior. SNaN remains post-read Unsupported with no CPU
+commit; m32 NaNs, unmasked delivery and JIT/native execution remain outside
+the slice. Switch the exact DD00/budget-one/no-stop Unsupported fixture and
+schema predicate from canonical QNaN to canonical SNaN. Cover quiet-only,
+low/middle/max payloads and both signs across TOP×FCW, sticky subnormal→QNaN
+DE/PE, atomic SNaN rejection, positive bare and negative payload-bearing
+DD00/DFE0+FNSTSW CLI fixtures, and explicit JIT/native denial. See the
+[S2-31ag report](../reports/STAGE_2_REPORT.md#s2-31ag--bounded-fld-m64fp-canonical-qnan-extension).

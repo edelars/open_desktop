@@ -3713,10 +3713,11 @@ and the source sign. Its tag is Valid. The operation sets sticky FSW.DE and
 does not set UE or PE; it clears C1 and preserves other flags, payloads, TOP
 and pointer behavior as in the existing DD00 load policy. Repeated masked
 subnormal loads retain DE. Binary64 signed zero remains Zero-tagged; Normal
-expansion is unchanged. Infinity and NaN remain Unsupported after the one
-read with no CPU commit. Unmasked controls remain outside the supported
-profile; no exception delivery or unmasked push behavior is claimed. Native
-admission remains closed.
+expansion is unchanged. At the S2-31z stage, infinity and NaN remained
+Unsupported after the one read with no CPU commit; S2-31ae added infinity and
+S2-31ag adds canonical QNaN. SNaN remains Unsupported. Unmasked controls
+remain outside the supported profile; no exception delivery or unmasked push
+behavior is claimed. Native admission remains closed.
 
 Independent literal vectors cover signed minimum, interior and largest
 subnormals across all TOP×FCW pairs, including sticky PE/C1 behavior and a
@@ -3887,10 +3888,11 @@ binary80 infinity by integer fields: explicit integer bit set, exponent
 
 Retain all four accepted FCWs, the DD00-local `FSW & 0x80dd == 0` gate, Empty
 destination, TOP decrement, C1 clear, FIP/FDP update and one retirement.
-Sticky DE and PE are preserved. Binary64 QNaN and SNaN encodings remain
-post-read Unsupported after one Qword read, with no CPU commit. The exact
-schema Unsupported exception uses binary64 QNaN, and only exact DD00,
-budget-one, no-stop fixtures qualify. FILD and m80fp retain their separate
+Sticky DE and PE are preserved. Binary64 QNaN and SNaN encodings remained
+post-read Unsupported at the S2-31ae stage, with no CPU commit. Its exact
+schema Unsupported exception used binary64 QNaN for exact DD00, budget-one,
+no-stop fixtures; S2-31ag supersedes this predicate by accepting QNaNs and
+narrowing the current rejection to SNaN. FILD and m80fp retain their separate
 `0x80df` status gate and m80fp subnormal loads add no DE. Unmasked exception
 delivery is deferred; the SDM says FLD pushes even with an unmasked exception,
 so this all-masked local profile does not claim that behavior. JIT/native
@@ -3946,3 +3948,41 @@ instruction reference; reconstructed tag classification follows Vol.2A Table
 [Stage 2 plan](../plans/STAGE_2.md#s2-31af-extend-bounded-fld-m32fp-rax-d9-00-to-infinities),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31af report](../reports/STAGE_2_REPORT.md#s2-31af--bounded-fld-m32fp-signed-infinity-extension).
+
+## Local S2-31ag: bounded `FLD m64fp [RAX]` (`DD 00`) canonical QNaNs
+
+S2-31ag extends exact bare `DD 00` to canonical binary64 quiet NaNs: exponent
+field `0x7ff`, fraction bit 51 set, and arbitrary lower payload bits, for
+either sign. After the existing canonical48 eight-byte preflight and exactly
+one Qword read, construct binary80 using integer fields: significand
+`0x8000000000000000 | (fraction << 11)`, exponent `0x7fff`, and the source
+sign. Push with `X87Tag::Special`, preserving payload bits in the mapped
+fraction field. No host floating-point conversion is used.
+
+Retain the four FCWs, DD00-local `FSW & 0x80dd == 0` gate, Empty destination,
+C1-clear/TOP, FIP/FDP and one-retirement behavior. Add no status flags,
+including IE; sticky DE and PE remain preserved. Existing signed zero, Normal,
+subnormal and infinity paths remain unchanged. Binary64 SNaNs remain post-read
+Unsupported after one Qword read without CPU commit. The exact DD00, budget-one,
+no-stop schema exception now requires a canonical SNaN; QNaNs, infinities,
+zero, Normal and subnormal inputs do not match. Keep m32 NaNs, unmasked
+exception delivery and JIT/native execution outside this supported path; the
+JIT and native profiles continue to deny DD00 loads. m80fp subnormal behavior
+remains distinct and adds no DE.
+
+Independent signed quiet-only, low-payload, middle-payload and maximum-payload
+vectors cover every TOP×FCW pair. A minimum-subnormal load followed by a
+payload-bearing QNaN checks sticky DE/PE and unchanged status policy. The
+positive bare DD00 and negative payload-bearing DD00/DFE0+FNSTSW fixtures
+verify exact bytes, Special tag and retirement through CLI. SNaN rejection
+tests assert one Qword read and no CPU commit. Intel SDM revision 093 Vol.1
+Table 4-3 describes binary64 quiet-NaN encoding; Vol.2A FLD m64fp,
+pp.3-352–3-353 (official PDF p.470), specifies the load form. Reconstructed
+tag classification follows Vol.2A Table 3-47, “Recreating FSAVE Format”
+(official PDF p.532). This bounded all-masked profile makes no claim about
+unmasked delivery. See the [Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol.2A PDF, FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
+[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=532),
+[Stage 2 plan](../plans/STAGE_2.md#s2-31ag-extend-bounded-fld-m64fp-rax-dd-00-to-canonical-qnans),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[S2-31ag report](../reports/STAGE_2_REPORT.md#s2-31ag--bounded-fld-m64fp-canonical-qnan-extension).

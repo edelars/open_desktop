@@ -258,10 +258,11 @@ nonzero binary64 subnormal; subnormals produce canonical Normal binary80 with
 Valid tag and sticky DE under the all-masked FCW profile. At the S2-31z stage, a no-stop, budget-one Unsupported fixture for exact
 `dd00` was admitted when its eight-byte source had exponent field 2047
 (infinity or NaN). S2-31ae supersedes it: current rejection fixtures require a
-canonical QNaN source. Zero, Normal, subnormal and infinity sources are
-excluded from the current exception. Other x87 state, code bytes and
-instruction boundaries remain subject to the existing exact x87 profile.
-This does not admit unmasked exception behavior.
+canonical QNaN source. S2-31ag supersedes that predicate by accepting canonical
+QNaNs; the current rejection fixture requires canonical SNaN. Zero, Normal,
+subnormal and infinity sources remain excluded from the current exception.
+Other x87 state, code bytes and instruction boundaries remain subject to the
+existing exact x87 profile. This does not admit unmasked exception behavior.
 
 ## S2-31aa literal FLD m80fp fixture profile (historical)
 
@@ -310,11 +311,12 @@ classes are not admitted by that predicate.
 
 The `s2-long-x87-state-v1` profile accepts signed binary64 infinity sources
 for exact `dd00` and `dd00dfe0`, yielding canonical signed binary80 infinity
-with Special tag. The no-stop, budget-one Unsupported exception now admits
-canonical QNaN sources only for exact `dd00`; infinities and SNaNs do not match.
-The all-masked FCW set, `FSW & 0x80dd` gate, Empty destination and eight-byte
-single-read constraints remain in force. Native/JIT profiles continue to deny
-the load.
+with Special tag. At the S2-31ae stage, the no-stop, budget-one Unsupported
+exception admitted canonical QNaN for exact `dd00`; S2-31ag supersedes that
+rule by accepting QNaN loads and narrowing current rejection to canonical
+SNaN. The all-masked FCW set, `FSW & 0x80dd` gate, Empty destination and
+eight-byte single-read constraints remain in force. Native/JIT profiles
+continue to deny the load.
 
 
 ## S2-31af literal FLD m32fp signed-infinity fixtures
@@ -326,3 +328,16 @@ canonical QNaN only for exact `d900`; infinities and SNaNs are excluded. The
 all-masked FCW set, `FSW & 0x80dd` gate, Empty destination and four-byte
 single-read constraints remain in force. Native/JIT profiles continue to deny
 the load.
+
+
+## S2-31ag literal FLD m64fp canonical QNaN fixtures
+
+The `s2-long-x87-state-v1` profile accepts canonical binary64 QNaNs for exact
+`dd00` and `dd00dfe0`. The quiet bit is set, lower payload bits are arbitrary,
+and sign/payload map exactly into canonical binary80 with Special tag. The
+four all-masked FCWs, `FSW & 0x80dd` gate, Empty destination, canonical48
+eight-byte preflight and one-Qword-read rules remain unchanged. The exact
+DD00, budget-one, no-stop Unsupported exception now admits canonical SNaN
+only; QNaN, infinity, zero, Normal and subnormal sources do not match. The
+positive bare and negative payload-bearing DD00/DFE0+FNSTSW fixtures run
+through CLI. JIT/native profiles continue to deny the load.

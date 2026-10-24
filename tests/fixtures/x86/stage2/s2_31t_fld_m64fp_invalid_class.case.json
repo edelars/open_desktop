@@ -4,9 +4,9 @@
   "profile": "s2-long-x87-state-v1",
   "provenance": {
     "kind": "project_fixture",
-    "source": "Handwritten literal positive canonical quiet-NaN binary64 rejected after one Qword read, with binary64 source and x87 state; expected behavior follows the local bounded S2-31ae contract.",
-    "specification": "Intel SDM revision 093, Vol.2A FLD m64fp entry; local bounded S2-31ae contract.",
-    "specification_version": "Intel SDM revision 093; project S2-31ae"
+    "source": "Handwritten exact DD00 canonical binary64 SNaN rejection fixture, budget one and no stop RIP; updated for S2-31ag.",
+    "specification": "Intel SDM revision 093, Vol.2A FLD m64fp entry; local bounded S2-31ag contract.",
+    "specification_version": "Intel SDM revision 093; project S2-31ag"
   },
   "seed": null,
   "converted_from_v1_sha256": null,
@@ -73,7 +73,7 @@
         "write": false,
         "execute": false
       },
-      "initial_bytes_hex": "000000000000f87f",
+      "initial_bytes_hex": "010000000000f07f",
       "comparison_mask_hex": "ffffffffffffffff"
     },
     {
