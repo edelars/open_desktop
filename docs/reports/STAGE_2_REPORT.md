@@ -4289,7 +4289,9 @@ admission regression is compile-covered but Linux-only and was not executed on
 this macOS host. Physical x86/native x87 acceptance was not performed.
 Independent Sol-medium review found no implementation defects; it identified a
 documentation ambiguity about neighboring DF forms, which was corrected and
-re-reviewed clean.
+re-reviewed clean. `graphify update .` completed with 3555 nodes, 7592 edges
+and 183 communities; its existing parser warning for
+`include/open_desktop/host_abi.h` remains.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
