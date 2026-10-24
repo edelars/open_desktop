@@ -459,6 +459,8 @@ pub enum Operation {
     Fucomi,
     /// Bare `DF F1` FCOMIP ST(0), ST(1), bounded compare then physical TOP pop.
     Fcomip,
+    /// Bare `DF E9` FUCOMIP ST(0), ST(1), bounded compare then physical TOP pop.
+    Fucomip,
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
     FcompSt {
         source: u8,
@@ -759,10 +761,12 @@ impl Instruction {
                 defined: crate::ZF,
                 undefined: 0,
             },
-            Operation::Fcomi | Operation::Fcomip | Operation::Fucomi => FlagEffects {
-                defined: 0x8d5,
-                undefined: 0,
-            },
+            Operation::Fcomi | Operation::Fcomip | Operation::Fucomi | Operation::Fucomip => {
+                FlagEffects {
+                    defined: 0x8d5,
+                    undefined: 0,
+                }
+            }
             _ => FlagEffects::default(),
         }
     }
@@ -1061,6 +1065,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 match self.byte()? {
                     0xe0 => Operation::FnstswAx,
+                    0xe9 => Operation::Fucomip,
                     0xf1 => Operation::Fcomip,
                     _ => return Err(self.unsupported(opcode)),
                 }
@@ -2337,7 +2342,7 @@ mod tests {
     }
 
     #[test]
-    fn df_admits_only_bare_fnstsw_ax_and_fcomip_forms() {
+    fn df_admits_only_bare_fnstsw_ax_and_fcomi_pop_forms() {
         let mut memory = Memory::new(&[0xdf, 0xe0]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::FnstswAx);
@@ -2351,6 +2356,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0xe0 => Ok(Operation::FnstswAx),
+                    0xe9 => Ok(Operation::Fucomip),
                     0xf1 => Ok(Operation::Fcomip),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
@@ -2417,6 +2423,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0xe0 => Ok(Operation::FnstswAx),
+                    0xe9 => Ok(Operation::Fucomip),
                     0xf1 => Ok(Operation::Fcomip),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
@@ -2440,6 +2447,10 @@ mod tests {
                 Memory::new(&[prefix, 0xdf, 0xf1]).decode(),
                 Err(DecodeError::Unsupported { .. })
             ));
+            assert!(matches!(
+                Memory::new(&[prefix, 0xdf, 0xe9]).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
         }
         assert!(matches!(
             Memory::new(&[0xdf]).decode(),
@@ -2448,6 +2459,21 @@ mod tests {
                 access: AccessKind::Fetch,
             }))
         ));
+    }
+
+    #[test]
+    fn fucomip_accepts_only_bare_df_e9_and_defines_fcomi_flags() {
+        let instruction = Memory::new(&[0xdf, 0xe9]).decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Fucomip);
+        assert_eq!(instruction.length, 2);
+        assert_eq!(instruction.prefixes, Prefixes::default());
+        assert_eq!(
+            instruction.flag_effects(),
+            FlagEffects {
+                defined: 0x8d5,
+                undefined: 0
+            }
+        );
     }
 
     #[test]

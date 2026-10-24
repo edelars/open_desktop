@@ -178,3 +178,12 @@ an invalid old ST(1)-tag reject, exhaustive DF decoding, TOP/relation/status
 coverage and all 64 RFLAGS masks are covered; native x87 admission explicitly
 denies FCOMIP. Exceptions and non-Normal operands remain outside the bounded
 profile. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30ak-bounded-fcomip-st0-st1-df-f1), [fixture notes](../../tests/fixtures/x86/stage2/README.md), and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
+
+S2-30am adds bare `DF E9` FUCOMIP for canonical-Normal ST(0)/ST(1), with the
+same ordered RFLAGS mapping and definedness as FCOMIP, clearing only C1,
+emptying old physical TOP and advancing TOP once. Matrices cover all TOP,
+relations, initial condition fields and 64 affected-flag masks; exact
+`dfe9dfe0`/`dfe9` fixtures include a TOP=5 invalid actual-ST(1) tag reject.
+Native x87 admission explicitly denies FUCOMIP; unordered/special inputs and
+exception delivery remain outside this bounded profile. See the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30am-bounded-fucomip-st0-st1-df-e9), [fixture notes](../../tests/fixtures/x86/stage2/README.md), and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30am--bounded-fucomip-st0-st1-to-rflags-and-pop).

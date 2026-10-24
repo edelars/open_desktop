@@ -218,6 +218,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30aj | Bare `DB F1` FCOMI ST(0), ST(1), bounded canonical-Normal compare to RFLAGS; native closed | S2-30ai |
 | [x] | S2-30ak | Bare `DF F1` FCOMIP ST(0), ST(1), bounded canonical-Normal compare to RFLAGS and one physical TOP pop; native closed | S2-30aj |
 | [x] | S2-30al | Bare `DB E9` FUCOMI ST(0), ST(1), bounded canonical-Normal compare to RFLAGS; native closed | S2-30ak |
+| [x] | S2-30am | Bare `DF E9` FUCOMIP ST(0), ST(1), bounded canonical-Normal compare to RFLAGS and one physical TOP pop; native closed | S2-30al |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -2291,6 +2292,37 @@ environment and execution-boundary atomicity. Literal schema/CLI fixtures use
 exact `dbe9dfe0` and `dbe9`; the no-stop/budget-one rejection has Empty actual
 old ST(1). Reject the unsupported variant `dbeadfe0`. Native admission
 explicitly denies `Operation::Fucomi` and DB E9.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+#### S2-30am. Bare bounded `FUCOMIP ST(0), ST(1)`
+
+Accept exactly bare `DF E9`. Before mutation, require `Some(X87State)`, FCW
+`0x037f`, `FSW & 0x80ff == 0`, Valid tags at old physical TOP and
+`(TOP+1)&7`, and canonical-Normal binary80 operands from
+`bounded_x87_fcom_result(state, 1)`. Greater clears all six affected RFLAGS
+bits, less sets CF, and equal sets ZF; `FlagEffects` defines CF/PF/AF/ZF/SF/OF
+(`0x8d5`).
+
+Clear only FSW.C1, empty the tag at actual old physical TOP, and set TOP to
+`(old TOP+1)&7`. Preserve the old ST(1) Valid tag, every physical register
+payload, C0/C2/C3, FCW, FDP/FOP, every other FSW bit, all GPRs and memory. Set
+FIP to instruction-start RIP, advance RIP by two and retire once. Missing state,
+invalid environment/tag/class, every other DB/DF form, prefixes, REX, WAIT,
+fetch/truncation, STOP and exhausted budget reject without commit.
+
+The exact DF allowlist is E0 FNSTSW AX, E9 FUCOMIP and F1 FCOMIP; DB continues
+to admit only E2 FNCLEX, E3 FNINIT, E9 FUCOMI and F1 FCOMI. Schema/CLI fixtures
+use exact `dfe9dfe0` and `dfe9`; the no-stop/budget-one rejection has an Empty
+tag at actual old physical `(TOP+1)&7` with TOP=5. Schema and CLI reject
+`dfeadfe0` and prefixed `66`, `48`, and `9b` variants. Coverage spans all TOP ×
+ordered relations × 16 initial FSW condition fields, all 64 affected RFLAGS
+masks with definedness, TOP wrap, payload preservation, invalid tags/classes,
+environment and instruction-boundary atomicity. Exhaustive DF decoding admits
+only E0/E9/F1 and rejects all other second bytes and prefixes. Native admission
+explicitly denies `Operation::Fucomip` and DF E9.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329

@@ -2694,3 +2694,35 @@ explicitly denies `Operation::Fucomi` and DB E9.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## Local S2-30am: bounded `FUCOMIP ST(0), ST(1)` (`DF E9`)
+
+Accept exactly bare `DF E9`. Before any mutation, call
+`bounded_x87_fcom_result(state, 1)`, which requires an existing x87 snapshot,
+FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags at old physical TOP and
+`(TOP+1)&7`, and canonical-Normal binary80 operands. Greater clears the six
+affected RFLAGS bits, less sets CF, and equal sets ZF. `FlagEffects` defines
+CF/PF/AF/ZF/SF/OF (`0x8d5`) on successful retirement.
+
+Clear only FSW.C1; empty the tag at actual old physical TOP and set TOP to
+`(old TOP+1)&7`. Preserve old ST(1)'s Valid tag, every physical raw payload,
+C0/C2/C3, FCW, FDP/FOP, every other FSW bit, GPRs and memory. Set FIP to the
+instruction-start RIP, advance RIP by two and retire once. Missing state, bad
+environment/tag/class, fetch/truncation, STOP and exhausted budget reject
+without commit. Unordered comparisons, special values, x87 exceptions and
+native execution are excluded.
+
+The exact DF allowlist is E0 FNSTSW AX, E9 FUCOMIP and F1 FCOMIP. Existing DB
+E2 FNCLEX, E3 FNINIT, E9 FUCOMI and F1 FCOMI remain admitted; all other DB/DF
+forms, prefixes, REX, WAIT and memory operands reject. Exact literal schema/CLI
+programs are `dfe9dfe0` and `dfe9`; the no-stop/budget-one rejection sets TOP=5
+and the actual physical `(TOP+1)&7` tag to Empty. Schema and CLI reject
+`dfeadfe0` and the 66/48/9B-prefixed forms. Interpreter coverage spans every
+TOP × ordered relation × 16 initial FSW condition fields and all 64 affected
+RFLAGS masks with definedness, including TOP wrap and atomic invalid-input and
+execution-boundary rejection. Native admission explicitly denies
+`Operation::Fucomip` and DF E9.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

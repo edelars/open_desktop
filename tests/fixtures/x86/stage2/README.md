@@ -1425,3 +1425,20 @@ pseudocode depicts one; the local contract follows the explicit table/prose.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+### S2-30am FUCOMIP schema and literal CLI coverage
+
+[s2_30am_fucomip_equal_fnstsw.case.json](s2_30am_fucomip_equal_fnstsw.case.json)
+uses exact `dfe9dfe0`: equal canonical-Normal operands set ZF, clear the other
+five affected flags and C1, empty old physical TOP, advance TOP once, and let
+FNSTSW copy `0x4d00` to AX. All raw payloads and the old physical ST(1) Valid
+tag remain preserved. The paired
+[s2_30am_fucomip_invalid_rhs_tag.case.json](s2_30am_fucomip_invalid_rhs_tag.case.json)
+uses exact `dfe9`, TOP=5, and Empty at actual physical `(TOP+1)&7`; with no stop
+RIP and budget one, it rejects without retirement or mutation. Schema/CLI
+reject `dfeadfe0` and 66/48/9B-prefixed variants. Native admission explicitly
+denies `Operation::Fucomip` and DF E9.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

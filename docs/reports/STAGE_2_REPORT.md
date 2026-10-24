@@ -4296,3 +4296,42 @@ and 183 communities; its existing parser warning for
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## S2-30am — bounded FUCOMIP ST(0), ST(1) to RFLAGS and pop
+
+Added exact bare `DF E9` as a distinct `Operation::Fucomip`. The decoder keeps
+DF limited to E0 FNSTSW AX, E9 FUCOMIP and F1 FCOMIP, and leaves the DB allowlist
+E2 FNCLEX, E3 FNINIT, E9 FUCOMI and F1 FCOMI. Prefixes, REX, WAIT, memory and all
+other DB/DF bytes remain unsupported. Execution preflights the existing
+`bounded_x87_fcom_result(state, 1)` before mutation: x87 state must exist, FCW
+must be `0x037f`, `FSW & 0x80ff` zero, both actual physical operand tags Valid,
+and both binary80 values canonical Normal. Commit maps greater/less/equal to
+cleared relation flags/CF/ZF, defines all six bits in `0x8d5`, clears only C1,
+empties old physical TOP and increments TOP with wrap. It preserves all raw
+payloads, the old ST(1) Valid tag, remaining x87 state, GPRs and memory, records
+FIP, advances RIP by two and retires once. Unordered/special values, exception
+delivery, `#NM` and native x87 execution remain excluded.
+
+Interpreter tests cover TOP × three ordered relations × 16 initial FSW
+condition fields, all 64 initial affected-RFLAGS masks with definedness, bad
+operand tags/classes, FCW/FSW, missing state, and fetch/truncation/STOP/budget
+atomicity. Literal fixtures use exact `dfe9dfe0` and `dfe9`; the latter sets
+TOP=5 and the actual physical RHS (slot 6) tag Empty with no stop RIP and budget
+one. Schema/CLI tests reject `dfeadfe0` and `66`/`48`/`9b` prefixes. Native
+admission explicitly rejects `Operation::Fucomip`; the Linux-only native
+admission regression was compile-checked but not executed on this macOS host.
+
+Validation passed: `cargo test --workspace --offline`, `cargo check --workspace
+--all-targets --offline`, Linux x86_64 compile-only
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
+--offline`, `cargo fmt --all -- --check`, and `git diff --check`. Focused
+FUCOMIP tests passed (4 interpreter/decode tests and the literal CLI fixture
+test). `python3 tools/check_layout.py` reports the pre-existing unmapped root
+`.serena/` directory; it was present before this task and remains untouched.
+`graphify update .` completed with 3567 nodes, 7616 edges and 177 communities;
+the existing extractor warning for `include/open_desktop/host_abi.h` remains.
+Physical x86 execution and native x87 state comparison were not performed.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

@@ -196,3 +196,13 @@ rejection uses `dbe9` with budget one and no stop RIP. The rejection fixture
 must encode an Empty tag at the actual old physical `(TOP+1)&7` while retaining
 a Valid old TOP. FUCOMI defines all six affected RFLAGS bits, so
 `rflags_mask` includes `0x8d5`. Schema/CLI tests reject `dbeadfe0`.
+
+## S2-30am literal FUCOMIP fixture profile
+
+The S2-30am x87-state fixtures use exact local instruction bytes: success
+observes `dfe9dfe0` (FUCOMIP followed by FNSTSW AX), and atomic rejection uses
+`dfe9` with budget one and no stop RIP. The rejection fixture sets TOP=5 and
+encodes Empty at the actual physical `(TOP+1)&7` tag while retaining a Valid
+old TOP. FUCOMIP defines all six affected RFLAGS bits, so `rflags_mask`
+includes `0x8d5`; successful execution also empties old TOP and advances TOP
+once. Schema/CLI reject `dfeadfe0` and 66/48/9B-prefixed variants.

@@ -716,6 +716,8 @@ impl Fixture {
                 "dbf1dfe0" => ("dbf1dfe0", 4),
                 "dff1" => ("dff1", 2),
                 "dff1dfe0" => ("dff1dfe0", 4),
+                "dfe9" => ("dfe9", 2),
+                "dfe9dfe0" => ("dfe9dfe0", 4),
                 "dfe0" => ("dfe0", 2),
                 "d9e0" => ("d9e0", 2),
                 "d9e1" => ("d9e1", 2),
@@ -947,6 +949,14 @@ impl Fixture {
                     let rhs = (top + 1) & 7;
                     (x87.tag_word.get() >> (u32::from(rhs) * 2)) & 3 != 0
                 });
+            let is_fucomip_source_rejected = code_bytes == "dfe9"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
+                    let rhs = (top + 1) & 7;
+                    (x87.tag_word.get() >> (u32::from(rhs) * 2)) & 3 != 0
+                });
             let expected_budget = if code_bytes.len() == 8 { 2 } else { 1 };
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length
@@ -975,6 +985,7 @@ impl Fixture {
                     || is_fcomi_source_rejected
                     || is_fucomi_source_rejected
                     || is_fcomip_source_rejected
+                    || is_fucomip_source_rejected
                 {
                     self.stop_rip.is_some() || self.expected_exit != ExpectedExit::Unsupported
                 } else {

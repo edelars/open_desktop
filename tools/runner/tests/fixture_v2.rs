@@ -92,6 +92,10 @@ const FUCOMI_EQUAL_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30al_fucomi_equal_fnstsw.case.json");
 const FUCOMI_INVALID_RHS_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30al_fucomi_invalid_rhs_tag.case.json");
+const FUCOMIP_EQUAL_FNSTSW: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30am_fucomip_equal_fnstsw.case.json");
+const FUCOMIP_INVALID_RHS_TAG: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30am_fucomip_invalid_rhs_tag.case.json");
 const GS_BASE_QWORD_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_22b_gs_base_qword_load_alias.case.json");
 const FS_SELECTOR_TO_RAX: &[u8] =
@@ -1623,6 +1627,40 @@ fn local_x87_fcomip_fixture_observes_flags_and_pop_and_rejects_bad_rhs_atomicall
 
     let (input, result) = run(FCOMIP_INVALID_RHS_TAG, "interpreter", 4);
     assert_eq!(input.fixture.memory[0].initial_bytes_hex, "dff1");
+    assert_eq!(input.fixture.instruction_budget, 1);
+    assert_eq!(input.fixture.stop_rip, None);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    assert_eq!(snapshot(&result).state, input.fixture.initial_state);
+}
+
+#[test]
+fn local_x87_fucomip_fixture_observes_flags_and_pop_and_rejects_bad_rhs_atomically() {
+    let (input, result) = run(FUCOMIP_EQUAL_FNSTSW, "interpreter", 0);
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "dfe9dfe0");
+    let mut wrong_schema_program = input.fixture.clone();
+    wrong_schema_program.memory[0].initial_bytes_hex = "dfeadfe0".into();
+    assert!(wrong_schema_program.to_json().is_err());
+    for rejected in ["dfeadfe0", "66dfe9dfe0", "48dfe9dfe0", "9bdfe9dfe0"] {
+        let mut wrong_schema_program = input.fixture.clone();
+        wrong_schema_program.memory[0].initial_bytes_hex = rejected.into();
+        assert!(wrong_schema_program.to_json().is_err(), "{rejected}");
+    }
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 2);
+    let observed = snapshot(&result);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0004);
+    expected.gpr[0] = HexU64((expected.gpr[0].get() & !0xffff) | 0x4d00);
+    expected.rflags = HexU64((expected.rflags.get() & !0x8d5) | 0x40);
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.status_word = HexU64(0x4d00);
+    expected_x87.tag_word = HexU64(0xfff3);
+    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+    assert_eq!(observed.state, expected);
+
+    let (input, result) = run(FUCOMIP_INVALID_RHS_TAG, "interpreter", 4);
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "dfe9");
     assert_eq!(input.fixture.instruction_budget, 1);
     assert_eq!(input.fixture.stop_rip, None);
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));

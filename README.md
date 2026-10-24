@@ -2,7 +2,7 @@
 
 Собственная платформа для запуска x86-64 гостевых ОС на macOS/Apple Silicon. Декодер, интерпретатор, JIT ARM64, виртуальная машина и интеграция разрабатываются самостоятельно.
 
-**Текущее состояние:** реализуются ограниченные вертикальные срезы CPU и системных компонентов Stage 2; это не означает готовность полной VM или поддержку полного x87. В частности, `od-isa` поддерживает bounded x87 compare/pop формы для canonical Normal binary80, включая `FCOM ST(i)`, `FCOMP ST(i)`, `FCOMPP`, `FCOMI` и `FCOMIP`, и сохраняет native x87 execution закрытым. Фактические границы и проверки описаны в [плане этапа 2](docs/plans/STAGE_2.md), [CPU contract](docs/specs/CPU_CONTRACT.md) и [отчёте](docs/reports/STAGE_2_REPORT.md).
+**Текущее состояние:** реализуются ограниченные вертикальные срезы CPU и системных компонентов Stage 2; это не означает готовность полной VM или поддержку полного x87. В частности, `od-isa` поддерживает bounded x87 compare/pop формы для canonical Normal binary80, включая `FCOM ST(i)`, `FCOMP ST(i)`, `FCOMPP`, `FCOMI`, `FCOMIP`, `FUCOMI` и `FUCOMIP`, и сохраняет native x87 execution закрытым. Фактические границы и проверки описаны в [плане этапа 2](docs/plans/STAGE_2.md), [CPU contract](docs/specs/CPU_CONTRACT.md) и [отчёте](docs/reports/STAGE_2_REPORT.md).
 
 ## Начало работы
 
