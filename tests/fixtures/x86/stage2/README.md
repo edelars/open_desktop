@@ -2151,4 +2151,4 @@ and negative FSTP+FNSTSW fixtures are schema/CLI reachable and included in
 native denial. Noncanonical neighbors, mismatched tags, and forbidden status
 reject before access. See the [S2-31aq CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31aq-signed-infinity-fstfstp-m32fp-rax),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31aq-store-canonical-signed-binary80-infinity-through-bounded-m32-fstfstp),
-and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31aq-signed-infinity-stores-for-bounded-m32-fstfstp).
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31aq--signed-infinity-stores-for-bounded-m32-fstfstp).

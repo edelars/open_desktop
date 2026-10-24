@@ -294,5 +294,5 @@
   ISSUE-019; the final combined S2-31 substage owns physical acceptance. See
   [S2-31aq CPU contract](specs/CPU_CONTRACT.md#local-s2-31aq-signed-infinity-fstfstp-m32fp-rax),
   [plan](plans/STAGE_2.md#s2-31aq-store-canonical-signed-binary80-infinity-through-bounded-m32-fstfstp),
-  [report](reports/STAGE_2_REPORT.md#s2-31aq-signed-infinity-stores-for-bounded-m32-fstfstp),
+  [report](reports/STAGE_2_REPORT.md#s2-31aq--signed-infinity-stores-for-bounded-m32-fstfstp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).

@@ -5913,6 +5913,8 @@ combined final S2-31 substage. Independent `gpt-6.1-sol` review at medium
 reasoning found no concrete findings.
 
 
+<a id="s2-31aq--signed-infinity-stores-for-bounded-m32-fstfstp"></a>
+
 ## S2-31aq — signed-infinity stores for bounded m32 FST/FSTP
 
 Exact D910/D918 now accept only canonical binary80 infinity with the physical

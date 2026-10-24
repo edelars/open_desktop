@@ -451,4 +451,4 @@ schema and CLI; both are included in native denial. Pseudo-infinity, NaNs,
 other Special classes, mismatched tags, and forbidden status reject before the
 write. See the [S2-31aq contract](../specs/CPU_CONTRACT.md#local-s2-31aq-signed-infinity-fstfstp-m32fp-rax),
 [plan](../plans/STAGE_2.md#s2-31aq-store-canonical-signed-binary80-infinity-through-bounded-m32-fstfstp),
-and [report](../reports/STAGE_2_REPORT.md#s2-31aq-signed-infinity-stores-for-bounded-m32-fstfstp).
+and [report](../reports/STAGE_2_REPORT.md#s2-31aq--signed-infinity-stores-for-bounded-m32-fstfstp).
