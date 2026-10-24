@@ -5992,4 +5992,10 @@ Graphify updated to 4042 nodes and 8386 edges. The layout checker reports the
 pre-existing unmapped `.serena/` directory, left untouched. Architecture-gated
 native runtime denial was not executed on this arm64 host; the Linux x86 runner
 target compiled. Physical validation remains deferred to the combined final
-S2-31 substage. Independent review is pending.
+S2-31 substage. Independent `gpt-6.1-sol` medium review of commit `52dc10c`
+found no concrete correctness, regression, contract, or fixture-reachability
+findings. Targeted verification passed 13 m80 store tests, one SNaN load/store
+composition test, one CLI fixture test, and two relevant JIT-denial tests. The
+Intel FST/FSTP entry explicitly exempts double extended-precision stores from
+the SNaN invalid-operation exception ([Intel SDM revision 093, Vol.2A, p.3-387,
+official PDF p.505](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505)).
