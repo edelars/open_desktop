@@ -1347,6 +1347,23 @@ physical x86 behavior.
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
 pp.3-347–3-349 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+### S2-31e FIST m16int schema and literal coverage
+
+The schema admits only bare `DF 10` and exact `DF 10 DF E0` (FNSTSW AX).
+Handwritten cases cover a positive tie, FNSTSW composition, exact signed-word
+limits, signed-i16 overflow, invalid old TOP tag, invalid FSW, unsupported FCW
+and an out-of-domain exponent. The CLI verifies one Word mutation and complete
+no-pop state preservation, including TOP, tags and raw payloads; rejection
+cases preserve CPU and memory with zero retirement. Interpreter unit tests also
+cover every rounding control and sign, rounding at the signed limits, complete
+canonical48 range validation, the one-write/no-read contract, permission
+failure and injected architectural-fault atomicity. Native x87 admission
+explicitly denies FIST. Flat fixture RAM does not establish MMU translation,
+page walks, MMIO, SMP or physical x86 behavior.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
+pp.3-347–3-349 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ### S2-31c FIST m32int schema and literal coverage
 
 The schema admits only bare `DB 10` and exact `DB 10 DF E0` (FNSTSW AX).

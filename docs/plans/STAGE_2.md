@@ -223,6 +223,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
+| [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
+| [x] | S2-31e | Bare bounded FIST m16int [RAX] DF 10, partial slice | S2-31d |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2060,6 +2062,22 @@ x87 payloads and unrelated state. Add literal fixtures for `DF 18`, exact
 tag/status/configuration and no-commit rejection. Decoder/schema coverage must
 reject prefixes and nearby forms, and native admission remains closed. This
 local slice does not model general x87 exception delivery or complete S2-31.
+
+#### S2-31e. Bare bounded `FIST m16int [RAX]` (`DF 10`), partial slice
+
+Implement only bare `DF 10` in Long64 with a canonical Word destination
+`[RAX]` and an existing x87 snapshot. Mirror S2-31d's canonical-Normal old
+physical TOP, exponent 0..15, four exact all-masked PC64 FCW values,
+`FSW & 0x80df == 0`, integer quotient/remainder RC rounding and post-rounded
+signed-i16 bounds. Validate the complete canonical48 destination before one
+atomic Word store with no data read. Only after that store succeeds, update
+sticky PE/C1, FIP/FDP, RIP and retirement once. Preserve TOP, every physical
+tag, all eight raw payloads and unrelated state. Failures before or during the
+store preserve architectural state and memory. Add literal `DF 10` and exact
+`DF 10 DF E0` (FNSTSW AX) fixtures for no-pop state, rounding/boundaries,
+overflow and invalid tag/status/control/exponent cases; reject prefixes and
+nearby forms, and explicitly deny native admission. This local slice does not
+model general x87 exception delivery or complete S2-31.
 
 ### S2-32. Остальные обязательные x87 формы
 

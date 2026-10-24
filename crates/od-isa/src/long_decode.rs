@@ -455,6 +455,8 @@ pub enum Operation {
     FistpM32IntRax,
     /// Bare `DF 18` FISTP word integer at [RAX], bounded finite profile.
     FistpM16IntRax,
+    /// Bare `DF 10` FIST word integer at [RAX], bounded finite profile.
+    FistM16IntRax,
     /// Bare `DB 10` FIST dword integer at [RAX], bounded finite profile.
     FistM32IntRax,
     /// Bare `D8 D0+i` FCOM ST(i), bounded canonical-Normal register compare.
@@ -1097,6 +1099,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 match modrm {
                     0xe0 => Operation::FnstswAx,
+                    0x10 => Operation::FistM16IntRax,
                     0x18 => Operation::FistpM16IntRax,
                     _ => indexed_x87_compare(opcode.byte, modrm)
                         .ok_or_else(|| self.unsupported(opcode))?,
@@ -2267,6 +2270,11 @@ mod tests {
         assert_eq!(fistp_word.length, 2);
         assert_eq!(fistp_word.prefixes, Prefixes::default());
 
+        let fist_word = Memory::new(&[0xdf, 0x10]).decode().unwrap();
+        assert_eq!(fist_word.operation, Operation::FistM16IntRax);
+        assert_eq!(fist_word.length, 2);
+        assert_eq!(fist_word.prefixes, Prefixes::default());
+
         for second in 0u8..=u8::MAX {
             let decoded = Memory::new(&[0xdb, second]).decode();
             assert_eq!(
@@ -2407,6 +2415,7 @@ mod tests {
                 match modrm {
                     0xe0 => Ok(Operation::FnstswAx),
                     0x18 => Ok(Operation::FistpM16IntRax),
+                    0x10 => Ok(Operation::FistM16IntRax),
                     _ if indexed_x87_compare(0xdf, modrm).is_some() => {
                         Ok(indexed_x87_compare(0xdf, modrm).unwrap())
                     }
@@ -2476,6 +2485,7 @@ mod tests {
                 match modrm {
                     0xe0 => Ok(Operation::FnstswAx),
                     0x18 => Ok(Operation::FistpM16IntRax),
+                    0x10 => Ok(Operation::FistM16IntRax),
                     _ if indexed_x87_compare(0xdf, modrm).is_some() => {
                         Ok(indexed_x87_compare(0xdf, modrm).unwrap())
                     }
@@ -2564,6 +2574,8 @@ mod tests {
                     Ok(Operation::FistpM32IntRax)
                 } else if opcode == 0xdf && modrm == 0xe0 {
                     Ok(Operation::FnstswAx)
+                } else if opcode == 0xdf && modrm == 0x10 {
+                    Ok(Operation::FistM16IntRax)
                 } else if opcode == 0xdf && modrm == 0x18 {
                     Ok(Operation::FistpM16IntRax)
                 } else if let Some(operation) = indexed_x87_compare(opcode, modrm) {

@@ -2769,6 +2769,37 @@ physical execution, exception delivery, or general x87 semantics.
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
 pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## Local S2-31e: bounded `FIST m16int [RAX]` (`DF 10`)
+
+The interpreter admits bare `DF 10` in Long64 as a Word store through RAX,
+with 64-bit address size, no index/displacement/segment override, and a full
+canonical48 check over both bytes. Preflight mirrors S2-31d: an existing x87
+snapshot; FCW exactly `0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`; and
+`FSW & 0x80df == 0`, with sticky PE allowed. Only the old physical TOP tag and
+payload are inspected. The tag must be Valid, the raw binary80 value canonical
+Normal, and its unbiased exponent 0..15. Other physical tags and payloads are
+not examined. Integer quotient/remainder rounding follows FCW.RC, and the
+rounded result must fit signed i16.
+
+After preflight, validate the complete canonical48 two-byte destination and
+issue exactly one atomic `GuestMemory::write_integer` Word store, with no data
+read. Store errors propagate unchanged and preserve CPU/x87 state and RAM.
+Only after success, set PE sticky iff the conversion had a remainder, set C1
+iff rounding increased magnitude, record FIP/FDP, advance RIP by two and
+retire once. Preserve TOP, every physical tag, all eight raw payloads, FCW,
+FOP, C0/C2/C3, other status bits, GPRs, RFLAGS and unrelated state.
+
+Literal fixtures admit only `DF 10` and exact `DF 10 DF E0`; they cover
+no-pop state, FNSTSW composition, signed-word rounding/boundaries, overflow
+and invalid tag/status/control/exponent rejection. Decoder and schema reject
+prefixes and nearby encodings. Native x87 admission explicitly denies the
+operation. This local slice does not model unmasked exceptions, deferred
+delivery, stack faults, CR0/#NM, MMIO, SMP, translation/page walks, or general
+x87 semantics and does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
+pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ## Local S2-31a: bounded `FRNDINT` (`D9 FC`)
 
 The interpreter admits only bare `D9 FC` in an existing x87-state snapshot.

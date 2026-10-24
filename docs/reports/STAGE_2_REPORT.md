@@ -4366,6 +4366,40 @@ S2-31.
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
 pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## S2-31e — bounded `FIST m16int [RAX]` partial slice
+
+Added bare `DF 10` as a fixed Word store through RAX in Long64. The decoder
+uses the existing integer quotient/remainder conversion with the S2-31d
+canonical-Normal source, exponent 0..15, exact PC64/all-masked FCW values,
+`FSW & 0x80df == 0`, and post-rounded signed-i16 bounds. The full canonical48
+two-byte destination is checked before one atomic Word store with no data
+read. Only a successful store commits PE/C1, FIP/FDP, RIP and retirement. The
+non-pop operation preserves TOP, every physical tag, all raw x87 payloads and
+unrelated state.
+
+Literal fixtures admit exact `DF 10` and `DF 10 DF E0` (FNSTSW AX), and cover
+no-pop behavior, a tie, exact signed-word limits, overflow and invalid
+tag/status/control/exponent state. Interpreter checks additionally exercise
+all RC modes and signs, rounded boundaries, one-write/no-read behavior,
+permission and injected #PF failure atomicity, and canonical-range rejection.
+Native admission explicitly denies DF 10.
+
+Verification passed: `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+and `git diff --check`. The local CLI fixture test covers nine literal S2-31e
+cases; the full workspace test includes the new decoder, conversion, store
+atomicity and schema/fixture checks. Native admission explicitly denies DF 10,
+but platform-gated native execution was not run. No Mac mini or physical x86
+tests were run. MMU/page-walk, MMIO, SMP and general x87 exception behavior
+remain outside this local slice.
+
+This bounded local slice does not establish physical x86 behavior, MMU/page
+walks, MMIO, SMP, architectural exception delivery, unmasked x87 exceptions,
+or general x87 semantics. It does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
+pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ## S2-30ak — bounded FCOMIP ST(0), ST(1) to RFLAGS and pop
 
 Added exactly bare `DF F1` as `Operation::Fcomip`. DF decoding now admits
