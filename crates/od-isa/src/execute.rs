@@ -1050,16 +1050,20 @@ fn step_tracked_with_stop(
         if let Err(error) = memory.read(address, context, &mut raw) {
             return report_memory_error(error);
         }
-        if X87Binary80::from_bytes(raw).classify() != X87Binary80Class::Normal {
-            return Ok(StepOutcome::Unsupported {
-                opcode: instruction.opcode.byte,
-            });
-        }
+        let tag = match X87Binary80::from_bytes(raw).classify() {
+            X87Binary80Class::Normal => X87Tag::Valid,
+            X87Binary80Class::Zero => X87Tag::Zero,
+            _ => {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+        };
         let x87 = state.x87.as_mut().expect("FLD state was prevalidated");
         let old_top = x87.top();
         let new_top = old_top.wrapping_add(7) & 7;
         x87.registers[destination] = raw;
-        x87.set_tag(destination as u8, X87Tag::Valid);
+        x87.set_tag(destination as u8, tag);
         x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9))) | (u16::from(new_top) << 11);
         x87.instruction_pointer = state.rip;
         x87.data_pointer = address;
@@ -23592,12 +23596,14 @@ mod tests {
     }
 
     #[test]
-    fn fld_m80fp_reads_one_exact_normal_value_and_pushes_every_top() {
+    fn fld_m80fp_reads_one_exact_normal_or_signed_zero_and_pushes_every_top() {
         let literals = [
             [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x3f],
             [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xbf],
             [0xf1, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0xd2, 0x01, 0x00],
             [0xf1, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0xd2, 0xfe, 0x7f],
+            [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80],
         ];
         for top in 0..8_u8 {
             for (index, raw) in literals.into_iter().enumerate() {
@@ -23640,7 +23646,14 @@ mod tests {
                     );
                     let after = state.x87.as_ref().unwrap();
                     assert_eq!(after.registers[usize::from(destination)], raw);
-                    assert_eq!(after.tag(destination), Some(X87Tag::Valid));
+                    assert_eq!(
+                        after.tag(destination),
+                        Some(if index < 4 {
+                            X87Tag::Valid
+                        } else {
+                            X87Tag::Zero
+                        })
+                    );
                     assert_eq!(after.top(), destination);
                     assert_eq!(
                         after.status_word,
@@ -23740,8 +23753,8 @@ mod tests {
         assert!(memory.accesses.is_empty());
 
         let invalid_classes = [
-            [0; 10],
             [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
             [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0],
             [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
             [0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x7f],

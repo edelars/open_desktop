@@ -1837,6 +1837,25 @@ Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
 Value,” pp.3-352–3-353, official PDF pp.470–471
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
 
+### S2-31w FLD m80fp signed-zero fixture coverage
+
+The current `DB 28` success fixture supplies literal binary80 +0 and asserts
+the pushed Zero tag and ten zero bytes. The `DB 28 DF E0` composition fixture
+supplies -0 and checks the preserved sign byte (`0x80`) and Zero tag while
+FNSTSW observes TOP/C1. The invalid-class fixture now supplies positive
+minimum nonzero binary80 subnormal; schema admission is limited to nonzero
+binary80 subnormal values for exact DB 28 with budget one and no stop RIP.
+Both signs of minimum subnormal remain Unsupported after the one ten-byte read
+with no CPU commit. The S2-31r report and fixture history above document its
+original Normal-only state.
+
+Intel SDM revision 093, Vol.2A FLD m80fp (pp.3-352–3-353, official PDF p.470)
+does not define #D for this source format. Binary32/binary64 denormal policy is
+not carried over; broader denormal/unmasked handling requires a dedicated
+semantics slice. See the [S2-31w CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31w-bounded-fld-m80fp-rax-db-28-signed-zero-extension),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31w-extend-bounded-fld-m80fp-rax-db-28-to-signed-zero),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31w--bounded-fld-m80fp-signed-zero-extension).
+
 ### S2-31s FLD m32fp schema and literal CLI coverage
 
 Fixtures contain exact literal `D9 00` and `D9 00 DF E0` instruction bytes,

@@ -2783,6 +2783,35 @@ Value,” pp.3-352–3-353, official PDF pp.470–471
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. Signed-zero packing
 and tag details follow local policy.
 
+#### S2-31w. Extend bounded `FLD m80fp [RAX]` (`DB 28`) to signed zero
+
+Keep exact bare `DB 28`, the existing push gates, canonical48 ten-byte
+preflight and exactly one `GuestMemory::read` into `[u8; 10]`. After the read,
+accept canonical binary80 Normal unchanged with `X87Tag::Valid`, and accept
+both raw signed binary80 zeros unchanged with `X87Tag::Zero`. Every other
+class, including both signs of nonzero minimum subnormal, remains Unsupported
+after one read and without CPU commit. Intel SDM revision 093 Vol.2A FLD
+m80fp specifies no denormal exception for this format; do not import binary32/
+binary64 #D behavior or broaden the class policy. Any future denormal and
+unmasked exception behavior requires its own semantics slice.
+
+Preserve TOP push/wrap, C1 clearing, PE and other local status policy, FCW/FOP,
+other tags/payloads, FIP/FDP/RIP and one retirement. Keep native admission
+denied. Literal +0/-0 vectors cover every TOP×FCW combination; minimum
+subnormal ± cases and other specials reject after the one exact read with full
+CPU state unchanged. Update the base fixture to +0 and the FNSTSW composition
+to -0, asserting the exact raw bytes and Zero tag. Reclassify the old
+zero-rejection fixture and its exact DB 28 / budget-one / no-stop schema
+predicate to nonzero binary80 subnormal. Preserve the S2-31r report as the
+historical Normal-only record and add this result separately. S2-31 remains
+partial; physical acceptance stays in the combined final substage.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF p.470
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. The no-#D statement
+is specific to FLD m80fp. Broader denormal/unmasked policy is deferred.
+
 #### S2-30an. Bare indexed FCOMI-family register forms
 
 Generalize the four existing `i=1` forms to exact bare DB/DF register bytes:

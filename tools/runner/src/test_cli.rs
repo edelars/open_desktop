@@ -2331,12 +2331,14 @@ mod tests {
 
     #[test]
     fn fld_m80fp_literal_fixtures_load_raw_binary80_and_reject_bad_class() {
-        for (bytes, expected_rax, retired) in [
+        for (bytes, expected_rax, retired, expected_raw, expected_tag_word) in [
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31r_fld_m80fp.case.json")
                     .as_slice(),
                 0x0000_0000_0030_0004,
                 1,
+                "00000000000000000000",
+                0x7ffc,
             ),
             (
                 include_bytes!(
@@ -2345,6 +2347,8 @@ mod tests {
                 .as_slice(),
                 0x0000_0000_0030_7d00,
                 2,
+                "00000000000000000080",
+                0x7ffc,
             ),
         ] {
             let fixture = v2::Fixture::from_json(bytes).expect("S2-31r fixture schema");
@@ -2365,10 +2369,10 @@ mod tests {
             assert_eq!(value.state.gpr[0], HexU64(expected_rax));
             let after = value.state.x87.as_ref().unwrap();
             assert_eq!(after.status_word, HexU64(0x7d00));
-            assert_eq!(after.tag_word, HexU64(0x3ffc));
+            assert_eq!(after.tag_word, HexU64(expected_tag_word));
             assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
             assert_eq!(after.data_pointer, HexU64(0x0030_0004));
-            assert_eq!(after.registers[7], "0123456789abcdef0180");
+            assert_eq!(after.registers[7], expected_raw);
             for physical in 0..7 {
                 assert_eq!(
                     after.registers[physical],
@@ -2388,7 +2392,7 @@ mod tests {
                     .find(|region| region.region_id == "stack")
                     .unwrap()
                     .bytes_hex,
-                "0123456789abcdef0180"
+                expected_raw
             );
             assert_eq!(
                 regions
@@ -2428,6 +2432,29 @@ mod tests {
             .find(|region| region.region_id == "canary")
             .unwrap();
         assert_eq!(canary.bytes_hex, "a5");
+
+        let template: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31r_fld_m80fp_invalid_class.case.json"
+        ))
+        .unwrap();
+        for (raw, should_be_admitted) in [
+            ("01000000000000000000", true),
+            ("01000000000000000080", true),
+            ("00000000000000000000", false),
+            ("00000000000000000080", false),
+            ("00000000000000800000", false),
+            ("0000000000000080003f", false),
+            ("0000000000000080ff7f", false),
+        ] {
+            let mut nearby = template.clone();
+            nearby["memory"][1]["initial_bytes_hex"] = serde_json::Value::String(raw.into());
+            let parsed = v2::Fixture::from_json(&serde_json::to_vec(&nearby).unwrap());
+            assert_eq!(
+                parsed.is_ok(),
+                should_be_admitted,
+                "S2-31w schema admission for raw binary80 {raw}"
+            );
+        }
     }
 
     #[test]

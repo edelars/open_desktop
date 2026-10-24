@@ -2742,6 +2742,42 @@ Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See the
 [Stage 2 plan](../plans/STAGE_2.md#s2-31r-bare-bounded-fld-m80fp-rax-db-28-partial-slice)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+## Local S2-31w: bounded `FLD m80fp [RAX]` (`DB 28`) signed-zero extension
+
+This updates the current S2-31r behavior while preserving that report as the
+historical Normal-only result. Exact bare `DB 28` keeps the existing x87 state,
+FCW/FSW/Empty-destination gates, complete canonical48 ten-byte range check,
+and one exact read. After the read, canonical Normal bytes remain unchanged
+and receive `X87Tag::Valid`; either canonical signed-zero encoding remains
+unchanged and receives `X87Tag::Zero`. Nonzero subnormals, infinity, NaNs and
+other non-Normal classes return local Unsupported after the read without any
+CPU commit. In particular both signs of minimum nonzero binary80 subnormal are
+still excluded.
+
+Success retains the existing bounded push effects: set TOP to the destination,
+clear C1, preserve PE and all other status bits, FCW/FOP, other tags/payloads,
+record FIP/FDP, advance RIP by two and retire once. No memory write is issued.
+Faults and backend failures retain the existing behavior. Native admission
+remains denied.
+
+Intel SDM revision 093 Vol.2A FLD m80fp pp.3-352–3-353 (official PDF p.470)
+does not define a denormal exception for the m80fp source. Therefore the
+binary32/binary64 #D behavior is not applied here. Denormal and unmasked
+exception semantics beyond this narrow class decision require a dedicated
+future slice.
+
+Literal interpreter coverage checks +0/-0 over every TOP×FCW pair, unchanged
+Normal values, exact single-read behavior, Zero tags, and full-state rejection
+for ±minimum subnormal and other unsupported classes. The `DB 28` fixture uses
++0; the `DB 28 DF E0` composition uses -0 and checks raw sign plus Zero tag.
+The Unsupported fixture now uses positive minimum subnormal. Schema exception
+admission is restricted to nonzero binary80 subnormal data for exact `DB 28`,
+budget one and no stop RIP.
+
+[Stage 2 plan](../plans/STAGE_2.md#s2-31w-extend-bounded-fld-m80fp-rax-db-28-to-signed-zero),
+[historical S2-31r report](../reports/STAGE_2_REPORT.md#s2-31r--bounded-fld-m80fp-partial-slice),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
 ## Local S2-31s: bounded `FLD m32fp [RAX]` (`D9 00`)
 
 The interpreter admits only exact bare `D9 00` in Long64 with existing x87

@@ -1066,9 +1066,38 @@ impl Fixture {
                             .and_then(|offset| offset.checked_mul(2));
                         start.is_some_and(|start| {
                             start.checked_add(20).is_some_and(|end| {
-                                region.initial_bytes_hex.len() >= end
-                                    && region.initial_bytes_hex[start..end]
-                                        .eq_ignore_ascii_case("00000000000000000000")
+                                region.initial_bytes_hex.len() >= end && {
+                                    match region.initial_bytes_hex.get(start..end) {
+                                        Some(raw) => {
+                                            let mut bytes = [0_u8; 10];
+                                            let decoded = bytes
+                                                .iter_mut()
+                                                .zip(raw.as_bytes().chunks_exact(2))
+                                                .all(|(byte, pair)| {
+                                                    std::str::from_utf8(pair)
+                                                        .ok()
+                                                        .and_then(|pair| {
+                                                            u8::from_str_radix(pair, 16).ok()
+                                                        })
+                                                        .map(|value| *byte = value)
+                                                        .is_some()
+                                                });
+                                            if !decoded {
+                                                false
+                                            } else {
+                                                let significand = u64::from_le_bytes(
+                                                    bytes[..8].try_into().expect("binary80 width"),
+                                                );
+                                                let sign_exponent =
+                                                    u16::from_le_bytes([bytes[8], bytes[9]]);
+                                                sign_exponent & 0x7fff == 0
+                                                    && significand != 0
+                                                    && significand & (1 << 63) == 0
+                                            }
+                                        }
+                                        None => false,
+                                    }
+                                }
                             })
                         })
                     })

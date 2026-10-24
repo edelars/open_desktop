@@ -5222,3 +5222,44 @@ Value,” pp.3-352–3-353, official PDF pp.470–471
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. Signed-zero tag and
 packing details are local project policy.
+
+
+## S2-31w — bounded `FLD m80fp` signed-zero extension
+
+Extended exact bare `DB 28` to accept raw binary80 +0 and -0 after the
+existing single ten-byte read. Both sign encodings are preserved byte-for-byte
+and assigned `X87Tag::Zero`; canonical Normal values retain their exact raw
+payload and Valid tag. Positive/negative nonzero subnormals, infinity, NaNs and
+other unsupported encodings still return Unsupported after exactly one read
+with no CPU commit. No binary32/binary64 denormal `#D` policy is imported: the
+Intel SDM revision 093 FLD m80fp entry specifies no denormal exception for
+this source format. Broader denormal and unmasked exception handling is
+deferred to a dedicated slice.
+
+Literal interpreter checks cover both signed zeros across all eight TOP values
+and four FCW settings while retaining Normal vectors. Both signs of minimum
+nonzero subnormal and other special classes are checked for one-read,
+full-state atomic rejection. The base schema/CLI fixture now loads +0 and the
+`DB 28 DF E0` composition fixture loads -0; CLI assertions verify the exact
+signed ten-byte payload and Zero tag. The invalid-class fixture now uses
+positive minimum subnormal, with schema admission limited to nonzero binary80
+subnormal data for exact `DB 28`, budget one and no stop RIP. The S2-31r report
+above remains the historical Normal-only result.
+
+Validation passed: `cargo test --workspace --all-targets --offline` (687 tests),
+`cargo check --workspace --all-targets --offline`,
+`cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu
+--offline` (compile-only), `cargo fmt --all -- --check`, and `git diff --check`.
+The Linux compile emitted existing dead-code warnings in `od-host` and
+`od-runner`. `python3 tools/check_layout.py` reports the pre-existing unmapped
+root `.serena/` directory; it was left untouched. Independent `gpt-6.1-sol`
+review found no concrete defects. `graphify update .` refreshed the code graph.
+No Mac mini or physical x86 checks were performed; physical acceptance remains
+in the combined final S2-31 substage. S2-31 remains partial, native admission
+stays denied, and ISSUE-019 remains open for broader x87 and exception
+behavior.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF p.470
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
