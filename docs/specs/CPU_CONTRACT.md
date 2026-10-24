@@ -3798,8 +3798,8 @@ Unsupported schema fixture at the S2-31ab stage used positive canonical SNaN
 for exact `DB 28`, budget one and no stop RIP; S2-31ac replaces it with positive
 pseudo-infinity. JIT and native profiles continue to deny `DB 28`.
 
-Intel SDM revision 093 Vol.1 Table 8-3 distinguishes canonical quiet/signaling
-NaNs and pseudo-NaN encodings
+Intel SDM revision 093 Vol.1 Table 4-3 describes canonical quiet/signaling
+NaNs; §8.2.2/Table 8-3 describes pseudo-NaNs and other unsupported encodings
 ([Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); the
 Vol.2A FLD m80fp entry remains the form reference
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
@@ -3831,11 +3831,45 @@ one ten-byte read and no writes. Positive bare DB28 and negative
 DB28/DFE0-with-FNSTSW fixtures run through the CLI. The narrow Unsupported
 schema/CLI exception now uses positive pseudo-infinity and remains restricted
 to exact DB28, budget one and no stop RIP; canonical SNaNs and neighboring
-encodings are excluded. Intel SDM revision 093 Vol.1 Table 8-3 distinguishes
-canonical signaling NaNs from quiet and pseudo-NaN encodings
+encodings are excluded. Intel SDM revision 093 Vol.1 Table 4-3 describes
+canonical signaling and quiet NaNs; §8.2.2/Table 8-3 describes pseudo-NaNs
+and other unsupported encodings. Vol.2A Table 3-47 reconstructs E=0,J=1 as Special
 ([Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol.2A FLD
 m80fp remains the instruction reference
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
 No physical or Mac mini acceptance is claimed. See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ac-extend-bounded-fld-m80fp-rax-db-28-to-canonical-snans),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31ac report](../reports/STAGE_2_REPORT.md#s2-31ac--bounded-fld-m80fp-canonical-signalingnan-extension).
+
+## Local S2-31ad: bounded `FLD m80fp [RAX]` (`DB 28`) pseudo-denormals
+
+S2-31ad extends exact bare `DB 28` to binary80 pseudo-denormals: exponent zero,
+explicit integer bit set, any fraction and either sign. Preserve all ten source
+bytes, including exponent zero, and push `X87Tag::Special`. Do not normalize the
+exponent to one. Under the all-masked FCW profile this load adds no DE or other
+status flags; the value is only represented in x87 state and this slice does
+not implement arithmetic consumption or unmasked exception delivery.
+
+Retain the four accepted FCWs, `FSW & 0x80df == 0`, Empty destination, full
+canonical48 ten-byte preflight, exactly one raw read, and existing C1-clear,
+push/TOP, pointer and retirement behavior. Pseudo-infinity, pseudo-NaNs,
+unnormals and other unsupported classes remain post-read Unsupported without
+CPU commit. Native/JIT admission remains closed.
+
+Independent raw literals cover both signs, zero/minimum/maximum fraction, and
+matching exponent-one Normal controls across all TOP×FCW pairs. The tests assert
+that pseudo-denormal source bytes and exponent zero are preserved, the tag is
+Special, and status is unchanged except TOP/C1 policy. Positive bare and
+negative DB28/DFE0 FNSTSW fixtures run through the CLI. The exact DB28,
+budget-one, no-stop Unsupported schema exception continues to use positive
+pseudo-infinity; pseudo-denormals do not match it.
+
+Intel SDM revision 093 Vol.1 §8.2.2/Table 8-3 describes pseudo-denormals as
+supported encodings handled as denormals; Vol.2A FLD m80fp specifies no `#D`
+for the m80fp form ([Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+The raw FXSAVE/FSAVE tag reconstruction assigns E=0,J=1 to Special (Vol.2A
+Table 3-47, official PDF page 532). No arithmetic or unmasked behavior is
+inferred. See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ad-extend-bounded-fld-m80fp-rax-db-28-to-pseudo-denormals),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[S2-31ad report](../reports/STAGE_2_REPORT.md#s2-31ad--bounded-fld-m80fp-pseudo-denormal-extension).

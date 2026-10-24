@@ -5491,8 +5491,9 @@ SNaNs and pseudo-SNaNs reject against the exact no-stop/budget-one schema
 exception, which now uses positive pseudo-infinity. JIT/native admission and
 unmasked exception delivery remain outside scope.
 
-Intel SDM revision 093 Vol.1 Table 8-3 distinguishes canonical signaling NaN,
-quiet NaN and pseudo-NaN encodings
+Intel SDM revision 093 Vol.1 Table 4-3 describes canonical signaling and quiet
+NaN encodings; §8.2.2/Table 8-3 describes pseudo-NaNs and other unsupported
+encodings. Vol.2A Table 3-47 reconstructs E=0,J=1 as Special
 ([Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol.2A FLD
 m80fp remains the instruction-form reference
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
@@ -5511,3 +5512,25 @@ root `.serena` directory; it was left untouched. Independent
 gpt-6.1-sol medium review found no actionable defects in classification,
 gates, raw bytes/status, neighboring-class rejection, schema scope, CLI
 fixtures, or native/JIT denial.
+
+## S2-31ad — bounded `FLD m80fp` pseudo-denormal extension
+
+Exact bare `DB 28` now accepts pseudo-denormals only (exponent zero, explicit
+integer bit set) under the unchanged all-masked FCWs, `FSW & 0x80df == 0`, Empty
+destination, canonical48 ten-byte preflight and single raw read. It preserves
+all ten bytes including exponent zero, pushes Special, and adds no DE or other
+status flags. No arithmetic consumption or unmasked exception delivery is
+implemented; pseudo-infinity/NaNs and unnormals remain Unsupported after one
+read without CPU commit. Native/JIT admission remains closed.
+
+Independent literal coverage spans both signs, zero/minimum/maximum fractions,
+matching exponent-one Normal controls, every TOP×FCW pair, raw payload/tag/
+status invariants, and existing read/fault/atomicity behavior. Positive bare
+and negative DB28/DFE0 FNSTSW fixtures run through the CLI. The schema exception
+remains narrow to positive pseudo-infinity with exact DB28, budget one and no
+stop RIP; pseudo-denormal neighbors are excluded. Intel SDM revision 093 Vol.1
+§8.2.2/Table 8-3 describes pseudo-denormal handling; Vol.2A FLD m80fp states
+that `#D` does not occur for the m80fp form. Table 3-47 reconstructs E=0,J=1
+as Special. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ad-bounded-fld-m80fp-rax-db-28-pseudo-denormals),
+[plan](../plans/STAGE_2.md#s2-31ad-extend-bounded-fld-m80fp-rax-db-28-to-pseudo-denormals),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

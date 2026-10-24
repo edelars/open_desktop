@@ -244,6 +244,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31aa | Extend exact DB 28 FLD m80fp to canonical signed binary80 infinities with Special tag; native closed | S2-31x |
 | [x] | S2-31ab | Extend exact DB 28 FLD m80fp to canonical quiet binary80 NaNs with Special tag; native closed | S2-31aa |
 | [x] | S2-31ac | Extend exact DB 28 FLD m80fp to canonical signaling binary80 NaNs under all-masked FCWs; native closed | S2-31ab |
+| [x] | S2-31ad | Extend exact DB 28 FLD m80fp to raw pseudo-denormals with Special tag and no DE; native closed | S2-31ac |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3186,3 +3187,14 @@ the opcode table/prose. C1 clearing remains a local policy.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+#### S2-31ad. Extend bounded `FLD m80fp [RAX]` (`DB 28`) to pseudo-denormals
+
+[x] Accept only DB28 pseudo-denormals (E=0,J=1) in the existing all-masked
+profile. Preserve raw bytes and E=0, assign Special, add no DE/status flags,
+and retain existing gates and single-read/push semantics. Other unsupported
+classes remain rejected; native/JIT and arithmetic consumption remain out of
+scope. Cover both signs and boundary fractions across TOP×FCW, exponent-one
+Normal controls, schema/CLI fixtures and native denial; retain positive
+pseudo-infinity as the narrow Unsupported fixture class. See the [S2-31ad
+report](../reports/STAGE_2_REPORT.md#s2-31ad--bounded-fld-m80fp-pseudo-denormal-extension).

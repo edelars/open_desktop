@@ -571,3 +571,13 @@ unmasked exception delivery remain outside this path. See the [S2-31ac CPU
 contract](../specs/CPU_CONTRACT.md#local-s2-31ac-bounded-fld-m80fp-rax-db-28-canonical-signalingnans),
 [plan](../plans/STAGE_2.md#s2-31ac-extend-bounded-fld-m80fp-rax-db-28-to-canonical-snans),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31ad `FLD m80fp` pseudo-denormal load
+
+Exact bare `DB 28` accepts E=0,J=1 pseudo-denormals under the existing four
+all-masked FCWs, FSW gate, Empty destination and ten-byte preflight. Preserve
+all raw bytes (including E=0), assign Special and add no DE or other status
+flags. Coverage includes signed zero/minimum/maximum fraction and matching
+exponent-one Normal controls across TOP×FCW, while pseudo-infinity/NaNs and
+unnormals remain Unsupported after one read without commit. This does not add
+arithmetic consumption, unmasked delivery or native x87 execution.

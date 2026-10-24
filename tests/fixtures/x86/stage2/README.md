@@ -1974,3 +1974,18 @@ and expects Unsupported after the one Qword read without CPU commit; schema
 admission is restricted to binary64 infinity/NaN with exact `DD 00`, budget
 one and no stop RIP. Native admission remains closed. See the [S2-31z CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31z-bounded-fld-m64fp-rax-dd-00-masked-subnormal-extension), [plan](../../../../docs/plans/STAGE_2.md#s2-31z-extend-bounded-fld-m64fp-rax-dd-00-to-masked-subnormals), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31z--bounded-fld-m64fp-masked-subnormal-extension).
+
+### S2-31ad FLD m80fp pseudo-denormal fixture coverage
+
+The positive bare `DB 28` fixture supplies a pseudo-denormal with zero
+fraction; the negative `DB 28 DF E0` fixture supplies maximum fraction and
+observes TOP/status through FNSTSW. Both preserve all ten bytes, including the
+zero exponent, and push Special without new status flags. Interpreter literal
+coverage includes both signs, zero/minimum/maximum fraction, all TOP×FCW pairs,
+and equivalent exponent-one Normal controls. The unsupported schema fixture
+remains positive pseudo-infinity; pseudo-denormals do not match its exact
+DB28/budget-one/no-stop predicate. Arithmetic consumption, unmasked delivery,
+native/JIT admission and physical behavior remain outside the slice. See the
+[S2-31ad CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ad-bounded-fld-m80fp-rax-db-28-pseudo-denormals),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ad-extend-bounded-fld-m80fp-rax-db-28-to-pseudo-denormals),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ad--bounded-fld-m80fp-pseudo-denormal-extension).

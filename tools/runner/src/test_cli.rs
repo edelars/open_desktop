@@ -2432,6 +2432,22 @@ mod tests {
                 "ffffffffffffffbfffff",
                 0xbffc,
             ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ad_fld_m80fp_pseudo_denormal.case.json")
+                    .as_slice(),
+                0x0000_0000_0030_0004,
+                1,
+                "00000000000000800000",
+                0xbffc,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ad_fld_m80fp_negative_max_pseudo_denormal_fnstsw.case.json")
+                    .as_slice(),
+                0x0000_0000_0030_7d00,
+                2,
+                "ffffffffffffffff0080",
+                0xbffc,
+            ),
         ] {
             let fixture = v2::Fixture::from_json(bytes).expect("FLD m80fp fixture schema");
             let mut memory =

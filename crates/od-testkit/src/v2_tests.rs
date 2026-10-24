@@ -686,6 +686,11 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
 
     for raw in [
         "00000000000000800000",
+        "01000000000000800000",
+        "ffffffffffffffff0000",
+        "00000000000000800080",
+        "01000000000000800080",
+        "ffffffffffffffff0080",
         "0000000000000080ff7f",
         "00000000000000c0ff7f",
         "00000000000000c0ffff",

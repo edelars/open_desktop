@@ -293,3 +293,12 @@ all-masked FCW/`FSW & 0x80df`/Empty/ten-byte/read-once gates. The exact `db28`,
 budget-one, no-stop Unsupported exception now admits positive pseudo-infinity
 only. It excludes either sign of canonical SNaN or QNaN, pseudo-NaNs,
 pseudo-denormals, unnormals, other special classes and other opcodes.
+
+## S2-31ad `FLD m80fp` pseudo-denormal fixtures
+
+Exact `db28` and `db28dfe0` success fixtures may supply binary80 pseudo-denormals
+(exponent zero, explicit integer bit set, either sign and any fraction). The
+interpreter preserves the raw ten-byte source, assigns Special and adds no DE
+or other status bits. The exact DB28/budget-one/no-stop Unsupported exception
+continues to admit only positive pseudo-infinity; pseudo-denormals and adjacent
+classes are not admitted by that predicate.
