@@ -206,6 +206,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30x | Bare `DD D0+i` FST ST(i), canonical Normal raw copy without TOP change; native closed | S2-30w |
 | [x] | S2-30y | Bare `D9 E0` FCHS, bounded canonical-Normal ST(0) sign-bit flip; native closed | S2-30x |
 | [x] | S2-30z | Bare `D9 E1` FABS, bounded canonical-Normal ST(0) sign-bit clear; native closed | S2-30y |
+| [x] | S2-30aa | Bare `D9 E4` FTST, bounded canonical-Normal ST(0) comparison with zero; native closed | S2-30z |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -1958,6 +1959,28 @@ with no stop RIP and budget one. Native admission explicitly denies D9 E1.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FABS—Absolute Value,” p.3-309
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=427)).
+
+#### S2-30aa. Bare bounded `FTST` (canonical-Normal comparison slice)
+
+Accept exactly bare `D9 E4` with existing `Some(X87State)`, FCW `0x037f`,
+`FSW & 0x80ff == 0`, Valid old physical TOP tag and canonical-Normal ST(0)
+from `bounded_x87_normal_st0_source`. Positive Normal sets C3/C2/C0 to `000`;
+negative Normal sets them to `001`. Clear C1 in both cases and replace the full
+condition-code field using `(old_fsw & !0x4700) | (negative ? 0x0100 : 0)`.
+Preserve TOP, all tags, physical register bytes and every other state field;
+record instruction-start RIP in FIP, advance RIP by two and retire once.
+
+Missing state, invalid environment/tag/class, every other D9 byte, prefixes,
+REX, WAIT, truncation, fetch failure, STOP and exhausted budget must leave the
+full state unchanged. Signed zero, special/subnormal values, exceptions, stack
+faults, CR0/#NM, memory forms, native execution and FPU feature claims are
+excluded. Exhaustive D9 decoding accepts exactly E0→FCHS, E1→FABS and E4→FTST.
+Vectors cover all TOP positions, signs, Normal significand/exponent endpoints,
+all initial condition-code combinations, sentinels, FTST→FNSTSW AX, atomic
+rejections and CLI/schema fixtures. Native admission explicitly denies FTST.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FTST—Test,” pp.3-400–3-401
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
 ### S2-31. x87 conversions, rounding и exceptions
 

@@ -39,6 +39,12 @@ const FABS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30z_fabs_normal.case.json");
 const FABS_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30z_fabs_invalid_source.case.json");
+const FTST_POSITIVE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30aa_ftst_positive.case.json");
+const FTST_NEGATIVE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30aa_ftst_negative.case.json");
+const FTST_INVALID_SOURCE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30aa_ftst_invalid_source.case.json");
 const GS_BASE_QWORD_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_22b_gs_base_qword_load_alias.case.json");
 const FS_SELECTOR_TO_RAX: &[u8] =
@@ -1266,6 +1272,38 @@ fn local_x87_fabs_fixture_cli_clears_only_the_st0_sign_and_clears_c1() {
 #[test]
 fn local_x87_fabs_invalid_source_fixture_is_atomic_in_the_cli_runner() {
     let (input, result) = run(FABS_INVALID_SOURCE, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, input.fixture.initial_state.rip);
+    assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    assert_eq!(observed.state.x87, input.fixture.initial_state.x87);
+}
+
+#[test]
+fn local_x87_ftst_fixtures_set_positive_and_negative_condition_codes() {
+    for (fixture, raw, status) in [
+        (FTST_POSITIVE, "0000000000000080ff3f", 0u64),
+        (FTST_NEGATIVE, "0000000000000080ffbf", 0x0100),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 1);
+        let observed = snapshot(&result);
+        let mut expected = input.fixture.initial_state.clone();
+        expected.rip = HexU64(0x0010_0002);
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.registers[0] = raw.into();
+        expected_x87.status_word = HexU64(status);
+        expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+        assert_eq!(observed.state, expected);
+    }
+}
+
+#[test]
+fn local_x87_ftst_empty_tag_fixture_is_atomic_in_the_cli_runner() {
+    let (input, result) = run(FTST_INVALID_SOURCE, "interpreter", 4);
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
     assert_eq!(count(&result), 0);
     let observed = snapshot(&result);

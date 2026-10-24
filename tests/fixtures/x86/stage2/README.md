@@ -1189,6 +1189,21 @@ cases are checked. Native x87 admission explicitly denies all eight forms.
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
 Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
 
+### S2-30aa x87 schema and fixture coverage
+
+The schema admits exactly the D9 E0 FCHS, D9 E1 FABS and bare D9 E4 FTST
+forms. Two literal FTST success fixtures cover positive and negative
+canonical-Normal ST(0), including a condition-code field initially set to all
+ones. The Empty-tag rejection fixture has `stop_rip: null` and instruction
+budget one; the CLI verifies full state preservation and zero retirement.
+Local interpreter vectors additionally cover every TOP, source sign and
+Normal endpoints, all initial condition-code combinations, unchanged raw
+payload/tag sentinels, FTST followed by FNSTSW AX, and fetch/truncation/STOP/
+budget atomicity. Native x87 admission explicitly denies D9 E4.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FTST—Test,” pp.3-400–3-401
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ### S2-30x x87 schema and fixture coverage
 
 The schema admits all eight bare `DD D0+i` FST ST(i) encodings. The literal

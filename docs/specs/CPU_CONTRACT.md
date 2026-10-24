@@ -2282,3 +2282,33 @@ denies `D9 E1`.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FABS—Absolute Value,” p.3-309
 ([official PDF, Vol.2A p.3-309](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=427)).
+
+## Local S2-30aa: bounded `FTST` (`D9 E4`)
+
+The interpreter accepts exactly bare `D9 E4` with an existing
+`Some(X87State)`, FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tag at old physical
+TOP, and canonical-Normal binary80 ST(0) from
+`bounded_x87_normal_st0_source`. Positive Normal sets C3/C2/C0 to `000`; a
+negative Normal sets them to `001`. Both clear C1. The whole condition-code
+field is replaced as `(old_fsw & !0x4700) | (negative ? 0x0100 : 0)`, so no
+previous C0/C1/C2/C3 value survives. TOP, all physical raw payloads, tags and
+all other x87/CPU fields are preserved. FIP receives instruction-start RIP,
+RIP advances by two, and the operation retires once.
+
+Missing state, invalid FCW/FSW, non-Valid tag, non-Normal source, every other
+D9 second byte, prefixes/REX/WAIT, truncation, fetch failure, STOP and exhausted
+budget reject without state commit. Signed zero, subnormal/special values,
+memory forms, exceptions, stack faults, CR0/#NM, native admission and FPU
+feature claims are outside this slice.
+
+Coverage enumerates all 256 D9 second bytes, accepting E0 as FCHS, E1 as FABS,
+and E4 as FTST only; it checks all TOP values, both signs, minimum/maximum and
+full-significand canonical Normals, all 16 initial condition-code combinations,
+raw payload/tag sentinels, full-state rejection boundaries, and FTST followed
+by FNSTSW AX. Two literal success fixtures cover positive and negative results;
+an Empty-tag fixture rejects with no stop RIP and instruction budget one. The
+schema and CLI admit these fixtures. Native x87 admission explicitly denies
+D9 E4.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FTST—Test,” pp.3-400–3-401
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

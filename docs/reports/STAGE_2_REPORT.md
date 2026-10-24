@@ -3826,3 +3826,40 @@ and `graphify update .`. `python3 tools/check_layout.py` reports the pre-existin
 unmapped root `.serena/` directory; it was left untouched. The Linux native
 denial test was not run on this arm64 macOS host. No Mac mini, SSH or physical
 hardware checks were run. Independent gpt-6.1-sol review found no defects.
+
+## S2-30aa — bounded FTST canonical-Normal comparison slice
+
+Added bare `D9 E4` to the exhaustive D9 table as the third and only new accepted
+second byte after E0/FCHS and E1/FABS. The interpreter requires an existing
+x87 snapshot, FCW `0x037f`, `FSW & 0x80ff == 0`, a Valid physical TOP tag and
+canonical-Normal ST(0) via the shared bounded source gate. It derives C0 from
+the sign bit, clears C1, clears C2/C3, preserves TOP/tags/all raw physical
+payloads and other state, records FIP and retires once. This deliberately leaves
+signed zero, special/subnormal values, exceptions, stack faults, CR0/#NM, memory
+forms and full architectural x87 behavior out of scope.
+
+Literal vectors cover all eight TOP values, positive/negative minimum and
+maximum Normal endpoints plus signed full-width-significand examples, each of
+all 16 initial C3/C2/C1/C0 combinations, complete payload/tag sentinels,
+missing state, invalid FCW/FSW/tag/class, truncation, fetch failure, STOP and
+zero budget with full-state no-commit checks. FTST followed by FNSTSW AX confirms
+the status update is visible. Two literal success fixtures cover positive and
+negative comparisons; a third has canonical-Normal bytes with an Empty physical
+TOP tag, `stop_rip: null`, and instruction budget one. The fixture schema and
+CLI verify the success state, zero-retirement rejection and atomicity. Native
+admission explicitly denies `Operation::Ftst`, and its x87 deny regression
+vector includes `D9 E4`; the prior explicit `FCHS` denial finding remains
+covered by its existing `D9 E0` vector and arm.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FTST—Test,” pp.3-400–3-401
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, Linux x86_64 compile-only
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
+--offline`, focused FTST interpreter/decode/schema/CLI tests,
+`cargo fmt --all -- --check`, `git diff --check` and `graphify update .`.
+`python3 tools/check_layout.py` still reports the pre-existing unmapped root `.serena/`
+directory; it was left untouched. Linux native admission tests were not run on
+the arm64 macOS host. No Mac mini, SSH or physical-hardware checks were run.
+Independent gpt-6.1-sol medium review completed with no findings.

@@ -447,6 +447,8 @@ pub enum Operation {
     Fchs,
     /// Bare `D9 E1` FABS, clearing the sign of canonical-Normal ST(0) only.
     Fabs,
+    /// Bare `D9 E4` FTST, comparing canonical-Normal ST(0) with zero.
+    Ftst,
     /// Bare `DD D8+i` FSTP ST(i), exact Normal source and physical TOP pop only.
     FstpSti {
         destination: u8,
@@ -1119,6 +1121,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 match self.byte()? {
                     0xe0 => Operation::Fchs,
                     0xe1 => Operation::Fabs,
+                    0xe4 => Operation::Ftst,
                     _ => return Err(self.unsupported(opcode)),
                 }
             }
@@ -2179,6 +2182,16 @@ mod tests {
                 "{bytes:02x?}"
             );
         }
+        for prefix in [0xf0, 0xf2, 0xf3, 0x2e, 0x64, 0x66, 0x67, 0x40, 0x48, 0x9b] {
+            let bytes = [prefix, 0xd9, 0xe4];
+            assert!(
+                matches!(
+                    Memory::new(&bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
         for bytes in [
             &[0x9b, 0xdb, 0xe2][..],
             &[0x66, 0xdb, 0xe2][..],
@@ -2378,7 +2391,7 @@ mod tests {
     }
 
     #[test]
-    fn d9_accepts_only_bare_fchs_and_fabs() {
+    fn d9_accepts_only_bare_fchs_fabs_and_ftst() {
         let mut memory = Memory::new(&[0xd9, 0xe0]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::Fchs);
@@ -2394,6 +2407,8 @@ mod tests {
                     Ok(Operation::Fchs)
                 } else if second == 0xe1 {
                     Ok(Operation::Fabs)
+                } else if second == 0xe4 {
+                    Ok(Operation::Ftst)
                 } else {
                     Err(DecodeError::Unsupported {
                         opcode: Opcode {
