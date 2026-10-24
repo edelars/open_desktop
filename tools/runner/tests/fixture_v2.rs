@@ -41,6 +41,8 @@ const FRNDINT_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_fnstsw.case.json");
 const FRNDINT_INVALID_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_invalid_tag.case.json");
+const FLDCW_FRNDINT_FNSTSW: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31i_fldcw_frndint_fnstsw.case.json");
 const FABS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30z_fabs_normal.case.json");
 const FABS_INVALID_SOURCE: &[u8] =
@@ -1360,6 +1362,67 @@ fn local_x87_frndint_invalid_tag_fixture_is_atomic() {
 }
 
 #[test]
+fn local_x87_fldcw_fixture_covers_all_old_and_loaded_control_word_pairs() {
+    let words = [0x037f, 0x077f, 0x0b7f, 0x0f7f];
+    for old in words {
+        for loaded in words {
+            let mut fixture = Fixture::from_json(FLDCW_FRNDINT_FNSTSW).unwrap().fixture;
+            fixture.case_id = format!("local_x87_fldcw_{old:04x}_{loaded:04x}");
+            fixture.initial_state.x87.as_mut().unwrap().control_word = HexU64(old);
+            fixture.initial_state.x87.as_mut().unwrap().status_word = HexU64(0x4720);
+            fixture.initial_state.gpr[0] = HexU64(0x0000_0000_0030_0001);
+            let code = fixture
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "code")
+                .unwrap();
+            code.length = 2;
+            code.initial_bytes_hex = "d928".into();
+            code.comparison_mask_hex = "ffff".into();
+            let stack = fixture
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "stack")
+                .unwrap();
+            let little_endian = loaded.to_le_bytes();
+            stack.initial_bytes_hex.replace_range(
+                2..6,
+                &format!("{:02x}{:02x}", little_endian[0], little_endian[1]),
+            );
+            fixture.stop_rip = Some(HexU64(0x0010_0002));
+            fixture.instruction_budget = 1;
+
+            let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(count(&result), 1);
+            let observed = snapshot(&result);
+            assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+            assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+            assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+            let mut expected = input.fixture.initial_state.x87.clone().unwrap();
+            expected.control_word = HexU64(loaded);
+            assert_eq!(observed.state.x87.as_ref(), Some(&expected));
+        }
+    }
+}
+
+#[test]
+fn local_x87_fldcw_frndint_fnstsw_composition_uses_loaded_rounding_mode() {
+    let (input, result) = run(FLDCW_FRNDINT_FNSTSW, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 3);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0006));
+    assert_eq!(observed.state.gpr[0].get() & 0xffff, 0x4720);
+    let mut expected = input.fixture.initial_state.x87.clone().unwrap();
+    expected.control_word = HexU64(0x0b7f);
+    expected.registers[0] = "00000000000000800040".into();
+    expected.status_word = HexU64(0x4720);
+    expected.instruction_pointer = HexU64(0x0010_0002);
+    assert_eq!(observed.state.x87.as_ref(), Some(&expected));
+}
+
+#[test]
 fn local_x87_fabs_fixture_cli_clears_only_the_st0_sign_and_clears_c1() {
     let (input, result) = run(FABS_NORMAL, "interpreter", 0);
     assert!(matches!(result.outcome, Outcome::StopAddress {}));
@@ -2467,6 +2530,17 @@ fn push_immediate_cli_fixtures_match_literal_signed_boundary_answers() {
 #[test]
 fn v2_jit_has_explicit_unsupported_result_without_interpreter_fallback() {
     let (_, result) = run(LOAD_ADD_STORE, "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    assert!(matches!(
+        result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn v2_jit_explicitly_denies_bounded_fldcw_without_interpreter_fallback() {
+    let (_, result) = run(FLDCW_FRNDINT_FNSTSW, "jit", 4);
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
     assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
     assert!(matches!(

@@ -761,6 +761,8 @@ impl Fixture {
                 "ded9dfe0" => ("ded9dfe0", 4),
                 "d9fcdfe0" => ("d9fcdfe0", 4),
                 "d9fc" => ("d9fc", 2),
+                "d928" => ("d928", 2),
+                "d928d9fcdfe0" => ("d928d9fcdfe0", 6),
                 "d938" => ("d938", 2),
                 "d938dfe0" => ("d938dfe0", 4),
                 "dd38" => ("dd38", 2),
@@ -919,6 +921,18 @@ impl Fixture {
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
                 && self.initial_state.gpr[0].get() == 0x0000_7fff_ffff_ffff;
+            let is_fldcw_old_environment_rejected = code_bytes == "d928"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
+                        || x87.status_word.get() & 0x80df != 0
+                });
+            let is_fldcw_noncanonical_range_exception = code_bytes == "d928"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && !is_fldcw_old_environment_rejected
+                && self.initial_state.gpr[0].get() == 0x0000_7fff_ffff_ffff;
             let is_fistp_overflow_rejected = code_bytes == "db18"
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
@@ -1076,7 +1090,11 @@ impl Fixture {
                             }
                     })
             });
-            let expected_budget = if code_bytes.len() == 8 { 2 } else { 1 };
+            let expected_budget = match code_bytes.len() {
+                8 => 2,
+                12 => 3,
+                _ => 1,
+            };
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length
                 || !code.permissions.execute
@@ -1098,6 +1116,8 @@ impl Fixture {
                     || is_frndint_source_rejected
                     || is_fnstcw_noncanonical_range_exception
                     || is_fnstsw_noncanonical_range_exception
+                    || is_fldcw_noncanonical_range_exception
+                    || is_fldcw_old_environment_rejected
                     || is_fistp_overflow_rejected
                     || is_fistp_tag_rejected
                     || is_fist_overflow_rejected
@@ -1123,6 +1143,7 @@ impl Fixture {
                         || self.expected_exit
                             != if is_fnstcw_noncanonical_range_exception
                                 || is_fnstsw_noncanonical_range_exception
+                                || is_fldcw_noncanonical_range_exception
                             {
                                 ExpectedExit::Exception
                             } else {

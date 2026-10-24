@@ -2914,6 +2914,38 @@ Status Word,” pp.3-392–3-393 (`DD /7`); Vol.1 §§8.1.8, 8.1.9 and 8.3.12 fo
 x87 state and condition-code context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
+## Local S2-31i: bounded `FLDCW m2byte [RAX]` (`D9 28`)
+
+The interpreter admits only exact bare `D9 28` in Long64 with an existing x87
+snapshot. Before touching memory, require old FCW exactly `0x037f`, `0x077f`,
+`0x0b7f`, or `0x0f7f`, and `FSW & 0x80df == 0`. Sticky PE and C0-C3 condition
+bits are allowed; tags, TOP, and payloads are not inspected.
+
+Validate the complete canonical48 range `[RAX, RAX+1]`, then issue exactly one
+`GuestMemory::read_integer` Word read. Accept the loaded little-endian FCW only
+if it is one of the same four values. An invalid old environment rejects
+before data access. An invalid loaded FCW returns Unsupported after its single
+read and before state mutation. A successful load changes only
+`x87.control_word`, advances RIP by two, and retires once. Preserve the full
+FSW (including architecturally undefined C0-C3 by local deterministic policy),
+TOP, tags, all eight payloads, FIP/FDP/FOP, GPRs, and RFLAGS. Read and address
+errors propagate and preserve CPU state.
+
+Tests cover all 16 old/new FCW pairs, each loaded RC mode through FRNDINT,
+`D9 28 D9 FC DF E0` composition, invalid old FCW/FSW before access, invalid
+loaded FCW after one read, missing state, second-byte read failure,
+canonical48 crossing, fetch/truncation/STOP/budget boundaries, and exhaustive
+D9 ModR/M plus prefix/WAIT rejection. Native x87 admission explicitly denies
+FLDCW. This local slice preserves pending-status bits when they are allowed by
+the old-state gate but does not deliver pending or unmasked exceptions; WAIT,
+`#MF`, `#NM`/CR0, MMU translation, MMIO, SMP and physical x86 behavior remain
+outside the slice. It does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLDCW—Load x87 FPU Control
+Word,” pp.3-356–3-357 (`D9 /5`); Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state
+and instruction-pointer/data-pointer context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
 ## Local S2-31a: bounded `FRNDINT` (`D9 FC`)
 
 The interpreter admits only bare `D9 FC` in an existing x87-state snapshot.

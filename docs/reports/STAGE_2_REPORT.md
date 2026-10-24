@@ -4682,3 +4682,35 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FSTSW/FNSTSW—Store x87 FPU Status Word,” pp.3-392–3-393 (`DD /7`); Vol.1
 §§8.1.8, 8.1.9 and 8.3.12 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
+## S2-31i — bounded `FLDCW m2byte [RAX]` partial slice
+
+Added exact bare `D9 28` in Long64 with an existing x87 snapshot. The old
+environment gate runs before address or data access: FCW must be one of
+`037f/077f/0b7f/0f7f` and `FSW & 0x80df` must be zero. The implementation
+validates canonical48 for the complete Word range, makes one GuestMemory Word
+read, then accepts only those same four loaded FCWs. Invalid old state causes
+zero data accesses; invalid loaded state causes one read and no state commit.
+Success changes only FCW and RIP and retires once, preserving FSW, tags, TOP,
+all payloads, pointers, GPRs and RFLAGS. C0-C3 preservation is local policy.
+
+Interpreter tests cover all 16 old/new pairs, all four RC modes via FRNDINT,
+invalid/missing state, a second-byte read fault, canonical crossing, fetch,
+truncation, STOP and budget boundaries. The literal CLI fixture composes
+`D9 28 D9 FC DF E0` and observes the rounding result and status through AX.
+The schema rejects prefixes, WAIT and neighbor forms. Native admission remains
+closed. Pending/unmasked exception delivery, `#MF`, `#NM`/CR0, MMU, MMIO and
+physical execution remain unverified; this does not complete S2-31.
+
+Validation passed: `cargo test --workspace --offline` (all 639 unit, fixture,
+runner and doctest cases); `cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, and `git diff --check`. `python3 tools/check_layout.py`
+was run but reports the existing untracked `.serena/` root directory as
+unmapped; that user data was left untouched. `graphify update .` refreshed the
+code graph. Physical x86/Mac mini checks were not run on this host; native x87
+admission remains explicitly denied.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FLDCW—Load x87 FPU Control Word,” pp.3-356–3-357 (`D9 /5`); Vol.1 §§8.1.8,
+8.1.9 and §8.6 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).

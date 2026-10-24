@@ -1386,6 +1386,26 @@ Status Word,” pp.3-392–3-393 (`DD /7`); Vol.1 §§8.1.8, 8.1.9 and 8.3.12
 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
+### S2-31i FLDCW m2byte schema and literal coverage
+
+The schema admits exact bare `D9 28` and the composition
+`D9 28 D9 FC DF E0`; prefixes, including waiting `9B D9 28`, and other D9
+forms remain unsupported. The literal composition fixture loads `0x0b7f`
+across the existing stack region, rounds 1.5 upward through FRNDINT, and
+observes resulting FSW `0x4720` through FNSTSW AX. Interpreter vectors cover
+all 16 old/new standard FCW pairs and each loaded rounding-control setting.
+Invalid old FCW/FSW rejects before data access; invalid loaded FCW performs
+one Word read and rejects without committing. Missing x87 state, second-byte
+permission failure, canonical48 crossing, fetch/truncation/STOP/budget and
+exhaustive D9 ModR/M/prefix decoding are covered. Native x87 admission denies
+FLDCW. The bounded implementation does not deliver pending/unmasked x87
+exceptions, `#MF`, or `#NM`/CR0 and makes no physical execution claim.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLDCW—Load x87 FPU Control
+Word,” pp.3-356–3-357 (`D9 /5`); Vol.1 §§8.1.8, 8.1.9 and §8.6 ([official
+Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
 ### S2-31f FISTP m64int schema and literal coverage
 
 The schema admits exact `DF 38` and `DF 38 DF E0` (FNSTSW AX), with prefixes

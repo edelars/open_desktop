@@ -195,7 +195,7 @@ fn x87_schema_admits_d9_ftst_fnstcw_and_a_budget_one_source_rejection() {
         let accepted = candidate.validate().is_ok();
         assert_eq!(
             accepted,
-            matches!(second, 0x38 | 0xe0 | 0xe1 | 0xe4 | 0xfc),
+            matches!(second, 0x28 | 0x38 | 0xe0 | 0xe1 | 0xe4 | 0xfc),
             "D9 {second:02x}"
         );
     }
@@ -507,6 +507,41 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         .unwrap();
     code.initial_bytes_hex = "dfe0".into();
     assert!(Fixture::from_json(&fnstsw.to_json().unwrap()).is_ok());
+
+    let mut fldcw_old_environment_before_canonical_fault = fixture.clone();
+    let code = fldcw_old_environment_before_canonical_fault
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "d928".into();
+    fldcw_old_environment_before_canonical_fault.stop_rip = None;
+    fldcw_old_environment_before_canonical_fault.instruction_budget = 1;
+    fldcw_old_environment_before_canonical_fault.expected_exit = ExpectedExit::Unsupported;
+    fldcw_old_environment_before_canonical_fault
+        .initial_state
+        .gpr[0] = HexU64(0x0000_7fff_ffff_ffff);
+    fldcw_old_environment_before_canonical_fault
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .control_word = HexU64(0xa55a);
+    assert!(
+        Fixture::from_json(
+            &fldcw_old_environment_before_canonical_fault
+                .to_json()
+                .unwrap()
+        )
+        .is_ok()
+    );
+    fldcw_old_environment_before_canonical_fault.expected_exit = ExpectedExit::Exception;
+    assert!(
+        Fixture::from_json(
+            &serde_json::to_vec(&fldcw_old_environment_before_canonical_fault).unwrap()
+        )
+        .is_err()
+    );
 
     let mut fistp_m64 = fixture.clone();
     let code = fistp_m64

@@ -189,6 +189,7 @@ fn step_tracked_with_stop(
             | Operation::Fnclex
             | Operation::FnstswAx
             | Operation::FnstcwM16Rax
+            | Operation::FldcwM16Rax
             | Operation::FnstswM16Rax
             | Operation::Fchs
             | Operation::Fabs
@@ -462,6 +463,7 @@ fn step_tracked_with_stop(
         | Operation::Fnclex
         | Operation::FnstswAx
         | Operation::FnstcwM16Rax
+        | Operation::FldcwM16Rax
         | Operation::FnstswM16Rax
         | Operation::Fchs
         | Operation::Fabs
@@ -815,6 +817,44 @@ fn step_tracked_with_stop(
             opcode: instruction.opcode.byte,
         });
     }
+    if instruction.operation == Operation::FldcwM16Rax {
+        let x87 = state.x87.as_ref().expect("FLDCW requires x87 state");
+        if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
+            || x87.status_word & 0x80df != 0
+        {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let source = MemoryOperand {
+            base: AddressBase::Register(Register::Rax),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: OperandSize::Qword,
+            size: OperandSize::Word,
+        };
+        let address = match source.access_address_48(state, next_rip) {
+            Ok(address) => address,
+            Err(error) => return report_memory_error(error),
+        };
+        let loaded = match memory.read_integer(address, context, OperandSize::Word) {
+            Ok(value) => value as u16,
+            Err(error) => return report_memory_error(error),
+        };
+        if !matches!(loaded, 0x037f | 0x077f | 0x0b7f | 0x0f7f) {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        state
+            .x87
+            .as_mut()
+            .expect("x87 state was prevalidated")
+            .control_word = loaded;
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
     if matches!(
         instruction.operation,
         Operation::FnstcwM16Rax | Operation::FnstswM16Rax
@@ -918,6 +958,7 @@ fn step_tracked_with_stop(
         Operation::FnstcwM16Rax => {
             unreachable!("FNSTCW commits in its prevalidated store path")
         }
+        Operation::FldcwM16Rax => unreachable!("FLDCW commits in its prevalidated load path"),
         Operation::FnstswM16Rax => {
             unreachable!("FNSTSW m2byte commits in its prevalidated store path")
         }
@@ -20151,5 +20192,206 @@ mod tests {
         ));
         assert_eq!(crossing, before);
         assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn fldcw_m16_accepts_every_old_and_loaded_control_word_pair_and_selects_rc() {
+        let words = [0x037f, 0x077f, 0x0b7f, 0x0f7f];
+        for old in words {
+            for loaded in words {
+                let mut state = LongModeState::default();
+                state.rip = 0xa000;
+                state.gpr[Register::Rax as usize] = 0x1000;
+                state.rflags = 0x0bad_f00d_0123_4567;
+                let mut x87 = crate::state::X87State::fixture_seed();
+                x87.control_word = old;
+                x87.status_word = 0x4720;
+                x87.tag_word = 0xffff;
+                x87.instruction_pointer = 0x1234;
+                x87.data_pointer = 0x5678;
+                x87.last_opcode = 0x05aa;
+                x87.registers = [[0x5a; 10]; 8];
+                state.x87 = Some(x87);
+                let before_x87 = state.x87.clone().unwrap();
+                let before_gprs = state.gpr;
+                let before_flags = state.rflags;
+                let mut memory = Memory::at(&[0xd9, 0x28], state.rip);
+                memory.bytes[..2].copy_from_slice(&loaded.to_le_bytes());
+
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Advanced),
+                    "old={old:04x} loaded={loaded:04x}"
+                );
+                assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1000, 2)]);
+                let actual = state.x87.as_ref().unwrap();
+                assert_eq!(actual.control_word, loaded);
+                assert_eq!(actual.status_word, before_x87.status_word);
+                assert_eq!(actual.tag_word, before_x87.tag_word);
+                assert_eq!(actual.registers, before_x87.registers);
+                assert_eq!(actual.instruction_pointer, before_x87.instruction_pointer);
+                assert_eq!(actual.data_pointer, before_x87.data_pointer);
+                assert_eq!(actual.last_opcode, before_x87.last_opcode);
+                assert_eq!(state.gpr, before_gprs);
+                assert_eq!(state.rflags, before_flags);
+                assert_eq!(state.rip, 0xa002);
+
+                state.x87.as_mut().unwrap().registers[0] = binary80_normal(3 << 62, 0x3fff, false);
+                state.x87.as_mut().unwrap().status_word = 0;
+                state.x87.as_mut().unwrap().set_tag(0, X87Tag::Valid);
+                let mut conversion = Memory::at(&[0xd9, 0xfc], state.rip);
+                assert_eq!(
+                    step(&mut state, &mut conversion, AccessContext::default()),
+                    Ok(StepOutcome::Advanced)
+                );
+                let rounded_to_two = matches!(loaded, 0x037f | 0x0b7f);
+                let expected =
+                    binary80_normal(1 << 63, if rounded_to_two { 0x4000 } else { 0x3fff }, false);
+                assert_eq!(state.x87.as_ref().unwrap().registers[0], expected);
+                assert_eq!(
+                    state.x87.as_ref().unwrap().status_word & 0x0200 != 0,
+                    rounded_to_two
+                );
+                assert_eq!(state.rip, 0xa004);
+            }
+        }
+    }
+
+    #[test]
+    fn fldcw_m16_rejects_old_environment_before_access_and_invalid_new_word_after_one_read() {
+        for (control_word, status_word) in [
+            (0xa55a, 0),
+            (0x037f, 1),
+            (0x037f, 0x0002),
+            (0x037f, 0x0004),
+            (0x037f, 0x0008),
+            (0x037f, 0x0010),
+            (0x037f, 0x0040),
+            (0x037f, 0x0080),
+            (0x037f, 0x8000),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0xa100;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = control_word;
+            x87.status_word = status_word;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd9, 0x28], state.rip);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xd9 })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut missing = LongModeState::default();
+        missing.rip = 0xa100;
+        missing.gpr[Register::Rax as usize] = 0x1000;
+        let before = missing.clone();
+        let mut memory = Memory::at(&[0xd9, 0x28], missing.rip);
+        assert_eq!(
+            step(&mut missing, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xd9 })
+        );
+        assert_eq!(missing, before);
+        assert!(memory.accesses.is_empty());
+
+        for invalid in [0u16, 0x027f, 0x137f, 0xffff] {
+            let mut state = LongModeState::default();
+            state.rip = 0xa102;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0x4700;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd9, 0x28], state.rip);
+            memory.bytes[..2].copy_from_slice(&invalid.to_le_bytes());
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xd9 }),
+                "loaded={invalid:04x}"
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1000, 2)]);
+        }
+    }
+
+    #[test]
+    fn fldcw_m16_memory_and_execution_failures_preserve_cpu_state() {
+        let setup = |address| {
+            let mut state = LongModeState::default();
+            state.rip = 0xa110;
+            state.gpr[Register::Rax as usize] = address;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0x4720;
+            state.x87 = Some(x87);
+            state
+        };
+
+        let mut denied = setup(0x1000);
+        let before = denied.clone();
+        let mut memory = Memory::at(&[0xd9, 0x28], denied.rip);
+        memory.error = Some(MemoryError::PermissionDenied {
+            address: 0x1001,
+            access: AccessKind::Read,
+        });
+        memory.error_kind = Some(AccessKind::Read);
+        assert_eq!(
+            step(&mut denied, &mut memory, AccessContext::default()),
+            Err(MemoryError::PermissionDenied {
+                address: 0x1001,
+                access: AccessKind::Read,
+            })
+        );
+        assert_eq!(denied, before);
+        assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1000, 2)]);
+
+        let mut crossing = setup(0x0000_7fff_ffff_ffff);
+        let before = crossing.clone();
+        let mut memory = Memory::at(&[0xd9, 0x28], crossing.rip);
+        assert!(matches!(
+            step(&mut crossing, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Fault(ArchitecturalFault { vector: 13, .. }))
+        ));
+        assert_eq!(crossing, before);
+        assert!(memory.accesses.is_empty());
+
+        for (bytes, stop_rip, budget, fetch_error) in [
+            (&[0xd9][..], None, 1, false),
+            (&[0xd9, 0x28][..], Some(0xa110), 1, false),
+            (&[0xd9, 0x28][..], None, 0, false),
+            (&[0xd9, 0x28][..], None, 1, true),
+        ] {
+            let mut state = setup(0x1000);
+            let before = state.clone();
+            let mut memory = Memory::at(bytes, state.rip);
+            if fetch_error {
+                memory.fetch_error = Some((
+                    state.rip + 1,
+                    MemoryError::Unmapped {
+                        address: state.rip + 1,
+                        access: AccessKind::Fetch,
+                    },
+                ));
+            }
+            let outcome = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(outcome.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
     }
 }

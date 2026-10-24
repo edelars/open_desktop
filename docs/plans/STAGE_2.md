@@ -228,6 +228,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31f | Bare bounded FISTP m64int [RAX] DF 38, partial slice | S2-31e |
 | [x] | S2-31g | Bare bounded FNSTCW m2byte [RAX] D9 38, snapshot-preserving Word store; native closed | S2-31f |
 | [x] | S2-31h | Bare bounded FNSTSW m2byte [RAX] DD 38, raw-FSW snapshot-preserving Word store; native closed | S2-31g |
+| [x] | S2-31i | Bare bounded FLDCW m2byte [RAX] D9 28, validated Word load and local RC control; native closed | S2-31h |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2140,6 +2141,27 @@ not deliver `#MF` or `#NM`, model CR0, MMU, MMIO, or complete S2-31.
 
 **Результат:** implemented and checked with workspace fixtures/interpreter
 tests; native execution remains explicitly denied. See the S2-31h report and
+CPU contract for validation and scope.
+
+#### S2-31i. Bare bounded `FLDCW m2byte [RAX]` (`D9 28`), partial slice
+
+Implement only exact bare `D9 28` in Long64 with an existing x87 snapshot and
+fixed Word source `[RAX]`. Before data access require old FCW exactly
+`037f/077f/0b7f/0f7f` and `FSW & 0x80df == 0`; sticky PE and condition codes
+are permitted. Validate the complete canonical48 source range, issue one
+GuestMemory Word read, then accept only one of the same four FCWs. Invalid old
+state rejects before access; invalid loaded FCW rejects after that read and
+before commit. Success changes only FCW and RIP by two and retires once,
+preserving FSW (including undefined C0-C3 by local deterministic policy),
+TOP/tags/payloads, FIP/FDP/FOP, GPRs and RFLAGS. Test all 16 old/new FCW pairs,
+all four loaded RC modes through FRNDINT, `D9 28 D9 FC DF E0`, bad old/new
+states, missing state, invalid address/read and execution boundaries. Reject
+prefixes, WAIT and other D9 /5 addressing; keep native admission closed. This
+does not implement pending/unmasked exception delivery, `#MF`/`#NM`, MMU, MMIO,
+or complete S2-31.
+
+**Результат:** implemented and checked with workspace fixtures/interpreter
+tests; native execution remains explicitly denied. See the S2-31i report and
 CPU contract for validation and scope.
 
 ### S2-32. Остальные обязательные x87 формы

@@ -445,6 +445,8 @@ pub enum Operation {
     FnstswAx,
     /// Bare `D9 38` FNSTCW m2byte at [RAX], preserving the x87 snapshot.
     FnstcwM16Rax,
+    /// Bare `D9 28` FLDCW m2byte at [RAX], bounded all-masked control words.
+    FldcwM16Rax,
     /// Bare `DD 38` FNSTSW m2byte at [RAX], preserving the x87 snapshot.
     FnstswM16Rax,
     /// Bare `D9 E0` FCHS, flipping the sign of canonical-Normal ST(0) only.
@@ -1222,6 +1224,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 match self.byte()? {
+                    0x28 => Operation::FldcwM16Rax,
                     0x38 => Operation::FnstcwM16Rax,
                     0xe0 => Operation::Fchs,
                     0xe1 => Operation::Fabs,
@@ -2757,7 +2760,7 @@ mod tests {
     }
 
     #[test]
-    fn d9_accepts_only_bare_fchs_fabs_ftst_frndint_and_fnstcw_m16_rax() {
+    fn d9_accepts_only_bare_fldcw_fchs_fabs_ftst_frndint_and_fnstcw_m16_rax() {
         let mut memory = Memory::new(&[0xd9, 0xe0]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::Fchs);
@@ -2769,7 +2772,9 @@ mod tests {
             let decoded = Memory::new(&[0xd9, second]).decode();
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
-                if second == 0x38 {
+                if second == 0x28 {
+                    Ok(Operation::FldcwM16Rax)
+                } else if second == 0x38 {
                     Ok(Operation::FnstcwM16Rax)
                 } else if second == 0xe0 {
                     Ok(Operation::Fchs)
@@ -2791,6 +2796,25 @@ mod tests {
                 "D9 {second:02x}"
             );
         }
+
+        for prefix in [
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+        ]
+        .into_iter()
+        .chain(0x40..=0x4f)
+        {
+            assert!(matches!(
+                Memory::new(&[prefix, 0xd9, 0x28]).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+        }
+        assert!(matches!(
+            Memory::new(&[0xd9]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                address: 0x1000,
+                access: AccessKind::Fetch,
+            }))
+        ));
 
         for bytes in [
             &[0xf0, 0xd9, 0xe0][..],

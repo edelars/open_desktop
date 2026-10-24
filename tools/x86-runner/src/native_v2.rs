@@ -560,6 +560,7 @@ fn admission_with_tracee_memory(
             | Operation::FnstswAx
             | Operation::FnstcwM16Rax
             | Operation::FnstswM16Rax
+            | Operation::FldcwM16Rax
             | Operation::Fchs
             | Operation::Fabs
             | Operation::Ftst
@@ -3750,6 +3751,7 @@ mod tests {
             [0xdf, 0xf1],
             [0xd9, 0xe0],
             [0xd9, 0xfc],
+            [0xd9, 0x28],
             [0xdd, 0x38],
             [0xdd, 0xd0],
             [0xdd, 0xd1],
