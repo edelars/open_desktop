@@ -5607,4 +5607,6 @@ runner check; `cargo fmt --all -- --check`; `git diff --check`; and graphify
 update. The architecture-gated native-denial test compiles for Linux x86 but is
 not executed on this local arm64 host. `python3 tools/check_layout.py` reports
 the pre-existing unmapped root `.serena` directory, which was left untouched.
-Independent gpt-6.1-sol medium review is pending.
+Independent gpt-6.1-sol medium review found no concrete findings. All nine
+focused ISA/schema/runner review checks passed; native runtime denial remains
+unexecuted on this local arm64 host.
