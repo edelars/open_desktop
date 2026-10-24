@@ -216,6 +216,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30ah | Bare `DD E9` FUCOMP ST(0), ST(1), bounded canonical-Normal compare then one physical TOP pop; native closed | S2-30ag |
 | [x] | S2-30ai | Bare `DA E9` FUCOMPP, bounded canonical-Normal compare then two physical TOP pops; native closed | S2-30ah |
 | [x] | S2-30aj | Bare `DB F1` FCOMI ST(0), ST(1), bounded canonical-Normal compare to RFLAGS; native closed | S2-30ai |
+| [x] | S2-30ak | Bare `DF F1` FCOMIP ST(0), ST(1), bounded canonical-Normal compare to RFLAGS and one physical TOP pop; native closed | S2-30aj |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -2235,6 +2236,38 @@ and DB F1.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329.
+
+#### S2-30ak. Bare bounded `FCOMIP ST(0), ST(1)`
+
+Accept exactly bare `DF F1`. Before mutation, require `Some(X87State)`, FCW
+`0x037f`, `FSW & 0x80ff == 0`, Valid tags at old physical TOP and
+`(TOP+1)&7`, and canonical-Normal binary80 operands by
+`bounded_x87_fcom_result(state, 1)`. Greater sets relation flags to zero, less
+sets CF, and equal sets ZF. Clear CF/PF/AF/ZF/SF/OF before setting the relation;
+`FlagEffects` defines all six bits (`0x8d5`) on successful retirement.
+
+Clear only FSW.C1, empty the tag at the actual old physical TOP, and advance
+TOP to `(old TOP+1)&7`. Preserve the old ST(1) Valid tag, every physical
+register payload, C0/C2/C3, FCW, FDP/FOP, every other FSW bit, all GPRs and
+memory. Set FIP to instruction-start RIP, advance RIP by two and retire once.
+Only bare `DF F1` is admitted under DF; the existing `DF E0` FNSTSW AX and new
+`DF F1` are the only accepted encodings. Existing DB E2 FNCLEX, DB E3 FNINIT
+and DB F1 FCOMI remain admitted. Exceptions, other FCOMI-family forms,
+prefixes, REX, WAIT, fetch/truncation, STOP and exhausted budget reject without
+a state commit. Native admission explicitly denies `Operation::Fcomip` and
+DF F1.
+
+Coverage includes every TOP × ordered relation × 16 initial FSW condition
+fields, all 64 initial subsets of the six changed RFLAGS bits with definedness,
+including TOP wrap, payload/tag sentinels, independent bad operand tags and
+classes, invalid environment and execution-boundary atomicity. Literal schema
+and CLI fixtures use exact `dff1`/`dff1dfe0`; the no-stop/budget-one rejection
+fixture has an Empty tag at actual old physical ST(1). Exhaustive DF decoding
+admits only E0 and F1 and rejects every other second byte and all prefixes.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
 #### S2-30ah. Bare bounded `FUCOMP ST(0), ST(1)`
 

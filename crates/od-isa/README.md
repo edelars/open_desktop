@@ -169,3 +169,12 @@ and retained status sentinels, idempotence, and atomic state/fetch/stop/budget
 rejection. The schema and CLI include a success fixture and a real
 no-stop/budget-one source-tag rejection. Native x87 admission explicitly denies
 FABS; full x87 semantics remain open. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30z-bounded-fabs-d9-e1), [fixture notes](../../tests/fixtures/x86/stage2/README.md), and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
+
+S2-30ak adds bare `DF F1` FCOMIP for canonical-Normal ST(0)/ST(1): it maps
+greater/less/equal to RFLAGS, defines all six affected bits, clears only C1,
+empties the actual old physical TOP tag and advances TOP once. It preserves
+the old ST(1) tag and every register payload. Exact `dff1`/`dff1dfe0` fixtures,
+an invalid old ST(1)-tag reject, exhaustive DF decoding, TOP/relation/status
+coverage and all 64 RFLAGS masks are covered; native x87 admission explicitly
+denies FCOMIP. Exceptions and non-Normal operands remain outside the bounded
+profile. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30ak-bounded-fcomip-st0-st1-df-f1), [fixture notes](../../tests/fixtures/x86/stage2/README.md), and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).

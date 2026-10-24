@@ -4212,3 +4212,45 @@ x86 execution, SSH and Mac mini acceptance were not performed.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## S2-30ak — bounded FCOMIP ST(0), ST(1) to RFLAGS and pop
+
+Added exactly bare `DF F1` as `Operation::Fcomip`. DF decoding now admits
+only existing `DF E0` FNSTSW AX and FCOMIP `DF F1`; every other ModR/M byte,
+prefix, REX and WAIT form remains rejected. Before commit, FCOMIP requires
+existing x87 state, FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags at old
+physical TOP and `(TOP+1)&7`, and canonical-Normal operands from
+`bounded_x87_fcom_result(state, 1)`. Greater sets relation flags to zero, less
+sets CF, and equal sets ZF; all six affected RFLAGS bits (`0x8d5`) are defined.
+It clears only FSW.C1, empties the tag at old physical TOP, advances TOP once
+with wrap, and preserves old physical ST(1)'s Valid tag, all register
+payloads, C0/C2/C3, FCW/FDP/FOP and unrelated state. FIP records instruction
+start, RIP advances two bytes, and retirement occurs once. Exceptions and
+non-Normal classes remain unsupported and atomic.
+
+Coverage spans all eight TOP values × all three ordered relations × 16 initial
+FSW condition fields, all 64 affected RFLAGS masks with definedness, used-tag
+and raw-class/environment rejection, missing x87 state, and fetch/truncation/
+STOP/budget atomicity. DF decoder tests enumerate all 256 second bytes and
+reject every prefix. Literal schema/CLI fixtures cover exact `dff1dfe0` with
+FNSTSW result AX/FSW `0x4d00` and tag word `0xfff3`, plus no-stop/budget-one
+`dff1` rejection on Empty actual old physical ST(1). Native admission
+explicitly denies `Operation::Fcomip` and DF F1.
+
+Validation passed: `cargo test --workspace --offline` (all workspace tests),
+`cargo check --workspace --all-targets --offline`, Linux x86_64 compile-only
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
+--offline`, `cargo fmt --all -- --check`, and `git diff --check`. Focused
+FCOMIP interpreter and literal runner tests passed. Native admission explicitly
+denies `Operation::Fcomip` and DF F1 in code; the Linux-only native admission
+regression was not executed on this macOS host. `python3 tools/check_layout.py`
+still reports the pre-existing unmapped root `.serena/` directory, which was
+present before this task and left untouched. `graphify update .` rebuilt the
+graph with 3542 nodes and 7569 edges; the existing parser warning for
+`include/open_desktop/host_abi.h` remains. Linux x86_64 compile-only check
+passed; Linux native x87 execution, the Linux-only admission test and
+physical-x86 acceptance were not performed.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

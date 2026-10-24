@@ -2631,3 +2631,34 @@ every other second byte, and reject every prefix for FCOMI.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329.
+
+## Local S2-30ak: bounded `FCOMIP ST(0), ST(1)` (`DF F1`)
+
+Accept exactly bare `DF F1`. Before mutation, require `Some(X87State)`, FCW
+`0x037f`, `FSW & 0x80ff == 0`, Valid tags at old physical TOP and
+`(TOP+1)&7`, and canonical-Normal binary80 operands by
+`bounded_x87_fcom_result(state, 1)`. Greater sets relation flags to zero, less
+sets CF, and equal sets ZF. Clear CF/PF/AF/ZF/SF/OF before setting the relation;
+`FlagEffects` defines all six bits (`0x8d5`) on successful retirement.
+
+Clear only FSW.C1, empty the tag at actual old physical TOP, and set TOP to
+`(old TOP+1)&7`. Preserve the Valid tag at old physical ST(1), all payloads,
+C0/C2/C3, FCW, FDP/FOP, every other FSW bit, all GPRs and memory. Set FIP to
+instruction-start RIP, advance RIP by two and retire once. Missing state,
+invalid environment/tag/class, other DF encodings, prefixes, REX, WAIT,
+fetch/truncation, STOP and exhausted budget reject without a state commit.
+The DF decoder admits only existing `DF E0` FNSTSW AX and new `DF F1` FCOMIP;
+DB E2/E3/F1 keeps FNCLEX/FNINIT/FCOMI. Exceptions and all other FCOMI-family
+forms remain outside this slice. Native admission explicitly denies
+`Operation::Fcomip` and DF F1.
+
+Interpreter coverage spans all TOP × three relations × 16 initial FSW
+condition fields, all 64 initial subsets of the affected RFLAGS bits with
+definedness, bad tags/classes, environment and instruction-boundary atomicity.
+Literal fixtures use exact `dff1` and `dff1dfe0`, plus no-stop/budget-one
+rejection with Empty actual old physical ST(1). Exhaustive DF decoding admits
+only E0/F1 and rejects every other ModR/M byte and all prefixes.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

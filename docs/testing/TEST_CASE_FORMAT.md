@@ -176,3 +176,14 @@ physical `(TOP+1)&7` register while retaining a Valid old TOP. FCOMI defines
 all six affected RFLAGS bits, so the top-level `rflags_mask` includes `0x8d5`;
 the generic JSON schema validates the mask and fixture structure, while the
 instruction decoder and fixture tests enforce the exact byte boundary.
+
+## S2-30ak literal FCOMIP fixture profile
+
+The S2-30ak x87-state fixtures preserve the local bounded instruction contract
+in their literal programs: success observes only `dff1dfe0` (FCOMIP followed
+by FNSTSW AX), and atomic rejection uses `dff1` with budget one and no stop
+RIP. The rejection fixture encodes an Empty tag at actual old physical
+`(TOP+1)&7` while retaining a Valid old TOP. FCOMIP defines all six affected
+RFLAGS bits, so `rflags_mask` includes `0x8d5`; the schema validates fixture
+structure and decoder/runner tests enforce the exact byte boundary and the
+one-entry physical TOP pop.

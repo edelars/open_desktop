@@ -1356,7 +1356,24 @@ Schema loading and interpreter CLI coverage assert both exact byte strings.
 Native admission explicitly denies `Operation::Fcomi` and DB F1.
 
 Normative source: Intel SDM revision 093, Vol.2A,
-“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-334–3-336.
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329.
+
+### S2-30ak FCOMIP schema and literal CLI coverage
+
+[`s2_30ak_fcomip_equal_fnstsw.case.json`](s2_30ak_fcomip_equal_fnstsw.case.json)
+uses exact `dff1dfe0`: equal canonical-Normal operands set ZF, clear the other
+five affected RFLAGS bits, clear only FSW.C1, empty physical old TOP, advance
+TOP once, and let FNSTSW copy `0x4d00` to AX. Physical old ST(1) remains Valid
+and its ten-byte payload is preserved. The paired
+[`s2_30ak_fcomip_invalid_rhs_tag.case.json`](s2_30ak_fcomip_invalid_rhs_tag.case.json)
+uses exact `dff1`, no stop RIP and budget one; the actual old physical ST(1)
+tag is Empty, so FCOMIP rejects atomically without retirement. Schema loading
+and interpreter CLI coverage assert the exact byte strings and resulting
+state. Native admission explicitly denies `Operation::Fcomip` and DF F1.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
 ### S2-30ah FUCOMP schema and literal CLI coverage
 

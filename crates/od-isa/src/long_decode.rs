@@ -455,6 +455,8 @@ pub enum Operation {
     },
     /// Bare `DB F1` FCOMI ST(0), ST(1), bounded canonical-Normal compare.
     Fcomi,
+    /// Bare `DF F1` FCOMIP ST(0), ST(1), bounded compare then physical TOP pop.
+    Fcomip,
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
     FcompSt {
         source: u8,
@@ -755,7 +757,7 @@ impl Instruction {
                 defined: crate::ZF,
                 undefined: 0,
             },
-            Operation::Fcomi => FlagEffects {
+            Operation::Fcomi | Operation::Fcomip => FlagEffects {
                 defined: 0x8d5,
                 undefined: 0,
             },
@@ -1050,6 +1052,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     _ => return Err(self.unsupported(opcode)),
                 }
             }
+            (OpcodeMap::Primary, 0xdf) => {
+                if prefixes != Prefixes::default() {
+                    return Err(self.unsupported(opcode));
+                }
+                match self.byte()? {
+                    0xe0 => Operation::FnstswAx,
+                    0xf1 => Operation::Fcomip,
+                    _ => return Err(self.unsupported(opcode)),
+                }
+            }
             (OpcodeMap::Primary, 0xd8) => {
                 if prefixes != Prefixes::default() {
                     return Err(self.unsupported(opcode));
@@ -1163,12 +1175,6 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xe4 => Operation::Ftst,
                     _ => return Err(self.unsupported(opcode)),
                 }
-            }
-            (OpcodeMap::Primary, 0xdf) => {
-                if prefixes != Prefixes::default() || self.byte()? != 0xe0 {
-                    return Err(self.unsupported(opcode));
-                }
-                Operation::FnstswAx
             }
             (OpcodeMap::Escape0f, 0x00) => {
                 if prefixes != Prefixes::default() || self.byte()? != 0xe8 {
@@ -2324,7 +2330,7 @@ mod tests {
     }
 
     #[test]
-    fn fnstsw_ax_accepts_only_bare_df_e0() {
+    fn df_admits_only_bare_fnstsw_ax_and_fcomip_forms() {
         let mut memory = Memory::new(&[0xdf, 0xe0]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::FnstswAx);
@@ -2336,16 +2342,16 @@ mod tests {
             let decoded = Memory::new(&[0xdf, modrm]).decode();
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
-                if modrm == 0xe0 {
-                    Ok(Operation::FnstswAx)
-                } else {
-                    Err(DecodeError::Unsupported {
+                match modrm {
+                    0xe0 => Ok(Operation::FnstswAx),
+                    0xf1 => Ok(Operation::Fcomip),
+                    _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
                             byte: 0xdf,
                         },
                         length: 2,
-                    })
+                    }),
                 },
                 "DF {modrm:02x}"
             );
@@ -2373,6 +2379,60 @@ mod tests {
                 ),
                 "{bytes:02x?}"
             );
+        }
+        assert!(matches!(
+            Memory::new(&[0xdf]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                address: 0x1000,
+                access: AccessKind::Fetch,
+            }))
+        ));
+    }
+
+    #[test]
+    fn fcomip_accepts_only_bare_df_f1() {
+        let mut memory = Memory::new(&[0xdf, 0xf1]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Fcomip);
+        assert_eq!(instruction.length, 2);
+        assert_eq!(instruction.prefixes, Prefixes::default());
+        assert_eq!(
+            instruction.flag_effects(),
+            FlagEffects {
+                defined: 0x8d5,
+                undefined: 0
+            }
+        );
+
+        for modrm in 0u8..=u8::MAX {
+            let decoded = Memory::new(&[0xdf, modrm]).decode();
+            assert_eq!(
+                decoded.map(|instruction| instruction.operation),
+                match modrm {
+                    0xe0 => Ok(Operation::FnstswAx),
+                    0xf1 => Ok(Operation::Fcomip),
+                    _ => Err(DecodeError::Unsupported {
+                        opcode: Opcode {
+                            map: OpcodeMap::Primary,
+                            byte: 0xdf,
+                        },
+                        length: 2,
+                    }),
+                },
+                "DF {modrm:02x}"
+            );
+        }
+
+        for prefix in [
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+        ]
+        .into_iter()
+        .chain(0x40..=0x4f)
+        {
+            assert!(matches!(
+                Memory::new(&[prefix, 0xdf, 0xf1]).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
         }
         assert!(matches!(
             Memory::new(&[0xdf]).decode(),

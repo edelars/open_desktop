@@ -5,7 +5,7 @@
   "provenance": {
     "kind": "project_fixture",
     "source": "Handwritten DB F1 bytes and literal full x87 state; old physical ST(1) has an Empty tag follows the local bounded S2-30aj contract.",
-    "specification": "Intel SDM revision 093, Vol.2A, FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values, pp.3-334–3-336; local bounded S2-30aj contract.",
+    "specification": "Intel SDM revision 093, Vol.2A, FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values, pp.3-327–3-329; local bounded S2-30aj contract.",
     "specification_version": "Intel SDM revision 093; project S2-30aj"
   },
   "seed": null,
