@@ -464,3 +464,12 @@ pseudo-QNaN, other unsupported encodings, and mismatched tags are rejection
 neighbors. See the [S2-31ar contract](../specs/CPU_CONTRACT.md#local-s2-31ar-canonical-quietnan-fstp-m80fp-rax-db-38),
 [plan](../plans/STAGE_2.md#s2-31ar-store-canonical-binary80-quietnan-through-bounded-fstp-m80fp),
 and [report](../reports/STAGE_2_REPORT.md#s2-31ar--canonical-quietnan-binary80-store-through-bounded-fstp-m80fp).
+
+### S2-31as canonical SignalingNaN DB38 fixtures
+
+The positive bare `DB 38` fixture stores a canonical binary80 SignalingNaN
+unchanged. The negative `DB 38 DF E0` fixture stores a signed payload-bearing
+SignalingNaN and checks FNSTSW; both have exact opcode budgets, memory images,
+and stop predicates. See the [S2-31as contract](../specs/CPU_CONTRACT.md#local-s2-31as-canonical-signalingnan-fstp-m80fp-rax-db-38),
+[plan](../plans/STAGE_2.md#s2-31as-store-canonical-binary80-signalingnan-through-bounded-fstp-m80fp),
+and [report](../reports/STAGE_2_REPORT.md#s2-31as--canonical-signalingnan-binary80-store-through-bounded-fstp-m80fp).

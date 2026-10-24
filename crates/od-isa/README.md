@@ -269,3 +269,7 @@ closed.
 Bounded `FSTP m80fp` (`DB 38`) also preserves canonical binary80 QuietNaNs
 byte-for-byte when physical TOP is Special-tagged. It adds no flags and pops
 only after the atomic ten-byte write; native/JIT admission stays closed.
+
+Exact `DB 38` also accepts Special-tagged canonical binary80 SignalingNaNs in
+the bounded S2-31as raw-store path. It preserves all ten bytes, including the
+signaling bit and payload, and adds no status flags. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31as-canonical-signalingnan-fstp-m80fp-rax-db-38).

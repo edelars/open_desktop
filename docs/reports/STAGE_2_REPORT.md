@@ -5970,3 +5970,26 @@ Physical validation remains deferred to the combined final S2-31 substage.
 Independent `gpt-6.1-sol` medium review found no code or coverage findings. It
 identified a plan wording issue about C1; the plan now correctly states that
 C1 clears while PE and C0/C2/C3 are preserved.
+
+<a id="s2-31as--canonical-signalingnan-binary80-store-through-bounded-fstp-m80fp"></a>
+
+## S2-31as — canonical SignalingNaN binary80 store through bounded FSTP m80fp
+
+Exact DB38 now preserves the full ten-byte encoding of a canonical binary80
+SignalingNaN only when physical TOP is tagged Special. The signaling bit,
+sign, and payload remain unchanged; the store adds no IE or other flags. It
+retains the existing environment gates, atomic one-write/no-read behavior,
+and pop-after-success semantics. Existing Normal, Zero, Infinity, and
+QuietNaN paths remain supported; pseudo-SNaNs and mismatched tags reject
+before access.
+
+The focused `od-isa` SNaN matrix, raw m80 composition, pre-access rejection,
+and write-fault atomicity tests passed. The positive bare and negative
+DFE0/FNSTSW fixtures pass the runner CLI and JIT-denial tests. The full offline
+workspace suite passed (745 tests, 0 failures); workspace all-target check,
+Linux x86 runner all-target check, formatting, and diff checks passed.
+Graphify updated to 4042 nodes and 8386 edges. The layout checker reports the
+pre-existing unmapped `.serena/` directory, left untouched. Architecture-gated
+native runtime denial was not executed on this arm64 host; the Linux x86 runner
+target compiled. Physical validation remains deferred to the combined final
+S2-31 substage. Independent review is pending.

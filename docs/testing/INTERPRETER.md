@@ -748,3 +748,11 @@ Exact DB38 accepts a Special-tagged canonical binary80 QuietNaN and copies all
 10 bytes unchanged. It adds no flags, retains the existing FCW/FSW gate, performs
 one atomic write/no read, and pops only after success. SNaN, pseudo-QNaN and
 mismatched tag/class pairs reject before access. See the [S2-31ar contract](../specs/CPU_CONTRACT.md#local-s2-31ar-canonical-quietnan-fstp-m80fp-rax-db-38).
+
+## Local S2-31as canonical SignalingNaN m80 store
+
+Exact `DB 38` may raw-store canonical binary80 SignalingNaN from Special-tagged
+physical TOP. It preserves sign, payload, and the clear quiet bit, adds no
+flags, validates the full ten-byte destination, writes once, and pops only
+after success. Pseudo-SNaNs and mismatched tag/class pairs reject before
+access. See the [S2-31as contract](../specs/CPU_CONTRACT.md#local-s2-31as-canonical-signalingnan-fstp-m80fp-rax-db-38).

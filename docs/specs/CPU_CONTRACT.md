@@ -2726,6 +2726,28 @@ See the [S2-31ar plan](../plans/STAGE_2.md#s2-31ar-store-canonical-binary80-quie
 [report](../reports/STAGE_2_REPORT.md#s2-31ar--canonical-quietnan-binary80-store-through-bounded-fstp-m80fp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+<a id="local-s2-31as-canonical-signalingnan-fstp-m80fp-rax-db-38"></a>
+
+## Local S2-31as: canonical SignalingNaN `FSTP m80fp [RAX]` (`DB 38`)
+
+Exact `DB 38` additionally accepts canonical binary80 SignalingNaN only with
+physical TOP tagged Special: exponent `0x7fff`, explicit integer bit one,
+quiet bit zero, and a nonzero remaining fraction, with either sign. Copy the
+raw ten bytes unchanged. In particular, do not set the quiet bit, alter the
+payload, or add IE or any other status flag. Keep the current C1-clear and
+PE/C0/C2/C3-preserve store policy, the four FCWs, and `FSW & 0x80df == 0`.
+
+Validate the full canonical48 ten-byte range, perform one atomic write/no read,
+and pop/advance TOP only after successful write. Valid+Normal, Zero+Zero,
+Special+Infinity, and Special+QuietNaN remain accepted. Pseudo-SNaN, other
+unsupported encodings, and mismatched tags reject before access. Native/JIT
+admission stays closed. Intel SDM Vol.1 Table 4-3 defines the canonical
+binary80 NaN encoding; Vol.2A pp.3-386–3-387 documents the DB /7 FSTP m80fp
+operation ([official revision 093 PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=503)).
+See the [S2-31as plan](../plans/STAGE_2.md#s2-31as-store-canonical-binary80-signalingnan-through-bounded-fstp-m80fp),
+[report](../reports/STAGE_2_REPORT.md#s2-31as--canonical-signalingnan-binary80-store-through-bounded-fstp-m80fp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
 ## Local S2-31r: bounded `FLD m80fp [RAX]` (`DB 28`)
 
 The interpreter admits only exact bare `DB 28` in Long64 with existing x87

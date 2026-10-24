@@ -2163,3 +2163,12 @@ coverage. SNaNs, pseudo-QNaNs and mismatched tag/class pairs reject before
 access. See the [S2-31ar CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ar-canonical-quietnan-fstp-m80fp-rax-db-38),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31ar-store-canonical-binary80-quietnan-through-bounded-fstp-m80fp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ar--canonical-quietnan-binary80-store-through-bounded-fstp-m80fp).
+
+### S2-31as canonical SignalingNaN DB38 fixtures
+
+The positive bare `DB 38` fixture stores a minimum-payload canonical binary80
+SignalingNaN. The negative `DB 38 DF E0` fixture stores a negative middle-
+payload SNaN and observes FNSTSW. Both preserve all ten bytes, including the
+clear quiet bit, and add no flags. See the [S2-31as CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31as-canonical-signalingnan-fstp-m80fp-rax-db-38),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31as-store-canonical-binary80-signalingnan-through-bounded-fstp-m80fp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31as--canonical-signalingnan-binary80-store-through-bounded-fstp-m80fp).

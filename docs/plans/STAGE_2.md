@@ -3454,3 +3454,22 @@ Special+Infinity paths. Reject SNaN, pseudo-QNaN, pseudo-SNaN, pseudo-infinity,
 finite special classes, and mismatched tags before access. Cover both signs,
 quiet-only/low/middle/max payloads including negative indefinite, TOP×FCW×PE/C1,
 cross-width FLD compositions, faults/range, CLI/FNSTSW, and native/JIT denial.
+
+<a id="s2-31as-store-canonical-binary80-signalingnan-through-bounded-fstp-m80fp"></a>
+
+#### S2-31as. Store canonical binary80 SignalingNaN through bounded FSTP m80fp
+
+Extend only exact `DB 38` so physical TOP may also be a Special-tagged
+canonical binary80 SignalingNaN: exponent `0x7fff`, explicit integer bit one,
+quiet bit zero, and a nonzero remaining fraction, with either sign. Copy all
+ten bytes unchanged, retaining the signaling bit and payload; do not quiet,
+use host floating point, or set IE or any other flag. Keep the four FCWs,
+`FSW & 0x80df == 0`, C1-clear, and PE/C0/C2/C3-preserve store policy.
+
+Preflight the full canonical48 ten-byte range and perform one atomic write/no
+read; pop and advance TOP only after success. Keep existing Normal, Zero,
+Infinity, and QuietNaN paths. Reject pseudo-SNaNs and other unsupported
+classes or mismatched tags before access. Cover both signs and minimum/low/
+middle/maximum payloads across TOP×FCW×PE/C1, raw m80 FLD-to-store composition,
+failure atomicity, literal DB38/DB38 DFE0 fixtures, and native/JIT denial.
+This does not implement general exception delivery or physical x86 acceptance.

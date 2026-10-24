@@ -307,3 +307,13 @@
   [plan](plans/STAGE_2.md#s2-31ar-store-canonical-binary80-quietnan-through-bounded-fstp-m80fp),
   [report](reports/STAGE_2_REPORT.md#s2-31ar--canonical-quietnan-binary80-store-through-bounded-fstp-m80fp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31as evidence:** exact DB38 now also raw-stores canonical binary80
+  SignalingNaN from a Special-tagged TOP, preserving the signaling bit and
+  payload without setting IE. Existing status gates, one-write/no-read access,
+  and pop-after-success remain. General x87 exception delivery and physical
+  behavior remain open under ISSUE-019; physical acceptance belongs to the
+  combined final S2-31 substage. See [S2-31as CPU contract](specs/CPU_CONTRACT.md#local-s2-31as-canonical-signalingnan-fstp-m80fp-rax-db-38),
+  [plan](plans/STAGE_2.md#s2-31as-store-canonical-binary80-signalingnan-through-bounded-fstp-m80fp),
+  [report](reports/STAGE_2_REPORT.md#s2-31as--canonical-signalingnan-binary80-store-through-bounded-fstp-m80fp),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).
