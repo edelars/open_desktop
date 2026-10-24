@@ -246,6 +246,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ac | Extend exact DB 28 FLD m80fp to canonical signaling binary80 NaNs under all-masked FCWs; native closed | S2-31ab |
 | [x] | S2-31ad | Extend exact DB 28 FLD m80fp to raw pseudo-denormals with Special tag and no DE; native closed | S2-31ac |
 | [x] | S2-31ae | Extend exact DD 00 FLD m64fp to signed binary64 infinities with canonical binary80 Special; native closed | S2-31z |
+| [x] | S2-31af | Extend exact D9 00 FLD m32fp to signed binary32 infinities with canonical binary80 Special; native closed | S2-31y |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3212,3 +3213,17 @@ and native admission remain outside the slice. Add TOP×FCW signed vectors,
 subnormal-then-infinity sticky-flag coverage, exact DD00 / DD00-DFE0 CLI
 fixtures, and a narrow QNaN Unsupported fixture predicate. Keep m80fp
 subnormal semantics distinct (no DE). See the [S2-31ae report](../reports/STAGE_2_REPORT.md#s2-31ae--bounded-fld-m64fp-signed-infinity-extension).
+
+#### S2-31af. Extend bounded `FLD m32fp [RAX]` (`D9 00`) to infinities
+
+[x] Accept only signed binary32 infinities (exponent 255, fraction zero) after
+the existing one-Dword read. Construct canonical binary80 infinity with
+integer fields and Special tag; add no flags. Retain the all-masked FCWs,
+`FSW & 0x80dd` gate, Empty destination, canonical48 four-byte preflight,
+sticky DE/PE and existing push/C1/pointer policy. Keep normal, zero and masked
+subnormal behavior unchanged, with NaNs post-read Unsupported and atomic.
+Unmasked behavior and JIT/native admission remain outside the slice. Change
+the D900-only Unsupported fixture/schema exception from infinity to canonical
+QNaN, and add signed infinity TOP×FCW vectors, a subnormal→infinity sticky
+status sequence, bare and D900/DFE0 CLI fixtures, schema/CLI rejection
+neighbors, and JIT/native denial. See the [S2-31af report](../reports/STAGE_2_REPORT.md#s2-31af--bounded-fld-m32fp-signed-infinity-extension).

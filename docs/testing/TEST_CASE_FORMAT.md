@@ -242,12 +242,13 @@ boundaries remain subject to the exact x87 profile.
 The S2-31y `s2-long-x87-state-v1` fixtures use only exact `d900` or
 `d900dfe0` programs. Successful fixtures may supply signed zero, Normal, or
 nonzero binary32 subnormal; subnormals produce canonical Normal binary80 with
-Valid tag and sticky DE under the all-masked FCW profile. A no-stop,
-budget-one Unsupported fixture for exact `d900` is admitted only when its
-four-byte source is binary32 infinity or NaN (exponent field 255). Zero,
-Normal and subnormal sources are excluded from this exception. Other x87
-state, code bytes and instruction boundaries remain subject to the existing
-exact x87 profile. This does not admit unmasked exception behavior.
+Valid tag and sticky DE under the all-masked FCW profile. At the S2-31y stage, a no-stop, budget-one Unsupported fixture for exact
+`d900` admitted binary32 infinity or NaN sources (exponent field 255). S2-31af
+supersedes this: signed infinities are now successful sources, and the current
+Unsupported exception admits canonical QNaN only. Zero, Normal and subnormal
+sources remain excluded. Other x87 state, code bytes and instruction
+boundaries remain subject to the existing exact x87 profile. Unmasked behavior
+is not admitted.
 
 ## S2-31z literal FLD m64fp fixture profile
 
@@ -312,5 +313,16 @@ for exact `dd00` and `dd00dfe0`, yielding canonical signed binary80 infinity
 with Special tag. The no-stop, budget-one Unsupported exception now admits
 canonical QNaN sources only for exact `dd00`; infinities and SNaNs do not match.
 The all-masked FCW set, `FSW & 0x80dd` gate, Empty destination and eight-byte
+single-read constraints remain in force. Native/JIT profiles continue to deny
+the load.
+
+
+## S2-31af literal FLD m32fp signed-infinity fixtures
+
+The `s2-long-x87-state-v1` profile accepts signed binary32 infinity sources
+for exact `d900` and `d900dfe0`, yielding canonical signed binary80 infinity
+with Special tag. The no-stop, budget-one Unsupported exception admits
+canonical QNaN only for exact `d900`; infinities and SNaNs are excluded. The
+all-masked FCW set, `FSW & 0x80dd` gate, Empty destination and four-byte
 single-read constraints remain in force. Native/JIT profiles continue to deny
 the load.

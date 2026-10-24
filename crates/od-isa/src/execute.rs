@@ -982,10 +982,17 @@ fn step_tracked_with_stop(
                 raw[..8].copy_from_slice(&significand.to_le_bytes());
                 raw[8..].copy_from_slice(&(binary80_exponent | sign).to_le_bytes());
                 (raw, X87Tag::Valid)
-            } else if !(1..=254).contains(&source_exponent) {
-                return Ok(StepOutcome::Unsupported {
-                    opcode: instruction.opcode.byte,
-                });
+            } else if source_exponent == 255 {
+                if fraction != 0 {
+                    return Ok(StepOutcome::Unsupported {
+                        opcode: instruction.opcode.byte,
+                    });
+                }
+                let sign = if bits >> 31 != 0 { 0x8000 } else { 0 };
+                let mut raw = [0_u8; 10];
+                raw[..8].copy_from_slice(&(1_u64 << 63).to_le_bytes());
+                raw[8..].copy_from_slice(&(0x7fff_u16 | sign).to_le_bytes());
+                (raw, X87Tag::Special)
             } else {
                 let significand = ((1_u64 << 23) | u64::from(fraction)) << 40;
                 let binary80_exponent = (source_exponent as i32 - 127 + 16383) as u16;
@@ -23158,7 +23165,7 @@ mod tests {
 
     #[test]
     fn fld_m32fp_matches_raw_binary80_literals_for_every_top_and_control_word() {
-        let vectors: [([u8; 4], [u8; 10], X87Tag); 14] = [
+        let vectors: [([u8; 4], [u8; 10], X87Tag); 16] = [
             ([0x00, 0x00, 0x00, 0x00], [0; 10], X87Tag::Zero),
             (
                 [0x00, 0x00, 0x00, 0x80],
@@ -23224,6 +23231,16 @@ mod tests {
                 [0xff, 0xff, 0x7f, 0x80],
                 [0, 0, 0, 0, 0, 0xfe, 0xff, 0xff, 0x80, 0xbf],
                 X87Tag::Valid,
+            ),
+            (
+                [0x00, 0x00, 0x80, 0x7f],
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
+                X87Tag::Special,
+            ),
+            (
+                [0x00, 0x00, 0x80, 0xff],
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xff],
+                X87Tag::Special,
             ),
         ];
         let control_words = [0x037f, 0x077f, 0x0b7f, 0x0f7f];
@@ -23665,6 +23682,70 @@ mod tests {
     }
 
     #[test]
+    fn fld_m32fp_infinity_preserves_de_and_pe_after_a_subnormal_load() {
+        for top in 0..8_u8 {
+            for control_word in [0x037f, 0x077f, 0x0b7f, 0x0f7f] {
+                let mut state = LongModeState::default();
+                state.rip = 0x8640;
+                state.gpr[Register::Rax as usize] = 0x1000;
+                let first_destination = top.wrapping_add(7) & 7;
+                let infinity_destination = top.wrapping_add(6) & 7;
+                let mut x87 = crate::state::X87State::fixture_seed();
+                x87.control_word = control_word;
+                x87.status_word = (u16::from(top) << 11) | 0x0220;
+                for physical in 0..8_u8 {
+                    x87.set_tag(physical, X87Tag::Special);
+                }
+                x87.set_tag(first_destination, X87Tag::Empty);
+                x87.set_tag(infinity_destination, X87Tag::Empty);
+                state.x87 = Some(x87);
+
+                let mut subnormal_memory = Memory::at(&[0xd9, 0x00], state.rip);
+                subnormal_memory.bytes[..4].copy_from_slice(&1_u32.to_le_bytes());
+                assert_eq!(
+                    step(&mut state, &mut subnormal_memory, AccessContext::default()),
+                    Ok(StepOutcome::Advanced)
+                );
+                assert_eq!(
+                    subnormal_memory.accesses,
+                    vec![(AccessKind::Read, 0x1000, 4)]
+                );
+                let before_infinity = state.x87.as_ref().unwrap().clone();
+                assert_eq!(before_infinity.top(), first_destination);
+                assert_eq!(before_infinity.status_word & 0x0022, 0x0022);
+
+                let mut infinity_memory = Memory::at(&[0xd9, 0x00], state.rip);
+                infinity_memory.bytes[..4].copy_from_slice(&0x7f80_0000_u32.to_le_bytes());
+                assert_eq!(
+                    step(&mut state, &mut infinity_memory, AccessContext::default()),
+                    Ok(StepOutcome::Advanced),
+                    "TOP={top}, FCW={control_word:04x}"
+                );
+                let after_infinity = state.x87.as_ref().unwrap();
+                assert_eq!(
+                    after_infinity.registers[usize::from(infinity_destination)],
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f]
+                );
+                assert_eq!(
+                    after_infinity.tag(infinity_destination),
+                    Some(X87Tag::Special)
+                );
+                assert_eq!(after_infinity.top(), infinity_destination);
+                assert_eq!(
+                    after_infinity.status_word,
+                    (before_infinity.status_word & !(0x3800 | 0x0200))
+                        | (u16::from(infinity_destination) << 11)
+                );
+                assert_eq!(after_infinity.status_word & 0x0022, 0x0022);
+                assert_eq!(
+                    infinity_memory.accesses,
+                    vec![(AccessKind::Read, 0x1000, 4)]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn fld_m32fp_rejects_invalid_values_gates_ranges_and_execution_boundaries_atomically() {
         let setup = |address: u64| {
             let mut state = LongModeState::default();
@@ -23677,7 +23758,14 @@ mod tests {
             state.x87 = Some(x87);
             state
         };
-        for bits in [0x7f80_0000_u32, 0xff80_0000, 0x7fc0_0001, 0xffc0_0001] {
+        for bits in [
+            0x7fc0_0000_u32,
+            0xffc0_0000,
+            0x7fc0_0001,
+            0xffc0_0001,
+            0x7f80_0001,
+            0xff80_0001,
+        ] {
             let mut state = setup(0x1000);
             let before = state.clone();
             let mut memory = Memory::at(&[0xd9, 0x00], state.rip);

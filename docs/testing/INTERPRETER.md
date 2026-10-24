@@ -481,15 +481,16 @@ subnormal. See the [S2-31v CPU contract](../specs/CPU_CONTRACT.md#local-s2-31v-b
 
 ## Local S2-31y masked binary32-subnormal extension
 
-Current exact bare `D9 00` accepts masked nonzero binary32 subnormal sources
-after its one Dword read. It normalizes the fraction into a canonical Normal
+At the S2-31y stage, exact bare `D9 00` accepts masked nonzero binary32
+subnormal sources after its one Dword read. It normalizes the fraction into a canonical Normal
 binary80 payload, preserves sign, assigns Valid, and sets sticky DE. The D900
 preflight permits an existing DE (`FSW & 0x80dd == 0`); other load paths keep
 their stricter shared gate. UE and PE are not added, C1 is cleared, and other
 status/payload/TOP/pointer behavior follows the existing bounded load policy.
 All four FCWs are fully masked; unmasked behavior and exception delivery are
-not included. Signed zero and Normal are unchanged; infinity and NaN remain
-Unsupported post-read with no commit. Binary80 `DB 28` subnormals retain their
+not included. Signed zero and Normal are unchanged. At that stage infinity
+and NaN remained Unsupported post-read; S2-31af now accepts signed infinity
+and keeps QNaN/SNaN Unsupported. Binary80 `DB 28` subnormals retain their
 separate S2-31x behavior.
 
 Independent all-TOP×FCW literals cover signed minimum, interior and largest
@@ -594,3 +595,16 @@ literal vectors cover signs across TOP×FCW and a subnormal-to-infinity sequence
 positive bare and negative DD00/DFE0+FNSTSW fixtures run through the CLI.
 Unmasked delivery and native/JIT execution remain outside scope. See the
 [S2-31ae CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ae-bounded-fld-m64fp-rax-dd-00-signed-infinities).
+
+
+## Local S2-31af `FLD m32fp` signed-infinity load
+
+Exact bare `D9 00` additionally accepts signed binary32 infinities, preserving
+the sign while constructing canonical binary80 infinity and a Special tag. It
+retains four all-masked FCWs, the `FSW & 0x80dd` gate, Empty destination, one
+Dword read and C1-clear/push/pointer policy; sticky DE/PE survive. Signed
+QNaNs and SNaNs reject after one read without CPU commit. Independent literals
+cover both signs across TOP×FCW and subnormal-to-infinity sticky status. Bare
+positive D900 and negative D900/DFE0+FNSTSW fixtures run through CLI. Unmasked
+delivery and native/JIT execution remain outside this slice. See the
+[S2-31af CPU contract](../specs/CPU_CONTRACT.md#local-s2-31af-bounded-fld-m32fp-rax-d9-00-signed-infinities).

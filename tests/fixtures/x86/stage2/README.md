@@ -1957,10 +1957,10 @@ observes sticky DE through FNSTSW AX. CLI checks verify canonical Normal
 binary80 payloads, Valid tags, and the sticky DE status bit. Interpreter
 literal vectors cover positive/negative minimum, interior and largest
 subnormals for every TOP and accepted FCW, plus sticky PE/C1 and repeated-load
-behavior. The invalid-class fixture now supplies positive infinity and expects
-Unsupported after the one Dword read with no CPU commit. Schema admission is
-limited to binary32 infinity/NaN with exact `D9 00`, budget one and no stop RIP.
-Native admission remains closed. See the [S2-31y CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31y-bounded-fld-m32fp-rax-d9-00-masked-subnormal-extension), [plan](../../../../docs/plans/STAGE_2.md#s2-31y-extend-bounded-fld-m32fp-rax-d9-00-to-masked-subnormals), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31y--bounded-fld-m32fp-masked-subnormal-extension).
+behavior. At the S2-31y stage, the invalid fixture supplied positive infinity;
+S2-31af now supplies canonical positive QNaN because signed infinities are
+supported. The current schema exception admits only QNaN for exact `D9 00`,
+budget one and no stop RIP. Native admission remains closed. See the [S2-31y CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31y-bounded-fld-m32fp-rax-d9-00-masked-subnormal-extension), [plan](../../../../docs/plans/STAGE_2.md#s2-31y-extend-bounded-fld-m32fp-rax-d9-00-to-masked-subnormals), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31y--bounded-fld-m32fp-masked-subnormal-extension).
 
 ### S2-31z FLD m64fp masked-subnormal fixture coverage
 
@@ -2001,3 +2001,16 @@ and PE. Signed QNaN/SNaN neighbors remain Unsupported after one Qword read.
 The narrow schema exception is exact DD00, budget one, no stop RIP and QNaN
 only. Native/JIT admission remains closed. See the [S2-31ae CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ae-bounded-fld-m64fp-rax-dd-00-signed-infinities), [plan](../../../../docs/plans/STAGE_2.md#s2-31ae-extend-bounded-fld-m64fp-rax-dd-00-to-infinities), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ae--bounded-fld-m64fp-signed-infinity-extension).
+
+
+### S2-31af FLD m32fp signed-infinity fixture coverage
+
+The positive bare `D9 00` fixture supplies +infinity; the negative
+`D9 00 DF E0` fixture supplies -infinity and observes the pushed state through
+FNSTSW. Both produce canonical binary80 infinity and Special tag without new
+flags. Interpreter literals cover both signs across all TOP×FCW pairs; a
+minimum-subnormal load followed by infinity verifies sticky DE and PE. Signed
+QNaN/SNaN neighbors remain Unsupported after one Dword read. The narrow
+schema exception is exact D900, budget one, no stop RIP and canonical QNaN
+only. Native/JIT admission remains closed. See the [S2-31af CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31af-bounded-fld-m32fp-rax-d9-00-signed-infinities), [plan](../../../../docs/plans/STAGE_2.md#s2-31af-extend-bounded-fld-m32fp-rax-d9-00-to-infinities), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31af--bounded-fld-m32fp-signed-infinity-extension).

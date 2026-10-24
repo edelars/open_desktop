@@ -2103,7 +2103,7 @@ mod tests {
     }
 
     #[test]
-    fn fld_m32fp_literal_fixtures_expand_binary32_signed_zero_and_reject_bad_class() {
+    fn fld_m32fp_literal_fixtures_expand_binary32_values_and_reject_bad_class() {
         for (bytes, expected_rax, expected_raw, expected_tag_word, retired) in [
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp.case.json")
@@ -2123,8 +2123,24 @@ mod tests {
                 0x7ffc,
                 2,
             ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31af_fld_m32fp_infinity.case.json")
+                    .as_slice(),
+                0x0000_0000_0030_0004,
+                "0000000000000080ff7f",
+                0xbffc,
+                1,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31af_fld_m32fp_negative_infinity_fnstsw.case.json")
+                    .as_slice(),
+                0x0000_0000_0030_7d00,
+                "0000000000000080ffff",
+                0xbffc,
+                2,
+            ),
         ] {
-            let fixture = v2::Fixture::from_json(bytes).expect("S2-31s fixture schema");
+            let fixture = v2::Fixture::from_json(bytes).expect("S2-31af fixture schema");
             let mut memory =
                 od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
             let result = execute_fixture_v2(&fixture, &mut memory);
@@ -2210,19 +2226,22 @@ mod tests {
             "../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp_invalid_class.case.json"
         ))
         .unwrap();
-        for rejected_bytes in ["00000000", "0000803f", "01000000", "01000080"] {
+        for rejected_bytes in [
+            "00000000", "0000803f", "01000000", "01000080", "0000807f", "000080ff", "0100807f",
+            "010080ff",
+        ] {
             let mut near_miss = invalid_json.clone();
             near_miss["memory"][1]["initial_bytes_hex"] =
                 serde_json::Value::String(rejected_bytes.into());
             assert!(
                 v2::Fixture::from_json(&serde_json::to_vec(&near_miss).unwrap()).is_err(),
-                "S2-31y schema must not admit Unsupported for {rejected_bytes}"
+                "S2-31af schema must not admit Unsupported for {rejected_bytes}"
             );
         }
         let mut nan = invalid_json;
-        nan["memory"][1]["initial_bytes_hex"] = serde_json::Value::String("0100c07f".into());
+        nan["memory"][1]["initial_bytes_hex"] = serde_json::Value::String("0000c07f".into());
         v2::Fixture::from_json(&serde_json::to_vec(&nan).unwrap())
-            .expect("NaN is an admitted Unsupported class");
+            .expect("canonical QNaN is an admitted Unsupported class");
     }
 
     #[test]

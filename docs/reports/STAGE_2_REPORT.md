@@ -5324,8 +5324,9 @@ and largest binary32 subnormals across all eight TOP and four FCW settings.
 The matrix also checks PE and C1 policy; a repeated-load case checks that DE
 stays sticky. Positive exact `D9 00` and negative `D9 00 DF E0` fixtures are
 admitted through the schema and run in the CLI; FNSTSW observes DE and the
-pushed TOP. The invalid-class fixture/schema predicate now uses binary32
-infinity/NaN, exact `D9 00`, budget one and no stop RIP. The S2-31v report
+pushed TOP. At that stage, the invalid-class fixture/schema predicate used binary32
+infinity/NaN, exact `D9 00`, budget one and no stop RIP; S2-31af now accepts
+infinity and narrows the current schema exception to QNaN. The S2-31v report
 above remains the historical signed-zero/reject result.
 
 Normative source: Intel SDM revision 093, Vol.1 §8.5.2 for masked denormal
@@ -5567,3 +5568,43 @@ gates, status preservation, NaN rejection, fixtures, denial paths or docs. See
 the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ae-bounded-fld-m64fp-rax-dd-00-signed-infinities),
 [plan](../plans/STAGE_2.md#s2-31ae-extend-bounded-fld-m64fp-rax-dd-00-to-infinities),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## S2-31af — bounded `FLD m32fp` signed-infinity extension
+
+Exact bare `D9 00` now accepts signed binary32 infinities only (exponent 255,
+zero fraction), converting by integer fields to canonical binary80 infinity
+with Special tag. The four all-masked FCWs, D900-local `FSW & 0x80dd` gate,
+Empty destination, canonical48 four-byte preflight and one Dword read remain
+unchanged. No status flags are added; sticky DE/PE, C1-clear/TOP/pointer policy
+and retirement are preserved. Existing zero, Normal and masked-subnormal
+paths are unchanged. QNaN/SNaN remain post-read Unsupported with no CPU commit.
+Unmasked delivery and JIT/native execution remain outside scope; binary80
+m80fp subnormals retain their separate no-DE behavior.
+
+Independent signed infinity literals cover every TOP×FCW pair. A minimum
+subnormal followed by infinity verifies sticky DE and PE. Bare positive D900
+and negative D900/DFE0+FNSTSW fixtures verify the canonical bytes, Special tag,
+status and retirement through CLI. The exact D900/budget-one/no-stop schema
+exception now uses canonical QNaN, while infinity and SNaN neighbors are
+excluded. JIT and native admission remain closed.
+
+Intel SDM revision 093 Vol.1 §8.5.2 describes masked denormal-operand
+handling, Table 4-3 gives floating point encodings, and Vol.2A FLD m32fp,
+pp.3-352–3-353 (official PDF p.470), specifies the load form. Table 3-47,
+“Recreating FSAVE Format,” supplies Special tag classification (official PDF
+p.532). This all-masked profile does not infer unmasked exception delivery.
+See the [Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol.2A PDF, FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
+[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=532),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31af-bounded-fld-m32fp-rax-d9-00-signed-infinities),
+[plan](../plans/STAGE_2.md#s2-31af-extend-bounded-fld-m32fp-rax-d9-00-to-infinities),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+Validation passed: focused D900 literal/status/rejection tests, schema
+admission, CLI fixtures, invalid-class atomicity and JIT denial; full workspace
+suite (697 tests); `cargo check --workspace --all-targets --offline`; Linux x86
+runner check; `cargo fmt --all -- --check`; `git diff --check`; and graphify
+update. The architecture-gated native-denial test compiles for Linux x86 but is
+not executed on this local arm64 host. `python3 tools/check_layout.py` reports
+the pre-existing unmapped root `.serena` directory, which was left untouched.
+Independent gpt-6.1-sol medium review is pending.

@@ -60,6 +60,11 @@ const FLD_M32_SUBNORMAL: &[u8] =
 const FLD_M32_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31y_fld_m32fp_negative_min_subnormal_fnstsw.case.json"
 );
+const FLD_M32_INFINITY: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31af_fld_m32fp_infinity.case.json");
+const FLD_M32_INFINITY_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31af_fld_m32fp_negative_infinity_fnstsw.case.json"
+);
 const FLD_M32_INVALID_CLASS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp_invalid_class.case.json");
 const FLD_M64_SUBNORMAL: &[u8] =
@@ -1495,10 +1500,10 @@ fn v2_jit_denies_m64_infinity_load_without_interpreter_fallback() {
 }
 
 #[test]
-fn local_x87_fld_m32fp_infinity_fixture_is_rejected_after_read_without_commit() {
+fn local_x87_fld_m32fp_qnan_fixture_is_rejected_after_read_without_commit() {
     let formerly_admitted_subnormal = String::from_utf8(FLD_M32_INVALID_CLASS.to_vec())
         .unwrap()
-        .replace("0000807f", "01000000");
+        .replace("0000c07f", "01000000");
     assert!(Fixture::from_json(formerly_admitted_subnormal.as_bytes()).is_err());
     let (input, result) = run(FLD_M32_INVALID_CLASS, "interpreter", 4);
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
@@ -1508,6 +1513,20 @@ fn local_x87_fld_m32fp_infinity_fixture_is_rejected_after_read_without_commit() 
     assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
     assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
     assert_eq!(observed.state.x87, input.fixture.initial_state.x87);
+}
+
+#[test]
+fn v2_jit_denies_m32_infinity_load_without_interpreter_fallback() {
+    let (_, positive) = run(FLD_M32_INFINITY, "jit", 4);
+    assert!(matches!(positive.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(positive.snapshot, Observation::Unavailable { .. }));
+    assert!(matches!(
+        positive.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+    let (_, negative) = run(FLD_M32_INFINITY_FNSTSW, "jit", 4);
+    assert!(matches!(negative.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(negative.snapshot, Observation::Unavailable { .. }));
 }
 
 #[test]

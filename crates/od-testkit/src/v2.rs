@@ -1100,7 +1100,7 @@ impl Fixture {
                         })
                     })
                 });
-            let is_fld_m32_infinity_or_nan_rejected = code_bytes == "d900"
+            let is_fld_m32_qnan_rejected = code_bytes == "d900"
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
                 && self.memory.iter().any(|region| {
@@ -1117,7 +1117,7 @@ impl Fixture {
                                 .and_then(|source| {
                                     u32::from_str_radix(source, 16).ok().map(u32::swap_bytes)
                                 })
-                                .is_some_and(|bits| bits & 0x7f80_0000 == 0x7f80_0000)
+                                .is_some_and(|bits| bits & 0x7fc0_0000 == 0x7fc0_0000)
                         })
                 });
             let is_fld_m64_qnan_rejected = code_bytes == "dd00"
@@ -1242,7 +1242,7 @@ impl Fixture {
                     || is_fist_word_tag_rejected
                     || is_fist_word_environment_rejected
                     || is_fld_m80_pseudo_infinity_rejected
-                    || is_fld_m32_infinity_or_nan_rejected
+                    || is_fld_m32_qnan_rejected
                     || is_fld_m64_qnan_rejected
                     || is_fcom_source_rejected
                     || is_fcomp_source_rejected

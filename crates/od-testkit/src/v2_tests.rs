@@ -588,12 +588,33 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             write: false,
             execute: false,
         },
-        initial_bytes_hex: "000000000000807f".into(),
+        initial_bytes_hex: "000000000000c07f".into(),
         comparison_mask_hex: "ff".repeat(8),
     });
     invalid_fld_m32.stop_rip = None;
     invalid_fld_m32.expected_exit = ExpectedExit::Unsupported;
     assert!(Fixture::from_json(&invalid_fld_m32.to_json().unwrap()).is_ok());
+    for (raw, admitted) in [
+        ("000000000000c07f", true),
+        ("000000000000c0ff", true),
+        ("000000000000807f", false),
+        ("00000000000080ff", false),
+        ("000000000100807f", false),
+        ("00000000010080ff", false),
+    ] {
+        let mut neighbor = invalid_fld_m32.clone();
+        neighbor
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "operand")
+            .unwrap()
+            .initial_bytes_hex = raw.into();
+        assert_eq!(
+            Fixture::from_json(&serde_json::to_vec(&neighbor).unwrap()).is_ok(),
+            admitted,
+            "D900 QNaN Unsupported predicate raw={raw}"
+        );
+    }
     let mut subnormal_fld_m32 = invalid_fld_m32.clone();
     subnormal_fld_m32
         .memory

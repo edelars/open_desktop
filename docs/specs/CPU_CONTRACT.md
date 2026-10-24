@@ -3673,18 +3673,20 @@ and the source sign. Its tag is Valid. The operation sets sticky FSW.DE and
 does not set UE or PE; it clears C1 and preserves other flags, payloads, TOP
 and pointer behavior as in the existing D900 load policy. Repeated masked
 subnormal loads retain DE. Binary32 signed zero remains Zero-tagged; Normal
-expansion is unchanged. Infinity and NaN remain Unsupported after the one
-read with no CPU commit. Unmasked FCWs remain outside the supported profile;
-no exception delivery or unmasked push behavior is claimed. Native admission
-remains closed.
+expansion is unchanged. At the S2-31y stage, infinity and NaN remained
+Unsupported after one read without CPU commit; S2-31af now accepts infinity
+and narrows the current Unsupported schema case to canonical QNaN. Unmasked
+FCWs remain outside the supported profile; no exception delivery or unmasked
+push behavior is claimed. Native admission remains closed.
 
 Independent literal vectors cover signed minimum, interior and largest
 subnormals across all TOP×FCW pairs, including sticky PE/C1 behavior and a
 repeated load. Exact D900 positive-subnormal and D900/DFE0 negative-subnormal
-fixtures exercise the CLI and FNSTSW composition. The narrow Unsupported
-schema fixture now uses infinity; its admission requires exact D900, budget
-one, no stop RIP, and binary32 exponent 255. The former S2-31v rejection of
-minimum subnormal records that historical contract only.
+fixtures exercise the CLI and FNSTSW composition. At the S2-31y stage, the narrow Unsupported schema fixture used infinity or
+NaN, exact D900, budget one and no stop RIP. S2-31af supersedes this: infinity
+is supported and the current exception fixture uses canonical QNaN only. The
+former S2-31v rejection of minimum subnormal records that historical contract
+only.
 
 Normative source: Intel SDM revision 093, Vol.1 §8.5.2 for masked denormal
 operand handling; Vol.2A, “FLD—Load Floating-Point Value,” pp.3-352–3-353,
@@ -3908,3 +3910,39 @@ Vol.2A Table 3-47, “Recreating FSAVE Format” (official PDF p.532). See the
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ae-extend-bounded-fld-m64fp-rax-dd-00-to-infinities),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31ae report](../reports/STAGE_2_REPORT.md#s2-31ae--bounded-fld-m64fp-signed-infinity-extension).
+
+## Local S2-31af: bounded `FLD m32fp [RAX]` (`D9 00`) signed infinities
+
+S2-31af extends exact bare `D9 00` to signed binary32 infinities only
+(exponent field 255, fraction zero). After the existing canonical48 four-byte
+preflight and exactly one Dword read, construct binary80 infinity by integer
+fields: significand `0x8000000000000000`, exponent `0x7fff` with the source
+sign. Push it with `X87Tag::Special`; no host floating-point conversion or new
+status flag is used.
+
+Retain the four all-masked FCWs, D900-local `FSW & 0x80dd == 0` gate, Empty
+destination, C1-clear, TOP, FIP/FDP, and retirement policy. Sticky DE and PE
+are preserved. Existing zero and Normal behavior and S2-31y masked subnormal
+normalization/DE behavior remain unchanged. Binary32 QNaN and SNaN inputs stay
+post-read Unsupported after exactly one Dword read with no CPU commit. The
+schema Unsupported exception is limited to canonical QNaN, exact D900,
+budget-one and no stop RIP; infinity and SNaN do not match. FILD and m64/m80
+status gates remain unchanged. Unmasked exception delivery is deferred; FLD
+can push despite an unmasked exception, so no generic pre-read suppression is
+inferred. JIT/native admission remains closed.
+
+Independent positive and negative infinity literals span all TOP×FCW pairs.
+A minimum-subnormal load followed by infinity checks sticky DE and PE. The
+bare positive D900 and negative D900/DFE0+FNSTSW fixtures verify exact raw
+binary80 bytes, Special tags, status and retirement. Signed QNaN/SNaN neighbors
+reject after one read without CPU commit. Intel SDM revision 093 Vol.1 §8.5.2
+describes masked denormal-operand handling; Vol.1 Table 4-3 gives floating
+point encodings. Vol.2A FLD m32fp, pp.3-352–3-353 (official PDF p.470), is the
+instruction reference; reconstructed tag classification follows Vol.2A Table
+3-47, “Recreating FSAVE Format” (official PDF p.532). See the
+[Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol.2A PDF, FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
+[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=532),
+[Stage 2 plan](../plans/STAGE_2.md#s2-31af-extend-bounded-fld-m32fp-rax-d9-00-to-infinities),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[S2-31af report](../reports/STAGE_2_REPORT.md#s2-31af--bounded-fld-m32fp-signed-infinity-extension).
