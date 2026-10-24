@@ -53,6 +53,10 @@ const FCOM_ST1_LESS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ab_fcom_st1_less.case.json");
 const FCOM_ST1_INVALID_RHS_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ab_fcom_st1_invalid_rhs_tag.case.json");
+const FCOM_ST7_EQUAL: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ac_fcom_st7_equal.case.json");
+const FCOM_ST7_INVALID_RHS_TAG: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ac_fcom_st7_invalid_rhs_tag.case.json");
 const GS_BASE_QWORD_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_22b_gs_base_qword_load_alias.case.json");
 const FS_SELECTOR_TO_RAX: &[u8] =
@@ -1376,6 +1380,56 @@ fn local_x87_fcom_st1_composes_with_fnstsw_ax() {
     expected_x87.status_word = HexU64(0x0100);
     expected_x87.instruction_pointer = input.fixture.initial_state.rip;
     assert_eq!(observed.state, expected);
+}
+
+#[test]
+fn local_x87_fcom_sti_cli_vectors_cover_every_source_index() {
+    for source in 0u8..=7 {
+        let mut fixture = Fixture::from_json(FCOM_ST1_EQUAL).unwrap().fixture;
+        fixture.case_id = format!("local_x87_fcom_st{source}_cli");
+        let x87 = fixture.initial_state.x87.as_mut().unwrap();
+        x87.registers[usize::from(source)] = x87.registers[0].clone();
+        x87.tag_word = HexU64(0);
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("d8d{source:x}");
+        code.comparison_mask_hex = "ffff".into();
+        let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "i={source}"
+        );
+        assert_eq!(count(&result), 1, "i={source}");
+        let observed = snapshot(&result);
+        let mut expected = input.fixture.initial_state.clone();
+        expected.rip = HexU64(0x0010_0002);
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.status_word = HexU64(0x4000);
+        expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+        assert_eq!(observed.state, expected, "i={source}");
+    }
+}
+
+#[test]
+fn local_x87_fcom_st7_literal_fixture_and_invalid_rhs_tag_are_handled() {
+    let (input, result) = run(FCOM_ST7_EQUAL, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0002);
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.status_word = HexU64(0x4000);
+    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+    assert_eq!(observed.state, expected);
+
+    let (input, result) = run(FCOM_ST7_INVALID_RHS_TAG, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    assert_eq!(snapshot(&result).state, input.fixture.initial_state);
 }
 
 #[test]

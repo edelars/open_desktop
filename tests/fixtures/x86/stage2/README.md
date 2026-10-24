@@ -1222,6 +1222,22 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+### S2-30ac x87 schema and fixture coverage
+
+The schema admits exactly the eight bare `D8 D0+i` FCOM register forms and
+`D8 D0+i DF E0` for status observation. The S2-30ab three-relation fixtures
+remain unchanged. `s2_30ac_fcom_st7_equal.case.json` adds a literal index-7
+success case; `s2_30ac_fcom_st7_invalid_rhs_tag.case.json` has canonical-Normal
+ST(7) bytes with an Empty tag, `stop_rip: null`, and budget one, and the CLI
+checks full-state atomic rejection. Additional runner vectors execute every
+source index. Interpreter vectors cover every TOP×i pair, including i=0 alias
+and TOP wrap. The schema rejects D8 D8..DF and every prefixed or extended form.
+Native admission explicitly denies all eight D8 D0..D7 encodings.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ### S2-30x x87 schema and fixture coverage
 
 The schema admits all eight bare `DD D0+i` FST ST(i) encodings. The literal

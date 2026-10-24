@@ -3909,3 +3909,46 @@ x87_instructions_are_rejected_by_native_profile_and_instruction_admission`,
 `.serena/` directory; it was left untouched. Independent review findings for
 the native deny arm, D8 arithmetic wording, and a stale plan link were corrected;
 follow-up review reported no remaining findings.
+
+## S2-30ac — bounded FCOM ST(i) exact Normal compare
+
+Generalized the operation to `FcomSt { source }` and admitted exactly bare
+`D8 D0..D7`. The interpreter compares old physical TOP against old physical
+`(TOP+i)&7` using sign, exponent and all 64 significand bits. For `i=0`, it
+checks the shared Valid tag and canonical-Normal payload once and returns
+equality. For other indices it preflights both tags and both canonical-Normal
+payloads before any commit. Commit changes only FSW condition bits, writes
+instruction-start RIP to FIP, advances RIP by two, and retires once. The D8
+arithmetic ranges remain unchanged; `D8 D8..DF` remain unsupported.
+
+Interpreter vectors cover all 64 TOP×i placements, including alias and wrap,
+all 16 initial condition-code combinations, all three relations, signed order,
+exponent/low-significand distinctions, Normal endpoints, independent tag and
+class rejects for both non-alias operands, alias failure, environment failure,
+sentinels, and fetch/truncation/STOP/budget atomicity. Existing S2-30ab literal
+fixtures remain unchanged; S2-30ac adds literal D8 D7 equality and canonical-
+Normal ST(7) payload with an Empty tag. Runner vectors cover all eight source
+indices. The schema admits only D8 D0..D7 and corresponding D8 D0+i DF E0
+observation sequences; no-stop, budget-one invalid-tag rejection is exercised.
+Native admission explicitly denies all eight encodings; its regression source
+contains a separate vector for each encoding.
+
+Validation passed: `cargo test --workspace --offline` (294 `od-isa` tests,
+155 `od-testkit` tests, 67 runner fixture tests and all remaining workspace
+suites), `cargo check --workspace --all-targets --offline`, Linux x86_64
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
+--offline`, `cargo fmt --all -- --check`, and `git diff --check`. The focused
+interpreter, schema, runner CLI and decoder tests also passed. The Linux-only
+native deny test was compiled but not executed on this arm64 macOS host. Independent
+review found a stale S2-30ac plan anchor; it now links to the actual plan document,
+and follow-up review confirmed the fix with no remaining findings. No
+Mac mini, SSH or physical-hardware checks were run. `python3 tools/check_layout.py` reports the pre-existing unmapped root `.serena/`
+directory; it was left untouched. Graphify regeneration completed; it rebuilt the graph after detecting changed community
+labels. Its parser warning for `include/open_desktop/host_abi.h` remains.
+
+Full x87 comparison behavior, special values, exceptions, native execution and
+FPU feature claims remain unverified; ISSUE-019 remains open.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

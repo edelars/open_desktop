@@ -208,9 +208,9 @@ fn x87_schema_admits_d9_ftst_and_a_budget_one_source_rejection() {
 }
 
 #[test]
-fn x87_schema_admits_fcom_st1_and_budget_one_two_operand_rejection() {
+fn x87_schema_admits_only_fcom_sti_register_forms_and_two_operand_rejection() {
     let mut fixture = x87_fixture().fixture;
-    fixture.case_id = "local_fcom_st1".into();
+    fixture.case_id = "local_fcom_sti".into();
     fixture.instruction_budget = 1;
     fixture.stop_rip = Some(HexU64(0x1002));
     fixture.expected_exit = ExpectedExit::StopAddress;
@@ -221,17 +221,55 @@ fn x87_schema_admits_fcom_st1_and_budget_one_two_operand_rejection() {
             .find(|region| region.region_id == "code")
             .unwrap();
         code.length = 2;
-        code.initial_bytes_hex = "d8d1".into();
+        code.initial_bytes_hex = "d8d0".into();
         code.comparison_mask_hex = "ffff".into();
     }
+    for source in 0u8..=7 {
+        fixture.case_id = format!("local_fcom_st{source}");
+        fixture.stop_rip = Some(HexU64(0x1002));
+        fixture.expected_exit = ExpectedExit::StopAddress;
+        fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap()
+            .initial_bytes_hex = format!("d8d{source:x}");
+        fixture.validate().unwrap();
+
+        fixture.stop_rip = None;
+        fixture.expected_exit = ExpectedExit::Unsupported;
+        fixture.validate().unwrap();
+    }
+
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "d8d7dfe0".into();
+    code.length = 4;
+    code.comparison_mask_hex = "ffffffff".into();
+    fixture.instruction_budget = 2;
+    fixture.stop_rip = Some(HexU64(0x1004));
+    fixture.expected_exit = ExpectedExit::StopAddress;
     fixture.validate().unwrap();
 
-    fixture.stop_rip = None;
-    fixture.expected_exit = ExpectedExit::Unsupported;
-    fixture.validate().unwrap();
-
+    fixture.instruction_budget = 1;
     fixture.stop_rip = Some(HexU64(0x1002));
     assert!(fixture.validate().is_err());
+    for modrm in 0xd8u8..=0xdf {
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = 2;
+        code.initial_bytes_hex = format!("d8{modrm:02x}");
+        code.comparison_mask_hex = "ffff".into();
+        fixture.instruction_budget = 1;
+        fixture.stop_rip = Some(HexU64(0x1002));
+        assert!(fixture.validate().is_err(), "ModR/M {modrm:02x}");
+    }
 }
 
 #[test]
@@ -711,7 +749,14 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         ("66dbe2", 3, 0x1003),
         ("f3dbe2", 3, 0x1003),
         ("d8e8", 2, 0x1002),
-        ("d8d0", 2, 0x1002),
+        ("d8d8", 2, 0x1002),
+        ("d8d9", 2, 0x1002),
+        ("d8da", 2, 0x1002),
+        ("d8db", 2, 0x1002),
+        ("d8dc", 2, 0x1002),
+        ("d8dd", 2, 0x1002),
+        ("d8de", 2, 0x1002),
+        ("d8df", 2, 0x1002),
         ("d8b1", 2, 0x1002),
         ("d800", 2, 0x1002),
         ("66d8c1", 3, 0x1003),

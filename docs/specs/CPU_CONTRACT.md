@@ -2330,10 +2330,12 @@ payloads, FCW, every other FSW bit, FDP/FOP and all remaining CPU state are
 preserved. FIP receives instruction-start RIP, RIP advances by two, and the
 instruction retires once.
 
-Missing x87 state/environment, either invalid tag or either non-Normal operand,
-other comparison forms and unsupported D8 encodings, prefixes/REX/WAIT,
-truncation, fetch failure, STOP and exhausted budget reject without state
-commit. Existing D8 arithmetic forms remain admitted. No pop, FCOMP/FCOMPP/
+For the original S2-30ab slice, missing x87 state/environment, either invalid
+tag or either non-Normal operand, other comparison forms and unsupported D8
+encodings, prefixes/REX/WAIT, truncation, fetch failure, STOP and exhausted
+budget reject without state commit. Existing D8 arithmetic forms remain
+admitted. S2-30ac below generalizes the supported register comparison forms.
+No pop, FCOMP/FCOMPP/
 FUCOM, memory operand, NaN/zero/subnormal behavior, exception delivery,
 #NM/WAIT, native admission or CPUID/FPU feature claim is included.
 
@@ -2344,9 +2346,47 @@ condition-code combination, complete physical-register sentinels, independent
 invalid tag/class/environment rejection for both operands, and fetch/truncate/
 STOP/budget atomicity. Three literal fixtures cover greater/equal/less results;
 an Empty-tag ST(1) fixture is a real `stop_rip: null`, budget-one rejection.
-The CLI also checks `FCOM ST(1)` followed by `FNSTSW AX`. The schema admits only
-the exact instruction and this observation sequence, and native x87 admission
-explicitly denies the instruction.
+The CLI also checks `FCOM ST(1)` followed by `FNSTSW AX`. The S2-30ab schema
+admission was limited to this instruction and observation sequence; the schema
+is generalized to all eight register forms by S2-30ac below. Native x87
+admission explicitly denies the instruction.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## Local S2-30ac: bounded `FCOM ST(i)` (`D8 D0+i`)
+
+This slice generalizes S2-30ab to exactly the eight bare two-byte encodings
+`D8 D0` through `D8 D7`. The left operand is old physical TOP (ST(0)); the
+right operand is old physical `(TOP+i)&7` (ST(i)). The existing gate remains:
+an x87 state must exist, FCW must be `0x037f`, `FSW & 0x80ff` must be clear,
+both operand tags must be Valid, and both raw values must be canonical Normal
+binary80. The `i=0` alias validates the shared tag and Normal payload once and
+returns equality.
+
+Ordering uses sign, normalized finite exponent and all 64 significand bits,
+without host floating-point conversion or subtraction. Greater returns `0`,
+less returns `0x0100`, and equal returns `0x4000`; commit is
+`(old_fsw & !0x4700) | result`. TOP, tags, all physical raw payloads, FCW,
+other FSW bits, FDP/FOP and all remaining CPU state are preserved. FIP gets
+instruction-start RIP, RIP advances by two, and the instruction retires once.
+Both operands are fully preflighted before commit; rejected inputs leave full
+state unchanged.
+
+Only `D8 D0..D7` are added to the D8 ModR/M map. Existing D8 arithmetic ranges
+remain intact, while `D8 D8..DF` remain unsupported. Prefixes,
+REX, WAIT, memory operands, pop forms, NaN/special/zero/subnormal inputs,
+exception delivery, native execution and FPU feature claims are outside scope.
+
+Coverage includes all 64 TOP×i placements, i=0 alias and TOP wrap, all three
+relations, sign/exponent/low-significand ordering, Normal endpoints, all
+initial condition-code combinations, independent tag/class rejection for
+both non-alias operands, alias failure, environment rejection, sentinels and
+fetch/truncation/STOP/budget atomicity. Schema and CLI vectors cover every
+index, the exact `D8 D0+i DF E0` observation sequence, and a no-stop,
+budget-one invalid-tag rejection. Native admission explicitly denies all
+eight compare encodings.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
