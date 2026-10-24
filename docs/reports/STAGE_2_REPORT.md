@@ -5806,9 +5806,41 @@ Graphify rebuilt with 3956 nodes and 8254 edges. The layout checker reports
 the existing unmapped `.serena/` directory, which remains untouched. The
 architecture-gated native denial compiles for Linux x86 but was not executed
 on this local arm64 host; physical x86 testing remains deferred to the
-combined final S2-31 substage. Independent `gpt-6.1-sol` medium review is
-pending.
+combined final S2-31 substage. Independent `gpt-6.1-sol` medium review was
+clean; it verified zero eligibility, gates, atomic write order, FST/FSTP
+status and stack handling, CLI fixture reachability, and native/JIT denial.
 
 See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31al-signed-zero-fst-m32fp-and-fstp-m32fp),
 [plan](../plans/STAGE_2.md#s2-31al-store-signed-binary80-zero-through-bounded-m32-fstfstp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## S2-31am — signed-zero stores for bounded m64 FST/FSTP
+
+Exact `DD 10` and `DD 18` now store a canonical binary80 Zero from physical
+TOP, preserving its sign as binary64 `+0` or `-0`. Both the Zero tag and the
+canonical exponent-zero/significand-zero payload are required; a mismatched
+tag or nonzero/pseudo-zero payload remains pre-access Unsupported. Existing
+FCWs and `FSW & 0x80df` store gates remain fixed. Exact zero adds no flags,
+preserves PE, and clears C1.
+
+The full canonical48 Qword range is checked before one atomic Qword write;
+there is no data read. DD10 preserves TOP, all tags and raw payloads. DD18
+empties old physical TOP and advances TOP only after the write succeeds.
+Normal rounding behavior and its local exponent limits remain unchanged.
+
+Tests cover both signs across TOP×FCW×PE×C1, m32↔m64 FLD-zero compositions,
+strict source/status rejection, denied and architectural write failures, and
+the final canonical Qword boundary. Four literal positive-bare/negative
+DFE0+FNSTSW fixtures run through schema/CLI; JIT and native admission stay
+closed. Focused checks and the full offline workspace suite passed (715 tests).
+`cargo check --workspace --all-targets --offline`, Linux x86
+`od-x86-runner` all-target check, `cargo fmt --all -- --check`, and
+`git diff --check` passed. Graphify rebuilt with 3972 nodes and 8280 edges.
+The layout check reports the existing unmapped `.serena/` directory, which
+remains untouched. The local arm64 host cannot execute the architecture-gated
+native denial path; physical x86 validation remains deferred to the combined
+final S2-31 substage.
+
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31am-signed-zero-fst-m64fp-and-fstp-m64fp),
+[plan](../plans/STAGE_2.md#s2-31am-store-signed-binary80-zero-through-bounded-m64-fstfstp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

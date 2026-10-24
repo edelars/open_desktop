@@ -2094,3 +2094,15 @@ pop/tag updates after the write. Interpreter coverage spans all TOP×FCW values,
 incoming PE/C1 combinations, FLD-zero compositions, bad tag/payload pairs,
 store faults and canonical range rejection. JIT/native admission remains
 closed. See [S2-31al CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31al-signed-zero-fst-m32fp-and-fstp-m32fp), [plan](../../../../docs/plans/STAGE_2.md#s2-31al-store-signed-binary80-zero-through-bounded-m32-fstfstp), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31al--signed-zero-stores-for-bounded-m32-fstfstp).
+
+### S2-31am signed-zero m64 store fixtures
+
+Four literal fixtures cover positive and negative binary80 Zero through exact
+`DD 10` and `DD 18`; negative cases compose with `DF E0` so FNSTSW exposes
+the final status. The raw ten-byte source has the Zero tag and canonical zero
+payload with the requested sign. Destination bytes are literal binary64
+`0000000000000000` or `0000000000000080`. Runner/schema tests check FST
+preservation and FSTP pop/tag changes only after the Qword write. Interpreter
+tests span TOP×FCW×sign×PE/C1, cross-width FLD-zero roundtrips, invalid source
+and status gates, write faults and canonical boundaries. JIT/native admission
+remains closed. See [S2-31am CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31am-signed-zero-fst-m64fp-and-fstp-m64fp), [plan](../../../../docs/plans/STAGE_2.md#s2-31am-store-signed-binary80-zero-through-bounded-m64-fstfstp), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31am--signed-zero-stores-for-bounded-m64-fstfstp).

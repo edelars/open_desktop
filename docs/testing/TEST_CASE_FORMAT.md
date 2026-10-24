@@ -398,3 +398,13 @@ observable in the stored binary32 Dword. Fixtures should use the matching Zero
 tag; a zero payload under another tag or a Zero tag over a nonzero/pseudo
 payload is an interpreter rejection before the data write. The existing
 all-masked FCWs and `FSW & 0x80df` status predicate remain in force.
+
+## S2-31am signed-zero m64 stores
+
+Exact `DD 10`/`DD 18` use the same strict Zero-tag plus canonical raw binary80
+zero predicate, storing the sign in a binary64 Qword. An invalid source or
+forbidden status gate must not become a valid Unsupported fixture by relying
+on a special-value source; use an environment/boundary predicate. Positive
+bare and negative `DF E0` fixtures cover FST and FSTP, and must be included in
+CLI/schema and native-denial tests. Native/JIT admission remains denied. See
+[S2-31am CPU contract](../specs/CPU_CONTRACT.md#local-s2-31am-signed-zero-fst-m64fp-and-fstp-m64fp), [plan](../plans/STAGE_2.md#s2-31am-store-signed-binary80-zero-through-bounded-m64-fstfstp), and [report](../reports/STAGE_2_REPORT.md#s2-31am--signed-zero-stores-for-bounded-m64-fstfstp).

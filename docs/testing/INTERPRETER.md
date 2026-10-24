@@ -692,3 +692,16 @@ stack; FSTP updates the old TOP tag and TOP only after the write succeeds.
 Literal tests cover TOP×FCW×sign×PE/C1, FLD-zero compositions, mismatched
 payload/tag rejection, denied/#PF stores and canonical-range failure.
 See the [S2-31al contract](../specs/CPU_CONTRACT.md#local-s2-31al-signed-zero-fst-m32fp-and-fstp-m32fp).
+
+## Local S2-31am signed-zero binary64 stores
+
+Exact `DD 10` and `DD 18` accept a source only when physical TOP is tagged Zero
+and its raw ten-byte binary80 value is canonical zero. The stored Qword
+preserves its sign. Existing all-masked FCWs and `FSW & 0x80df` remain; exact
+zero preserves PE, adds no status flags, and clears C1. The full canonical48
+Qword range is checked before one atomic write, with no data read. FST
+preserves the complete stack; FSTP changes old TOP's tag and TOP only after the
+write succeeds. Coverage includes TOP×FCW×sign×PE/C1, cross-width FLD-zero
+roundtrips, mismatched tags/payloads, forbidden status, backend and #PF
+failures, canonical boundary behavior, CLI/FNSTSW, and native/JIT denial.
+See the [S2-31am contract](../specs/CPU_CONTRACT.md#local-s2-31am-signed-zero-fst-m64fp-and-fstp-m64fp).

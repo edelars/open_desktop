@@ -4162,3 +4162,27 @@ Tag/payload mismatches, Empty source, pseudo-denormal payload, denied and
 architectural write failures, and canonical-range failure reject before
 commit. Literal CLI fixtures observe signed bytes and FNSTSW state. Native and
 JIT admission remain closed. See the [S2-31al plan](../plans/STAGE_2.md#s2-31al-store-signed-binary80-zero-through-bounded-m32-fstfstp), [report](../reports/STAGE_2_REPORT.md#s2-31al--signed-zero-stores-for-bounded-m32-fstfstp), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31am: signed-zero `FST m64fp` and `FSTP m64fp`
+
+Extend only exact bare `DD 10` and `DD 18` in Long64. The old physical TOP
+source is accepted as zero only when its tag is Zero and its ten raw binary80
+bytes classify as canonical Zero (`exponent=0`, significand=0). Preserve the
+sign bit in binary64 `+0` (`0000000000000000`) or `-0`
+(`0000000000000080`). Existing Normal conversion remains unchanged; a Zero
+tag with a nonzero/pseudo payload, or a non-Zero tag with zero payload,
+remains Unsupported before data access.
+
+Retain the existing four FCWs and `FSW & 0x80df == 0` gate. Sticky PE and C1
+may enter; exact zero preserves PE, adds no flags, and clears C1. Check the
+complete canonical48 Qword range before exactly one atomic Qword write; do not
+read data memory. Only after a successful write may DD18 empty old physical
+TOP and advance TOP. DD10 preserves TOP, all tags and all raw payloads. Store
+faults and invalid ranges leave CPU state uncommitted.
+
+Tests cover both signs across TOP×FCW×incoming PE/C1, literal output bytes,
+m32↔m64 FLD-zero compositions, bad tag/payload pairs, every forbidden FSW
+gate bit, denied and architectural write failures, canonical upper-boundary
+behavior, FST preservation and FSTP pop. Positive bare and negative
+DFE0/FNSTSW fixtures are exercised by CLI/schema and native-denial checks; JIT
+decode denial remains explicit. See the [S2-31am plan](../plans/STAGE_2.md#s2-31am-store-signed-binary80-zero-through-bounded-m64-fstfstp), [report](../reports/STAGE_2_REPORT.md#s2-31am--signed-zero-stores-for-bounded-m64-fstfstp), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

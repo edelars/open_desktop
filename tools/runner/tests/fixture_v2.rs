@@ -61,6 +61,16 @@ const FSTP_M32FP_POSITIVE_ZERO: &[u8] =
 const FSTP_M32FP_NEGATIVE_ZERO_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31al_fstp_m32fp_negative_zero_fnstsw.case.json"
 );
+const FST_M64FP_POSITIVE_ZERO: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31am_fst_m64fp_positive_zero.case.json");
+const FST_M64FP_NEGATIVE_ZERO_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31am_fst_m64fp_negative_zero_fnstsw.case.json"
+);
+const FSTP_M64FP_POSITIVE_ZERO: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31am_fstp_m64fp_positive_zero.case.json");
+const FSTP_M64FP_NEGATIVE_ZERO_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31am_fstp_m64fp_negative_zero_fnstsw.case.json"
+);
 const FILD_M64INT: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31p_fild_m64int_success.case.json");
 const FILD_M64INT_FNSTSW: &[u8] =
@@ -1731,6 +1741,70 @@ fn local_x87_fst_m32fp_signed_zero_fixtures_preserve_or_pop_after_store() {
             .find(|region| region.region_id == "stack")
             .unwrap();
         assert_eq!(&stack.bytes_hex[8..16], bytes);
+    }
+}
+
+#[test]
+fn local_x87_fst_m64fp_signed_zero_fixtures_preserve_or_pop_after_store() {
+    for (fixture, expected_rax, expected_rip, expected_status, expected_tag_word, bytes) in [
+        (
+            FST_M64FP_POSITIVE_ZERO,
+            0x0030_0004,
+            0x0010_0002,
+            0x4500,
+            0xfffd,
+            "0000000000000000",
+        ),
+        (
+            FST_M64FP_NEGATIVE_ZERO_FNSTSW,
+            0x0030_4500,
+            0x0010_0004,
+            0x4500,
+            0xfffd,
+            "0000000000000080",
+        ),
+        (
+            FSTP_M64FP_POSITIVE_ZERO,
+            0x0030_0004,
+            0x0010_0002,
+            0x4d00,
+            0xffff,
+            "0000000000000000",
+        ),
+        (
+            FSTP_M64FP_NEGATIVE_ZERO_FNSTSW,
+            0x0030_4d00,
+            0x0010_0004,
+            0x4d00,
+            0xffff,
+            "0000000000000080",
+        ),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), input.fixture.instruction_budget);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.rip, HexU64(expected_rip));
+        assert_eq!(observed.state.gpr[0], HexU64(expected_rax));
+        let x87 = observed.state.x87.as_ref().unwrap();
+        assert_eq!(x87.status_word, HexU64(expected_status));
+        assert_eq!(x87.tag_word, HexU64(expected_tag_word));
+        assert_eq!(
+            x87.registers[0],
+            if bytes.ends_with("80") {
+                "00000000000000000080"
+            } else {
+                "00000000000000000000"
+            }
+        );
+        assert_eq!(x87.instruction_pointer, HexU64(0x0010_0000));
+        assert_eq!(x87.data_pointer, HexU64(0x0030_0004));
+        let stack = observed
+            .memory
+            .iter()
+            .find(|region| region.region_id == "stack")
+            .unwrap();
+        assert_eq!(&stack.bytes_hex[8..24], bytes);
     }
 }
 

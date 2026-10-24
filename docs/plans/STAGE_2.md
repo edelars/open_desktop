@@ -253,6 +253,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31aj | Extend exact D9 00 FLD m32fp to canonical binary32 SNaNs with integer quieting and sticky IE; native/JIT closed | S2-31ah |
 | [x] | S2-31ak | Permit sticky IE/DE/PE only on exact D900/DD00 FLD gates; retain all other status gates | S2-31aj |
 | [x] | S2-31al | Extend exact D910/D918 m32 stores to canonical signed binary80 zero and atomic signed binary32 zero | S2-31ak |
+| [x] | S2-31am | Extend exact DD10/DD18 m64 stores to canonical signed binary80 zero and atomic signed binary64 zero | S2-31al |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3341,3 +3342,20 @@ payloads before access; retain Normal conversion and other widths unchanged.
 Cover both signs across TOP×FCW×incoming PE/C1, FLD-zero compositions, precise
 source mismatches, store faults and range failures, literal CLI/FNSTSW fixtures,
 and explicit native/JIT denial.
+
+#### S2-31am. Store signed binary80 zero through bounded m64 FST/FSTP
+
+Extend only exact `DD 10` (`FST m64fp [RAX]`) and `DD 18`
+(`FSTP m64fp [RAX]`) so the old physical TOP source may be canonical binary80
+zero (`exponent=0`, `significand=0`) with tag Zero. Preserve its sign as
+binary64 `+0`/`-0`. Retain the four admitted FCWs and `FSW & 0x80df == 0`
+store gate; sticky PE may remain set. Exact zero adds no flags and clears C1
+under the existing exact-result policy.
+
+Keep the full canonical48 Qword check and one atomic Qword write with no data
+read. FST preserves TOP, all tags and payloads; FSTP empties old physical TOP
+and advances TOP only after the write succeeds. Reject mismatched tags and
+payloads before access; preserve Normal conversion and its local exponent
+limits. Cover both signs across TOP×FCW×incoming PE/C1, cross-width FLD-zero
+compositions, source/environment rejection, exact memory boundaries and store
+faults, literal CLI/FNSTSW fixtures, and explicit native/JIT denial.
