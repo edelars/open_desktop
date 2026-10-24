@@ -2117,3 +2117,14 @@ position and observes the post-pop FSW through FNSTSW. Both are schema/CLI
 reachable and included in native-denial coverage. Tag/payload mismatches remain
 pre-access rejects, the ten-byte store remains atomic, and native/JIT admission
 remains closed. See [S2-31an CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31an-signed-zero-fstp-m80fp-rax-db-38), [plan](../../../../docs/plans/STAGE_2.md#s2-31an-store-canonical-signed-binary80-zero-through-bounded-fstp-m80fp), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31an--signed-zero-binary80-stores-through-bounded-fstp-m80fp).
+
+
+### S2-31ao signed-infinity m80 FSTP fixtures
+
+Exact `DB 38` accepts a Special-tagged canonical infinity only when the raw
+binary80 exponent is all ones, explicit integer bit is set, and fraction is
+zero. Both positive bare and negative `DB 38 DF E0`/FNSTSW fixtures preserve
+the ten literal bytes. Valid+Normal and Zero+Zero remain accepted. Pseudo-infinity,
+NaNs, and tag/class mismatches reject before the data write; fixture schema/CLI
+and native-denial checks include the signed-infinity cases. JIT/native execution
+remains closed. See [S2-31ao CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ao-signed-infinity-fstp-m80fp-rax-db-38), [plan](../../../../docs/plans/STAGE_2.md#s2-31ao-store-canonical-signed-binary80-infinity-through-bounded-fstp-m80fp), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ao--signed-infinity-binary80-store-through-bounded-fstp-m80fp).

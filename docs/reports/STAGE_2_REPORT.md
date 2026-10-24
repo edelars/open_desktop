@@ -5866,3 +5866,23 @@ formatting and diff checks passed. The layout checker reports the existing
 unmapped `.serena/` directory, which remains untouched. Graphify was updated;
 its final extraction reported no topology changes. The explicitly requested independent `gpt-6.1-sol` medium review was clean
 after the report-link correction in commit `4c9aba19`.
+
+
+## S2-31ao — signed-infinity binary80 store through bounded FSTP m80fp
+
+Exact bare `DB 38` now also accepts a Special-tagged canonical binary80
+infinity (`exp=0x7fff`, integer bit one, zero fraction), preserving all ten raw
+bytes and sign. The existing Valid+Normal and Zero+Zero pairs remain.
+Pseudo-infinity, NaNs, other classes, and mismatched tags reject before access.
+The FCW/FSW gates, exact no-flag policy, one atomic ten-byte write/no read, and
+post-success pop remain unchanged.
+
+Coverage includes both signs across TOP×FCW×PE/C1, canaries, wrap, m32/m64/m80
+load-to-store compositions, every forbidden FSW gate, source-class/tag rejects,
+write/range atomicity, Normal/zero regressions, literal CLI/FNSTSW fixtures,
+and native/JIT denial. The full offline workspace suite passed (725 tests);
+workspace all-target checks, Linux x86 runner check, formatting, and diff checks
+passed. Graphify was updated. The layout checker reports the existing unmapped
+`.serena/` directory, left untouched. Physical x86 testing remains deferred to
+the combined final S2-31 substage. The explicitly requested Sol-medium review
+result will be recorded after review.

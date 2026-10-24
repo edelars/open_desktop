@@ -4203,3 +4203,23 @@ canonical48 ten-byte preflight, exactly one atomic write occurs and no data read
 is performed. Only successful writes pop/empty physical TOP and advance TOP;
 all raw payloads and existing pointer/retirement behavior are preserved.
 Native/JIT admission remains closed. See the [S2-31an plan](../plans/STAGE_2.md#s2-31an-store-canonical-signed-binary80-zero-through-bounded-fstp-m80fp), [report](../reports/STAGE_2_REPORT.md#s2-31an--signed-zero-binary80-stores-through-bounded-fstp-m80fp), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+## Local S2-31ao: signed-infinity `FSTP m80fp [RAX]` (`DB 38`)
+
+Exact `DB 38` additionally accepts a canonical binary80 infinity when physical
+TOP has tag Special, exponent `0x7fff`, explicit integer bit set, and fraction
+zero. Preserve all ten raw bytes unchanged: `+∞` is
+`0000000000000080ff7f`, and `-∞` is `0000000000000080ffff`. Existing
+Valid+canonical-Normal and Zero+canonical-Zero pairs remain accepted.
+Pseudo-infinity, NaNs, finite special classes, unnormal encodings, and infinity
+with Valid/Zero/Empty tags remain Unsupported before data access.
+
+Retain the four FCWs and `FSW & 0x80df == 0` store gate. Infinity adds no flags,
+preserves PE and C0/C2/C3, and clears C1 under the existing local policy.
+Validate the complete canonical48 ten-byte range and perform exactly one atomic
+write/no read; pop and advance TOP only after success. Preserve all payloads,
+pointers, and retirement behavior. JIT/native admission remains denied. The
+canonical infinity field pattern follows Intel SDM Vol.1 §8.2.2/Table 8-3; raw
+FSTP m80fp store semantics are described in Vol.2A pp.3-386–3-387 ([official
+revision 093 PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=503)). See the [S2-31ao plan](../plans/STAGE_2.md#s2-31ao-store-canonical-signed-binary80-infinity-through-bounded-fstp-m80fp), [report](../reports/STAGE_2_REPORT.md#s2-31ao--signed-infinity-binary80-store-through-bounded-fstp-m80fp), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

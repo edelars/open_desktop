@@ -419,3 +419,12 @@ raw ten bytes, including sign, are copied unchanged. Invalid pairs are
 interpreter rejects before data access; invalid-environment fixtures must use a
 forbidden status bit, invalid FCW, or boundary condition rather than relying on
 a value-class rejection. See the [S2-31an contract](../specs/CPU_CONTRACT.md#local-s2-31an-signed-zero-fstp-m80fp-rax-db-38), [plan](../plans/STAGE_2.md#s2-31an-store-canonical-signed-binary80-zero-through-bounded-fstp-m80fp), and [report](../reports/STAGE_2_REPORT.md#s2-31an--signed-zero-binary80-stores-through-bounded-fstp-m80fp).
+
+
+## S2-31ao signed-infinity m80 FSTP
+
+For exact `DB 38`, canonical binary80 infinity uses a Special tag, exponent
+`0x7fff`, integer bit one, and zero fraction. The output must preserve all ten
+source bytes and sign. Retain the S2-31an signed-zero and Normal cases.
+Unsupported test cases must use actual noncanonical classes or mismatched tags,
+not treat canonical infinity as rejected. See the [S2-31ao contract](../specs/CPU_CONTRACT.md#local-s2-31ao-signed-infinity-fstp-m80fp-rax-db-38), [plan](../plans/STAGE_2.md#s2-31ao-store-canonical-signed-binary80-infinity-through-bounded-fstp-m80fp), and [report](../reports/STAGE_2_REPORT.md#s2-31ao--signed-infinity-binary80-store-through-bounded-fstp-m80fp).

@@ -246,3 +246,9 @@ S2-31an extends exact `DB 38` to a Zero-tagged canonical binary80 zero. It
 preserves all ten bytes (including sign), keeps the one-write/no-read and
 post-success pop rules, and leaves native/JIT admission closed; see the [CPU
 contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31an-signed-zero-fstp-m80fp-rax-db-38).
+
+
+S2-31ao also admits canonical binary80 infinity with the Special tag for exact
+`DB 38`, preserving its raw sign and ten-byte payload. The prior Normal and
+signed-zero pairs are unchanged; malformed classes reject before access. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31ao-signed-infinity-fstp-m80fp-rax-db-38).

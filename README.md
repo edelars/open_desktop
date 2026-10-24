@@ -30,3 +30,8 @@ cargo check --workspace --all-targets --offline
 Bounded `FSTP m80fp` (`DB 38`) also preserves canonical signed binary80 zero
 when the physical TOP tag is Zero, copying the raw ten bytes and popping only
 after the atomic store succeeds. Native/JIT admission remains closed.
+
+
+Bounded `FSTP m80fp` (`DB 38`) also copies canonical signed binary80 infinity
+when tagged Special, preserving all ten bytes and popping only after the atomic
+store succeeds. Native/JIT admission remains closed.

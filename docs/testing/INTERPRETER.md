@@ -713,3 +713,11 @@ The exact `DB 38` FSTP m80fp path accepts canonical signed zero when physical
 TOP is tagged Zero. It copies the original ten bytes unchanged, performs one
 atomic ten-byte write and no data read, and pops only after success. Valid-tagged
 canonical Normal behavior is unchanged. See the [S2-31an contract](../specs/CPU_CONTRACT.md#local-s2-31an-signed-zero-fstp-m80fp-rax-db-38).
+
+
+## Local S2-31ao signed-infinity raw binary80 store
+
+Exact `DB 38` additionally accepts Special-tagged canonical infinity and copies
+all ten raw bytes unchanged. The existing Normal and signed-zero source pairs,
+FCW/FSW gates, one-write/no-read, and post-success pop remain fixed. See the
+[S2-31ao contract](../specs/CPU_CONTRACT.md#local-s2-31ao-signed-infinity-fstp-m80fp-rax-db-38).

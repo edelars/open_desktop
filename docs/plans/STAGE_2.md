@@ -255,6 +255,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31al | Extend exact D910/D918 m32 stores to canonical signed binary80 zero and atomic signed binary32 zero | S2-31ak |
 | [x] | S2-31am | Extend exact DD10/DD18 m64 stores to canonical signed binary80 zero and atomic signed binary64 zero | S2-31al |
 | [x] | S2-31an | Extend exact DB38 FSTP m80fp to canonical signed binary80 zero with raw ten-byte store | S2-31am |
+| [x] | S2-31ao | Extend exact DB38 FSTP m80fp to canonical signed binary80 infinity with raw ten-byte store | S2-31an |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3379,3 +3380,20 @@ behavior. Reject malformed tag/payload pairs before memory access. Cover both
 signs across TOP×FCW×PE/C1, canaries, cross-width zero-load compositions, wrap,
 source/environment rejection, store faults and range edges, literal CLI/FNSTSW
 fixtures, and native/JIT denial.
+
+
+#### S2-31ao. Store canonical signed binary80 infinity through bounded FSTP m80fp
+
+Extend only exact `DB 38` (`FSTP m80fp [RAX]`) so physical TOP may also be a
+Special tag with canonical binary80 infinity (`exponent=0x7fff`, explicit
+integer bit set, fraction zero), either sign. Preserve all ten bytes exactly
+(`+∞` `0000000000000080ff7f`, `-∞` `0000000000000080ffff`). Keep the existing
+Valid+Normal and Zero+Zero source pairs. Do not round, normalize, or set flags;
+retain four FCWs, `FSW & 0x80df`, PE/C0/C2/C3 and C1-clear behavior.
+
+Keep full canonical48 ten-byte preflight, one atomic write/no read, and pop only
+after successful write. Cover signed infinity across TOP×FCW×PE/C1, canaries,
+wrap, m32/m64/m80 infinity-load compositions, pseudo-infinity/NaN/other-class
+and mismatched-tag rejection before access, every forbidden status gate, normal
+and zero regressions, write/range atomicity, literal CLI/FNSTSW fixtures, and
+native/JIT denial.
