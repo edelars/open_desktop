@@ -2180,7 +2180,7 @@ mod tests {
         let invalid = v2::Fixture::from_json(include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp_invalid_class.case.json"
         ))
-        .expect("invalid-class fixture schema");
+        .expect("S2-31s binary32 invalid-class fixture schema");
         let mut memory = od_testkit::memory::FlatMemory::from_fixture(&invalid.fixture).unwrap();
         let result = execute_fixture_v2(&invalid, &mut memory);
         result.validate_for(&invalid).unwrap();
@@ -2326,6 +2326,13 @@ mod tests {
                 "S2-31t schema must reject {bytes}"
             );
         }
+        let mut rejected_subnormal: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp_invalid_class.case.json"
+        ))
+        .unwrap();
+        rejected_subnormal["memory"][1]["initial_bytes_hex"] =
+            serde_json::Value::String("0100000000000000".into());
+        assert!(v2::Fixture::from_json(&serde_json::to_vec(&rejected_subnormal).unwrap()).is_err());
     }
 
     #[test]

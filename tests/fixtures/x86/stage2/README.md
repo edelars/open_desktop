@@ -1823,15 +1823,16 @@ Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
 Value,” pp.3-352–3-353, official PDF p.470
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
 
-### S2-31u FLD m64fp signed-zero fixture coverage
+### S2-31u FLD m64fp signed-zero fixture coverage (historical)
 
 The exact `DD 00` and `DD 00 DF E0` fixtures now use a literal positive-zero
 binary64 source and expect a successful push with the Zero tag; the composition
 observes the updated TOP and C1 through FNSTSW AX. The invalid-class fixture
-was changed to positive minimum subnormal and still expects Unsupported after
-one Qword read with no CPU commit. Interpreter literals additionally cover
-negative zero and negative minimum subnormal. Native admission continues to
-deny all three fixtures. See the [S2-31u CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31u-bounded-fld-m64fp-rax-dd-00-signed-zero-extension), [plan](../../../../docs/plans/STAGE_2.md#s2-31u-extend-bounded-fld-m64fp-rax-dd-00-to-signed-zero), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31u--bounded-fld-m64fp-signed-zero-extension).
+supplied positive minimum subnormal in the S2-31u slice; S2-31z reclassifies it
+to positive infinity while preserving the S2-31u report as historical
+evidence. Interpreter literals additionally cover negative zero and,
+currently, negative minimum subnormal. Native admission continues to deny all
+three fixtures. See the [S2-31u CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31u-bounded-fld-m64fp-rax-signed-zero-extension), [plan](../../../../docs/plans/STAGE_2.md#s2-31u-extend-bounded-fld-m64fp-rax-dd-00-to-signed-zero), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31u--bounded-fld-m64fp-signed-zero-extension).
 
 Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
 Value,” pp.3-352–3-353, official PDF pp.470–471
@@ -1913,3 +1914,16 @@ behavior. The invalid-class fixture now supplies positive infinity and expects
 Unsupported after the one Dword read with no CPU commit. Schema admission is
 limited to binary32 infinity/NaN with exact `D9 00`, budget one and no stop RIP.
 Native admission remains closed. See the [S2-31y CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31y-bounded-fld-m32fp-rax-d9-00-masked-subnormal-extension), [plan](../../../../docs/plans/STAGE_2.md#s2-31y-extend-bounded-fld-m32fp-rax-d9-00-to-masked-subnormals), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31y--bounded-fld-m32fp-masked-subnormal-extension).
+
+### S2-31z FLD m64fp masked-subnormal fixture coverage
+
+The positive exact `DD 00` fixture supplies the minimum binary64 subnormal;
+the negative `DD 00 DF E0` fixture supplies its negative and observes sticky
+DE through FNSTSW AX. CLI checks verify canonical Normal binary80 payloads,
+Valid tags and DE. Interpreter literals cover signed minimum, interior and
+largest subnormals for every TOP and accepted FCW, plus sticky PE/C1 and
+repeated-load behavior. The invalid-class fixture supplies positive infinity
+and expects Unsupported after the one Qword read without CPU commit; schema
+admission is restricted to binary64 infinity/NaN with exact `DD 00`, budget
+one and no stop RIP. Native admission remains closed. See the [S2-31z CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31z-bounded-fld-m64fp-rax-dd-00-masked-subnormal-extension), [plan](../../../../docs/plans/STAGE_2.md#s2-31z-extend-bounded-fld-m64fp-rax-dd-00-to-masked-subnormals), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31z--bounded-fld-m64fp-masked-subnormal-extension).

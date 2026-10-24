@@ -62,6 +62,11 @@ const FLD_M32_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
 );
 const FLD_M32_INVALID_CLASS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp_invalid_class.case.json");
+const FLD_M64_SUBNORMAL: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31z_fld_m64fp_min_subnormal.case.json");
+const FLD_M64_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31z_fld_m64fp_negative_min_subnormal_fnstsw.case.json"
+);
 const FABS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30z_fabs_normal.case.json");
 const FABS_INVALID_SOURCE: &[u8] =
@@ -1430,6 +1435,37 @@ fn local_x87_fld_m32fp_subnormal_fixtures_normalize_and_set_de() {
         let x87 = observed.state.x87.as_ref().unwrap();
         assert_eq!(x87.registers[7], payload);
         assert_eq!(x87.status_word, HexU64(status));
+        assert_eq!((x87.tag_word.get() >> 14) & 3, 0);
+        assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
+        assert_eq!(x87.data_pointer, input.fixture.initial_state.gpr[0]);
+    }
+}
+
+#[test]
+fn local_x87_fld_m64fp_subnormal_fixtures_normalize_and_set_de() {
+    for (fixture, expected_rax, expected_rip, payload) in [
+        (
+            FLD_M64_SUBNORMAL,
+            0x0000_0000_0030_0004,
+            0x0010_0002,
+            "0000000000000080cd3b",
+        ),
+        (
+            FLD_M64_SUBNORMAL_FNSTSW,
+            0x0000_0000_0030_7d02,
+            0x0010_0004,
+            "0000000000000080cdbb",
+        ),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), input.fixture.instruction_budget);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.rip, HexU64(expected_rip));
+        assert_eq!(observed.state.gpr[0], HexU64(expected_rax));
+        let x87 = observed.state.x87.as_ref().unwrap();
+        assert_eq!(x87.registers[7], payload);
+        assert_eq!(x87.status_word, HexU64(0x7d02));
         assert_eq!((x87.tag_word.get() >> 14) & 3, 0);
         assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
         assert_eq!(x87.data_pointer, input.fixture.initial_state.gpr[0]);

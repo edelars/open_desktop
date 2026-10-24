@@ -615,6 +615,50 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     wrong_fld_m32_budget.stop_rip = Some(HexU64(0x1004));
     assert!(Fixture::from_json(&serde_json::to_vec(&wrong_fld_m32_budget).unwrap()).is_err());
 
+    let mut fld_m64 = fixture.clone();
+    let code = fld_m64
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.length = 2;
+    code.initial_bytes_hex = "dd00".into();
+    code.comparison_mask_hex = "ffff".into();
+    fld_m64.initial_state.gpr[0] = HexU64(0x0000_0000_0030_0004);
+    fld_m64.memory.push(MemoryRegionSpec {
+        region_id: "operand".into(),
+        guest_address: HexU64(0x0000_0000_0030_0004),
+        length: 8,
+        permissions: MemoryPermissions {
+            read: true,
+            write: false,
+            execute: false,
+        },
+        initial_bytes_hex: "0100000000000000".into(),
+        comparison_mask_hex: "ff".repeat(8),
+    });
+    fld_m64.stop_rip = Some(HexU64(0x1002));
+    fld_m64.expected_exit = ExpectedExit::StopAddress;
+    assert!(Fixture::from_json(&fld_m64.to_json().unwrap()).is_ok());
+
+    let mut invalid_fld_m64 = fld_m64.clone();
+    invalid_fld_m64.stop_rip = None;
+    invalid_fld_m64.expected_exit = ExpectedExit::Unsupported;
+    invalid_fld_m64
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "operand")
+        .unwrap()
+        .initial_bytes_hex = "000000000000f07f".into();
+    assert!(Fixture::from_json(&invalid_fld_m64.to_json().unwrap()).is_ok());
+    invalid_fld_m64
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "operand")
+        .unwrap()
+        .initial_bytes_hex = "0100000000000000".into();
+    assert!(Fixture::from_json(&serde_json::to_vec(&invalid_fld_m64).unwrap()).is_err());
+
     let mut invalid_fld_m80 = fixture.clone();
     let code = invalid_fld_m80
         .memory

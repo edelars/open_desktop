@@ -240,6 +240,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31u | Extend S2-31t bare DD 00 to signed binary64 zero with Zero tag; keep nonzero subnormals and specials unsupported, native closed | S2-31t |
 | [x] | S2-31x | Extend exact DB 28 FLD m80fp to canonical nonzero binary80 subnormals with Special tag; native closed | S2-31w |
 | [x] | S2-31y | Extend exact D9 00 FLD m32fp to masked binary32 subnormal sources with exact Normal expansion and sticky DE; native closed | S2-31v |
+| [x] | S2-31z | Extend exact DD 00 FLD m64fp to masked binary64 subnormal sources with exact Normal expansion and sticky DE; native closed | S2-31u |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2867,6 +2868,33 @@ denormal-operand handling; Vol.2A FLD pp.3-352–3-353 (official PDF p.470)
 specifies the load format. This bounded all-masked profile does not infer
 unmasked push/exception behavior from that statement. Binary80 m80 subnormal
 handling remains the separate S2-31x behavior.
+
+#### S2-31z. Extend bounded `FLD m64fp [RAX]` (`DD 00`) to masked subnormals
+
+Keep exact bare `DD 00`, existing x87 state, the four all-masked FCWs, Empty
+`(TOP-1)&7`, complete canonical48 Qword preflight and one Qword read/no
+writes. For source exponent zero and fraction `f != 0`, normalize exactly:
+`k=floor(log2(f))`, binary80 significand `f << (63-k)`, unbiased exponent
+`k-1074` (biased `16383+k-1074`), preserving sign. Store canonical Normal and
+assign Valid. Set sticky FSW.DE only; do not add UE or PE, clear C1 under the
+existing load policy and preserve other flags, payloads, TOP and pointer
+behavior. Permit pre-existing DE only in this DD00 gate using
+`FSW & 0x80dd`; leave FILD and m80 gates unchanged. Unmasked controls remain
+unsupported and no exception delivery is implemented. Signed zero and Normal
+keep their S2-31u behavior; infinity and NaN remain Unsupported after one read
+without commit. Native admission stays closed.
+
+Use independent signed minimum, interior and largest subnormal literals over
+all TOP×FCW pairs, plus sticky-PE/C1/DE and repeated-load checks. Preserve
+single-read and preflight atomicity coverage. Reclassify the schema exception
+fixture from minimum subnormal to binary64 infinity/NaN while retaining exact
+DD00, budget-one and no-stop constraints. Add successful positive DD00 and
+negative DD00/DFE0 fixtures and run both through the CLI. S2-31u remains the
+historical signed-zero/subnormal-rejection result. Intel SDM rev.093 Vol.1
+§8.5.2 describes masked x87 denormal-operand handling; Vol.2A FLD
+pp.3-352–3-353 (official PDF p.470) specifies the load format. This bounded
+all-masked profile does not infer unmasked exception/push behavior. Binary80
+m80 subnormal handling remains the separate S2-31x behavior.
 
 #### S2-30an. Bare indexed FCOMI-family register forms
 

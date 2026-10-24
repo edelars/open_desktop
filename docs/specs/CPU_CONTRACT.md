@@ -3660,8 +3660,9 @@ retaining the bounded S2-31v gates: existing x87 state, FCW `037f/077f/0b7f/
 0f7f`, Empty physical destination `(TOP+7)&7`, complete canonical48 Dword
 range, and one Dword read with no writes. The D900-only FSW gate is now
 `FSW & 0x80dd == 0`, allowing a pre-existing sticky DE while continuing to
-reject all other masked status bits. FILD, m64fp, and m80fp retain their
-existing `0x80df` status gate.
+reject all other masked status bits. At that point FILD, m64fp and m80fp
+retained their existing `0x80df` status gate; S2-31z later extends the DD00
+path with its own DE-permitting preflight, while FILD and m80fp stay strict.
 
 For exponent field zero and nonzero fraction `f`, let `k=floor(log2(f))`.
 The pushed binary80 payload is canonical Normal with significand
@@ -3688,5 +3689,44 @@ operand handling; Vol.2A, “FLD—Load Floating-Point Value,” pp.3-352–3-35
 official PDF p.470
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
 The local contract is limited to the all-masked profile and does not infer
+unmasked exception behavior. The separate binary80 m80fp subnormal behavior
+remains as documented in S2-31x.
+
+## Local S2-31z: bounded `FLD m64fp [RAX]` (`DD 00`) masked-subnormal extension
+
+S2-31z extends exact bare `DD 00` to nonzero binary64 subnormal sources while
+retaining the bounded S2-31u gates: existing x87 state, FCW `037f/077f/0b7f/
+0f7f`, Empty physical destination `(TOP+7)&7`, complete canonical48 Qword
+range, and one Qword read with no writes. The DD00-only FSW gate is
+`FSW & 0x80dd == 0`, allowing a pre-existing sticky DE while rejecting the
+other masked status bits. FILD and m80fp retain their existing `0x80df`
+status gate; the D900 gate retains the separate S2-31y policy.
+
+For exponent field zero and nonzero fraction `f`, let `k=floor(log2(f))`.
+The pushed binary80 payload is canonical Normal with significand
+`f << (63-k)`, unbiased exponent `k-1074` (biased exponent `16383+k-1074`),
+and the source sign. Its tag is Valid. The operation sets sticky FSW.DE and
+does not set UE or PE; it clears C1 and preserves other flags, payloads, TOP
+and pointer behavior as in the existing DD00 load policy. Repeated masked
+subnormal loads retain DE. Binary64 signed zero remains Zero-tagged; Normal
+expansion is unchanged. Infinity and NaN remain Unsupported after the one
+read with no CPU commit. Unmasked controls remain outside the supported
+profile; no exception delivery or unmasked push behavior is claimed. Native
+admission remains closed.
+
+Independent literal vectors cover signed minimum, interior and largest
+subnormals across all TOP×FCW pairs, including sticky PE/C1 behavior and a
+repeated load. Exact DD00 positive-subnormal and DD00/DFE0
+negative-subnormal fixtures exercise the CLI and FNSTSW composition. The
+narrow Unsupported schema fixture now uses infinity; its admission requires
+exact DD00, budget one, no stop RIP, and binary64 exponent field 2047. The
+earlier S2-31u report records the signed-zero extension with subnormal
+rejection as it stood at that time.
+
+Normative source: Intel SDM revision 093, Vol.1 §8.5.2 for masked denormal
+operand handling; Vol.2A, “FLD—Load Floating-Point Value,” pp.3-352–3-353,
+official PDF p.470
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+This local contract is limited to the all-masked profile and does not infer
 unmasked exception behavior. The separate binary80 m80fp subnormal behavior
 remains as documented in S2-31x.

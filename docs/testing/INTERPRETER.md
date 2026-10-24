@@ -452,14 +452,15 @@ CLI fixtures cover exact `DD 00`, `DD 00 DF E0`, and zero-class rejection;
 native admission remains denied. General x87 exceptions and physical x86
 behavior remain unverified. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31t-bounded-fld-m64fp-rax-dd-00), [plan](../plans/STAGE_2.md#s2-31t-bare-bounded-fld-m64fp-rax-dd-00-partial-slice), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
-## Local S2-31u signed-zero extension
+## Local S2-31u signed-zero extension (historical)
 
 S2-31u extends the S2-31t exact `DD 00` load to accept binary64 `+0` and `-0`
 after its one Qword read. Independent literals require all-zero binary80 for
 +0 and sign byte `0x80` for -0, both with the Zero tag. Normal values keep the
-S2-31t conversion and Valid tag. Positive and negative nonzero minimum
-subnormals, infinity and NaNs remain Unsupported without CPU commit after the
-read. The matrix covers all TOP×FCW settings and preserves the existing
+S2-31t conversion and Valid tag. In the S2-31u slice, positive and negative
+nonzero minimum subnormals, infinity and NaNs remained Unsupported without
+CPU commit after the read; S2-31z extends the current DD00 path to masked
+binary64 subnormals. The matrix covers all TOP×FCW settings and preserves the existing
 status, destination, address, and native-denial checks. See the [S2-31u CPU
 contract](../specs/CPU_CONTRACT.md#local-s2-31u-bounded-fld-m64fp-rax-dd-00-signed-zero-extension),
 [plan](../plans/STAGE_2.md#s2-31u-extend-bounded-fld-m64fp-rax-dd-00-to-signed-zero),
@@ -495,3 +496,21 @@ Independent all-TOP×FCW literals cover signed minimum, interior and largest
 subnormals. The exact D900 success fixture loads positive minimum subnormal;
 the D900/DFE0 composition fixture loads negative minimum subnormal and checks
 DE through FNSTSW. See the [S2-31y CPU contract](../specs/CPU_CONTRACT.md#local-s2-31y-bounded-fld-m32fp-rax-d9-00-masked-subnormal-extension).
+
+## Local S2-31z masked binary64-subnormal extension
+
+Current exact bare `DD 00` accepts masked nonzero binary64 subnormal sources
+after its one Qword read. It normalizes the fraction into a canonical Normal
+binary80 payload, preserves sign, assigns Valid, and sets sticky DE. The DD00
+preflight permits an existing DE (`FSW & 0x80dd == 0`); FILD and m80 load
+paths retain their stricter shared gate. UE and PE are not added, C1 is
+cleared, and other status/payload/TOP/pointer behavior follows the existing
+bounded load policy. All four FCWs are fully masked; unmasked behavior and
+exception delivery are not included. Signed zero and Normal are unchanged;
+infinity and NaN remain Unsupported post-read with no commit. Binary80
+`DB 28` subnormals retain their separate S2-31x behavior.
+
+Independent all-TOP×FCW literals cover signed minimum, interior and largest
+subnormals. The exact DD00 success fixture loads positive minimum subnormal;
+the DD00/DFE0 composition fixture loads negative minimum subnormal and checks
+DE through FNSTSW. See the [S2-31z CPU contract](../specs/CPU_CONTRACT.md#local-s2-31z-bounded-fld-m64fp-rax-dd-00-masked-subnormal-extension).
