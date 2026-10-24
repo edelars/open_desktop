@@ -4202,4 +4202,4 @@ new status flags, preserves PE and C0/C2/C3, and clears C1. After complete
 canonical48 ten-byte preflight, exactly one atomic write occurs and no data read
 is performed. Only successful writes pop/empty physical TOP and advance TOP;
 all raw payloads and existing pointer/retirement behavior are preserved.
-Native/JIT admission remains closed. See the [S2-31an plan](../plans/STAGE_2.md#s2-31an-store-canonical-signed-binary80-zero-through-bounded-fstp-m80fp), [report](../reports/STAGE_2_REPORT.md#s2-31an---signed-zero-binary80-stores-through-bounded-fstp-m80fp), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+Native/JIT admission remains closed. See the [S2-31an plan](../plans/STAGE_2.md#s2-31an-store-canonical-signed-binary80-zero-through-bounded-fstp-m80fp), [report](../reports/STAGE_2_REPORT.md#s2-31an--signed-zero-binary80-stores-through-bounded-fstp-m80fp), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

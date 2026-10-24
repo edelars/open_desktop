@@ -2116,4 +2116,4 @@ bytes; the negative `DB 38 DF E0` fixture stores the sign byte in the final
 position and observes the post-pop FSW through FNSTSW. Both are schema/CLI
 reachable and included in native-denial coverage. Tag/payload mismatches remain
 pre-access rejects, the ten-byte store remains atomic, and native/JIT admission
-remains closed. See [S2-31an CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31an-signed-zero-fstp-m80fp-rax-db-38), [plan](../../../../docs/plans/STAGE_2.md#s2-31an-store-canonical-signed-binary80-zero-through-bounded-fstp-m80fp), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31an---signed-zero-binary80-stores-through-bounded-fstp-m80fp).
+remains closed. See [S2-31an CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31an-signed-zero-fstp-m80fp-rax-db-38), [plan](../../../../docs/plans/STAGE_2.md#s2-31an-store-canonical-signed-binary80-zero-through-bounded-fstp-m80fp), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31an--signed-zero-binary80-stores-through-bounded-fstp-m80fp).
