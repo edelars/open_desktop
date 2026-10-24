@@ -257,7 +257,7 @@ fn x87_schema_admits_only_fcom_sti_register_forms_and_two_operand_rejection() {
     fixture.instruction_budget = 1;
     fixture.stop_rip = Some(HexU64(0x1002));
     assert!(fixture.validate().is_err());
-    for modrm in 0xd8u8..=0xdf {
+    for modrm in [0xd8, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf] {
         let code = fixture
             .memory
             .iter_mut()
@@ -735,6 +735,49 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     fstp_bad_source.expected_exit = ExpectedExit::Unsupported;
     assert!(Fixture::from_json(&fstp_bad_source.to_json().unwrap()).is_ok());
 
+    let mut fcomp = fixture.clone();
+    fcomp.case_id = "local_fcomp_st1".into();
+    fcomp.instruction_budget = 1;
+    fcomp.stop_rip = Some(HexU64(0x1002));
+    fcomp.expected_exit = ExpectedExit::StopAddress;
+    let fcomp_code = fcomp
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    fcomp_code.length = 2;
+    fcomp_code.initial_bytes_hex = "d8d9".into();
+    fcomp_code.comparison_mask_hex = "ffff".into();
+    assert!(Fixture::from_json(&fcomp.to_json().unwrap()).is_ok());
+    let mut fcomp_observation = fcomp.clone();
+    fcomp_observation.case_id = "local_fcomp_st1_fnstsw".into();
+    fcomp_observation
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap()
+        .initial_bytes_hex = "d8d9dfe0".into();
+    fcomp_observation.instruction_budget = 2;
+    fcomp_observation.stop_rip = Some(HexU64(0x1004));
+    fcomp_observation
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap()
+        .length = 4;
+    fcomp_observation
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap()
+        .comparison_mask_hex = "ffffffff".into();
+    assert!(Fixture::from_json(&fcomp_observation.to_json().unwrap()).is_ok());
+    let mut fcomp_rejected = fcomp.clone();
+    fcomp_rejected.case_id = "local_fcomp_st1_rejected".into();
+    fcomp_rejected.stop_rip = None;
+    fcomp_rejected.expected_exit = ExpectedExit::Unsupported;
+    assert!(Fixture::from_json(&fcomp_rejected.to_json().unwrap()).is_ok());
+
     for (bytes, length, stop) in [
         ("db", 1, 0x1001),
         ("9bdbe3", 3, 0x1003),
@@ -750,7 +793,6 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         ("f3dbe2", 3, 0x1003),
         ("d8e8", 2, 0x1002),
         ("d8d8", 2, 0x1002),
-        ("d8d9", 2, 0x1002),
         ("d8da", 2, 0x1002),
         ("d8db", 2, 0x1002),
         ("d8dc", 2, 0x1002),

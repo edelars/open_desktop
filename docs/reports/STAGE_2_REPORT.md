@@ -3898,6 +3898,7 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+
 Validation passed: `cargo test --workspace --offline`,
 `cargo check --workspace --all-targets --offline`,
 `cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
@@ -3909,6 +3910,44 @@ x87_instructions_are_rejected_by_native_profile_and_instruction_admission`,
 `.serena/` directory; it was left untouched. Independent review findings for
 the native deny arm, D8 arithmetic wording, and a stale plan link were corrected;
 follow-up review reported no remaining findings.
+
+## S2-30ad — bounded FCOMP ST(1) compare and physical TOP pop
+
+Added exact bare `D8 D9` as the zero-operand FCOMP ST(1) alias. The interpreter
+reuses `bounded_x87_fcom_result(state, 1)` to validate and compare the old
+physical TOP and old `(TOP+1)&7` values before mutation. It then replaces the
+condition field with the exact greater/less/equal result, empties the old
+physical TOP tag, advances TOP by one, records FIP, and retires once. Raw
+payloads remain in their physical registers without rotation or clearing;
+neighboring D8 D0..D7 FCOM and arithmetic forms retain their existing decode.
+
+Interpreter vectors cover all eight TOP positions including wrap at seven,
+all 16 initial condition-code fields, all three relations, sign/exponent/low
+significand ordering, independent tag and class rejection for both operands,
+missing state/environment and fetch/truncation/STOP/budget atomicity. Literal
+fixtures add equal success and invalid ST(1)-tag rejection with no stop RIP and
+budget one. Schema and CLI cover only D8 D9 and exact D8 D9 DF E0 status
+observation. Native admission explicitly denies D8 D9.
+
+Validation passed: `cargo test --workspace --offline` (297 `od-isa` tests,
+155 `od-testkit` tests, 69 runner fixture cases and all remaining workspace
+suites), `cargo check --workspace --all-targets --offline`, Linux x86_64
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
+--offline`, `cargo fmt --all -- --check`, `git diff --check`, and
+`graphify update .`. Focused FCOMP decoder, interpreter, schema and CLI tests
+also passed. The Linux-only native-deny regression was compiled but not
+executed on this arm64 macOS host; no SSH or physical-hardware checks were run.
+`python3 tools/check_layout.py` reports the existing unmapped root `.serena/`
+directory, which was left untouched.
+Independent gpt-6.1-sol medium follow-up review confirmed the fixture tag and
+report ordering corrections with no remaining findings.
+
+Full x87 comparison behavior, special values, exceptions, native execution and
+FPU feature claims remain unverified; ISSUE-019 remains open.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
 ## S2-30ac — bounded FCOM ST(i) exact Normal compare
 

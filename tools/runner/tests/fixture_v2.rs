@@ -57,6 +57,11 @@ const FCOM_ST7_EQUAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ac_fcom_st7_equal.case.json");
 const FCOM_ST7_INVALID_RHS_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ac_fcom_st7_invalid_rhs_tag.case.json");
+const FCOMP_ST1_EQUAL: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ad_fcomp_st1_equal.case.json");
+const FCOMP_ST1_INVALID_RHS_TAG: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30ad_fcomp_st1_invalid_rhs_tag.case.json"
+);
 const GS_BASE_QWORD_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_22b_gs_base_qword_load_alias.case.json");
 const FS_SELECTOR_TO_RAX: &[u8] =
@@ -1430,6 +1435,54 @@ fn local_x87_fcom_st7_literal_fixture_and_invalid_rhs_tag_are_handled() {
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
     assert_eq!(count(&result), 0);
     assert_eq!(snapshot(&result).state, input.fixture.initial_state);
+}
+
+#[test]
+fn local_x87_fcomp_st1_literal_fixture_compares_then_pops_and_rejects_atomically() {
+    let (input, result) = run(FCOMP_ST1_EQUAL, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0002);
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.status_word = HexU64(0x4800);
+    expected_x87.tag_word = HexU64(0xfff3);
+    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+    assert_eq!(observed.state, expected);
+
+    let (input, result) = run(FCOMP_ST1_INVALID_RHS_TAG, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    assert_eq!(snapshot(&result).state, input.fixture.initial_state);
+}
+
+#[test]
+fn local_x87_fcomp_st1_cli_observation_sequence_preserves_popped_status() {
+    let mut fixture = Fixture::from_json(FCOMP_ST1_EQUAL).unwrap().fixture;
+    fixture.case_id = "local_x87_fcomp_st1_fnstsw_ax".into();
+    fixture.instruction_budget = 2;
+    fixture.stop_rip = Some(HexU64(0x0010_0004));
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.length = 4;
+    code.initial_bytes_hex = "d8d9dfe0".into();
+    code.comparison_mask_hex = "ffffffff".into();
+    let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 2);
+    let observed = snapshot(&result);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0004);
+    expected.gpr[0] = HexU64((expected.gpr[0].get() & !0xffff) | 0x4800);
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.status_word = HexU64(0x4800);
+    expected_x87.tag_word = HexU64(0xfff3);
+    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+    assert_eq!(observed.state, expected);
 }
 
 #[test]

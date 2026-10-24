@@ -1238,6 +1238,23 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+### S2-30ad x87 schema and fixture coverage
+
+The schema admits bare `D8 D9` FCOMP ST(1) and the exact four-byte
+`D8 D9 DF E0` sequence for status observation. The literal success fixture
+compares equal canonical-Normal ST(0)/ST(1), empties the old physical TOP tag,
+and advances TOP without changing register payload bytes. The literal reject
+fixture has an Empty ST(1) tag, `stop_rip: null`, and budget one; the CLI checks
+full-state atomic rejection. Interpreter vectors cover every TOP including
+TOP=7 wrap, all initial condition-code combinations, relation/sign/exponent/
+low-significand ordering, independent lhs/rhs tag and class rejection, and
+fetch/truncation/STOP/budget atomicity. The schema rejects D8 D8 and D8 DA..DF
+along with prefixes, REX and WAIT. Native admission explicitly denies D8 D9.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ### S2-30x x87 schema and fixture coverage
 
 The schema admits all eight bare `DD D0+i` FST ST(i) encodings. The literal
