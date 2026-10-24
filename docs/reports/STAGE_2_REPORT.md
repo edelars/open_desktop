@@ -6324,5 +6324,6 @@ range-fault atomicity are covered. `cargo test --workspace --offline` passed
 `cargo fmt --all -- --check` passed. The Linux-only native admission test was
 compile-checked but not executed on this macOS host. `tools/check_layout.py`
 reports the pre-existing unmapped `.serena/` directory, which was preserved;
-`git diff --check` passed. Independent review is pending. Native runtime and
-physical acceptance remain deferred under ISSUE-019.
+`git diff --check` passed. Independent gpt-6.1-sol review was clean: the 34
+focused m64fp ISA tests, FLD/store roundtrip, CLI fixtures and JIT denial were
+reviewed; native and physical runtime remain deferred under ISSUE-019.
