@@ -6122,7 +6122,9 @@ are retained, lower 40 bits truncate without rounding or PE, and sticky IE is
 committed only after a successful atomic Dword write. PE and all ten source
 bytes are preserved; D910 keeps TOP/tags and D918 pops only after success. The
 existing four FCWs and `FSW & 0x80df == 0` gate remain, so a later store is
-blocked until FNCLEX clears IE. QNaN conversion remains a no-new-flags path.
+blocked until FNCLEX clears IE at this stage. S2-31ay below supersedes that
+restriction for the exact m32/m64 FST/FSTP conversion helpers. QNaN conversion
+remains a no-new-flags path.
 
 Focused coverage includes both signs/opcodes over TOP×FCW×PE/C1 and payload
 bits 39/40, QNaN/SNaN status differentiation, write/range atomicity, and
@@ -6135,3 +6137,29 @@ runner all-target check, formatting, and diff checks passed. Graphify updated
 successfully. The layout check reports only the pre-existing unmapped
 `.serena/` directory, which was left untouched. Independent review is pending.
 Native runtime and physical acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31ay--sticky-ie-m32-m64-stores"></a>
+
+## S2-31ay — sticky IE in bounded m32/m64 stores
+
+The exact D910/D918 and DD10/DD18 conversion helpers now admit masked sticky IE
+by changing only their FSW predicate from `0x80df` to `0x80de`. ZE/OE/UE/SF/ES/B
+remain rejected; FCWs, source classes/tags, address validation, memory shape,
+and all unrelated x87 gates remain unchanged. Successful SNaN stores preserve
+IE and PE and OR IE after the atomic write; inexact finite stores similarly
+OR PE after success. FSTP still pops only after the write, and repeated stores
+can proceed with IE set. `FNSTSW` observes sticky IE and `FNCLEX` remains the
+way to clear status, but no longer needs to run between otherwise admitted
+m32/m64 stores.
+
+Validation passed locally: the od-isa suite passed 443 tests, both CLI
+fixture tests passed, both m32/m64 JIT-denial integration tests passed, and the
+full offline workspace suite passed 771 tests with zero failures. Workspace
+all-target checking and Linux x86_64 runner all-target checking passed;
+formatting and diff checks passed. Graphify rebuilt successfully (4,116 nodes,
+8,491 edges, 186 communities). The layout check reports only the pre-existing
+unmapped `.serena/` directory, which was left untouched. The Linux runner check
+reports existing unused calibration-helper warnings. Independent review is
+pending. Native runtime and physical acceptance remain deferred under
+ISSUE-019.

@@ -526,3 +526,15 @@ and are denied by JIT/native admission. See the
 [S2-31ax contract](../specs/CPU_CONTRACT.md#local-s2-31ax-canonical-signalingnan-fstfstp-m32fp-rax-d9-10-d9-18),
 [plan](../plans/STAGE_2.md#s2-31ax-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m32fp),
 and [report](../reports/STAGE_2_REPORT.md#s2-31ax--canonical-signalingnan-binary80-to-binary32-stores).
+
+
+## S2-31ay sticky IE m32/m64 stores
+
+The S2-31ay CLI fixtures start with masked IE already set and exercise exact
+m32 FST plus m64 FSTP/FNSTSW. They are parsed and executed by the interpreter,
+and included in explicit JIT-denial checks. Full-width ISA matrices cover all
+four store opcodes, FCWs, TOP wrap, sticky IE/PE, C1 policy, and admitted source
+classes; native runtime and physical acceptance remain deferred under
+ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ay-admit-sticky-ie-fstfstp-m32-m64),
+[plan](../plans/STAGE_2.md#s2-31ay-admit-sticky-ie-in-bounded-m32-m64-fst-fstp),
+and [report](../reports/STAGE_2_REPORT.md#s2-31ay--sticky-ie-m32-m64-stores).

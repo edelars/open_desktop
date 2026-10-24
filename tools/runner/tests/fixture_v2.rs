@@ -162,6 +162,12 @@ const FST_M32_SNAN: &[u8] =
 const FSTP_M32_NEGATIVE_SNAN_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31ax_fstp_m32fp_negative_snan_payload_fnstsw.case.json"
 );
+const FST_M32_SNAN_STICKY_IE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31ay_fst_m32fp_positive_snan_sticky_ie.case.json"
+);
+const FSTP_M64_NEGATIVE_SNAN_STICKY_IE_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31ay_fstp_m64fp_negative_snan_sticky_ie_fnstsw.case.json"
+);
 const FABS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30z_fabs_normal.case.json");
 const FABS_INVALID_SOURCE: &[u8] =
@@ -3111,7 +3117,11 @@ fn v2_jit_denies_m64_qnan_stores_without_interpreter_fallback() {
 
 #[test]
 fn v2_jit_denies_m64_snan_stores_without_interpreter_fallback() {
-    for fixture in [FST_M64_SNAN, FSTP_M64_NEGATIVE_SNAN_FNSTSW] {
+    for fixture in [
+        FST_M64_SNAN,
+        FSTP_M64_NEGATIVE_SNAN_FNSTSW,
+        FSTP_M64_NEGATIVE_SNAN_STICKY_IE_FNSTSW,
+    ] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
@@ -3137,7 +3147,11 @@ fn v2_jit_denies_m32_qnan_stores_without_interpreter_fallback() {
 
 #[test]
 fn v2_jit_denies_m32_snan_stores_without_interpreter_fallback() {
-    for fixture in [FST_M32_SNAN, FSTP_M32_NEGATIVE_SNAN_FNSTSW] {
+    for fixture in [
+        FST_M32_SNAN,
+        FSTP_M32_NEGATIVE_SNAN_FNSTSW,
+        FST_M32_SNAN_STICKY_IE,
+    ] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));

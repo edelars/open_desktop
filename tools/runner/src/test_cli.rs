@@ -3110,6 +3110,15 @@ mod tests {
                 "f0debc9a78563492ffff",
                 "5634d2ff",
             ),
+            (
+                "positive FST m32 signaling NaN with pre-existing IE",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ay_fst_m32fp_positive_snan_sticky_ie.case.json").as_slice(),
+                0x0030_0004,
+                0x4501,
+                0xfffe,
+                "0100000000000080ff7f",
+                "0000c07f",
+            ),
         ] {
             let fixture = v2::Fixture::from_json(bytes)
                 .unwrap_or_else(|error| panic!("{name}: invalid fixture schema: {error}"));
@@ -3323,6 +3332,15 @@ mod tests {
             (
                 "negative FSTP m64 signaling NaN with FNSTSW",
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aw_fstp_m64fp_negative_signaling_nan_fnstsw.case.json").as_slice(),
+                0x0030_4d01,
+                0x4d01,
+                0xffff,
+                "f0debc9a78563492ffff",
+                "9b5713cf8a46faff",
+            ),
+            (
+                "negative FSTP m64 signaling NaN with pre-existing IE and FNSTSW",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ay_fstp_m64fp_negative_snan_sticky_ie_fnstsw.case.json").as_slice(),
                 0x0030_4d01,
                 0x4d01,
                 0xffff,

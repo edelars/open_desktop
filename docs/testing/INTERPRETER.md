@@ -806,3 +806,16 @@ matrix, QNaN differential, faults, FNSTSW/FNCLEX recovery, interpreter
 fixtures and JIT/native denial are covered. Native runtime and physical
 acceptance remain deferred under ISSUE-019. See the
 [S2-31ax CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ax-canonical-signalingnan-fstfstp-m32fp-rax-d9-10-d9-18).
+
+
+## Local S2-31ay sticky IE in m32/m64 stores
+
+Exact D910/D918 and DD10/DD18 stores admit pre-existing masked IE while
+continuing to reject other forbidden status bits. Incoming IE/PE remains
+sticky; successful SNaN/inexact writes add IE/PE only after memory commits, and
+FSTP pops only after a successful write. Repeated stores after SNaN no longer
+require an intervening FNCLEX. Cross-product ISA tests, SNaN FLD→repeated store
+sequences, CLI fixtures with incoming IE, FNSTSW/FNCLEX, and JIT denial cover
+the change. Other x87 gates and native admission remain unchanged; native
+runtime and physical acceptance remain deferred under ISSUE-019. See the
+[S2-31ay CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ay-admit-sticky-ie-fstfstp-m32-m64).

@@ -4216,7 +4216,7 @@ when storing binary32 `+0` (`00000000`) or `-0` (`00000080`). The existing
 Normal conversion path is unchanged; a Zero tag with a nonzero/pseudo payload,
 or a non-Zero tag with a zero payload, remains Unsupported before data access.
 
-Retain the existing four FCWs and `FSW & 0x80df == 0` gate, which permits
+Retain the existing four FCWs and the S2-31ay `FSW & 0x80de == 0` gate, which permits
 sticky PE and C1. An exact zero store adds no status flags, preserves PE, and
 clears C1 under the local exact-result policy. Check the full canonical48
 Dword range before exactly one atomic Dword write; do not read data memory.
@@ -4241,7 +4241,7 @@ sign bit in binary64 `+0` (`0000000000000000`) or `-0`
 tag with a nonzero/pseudo payload, or a non-Zero tag with zero payload,
 remains Unsupported before data access.
 
-Retain the existing four FCWs and `FSW & 0x80df == 0` gate. Sticky PE and C1
+Retain the existing four FCWs and the S2-31ay `FSW & 0x80de == 0` gate. Sticky PE and C1
 may enter; exact zero preserves PE, adds no flags, and clears C1. Check the
 complete canonical48 Qword range before exactly one atomic Qword write; do not
 read data memory. Only after a successful write may DD18 empty old physical
@@ -4303,7 +4303,7 @@ binary64 infinity: `+∞` bytes `000000000000f07f`, `-∞` bytes
 new status flag. Preserve a preexisting PE; clear C1 under the local exact-store
 policy, with C0/C2/C3 unchanged.
 
-Retain the four admitted FCWs and `FSW & 0x80df == 0` gate. The complete
+Retain the four admitted FCWs and `FSW & 0x80de == 0` gate. The complete
 canonical48 Qword range is checked before exactly one atomic write; no data read
 is performed. DD10 preserves TOP, tags and all raw payloads. DD18 empties old
 physical TOP and advances TOP only after successful write. Existing Normal
@@ -4326,7 +4326,7 @@ and zero fraction. Integer-field conversion emits binary32 `+∞` bytes
 This path adds no status flags and preserves PE, with C1/C0/C2/C3 following the
 existing exact-store policy.
 
-Retain the four admitted FCWs and `FSW & 0x80df == 0` gate. Check the complete
+Retain the four admitted FCWs and `FSW & 0x80de == 0` gate. Check the complete
 canonical48 Dword range before exactly one atomic write; perform no data read.
 D910 preserves TOP, tags, and payloads. D918 pops only after successful write.
 Normal and signed-zero behavior remains unchanged. Pseudo-infinity, NaNs,
@@ -4351,7 +4351,7 @@ under this bounded policy: it does not round, set PE or IE, or use host floating
 point. Preserve sticky PE and clear C1; C0/C2/C3 follow the existing local
 store policy.
 
-Retain the four FCWs and `FSW & 0x80df == 0` gate. Preflight the full
+Retain the four FCWs and `FSW & 0x80de == 0` gate. Preflight the full
 canonical48 Qword range, then make exactly one atomic write and no data read.
 DD10 preserves TOP/tags/payloads; DD18 pops only after successful write. Keep
 Normal, Zero and Infinity behavior. SNaN, pseudo-NaN, other special encodings,
@@ -4360,6 +4360,28 @@ general x87 exception delivery and physical acceptance remain outside this
 slice. See the [plan](../plans/STAGE_2.md#s2-31au-store-canonical-binary80-quietnan-through-bounded-fstfstp-m64fp),
 [report](../reports/STAGE_2_REPORT.md#s2-31au--canonical-quietnan-binary80-to-binary64-stores),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31ay-admit-sticky-ie-fstfstp-m32-m64"></a>
+
+## Local S2-31ay: masked sticky IE in m32/m64 `FST/FSTP [RAX]`
+
+Only the status gate in the exact D910/D918 m32 and DD10/DD18 m64 conversion
+helpers changes, from `FSW & 0x80df == 0` to `FSW & 0x80de == 0`. This admits
+sticky IE while still rejecting ZE, OE, UE, SF, ES, and B. The four admitted
+FCWs, source class/tag rules, full canonical48 range checks, memory access
+shape, and all other x87 status gates remain unchanged.
+
+Successful stores preserve incoming IE and PE. A successful SNaN store ORs IE;
+an inexact finite store ORs PE; both status changes happen only after the
+atomic write succeeds. ES/B remain clear, C1 follows the existing conversion
+policy, and FSTP pops only after success. Repeated stores can proceed with IE
+set; `FNSTSW` observes it and `FNCLEX` can clear it, but is no longer required
+between otherwise admitted m32/m64 stores. m80, integer, load, and arithmetic
+gates are unchanged. Native/JIT admission remains closed and physical
+acceptance stays under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31ay-admit-sticky-ie-in-bounded-m32-m64-fst-fstp),
+[report](../reports/STAGE_2_REPORT.md#s2-31ay--sticky-ie-m32-m64-stores), and
+[fixtures](../../tests/fixtures/x86/stage2/README.md).
 
 
 <a id="local-s2-31aw-canonical-signalingnan-fstfstp-m64fp-rax-dd-10-dd-18"></a>
@@ -4374,11 +4396,12 @@ and truncate lower 11 bits without rounding or PE. Add sticky IE after the
 Qword write succeeds; retain PE and clear C1. Under the admitted profile ES,
 B, and SF stay clear. The ten-byte source register payload is never rewritten.
 
-Keep the four FCWs and `FSW & 0x80df == 0` gate, canonical48 full-Qword
+Keep the four FCWs and `FSW & 0x80de == 0` gate, canonical48 full-Qword
 preflight, one atomic write/no data read, and existing pointer/retirement
 policy. DD10 preserves the stack; DD18 empties old TOP and advances TOP only
-after a successful store. `FNSTSW` observes IE, after which `FNCLEX` clears it
-and the store gate admits a subsequent operation. QNaNs continue through the
+after a successful store. `FNSTSW` observes IE; a subsequent m32/m64 store
+remains admitted while IE stays set, and `FNCLEX` is available to clear it.
+QNaNs continue through the
 S2-31au no-new-flags path; pseudo-SNaNs, malformed payloads, mismatched tags,
 and forbidden environment bits reject before access. JIT/native admission and
 general unmasked exception delivery remain outside scope. This narrow masked
@@ -4402,7 +4425,7 @@ rounding. This bounded conversion adds no flags, including PE, and does not use
 host floating point. Preserve sticky PE and clear C1 under the existing exact
 store policy.
 
-Retain the four FCWs and `FSW & 0x80df == 0` gate. Preflight the full
+Retain the four FCWs and `FSW & 0x80de == 0` gate. Preflight the full
 canonical48 Dword range and perform exactly one atomic write/no data read. D910
 preserves TOP/tags/payloads; D918 pops only after a successful write. Keep
 Normal, Zero and Infinity behavior. SNaNs, pseudo-NaNs, other special classes,
@@ -4426,11 +4449,12 @@ rounding or PE. Set sticky IE only after the full-range Dword write succeeds;
 preserve PE and the source register bytes. The admitted masked profile leaves
 ES/B/SF clear and clears C1 under the existing exact-store policy.
 
-Keep four FCWs and `FSW & 0x80df == 0`. Preflight the full canonical48 Dword
+Keep four FCWs and `FSW & 0x80de == 0`. Preflight the full canonical48 Dword
 range and perform exactly one atomic write/no data read. D910 preserves TOP,
 tags and payloads; D918 empties old TOP and advances only after a successful
 write. QNaNs retain their S2-31av no-new-flags behavior. `FNSTSW` observes IE;
-the existing IE gate blocks a subsequent store until `FNCLEX` clears it.
+a subsequent m32/m64 store remains admitted with IE set, and `FNCLEX` is
+available to clear it.
 Pseudo-SNaNs, other special classes, and mismatched tags reject before access.
 JIT/native admission, unmasked exception delivery, native runtime execution,
 and physical acceptance remain outside scope. This bounded masked behavior

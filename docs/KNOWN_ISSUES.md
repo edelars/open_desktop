@@ -286,16 +286,31 @@
   [report](reports/STAGE_2_REPORT.md#s2-31ap--signed-infinity-stores-for-bounded-m64-fstfstp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
 
-- **S2-31ax evidence:** exact D910/D918 m32 stores now convert Special-tagged
+- **S2-31ax evidence (historical gate, superseded by S2-31ay):** exact D910/D918 m32 stores now convert Special-tagged
   canonical binary80 SNaNs to quiet binary32 values, preserving sign and the
   upper 22 payload bits while truncating lower 40 without PE. Sticky IE is
   committed only after the atomic Dword write succeeds; source bytes and sticky
-  PE remain unchanged, and D918 pops only after success. The store gate blocks
-  subsequent stores until FNCLEX clears IE. Native runtime and physical
+  PE remain unchanged, and D918 pops only after success. At the S2-31ax stage,
+  the store gate blocked subsequent stores until FNCLEX cleared IE; S2-31ay
+  now admits sticky IE for the exact m32/m64 FST/FSTP conversion helpers.
+  Native runtime and physical
   acceptance remain unverified and deferred to the final combined S2-31
   substage under ISSUE-019. See [S2-31ax CPU contract](specs/CPU_CONTRACT.md#local-s2-31ax-canonical-signalingnan-fstfstp-m32fp-rax-d9-10-d9-18),
   [plan](plans/STAGE_2.md#s2-31ax-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m32fp),
   [report](reports/STAGE_2_REPORT.md#s2-31ax--canonical-signalingnan-binary80-to-binary32-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31ay evidence:** exact D910/D918 and DD10/DD18 conversion helpers now
+  admit masked sticky IE by changing only their local FSW mask to `0x80de`.
+  ZE/OE/UE/SF/ES/B, FCW restrictions, source class/tag rules, canonical range
+  checks, and all other x87 instruction gates remain unchanged. Incoming IE/PE
+  is preserved; successful SNaN writes OR IE and inexact finite writes OR PE
+  only after the atomic store. Repeated stores remain available with IE set;
+  FNCLEX can still clear status. Full validation, CLI fixture reachability, and
+  independent review are recorded in the [S2-31ay report](reports/STAGE_2_REPORT.md#s2-31ay--sticky-ie-m32-m64-stores).
+  Native runtime and physical acceptance remain deferred to the final combined
+  S2-31 substage. See the [CPU contract](specs/CPU_CONTRACT.md#local-s2-31ay-admit-sticky-ie-fstfstp-m32-m64),
+  [plan](plans/STAGE_2.md#s2-31ay-admit-sticky-ie-in-bounded-m32-m64-fst-fstp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
 
 - **S2-31aq evidence:** exact D910/D918 now store Special-tagged canonical

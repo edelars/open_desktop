@@ -261,6 +261,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31av | Convert Special-tagged canonical binary80 QuietNaN through exact D910/D918 stores with binary32 payload truncation | S2-31aq, S2-31au |
 | [x] | S2-31aw | Convert Special-tagged canonical binary80 SignalingNaN through exact DD10/DD18 stores, quieting binary64 and setting sticky IE | S2-31au |
 | [x] | S2-31ax | Convert Special-tagged canonical binary80 SignalingNaN through exact D910/D918 stores, quieting binary32 and setting sticky IE | S2-31av, S2-31aw |
+| [x] | S2-31ay | Admit masked sticky IE only in exact D910/D918 and DD10/DD18 stores; preserve sticky IE/PE and successful SNaN status | S2-31ax |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3561,6 +3562,23 @@ denial. Intel SDM revision 093 Vol. 2A's FST/FSTP entry defines NaN identity
 preservation on narrowing stores and the masked invalid-operation behavior is
 described in Vol. 1 §8.5.1 ([official Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505),
 [official Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436#page=232)).
+
+
+<a id="s2-31ay-admit-sticky-ie-in-bounded-m32-m64-fst-fstp"></a>
+
+#### S2-31ay. Admit sticky IE in bounded m32/m64 FST/FSTP
+
+Relax only the status gate in the exact D910/D918 and DD10/DD18 conversion
+helpers from `FSW & 0x80df == 0` to `FSW & 0x80de == 0`. This admits an
+already-set masked IE while continuing to reject ZE, OE, UE, SF, ES, and B;
+the FCW whitelist, source classes/tags, range validation, and all other x87
+instruction gates remain unchanged. Successful stores preserve incoming IE and
+PE, set IE for a signaling NaN and PE for an inexact finite conversion only
+after the atomic write succeeds, and keep ES/B clear. FSTP still pops only
+after success. Add repeated-store and SNaN-load-to-quiet-store sequences with
+FNSTSW/FNCLEX, plus fault, class, tag, FCW, forbidden-status, CLI, and JIT/native
+admission checks. FNCLEX remains available to clear status flags but is no
+longer required between otherwise admitted m32/m64 stores after SNaN.
 
 
 <a id="s2-31ax-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m32fp"></a>

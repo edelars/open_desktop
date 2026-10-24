@@ -2227,3 +2227,15 @@ Both retain the source bytes, execute through schema/CLI, and are included in
 native and JIT denial. See the [S2-31ax CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ax-canonical-signalingnan-fstfstp-m32fp-rax-d9-10-d9-18),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31ax-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m32fp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ax--canonical-signalingnan-binary80-to-binary32-stores).
+
+
+### S2-31ay sticky IE m32/m64 store fixtures
+
+The m32 D910 fixture starts with masked IE already set and stores a positive
+binary80 SNaN as binary32 QNaN while preserving IE. The m64 D918/DFE0 fixture
+starts with IE set, stores a negative SNaN as binary64 QNaN, pops after the
+write, and observes the sticky status through FNSTSW. Both are schema/CLI
+reachable and included in JIT denial checks; native execution remains outside
+the current runner. See the [S2-31ay CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ay-admit-sticky-ie-fstfstp-m32-m64),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ay-admit-sticky-ie-in-bounded-m32-m64-fst-fstp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ay--sticky-ie-m32-m64-stores).
