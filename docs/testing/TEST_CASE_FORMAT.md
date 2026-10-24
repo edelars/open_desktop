@@ -268,8 +268,8 @@ The S2-31aa `s2-long-x87-state-v1` fixtures use exact `db28` or
 (biased exponent `0x7fff`, explicit integer bit set, fraction zero); execution
 preserves the ten raw bytes and assigns Special. At that stage the no-stop,
 budget-one Unsupported exception admitted canonical QNaN for exact `db28`.
-S2-31ab changes the current narrow exception to canonical positive SNaN; see
-the current rule below.
+S2-31ab changed the narrow exception to canonical positive SNaN; S2-31ac
+replaces it with positive pseudo-infinity in the current rule below.
 
 ## S2-31ab literal FLD m80fp fixture profile
 
@@ -282,3 +282,14 @@ exact `db28` only. It excludes either QNaN sign, negative SNaN, pseudo-NaNs,
 pseudo-infinity, pseudo-denormal, unnormal and other encodings. This narrow
 schema rule does not admit other m80 forms, unmasked exception behavior, or
 native execution.
+
+## S2-31ac literal FLD m80fp fixture profile
+
+The S2-31ac `s2-long-x87-state-v1` profile admits canonical binary80
+SignalingNaN sources for exact `db28` and `db28dfe0`: biased exponent `0x7fff`,
+explicit integer bit set, quiet bit clear and nonzero remaining fraction.
+Success preserves the raw bytes and assigns Special under the unchanged
+all-masked FCW/`FSW & 0x80df`/Empty/ten-byte/read-once gates. The exact `db28`,
+budget-one, no-stop Unsupported exception now admits positive pseudo-infinity
+only. It excludes either sign of canonical SNaN or QNaN, pseudo-NaNs,
+pseudo-denormals, unnormals, other special classes and other opcodes.

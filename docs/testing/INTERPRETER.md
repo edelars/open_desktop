@@ -545,6 +545,29 @@ admission and unmasked exception delivery remain outside the supported path.
 Independent payload/sign vectors cover all TOP×FCW pairs, including negative
 indefinite QNaN, exact raw payload, Special tag, PE retention and IE clear.
 The positive bare QNaN and negative-indefinite `DB 28 DF E0` fixtures run
-through the CLI and FNSTSW composition. The no-stop, budget-one Unsupported
-schema fixture uses canonical positive SNaN; QNaNs and neighboring classes do
-not match the narrow exception. See the [S2-31ab CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ab-bounded-fld-m80fp-rax-db-28-canonical-quietnans), [plan](../plans/STAGE_2.md#s2-31ab-extend-bounded-fld-m80fp-rax-db-28-to-canonical-qnans), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+through the CLI and FNSTSW composition. At the S2-31ab stage, the no-stop,
+budget-one Unsupported schema fixture used canonical positive SNaN; QNaNs and
+neighboring classes did not match that exception. See the [S2-31ab CPU
+contract](../specs/CPU_CONTRACT.md#local-s2-31ab-bounded-fld-m80fp-rax-db-28-canonical-quietnans), [plan](../plans/STAGE_2.md#s2-31ab-extend-bounded-fld-m80fp-rax-db-28-to-canonical-qnans), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31ac canonical binary80 SignalingNaN load
+
+Exact bare `DB 28` additionally accepts canonical binary80 SignalingNaNs:
+biased exponent `0x7fff`, explicit integer bit set, quiet bit clear and
+nonzero remaining fraction. It preserves all ten raw bytes, including the
+signaling bit and payload, and pushes with Special tag. The all-masked FCWs,
+`FSW & 0x80df` gate, Empty destination, canonical48 preflight and one-read
+behavior remain unchanged. No status bits are added, including IE; PE and
+C0/C2/C3 are preserved under the existing C1-clear, push/TOP, pointer and
+retirement policy.
+
+Minimum, middle and maximum payloads of both signs cover all TOP×FCW pairs
+with exact raw bytes, Special tag, one read and no writes. Bare positive and
+negative maximum-payload `DB 28 DF E0` fixtures run through CLI/FNSTSW. The
+no-stop, budget-one Unsupported schema fixture now uses positive
+pseudo-infinity; canonical SNaNs, pseudo-SNaNs, pseudo-QNaNs, pseudo-denormals
+and unnormals do not match the narrow exception. Native/JIT denial and
+unmasked exception delivery remain outside this path. See the [S2-31ac CPU
+contract](../specs/CPU_CONTRACT.md#local-s2-31ac-bounded-fld-m80fp-rax-db-28-canonical-signalingnans),
+[plan](../plans/STAGE_2.md#s2-31ac-extend-bounded-fld-m80fp-rax-db-28-to-canonical-snans),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

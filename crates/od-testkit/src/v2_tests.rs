@@ -677,7 +677,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             write: false,
             execute: false,
         },
-        initial_bytes_hex: "0100000000000080ff7f000000000000".into(),
+        initial_bytes_hex: "0000000000000000ff7f000000000000".into(),
         comparison_mask_hex: "ff".repeat(16),
     });
     invalid_fld_m80.stop_rip = None;
@@ -692,6 +692,12 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         "0100000000000080ffff",
         "0100000000000040ff7f",
         "0100000000000040ffff",
+        "0100000000000080ff7f",
+        "0100000000000080ffff",
+        "5555555555555595ff7f",
+        "5555555555555595ffff",
+        "ffffffffffffffbfff7f",
+        "ffffffffffffffbfffff",
     ] {
         let mut not_the_supported_rejection_class = invalid_fld_m80.clone();
         not_the_supported_rejection_class
@@ -707,7 +713,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         );
     }
 
-    // The signaling-NaN binary80 schema gate must safely decline offsets whose doubled
+    // The pseudo-infinity binary80 schema gate must safely decline offsets whose doubled
     // byte index fits usize but leaves no room for the twenty-character slice.
     let mut overflowing_schema_offset = invalid_fld_m80.clone();
     overflowing_schema_offset.initial_state.gpr[0] = HexU64(

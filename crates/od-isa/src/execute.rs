@@ -1088,7 +1088,8 @@ fn step_tracked_with_stop(
             X87Binary80Class::Zero => X87Tag::Zero,
             X87Binary80Class::Subnormal
             | X87Binary80Class::Infinity
-            | X87Binary80Class::QuietNaN => X87Tag::Special,
+            | X87Binary80Class::QuietNaN
+            | X87Binary80Class::SignalingNaN => X87Tag::Special,
             _ => {
                 return Ok(StepOutcome::Unsupported {
                     opcode: instruction.opcode.byte,
@@ -23228,7 +23229,7 @@ mod tests {
                     state.rflags = 0x0bad_f00d_0123_4567;
                     let mut x87 = crate::state::X87State::fixture_seed();
                     x87.control_word = control_word;
-                    x87.status_word = (u16::from(top) << 11) | 0x4620 | 0x0200;
+                    x87.status_word = (u16::from(top) << 11) | 0x4720 | 0x0200;
                     for physical in 0..8_u8 {
                         x87.registers[usize::from(physical)] = [0x31 + physical; 10];
                         x87.set_tag(
@@ -23799,7 +23800,7 @@ mod tests {
     }
 
     #[test]
-    fn fld_m80fp_reads_one_exact_normal_zero_or_subnormal_and_pushes_every_top() {
+    fn fld_m80fp_reads_supported_literal_classes_and_pushes_every_top() {
         let literals = [
             [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x3f],
             [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xbf],
@@ -23817,6 +23818,12 @@ mod tests {
             [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xff],
             [0x35, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xff, 0x7f],
             [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xff, 0xff],
+            [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x7f],
+            [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xff],
+            [0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x95, 0xff, 0x7f],
+            [0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x95, 0xff, 0xff],
+            [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xbf, 0xff, 0x7f],
+            [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xbf, 0xff, 0xff],
         ];
         for top in 0..8_u8 {
             for (index, raw) in literals.into_iter().enumerate() {
@@ -23874,6 +23881,7 @@ mod tests {
                     );
                     assert_eq!(after.status_word & 0x0001, before.status_word & 0x0001);
                     assert_eq!(after.status_word & 0x0020, before.status_word & 0x0020);
+                    assert_eq!(after.status_word & 0x4500, before.status_word & 0x4500);
                     assert_eq!(after.instruction_pointer, 0x8600);
                     assert_eq!(after.data_pointer, 0x1003);
                     assert_eq!(after.control_word, before.control_word);
@@ -23970,8 +23978,6 @@ mod tests {
         let invalid_classes = [
             [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0],
             [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x80],
-            [1, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
-            [1, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xff],
             [0, 0, 0, 0, 0, 0, 0, 0x00, 0xff, 0x7f],
             [0, 0, 0, 0, 0, 0, 0, 0x00, 0xff, 0xff],
             [0, 0, 0, 0, 0, 0, 0, 0x40, 0xff, 0x7f],

@@ -243,6 +243,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31z | Extend exact DD 00 FLD m64fp to masked binary64 subnormal sources with exact Normal expansion and sticky DE; native closed | S2-31u |
 | [x] | S2-31aa | Extend exact DB 28 FLD m80fp to canonical signed binary80 infinities with Special tag; native closed | S2-31x |
 | [x] | S2-31ab | Extend exact DB 28 FLD m80fp to canonical quiet binary80 NaNs with Special tag; native closed | S2-31aa |
+| [ ] | S2-31ac | Extend exact DB 28 FLD m80fp to canonical signaling binary80 NaNs under all-masked FCWs; native closed | S2-31ab |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2947,6 +2948,28 @@ neighbor classes must not match. Add bare positive QNaN and negative-indefinite
 `DB 28 DF E0` CLI fixtures, and keep interpreter/JIT/native denial tests. The
 Vol.1 binary80 special-value table is the encoding reference; no hardware or
 physical acceptance is claimed.
+
+#### S2-31ac. Extend bounded `FLD m80fp [RAX]` (`DB 28`) to canonical SNaNs
+
+Keep the exact S2-31ab gates: bare `DB 28`, all-masked FCWs,
+`FSW & 0x80df == 0`, Empty `(TOP-1)&7`, canonical48 ten-byte preflight and
+one raw read. Accept canonical SignalingNaNs only: biased exponent `0x7fff`,
+explicit integer bit set, quiet bit clear and remaining fraction nonzero.
+Preserve all ten bytes including the signaling bit/payload and push with
+Special tag; do not quiet the source or add exception flags, including IE.
+Preserve PE and C0/C2/C3 under the existing local C1-clear/TOP/pointer/
+retirement policy. Pseudo-SNaNs, pseudo-infinity, unnormals, pseudo-denormals
+and pseudo-QNaNs remain Unsupported after one read without CPU commit. Native
+and JIT admission and unmasked exception behavior remain outside scope.
+
+Add independent minimum, middle and maximum SNaN payloads of both signs over
+every TOP×FCW pair; verify exact raw payload, Special tag, status preservation,
+one ten-byte read and no writes. Add positive bare DB28 and negative
+DB28/DFE0 FNSTSW success fixtures. Move the current exact-DB28, budget-one,
+no-stop schema/CLI rejection fixture from canonical positive SNaN to positive
+pseudo-infinity; ensure canonical SNaNs and pseudo-SNaNs do not match the
+narrow predicate. Keep explicit native/JIT denial. No physical acceptance is
+claimed.
 
 #### S2-30an. Bare indexed FCOMI-family register forms
 

@@ -3786,16 +3786,17 @@ The load sets no status flags, including IE; it preserves sticky PE and the
 existing C1-clear, TOP/push, FCW/FOP, pointer and retirement policy. Signed
 zero, Normal, subnormal and infinity behavior remains unchanged. Canonical
 signaling NaNs, pseudo-NaNs, pseudo-denormals, pseudo-infinities, unnormals and
-other classes remain post-read Unsupported without CPU commit. No exception
-delivery or unmasked behavior is added. Native x87 admission remains closed.
+other classes remain post-read Unsupported without CPU commit at this stage. No
+exception delivery or unmasked behavior is added. Native x87 admission remains
+closed.
 
 Independent payload/sign literals cover the complete TOP×FCW matrix, including
 the negative indefinite QNaN. They assert raw payload, Special tag, preserved
 PE, no IE, exact read count and no writes. Bare positive-QNaN and negative
 indefinite `DB 28 DF E0` fixtures run through the CLI/FNSTSW path. The narrow
-Unsupported schema fixture now uses positive canonical SNaN for exact `DB 28`,
-budget one and no stop RIP; signed QNaNs, pseudo-NaNs and neighboring classes
-do not match it. JIT and native profiles continue to deny `DB 28`.
+Unsupported schema fixture at the S2-31ab stage used positive canonical SNaN
+for exact `DB 28`, budget one and no stop RIP; S2-31ac replaces it with positive
+pseudo-infinity. JIT and native profiles continue to deny `DB 28`.
 
 Intel SDM revision 093 Vol.1 Table 8-3 distinguishes canonical quiet/signaling
 NaNs and pseudo-NaN encodings
@@ -3805,3 +3806,36 @@ Vol.2A FLD m80fp entry remains the form reference
 No physical or Mac mini acceptance is claimed. See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ab-extend-bounded-fld-m80fp-rax-db-28-to-canonical-qnans),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31ab report](../reports/STAGE_2_REPORT.md#s2-31ab--bounded-fld-m80fp-canonical-quietnan-extension).
+
+## Local S2-31ac: bounded `FLD m80fp [RAX]` (`DB 28`) canonical SignalingNaNs
+
+S2-31ac extends exact bare `DB 28` to canonical binary80 SignalingNaNs only:
+biased exponent `0x7fff`, explicit integer bit set, quiet bit clear, and
+remaining fraction nonzero. The source's raw ten bytes are preserved exactly,
+including its clear quiet bit and payload; the pushed destination receives
+`X87Tag::Special`. Keep the existing all-masked FCWs, `FSW & 0x80df == 0`,
+Empty physical destination `(TOP+7)&7`, canonical48 ten-byte range and
+one-read/no-write preflight.
+
+The operation adds no exception flags, especially IE, and preserves PE and
+C0/C2/C3. Existing C1-clear, TOP/push, FCW/FOP, pointer and retirement policy
+remains unchanged. Canonical QuietNaN, signed zero, Normal, subnormal and
+infinity behavior remains as documented in prior slices. Pseudo-SNaNs,
+pseudo-infinity, pseudo-QNaNs, pseudo-denormals, unnormals and other classes
+remain post-read Unsupported without CPU commit. Unmasked delivery and native
+x87/JIT execution are not added.
+
+Independent minimum, middle and maximum SNaN payloads of both signs cover every
+TOP×FCW pair and assert exact raw bytes, Special tag, status preservation,
+one ten-byte read and no writes. Positive bare DB28 and negative
+DB28/DFE0-with-FNSTSW fixtures run through the CLI. The narrow Unsupported
+schema/CLI exception now uses positive pseudo-infinity and remains restricted
+to exact DB28, budget one and no stop RIP; canonical SNaNs and neighboring
+encodings are excluded. Intel SDM revision 093 Vol.1 Table 8-3 distinguishes
+canonical signaling NaNs from quiet and pseudo-NaN encodings
+([Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol.2A FLD
+m80fp remains the instruction reference
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+No physical or Mac mini acceptance is claimed. See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ac-extend-bounded-fld-m80fp-rax-db-28-to-canonical-snans),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[S2-31ac report](../reports/STAGE_2_REPORT.md#s2-31ac--bounded-fld-m80fp-canonical-signalingnan-extension).

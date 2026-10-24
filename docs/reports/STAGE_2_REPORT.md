@@ -5472,3 +5472,39 @@ local arm64 host. `python3 tools/check_layout.py` reports the pre-existing
 unmapped root `.serena` directory; it was left untouched. Independent
 gpt-6.1-sol medium review found no defects in classification, gates, status
 preservation, atomicity, fixture/schema precision, native denial, or docs.
+
+## S2-31ac — bounded `FLD m80fp` canonical SignalingNaN extension
+
+Extended exact bare `DB 28` to accept canonical binary80 SignalingNaNs only:
+biased exponent `0x7fff`, explicit integer bit set, quiet bit clear and
+nonzero remaining fraction. The operation preserves all ten raw bytes, keeps
+the clear quiet bit and source payload, and pushes with Special tag. The
+all-masked FCWs, `FSW & 0x80df` gate, Empty destination, canonical48 ten-byte
+preflight and one-read/no-write commit boundary are unchanged.
+
+The load adds no exception flags, including IE, and preserves PE/C0/C2/C3
+under the existing C1-clear, TOP, pointer and retirement policy. Minimum,
+middle and maximum SNaN payloads of both signs cover every TOP×FCW pair and
+verify exact source bytes, tag, status, read count and no writes. Positive bare
+and negative maximum-payload DB28/DFE0-with-FNSTSW CLI fixtures run. Canonical
+SNaNs and pseudo-SNaNs reject against the exact no-stop/budget-one schema
+exception, which now uses positive pseudo-infinity. JIT/native admission and
+unmasked exception delivery remain outside scope.
+
+Intel SDM revision 093 Vol.1 Table 8-3 distinguishes canonical signaling NaN,
+quiet NaN and pseudo-NaN encodings
+([Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol.2A FLD
+m80fp remains the instruction-form reference
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ac-bounded-fld-m80fp-rax-db-28-canonical-signalingnans),
+[plan](../plans/STAGE_2.md#s2-31ac-extend-bounded-fld-m80fp-rax-db-28-to-canonical-snans),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+Validation passed: focused od-isa FLD m80, schema-admission, CLI fixture, and
+JIT-denial tests; `cargo test --workspace --all-targets --offline`;
+`cargo check --workspace --all-targets --offline`;
+`cargo check --target x86_64-unknown-linux-gnu -p od-x86-runner --all-targets --offline`;
+`cargo fmt --all -- --check`; and `git diff --check`. The architecture-gated
+native-denial test compiles for Linux x86 but does not execute on this local
+arm64 host. `python3 tools/check_layout.py` reports the pre-existing unmapped
+root `.serena` directory; it was left untouched. Independent review is pending.

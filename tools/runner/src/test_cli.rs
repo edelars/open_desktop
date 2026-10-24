@@ -2416,6 +2416,22 @@ mod tests {
                 "00000000000000c0ffff",
                 0xbffc,
             ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ac_fld_m80fp_snan.case.json")
+                    .as_slice(),
+                0x0000_0000_0030_0004,
+                1,
+                "0100000000000080ff7f",
+                0xbffc,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ac_fld_m80fp_snan_fnstsw.case.json")
+                    .as_slice(),
+                0x0000_0000_0030_7d00,
+                2,
+                "ffffffffffffffbfffff",
+                0xbffc,
+            ),
         ] {
             let fixture = v2::Fixture::from_json(bytes).expect("FLD m80fp fixture schema");
             let mut memory =
@@ -2523,11 +2539,17 @@ mod tests {
             ("00000000000000c0ff7f", false),
             ("00000000000000c0ffff", false),
             ("0100000000000080ffff", false),
-            ("0100000000000080ff7f", true),
+            ("0100000000000080ff7f", false),
             ("0100000000000040ff7f", false),
             ("0100000000000040ffff", false),
+            ("5555555555555595ff7f", false),
+            ("5555555555555595ffff", false),
+            ("ffffffffffffffbfff7f", false),
+            ("ffffffffffffffbfffff", false),
             ("0100000000000000ff7f", false),
             ("0100000000000000ffff", false),
+            ("0000000000000000ff7f", true),
+            ("0000000000000000ffff", false),
         ] {
             let mut nearby = template.clone();
             nearby["memory"][1]["initial_bytes_hex"] = serde_json::Value::String(raw.into());
@@ -2535,7 +2557,7 @@ mod tests {
             assert_eq!(
                 parsed.is_ok(),
                 should_be_admitted,
-                "S2-31ab schema admission for raw binary80 {raw}"
+                "S2-31ac schema admission for raw binary80 {raw}"
             );
         }
     }
