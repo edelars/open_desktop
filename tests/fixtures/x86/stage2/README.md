@@ -1326,3 +1326,19 @@ initial condition field; native admission denies `DE D9`.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326.
+
+### S2-30ag FUCOM schema and literal CLI coverage
+
+[s2_30ag_fucom_equal_fnstsw.case.json](s2_30ag_fucom_equal_fnstsw.case.json)
+runs bare `DD E1` followed by `DF E0` with equal canonical-Normal operands;
+FUCOM replaces the condition codes with equality and FNSTSW copies that value
+to AX. TOP, tags and raw register payloads remain unchanged. The paired
+[s2_30ag_fucom_invalid_rhs_tag.case.json](s2_30ag_fucom_invalid_rhs_tag.case.json)
+has a Valid lhs and Empty old physical ST(1), no stop RIP, and budget one; it
+must return Unsupported without retiring. Schema and interpreter-runner tests
+load both literal files. The unique QNaN comparison behavior of FUCOM is
+outside this Normal-only slice.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

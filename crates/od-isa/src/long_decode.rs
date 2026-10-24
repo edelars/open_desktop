@@ -459,6 +459,8 @@ pub enum Operation {
     },
     /// Bare `DE D9` FCOMPP, bounded compare then two-entry physical TOP pop.
     Fcompp,
+    /// Bare `DD E1` FUCOM ST(0), ST(1), bounded canonical-Normal comparison.
+    Fucom,
     /// Bare `DD D8+i` FSTP ST(i), exact Normal source and physical TOP pop only.
     FstpSti {
         destination: u8,
@@ -1114,17 +1116,18 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 let modrm = self.byte()?;
-                if !(0xd0..=0xdf).contains(&modrm) {
-                    return Err(self.unsupported(opcode));
-                }
-                if modrm < 0xd8 {
+                if modrm == 0xe1 {
+                    Operation::Fucom
+                } else if (0xd0..=0xd7).contains(&modrm) {
                     Operation::FstSti {
                         destination: modrm & 7,
                     }
-                } else {
+                } else if (0xd8..=0xdf).contains(&modrm) {
                     Operation::FstpSti {
                         destination: modrm & 7,
                     }
+                } else {
+                    return Err(self.unsupported(opcode));
                 }
             }
             (OpcodeMap::Primary, 0xd9) => {
@@ -2312,7 +2315,7 @@ mod tests {
     }
 
     #[test]
-    fn fst_sti_and_fstp_sti_accept_only_their_bare_dd_modrm_ranges() {
+    fn dd_accepts_only_bounded_fst_fstp_and_fucom_encodings() {
         for index in 0u8..=7 {
             let bytes = [0xdd, 0xd0 | index];
             let mut memory = Memory::new(&bytes);
@@ -2349,6 +2352,8 @@ mod tests {
                     Ok(Operation::FstpSti {
                         destination: modrm & 7,
                     })
+                } else if modrm == 0xe1 {
+                    Ok(Operation::Fucom)
                 } else {
                     Err(DecodeError::Unsupported {
                         opcode: Opcode {
@@ -2393,7 +2398,7 @@ mod tests {
                 access: AccessKind::Fetch,
             }))
         ));
-        for bytes in [&[0xdd, 0xd8][..], &[0xdd, 0xdf][..]] {
+        for bytes in [&[0xdd, 0xd8][..], &[0xdd, 0xdf], &[0xdd, 0xe1]] {
             let mut memory = Memory::new(bytes);
             memory.fault_at = Some(1);
             assert!(matches!(

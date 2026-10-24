@@ -212,6 +212,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30ad | Bare `D8 D9` FCOMP ST(1) alias, exact compare then physical TOP pop; native closed | S2-30ac |
 | [x] | S2-30ae | Bare `D8 D8+i` FCOMP ST(i), exact compare then physical TOP pop for all indices; native closed | S2-30ad |
 | [x] | S2-30af | Bare `DE D9` FCOMPP, exact bounded ST(0)/ST(1) compare then two-entry physical TOP pop; native closed | S2-30ae |
+| [x] | S2-30ag | Bare `DD E1` FUCOM ST(0), ST(1), bounded canonical-Normal compare without pop; native closed | S2-30af |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -2173,3 +2174,36 @@ git diff --check
 Создан план будущей реализации срезов A–D и задач S2-00–S2-44. Разработка CPU, SSH-прогоны и новые ISA-проверки при составлении этого документа не выполнялись.
 
 22 октября 2026 года выполнены `python3 tools/check_layout.py` и `git diff --check`: ошибок структуры, относительных ссылок и whitespace не найдено. Дополнительно проверены последовательность 45 задач, соответствие таблицы заголовкам, наличие критерия готовности у каждой задачи и закрытие блоков команд. Это проверка плана, а не подтверждение реализации этапа.
+
+#### S2-30ag. Bare bounded `FUCOM ST(0), ST(1)` (local canonical-Normal slice)
+
+Accept exactly bare `DD E1` with existing `Some(X87State)`. Require FCW
+`0x037f`, `FSW & 0x80ff == 0`, Valid tags at old physical TOP and
+`(TOP+1)&7`, and canonical Normal binary80 operands. Reuse the exact integer
+comparison in `bounded_x87_fcom_result(state, 1)`. Greater sets C0/C1/C2/C3 to
+`0000`, less to `1000`, and equal to `0001` (FSW masks `0`, `0x0100`,
+`0x4000`) through `(old_fsw & !0x4700) | relation`. FUCOM does not pop: TOP,
+all tags and all raw register payloads remain unchanged. FIP becomes the
+instruction-start RIP, RIP advances by two, and the instruction retires once.
+Clearing C1 for this bounded normal domain is a deterministic local policy;
+the SDM specifies C1=0 for stack underflow but does not define it for this
+normal case.
+
+Missing state, invalid environment/tag/class, prefixes, REX, WAIT, unsupported
+DD bytes, fetch failure/truncation, STOP and exhausted budget reject without
+state commit. This slice excludes zero, subnormal, infinity, NaN, noncanonical
+encodings, memory forms, FUCOMP/FUCOMPP, exception delivery, stack faults,
+`#NM`, and native execution. In particular, the unique QNaN handling that
+distinguishes FUCOM from FCOM is outside the accepted Normal-only domain.
+
+Literal vectors cover every TOP, all three relations, all 16 initial condition
+fields, signed operands, exponent ordering and low-significand differences.
+Independent invalid lhs/rhs tags and classes plus environment, fetch,
+truncation, STOP and zero-budget rejects preserve full state. Exhaustive DD
+ModR/M checks add only E1 while retaining D0..D7 FST and D8..DF FSTP. Schema
+and CLI fixtures cover exact `dde1`, `dde1dfe0`, and an actual invalid-rhs-tag
+no-stop/budget-one rejection. Native admission explicitly denies `DD E1`.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

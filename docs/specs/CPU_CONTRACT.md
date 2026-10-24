@@ -2494,3 +2494,38 @@ admission explicitly denies `Operation::Fcompp` and `DE D9`.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## Local S2-30ag: bounded `FUCOM ST(0), ST(1)` (`DD E1`)
+
+The local profile accepts exactly bare `DD E1` and requires an existing
+`Some(X87State)`, FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags at old physical
+TOP and `(TOP+1)&7`, and canonical Normal binary80 payloads. Both operands are
+preflighted before any state commit. Ordering reuses the exact integer
+`bounded_x87_fcom_result(state, 1)` helper: greater maps to condition `0`, less
+to `0x0100`, and equal to `0x4000`. Commit replaces the full condition-code
+field with `(old_fsw & !0x4700) | relation`. C1 is therefore zero for this
+normal case as an explicit deterministic local policy; the SDM specifies C1=0
+on stack underflow but leaves its value undefined for this bounded normal case.
+
+FUCOM does not pop. TOP, all tags, all ten-byte physical register payloads,
+FCW, remaining FSW fields, FDP/FOP, GPRs and RFLAGS remain unchanged. FIP is set
+to instruction-start RIP, RIP advances by two, and one instruction retires.
+Missing state, invalid environment/tag/class, fetch failure/truncation, STOP or
+exhausted budget leave the complete state unchanged.
+
+Only canonical Normal finite operands are included. Zero, subnormal, infinity,
+NaN and noncanonical encodings, memory forms, FUCOMP/FUCOMPP, exception
+handling, stack faults, `#NM`, native execution and FPU feature claims are
+excluded. Therefore FUCOM's distinct quiet-NaN comparison behavior is not
+implemented by this slice. Decoder coverage enumerates all DD ModR/M bytes and
+accepts only existing D0..D7 FST, D8..DF FSTP, and new E1 FUCOM; prefixes, REX,
+WAIT and truncation remain rejected. Literal interpreter vectors cover all TOP
+values, three relations and all 16 incoming condition fields, signed operands,
+exponent ordering and low-significand differences. Independent lhs/rhs tag and
+class rejects plus environment and execution-boundary rejects are atomic.
+Schema/CLI fixtures cover `dde1`, `dde1dfe0`, and a genuine invalid-rhs-tag
+no-stop/budget-one rejection. Native admission explicitly denies the operation.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

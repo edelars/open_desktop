@@ -1681,4 +1681,46 @@ mod tests {
         };
         assert_eq!(value.state, loaded.fixture.initial_state);
     }
+
+    #[test]
+    fn x87_fucom_literal_fixtures_run_success_and_atomic_rhs_rejection() {
+        let success = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30ag_fucom_equal_fnstsw.case.json"
+        ))
+        .unwrap();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&success.fixture).unwrap();
+        let result = execute_fixture_v2(&success, &mut memory);
+        result.validate_for(&success).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(2) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("FUCOM literal success fixture must be observable");
+        };
+        let before = success.fixture.initial_state.x87.as_ref().unwrap();
+        let after = value.state.x87.as_ref().unwrap();
+        assert_eq!(after.status_word, HexU64(0x4000));
+        assert_eq!(after.tag_word, before.tag_word);
+        assert_eq!(after.registers, before.registers);
+        assert_eq!(value.state.gpr[0].get() & 0xffff, 0x4000);
+
+        let rejected = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30ag_fucom_invalid_rhs_tag.case.json"
+        ))
+        .unwrap();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&rejected.fixture).unwrap();
+        let result = execute_fixture_v2(&rejected, &mut memory);
+        result.validate_for(&rejected).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::Unsupported { .. }));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(0) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("FUCOM rejected fixture must preserve an observable state");
+        };
+        assert_eq!(value.state, rejected.fixture.initial_state);
+    }
 }

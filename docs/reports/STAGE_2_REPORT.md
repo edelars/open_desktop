@@ -4074,3 +4074,31 @@ execution and FPU feature claims remain unverified; ISSUE-019 remains open.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## S2-30ag — bounded FUCOM ST(0), ST(1) compare without pop
+
+Added bare `DD E1` with the shared exact integer canonical-Normal comparison
+gate for old physical TOP and TOP+1. Success replaces C0/C1/C2/C3 with greater
+`0`, less `0x0100`, or equal `0x4000`; it clears C1 by the bounded profile's
+explicit local policy, records FIP, advances RIP by two, and retires once.
+TOP, all physical tags and all raw register payloads are preserved. The local
+contract notes that Intel defines C1=0 for stack underflow but does not define
+C1 for this normal case. FUCOM's unique QNaN semantics remain outside the
+Normal-only domain.
+
+Coverage includes every TOP × three relations × 16 initial condition fields,
+signed operands, same-sign/different-exponent greater and less cases for both
+positive and negative values, low-significand distinctions, independent
+lhs/rhs invalid-tag and invalid-class rejection, invalid environment, and
+fetch/truncation/STOP/budget atomicity. Exhaustive DD ModR/M coverage adds E1
+and retains FST/FSTP neighbors. Schema and literal interpreter fixtures cover
+`dde1`, `dde1dfe0`, and an actual invalid-RHS-tag no-stop/budget-one rejection.
+Native admission explicitly denies FUCOM and DD E1. Full x87 architectural
+behavior remains unverified.
+
+Independent Sol-medium review confirmed the condition-code tuple and exponent
+ordering coverage corrections; no remaining findings.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
