@@ -212,10 +212,11 @@ MCP отложен: CLI с JSON и Python orchestration уже поддержи�
 ## Local x87 slices are not physical-oracle claims
 
 The local schema-v2 x87-state profile admits handwritten bounded cases for
-`D9 18` (`FSTP m32fp [RAX]`) and its exact `D9 18 DF E0` status-observation
-composition. These fixtures are checked only by the interpreter and local
+`D9 18` (`FSTP m32fp [RAX]`) and `D9 10` (`FST m32fp [RAX]`), each with its
+exact `DF E0` status-observation composition. These fixtures are checked only by the interpreter and local
 fixture RAM. They are excluded from the physical/native oracle suite because
 native x87 state observation and admission remain closed. Their passing result
 does not establish binary32 hardware equivalence, x87 exception priority or
 delivery, MMU/page-walk behavior, MMIO, SMP, or physical x86 behavior. See the
-[S2-31j report](../reports/STAGE_2_REPORT.md#s2-31j--bounded-fstp-m32fp-partial-slice).
+[S2-31j report](../reports/STAGE_2_REPORT.md#s2-31j--bounded-fstp-m32fp-partial-slice)
+and [S2-31k report](../reports/STAGE_2_REPORT.md#s2-31k--bounded-fst-m32fp-partial-slice).

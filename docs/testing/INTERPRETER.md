@@ -331,3 +331,15 @@ write before popping the old physical TOP. Local vectors and the exact
 and failure atomicity. The profile rejects out-of-domain values before data
 access; it does not claim x87 exception delivery, hardware exception priority,
 native equivalence, or physical x86 confirmation. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31j-bounded-fstp-m32fp-rax-d9-18) and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31k x87 conversion slice
+
+The exact bare `D9 10` (`FST m32fp [RAX]`) profile reuses S2-31j's integer-only
+binary80-to-binary32 conversion, canonical48 Dword preflight, and one atomic
+write. Success preserves TOP, all tags and all 80-bit payloads while applying
+the local PE/C1 and FIP/FDP policy. Literal fixtures and focused interpreter
+checks cover RC, ties, signs, exponent boundaries, no-pop preservation and
+failure atomicity. The profile does not claim x87 exception delivery, hardware
+exception priority, native equivalence or physical x86 confirmation. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31k-bounded-fst-m32fp-rax-d9-10)
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).

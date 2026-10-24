@@ -459,6 +459,8 @@ pub enum Operation {
     Frndint,
     /// Bare `D9 18` FSTP m32fp at [RAX], bounded finite profile.
     FstpM32FpRax,
+    /// Bare `D9 10` FST m32fp at [RAX], bounded finite profile.
+    FstM32FpRax,
     /// Bare `DB 18` FISTP dword integer at [RAX], bounded finite profile.
     FistpM32IntRax,
     /// Bare `DF 18` FISTP word integer at [RAX], bounded finite profile.
@@ -1228,6 +1230,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 match self.byte()? {
                     0x28 => Operation::FldcwM16Rax,
                     0x38 => Operation::FnstcwM16Rax,
+                    0x10 => Operation::FstM32FpRax,
                     0x18 => Operation::FstpM32FpRax,
                     0xe0 => Operation::Fchs,
                     0xe1 => Operation::Fabs,
@@ -2763,7 +2766,7 @@ mod tests {
     }
 
     #[test]
-    fn d9_accepts_only_bare_fldcw_fstp_fchs_fabs_ftst_frndint_and_fnstcw_m16_rax() {
+    fn d9_accepts_only_bare_fldcw_fst_fstp_fchs_fabs_ftst_frndint_and_fnstcw_m16_rax() {
         let mut memory = Memory::new(&[0xd9, 0xe0]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::Fchs);
@@ -2777,6 +2780,8 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 if second == 0x28 {
                     Ok(Operation::FldcwM16Rax)
+                } else if second == 0x10 {
+                    Ok(Operation::FstM32FpRax)
                 } else if second == 0x18 {
                     Ok(Operation::FstpM32FpRax)
                 } else if second == 0x38 {
@@ -2809,10 +2814,15 @@ mod tests {
         .chain(0x40..=0x4f)
         {
             assert!(matches!(
-                Memory::new(&[prefix, 0xd9, 0x28]).decode(),
+                Memory::new(&[prefix, 0xd9, 0x10]).decode(),
                 Err(DecodeError::Unsupported { .. })
             ));
         }
+
+        assert!(matches!(
+            Memory::new(&[0xd9]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped { .. }))
+        ));
         assert!(matches!(
             Memory::new(&[0xd9]).decode(),
             Err(DecodeError::Memory(MemoryError::Unmapped {

@@ -2708,6 +2708,47 @@ Point Value,” pp.3-350–3-351 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and �
 for x87 state and FIP/FDP context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
+## Local S2-31k: bounded `FST m32fp [RAX]` (`D9 10`)
+
+The interpreter admits only exact bare `D9 10` in Long64 with an existing x87
+snapshot. It uses the same source/environment gates and integer-only conversion
+as S2-31j: the old physical TOP tag must be Valid; its raw binary80 payload
+must classify as canonical Normal with unbiased exponent -126..126; FCW must
+be `0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`; and require `FSW & 0x80df == 0`.
+Sticky PE and condition codes are permitted. Finite normal binary32 is the only
+accepted result; input exponents outside the range and a rounding carry past
+the local exponent range reject before data access. No host floating-point
+conversion is used.
+
+For significand `s`, derive `q=s>>40`, `r=s & ((1<<40)-1)`, and
+`d=1<<40`, then call the shared `round_quotient_magnitude(sign,q,r,d,RC)`.
+Rounding, signed directed behavior and packing are identical to S2-31j.
+
+After preflight, check the full canonical48 Dword destination `[RAX,RAX+3]`
+and perform exactly one atomic `GuestMemory::write_integer` Dword store with no
+data read. Only after success, set PE sticky iff `r != 0`, set C1 iff rounding
+increased magnitude (exact results clear C1 by local policy), record the
+instruction-start RIP in FIP and destination in FDP, advance RIP by two and
+retire once. Preserve TOP, all eight tags, all raw payloads, FCW/FOP and
+unrelated state. C0/C2/C3 retention and exact C1 behavior are deterministic
+local policy; no hardware equivalence claim is made. Architectural store faults
+are surfaced as guest faults; backend diagnostics remain errors.
+
+Literal fixtures cover exact `D9 10` and exact `D9 10 DF E0` composition.
+Interpreter checks cover all TOP values, every tag/payload sentinel, RC/tie/
+sign behavior, exponent endpoints and carry rejection, canaries, one-write/no-
+read behavior, canonical range, backend store failure, architectural `#PF`,
+invalid source/environment, missing x87 state and fetch/truncation/STOP/budget
+boundaries. Prefixes, WAIT and all neighboring D9 encodings remain unsupported.
+Native x87 admission explicitly denies this operation. Flat-memory tests do
+not establish MMU/page walks, MMIO, physical x86 behavior, exception delivery,
+or hardware exception priority. This slice does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-350–3-351 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and §8.6
+([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
 ## Local S2-31b: bounded `FISTP m32int [RAX]` (`DB 18`)
 
 The interpreter admits only bare `DB 18` in Long64: a Dword store through

@@ -4755,3 +4755,41 @@ Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
 Point Value,” pp.3-350–3-351 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and §8.6
 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
+## S2-31k — bounded `FST m32fp` partial slice
+
+Added exact bare `D9 10` as `FST m32fp [RAX]` in Long64. It reuses S2-31j's
+integer-only binary80-to-binary32 conversion, source/environment gates and
+canonical48 Dword preflight. Only finite normal binary32 results are admitted;
+out-of-range exponents and a carry outside the local exponent range reject
+before data access.
+
+Success performs one atomic Dword write with no data read, then updates PE/C1,
+FIP/FDP and RIP. TOP, every tag and all 80-bit payloads remain unchanged. C0,
+C2 and C3 are retained by local deterministic policy; C1 is set when rounding
+increases magnitude and cleared for exact results by local policy. Backend
+store diagnostics are preserved, and architectural write faults are reported
+as guest faults.
+
+The schema admits exact `D9 10` and `D9 10 DF E0`. CLI fixtures verify the
+stored `0x3fc00000`, full no-pop state preservation, FIP/FDP and FNSTSW AX
+composition. Focused interpreter tests cover all TOP values and tag/payload
+sentinels, tie and sign-sensitive rounding modes, exponent endpoints/carry,
+sticky PE/C1, canaries, one-write/no-read behavior, canonical range, denied
+backend writes and architectural `#PF` atomicity. Decoder/schema checks cover
+prefixes, WAIT, neighboring encodings and truncation. Native x87 admission
+explicitly denies FST.
+
+Validation passed: `cargo test --workspace --offline`, `cargo check --workspace
+--all-targets --offline`, `cargo fmt --all -- --check`, and `git diff --check`.
+`graphify update .` refreshed the code graph. `python3 tools/check_layout.py`
+still reports the pre-existing unmapped root `.serena/` directory, which was
+left untouched. Physical x86 and Mac mini checks were not run; they remain for
+the final combined stage. This local slice does not establish hardware
+exception priority, general x87 exception delivery, MMU/page-walk behavior,
+MMIO or SMP, and does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-350–3-351 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and §8.6
+([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).

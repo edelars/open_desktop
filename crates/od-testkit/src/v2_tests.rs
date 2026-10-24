@@ -168,7 +168,7 @@ fn x87_schema_admits_fdivr_forms_and_inexact_no_stop_case() {
 }
 
 #[test]
-fn x87_schema_admits_d9_ftst_fnstcw_and_a_budget_one_source_rejection() {
+fn x87_schema_admits_d9_fst_ftst_fnstcw_and_a_budget_one_source_rejection() {
     let mut fixture = x87_fixture().fixture;
     fixture.case_id = "local_fabs".into();
     fixture.instruction_budget = 1;
@@ -195,7 +195,10 @@ fn x87_schema_admits_d9_ftst_fnstcw_and_a_budget_one_source_rejection() {
         let accepted = candidate.validate().is_ok();
         assert_eq!(
             accepted,
-            matches!(second, 0x18 | 0x28 | 0x38 | 0xe0 | 0xe1 | 0xe4 | 0xfc),
+            matches!(
+                second,
+                0x10 | 0x18 | 0x28 | 0x38 | 0xe0 | 0xe1 | 0xe4 | 0xfc
+            ),
             "D9 {second:02x}"
         );
     }
@@ -579,6 +582,24 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         fstp_m32fp.instruction_budget = budget;
         assert!(
             Fixture::from_json(&fstp_m32fp.to_json().unwrap()).is_ok(),
+            "{bytes}"
+        );
+    }
+
+    for (bytes, length, stop, budget) in [("d910", 2, 0x1002, 1), ("d910dfe0", 4, 0x1004, 2)] {
+        let mut fst_m32fp = fixture.clone();
+        let code = fst_m32fp
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = length;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(length as usize);
+        fst_m32fp.stop_rip = Some(HexU64(stop));
+        fst_m32fp.instruction_budget = budget;
+        assert!(
+            Fixture::from_json(&fst_m32fp.to_json().unwrap()).is_ok(),
             "{bytes}"
         );
     }

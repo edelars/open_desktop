@@ -230,6 +230,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31h | Bare bounded FNSTSW m2byte [RAX] DD 38, raw-FSW snapshot-preserving Word store; native closed | S2-31g |
 | [x] | S2-31i | Bare bounded FLDCW m2byte [RAX] D9 28, validated Word load and local RC control; native closed | S2-31h |
 | [x] | S2-31j | Bare bounded FSTP m32fp [RAX] D9 18, integer binary80-to-binary32 conversion and atomic Dword store; native closed | S2-31i |
+| [x] | S2-31k | Bare bounded FST m32fp [RAX] D9 10, shared binary80-to-binary32 conversion and atomic Dword store without pop; native closed | S2-31j |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2191,6 +2192,31 @@ or general x87 exception delivery and does not complete S2-31.
 
 **Результат:** implemented and checked with local fixtures/interpreter tests;
 native execution remains explicitly denied. See the S2-31j report and CPU
+contract for validation and scope.
+
+#### S2-31k. Bare bounded `FST m32fp [RAX]` (`D9 10`), partial slice
+
+Implement only exact bare `D9 10` in Long64 with an existing x87 snapshot and
+fixed Dword destination `[RAX]`. Reuse S2-31j's integer-only binary80-to-
+binary32 conversion and its source/environment gates: Valid old physical TOP,
+canonical Normal raw binary80 source with unbiased exponent -126..126, FCW
+`037f/077f/0b7f/0f7f`, and `FSW & 0x80df == 0`. Reject non-normal results and
+any exponent carry outside that interval before data access.
+
+Validate the full canonical48 Dword range and issue exactly one atomic
+GuestMemory write with no data read. Only after success update sticky PE and C1
+(C1 means rounded magnitude up; exact results clear it under local policy),
+record FIP/FDP, advance RIP by two and retire once. Preserve TOP, every tag,
+all 80-bit payloads, FCW/FOP and unrelated CPU state; C0/C2/C3 are retained by
+local deterministic policy. Check literal `D9 10` and exact `D9 10 DF E0`
+fixtures, RC/tie/sign and exponent boundaries, all TOP values, atomic memory
+faults and canonical range checks. Reject prefixes, WAIT, truncation and
+neighboring D9 forms; native admission remains closed. This partial slice does
+not claim hardware exception priority or general x87 exception delivery and
+does not complete S2-31.
+
+**Результат:** реализовано и проверено локальными fixtures/interpreter tests;
+native execution remains explicitly denied. See the S2-31k report and CPU
 contract for validation and scope.
 
 ### S2-32. Остальные обязательные x87 формы
