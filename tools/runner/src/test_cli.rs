@@ -2227,12 +2227,13 @@ mod tests {
 
     #[test]
     fn fld_m64fp_literal_fixtures_expand_binary64_and_reject_bad_class() {
-        for (bytes, retired, raw) in [
+        for (bytes, retired, raw, expected_tag_word) in [
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp.case.json")
                     .as_slice(),
                 1,
                 "00000000000000000000",
+                0x7ffc,
             ),
             (
                 include_bytes!(
@@ -2241,9 +2242,24 @@ mod tests {
                 .as_slice(),
                 2,
                 "00000000000000000000",
+                0x7ffc,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ae_fld_m64fp_infinity.case.json")
+                    .as_slice(),
+                1,
+                "0000000000000080ff7f",
+                0xbffc,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ae_fld_m64fp_negative_infinity_fnstsw.case.json")
+                    .as_slice(),
+                2,
+                "0000000000000080ffff",
+                0xbffc,
             ),
         ] {
-            let fixture = v2::Fixture::from_json(bytes).expect("S2-31u fixture schema");
+            let fixture = v2::Fixture::from_json(bytes).expect("S2-31ae fixture schema");
             let mut memory =
                 od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
             let result = execute_fixture_v2(&fixture, &mut memory);
@@ -2268,7 +2284,7 @@ mod tests {
                 })
             );
             assert_eq!(after.status_word, HexU64(0x7d00));
-            assert_eq!(after.tag_word, HexU64(0x7ffc));
+            assert_eq!(after.tag_word, HexU64(expected_tag_word));
             assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
             assert_eq!(after.data_pointer, HexU64(0x0030_0004));
             assert_eq!(after.registers[7], raw);
@@ -2277,7 +2293,7 @@ mod tests {
                 .into_iter()
                 .find(|region| region.region_id == "stack")
                 .unwrap();
-            assert_eq!(stack.bytes_hex, "0000000000000000");
+            assert_eq!(stack.bytes_hex, fixture.fixture.memory[1].initial_bytes_hex);
             let canary = memory
                 .snapshot()
                 .into_iter()

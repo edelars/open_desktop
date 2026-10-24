@@ -230,12 +230,12 @@ part of this reject profile.
 The S2-31u `s2-long-x87-state-v1` fixtures use only exact `dd00` or
 `dd00dfe0` programs. A successful fixture may supply binary64 signed zero or a
 Normal source; signed zero is a successful input and the runner checks that its
-result has the corresponding Zero tag. A no-stop, budget-one rejection fixture
-for `dd00` admitted nonzero binary64 subnormal sources in the S2-31u slice.
-S2-31z supersedes that predicate: current Unsupported fixtures are limited to
-binary64 infinity/NaN, while masked subnormals are success inputs. Neighboring
-source classes, code bytes and instruction boundaries remain subject to the
-exact x87 profile.
+result has the corresponding Zero tag. A no-stop, budget-one rejection fixture for `dd00` admitted nonzero binary64
+subnormal sources in the S2-31u slice. S2-31z superseded that predicate with
+binary64 infinity/NaN while masked subnormals became success inputs; S2-31ae
+then enabled infinities and narrowed the current Unsupported fixture to
+canonical QNaNs. Neighboring source classes, code bytes and instruction
+boundaries remain subject to the exact x87 profile.
 
 ## S2-31y literal FLD m32fp fixture profile
 
@@ -254,12 +254,13 @@ exact x87 profile. This does not admit unmasked exception behavior.
 The S2-31z `s2-long-x87-state-v1` fixtures use only exact `dd00` or
 `dd00dfe0` programs. Successful fixtures may supply signed zero, Normal, or
 nonzero binary64 subnormal; subnormals produce canonical Normal binary80 with
-Valid tag and sticky DE under the all-masked FCW profile. A no-stop,
-budget-one Unsupported fixture for exact `dd00` is admitted only when its
-eight-byte source has exponent field 2047 (infinity or NaN). Zero, Normal and
-subnormal sources are excluded from this exception. Other x87 state, code
-bytes and instruction boundaries remain subject to the existing exact x87
-profile. This does not admit unmasked exception behavior.
+Valid tag and sticky DE under the all-masked FCW profile. At the S2-31z stage, a no-stop, budget-one Unsupported fixture for exact
+`dd00` was admitted when its eight-byte source had exponent field 2047
+(infinity or NaN). S2-31ae supersedes it: current rejection fixtures require a
+canonical QNaN source. Zero, Normal, subnormal and infinity sources are
+excluded from the current exception. Other x87 state, code bytes and
+instruction boundaries remain subject to the existing exact x87 profile.
+This does not admit unmasked exception behavior.
 
 ## S2-31aa literal FLD m80fp fixture profile (historical)
 
@@ -302,3 +303,14 @@ interpreter preserves the raw ten-byte source, assigns Special and adds no DE
 or other status bits. The exact DB28/budget-one/no-stop Unsupported exception
 continues to admit only positive pseudo-infinity; pseudo-denormals and adjacent
 classes are not admitted by that predicate.
+
+
+## S2-31ae literal FLD m64fp signed-infinity fixtures
+
+The `s2-long-x87-state-v1` profile accepts signed binary64 infinity sources
+for exact `dd00` and `dd00dfe0`, yielding canonical signed binary80 infinity
+with Special tag. The no-stop, budget-one Unsupported exception now admits
+canonical QNaN sources only for exact `dd00`; infinities and SNaNs do not match.
+The all-masked FCW set, `FSW & 0x80dd` gate, Empty destination and eight-byte
+single-read constraints remain in force. Native/JIT profiles continue to deny
+the load.

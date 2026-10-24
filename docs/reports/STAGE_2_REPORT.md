@@ -5534,3 +5534,35 @@ that `#D` does not occur for the m80fp form. Table 3-47 reconstructs E=0,J=1
 as Special. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ad-bounded-fld-m80fp-rax-db-28-pseudo-denormals),
 [plan](../plans/STAGE_2.md#s2-31ad-extend-bounded-fld-m80fp-rax-db-28-to-pseudo-denormals),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## S2-31ae — bounded `FLD m64fp` signed-infinity extension
+
+Exact bare `DD 00` now accepts signed binary64 infinities only (exponent
+`0x7ff`, zero fraction), converting them by integer fields into canonical
+binary80 infinities with Special tag. The four all-masked FCWs, DD00-local
+`FSW & 0x80dd` gate, Empty destination, canonical48 eight-byte preflight and
+one Qword read remain unchanged. Sticky DE/PE, existing C1-clear/TOP/pointer
+behavior and retirement are preserved. QNaN/SNaN remain Unsupported after the
+read without CPU commit. Unmasked delivery and JIT/native admission remain
+outside scope; m80fp subnormal loads retain their no-DE behavior.
+
+Independent signed infinity literals cover every TOP×FCW pair. A subnormal
+followed by infinity checks sticky DE and PE. The positive bare and negative
+DD00/DFE0+FNSTSW fixtures verify exact output bytes/status through CLI. The
+invalid-class fixture and exact DD00/budget-one/no-stop schema predicate now
+use QNaN, while signed infinities and SNaNs are excluded from rejection
+fixtures. Intel SDM revision 093 Vol.1 Table 4-3 describes binary64 special
+encodings; Vol.2A FLD m64fp is the instruction reference. The reconstructed
+x87 tag classification uses Vol.2A Table 3-47, “Recreating FSAVE Format.”
+
+Validation passed: focused FLD literal/status, rejection, schema, CLI fixture,
+JIT denial and native-profile checks; full workspace suite (695 tests);
+`cargo check --workspace --all-targets --offline`; Linux x86 runner check;
+`cargo fmt --all -- --check`; `git diff --check`; and graphify update. The
+architecture-gated native-denial test compiles for Linux x86 but does not
+execute on this local arm64 host. `python3 tools/check_layout.py` reports the
+pre-existing unmapped root `.serena` directory, which was left untouched.
+Independent gpt-6.1-sol medium review is pending. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ae-bounded-fld-m64fp-rax-dd-00-signed-infinities),
+[plan](../plans/STAGE_2.md#s2-31ae-extend-bounded-fld-m64fp-rax-dd-00-to-infinities),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

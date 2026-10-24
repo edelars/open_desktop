@@ -3873,3 +3873,38 @@ Table 3-47, official PDF page 532). No arithmetic or unmasked behavior is
 inferred. See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ad-extend-bounded-fld-m80fp-rax-db-28-to-pseudo-denormals),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31ad report](../reports/STAGE_2_REPORT.md#s2-31ad--bounded-fld-m80fp-pseudo-denormal-extension).
+
+## Local S2-31ae: bounded `FLD m64fp [RAX]` (`DD 00`) signed infinities
+
+S2-31ae extends exact bare `DD 00` to signed binary64 infinities only
+(exponent field `0x7ff`, fraction zero). After the existing canonical48
+eight-byte preflight and exactly one Qword read, it constructs canonical
+binary80 infinity by integer fields: explicit integer bit set, exponent
+`0x7fff` with the source sign, zero fraction. The pushed physical slot receives
+`X87Tag::Special`; no host floating-point conversion is involved.
+
+Retain all four accepted FCWs, the DD00-local `FSW & 0x80dd == 0` gate, Empty
+destination, TOP decrement, C1 clear, FIP/FDP update and one retirement.
+Sticky DE and PE are preserved. Binary64 QNaN and SNaN encodings remain
+post-read Unsupported after one Qword read, with no CPU commit. The exact
+schema Unsupported exception uses binary64 QNaN, and only exact DD00,
+budget-one, no-stop fixtures qualify. FILD and m80fp retain their separate
+`0x80df` status gate and m80fp subnormal loads add no DE. Unmasked exception
+delivery is deferred; the SDM says FLD pushes even with an unmasked exception,
+so this all-masked local profile does not claim that behavior. JIT/native
+admission remains closed.
+
+Independent positive and negative infinity literals span all TOP×FCW pairs.
+A subnormal followed by infinity verifies sticky DE and PE across repeated
+loads. Bare positive DD00 and negative DD00/DFE0+FNSTSW fixtures verify exact
+binary80 bytes, Special tags, status and retirement; signed QNaN/SNaN neighbors
+reject after one read. Intel SDM revision 093 Vol.1 Table 4-3 gives floating
+point encodings; Vol.2A FLD m64fp, pp.3-352–3-353 (official PDF p.470), is the
+instruction reference. The reconstructed x87 tag classification follows
+Vol.2A Table 3-47, “Recreating FSAVE Format” (official PDF p.532). See the
+[Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436) and
+[Vol.2A PDF, FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
+[Vol.2A PDF, Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=532).
+See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ae-extend-bounded-fld-m64fp-rax-dd-00-to-infinities),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[S2-31ae report](../reports/STAGE_2_REPORT.md#s2-31ae--bounded-fld-m64fp-signed-infinity-extension).

@@ -245,6 +245,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ab | Extend exact DB 28 FLD m80fp to canonical quiet binary80 NaNs with Special tag; native closed | S2-31aa |
 | [x] | S2-31ac | Extend exact DB 28 FLD m80fp to canonical signaling binary80 NaNs under all-masked FCWs; native closed | S2-31ab |
 | [x] | S2-31ad | Extend exact DB 28 FLD m80fp to raw pseudo-denormals with Special tag and no DE; native closed | S2-31ac |
+| [x] | S2-31ae | Extend exact DD 00 FLD m64fp to signed binary64 infinities with canonical binary80 Special; native closed | S2-31z |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3198,3 +3199,16 @@ scope. Cover both signs and boundary fractions across TOP×FCW, exponent-one
 Normal controls, schema/CLI fixtures and native denial; retain positive
 pseudo-infinity as the narrow Unsupported fixture class. See the [S2-31ad
 report](../reports/STAGE_2_REPORT.md#s2-31ad--bounded-fld-m80fp-pseudo-denormal-extension).
+
+#### S2-31ae. Extend bounded `FLD m64fp [RAX]` (`DD 00`) to infinities
+
+[x] Accept only signed binary64 infinities (exponent `0x7ff`, fraction zero)
+after the existing one-Qword read, converting their sign and fields to
+canonical binary80 infinity and assigning Special. Preserve the four FCWs,
+`FSW & 0x80dd` gate, Empty destination, canonical48 eight-byte preflight,
+sticky DE/PE, C1-clear, TOP, pointers and retirement behavior. Binary64 NaNs
+remain post-read Unsupported without CPU commit; unmasked exception delivery
+and native admission remain outside the slice. Add TOP×FCW signed vectors,
+subnormal-then-infinity sticky-flag coverage, exact DD00 / DD00-DFE0 CLI
+fixtures, and a narrow QNaN Unsupported fixture predicate. Keep m80fp
+subnormal semantics distinct (no DE). See the [S2-31ae report](../reports/STAGE_2_REPORT.md#s2-31ae--bounded-fld-m64fp-signed-infinity-extension).

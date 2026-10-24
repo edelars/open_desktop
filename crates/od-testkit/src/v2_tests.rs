@@ -649,8 +649,29 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         .iter_mut()
         .find(|region| region.region_id == "operand")
         .unwrap()
-        .initial_bytes_hex = "000000000000f07f".into();
+        .initial_bytes_hex = "000000000000f87f".into();
     assert!(Fixture::from_json(&invalid_fld_m64.to_json().unwrap()).is_ok());
+    for (raw, admitted) in [
+        ("000000000000f87f", true),
+        ("000000000000f8ff", true),
+        ("000000000000f07f", false),
+        ("000000000000f0ff", false),
+        ("010000000000f07f", false),
+        ("010000000000f0ff", false),
+    ] {
+        let mut neighbor = invalid_fld_m64.clone();
+        neighbor
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "operand")
+            .unwrap()
+            .initial_bytes_hex = raw.into();
+        assert_eq!(
+            Fixture::from_json(&serde_json::to_vec(&neighbor).unwrap()).is_ok(),
+            admitted,
+            "DD00 QNaN Unsupported predicate raw={raw}"
+        );
+    }
     invalid_fld_m64
         .memory
         .iter_mut()

@@ -581,3 +581,16 @@ flags. Coverage includes signed zero/minimum/maximum fraction and matching
 exponent-one Normal controls across TOP×FCW, while pseudo-infinity/NaNs and
 unnormals remain Unsupported after one read without commit. This does not add
 arithmetic consumption, unmasked delivery or native x87 execution.
+
+
+## Local S2-31ae `FLD m64fp` signed-infinity load
+
+Exact bare `DD 00` additionally accepts signed binary64 infinities, preserving
+the sign while constructing canonical binary80 infinity and a Special tag.
+It retains the four FCWs, `FSW & 0x80dd` gate, Empty destination, one Qword
+read and C1-clear/push/pointer policy. Sticky DE and PE survive the load.
+Signed QNaNs and SNaNs reject after one read without CPU commit. Independent
+literal vectors cover signs across TOP×FCW and a subnormal-to-infinity sequence;
+positive bare and negative DD00/DFE0+FNSTSW fixtures run through the CLI.
+Unmasked delivery and native/JIT execution remain outside scope. See the
+[S2-31ae CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ae-bounded-fld-m64fp-rax-dd-00-signed-infinities).
