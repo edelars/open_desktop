@@ -5716,3 +5716,52 @@ reporting; Vol.2A FLD m64fp (PDF p.470) identifies SNaN as #IA, and Table
 See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ai-bounded-fld-m64fp-rax-dd-00-canonical-snans),
 [plan](../plans/STAGE_2.md#s2-31ai-extend-bounded-fld-m64fp-rax-dd-00-to-canonical-snans),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## S2-31aj — bounded `FLD m32fp` canonical SNaN extension
+
+Exact bare `D9 00` now accepts canonical binary32 signaling NaNs after one
+Dword read. Integer-only conversion sets binary80's explicit integer and
+quiet bits, shifts the source fraction by 40, preserves sign, and assigns
+Special. Sticky IE alone is added; DE/PE and other admitted status remain
+sticky. Existing FCWs, the D900-local `FSW & 0x80dd` gate, Empty destination,
+C1/TOP/pointer/retirement behavior, canonical48 preflight and one-read access
+remain unchanged. Subsequent D900 loads are rejected while IE is set until
+FNCLEX clears status. Binary64 and raw binary80 SNaNs retain their operation-
+specific behavior; unmasked delivery and native/JIT execution remain outside
+scope.
+
+Independent signed low, middle and maximum payload vectors cover every
+TOP×FCW pair, with exact quieted binary80 literals. Tests verify clean TOP=0
+FSW `0x3801`, sticky DE/PE, SNaN→quieted-QNaN composition, one-Dword-read
+fault behavior, pre-read unmasked-FCW/pre-existing-IE gates, subsequent-load
+rejection, and FNCLEX clearing exception flags while preserving TOP, tags and
+payloads before another load. Positive bare and negative payload-bearing
+D900/DFE0+FNSTSW CLI fixtures are included. The exact D900/budget-one/no-stop
+Unsupported schema exception now represents an invalid environment gate,
+independent of source class. Native/JIT deny fixtures include both SNaN cases.
+
+Focused validation passed: `od-isa` D900 matrices/recovery (5 tests), the
+D900 schema predicate (1), successful CLI fixtures (1), JIT denial (1), and
+invalid-environment pre-read rejection (1). The full offline workspace suite
+passed (700 tests); workspace and Linux x86 runner all-target checks,
+`cargo fmt --all -- --check`, and `git diff --check` passed. `graphify update .`
+completed with 3930 nodes and 8217 edges. The layout check reports the existing
+unmapped `.serena/` directory, which remains untouched. Independent
+`gpt-6.1-sol` medium review was clean after restoring the prior S2-31aa
+validation paragraph and adding a clean TOP=0 assertion for SNaN FSW `0x3801`.
+The reviewer confirmed conversion/status semantics, pre-read gates, atomicity,
+fixture/schema/native/JIT reachability and scope boundaries. No Mac mini or
+physical x86 test was run; physical acceptance remains deferred to the
+combined final S2-31 substage.
+
+Intel SDM revision 093 Vol.1 §4.8.3.5/Table 4-8 describes SNaN quieting by
+setting the most-significant fraction bit; §8.1.3.3 describes x87 invalid
+operation status. Vol.2A FLD m32fp identifies SNaN as #IA; reconstructed tag
+classification follows Table 3-47, “Recreating FSAVE Format” (PDF p.533). The
+local profile covers all-masked FCWs only. See [Vol.1 §4.8.3.5/Table 4-8](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=105),
+[Vol.1 §8.1.3.3](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211),
+[Vol.2A FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470), and
+[Vol.2A Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=533).
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31aj-bounded-fld-m32fp-rax-d9-00-canonical-snans),
+[plan](../plans/STAGE_2.md#s2-31aj-extend-bounded-fld-m32fp-rax-d9-00-to-canonical-snans),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

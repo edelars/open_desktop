@@ -2104,7 +2104,7 @@ mod tests {
 
     #[test]
     fn fld_m32fp_literal_fixtures_expand_binary32_values_and_reject_bad_class() {
-        for (bytes, expected_rax, expected_raw, expected_tag_word, retired) in [
+        for (bytes, expected_rax, expected_raw, expected_tag_word, retired, expected_status) in [
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp.case.json")
                     .as_slice(),
@@ -2112,6 +2112,7 @@ mod tests {
                 "00000000000000000000",
                 0x7ffc,
                 1,
+                0x7d00,
             ),
             (
                 include_bytes!(
@@ -2122,6 +2123,7 @@ mod tests {
                 "00000000000000000080",
                 0x7ffc,
                 2,
+                0x7d00,
             ),
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31af_fld_m32fp_infinity.case.json")
@@ -2130,6 +2132,7 @@ mod tests {
                 "0000000000000080ff7f",
                 0xbffc,
                 1,
+                0x7d00,
             ),
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31af_fld_m32fp_negative_infinity_fnstsw.case.json")
@@ -2138,6 +2141,7 @@ mod tests {
                 "0000000000000080ffff",
                 0xbffc,
                 2,
+                0x7d00,
             ),
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ah_fld_m32fp_qnan.case.json")
@@ -2146,6 +2150,7 @@ mod tests {
                 "00000000000000c0ff7f",
                 0xbffc,
                 1,
+                0x7d00,
             ),
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ah_fld_m32fp_negative_qnan_payload_fnstsw.case.json")
@@ -2154,6 +2159,25 @@ mod tests {
                 "00000000004523c1ffff",
                 0xbffc,
                 2,
+                0x7d00,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_snan.case.json")
+                    .as_slice(),
+                0x0000_0000_0030_0004,
+                "00000000000100c0ff7f",
+                0xbffc,
+                1,
+                0x7d01,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_negative_snan_payload_fnstsw.case.json")
+                    .as_slice(),
+                0x0000_0000_0030_7d01,
+                "00000000004523e1ffff",
+                0xbffc,
+                2,
+                0x7d01,
             ),
         ] {
             let fixture = v2::Fixture::from_json(bytes).expect("S2-31ah fixture schema");
@@ -2173,7 +2197,7 @@ mod tests {
             };
             assert_eq!(value.state.gpr[0], HexU64(expected_rax));
             let after = value.state.x87.as_ref().unwrap();
-            assert_eq!(after.status_word, HexU64(0x7d00));
+            assert_eq!(after.status_word, HexU64(expected_status));
             assert_eq!(after.tag_word, HexU64(expected_tag_word));
             assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
             assert_eq!(after.data_pointer, HexU64(0x0030_0004));
@@ -2210,9 +2234,9 @@ mod tests {
         }
 
         let invalid = v2::Fixture::from_json(include_bytes!(
-            "../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp_invalid_class.case.json"
+            "../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_invalid_environment.case.json"
         ))
-        .expect("S2-31s binary32 invalid-class fixture schema");
+        .expect("S2-31aj binary32 invalid-environment fixture schema");
         let mut memory = od_testkit::memory::FlatMemory::from_fixture(&invalid.fixture).unwrap();
         let result = execute_fixture_v2(&invalid, &mut memory);
         result.validate_for(&invalid).unwrap();
@@ -2239,28 +2263,21 @@ mod tests {
         assert_eq!(canary.bytes_hex, "a5");
 
         let invalid_json: serde_json::Value = serde_json::from_slice(include_bytes!(
-            "../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp_invalid_class.case.json"
+            "../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_invalid_environment.case.json"
         ))
         .unwrap();
-        for rejected_bytes in [
-            "00000000", "0000803f", "01000000", "01000080", "0000807f", "000080ff", "0000c07f",
-            "0100c07f", "4523c17f", "ffffff7f", "0000c0ff", "0100c0ff",
-        ] {
-            let mut near_miss = invalid_json.clone();
-            near_miss["memory"][1]["initial_bytes_hex"] =
-                serde_json::Value::String(rejected_bytes.into());
-            assert!(
-                v2::Fixture::from_json(&serde_json::to_vec(&near_miss).unwrap()).is_err(),
-                "S2-31ah schema must not admit Unsupported for {rejected_bytes}"
-            );
+        for source in ["0000803f", "0100807f", "0000c07f", "ffffbf7f"] {
+            let mut source_class_irrelevant = invalid_json.clone();
+            source_class_irrelevant["memory"][1]["initial_bytes_hex"] =
+                serde_json::Value::String(source.into());
+            v2::Fixture::from_json(&serde_json::to_vec(&source_class_irrelevant).unwrap())
+                .unwrap_or_else(|error| panic!("environment gate should admit {source}: {error}"));
         }
-        let mut qnan = invalid_json.clone();
-        qnan["memory"][1]["initial_bytes_hex"] = serde_json::Value::String("0000c07f".into());
-        assert!(v2::Fixture::from_json(&serde_json::to_vec(&qnan).unwrap()).is_err());
-        let mut snan = invalid_json;
-        snan["memory"][1]["initial_bytes_hex"] = serde_json::Value::String("0100807f".into());
-        v2::Fixture::from_json(&serde_json::to_vec(&snan).unwrap())
-            .expect("canonical SNaN is the remaining admitted Unsupported class");
+        let mut clean_snan = invalid_json;
+        clean_snan["initial_state"]["x87"]["status_word"] =
+            serde_json::Value::String("0x0000000000004500".into());
+        clean_snan["memory"][1]["initial_bytes_hex"] = serde_json::Value::String("0100807f".into());
+        assert!(v2::Fixture::from_json(&serde_json::to_vec(&clean_snan).unwrap()).is_err());
     }
 
     #[test]

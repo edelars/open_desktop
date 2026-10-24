@@ -4002,11 +4002,11 @@ floating-point conversion is used.
 Retain the four all-masked FCWs, D900-local `FSW & 0x80dd == 0` gate, Empty
 destination, C1-clear/TOP, FIP/FDP, and one-retirement policy. Add no exception
 flags, including IE; sticky DE and PE are preserved. Existing zero, Normal,
-masked-subnormal, and signed-infinity paths remain unchanged. Binary32 SNaNs
-remain post-read Unsupported after one Dword read with no CPU commit. The
-exact D900/budget-one/no-stop Unsupported schema exception now requires a
-canonical SNaN; QNaNs, infinities, zero, Normal and subnormal inputs do not
-match. FILD and m64/m80 gates remain unchanged. Unmasked exception delivery
+masked-subnormal, and signed-infinity paths remain unchanged. At the S2-31ah
+stage binary32 SNaNs were post-read Unsupported; S2-31aj now accepts them as
+described below. The exact current D900/budget-one/no-stop Unsupported schema
+exception represents an invalid environment gate, independent of operand
+class. FILD and m64/m80 gates remain unchanged. Unmasked exception delivery
 and JIT/native execution remain outside this supported path; native/JIT
 profiles continue to deny D900 loads.
 
@@ -4026,6 +4026,52 @@ unmasked delivery. See the [Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent
 [Stage 2 plan](../plans/STAGE_2.md#s2-31ah-extend-bounded-fld-m32fp-rax-d9-00-to-canonical-qnans),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31ah report](../reports/STAGE_2_REPORT.md#s2-31ah--bounded-fld-m32fp-canonical-qnan-extension).
+
+## Local S2-31aj: bounded `FLD m32fp [RAX]` (`D9 00`) canonical SNaNs
+
+S2-31aj extends exact bare `D9 00` to canonical binary32 signaling NaNs:
+exponent field `0xff`, nonzero fraction, and quiet bit 22 clear, for either
+sign. After canonical48 four-byte preflight and one Dword read, construct
+binary80 with integer fields only: significand
+`0xc000000000000000 | (u64::from(fraction) << 40)`, exponent `0x7fff`, and
+preserved sign. Push with `X87Tag::Special`; the binary80 quiet bit is set and
+the mapped source payload remains unchanged.
+
+Retain the four all-masked FCWs, D900-local `FSW & 0x80dd == 0` gate, Empty
+destination, C1-clear/TOP, FIP/FDP, canonical48 range, one-read and
+one-retirement policy. Add sticky IE only; preserve DE/PE and do not add ES,
+SF, B, or other status flags. Existing signed zero, Normal, masked-subnormal,
+infinity, and QNaN paths are unchanged. Existing IE and unmasked FCWs remain
+Unsupported before the operand read. A later D900 load is similarly rejected
+until FNCLEX clears status. Faults and failed reads leave CPU state
+uncommitted. Binary64 SNaNs use the separate S2-31ai behavior; m80 raw SNaNs
+remain byte-preserving with no new flags. Unmasked exception delivery,
+native/JIT execution and physical behavior remain outside this slice.
+
+Independent signed minimum, middle and maximum payload literals cover every
+TOP×FCW pair, with exact binary80 quieted payloads and sticky DE/PE checks.
+The clean TOP=0 result has FSW `0x3801`. Tests cover SNaN→quieted-QNaN,
+pre-existing IE and unmasked-FCW pre-read gates, one-Dword-read failures,
+later-load rejection, FNCLEX clearing exception flags while preserving
+TOP/tags/payloads, and recovery through a QNaN load. Positive bare and
+negative payload-bearing D900/DFE0+FNSTSW fixtures run through the CLI. The
+exact Unsupported schema exception is now environment-driven: exact D900,
+one instruction, no stop RIP, and an invalid FCW or a set bit in `0x80dd`;
+the operand class does not affect matching. Native/JIT profiles continue to
+deny the load.
+
+Intel SDM revision 093 Vol.1 §4.8.3.5/Table 4-8 describes SNaN quieting by
+setting the most-significant fraction bit; §8.1.3.3 describes x87 invalid
+operation status. Vol.2A FLD m32fp identifies SNaN as #IA; reconstructed tag
+classification follows Table 3-47, “Recreating FSAVE Format” (PDF p.533). The
+local contract covers the all-masked profile only and makes no claim about
+unmasked delivery. See [Vol.1 §4.8.3.5/Table 4-8](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=105),
+[Vol.1 §8.1.3.3](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211),
+[Vol.2A FLD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
+[Vol.2A Table 3-47](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=533),
+[Stage 2 plan](../plans/STAGE_2.md#s2-31aj-extend-bounded-fld-m32fp-rax-d9-00-to-canonical-snans),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[S2-31aj report](../reports/STAGE_2_REPORT.md#s2-31aj--bounded-fld-m32fp-canonical-snan-extension).
 
 ## Local S2-31ai: bounded `FLD m64fp [RAX]` (`DD 00`) canonical SNaNs
 

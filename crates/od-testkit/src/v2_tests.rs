@@ -588,21 +588,31 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             write: false,
             execute: false,
         },
-        initial_bytes_hex: "000000000100807f".into(),
+        initial_bytes_hex: "000000000000803f".into(),
         comparison_mask_hex: "ff".repeat(8),
     });
+    invalid_fld_m32
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .control_word = HexU64(0x037f);
+    invalid_fld_m32
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .status_word = HexU64(0x0001);
     invalid_fld_m32.stop_rip = None;
     invalid_fld_m32.expected_exit = ExpectedExit::Unsupported;
     assert!(Fixture::from_json(&invalid_fld_m32.to_json().unwrap()).is_ok());
-    for (raw, admitted) in [
-        ("000000000100807f", true),
-        ("00000000010080ff", true),
-        ("000000000300807f", true),
-        ("00000000030080ff", true),
-        ("00000000ffffbf7f", true),
-        ("00000000ffffbfff", true),
-        ("000000000000c07f", false),
-        ("000000000000c0ff", false),
+    for raw in [
+        "000000000000803f",
+        "000000000100807f",
+        "00000000010080ff",
+        "000000000000c07f",
+        "000000000000c0ff",
+        "000000000100007f",
     ] {
         let mut neighbor = invalid_fld_m32.clone();
         neighbor
@@ -611,20 +621,44 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             .find(|region| region.region_id == "operand")
             .unwrap()
             .initial_bytes_hex = raw.into();
-        assert_eq!(
+        assert!(
             Fixture::from_json(&serde_json::to_vec(&neighbor).unwrap()).is_ok(),
-            admitted,
-            "D900 SNaN Unsupported predicate raw={raw}"
+            "D900 invalid-environment predicate must not depend on source class {raw}"
         );
     }
-    let mut subnormal_fld_m32 = invalid_fld_m32.clone();
-    subnormal_fld_m32
-        .memory
-        .iter_mut()
-        .find(|region| region.region_id == "operand")
+    for status_word in [0, 0x0002, 0x0020, 0x0200] {
+        let mut clean_environment_snan = invalid_fld_m32.clone();
+        clean_environment_snan
+            .initial_state
+            .x87
+            .as_mut()
+            .unwrap()
+            .status_word = HexU64(status_word);
+        clean_environment_snan
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "operand")
+            .unwrap()
+            .initial_bytes_hex = "000000000100807f".into();
+        assert!(
+            clean_environment_snan.validate().is_err(),
+            "clean environment status {status_word:04x} must not admit Unsupported"
+        );
+    }
+    let mut wrong_fld_m32_control = invalid_fld_m32.clone();
+    wrong_fld_m32_control
+        .initial_state
+        .x87
+        .as_mut()
         .unwrap()
-        .initial_bytes_hex = "0000000001000000".into();
-    assert!(Fixture::from_json(&serde_json::to_vec(&subnormal_fld_m32).unwrap()).is_err());
+        .control_word = HexU64(0x027f);
+    wrong_fld_m32_control
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .status_word = HexU64(0);
+    assert!(Fixture::from_json(&wrong_fld_m32_control.to_json().unwrap()).is_ok());
     let mut wrong_fld_m32_budget = fixture.clone();
     let code = wrong_fld_m32_budget
         .memory

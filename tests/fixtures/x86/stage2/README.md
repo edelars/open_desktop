@@ -2039,9 +2039,9 @@ state through FNSTSW. Both preserve sign/payload in canonical binary80 with
 Special tag and add no exception flags. Interpreter literals cover
 quiet-only, low, middle and maximum payloads of both signs across TOP×FCW; a
 minimum-subnormal load followed by QNaN verifies sticky DE/PE. The current
-schema exception is exact D900, budget one, no stop RIP and canonical SNaN
-only. SNaNs remain post-read Unsupported after one Dword read. JIT/native
-admission remains closed. See the [S2-31ah CPU
+At S2-31ah, the schema exception was keyed to canonical SNaN and SNaNs
+remained post-read Unsupported; S2-31aj accepts them and now uses an invalid-
+environment fixture. JIT/native admission remains closed. See the [S2-31ah CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ah-bounded-fld-m32fp-rax-d9-00-canonical-qnans), [plan](../../../../docs/plans/STAGE_2.md#s2-31ah-extend-bounded-fld-m32fp-rax-d9-00-to-canonical-qnans), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ah--bounded-fld-m32fp-canonical-qnan-extension).
 
 ### S2-31ai FLD m64fp canonical SNaN fixture coverage
@@ -2057,3 +2057,18 @@ schema exception is DD00, budget one, no stop RIP, and an invalid FCW or
 `FSW & 0x80dd != 0`, independent of operand value. Native/JIT admission
 remains closed. See the [S2-31ai CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ai-bounded-fld-m64fp-rax-dd-00-canonical-snans), [plan](../../../../docs/plans/STAGE_2.md#s2-31ai-extend-bounded-fld-m64fp-rax-dd-00-to-canonical-snans), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ai--bounded-fld-m64fp-canonical-snan-extension).
+
+### S2-31aj FLD m32fp canonical SNaN fixture coverage
+
+The positive bare `D9 00` fixture loads a minimum-payload canonical binary32
+SNaN. The negative payload-bearing `D9 00 DF E0` fixture observes IE through
+FNSTSW. Integer conversion sets binary80's quiet bit, preserves sign/payload,
+and assigns Special. Interpreter literal vectors cover signed low, middle and
+maximum payloads across TOP×FCW, sticky DE/PE, exact FSW, and FNCLEX recovery.
+The latter clears exception flags while preserving TOP, tags and loaded bytes,
+then permits another D900 load. Memory errors, unmasked/pre-existing-IE
+pre-read gates and subsequent-load rejection are covered. The exact
+D900/budget-one/no-stop Unsupported schema fixture is environment-driven
+(invalid FCW or `FSW & 0x80dd != 0`) and uses an ordinary Normal source to show
+operand class is irrelevant. Native/JIT admission remains closed. See the
+[S2-31aj CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31aj-bounded-fld-m32fp-rax-d9-00-canonical-snans), [plan](../../../../docs/plans/STAGE_2.md#s2-31aj-extend-bounded-fld-m32fp-rax-d9-00-to-canonical-snans), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31aj--bounded-fld-m32fp-canonical-snan-extension).

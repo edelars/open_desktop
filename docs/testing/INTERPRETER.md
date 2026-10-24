@@ -632,12 +632,27 @@ fraction bit 22 set, preserving sign and lower payload through integer
 conversion to canonical binary80 and pushing with Special tag. No exception
 status is added; sticky DE/PE and existing C1/TOP/pointer/retirement behavior
 remain. The all-masked FCWs, `FSW & 0x80dd` gate, Empty destination,
-canonical48 four-byte preflight and one Dword read are unchanged. SNaNs reject
-after one read without commit; the current exact-D900/budget-one/no-stop
-schema fixture uses SNaN. Signed quiet-only, low, middle and maximum payloads
+canonical48 four-byte preflight and one Dword read are unchanged. SNaNs were
+rejected after one read at S2-31ah; S2-31aj now accepts them. The current
+exact-D900/budget-one/no-stop schema fixture represents an invalid environment
+gate. Signed quiet-only, low, middle and maximum payloads
 cover TOP×FCW; a subnormal→QNaN sequence checks sticky DE/PE. Bare positive
 and negative payload-bearing D900/DFE0+FNSTSW fixtures run through CLI. JIT
 and native admission remain closed. See the [S2-31ah CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ah-bounded-fld-m32fp-rax-d9-00-canonical-qnans).
+
+## Local S2-31aj `FLD m32fp` canonical signaling-NaN load
+
+Exact bare `D9 00` accepts canonical binary32 SNaNs with exponent `0xff`, a
+nonzero fraction, and quiet bit 22 clear. Integer conversion sets binary80's
+explicit integer and quiet bits, shifts the payload by 40, preserves sign, and
+pushes with Special tag. Sticky IE alone is added; sticky DE/PE remain, while
+ES/SF/B and other flags are not introduced. Existing zero, Normal, subnormal,
+infinity and QNaN paths remain unchanged. The all-masked FCWs,
+`FSW & 0x80dd` gate, Empty destination, canonical48 Dword preflight and
+one-read policy remain fixed. A subsequent D900 load stays blocked until
+FNCLEX clears status. Binary64 and raw binary80 SNaNs keep their separate
+behavior. Native/JIT and unmasked delivery remain outside scope. See the
+[S2-31aj CPU contract](../specs/CPU_CONTRACT.md#local-s2-31aj-bounded-fld-m32fp-rax-d9-00-canonical-snans).
 
 ## Local S2-31ai `FLD m64fp` canonical signaling-NaN load
 

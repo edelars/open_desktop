@@ -1895,7 +1895,7 @@ mod tests {
             )
             .as_slice(),
             include_bytes!(
-                "../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp_invalid_class.case.json"
+                "../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_invalid_environment.case.json"
             )
             .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31af_fld_m32fp_infinity.case.json")
@@ -1905,6 +1905,10 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ah_fld_m32fp_qnan.case.json")
                 .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ah_fld_m32fp_negative_qnan_payload_fnstsw.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_snan.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_negative_snan_payload_fnstsw.case.json")
                 .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp.case.json")
                 .as_slice(),

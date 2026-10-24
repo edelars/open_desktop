@@ -70,8 +70,14 @@ const FLD_M32_QNAN: &[u8] =
 const FLD_M32_NEGATIVE_QNAN_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31ah_fld_m32fp_negative_qnan_payload_fnstsw.case.json"
 );
-const FLD_M32_INVALID_CLASS: &[u8] =
-    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp_invalid_class.case.json");
+const FLD_M32_SNAN: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_snan.case.json");
+const FLD_M32_NEGATIVE_SNAN_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_negative_snan_payload_fnstsw.case.json"
+);
+const FLD_M32_INVALID_CLASS: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_invalid_environment.case.json"
+);
 const FLD_M64_SUBNORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31z_fld_m64fp_min_subnormal.case.json");
 const FLD_M64_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
@@ -1523,11 +1529,7 @@ fn v2_jit_denies_m64_infinity_qnan_and_snan_loads_without_fallback() {
 }
 
 #[test]
-fn local_x87_fld_m32fp_snan_fixture_is_rejected_after_read_without_commit() {
-    let formerly_admitted_qnan = String::from_utf8(FLD_M32_INVALID_CLASS.to_vec())
-        .unwrap()
-        .replace("0100807f", "0000c07f");
-    assert!(Fixture::from_json(formerly_admitted_qnan.as_bytes()).is_err());
+fn local_x87_fld_m32fp_invalid_environment_fixture_rejects_before_read_without_commit() {
     let (input, result) = run(FLD_M32_INVALID_CLASS, "interpreter", 4);
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
     assert_eq!(count(&result), 0);
@@ -1550,7 +1552,12 @@ fn v2_jit_denies_m32_infinity_load_without_interpreter_fallback() {
     let (_, negative) = run(FLD_M32_INFINITY_FNSTSW, "jit", 4);
     assert!(matches!(negative.outcome, Outcome::Unsupported { .. }));
     assert!(matches!(negative.snapshot, Observation::Unavailable { .. }));
-    for fixture in [FLD_M32_QNAN, FLD_M32_NEGATIVE_QNAN_FNSTSW] {
+    for fixture in [
+        FLD_M32_QNAN,
+        FLD_M32_NEGATIVE_QNAN_FNSTSW,
+        FLD_M32_SNAN,
+        FLD_M32_NEGATIVE_SNAN_FNSTSW,
+    ] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));

@@ -963,12 +963,12 @@ fn step_tracked_with_stop(
         let source_exponent = (bits >> 23) & 0xff;
         let fraction = bits & 0x7f_ffff;
         let is_subnormal = source_exponent == 0 && fraction != 0;
-        let (raw, tag) = if bits & 0x7fff_ffff == 0 {
+        let (raw, tag, is_signaling_nan) = if bits & 0x7fff_ffff == 0 {
             let mut raw = [0_u8; 10];
             if bits >> 31 != 0 {
                 raw[9] = 0x80;
             }
-            (raw, X87Tag::Zero)
+            (raw, X87Tag::Zero, false)
         } else {
             if source_exponent == 0 {
                 if !is_subnormal {
@@ -981,26 +981,26 @@ fn step_tracked_with_stop(
                 let mut raw = [0_u8; 10];
                 raw[..8].copy_from_slice(&significand.to_le_bytes());
                 raw[8..].copy_from_slice(&(binary80_exponent | sign).to_le_bytes());
-                (raw, X87Tag::Valid)
+                (raw, X87Tag::Valid, false)
             } else if source_exponent == 255 {
                 if fraction != 0 {
-                    if fraction & (1 << 22) == 0 {
-                        return Ok(StepOutcome::Unsupported {
-                            opcode: instruction.opcode.byte,
-                        });
-                    }
-                    let significand = (1_u64 << 63) | (u64::from(fraction) << 40);
+                    let is_signaling_nan = fraction & (1 << 22) == 0;
+                    let significand = if is_signaling_nan {
+                        0xc000_0000_0000_0000 | (u64::from(fraction) << 40)
+                    } else {
+                        (1_u64 << 63) | (u64::from(fraction) << 40)
+                    };
                     let sign = if bits >> 31 != 0 { 0x8000 } else { 0 };
                     let mut raw = [0_u8; 10];
                     raw[..8].copy_from_slice(&significand.to_le_bytes());
                     raw[8..].copy_from_slice(&(0x7fff_u16 | sign).to_le_bytes());
-                    (raw, X87Tag::Special)
+                    (raw, X87Tag::Special, is_signaling_nan)
                 } else {
                     let sign = if bits >> 31 != 0 { 0x8000 } else { 0 };
                     let mut raw = [0_u8; 10];
                     raw[..8].copy_from_slice(&(1_u64 << 63).to_le_bytes());
                     raw[8..].copy_from_slice(&(0x7fff_u16 | sign).to_le_bytes());
-                    (raw, X87Tag::Special)
+                    (raw, X87Tag::Special, false)
                 }
             } else {
                 let significand = ((1_u64 << 23) | u64::from(fraction)) << 40;
@@ -1009,7 +1009,7 @@ fn step_tracked_with_stop(
                 let mut raw = [0_u8; 10];
                 raw[..8].copy_from_slice(&significand.to_le_bytes());
                 raw[8..].copy_from_slice(&(binary80_exponent | sign).to_le_bytes());
-                (raw, X87Tag::Valid)
+                (raw, X87Tag::Valid, false)
             }
         };
         let x87 = state.x87.as_mut().expect("FLD state was prevalidated");
@@ -1018,7 +1018,8 @@ fn step_tracked_with_stop(
         x87.set_tag(destination as u8, tag);
         x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9)))
             | (u16::from(new_top) << 11)
-            | if is_subnormal { 1 << 1 } else { 0 };
+            | if is_subnormal { 1 << 1 } else { 0 }
+            | if is_signaling_nan { 1 } else { 0 };
         x87.instruction_pointer = state.rip;
         x87.data_pointer = address;
         state.rip = next_rip;
@@ -23176,7 +23177,7 @@ mod tests {
 
     #[test]
     fn fld_m32fp_matches_raw_binary80_literals_for_every_top_and_control_word() {
-        let vectors: [([u8; 4], [u8; 10], X87Tag); 24] = [
+        let vectors: [([u8; 4], [u8; 10], X87Tag); 30] = [
             ([0x00, 0x00, 0x00, 0x00], [0; 10], X87Tag::Zero),
             (
                 [0x00, 0x00, 0x00, 0x80],
@@ -23293,6 +23294,36 @@ mod tests {
                 [0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff],
                 X87Tag::Special,
             ),
+            (
+                [0x01, 0x00, 0x80, 0x7f],
+                [0, 0, 0, 0, 0, 1, 0, 0xc0, 0xff, 0x7f],
+                X87Tag::Special,
+            ),
+            (
+                [0x01, 0x00, 0x80, 0xff],
+                [0, 0, 0, 0, 0, 1, 0, 0xc0, 0xff, 0xff],
+                X87Tag::Special,
+            ),
+            (
+                [0x45, 0x23, 0xa1, 0x7f],
+                [0, 0, 0, 0, 0, 0x45, 0x23, 0xe1, 0xff, 0x7f],
+                X87Tag::Special,
+            ),
+            (
+                [0x45, 0x23, 0xa1, 0xff],
+                [0, 0, 0, 0, 0, 0x45, 0x23, 0xe1, 0xff, 0xff],
+                X87Tag::Special,
+            ),
+            (
+                [0xff, 0xff, 0xbf, 0x7f],
+                [0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0x7f],
+                X87Tag::Special,
+            ),
+            (
+                [0xff, 0xff, 0xbf, 0xff],
+                [0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff],
+                X87Tag::Special,
+            ),
         ];
         let control_words = [0x037f, 0x077f, 0x0b7f, 0x0f7f];
         for top in 0..8_u8 {
@@ -23337,6 +23368,10 @@ mod tests {
                     assert_eq!(after.registers[usize::from(destination)], expected);
                     assert_eq!(after.tag(destination), Some(expected_tag));
                     assert_eq!(after.top(), destination);
+                    let source_bits = u32::from_le_bytes(source);
+                    let is_signaling_nan = source_bits & 0x7f80_0000 == 0x7f80_0000
+                        && source_bits & 0x007f_ffff != 0
+                        && source_bits & 0x0040_0000 == 0;
                     assert_eq!(
                         after.status_word,
                         (before.status_word & !(0x3800 | 0x0200))
@@ -23347,7 +23382,8 @@ mod tests {
                                 0x0002
                             } else {
                                 0
-                            },
+                            }
+                            | if is_signaling_nan { 1 } else { 0 },
                         "TOP={top}, case={case}, source={source:02x?}"
                     );
                     assert_eq!(after.instruction_pointer, 0x8600);
@@ -23924,6 +23960,122 @@ mod tests {
     }
 
     #[test]
+    fn fld_m32fp_snan_sets_ie_quiets_payload_and_fnclex_recovers() {
+        let mut clean_state = LongModeState::default();
+        clean_state.rip = 0x86c0;
+        clean_state.gpr[Register::Rax as usize] = 0x1000;
+        let mut clean_x87 = crate::state::X87State::fixture_seed();
+        clean_x87.control_word = 0x037f;
+        clean_x87.status_word = 0;
+        for physical in 0..8_u8 {
+            clean_x87.set_tag(physical, X87Tag::Special);
+        }
+        clean_x87.set_tag(7, X87Tag::Empty);
+        clean_state.x87 = Some(clean_x87);
+        let mut clean_memory = Memory::at(&[0xd9, 0x00], clean_state.rip);
+        clean_memory.bytes[..4].copy_from_slice(&0x7f80_0001_u32.to_le_bytes());
+        assert_eq!(
+            step(
+                &mut clean_state,
+                &mut clean_memory,
+                AccessContext::default()
+            ),
+            Ok(StepOutcome::Advanced)
+        );
+        let clean_after = clean_state.x87.as_ref().unwrap();
+        assert_eq!(clean_after.status_word, 0x3801);
+        assert_eq!(
+            clean_after.registers[7],
+            [0, 0, 0, 0, 0, 1, 0, 0xc0, 0xff, 0x7f]
+        );
+        assert_eq!(clean_after.tag(7), Some(X87Tag::Special));
+        assert_eq!(clean_memory.accesses, vec![(AccessKind::Read, 0x1000, 4)]);
+
+        for top in 0..8_u8 {
+            for control_word in [0x037f, 0x077f, 0x0b7f, 0x0f7f] {
+                let mut state = LongModeState::default();
+                state.rip = 0x86d0;
+                state.gpr[Register::Rax as usize] = 0x1000;
+                let snan_destination = top.wrapping_add(7) & 7;
+                let qnan_destination = top.wrapping_add(6) & 7;
+                let mut x87 = crate::state::X87State::fixture_seed();
+                x87.control_word = control_word;
+                x87.status_word = (u16::from(top) << 11) | 0x0022;
+                for physical in 0..8_u8 {
+                    x87.set_tag(physical, X87Tag::Special);
+                }
+                x87.set_tag(snan_destination, X87Tag::Empty);
+                x87.set_tag(qnan_destination, X87Tag::Empty);
+                state.x87 = Some(x87);
+
+                let mut snan_memory = Memory::at(&[0xd9, 0x00], state.rip);
+                snan_memory.bytes[..4].copy_from_slice(&0xffa1_2345_u32.to_le_bytes());
+                assert_eq!(
+                    step(&mut state, &mut snan_memory, AccessContext::default()),
+                    Ok(StepOutcome::Advanced),
+                    "TOP={top}, FCW={control_word:04x}"
+                );
+                let after_snan = state.x87.as_ref().unwrap().clone();
+                assert_eq!(
+                    after_snan.registers[usize::from(snan_destination)],
+                    [0, 0, 0, 0, 0, 0x45, 0x23, 0xe1, 0xff, 0xff]
+                );
+                assert_eq!(after_snan.tag(snan_destination), Some(X87Tag::Special));
+                assert_eq!(after_snan.top(), snan_destination);
+                assert_eq!(
+                    after_snan.status_word,
+                    (u16::from(snan_destination) << 11) | 0x0023
+                );
+                assert_eq!(snan_memory.accesses, vec![(AccessKind::Read, 0x1000, 4)]);
+
+                let mut blocked_load = Memory::at(&[0xd9, 0x00], state.rip);
+                blocked_load.bytes[..4].copy_from_slice(&0x3f80_0000_u32.to_le_bytes());
+                let before_blocked = state.clone();
+                assert_eq!(
+                    step(&mut state, &mut blocked_load, AccessContext::default()),
+                    Ok(StepOutcome::Unsupported { opcode: 0xd9 })
+                );
+                assert_eq!(state, before_blocked);
+                assert!(blocked_load.accesses.is_empty());
+
+                let mut fnclex = Memory::at(&[0xdb, 0xe2], state.rip);
+                assert_eq!(
+                    step(&mut state, &mut fnclex, AccessContext::default()),
+                    Ok(StepOutcome::Advanced)
+                );
+                let after_fnclex = state.x87.as_ref().unwrap();
+                assert_eq!(after_fnclex.status_word, u16::from(snan_destination) << 11);
+                assert_eq!(after_fnclex.top(), snan_destination);
+                assert_eq!(
+                    after_fnclex.registers[usize::from(snan_destination)],
+                    after_snan.registers[usize::from(snan_destination)]
+                );
+                assert_eq!(after_fnclex.tag(snan_destination), Some(X87Tag::Special));
+
+                let mut recovered_qnan = Memory::at(&[0xd9, 0x00], state.rip);
+                recovered_qnan.bytes[..4].copy_from_slice(&0x7fc0_0001_u32.to_le_bytes());
+                assert_eq!(
+                    step(&mut state, &mut recovered_qnan, AccessContext::default()),
+                    Ok(StepOutcome::Advanced)
+                );
+                let after_qnan = state.x87.as_ref().unwrap();
+                assert_eq!(
+                    after_qnan.registers[usize::from(qnan_destination)],
+                    [0, 0, 0, 0, 0, 1, 0, 0xc0, 0xff, 0x7f]
+                );
+                assert_eq!(after_qnan.tag(qnan_destination), Some(X87Tag::Special));
+                assert_eq!(after_qnan.status_word, u16::from(qnan_destination) << 11);
+                assert_eq!(
+                    after_qnan.registers[usize::from(snan_destination)],
+                    after_snan.registers[usize::from(snan_destination)]
+                );
+                assert_eq!(after_qnan.tag(snan_destination), Some(X87Tag::Special));
+                assert_eq!(recovered_qnan.accesses, vec![(AccessKind::Read, 0x1000, 4)]);
+            }
+        }
+    }
+
+    #[test]
     fn fld_m32fp_rejects_invalid_values_gates_ranges_and_execution_boundaries_atomically() {
         let setup = |address: u64| {
             let mut state = LongModeState::default();
@@ -23936,26 +24088,6 @@ mod tests {
             state.x87 = Some(x87);
             state
         };
-        for bits in [
-            0x7f80_0001_u32,
-            0xff80_0001,
-            0x7f80_0003,
-            0xff80_0003,
-            0x7fbf_ffff,
-            0xffbf_ffff,
-        ] {
-            let mut state = setup(0x1000);
-            let before = state.clone();
-            let mut memory = Memory::at(&[0xd9, 0x00], state.rip);
-            memory.bytes[..4].copy_from_slice(&bits.to_le_bytes());
-            assert_eq!(
-                step(&mut state, &mut memory, AccessContext::default()),
-                Ok(StepOutcome::Unsupported { opcode: 0xd9 })
-            );
-            assert_eq!(state, before);
-            assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1000, 4)]);
-        }
-
         let mut rejected = Vec::new();
         let mut missing = setup(0x1000);
         missing.x87 = None;
@@ -23976,6 +24108,7 @@ mod tests {
         for mut state in rejected {
             let before = state.clone();
             let mut memory = Memory::at(&[0xd9, 0x00], state.rip);
+            memory.bytes[..4].copy_from_slice(&0x7f80_0001_u32.to_le_bytes());
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Unsupported { opcode: 0xd9 })
@@ -24020,6 +24153,7 @@ mod tests {
             let mut state = setup(0x1000);
             let before = state.clone();
             let mut memory = Memory::at(&[0xd9, 0x00], state.rip);
+            memory.bytes[..4].copy_from_slice(&0xffbf_ffff_u32.to_le_bytes());
             memory.error = Some(error.clone());
             memory.error_kind = Some(AccessKind::Read);
             let outcome = step(&mut state, &mut memory, AccessContext::default());

@@ -348,9 +348,9 @@ The `s2-long-x87-state-v1` profile accepts canonical binary32 QNaNs for exact
 `d900` and `d900dfe0`. Fraction bit 22 is set, lower payload bits are
 arbitrary, and sign/payload map into canonical binary80 with Special tag. The
 four all-masked FCWs, `FSW & 0x80dd` gate, Empty destination, canonical48
-four-byte preflight and one-Dword-read rules remain unchanged. The exact
-D900/budget-one/no-stop Unsupported exception now admits canonical SNaN only;
-QNaN, infinity, zero, Normal and subnormal sources do not match. The positive
+four-byte preflight and one-Dword-read rules remain unchanged. At S2-31ah, the
+exact D900/budget-one/no-stop exception was keyed to SNaN; S2-31aj now accepts
+SNaNs and changes this exception to an invalid-environment predicate. The positive
 bare and negative payload-bearing D900/DFE0+FNSTSW fixtures run through CLI.
 JIT/native profiles continue to deny the load.
 
@@ -366,3 +366,18 @@ driven (invalid FCW or a set masked gate bit), independent of the operand
 class. The old SNaN-class rejection exception is superseded. Bare and
 `dd00dfe0`/FNSTSW fixtures assert output and IE. See the [S2-31ai CPU
 contract](../specs/CPU_CONTRACT.md#local-s2-31ai-bounded-fld-m64fp-rax-dd-00-canonical-snans), [plan](../plans/STAGE_2.md#s2-31ai-extend-bounded-fld-m64fp-rax-dd-00-to-canonical-snans), and [report](../reports/STAGE_2_REPORT.md#s2-31ai--bounded-fld-m64fp-canonical-snan-extension).
+
+## S2-31aj literal FLD m32fp canonical SNaN fixtures
+
+The positive bare `D9 00` fixture loads a minimum-payload canonical binary32
+SNaN; the negative `D9 00 DF E0` fixture loads a middle-payload SNaN and
+observes sticky IE through FNSTSW. Conversion sets the binary80 quiet bit,
+preserves payload and sign, and assigns Special. Independent low/middle/max
+payload literals of both signs cover every TOP×FCW pair. Tests also cover
+sticky DE/PE, SNaN→quieted-QNaN bytes, one-Dword-read faults, unmasked/pre-
+existing-IE rejection before access, subsequent-load rejection, and FNCLEX
+clearing flags while preserving TOP/tags/payloads and permitting another load.
+The exact D900/budget-one/no-stop Unsupported schema case is environment-
+driven (invalid FCW or `FSW & 0x80dd != 0`) and does not depend on operand
+class. JIT/native profiles continue to deny D900 loads. See the [S2-31aj CPU
+contract](../specs/CPU_CONTRACT.md#local-s2-31aj-bounded-fld-m32fp-rax-d9-00-canonical-snans), [plan](../plans/STAGE_2.md#s2-31aj-extend-bounded-fld-m32fp-rax-d9-00-to-canonical-snans), and [report](../reports/STAGE_2_REPORT.md#s2-31aj--bounded-fld-m32fp-canonical-snan-extension).
