@@ -418,3 +418,23 @@ denied; general x87 exceptions and physical x86 behavior remain open. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31p-bounded-fild-m64int-rax-df-28),
 [plan](../plans/STAGE_2.md#s2-31p-bare-bounded-fild-m64int-rax-df-28-partial-slice),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31q x87 raw binary80 store slice
+
+Exact bare `DB 38` (`FSTP m80fp [RAX]`) copies the original ten-byte raw
+payload from Valid canonical-Normal physical TOP to `[RAX,RAX+9]` in one
+`GuestMemory::write` call and performs no read. The complete canonical48 range
+and checked endpoint are validated first. After a successful store, only the
+old TOP tag, TOP, C1, FIP/FDP and RIP change; all payloads and other CPU state
+remain preserved. Sticky PE and all four accepted RC control words are allowed.
+C0/C2/C3 retention is a local deterministic policy because the SDM calls these
+condition codes undefined for FSTP.
+
+Interpreter coverage includes every TOP and wrap, raw fractional and minimum/
+maximum Normal payloads, PE/C1/status retention, unaligned canaries and a
+nonzero byte 11, one-write/no-read accounting, invalid source/environment
+before access, full canonical range and overflow checks, denied and injected
+backend/#PF writes, and fetch/truncation/STOP/zero-budget atomicity. Schema and
+CLI fixtures contain literal `DB 38` and `DB 38 DF E0`; native admission denies
+the operation. General exception delivery, MMU/MMIO, and physical x86 behavior
+remain outside this local slice. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31q-bounded-fstp-m80fp-rax-db-38), [Stage 2 plan](../plans/STAGE_2.md#s2-31q-bare-bounded-fstp-m80fp-rax-db-38-partial-slice), and [report](../reports/STAGE_2_REPORT.md).

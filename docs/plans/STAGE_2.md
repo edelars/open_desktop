@@ -233,6 +233,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31k | Bare bounded FST m32fp [RAX] D9 10, shared binary80-to-binary32 conversion and atomic Dword store without pop; native closed | S2-31j |
 | [x] | S2-31l | Bare bounded FSTP m64fp [RAX] DD 18, shared binary80-to-binary64 conversion and atomic Qword store with pop; native closed | S2-31k |
 | [x] | S2-31m | Bare bounded FST m64fp [RAX] DD 10, shared binary80-to-binary64 conversion and atomic Qword store without pop; native closed | S2-31l |
+| [x] | S2-31q | Bare bounded FSTP m80fp [RAX] DB 38, exact ten-byte binary80 store and pop; native closed | S2-31p |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2586,6 +2587,43 @@ no-stop/budget-one rejection. Native admission explicitly denies `DD E1`.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+#### S2-31q. Bare bounded `FSTP m80fp [RAX]` (`DB 38`), partial slice
+
+Admit only exact bare `DB 38` in Long64 with an existing x87 snapshot. Require
+Valid physical TOP, canonical-Normal raw binary80, FCW `037f/077f/0b7f/0f7f`,
+and `FSW & 0x80df == 0`; sticky PE and C1 are allowed. Preflight the complete
+canonical48 ten-byte `[RAX,RAX+9]` range, including checked `u64` overflow,
+then call `GuestMemory::write(address, context, &raw)` exactly once. Do not read
+destination data or split the store into narrower writes. Only after success,
+empty the old physical TOP and advance TOP modulo eight. Clear C1, preserving
+PE, C0/C2/C3 and all other FSW bits; preserve all payloads, other tags, FCW/FOP
+and unrelated CPU state. Record FIP/FDP, advance RIP by two and retire once.
+
+Memory faults leave the CPU uncommitted; the memory backend's atomic write
+contract leaves RAM unchanged. Architectural faults use the guest-fault path;
+backend failures remain diagnostics. Missing/invalid x87 state, prefixes,
+REX, WAIT and other unadmitted DB forms reject atomically, while existing DB
+integer, status, control and register forms retain their current behavior.
+Truncation, fetch failure, STOP and zero budget also reject atomically. The SDM
+marks C0/C2/C3 undefined for this store, so retaining
+them is an explicit deterministic local policy. No native x87 execution or
+general exception delivery is added.
+
+Interpreter tests cover all TOP values and wrap, raw sentinels, fractional
+binary80, minimum/maximum Normal exponents, all supported FCW values, sticky PE
+and C1 policy, retained condition codes, unaligned exact-width writes with
+canaries and nonzero byte 11, canonical start/end and overflow, denied and
+injected backend/#PF writes, invalid source/environment before data access,
+and fetch/truncation/STOP/budget boundaries. Literal schema-v2 and CLI fixtures
+use exact `DB 38` and `DB 38 DF E0`; fixture bytes determine instruction
+identity independently of case names. Native admission explicitly denies
+`Operation::FstpM80FpRax`. S2-31 remains partial.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-386–3-387 (`DB /7`), official PDF p.504
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
 
 #### S2-30an. Bare indexed FCOMI-family register forms
 

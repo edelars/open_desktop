@@ -569,6 +569,7 @@ fn admission_with_tracee_memory(
             | Operation::FstpM32FpRax
             | Operation::FstM64FpRax
             | Operation::FstpM64FpRax
+            | Operation::FstpM80FpRax
             | Operation::FistM32IntRax
             | Operation::FistpM32IntRax
             | Operation::FistpM64IntRax
@@ -1875,6 +1876,14 @@ mod tests {
             .as_slice(),
             include_bytes!(
                 "../../../tests/fixtures/x86/stage2/s2_31l_fstp_m64fp_fnstsw.case.json"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_31q_fstp_m80fp.case.json"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_31q_fstp_m80fp_fnstsw.case.json"
             )
             .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31m_fst_m64fp.case.json")

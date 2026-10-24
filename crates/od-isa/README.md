@@ -203,3 +203,10 @@ successful read. The shared packer also serves the existing m16/m32 FILD
 forms. Native x87 admission and broader architectural exception behavior remain
 outside this slice; see the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31p-bounded-fild-m64int-rax-df-28),
 [plan](../../docs/plans/STAGE_2.md), and [report](../../docs/reports/STAGE_2_REPORT.md).
+
+S2-31q adds exact bare `DB 38` (`FSTP m80fp [RAX]`) for a Valid
+canonical-Normal binary80 ST(0). It validates the complete ten-byte
+canonical48 range, performs one raw slice write without a data read, then pops
+TOP and clears C1 only after success. Exact `DB 38`/`DB 38 DF E0` fixtures,
+atomicity checks and explicit native denial are documented in the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31q-bounded-fstp-m80fp-rax-db-38).

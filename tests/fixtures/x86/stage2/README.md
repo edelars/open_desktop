@@ -1771,3 +1771,21 @@ Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
 pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
 [official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461));
 see the local bounded [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31p-bounded-fild-m64int-rax-df-28).
+
+### S2-31q FSTP m80fp schema and literal CLI coverage
+
+The schema admits exact bare `DB 38` and exact `DB 38 DF E0` (FNSTSW AX).
+Fixtures contain independent literal code bytes, raw binary80 ST(0) state and
+the ten-byte destination; CLI checks verify all ten bytes, TOP/tag retirement,
+preserved payloads and FNSTSW-visible C1 clearing. Interpreter tests add all TOP
+values, minimum/maximum Normal raw exponents, accepted FCW variants, sticky PE,
+condition retention, unaligned canaries and a nonzero byte 11, one write/no
+reads, full canonical48 range/overflow, denied and injected backend/#PF stores,
+and source/environment/fetch/execution-boundary atomicity. Native admission
+explicitly denies the decoded operation. This local profile does not establish
+physical x86 behavior or general x87 exception delivery.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-386–3-387 (`DB /7`), official PDF p.504
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.

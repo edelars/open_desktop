@@ -451,6 +451,8 @@ pub enum Operation {
     FnstswM16Rax,
     /// Bare `DD 18` FSTP m64fp at [RAX], bounded finite profile.
     FstpM64FpRax,
+    /// Bare `DB 38` FSTP m80fp at [RAX], bounded raw binary80 profile.
+    FstpM80FpRax,
     /// Bare `DD 10` FST m64fp at [RAX], bounded finite profile.
     FstM64FpRax,
     /// Bare `D9 E0` FCHS, flipping the sign of canonical-Normal ST(0) only.
@@ -1107,6 +1109,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 match modrm {
                     0x00 => Operation::FildM32IntRax,
+                    0x38 => Operation::FstpM80FpRax,
                     0xe2 => Operation::Fnclex,
                     0xe3 => Operation::Fninit,
                     0x10 => Operation::FistM32IntRax,
@@ -2282,6 +2285,13 @@ mod tests {
         assert_eq!(fnclex.prefixes, Prefixes::default());
         assert_eq!(fnclex_memory.fetched, [0xfff, 0x1000]);
 
+        let mut fstp_m80_memory = Memory::new(&[0xdb, 0x38]);
+        let fstp_m80 = fstp_m80_memory.decode().unwrap();
+        assert_eq!(fstp_m80.operation, Operation::FstpM80FpRax);
+        assert_eq!(fstp_m80.length, 2);
+        assert_eq!(fstp_m80.prefixes, Prefixes::default());
+        assert_eq!(fstp_m80_memory.fetched, [0xfff, 0x1000]);
+
         let mut fcomi_memory = Memory::new(&[0xdb, 0xf1]);
         let fcomi = fcomi_memory.decode().unwrap();
         assert_eq!(fcomi.operation, Operation::Fcomi { source: 1 });
@@ -2322,6 +2332,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match second {
                     0x00 => Ok(Operation::FildM32IntRax),
+                    0x38 => Ok(Operation::FstpM80FpRax),
                     0xe2 => Ok(Operation::Fnclex),
                     0xe3 => Ok(Operation::Fninit),
                     0x10 => Ok(Operation::FistM32IntRax),
@@ -2347,7 +2358,7 @@ mod tests {
         .into_iter()
         .chain(0x40..=0x4f)
         {
-            for second in [0x00, 0x10, 0x18, 0xe2, 0xe3, 0xe9, 0xf1] {
+            for second in [0x00, 0x10, 0x18, 0x38, 0xe2, 0xe3, 0xe9, 0xf1] {
                 assert!(matches!(
                     Memory::new(&[prefix, 0xdb, second]).decode(),
                     Err(DecodeError::Unsupported { .. })
@@ -2433,6 +2444,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0x00 => Ok(Operation::FildM32IntRax),
+                    0x38 => Ok(Operation::FstpM80FpRax),
                     0x10 => Ok(Operation::FistM32IntRax),
                     0x18 => Ok(Operation::FistpM32IntRax),
                     0xe2 => Ok(Operation::Fnclex),
@@ -2664,6 +2676,8 @@ mod tests {
                     Ok(Operation::Fninit)
                 } else if opcode == 0xdb && modrm == 0x00 {
                     Ok(Operation::FildM32IntRax)
+                } else if opcode == 0xdb && modrm == 0x38 {
+                    Ok(Operation::FstpM80FpRax)
                 } else if opcode == 0xdf && modrm == 0x00 {
                     Ok(Operation::FildM16IntRax)
                 } else if opcode == 0xdf && modrm == 0x28 {

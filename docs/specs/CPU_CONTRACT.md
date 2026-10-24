@@ -2663,6 +2663,45 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## Local S2-31q: bounded `FSTP m80fp [RAX]` (`DB 38`)
+
+The interpreter admits only exact bare `DB 38` in Long64 with an existing x87
+snapshot. The old physical TOP tag must be Valid and its original ten-byte
+binary80 payload must classify as canonical Normal. Accept FCW `0x037f`,
+`0x077f`, `0x0b7f`, or `0x0f7f`, and require `FSW & 0x80df == 0`; sticky PE and
+C1 are allowed. The destination receives the exact original bytes, with no
+conversion or host floating-point operation.
+
+Before data access, validate the complete canonical48 ten-byte range
+`[RAX,RAX+9]` and checked `u64` endpoint arithmetic. Then issue exactly one
+atomic `GuestMemory::write(address, context, &raw)` and no data read. Only after
+success, empty old physical TOP, advance TOP modulo eight, and clear C1. Preserve
+PE and all other FSW bits, including C0/C2/C3 as an explicit deterministic
+local policy because the SDM marks those condition codes undefined for FSTP.
+Preserve every physical register payload, all other tags, FCW/FOP and unrelated
+state. Record instruction-start RIP in FIP and RAX in FDP, advance RIP by two
+and retire once. Architectural faults use the guest fault path; backend errors
+remain diagnostics and neither path commits CPU state.
+
+Exact schema/CLI fixtures cover `DB 38` and `DB 38 DF E0`; the code bytes define
+the instruction independent of fixture names. Interpreter tests cover all TOP
+values including wrap, fractional and exponent-endpoint raw payloads, every
+accepted FCW, PE/C1 and condition-code retention, unaligned ten-byte storage
+with canaries and a nonzero byte 11, one write/no reads, canonical range and
+overflow, denied/backend/#PF stores, unsupported environment/tag/class before
+access, and fetch/truncation/STOP/budget boundaries. Prefixes, REX, WAIT and
+other unadmitted DB /7 store forms remain unsupported; existing DB integer,
+status, control and register operations retain their behavior. Native admission
+explicitly denies this operation. This bounded slice does not implement x87 exception delivery,
+physical x86 acceptance, MMU or MMIO behavior and does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-386–3-387 (`DB /7`), official PDF p.504
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See also the
+[Stage 2 plan](../plans/STAGE_2.md#s2-31q-bare-bounded-fstp-m80fp-rax-db-38-partial-slice)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
 ## Local S2-31j: bounded `FSTP m32fp [RAX]` (`D9 18`)
 
 The interpreter admits only exact bare `D9 18` in Long64 with an existing x87

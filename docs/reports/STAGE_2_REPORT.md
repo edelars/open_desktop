@@ -4836,6 +4836,46 @@ Point Value,” pp.3-386–3-387 (`DD /2`/`DD /3`)
 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
 
+## S2-31q — bounded FSTP m80fp partial slice
+
+Added exact bare `DB 38` (`FSTP m80fp [RAX]`) in Long64. The new path accepts
+only an existing x87 state with Valid physical TOP, canonical-Normal binary80,
+one of the four all-masked FCWs and `FSW & 0x80df == 0`. It validates the
+complete canonical48 ten-byte destination and checked endpoint before issuing
+one `GuestMemory::write` with the original raw bytes. After success it empties
+old TOP, advances TOP modulo eight, clears C1, records FIP/FDP and advances RIP.
+PE and all remaining status bits, all register payloads and unrelated state are
+preserved. Retention of undefined C0/C2/C3 is documented as local policy.
+
+Two schema-v2 literal fixtures cover exact `DB 38` and `DB 38 DF E0`; CLI
+assertions verify the raw ten-byte result, pop state, status observation and
+retirement counts. Interpreter tests cover all TOPs and wrap, raw fractional
+and minimum/maximum Normal payloads, all accepted RC settings, PE/C1 and
+condition retention, unaligned canaries including byte 11, exactly one write
+and zero reads, bad environment/tag/class before access, canonical start/end
+and overflow, denied/backend/#PF write errors, and fetch/truncation/STOP/budget
+atomicity. Exhaustive DB ModR/M and prefix checks preserve existing forms.
+Native instruction admission explicitly denies the operation.
+
+Validation passed: full `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, focused S2-31q interpreter,
+decoder and CLI/schema tests, all 84 `fixture_v2` tests,
+`cargo check --target x86_64-unknown-linux-gnu -p od-x86-runner --all-targets
+--offline`, formatting and `git diff --check`. The cross-target `cargo test
+--no-run` attempt could compile objects but could not link with the host macOS
+linker; the Linux all-target `cargo check` successfully compiled the
+Linux-gated native admission tests without linking. `tools/check_layout.py`
+continues to report the pre-existing unmapped `.serena/` directory; it was left
+untouched. The graph was refreshed with `graphify update .`. No native
+instruction or physical x86 acceptance was run. Independent gpt-6.1-sol review
+found no functional defects; it identified overly broad wording about DB forms
+in the contract, which was narrowed to the unadmitted DB /7 store forms.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-386–3-387 (`DB /7`), official PDF p.504
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
+
 ## S2-31m — bounded `FST m64fp` partial slice
 
 Added exact bare `DD 10` as `FST m64fp [RAX]` in Long64. It reuses the
