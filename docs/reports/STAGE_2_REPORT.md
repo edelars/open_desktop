@@ -5303,3 +5303,45 @@ combined final S2-31 substage. The SDM revision 093 Vol.2A FLD m80fp entry,
 pp.3-352–3-353 (official PDF p.470), specifies no `#D` for this source format.
 No binary32/binary64 denormal behavior is inferred. Broader exception delivery
 remains open under ISSUE-019.
+
+## S2-31y — bounded `FLD m32fp` masked-subnormal extension
+
+Extended exact bare `D9 00` to accept nonzero binary32 subnormal operands
+under the four all-masked FCWs. Integer normalization maps fraction `f` to
+significand `f << (63-k)` and unbiased exponent `k-149`, where
+`k=floor(log2(f))`; sign is preserved, the pushed binary80 class is canonical
+Normal, and its tag is Valid. The D900-only FSW preflight now uses
+`FSW & 0x80dd`, allowing pre-existing sticky DE while the shared FILD/m64/m80
+gate remains unchanged. Successful subnormal loads set DE and preserve its
+sticky state, add no UE or PE, clear C1, and retain the established push,
+payload, pointer and retirement behavior. Infinity and NaN still reject after
+one Dword read without CPU commit. Unmasked exception delivery and push
+behavior are not claimed; native admission remains denied. The binary80
+`DB 28` subnormal path remains the distinct S2-31x behavior with no DE.
+
+Independent literal vectors cover positive and negative minimum, interior
+and largest binary32 subnormals across all eight TOP and four FCW settings.
+The matrix also checks PE and C1 policy; a repeated-load case checks that DE
+stays sticky. Positive exact `D9 00` and negative `D9 00 DF E0` fixtures are
+admitted through the schema and run in the CLI; FNSTSW observes DE and the
+pushed TOP. The invalid-class fixture/schema predicate now uses binary32
+infinity/NaN, exact `D9 00`, budget one and no stop RIP. The S2-31v report
+above remains the historical signed-zero/reject result.
+
+Normative source: Intel SDM revision 093, Vol.1 §8.5.2 for masked denormal
+operand handling; Vol.2A, “FLD—Load Floating-Point Value,” pp.3-352–3-353,
+official PDF p.470
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+This local profile is limited to masked controls and does not infer unmasked
+exception behavior.
+
+Validation: focused `od-isa` D900 tests (3), focused runner literal fixture
+tests (3), and the exact x87 schema predicate test (1) passed. The full
+`cargo test --workspace --all-targets --offline`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check --target x86_64-unknown-linux-gnu -p od-x86-runner --all-targets
+--offline`, `cargo fmt --all -- --check`, and `git diff --check` passed.
+`python3 tools/check_layout.py` reports the existing unmapped `.serena/`
+directory; it was present before this change and left untouched. Graphify was
+updated. No Mac mini or physical x86 tests were run; those remain deferred to
+the combined final S2-31 substage.

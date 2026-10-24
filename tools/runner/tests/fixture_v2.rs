@@ -55,6 +55,13 @@ const FILD_M64INT: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31p_fild_m64int_success.case.json");
 const FILD_M64INT_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31p_fild_m64int_fnstsw.case.json");
+const FLD_M32_SUBNORMAL: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31y_fld_m32fp_min_subnormal.case.json");
+const FLD_M32_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31y_fld_m32fp_negative_min_subnormal_fnstsw.case.json"
+);
+const FLD_M32_INVALID_CLASS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp_invalid_class.case.json");
 const FABS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30z_fabs_normal.case.json");
 const FABS_INVALID_SOURCE: &[u8] =
@@ -1394,6 +1401,55 @@ fn local_x87_fild_m64int_fixtures_load_signed_qword_and_observe_status() {
         assert_eq!(x87.data_pointer, input.fixture.initial_state.gpr[0]);
         assert_eq!(x87.tag_word, HexU64(0x3ffc));
     }
+}
+
+#[test]
+fn local_x87_fld_m32fp_subnormal_fixtures_normalize_and_set_de() {
+    for (fixture, expected_rax, expected_rip, payload, status) in [
+        (
+            FLD_M32_SUBNORMAL,
+            0x0000_0000_0030_0004,
+            0x0010_0002,
+            "00000000000000806a3f",
+            0x7d02,
+        ),
+        (
+            FLD_M32_SUBNORMAL_FNSTSW,
+            0x0000_0000_0030_7d02,
+            0x0010_0004,
+            "00000000000000806abf",
+            0x7d02,
+        ),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), input.fixture.instruction_budget);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.rip, HexU64(expected_rip));
+        assert_eq!(observed.state.gpr[0], HexU64(expected_rax));
+        let x87 = observed.state.x87.as_ref().unwrap();
+        assert_eq!(x87.registers[7], payload);
+        assert_eq!(x87.status_word, HexU64(status));
+        assert_eq!((x87.tag_word.get() >> 14) & 3, 0);
+        assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
+        assert_eq!(x87.data_pointer, input.fixture.initial_state.gpr[0]);
+    }
+}
+
+#[test]
+fn local_x87_fld_m32fp_infinity_fixture_is_rejected_after_read_without_commit() {
+    let formerly_admitted_subnormal = String::from_utf8(FLD_M32_INVALID_CLASS.to_vec())
+        .unwrap()
+        .replace("0000807f", "01000000");
+    assert!(Fixture::from_json(formerly_admitted_subnormal.as_bytes()).is_err());
+    let (input, result) = run(FLD_M32_INVALID_CLASS, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, input.fixture.initial_state.rip);
+    assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    assert_eq!(observed.state.x87, input.fixture.initial_state.x87);
 }
 
 #[test]

@@ -465,7 +465,12 @@ fn step_tracked_with_stop(
             | Operation::FldM80FpRax
             | Operation::FldM64FpRax
     ) {
-        match bounded_x87_fild_destination(state) {
+        let destination = if instruction.operation == Operation::FldM32FpRax {
+            bounded_x87_fld_m32_destination(state)
+        } else {
+            bounded_x87_fild_destination(state)
+        };
+        match destination {
             Some(destination) => Some(destination),
             None => {
                 return Ok(StepOutcome::Unsupported {
@@ -955,6 +960,9 @@ fn step_tracked_with_stop(
             Ok(value) => value as u32,
             Err(error) => return report_memory_error(error),
         };
+        let source_exponent = (bits >> 23) & 0xff;
+        let fraction = bits & 0x7f_ffff;
+        let is_subnormal = source_exponent == 0 && fraction != 0;
         let (raw, tag) = if bits & 0x7fff_ffff == 0 {
             let mut raw = [0_u8; 10];
             if bits >> 31 != 0 {
@@ -962,25 +970,39 @@ fn step_tracked_with_stop(
             }
             (raw, X87Tag::Zero)
         } else {
-            let source_exponent = (bits >> 23) & 0xff;
-            if !(1..=254).contains(&source_exponent) {
+            if source_exponent == 0 {
+                if !is_subnormal {
+                    unreachable!("binary32 zero was handled above");
+                }
+                let leading_bit = 31 - fraction.leading_zeros();
+                let significand = u64::from(fraction) << (63 - leading_bit);
+                let binary80_exponent = (16383 + leading_bit as i32 - 149) as u16;
+                let sign = if bits >> 31 != 0 { 0x8000 } else { 0 };
+                let mut raw = [0_u8; 10];
+                raw[..8].copy_from_slice(&significand.to_le_bytes());
+                raw[8..].copy_from_slice(&(binary80_exponent | sign).to_le_bytes());
+                (raw, X87Tag::Valid)
+            } else if !(1..=254).contains(&source_exponent) {
                 return Ok(StepOutcome::Unsupported {
                     opcode: instruction.opcode.byte,
                 });
+            } else {
+                let significand = ((1_u64 << 23) | u64::from(fraction)) << 40;
+                let binary80_exponent = (source_exponent as i32 - 127 + 16383) as u16;
+                let sign = if bits >> 31 != 0 { 0x8000 } else { 0 };
+                let mut raw = [0_u8; 10];
+                raw[..8].copy_from_slice(&significand.to_le_bytes());
+                raw[8..].copy_from_slice(&(binary80_exponent | sign).to_le_bytes());
+                (raw, X87Tag::Valid)
             }
-            let significand = ((1_u64 << 23) | u64::from(bits & 0x7f_ffff)) << 40;
-            let binary80_exponent = (source_exponent as i32 - 127 + 16383) as u16;
-            let sign = if bits >> 31 != 0 { 0x8000 } else { 0 };
-            let mut raw = [0_u8; 10];
-            raw[..8].copy_from_slice(&significand.to_le_bytes());
-            raw[8..].copy_from_slice(&(binary80_exponent | sign).to_le_bytes());
-            (raw, X87Tag::Valid)
         };
         let x87 = state.x87.as_mut().expect("FLD state was prevalidated");
         let new_top = x87.top().wrapping_add(7) & 7;
         x87.registers[destination] = raw;
         x87.set_tag(destination as u8, tag);
-        x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9))) | (u16::from(new_top) << 11);
+        x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9)))
+            | (u16::from(new_top) << 11)
+            | if is_subnormal { 1 << 1 } else { 0 };
         x87.instruction_pointer = state.rip;
         x87.data_pointer = address;
         state.rip = next_rip;
@@ -2604,6 +2626,20 @@ fn bounded_x87_fild_destination(state: &LongModeState) -> Option<usize> {
     let x87 = state.x87.as_ref()?;
     if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
         || x87.status_word & 0x80df != 0
+    {
+        return None;
+    }
+    let destination = x87.top().wrapping_add(7) & 7;
+    (x87.tag(destination) == Some(X87Tag::Empty)).then_some(usize::from(destination))
+}
+
+/// FLD m32fp accepts an already-sticky denormal-operand flag so repeated
+/// masked binary32 subnormal loads can preserve DE without broadening the
+/// shared integer and other-format load gates.
+fn bounded_x87_fld_m32_destination(state: &LongModeState) -> Option<usize> {
+    let x87 = state.x87.as_ref()?;
+    if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
+        || x87.status_word & 0x80dd != 0
     {
         return None;
     }
@@ -23086,7 +23122,7 @@ mod tests {
 
     #[test]
     fn fld_m32fp_matches_raw_binary80_literals_for_every_top_and_control_word() {
-        let vectors: [([u8; 4], [u8; 10], X87Tag); 8] = [
+        let vectors: [([u8; 4], [u8; 10], X87Tag); 14] = [
             ([0x00, 0x00, 0x00, 0x00], [0; 10], X87Tag::Zero),
             (
                 [0x00, 0x00, 0x00, 0x80],
@@ -23121,6 +23157,36 @@ mod tests {
             (
                 [0x00, 0x00, 0x00, 0x3f],
                 [0, 0, 0, 0, 0, 0, 0, 0x80, 0xfe, 0x3f],
+                X87Tag::Valid,
+            ),
+            (
+                [0x01, 0x00, 0x00, 0x00],
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0x6a, 0x3f],
+                X87Tag::Valid,
+            ),
+            (
+                [0x01, 0x00, 0x00, 0x80],
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0x6a, 0xbf],
+                X87Tag::Valid,
+            ),
+            (
+                [0x03, 0x00, 0x00, 0x00],
+                [0, 0, 0, 0, 0, 0, 0, 0xc0, 0x6b, 0x3f],
+                X87Tag::Valid,
+            ),
+            (
+                [0x03, 0x00, 0x00, 0x80],
+                [0, 0, 0, 0, 0, 0, 0, 0xc0, 0x6b, 0xbf],
+                X87Tag::Valid,
+            ),
+            (
+                [0xff, 0xff, 0x7f, 0x00],
+                [0, 0, 0, 0, 0, 0xfe, 0xff, 0xff, 0x80, 0x3f],
+                X87Tag::Valid,
+            ),
+            (
+                [0xff, 0xff, 0x7f, 0x80],
+                [0, 0, 0, 0, 0, 0xfe, 0xff, 0xff, 0x80, 0xbf],
                 X87Tag::Valid,
             ),
         ];
@@ -23169,7 +23235,16 @@ mod tests {
                     assert_eq!(after.top(), destination);
                     assert_eq!(
                         after.status_word,
-                        (before.status_word & !(0x3800 | 0x0200)) | (u16::from(destination) << 11)
+                        (before.status_word & !(0x3800 | 0x0200))
+                            | (u16::from(destination) << 11)
+                            | if u32::from_le_bytes(source) & 0x7f80_0000 == 0
+                                && u32::from_le_bytes(source) & 0x007f_ffff != 0
+                            {
+                                0x0002
+                            } else {
+                                0
+                            },
+                        "TOP={top}, case={case}, source={source:02x?}"
                     );
                     assert_eq!(after.instruction_pointer, 0x8600);
                     assert_eq!(after.data_pointer, 0x1003);
@@ -23464,14 +23539,7 @@ mod tests {
             state.x87 = Some(x87);
             state
         };
-        for bits in [
-            0x0000_0001_u32,
-            0x8000_0001,
-            0x007f_ffff,
-            0x7f80_0000,
-            0xff80_0000,
-            0x7fc0_0001,
-        ] {
+        for bits in [0x7f80_0000_u32, 0xff80_0000, 0x7fc0_0001, 0xffc0_0001] {
             let mut state = setup(0x1000);
             let before = state.clone();
             let mut memory = Memory::at(&[0xd9, 0x00], state.rip);
@@ -23592,6 +23660,51 @@ mod tests {
             );
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn fld_m32fp_accepts_and_preserves_sticky_de_but_other_loads_keep_their_gate() {
+        let mut state = LongModeState::default();
+        state.rip = 0x8690;
+        state.gpr[Register::Rax as usize] = 0x1000;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0x0002;
+        x87.set_tag(7, X87Tag::Empty);
+        x87.set_tag(6, X87Tag::Empty);
+        state.x87 = Some(x87);
+        let mut memory = Memory::at(&[0xd9, 0x00, 0xd9, 0x00], state.rip);
+        memory.bytes = vec![1, 0, 0, 0];
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.x87.as_ref().unwrap().status_word & 0x0002, 0x0002);
+        assert_eq!(state.x87.as_ref().unwrap().top(), 6);
+        assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1000, 4); 2]);
+
+        for bytes in [&[0xdb, 0x00][..], &[0xdd, 0x00][..], &[0xdb, 0x28][..]] {
+            let mut rejected = LongModeState::default();
+            rejected.rip = 0x86a0;
+            rejected.gpr[Register::Rax as usize] = 0x1000;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0x0002;
+            x87.set_tag(7, X87Tag::Empty);
+            rejected.x87 = Some(x87);
+            let before = rejected.clone();
+            let mut memory = Memory::at(bytes, rejected.rip);
+            assert_eq!(
+                step(&mut rejected, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: bytes[0] })
+            );
+            assert_eq!(rejected, before);
             assert!(memory.accesses.is_empty());
         }
     }

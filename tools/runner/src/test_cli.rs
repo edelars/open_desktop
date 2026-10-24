@@ -2210,20 +2210,19 @@ mod tests {
             "../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp_invalid_class.case.json"
         ))
         .unwrap();
-        for rejected_bytes in ["00000000", "0000803f", "0000807f"] {
+        for rejected_bytes in ["00000000", "0000803f", "01000000", "01000080"] {
             let mut near_miss = invalid_json.clone();
             near_miss["memory"][1]["initial_bytes_hex"] =
                 serde_json::Value::String(rejected_bytes.into());
             assert!(
                 v2::Fixture::from_json(&serde_json::to_vec(&near_miss).unwrap()).is_err(),
-                "S2-31v schema must not admit Unsupported for {rejected_bytes}"
+                "S2-31y schema must not admit Unsupported for {rejected_bytes}"
             );
         }
-        let mut negative_subnormal = invalid_json;
-        negative_subnormal["memory"][1]["initial_bytes_hex"] =
-            serde_json::Value::String("01000080".into());
-        v2::Fixture::from_json(&serde_json::to_vec(&negative_subnormal).unwrap())
-            .expect("negative nonzero subnormal is an admitted Unsupported case");
+        let mut nan = invalid_json;
+        nan["memory"][1]["initial_bytes_hex"] = serde_json::Value::String("0100c07f".into());
+        v2::Fixture::from_json(&serde_json::to_vec(&nan).unwrap())
+            .expect("NaN is an admitted Unsupported class");
     }
 
     #[test]

@@ -2816,45 +2816,6 @@ acceptance remain outside this local slice. See the
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [S2-31x report](../reports/STAGE_2_REPORT.md#s2-31x--bounded-fld-m80fp-canonical-subnormal-extension).
 
-## Local S2-31s: bounded `FLD m32fp [RAX]` (`D9 00`)
-
-The interpreter admits only exact bare `D9 00` in Long64 with existing x87
-state. It requires FCW `0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`,
-`FSW & 0x80df == 0`, and an Empty physical destination `(TOP+7)&7`. The old
-logical ST(0) is not inspected. Before memory access it checks the full
-canonical48 Dword range `[RAX,RAX+3]` and checked endpoint addition, then makes
-exactly one `GuestMemory::read_integer` Dword read. The resulting four little-
-endian source bytes are accepted only for exponent fields 1..254. Zero,
-subnormal, infinity and NaN return local Unsupported after that single read,
-without CPU commit.
-
-Conversion is an exact integer expansion. The binary80 significand is
-`((1<<23)|fraction)<<40`; the exponent is `source_exponent - 127 + 16383`; the
-source sign is preserved. All binary32 Normal values are included, including
-source exponent 127 and exponent fields 1 and 254. No host float or store-side
-conversion helper is used.
-
-On success, the destination receives the expanded raw payload and Valid tag,
-TOP becomes `(old_TOP+7)&7`, and C1 is cleared. PE and every other FSW bit
-except the TOP field are retained; retaining C0/C2/C3 is the local policy.
-FCW/FOP, unrelated slots, GPRs and RFLAGS are preserved. FIP/FDP are recorded,
-RIP advances by two, and the instruction retires once. Architectural read
-faults follow the guest-fault path and backend errors remain diagnostics.
-Every other D9 ModR/M value and every prefix/REX/WAIT encoding remains outside
-the admitted form. Native admission explicitly denies `Operation::FldM32FpRax`.
-
-Interpreter checks use independent literal binary80 payloads for ±1, adjacent
-fractions, minimum and maximum Normal inputs, and exponent 127, across all
-TOP×FCW settings. They also check sticky PE/C1 clearing, local condition-code
-retention, preserved unrelated slots and state, one unaligned four-byte read
-with no writes/canaries, special values rejected after one read, invalid gates
-before access, canonical crossing/overflow, injected #PF/backend errors, and
-fetch/truncation/STOP/zero-budget atomicity. Exact schema/CLI fixtures cover
-`D9 00`, `D9 00 DF E0`, and invalid-class no-commit behavior. Exhaustive D9
-decode coverage preserves the existing D9 forms and rejects all prefixes.
-Physical x86 behavior, general x87 exception delivery, MMU/MMIO/SMP and native
-x87 state remain unverified; S2-31 stays partial under ISSUE-019.
-
 ## Local S2-31v: bounded `FLD m32fp [RAX]` (`D9 00`) signed-zero extension
 
 S2-31v extends exact bare `D9 00` to accept binary32 +0 and -0 after the
@@ -3652,3 +3613,80 @@ four indexed `Operation` families.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## Local S2-31s: bounded `FLD m32fp [RAX]` (`D9 00`)
+
+The interpreter admits only exact bare `D9 00` in Long64 with existing x87
+state. It requires FCW `0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`,
+`FSW & 0x80df == 0`, and an Empty physical destination `(TOP+7)&7`. The old
+logical ST(0) is not inspected. Before memory access it checks the full
+canonical48 Dword range `[RAX,RAX+3]` and checked endpoint addition, then makes
+exactly one `GuestMemory::read_integer` Dword read. The resulting four little-
+endian source bytes are accepted only for exponent fields 1..254. Zero,
+subnormal, infinity and NaN return local Unsupported after that single read,
+without CPU commit.
+
+Conversion is an exact integer expansion. The binary80 significand is
+`((1<<23)|fraction)<<40`; the exponent is `source_exponent - 127 + 16383`; the
+source sign is preserved. All binary32 Normal values are included, including
+source exponent 127 and exponent fields 1 and 254. No host float or store-side
+conversion helper is used.
+
+On success, the destination receives the expanded raw payload and Valid tag,
+TOP becomes `(old_TOP+7)&7`, and C1 is cleared. PE and every other FSW bit
+except the TOP field are retained; retaining C0/C2/C3 is the local policy.
+FCW/FOP, unrelated slots, GPRs and RFLAGS are preserved. FIP/FDP are recorded,
+RIP advances by two, and the instruction retires once. Architectural read
+faults follow the guest-fault path and backend errors remain diagnostics.
+Every other D9 ModR/M value and every prefix/REX/WAIT encoding remains outside
+the admitted form. Native admission explicitly denies `Operation::FldM32FpRax`.
+
+Interpreter checks use independent literal binary80 payloads for ±1, adjacent
+fractions, minimum and maximum Normal inputs, and exponent 127, across all
+TOP×FCW settings. They also check sticky PE/C1 clearing, local condition-code
+retention, preserved unrelated slots and state, one unaligned four-byte read
+with no writes/canaries, special values rejected after one read, invalid gates
+before access, canonical crossing/overflow, injected #PF/backend errors, and
+fetch/truncation/STOP/zero-budget atomicity. Exact schema/CLI fixtures cover
+`D9 00`, `D9 00 DF E0`, and invalid-class no-commit behavior. Exhaustive D9
+decode coverage preserves the existing D9 forms and rejects all prefixes.
+Physical x86 behavior, general x87 exception delivery, MMU/MMIO/SMP and native
+x87 state remain unverified; S2-31 stays partial under ISSUE-019.
+
+## Local S2-31y: bounded `FLD m32fp [RAX]` (`D9 00`) masked-subnormal extension
+
+S2-31y extends exact bare `D9 00` to nonzero binary32 subnormal sources while
+retaining the bounded S2-31v gates: existing x87 state, FCW `037f/077f/0b7f/
+0f7f`, Empty physical destination `(TOP+7)&7`, complete canonical48 Dword
+range, and one Dword read with no writes. The D900-only FSW gate is now
+`FSW & 0x80dd == 0`, allowing a pre-existing sticky DE while continuing to
+reject all other masked status bits. FILD, m64fp, and m80fp retain their
+existing `0x80df` status gate.
+
+For exponent field zero and nonzero fraction `f`, let `k=floor(log2(f))`.
+The pushed binary80 payload is canonical Normal with significand
+`f << (63-k)`, unbiased exponent `k-149` (biased exponent `16383+k-149`),
+and the source sign. Its tag is Valid. The operation sets sticky FSW.DE and
+does not set UE or PE; it clears C1 and preserves other flags, payloads, TOP
+and pointer behavior as in the existing D900 load policy. Repeated masked
+subnormal loads retain DE. Binary32 signed zero remains Zero-tagged; Normal
+expansion is unchanged. Infinity and NaN remain Unsupported after the one
+read with no CPU commit. Unmasked FCWs remain outside the supported profile;
+no exception delivery or unmasked push behavior is claimed. Native admission
+remains closed.
+
+Independent literal vectors cover signed minimum, interior and largest
+subnormals across all TOP×FCW pairs, including sticky PE/C1 behavior and a
+repeated load. Exact D900 positive-subnormal and D900/DFE0 negative-subnormal
+fixtures exercise the CLI and FNSTSW composition. The narrow Unsupported
+schema fixture now uses infinity; its admission requires exact D900, budget
+one, no stop RIP, and binary32 exponent 255. The former S2-31v rejection of
+minimum subnormal records that historical contract only.
+
+Normative source: Intel SDM revision 093, Vol.1 §8.5.2 for masked denormal
+operand handling; Vol.2A, “FLD—Load Floating-Point Value,” pp.3-352–3-353,
+official PDF p.470
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+The local contract is limited to the all-masked profile and does not infer
+unmasked exception behavior. The separate binary80 m80fp subnormal behavior
+remains as documented in S2-31x.

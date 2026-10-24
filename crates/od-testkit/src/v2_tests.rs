@@ -588,12 +588,20 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             write: false,
             execute: false,
         },
-        initial_bytes_hex: "0000000001000000".into(),
+        initial_bytes_hex: "000000000000807f".into(),
         comparison_mask_hex: "ff".repeat(8),
     });
     invalid_fld_m32.stop_rip = None;
     invalid_fld_m32.expected_exit = ExpectedExit::Unsupported;
     assert!(Fixture::from_json(&invalid_fld_m32.to_json().unwrap()).is_ok());
+    let mut subnormal_fld_m32 = invalid_fld_m32.clone();
+    subnormal_fld_m32
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "operand")
+        .unwrap()
+        .initial_bytes_hex = "0000000001000000".into();
+    assert!(Fixture::from_json(&serde_json::to_vec(&subnormal_fld_m32).unwrap()).is_err());
     let mut wrong_fld_m32_budget = fixture.clone();
     let code = wrong_fld_m32_budget
         .memory

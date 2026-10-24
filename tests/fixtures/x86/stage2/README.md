@@ -1896,10 +1896,20 @@ Value,” pp.3-352–3-353, official PDF p.470
 The exact `D9 00` and `D9 00 DF E0` fixtures load positive and negative
 binary32 zero respectively. CLI assertions check the pushed Zero tag and raw
 signed binary80 payload; the composition observes TOP and C1 through FNSTSW
-AX. The invalid-class fixture supplies positive minimum subnormal and expects
-Unsupported with no CPU commit after one Dword read. Interpreter literals cover
-both signed zeros over all TOP×FCW pairs and separately reject both signed
-minimum subnormals after one Dword read.
-Schema exception admission is limited to a nonzero binary32 subnormal with
-exact `D9 00`, budget one and no stop RIP. Native admission continues to deny
-all fixtures. See the [S2-31v CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31v-bounded-fld-m32fp-rax-d9-00-signed-zero-extension), [plan](../../../../docs/plans/STAGE_2.md#s2-31v-extend-bounded-fld-m32fp-rax-d9-00-to-signed-zero), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31v--bounded-fld-m32fp-signed-zero-extension).
+AX. In the original S2-31v result, the invalid-class fixture supplied positive
+minimum subnormal and expected Unsupported. S2-31y supersedes that current
+fixture/profile while keeping the S2-31v report historical. Native admission
+continues to deny all fixtures. See the [S2-31v CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31v-bounded-fld-m32fp-rax-d9-00-signed-zero-extension), [plan](../../../../docs/plans/STAGE_2.md#s2-31v-extend-bounded-fld-m32fp-rax-d9-00-to-signed-zero), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31v--bounded-fld-m32fp-signed-zero-extension).
+
+### S2-31y FLD m32fp masked-subnormal fixture coverage
+
+The new exact `D9 00` fixture supplies positive minimum binary32 subnormal;
+the `D9 00 DF E0` composition fixture supplies negative minimum subnormal and
+observes sticky DE through FNSTSW AX. CLI checks verify canonical Normal
+binary80 payloads, Valid tags, and the sticky DE status bit. Interpreter
+literal vectors cover positive/negative minimum, interior and largest
+subnormals for every TOP and accepted FCW, plus sticky PE/C1 and repeated-load
+behavior. The invalid-class fixture now supplies positive infinity and expects
+Unsupported after the one Dword read with no CPU commit. Schema admission is
+limited to binary32 infinity/NaN with exact `D9 00`, budget one and no stop RIP.
+Native admission remains closed. See the [S2-31y CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31y-bounded-fld-m32fp-rax-d9-00-masked-subnormal-extension), [plan](../../../../docs/plans/STAGE_2.md#s2-31y-extend-bounded-fld-m32fp-rax-d9-00-to-masked-subnormals), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31y--bounded-fld-m32fp-masked-subnormal-extension).

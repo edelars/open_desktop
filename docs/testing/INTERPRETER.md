@@ -465,7 +465,7 @@ contract](../specs/CPU_CONTRACT.md#local-s2-31u-bounded-fld-m64fp-rax-dd-00-sign
 [plan](../plans/STAGE_2.md#s2-31u-extend-bounded-fld-m64fp-rax-dd-00-to-signed-zero),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
-## Local S2-31v signed-zero extension
+## Local S2-31v signed-zero extension (historical)
 
 S2-31v extends the bounded `D9 00` binary32 load to accept +0 and -0 after its
 single Dword read. The payload is ten zero bytes for +0 or ten zero bytes with
@@ -477,3 +477,21 @@ single-setup rejection cases verify both signs of minimum subnormal after one
 Dword read. Schema/CLI fixtures assert both
 signed payloads, while the Unsupported fixture uses positive minimum
 subnormal. See the [S2-31v CPU contract](../specs/CPU_CONTRACT.md#local-s2-31v-bounded-fld-m32fp-rax-d9-00-signed-zero-extension).
+
+## Local S2-31y masked binary32-subnormal extension
+
+Current exact bare `D9 00` accepts masked nonzero binary32 subnormal sources
+after its one Dword read. It normalizes the fraction into a canonical Normal
+binary80 payload, preserves sign, assigns Valid, and sets sticky DE. The D900
+preflight permits an existing DE (`FSW & 0x80dd == 0`); other load paths keep
+their stricter shared gate. UE and PE are not added, C1 is cleared, and other
+status/payload/TOP/pointer behavior follows the existing bounded load policy.
+All four FCWs are fully masked; unmasked behavior and exception delivery are
+not included. Signed zero and Normal are unchanged; infinity and NaN remain
+Unsupported post-read with no commit. Binary80 `DB 28` subnormals retain their
+separate S2-31x behavior.
+
+Independent all-TOP×FCW literals cover signed minimum, interior and largest
+subnormals. The exact D900 success fixture loads positive minimum subnormal;
+the D900/DFE0 composition fixture loads negative minimum subnormal and checks
+DE through FNSTSW. See the [S2-31y CPU contract](../specs/CPU_CONTRACT.md#local-s2-31y-bounded-fld-m32fp-rax-d9-00-masked-subnormal-extension).

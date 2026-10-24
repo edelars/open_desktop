@@ -236,13 +236,14 @@ binary64 subnormal (either sign); its expected exit is Unsupported. Zero is
 not admitted by this rejection rule. Neighboring source classes, code bytes
 and instruction boundaries remain subject to the existing exact x87 profile.
 
-## S2-31v literal FLD m32fp fixture profile
+## S2-31y literal FLD m32fp fixture profile
 
-The S2-31v `s2-long-x87-state-v1` fixtures use only exact `d900` or
-`d900dfe0` programs. Successful fixtures may supply either signed binary32
-zero or a Normal source; the runner checks that zero produces the matching
-binary80 sign payload and Zero tag. A no-stop, budget-one Unsupported fixture
-for exact `d900` is admitted only when its four-byte source is a nonzero
-binary32 subnormal (either sign). Zero, Normal, infinity and NaN are excluded
-from this exception. Other x87 state, code bytes and instruction boundaries
-remain subject to the existing exact x87 profile.
+The S2-31y `s2-long-x87-state-v1` fixtures use only exact `d900` or
+`d900dfe0` programs. Successful fixtures may supply signed zero, Normal, or
+nonzero binary32 subnormal; subnormals produce canonical Normal binary80 with
+Valid tag and sticky DE under the all-masked FCW profile. A no-stop,
+budget-one Unsupported fixture for exact `d900` is admitted only when its
+four-byte source is binary32 infinity or NaN (exponent field 255). Zero,
+Normal and subnormal sources are excluded from this exception. Other x87
+state, code bytes and instruction boundaries remain subject to the existing
+exact x87 profile. This does not admit unmasked exception behavior.
