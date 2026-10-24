@@ -387,7 +387,7 @@ priority and physical x86 behavior remain open. See the [CPU contract](../specs/
 Exact bare `DF 00` (`FILD m16int [RAX]`) reuses the same FCW/FSW and Empty
 physical push-destination gates as S2-31n. It validates `[RAX,RAX+1]` as one
 canonical48 Word range, makes exactly one typed Word read, sign-extends i16 to
-i32, and uses the unchanged integer-only binary80 packer. A successful read
+i64, and uses the shared integer-only i64 binary80 packer. A successful read
 pushes to `(TOP+7)&7`, clears C1, preserves PE and unrelated x87/CPU state, and
 updates FIP/FDP/RIP. Zero has an all-zero payload and Zero tag. Literal
 `DF 00` and `DF 00 DF E0` fixtures distinguish a Word read from a Dword read
@@ -397,4 +397,24 @@ range/read failures, and execution boundaries. Native admission stays closed;
 general x87 exceptions and physical x86 behavior remain open. See the [CPU
 contract](../specs/CPU_CONTRACT.md#local-s2-31o-bounded-fild-m16int-rax-df-00),
 [plan](../plans/STAGE_2.md#s2-31o-bare-bounded-fild-m16int-rax-df-00-partial-slice),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31p x87 Qword integer-load slice
+
+Exact bare `DF 28` (`FILD m64int [RAX]`) reuses the shared FCW/FSW and Empty
+physical `(TOP+7)&7` destination gates. It validates the complete canonical48
+Qword range, performs exactly one typed eight-byte read, then sign-interprets
+the value as i64 and packs it exactly into binary80 with integer arithmetic.
+The shared packer uses `unsigned_abs`, handles `i64::MIN`, emits ten zero bytes
+for zero, and does not depend on RC. Success updates only the destination
+payload/tag, TOP, C1, FIP/FDP/RIP and retirement; PE, FCW/FOP, other status,
+unrelated tags/payloads, GPRs and RFLAGS retain the local policy. Literal
+vectors cover signed extrema, values near `2^53` and `2^62`, and small signed
+values over every TOP×RC pair. Atomicity checks cover unaligned canaries,
+exact read width, canonical/range failures, architectural/backend read faults,
+gates and execution boundaries. Exact `DF 28` and `DF 28 DF E0` fixtures
+validate their bytes independently of filenames. Native admission remains
+denied; general x87 exceptions and physical x86 behavior remain open. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31p-bounded-fild-m64int-rax-df-28),
+[plan](../plans/STAGE_2.md#s2-31p-bare-bounded-fild-m64int-rax-df-28-partial-slice),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).

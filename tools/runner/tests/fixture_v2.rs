@@ -51,6 +51,10 @@ const FST_M32FP: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31k_fst_m32fp.case.json");
 const FST_M32FP_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31k_fst_m32fp_fnstsw.case.json");
+const FILD_M64INT: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31p_fild_m64int_success.case.json");
+const FILD_M64INT_FNSTSW: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31p_fild_m64int_fnstsw.case.json");
 const FABS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30z_fabs_normal.case.json");
 const FABS_INVALID_SOURCE: &[u8] =
@@ -1354,6 +1358,41 @@ fn local_x87_frndint_tie_and_fnstsw_fixtures_observe_result_and_status() {
             x87.tag_word,
             input.fixture.initial_state.x87.as_ref().unwrap().tag_word
         );
+    }
+}
+
+#[test]
+fn local_x87_fild_m64int_fixtures_load_signed_qword_and_observe_status() {
+    for (fixture, expected_rax, expected_rip) in [
+        (FILD_M64INT, 0x0000_0000_0030_0001, 0x0010_0002),
+        (FILD_M64INT_FNSTSW, 0x0000_0000_0030_7d00, 0x0010_0004),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        let code = input
+            .fixture
+            .memory
+            .iter()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        assert_eq!(
+            code.initial_bytes_hex,
+            if fixture == FILD_M64INT_FNSTSW {
+                "df28dfe0"
+            } else {
+                "df28"
+            }
+        );
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), input.fixture.instruction_budget);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.rip, HexU64(expected_rip));
+        assert_eq!(observed.state.gpr[0], HexU64(expected_rax));
+        let x87 = observed.state.x87.as_ref().unwrap();
+        assert_eq!(x87.registers[7], "0000000000000080ff3f");
+        assert_eq!(x87.status_word, HexU64(0x7d00));
+        assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
+        assert_eq!(x87.data_pointer, input.fixture.initial_state.gpr[0]);
+        assert_eq!(x87.tag_word, HexU64(0x3ffc));
     }
 }
 

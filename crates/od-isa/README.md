@@ -55,6 +55,7 @@ private synchronous RAM model; a fence backend error prevents retirement while
 preserving effects from earlier completed instructions. This does not establish
 shared-memory/SMP ordering, advertise SSE2, or implement other fence forms.
 
+
 S2-18e adds one bare `AA` STOSB iteration in long mode: AL is stored to flat
 `[RDI]`, then RDI advances by one according to DF; RSI and flags are preserved.
 Three mapped literal fixtures cover both DF directions and a pointer-alias/
@@ -194,3 +195,11 @@ require/read old TOP, while nonzero indices use physical `(TOP+i)&7`. All four
 families define six RFLAGS bits and clear C1; the pop forms empty actual old
 TOP and advance once, including `i=0`. Exact DB/DF, prefix, schema, native
 deny and literal boundary coverage are recorded in the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30an-indexed-bounded-fcomi-family-register-forms), [fixture notes](../../tests/fixtures/x86/stage2/README.md), and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
+
+S2-31p adds exact bare `DF 28` FILD m64int `[RAX]` in the bounded Long64 x87
+profile. It performs one canonical48-checked Qword read, converts signed i64
+exactly to binary80 using integer operations, then commits the push after a
+successful read. The shared packer also serves the existing m16/m32 FILD
+forms. Native x87 admission and broader architectural exception behavior remain
+outside this slice; see the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31p-bounded-fild-m64int-rax-df-28),
+[plan](../../docs/plans/STAGE_2.md), and [report](../../docs/reports/STAGE_2_REPORT.md).

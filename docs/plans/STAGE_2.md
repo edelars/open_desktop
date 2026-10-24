@@ -2287,8 +2287,9 @@ fixed Dword source `[RAX]`. Before any data access require FCW exactly
 `(old_TOP+7)&7`; do not validate old TOP's tag or any unrelated tags/payloads.
 Validate the full canonical48 range `[RAX,RAX+3]`, then issue exactly one
 typed Dword read and no writes. Convert signed i32 exactly to canonical
-binary80 with integer operations: zero has an all-zero payload and Zero tag;
-nonzero values use `abs(i64(value))`, `e=floor(log2(magnitude))`,
+binary80 through the shared integer-only i64 packer: zero has an all-zero
+payload and Zero tag; nonzero values use `unsigned_abs`,
+`e=63-leading_zeros(magnitude)`,
 `significand=magnitude << (63-e)`, and exponent `16383+e` with the signed sign
 bit. After the read succeeds, write payload/tag to the physical destination,
 set TOP to that destination, clear C1, set FIP/FDP, advance RIP by two and
@@ -2319,7 +2320,7 @@ preflight and push commit: existing x87 state, FCW `037f/077f/0b7f/0f7f`,
 `FSW & 0x80df == 0`, and Empty physical `(TOP+7)&7`; do not inspect old ST(0)
 or other tags/payloads. Validate the complete canonical48 Word range
 `[RAX,RAX+1]`, then issue one typed Word read and no writes. Sign-extend i16
-to i32 and reuse integer-only `pack_i32_binary80`; zero is all-zero payload
+to i64 and reuse integer-only `pack_i64_binary80`; zero is all-zero payload
 with Zero tag. Commit only after a successful read, preserve PE and unrelated
 state, clear C1, update FIP/FDP/RIP, and retire once. C0/C2/C3 retention is a
 local deterministic policy. Guest faults use the guest path; backend failures
@@ -2342,6 +2343,37 @@ pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com
 **Результат:** локальная реализация и проверки фиксируются в отчёте; S2-31
 остаётся частичным. Финальные Mac mini/physical checks выполняются одним
 общим подэтапом после стабилизации серии, не в этом срезе.
+
+#### S2-31p. Bare bounded `FILD m64int [RAX]` (`DF 28`), partial slice
+
+Add only exact bare `DF 28` in Long64 and preserve all existing DF and DB
+forms. Reuse the bounded FILD preflight: existing x87 state, FCW
+`037f/077f/0b7f/0f7f`, `FSW & 0x80df == 0`, and Empty physical
+`(TOP+7)&7`; do not inspect unrelated tags or payloads. Validate the complete
+canonical48 Qword range `[RAX,RAX+7]` before exactly one typed Qword read, with
+no write. Sign-extend the loaded i64 and use the generalized integer-only
+binary80 packer. Zero is ten zero bytes with a Zero tag. Commit only the new
+payload/tag, TOP, C1, FIP/FDP/RIP and retirement after the read succeeds;
+preserve PE, other status/control fields, GPR/RFLAGS and unrelated x87 state.
+C0/C2/C3 retention follows the existing local FILD policy. Architectural read
+faults use the guest path; backend failures remain diagnostics. Native
+admission remains denied.
+
+Independent literal answers cover zero, ±1/2/3, i64 extrema, ±(`2^53−1`),
+`2^53`, ±(`2^53+1`),
+and ±(`2^62−1`), ±`2^62`, ±(`2^62+1`) over every TOP×RC combination. Verify
+old ST(0) both Empty and occupied, stale destination payload, other tags and
+payloads, sticky PE/C1 policy, unaligned Qword canaries and exactly eight read
+bytes with no ninth-byte access. Check noncanonical/crossing/overflow ranges,
+architectural #PF/backend errors, invalid gates and fetch/truncation/STOP/zero
+budget boundaries. Exhaust DF ModR/M and all legacy/REX prefixes while
+preserving the existing DF and DB forms. Schema/CLI fixtures contain exact
+`DF 28` and `DF 28 DF E0`; native denial is explicit. S2-31 remains partial;
+final physical acceptance stays in the combined final S2-31 substage.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
+pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
+[official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461)).
 
 ### S2-32. Остальные обязательные x87 формы
 

@@ -1746,3 +1746,28 @@ families.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+### S2-31p FILD m64int schema and literal CLI coverage
+
+The schema and CLI execute only the exact bare bytes `DF 28` and exact
+composition `DF 28 DF E0` (FNSTSW AX). Each handwritten fixture places signed
+Qword value 1 at an unaligned address that crosses two adjacent RAM regions;
+the composition case observes the pushed status through AX. The CLI checks
+the binary80 payload/tag, TOP, FIP/FDP, status and preserved state. Decoder
+coverage exhausts every DF ModR/M byte and all tested legacy and REX prefixes,
+while retaining DF 00/10/18/38/E0/E9/F1 and all DB forms.
+
+Interpreter literals cover zero, ±1/2/3, i64 extrema, values around `2^53`
+and signed values around `2^62` across every TOP and RC. The shared i64 packer
+is also exercised by the existing m16/m32 FILD suites. An unaligned Qword
+read checks canaries and one exact eight-byte access. Invalid x87 gates,
+noncanonical/crossing/overflow ranges, architectural read #PF, backend errors,
+fetch/truncation/STOP/zero-budget boundaries and full state atomicity are
+covered. Native x87 admission explicitly denies the instruction. This remains
+a local partial slice; general exception delivery, MMU/MMIO/SMP and physical
+x86 behavior are not established.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
+pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
+[official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461));
+see the local bounded [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31p-bounded-fild-m64int-rax-df-28).

@@ -2883,8 +2883,8 @@ destination payload, or any other tags/payloads. It validates the complete
 canonical48 Word range `[RAX,RAX+1]`, then issues exactly one typed Word read
 and no writes.
 
-Sign-extend the read `i16` through `i32`, then use the exact integer-only
-`pack_i32_binary80` conversion. Zero becomes ten zero bytes with a Zero tag;
+Sign-extend the read `i16` to i64, then use the shared exact integer-only
+`pack_i64_binary80` conversion. Zero becomes ten zero bytes with a Zero tag;
 nonzero values become canonical binary80 with a Valid tag. After a successful
 read, write only the destination payload/tag, set TOP to that destination,
 clear C1, set FIP to instruction-start RIP and FDP to RAX, advance RIP by two,
@@ -2905,6 +2905,47 @@ only new `DF 00` while retaining `DF 10`, `DF 18`, `DF 38`, `DF E0`, `DF E9`,
 `DF 00 DF E0`. Native x87 admission explicitly denies this form. The bounded
 profile does not model general x87 exceptions, `#NM`, MMU/MMIO, SMP, or
 physical x86 acceptance, and does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
+pp.3-342–3-343
+([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
+[official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 stack state and FIP/FDP.
+
+## Local S2-31p: bounded `FILD m64int [RAX]` (`DF 28`)
+
+The Long64 interpreter admits exactly bare `DF 28` with an existing x87
+snapshot. It uses the bounded FILD gates: FCW exactly `0x037f`, `0x077f`,
+`0x0b7f`, or `0x0f7f`; `FSW & 0x80df == 0`; and Empty tag at physical
+destination `(old_TOP+7)&7`. It does not inspect old physical TOP, the stale
+destination payload, or any other tags/payloads. It validates the complete
+canonical48 Qword range `[RAX,RAX+7]` before exactly one typed Qword read and
+no writes.
+
+Interpret the Qword as signed i64 and use integer-only exact binary80 packing.
+Zero becomes ten zero bytes with a Zero tag; nonzero values become canonical
+binary80 with a Valid tag. The shared packer uses `unsigned_abs`, so `i64::MIN`
+does not require signed negation; no floating-point conversion or RC-dependent
+rounding occurs. After a successful read, write only the destination
+payload/tag, set TOP to that destination, clear C1, set FIP to instruction-start
+RIP and FDP to RAX, advance RIP by two, and retire once. Preserve PE, FCW/FOP,
+GPR/RFLAGS and every unrelated tag/payload. C0/C2/C3 retention is the local
+FILD policy. Old ST(0) may be Empty or occupied. Architectural read faults use
+the guest-fault path; backend failures remain diagnostics. Invalid preflight
+rejects before memory access.
+
+Independent literal vectors cover zero, ±1/2/3, `i64::MIN`, `i64::MAX`,
+±(`2^53−1`), `2^53`, ±(`2^53+1`) and ±(`2^62−1`), ±`2^62`,
+±(`2^62+1`), across every TOP and RC. Tests cover TOP wrap, stale Empty payload, unrelated tags/payloads,
+old ST(0) Empty/occupied, PE preservation and C1 clearing. An unaligned Qword
+with canaries proves one exact eight-byte read and no ninth-byte read. Tests
+also cover noncanonical start, canonical crossing, range arithmetic overflow,
+architectural #PF/backend failures and fetch/truncation/STOP/zero-budget
+atomicity. Exhaustive DF ModR/M and legacy/REX prefixes admit only the new
+`DF 28`, preserving DF 00/10/18/38/E0/E9/F1 and existing DB forms. Exact
+fixtures are `DF 28` and `DF 28 DF E0`; native x87 admission explicitly denies
+the operation. The bounded profile does not model general x87 exceptions,
+`#NM`, MMU/MMIO, SMP or physical x86 acceptance, and does not complete S2-31.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
 pp.3-342–3-343

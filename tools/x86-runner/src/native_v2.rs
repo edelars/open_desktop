@@ -576,6 +576,7 @@ fn admission_with_tracee_memory(
             | Operation::FistM16IntRax
             | Operation::FildM32IntRax
             | Operation::FildM16IntRax
+            | Operation::FildM64IntRax
             | Operation::FcomSt { .. }
             | Operation::Fcomi { .. }
             | Operation::Fcomip { .. }
@@ -1821,6 +1822,10 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31o_fild_m16int_success.case.json")
                 .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31o_fild_m16int_fnstsw.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31p_fild_m64int_success.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31p_fild_m64int_fnstsw.case.json")
                 .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31g_fnstcw_m16int_rc0.case.json")
                 .as_slice(),

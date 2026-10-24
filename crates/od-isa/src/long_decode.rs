@@ -479,6 +479,8 @@ pub enum Operation {
     FildM32IntRax,
     /// Bare `DF 00` FILD word integer at [RAX], bounded stack-push profile.
     FildM16IntRax,
+    /// Bare `DF 28` FILD qword integer at [RAX], bounded stack-push profile.
+    FildM64IntRax,
     /// Bare `D8 D0+i` FCOM ST(i), bounded canonical-Normal register compare.
     FcomSt {
         source: u8,
@@ -1120,6 +1122,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 match modrm {
                     0x00 => Operation::FildM16IntRax,
+                    0x28 => Operation::FildM64IntRax,
                     0xe0 => Operation::FnstswAx,
                     0x10 => Operation::FistM16IntRax,
                     0x18 => Operation::FistpM16IntRax,
@@ -2377,6 +2380,24 @@ mod tests {
                 "{bytes:02x?}"
             );
         }
+        for prefix in [
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+        ]
+        .into_iter()
+        .chain(0x40..=0x4f)
+        {
+            assert!(
+                matches!(
+                    Memory::new(&[prefix, 0xdf, 0x28]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "FILD m64 prefix {prefix:02x}"
+            );
+        }
+        let m64 = Memory::new(&[0xdf, 0x28]).decode().unwrap();
+        assert_eq!(m64.operation, Operation::FildM64IntRax);
+        assert_eq!(m64.length, 2);
+        assert_eq!(m64.prefixes, Prefixes::default());
         for prefix in [0xf0, 0xf2, 0xf3, 0x2e, 0x64, 0x66, 0x67, 0x40, 0x48, 0x9b] {
             let bytes = [prefix, 0xd9, 0xe4];
             assert!(
@@ -2463,6 +2484,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0x00 => Ok(Operation::FildM16IntRax),
+                    0x28 => Ok(Operation::FildM64IntRax),
                     0xe0 => Ok(Operation::FnstswAx),
                     0x38 => Ok(Operation::FistpM64IntRax),
                     0x18 => Ok(Operation::FistpM16IntRax),
@@ -2549,6 +2571,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0x00 => Ok(Operation::FildM16IntRax),
+                    0x28 => Ok(Operation::FildM64IntRax),
                     0xe0 => Ok(Operation::FnstswAx),
                     0x38 => Ok(Operation::FistpM64IntRax),
                     0x18 => Ok(Operation::FistpM16IntRax),
@@ -2643,6 +2666,8 @@ mod tests {
                     Ok(Operation::FildM32IntRax)
                 } else if opcode == 0xdf && modrm == 0x00 {
                     Ok(Operation::FildM16IntRax)
+                } else if opcode == 0xdf && modrm == 0x28 {
+                    Ok(Operation::FildM64IntRax)
                 } else if opcode == 0xdb && modrm == 0x10 {
                     Ok(Operation::FistM32IntRax)
                 } else if opcode == 0xdb && modrm == 0x18 {

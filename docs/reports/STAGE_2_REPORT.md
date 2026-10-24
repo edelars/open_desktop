@@ -4886,7 +4886,8 @@ snapshot, FCW exactly `037f/077f/0b7f/0f7f`, `FSW & 0x80df == 0`, and an Empty
 tag at physical `(old_TOP+7)&7`; it deliberately ignores old TOP's tag and
 all unrelated tags/payloads. The complete canonical48 Dword source range is
 validated before one typed Dword read. After that read succeeds, signed i32
-values are normalized to exact canonical binary80 by integer arithmetic only,
+values are widened to i64 and normalized to exact canonical binary80 through
+the shared integer-only i64 packer,
 then the payload/tag and TOP are committed together with C1 clear and FIP/FDP/
 RIP updates. Zero is ten zero bytes with a Zero tag. C0/C2/C3 retention is an
 explicit local policy because these bits are undefined for this form.
@@ -4923,7 +4924,7 @@ Added exact bare `DF 00` in Long64. It reuses the existing FILD push gates:
 existing x87 state, one of the four bounded FCW values, clear `FSW & 0x80df`,
 and Empty physical `(TOP+7)&7`. The executor validates the complete
 canonical48 Word range before one typed Word read. After success it sign-
-extends i16 to i32 and calls the unchanged integer-only binary80 packer, then
+extends i16 to i64 and calls the shared integer-only `pack_i64_binary80`, then
 commits the payload/tag, TOP, C1, FIP/FDP/RIP and retirement. PE and every
 unrelated CPU/x87 field remain unchanged. C0/C2/C3 retention is a local policy.
 
@@ -4952,6 +4953,52 @@ their adjacent third byte distinguishes Word from Dword, and the missing
 negative vectors are present; re-review found no remaining findings. No Mac
 mini or physical acceptance was run; it remains in the combined final S2-31
 substage.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
+pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
+[official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
+
+## S2-31p — bounded `FILD m64int` partial slice
+
+Added exact bare `DF 28` in Long64 while retaining the existing DF and DB
+forms. The executor uses the bounded FILD state gates, validates the complete
+canonical48 Qword range before one typed Qword read, and commits the signed
+integer push only after the read succeeds. The shared binary80 packer now
+accepts i64 and uses integer arithmetic plus `unsigned_abs`; it handles
+`i64::MIN`, represents every i64 exactly, emits ten zero bytes/Zero tag for
+zero, and has no RC-dependent rounding or new PE effect. Existing m16/m32
+FILD paths reuse this packer.
+
+Independent literals cover zero, ±1/2/3, i64 minimum/maximum, ±(`2^53−1`),
+`2^53`, ±(`2^53+1`), and ±(`2^62−1`), ±`2^62`, ±(`2^62+1`) across all
+TOP×RC combinations. State
+coverage includes wrap, stale Empty payload, unrelated tags/payloads, old
+ST(0) Empty/occupied, PE preservation and C1 clearing. An unaligned Qword
+with canaries records exactly one eight-byte read. Atomic rejects cover bad
+state/environment/destination gates, noncanonical and crossing canonical
+ranges, arithmetic overflow, architectural #PF and backend read failure,
+plus fetch fault/truncation, STOP and zero budget. Exhaustive DF ModR/M and
+legacy/REX prefix checks admit only `DF 28` as the new form while preserving
+DF 00/10/18/38/E0/E9/F1 and all existing DB forms.
+
+Two handwritten schema-v2 fixtures contain exact `DF 28` and
+`DF 28 DF E0`; interpreter/CLI checks validate their code bytes from fixture
+content, observe the pushed binary80 state and status, and confirm no RAM
+writes. Native admission explicitly denies FILD m64. General x87 exception
+delivery/priority, `#NM`, MMU/MMIO, SMP and physical x86 behavior remain
+unverified. S2-31 remains partial and final physical acceptance remains
+reserved for the combined S2-31 substage.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, target-specific native
+denial test compilation for `x86_64-unknown-linux-gnu`, and focused FILD,
+decoder, fixture/schema and CLI tests. `cargo fmt --all -- --check` and
+`git diff --check` passed. Independent Sol-medium review found no correctness
+issues; its stale i32 helper comment was corrected. `python3
+tools/check_layout.py` reports only the pre-existing unmapped `.serena/`
+directory, which was left untouched. `graphify update .` was run after the
+code changes. No native execution or physical x86 acceptance was performed.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
 pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
