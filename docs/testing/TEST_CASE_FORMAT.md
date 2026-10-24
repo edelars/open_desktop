@@ -381,3 +381,11 @@ The exact D900/budget-one/no-stop Unsupported schema case is environment-
 driven (invalid FCW or `FSW & 0x80dd != 0`) and does not depend on operand
 class. JIT/native profiles continue to deny D900 loads. See the [S2-31aj CPU
 contract](../specs/CPU_CONTRACT.md#local-s2-31aj-bounded-fld-m32fp-rax-d9-00-canonical-snans), [plan](../plans/STAGE_2.md#s2-31aj-extend-bounded-fld-m32fp-rax-d9-00-to-canonical-snans), and [report](../reports/STAGE_2_REPORT.md#s2-31aj--bounded-fld-m32fp-canonical-snan-extension).
+
+## S2-31ak m32/m64 FLD status predicates
+
+Exact D900/DD00 loads now admit sticky IE, DE and PE because their local
+preflight is `FSW & 0x80dc == 0`; those flags alone must not be used to make an
+Unsupported fixture valid. Rejected-environment fixtures should set ZE, OE,
+UE, SF, ES or B (or use an invalid FCW/boundary), independent of operand class.
+This predicate is local to D900/DD00; FILD and m80 retain their own x87 gates.

@@ -668,3 +668,15 @@ until FNCLEX, and FNSTSW exposes IE. Signed low/middle/max vectors, DE/PE,
 fault atomicity, gates, recovery and bare/DFE0 CLI fixtures are covered.
 Binary32 SNaN and m80 raw-SNaN behavior are unchanged. Unmasked delivery and
 native/JIT execution remain outside scope. See the [S2-31ai CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ai-bounded-fld-m64fp-rax-dd-00-canonical-snans).
+
+## Local S2-31ak sticky flags on exact m32/m64 FLD
+
+Only exact D900 and DD00 now permit sticky IE, DE and PE at entry; the local
+mask is `FSW & 0x80dc == 0`. ZE, OE, UE, SF, ES and B still reject before the
+operand read. Accepted loads preserve IE/DE/PE, with SNaN adding IE and a
+nonzero subnormal adding DE. FCWs, destination, read discipline and push
+policy stay unchanged, as do FILD, m80, store, arithmetic and other x87 gates.
+Tests cover every sticky-flag combination across source classes, FCWs and TOP,
+cross-width compositions, repeated SNaNs, fault atomicity, forbidden status
+bits, and FNCLEX recovery. The CLI/FNSTSW SNaN fixtures expose IE. See the
+[S2-31ak contract](../specs/CPU_CONTRACT.md#local-s2-31ak-sticky-exception-flags-for-bounded-m32m64-fld).

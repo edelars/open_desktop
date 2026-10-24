@@ -5765,3 +5765,21 @@ local profile covers all-masked FCWs only. See [Vol.1 §4.8.3.5/Table 4-8](https
 See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31aj-bounded-fld-m32fp-rax-d9-00-canonical-snans),
 [plan](../plans/STAGE_2.md#s2-31aj-extend-bounded-fld-m32fp-rax-d9-00-to-canonical-snans),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## S2-31ak — sticky IE/DE/PE across bounded m32/m64 FLD
+
+S2-31ak changes only the local status gates for exact D900 and DD00 from
+`FSW & 0x80dd == 0` to `FSW & 0x80dc == 0`. Either load now accepts all eight
+combinations of sticky IE, DE and PE, preserves those flags, and continues to
+reject ZE, OE, UE, SF, ES and B before reading memory. A signaling NaN adds IE;
+a nonzero subnormal adds DE. FCWs, Empty destination, memory preflight/read
+discipline and pointer/push policy remain unchanged. Other x87 operation gates
+are unchanged.
+
+Coverage includes the full sticky-flag × FCW × TOP × source-class matrix,
+same-width and mixed-width sequences, repeated SNaNs, second-load fault
+atomicity, per-bit forbidden-status rejection, occupied destination and
+unmasked-FCW controls, FNCLEX recovery, and the existing CLI/FNSTSW fixtures.
+The exact D900/DD00 budget-one/no-stop schema predicate now requires forbidden
+status rather than a source-class exception. Native/JIT remain closed, and no
+unmasked behavior is implied by the all-masked profile.

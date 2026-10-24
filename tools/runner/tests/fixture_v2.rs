@@ -75,9 +75,10 @@ const FLD_M32_SNAN: &[u8] =
 const FLD_M32_NEGATIVE_SNAN_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_negative_snan_payload_fnstsw.case.json"
 );
-const FLD_M32_INVALID_CLASS: &[u8] = include_bytes!(
-    "../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_invalid_environment.case.json"
-);
+const FLD_M32_INVALID_STATUS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ak_fld_m32fp_invalid_status.case.json");
+const FLD_M64_INVALID_STATUS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ak_fld_m64fp_invalid_status.case.json");
 const FLD_M64_SUBNORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31z_fld_m64fp_min_subnormal.case.json");
 const FLD_M64_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
@@ -1529,15 +1530,14 @@ fn v2_jit_denies_m64_infinity_qnan_and_snan_loads_without_fallback() {
 }
 
 #[test]
-fn local_x87_fld_m32fp_invalid_environment_fixture_rejects_before_read_without_commit() {
-    let (input, result) = run(FLD_M32_INVALID_CLASS, "interpreter", 4);
-    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
-    assert_eq!(count(&result), 0);
-    let observed = snapshot(&result);
-    assert_eq!(observed.state.rip, input.fixture.initial_state.rip);
-    assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
-    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
-    assert_eq!(observed.state.x87, input.fixture.initial_state.x87);
+fn local_x87_fld_m32_and_m64_invalid_status_fixtures_reject_before_read_without_commit() {
+    for fixture in [FLD_M32_INVALID_STATUS, FLD_M64_INVALID_STATUS] {
+        let (input, result) = run(fixture, "interpreter", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert_eq!(count(&result), 0);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state, input.fixture.initial_state);
+    }
 }
 
 #[test]

@@ -251,6 +251,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ah | Extend exact D9 00 FLD m32fp to canonical binary32 QNaNs with binary80 payload-preserving Special; native/JIT closed | S2-31af |
 | [x] | S2-31ai | Extend exact DD 00 FLD m64fp to canonical binary64 SNaNs with integer quieting and sticky IE; native/JIT closed | S2-31ag |
 | [x] | S2-31aj | Extend exact D9 00 FLD m32fp to canonical binary32 SNaNs with integer quieting and sticky IE; native/JIT closed | S2-31ah |
+| [x] | S2-31ak | Permit sticky IE/DE/PE only on exact D900/DD00 FLD gates; retain all other status gates | S2-31aj |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3304,3 +3305,21 @@ predicate. Cover signed low/middle/maximum SNaNs across TOP×FCW, exact
 quieted-QNaN literals, sticky DE/PE, pre-read gates, memory faults, FNCLEX
 recovery, CLI/FNSTSW fixtures and native/JIT denial. See the [S2-31aj
 report](../reports/STAGE_2_REPORT.md#s2-31aj--bounded-fld-m32fp-canonical-snan-extension).
+
+#### S2-31ak. Preserve sticky IE/DE/PE across exact m32/m64 FLD loads
+
+Relax only the local D900 and DD00 status masks from `0x80dd` to `0x80dc`.
+This permits all combinations of sticky IE, DE and PE while continuing to
+reject ZE, OE, UE, SF, ES and B before the operand read. Keep the four admitted
+FCWs, Empty destination, canonical48 range validation and one raw read. Loads
+preserve admitted sticky flags; a signaling NaN adds IE and a nonzero
+subnormal adds DE. Do not change FILD, m80, stores, arithmetic, or any other
+x87 status gate. Native/JIT admission and unmasked delivery remain out of
+scope.
+
+Tests span all eight IE/DE/PE combinations across source classes, FCWs and
+TOP values, and exercise same-width and cross-width sequences, repeated SNaNs,
+second-load fault atomicity, each forbidden bit, occupied destinations,
+unmasked FCWs and FNCLEX recovery. The exact D900/DD00 budget-one/no-stop
+schema cases now require a forbidden status bit and use no source-class
+exception. Existing single-load CLI/FNSTSW fixtures continue to observe IE.

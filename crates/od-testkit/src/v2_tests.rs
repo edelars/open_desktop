@@ -602,7 +602,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         .x87
         .as_mut()
         .unwrap()
-        .status_word = HexU64(0x0001);
+        .status_word = HexU64(0x0010);
     invalid_fld_m32.stop_rip = None;
     invalid_fld_m32.expected_exit = ExpectedExit::Unsupported;
     assert!(Fixture::from_json(&invalid_fld_m32.to_json().unwrap()).is_ok());
@@ -626,23 +626,31 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             "D900 invalid-environment predicate must not depend on source class {raw}"
         );
     }
-    for status_word in [0, 0x0002, 0x0020, 0x0200] {
-        let mut clean_environment_snan = invalid_fld_m32.clone();
-        clean_environment_snan
+    for combination in 0..8_u16 {
+        let sticky = (combination & 3) | if combination & 4 != 0 { 0x20 } else { 0 };
+        let mut sticky_environment_snan = invalid_fld_m32.clone();
+        sticky_environment_snan
             .initial_state
             .x87
             .as_mut()
             .unwrap()
-            .status_word = HexU64(status_word);
-        clean_environment_snan
-            .memory
-            .iter_mut()
-            .find(|region| region.region_id == "operand")
-            .unwrap()
-            .initial_bytes_hex = "000000000100807f".into();
+            .status_word = HexU64(u64::from(sticky));
         assert!(
-            clean_environment_snan.validate().is_err(),
-            "clean environment status {status_word:04x} must not admit Unsupported"
+            sticky_environment_snan.validate().is_err(),
+            "admitted sticky status {sticky:04x} must not admit Unsupported"
+        );
+    }
+    for forbidden_status in [0x0004, 0x0008, 0x0010, 0x0040, 0x0080, 0x8000] {
+        let mut forbidden_status_fixture = invalid_fld_m32.clone();
+        forbidden_status_fixture
+            .initial_state
+            .x87
+            .as_mut()
+            .unwrap()
+            .status_word = HexU64(forbidden_status);
+        assert!(
+            Fixture::from_json(&serde_json::to_vec(&forbidden_status_fixture).unwrap()).is_ok(),
+            "forbidden status {forbidden_status:04x} must admit pre-read Unsupported"
         );
     }
     let mut wrong_fld_m32_control = invalid_fld_m32.clone();
@@ -712,7 +720,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         .x87
         .as_mut()
         .unwrap()
-        .status_word = HexU64(1);
+        .status_word = HexU64(0x10);
     invalid_fld_m64
         .memory
         .iter_mut()
@@ -742,21 +750,33 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             "DD00 invalid-environment predicate must not inspect source value {raw}"
         );
     }
-    let mut clean_environment = invalid_fld_m64.clone();
-    clean_environment
-        .initial_state
-        .x87
-        .as_mut()
-        .unwrap()
-        .status_word = HexU64(0x4500);
-    assert!(Fixture::from_json(&serde_json::to_vec(&clean_environment).unwrap()).is_err());
-    clean_environment
-        .memory
-        .iter_mut()
-        .find(|region| region.region_id == "operand")
-        .unwrap()
-        .initial_bytes_hex = "0100000000000000".into();
-    assert!(Fixture::from_json(&serde_json::to_vec(&clean_environment).unwrap()).is_err());
+    for combination in 0..8_u16 {
+        let sticky = (combination & 3) | if combination & 4 != 0 { 0x20 } else { 0 };
+        let mut sticky_environment = invalid_fld_m64.clone();
+        sticky_environment
+            .initial_state
+            .x87
+            .as_mut()
+            .unwrap()
+            .status_word = HexU64(u64::from(sticky));
+        assert!(
+            sticky_environment.validate().is_err(),
+            "admitted sticky status {sticky:04x} must not admit Unsupported"
+        );
+    }
+    for forbidden_status in [0x0004, 0x0008, 0x0010, 0x0040, 0x0080, 0x8000] {
+        let mut forbidden_status_fixture = invalid_fld_m64.clone();
+        forbidden_status_fixture
+            .initial_state
+            .x87
+            .as_mut()
+            .unwrap()
+            .status_word = HexU64(forbidden_status);
+        assert!(
+            Fixture::from_json(&serde_json::to_vec(&forbidden_status_fixture).unwrap()).is_ok(),
+            "forbidden status {forbidden_status:04x} must admit pre-read Unsupported"
+        );
+    }
 
     let mut invalid_fld_m80 = fixture.clone();
     let code = invalid_fld_m80

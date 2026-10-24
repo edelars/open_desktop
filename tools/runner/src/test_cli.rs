@@ -2234,9 +2234,9 @@ mod tests {
         }
 
         let invalid = v2::Fixture::from_json(include_bytes!(
-            "../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_invalid_environment.case.json"
+            "../../../tests/fixtures/x86/stage2/s2_31ak_fld_m32fp_invalid_status.case.json"
         ))
-        .expect("S2-31aj binary32 invalid-environment fixture schema");
+        .expect("S2-31ak binary32 invalid-status fixture schema");
         let mut memory = od_testkit::memory::FlatMemory::from_fixture(&invalid.fixture).unwrap();
         let result = execute_fixture_v2(&invalid, &mut memory);
         result.validate_for(&invalid).unwrap();
@@ -2246,7 +2246,7 @@ mod tests {
             Observation::Available { value: HexU64(0) }
         );
         let Observation::Available { value } = result.snapshot else {
-            panic!("invalid-class rejection must preserve an observable state");
+            panic!("invalid-status rejection must preserve an observable state");
         };
         assert_eq!(value.state, invalid.fixture.initial_state);
         let stack = memory
@@ -2263,7 +2263,7 @@ mod tests {
         assert_eq!(canary.bytes_hex, "a5");
 
         let invalid_json: serde_json::Value = serde_json::from_slice(include_bytes!(
-            "../../../tests/fixtures/x86/stage2/s2_31aj_fld_m32fp_invalid_environment.case.json"
+            "../../../tests/fixtures/x86/stage2/s2_31ak_fld_m32fp_invalid_status.case.json"
         ))
         .unwrap();
         for source in ["0000803f", "0100807f", "0000c07f", "ffffbf7f"] {
@@ -2393,9 +2393,9 @@ mod tests {
             assert_eq!(canary.bytes_hex, "a5");
         }
         let invalid = v2::Fixture::from_json(include_bytes!(
-            "../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp_invalid_class.case.json"
+            "../../../tests/fixtures/x86/stage2/s2_31ak_fld_m64fp_invalid_status.case.json"
         ))
-        .expect("invalid-class fixture schema");
+        .expect("invalid-status fixture schema");
         let mut memory = od_testkit::memory::FlatMemory::from_fixture(&invalid.fixture).unwrap();
         let result = execute_fixture_v2(&invalid, &mut memory);
         result.validate_for(&invalid).unwrap();
@@ -2405,7 +2405,7 @@ mod tests {
             Observation::Available { value: HexU64(0) }
         );
         let Observation::Available { value } = result.snapshot else {
-            panic!("invalid-class rejection must preserve an observable state")
+            panic!("invalid-status rejection must preserve an observable state")
         };
         assert_eq!(value.state, invalid.fixture.initial_state);
         let stack = memory
@@ -2442,7 +2442,7 @@ mod tests {
             );
         }
         let mut rejected_subnormal: serde_json::Value = serde_json::from_slice(include_bytes!(
-            "../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp_invalid_class.case.json"
+            "../../../tests/fixtures/x86/stage2/s2_31ak_fld_m64fp_invalid_status.case.json"
         ))
         .unwrap();
         rejected_subnormal["initial_state"]["x87"]["status_word"] =
@@ -2628,7 +2628,7 @@ mod tests {
         let invalid = v2::Fixture::from_json(include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31r_fld_m80fp_invalid_class.case.json"
         ))
-        .expect("invalid-class fixture schema");
+        .expect("invalid-status fixture schema");
         let mut memory = od_testkit::memory::FlatMemory::from_fixture(&invalid.fixture).unwrap();
         let result = execute_fixture_v2(&invalid, &mut memory);
         result.validate_for(&invalid).unwrap();
@@ -2638,7 +2638,7 @@ mod tests {
             Observation::Available { value: HexU64(0) }
         );
         let Observation::Available { value } = result.snapshot else {
-            panic!("invalid-class rejection must preserve an observable state");
+            panic!("invalid-status rejection must preserve an observable state");
         };
         assert_eq!(value.state, invalid.fixture.initial_state);
         let stack = memory

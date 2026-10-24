@@ -2072,3 +2072,13 @@ D900/budget-one/no-stop Unsupported schema fixture is environment-driven
 (invalid FCW or `FSW & 0x80dd != 0`) and uses an ordinary Normal source to show
 operand class is irrelevant. Native/JIT admission remains closed. See the
 [S2-31aj CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31aj-bounded-fld-m32fp-rax-d9-00-canonical-snans), [plan](../../../../docs/plans/STAGE_2.md#s2-31aj-extend-bounded-fld-m32fp-rax-d9-00-to-canonical-snans), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31aj--bounded-fld-m32fp-canonical-snan-extension).
+
+### S2-31ak bounded m32/m64 FLD sticky-status fixtures
+
+The prior D900 environment fixture and DD00 rejected-class fixture now carry
+forbidden ZE status and use exact `D900`/`DD00`, budget-one, no-stop predicates.
+The schema no longer treats IE, DE or PE as an automatic rejection for these
+loads. The existing bare and DFE0/FNSTSW signaling-NaN fixtures verify the
+sticky IE result; interpreter tests cover repeated and cross-width sequences,
+all sticky IE/DE/PE combinations, and preserve the separate FILD/m80 gates.
+Native/JIT admission remains denied. See [S2-31ak CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ak-sticky-exception-flags-for-bounded-m32m64-fld), [plan](../../../../docs/plans/STAGE_2.md#s2-31ak-preserve-sticky-ie-de-pe-across-exact-m32m64-fld-loads), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ak--sticky-ie-de-pe-across-bounded-m32m64-fld).

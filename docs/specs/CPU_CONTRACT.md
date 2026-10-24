@@ -4101,6 +4101,30 @@ now environment-driven: exact DD00, one instruction, no stop RIP, and an
 invalid FCW or a status bit in `0x80dd`; its operand class is immaterial.
 Native and JIT profiles continue to reject this operation.
 
+## Local S2-31ak: sticky exception flags for bounded m32/m64 FLD
+
+S2-31ak supersedes the D900/DD00 `FSW & 0x80dd == 0` gates recorded by the
+earlier bounded load slices. Only these exact `D9 00` and `DD 00` paths now
+require `FSW & 0x80dc == 0`, allowing pre-existing IE, DE and PE in any
+combination. ZE, OE, UE, SF, ES and B remain forbidden before the memory read.
+The four all-masked FCWs, Empty destination, canonical48 range preflight,
+one Dword/Qword raw read, C1/TOP/pointer and retirement behavior are unchanged.
+
+Accepted loads preserve sticky IE/DE/PE. Canonical binary32/binary64 SNaN
+loads add IE, and nonzero subnormal loads add DE; no status flag is cleared
+except the existing load-local C1 policy. The gate change is limited to D900
+and DD00. FILD, m80 loads, stores, arithmetic and other x87 operations retain
+their existing predicates. Native/JIT admission and unmasked exception
+delivery remain deferred.
+
+Verification covers all eight IE/DE/PE combinations across source classes,
+FCWs and TOP values; same-width and mixed-width SNaN/ordinary/QNaN/subnormal
+sequences; repeated SNaNs; second-read fault atomicity; each forbidden status
+bit before read; and unchanged rejection for unrelated x87 gates. The exact
+D900/DD00 budget-one/no-stop schema cases now require a forbidden status bit
+instead of relying on a rejected operand class. Existing CLI/FNSTSW SNaN
+fixtures observe sticky IE. See the [S2-31ak plan](../plans/STAGE_2.md#s2-31ak-preserve-sticky-ie-de-pe-across-exact-m32m64-fld-loads), [report](../reports/STAGE_2_REPORT.md#s2-31ak--sticky-ie-de-pe-across-bounded-m32m64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
 Intel SDM revision 093 Vol.1 §4.8.3.5 and Table 4-8 describe SNaN quieting by
 setting the most-significant fraction bit and the masked-invalid response;
 §8.1.3.3 describes x87 invalid-operation status. Vol.2A FLD m64fp describes
