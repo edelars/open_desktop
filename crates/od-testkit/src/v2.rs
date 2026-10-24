@@ -715,6 +715,8 @@ impl Fixture {
                 "d9e1" => ("d9e1", 2),
                 "d9e4" => ("d9e4", 2),
                 "ded9" => ("ded9", 2),
+                "dae9" => ("dae9", 2),
+                "dae9dfe0" => ("dae9dfe0", 4),
                 "dde1" => ("dde1", 2),
                 "dde1dfe0" => ("dde1dfe0", 4),
                 "dde9" => ("dde9", 2),
@@ -891,6 +893,14 @@ impl Fixture {
                     let rhs = (top + 1) & 7;
                     (x87.tag_word.get() >> (u32::from(rhs) * 2)) & 3 != 0
                 });
+            let is_fucompp_source_rejected = code_bytes == "dae9"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
+                    let rhs = (top + 1) & 7;
+                    (x87.tag_word.get() >> (u32::from(rhs) * 2)) & 3 != 0
+                });
             let is_fucom_source_rejected = code_bytes == "dde1"
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
@@ -929,6 +939,7 @@ impl Fixture {
                     || is_fcom_source_rejected
                     || is_fcomp_source_rejected
                     || is_fcompp_source_rejected
+                    || is_fucompp_source_rejected
                     || is_fucom_source_rejected
                     || is_fucomp_source_rejected
                 {

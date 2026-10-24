@@ -1359,3 +1359,22 @@ outside the canonical-Normal-only slice.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+### S2-30ai FUCOMPP schema and literal CLI coverage
+
+[s2_30ai_fucompp_equal_fnstsw.case.json](s2_30ai_fucompp_equal_fnstsw.case.json)
+runs bare `DA E9` then `DF E0` with equal canonical-Normal operands. It observes
+FSW/AX `0x5000`, both old physical tags Empty, the TOP advance by two and two
+retired instructions; physical payloads remain unchanged.
+[s2_30ai_fucompp_invalid_rhs_tag.case.json](s2_30ai_fucompp_invalid_rhs_tag.case.json)
+uses a Valid lhs and invalid actual old physical ST(1) tag with no stop RIP and
+budget one, so execution must reject without retiring or changing state. Schema
+tests admit only exact `dae9` and `dae9dfe0` for this FUCOMPP slice, and decoder
+tests enumerate all DA ModR/M values and prefix forms. Native admission denies
+DA E9. C1=0 is an explicit local policy. Intel SDM revision 093 Vol.2A
+pp.3-402–3-404's opcode table/prose says two entries are popped while p.3-403
+pseudocode depicts one; the local contract follows the explicit table/prose.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

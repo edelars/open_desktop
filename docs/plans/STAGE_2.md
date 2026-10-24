@@ -214,6 +214,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30af | Bare `DE D9` FCOMPP, exact bounded ST(0)/ST(1) compare then two-entry physical TOP pop; native closed | S2-30ae |
 | [x] | S2-30ag | Bare `DD E1` FUCOM ST(0), ST(1), bounded canonical-Normal compare without pop; native closed | S2-30af |
 | [x] | S2-30ah | Bare `DD E9` FUCOMP ST(0), ST(1), bounded canonical-Normal compare then one physical TOP pop; native closed | S2-30ag |
+| [x] | S2-30ai | Bare `DA E9` FUCOMPP, bounded canonical-Normal compare then two physical TOP pops; native closed | S2-30ah |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
@@ -2237,6 +2238,36 @@ fields, wrap, physical payload sentinels, independent operand tag/class and
 environment rejection, and fetch/truncation/STOP/budget atomicity. Exhaustive
 DD ModR/M decoding retains neighboring forms; native admission explicitly
 denies `Operation::Fucomp` and DD E9.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+#### S2-30ai. Bare bounded `FUCOMPP`
+
+Accept exactly bare `DA E9` with an existing x87 snapshot. Before any mutation,
+require FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags at old physical TOP and
+`(TOP+1)&7`, and canonical-Normal binary80 operands through
+`bounded_x87_fcom_result(state, 1)`. Replace C0/C1/C2/C3 with greater `0`, less
+`0x0100`, or equal `0x4000`; C1=0 for this normal domain is an explicit local
+deterministic policy. Empty both old physical tags and set TOP to `(old+2)&7`.
+Leave payload bytes and all other state unchanged, set FIP to instruction-start
+RIP, advance RIP by two, and retire once.
+
+Reject missing state, invalid environment/tags/classes, every other DA ModR/M,
+prefixes, REX, WAIT, fetch failure, truncation, STOP and exhausted budget
+atomically. Preserve DE D9 FCOMPP and all existing DA bytes outside E9.
+Special values, exceptions, stack faults, `#NM`, and native x87 execution are
+excluded.
+
+Tests cover all TOP × relation × 16 initial condition combinations, TOP 6/7
+wrap, Empty old ST(2) with arbitrary payload, independent operand tag/class
+rejection, environment and execution-boundary rejection. Schema and literal
+runner fixtures cover `dae9`, `dae9dfe0`, and a real invalid old physical
+ST(1)-tag rejection with no stop RIP and budget one. Native admission denies
+DA E9. The explicit FUCOMPP opcode table/prose on pp.3-402–3-404 says two
+entries are popped; the pseudocode on p.3-403 depicts one. This slice follows
+the opcode table/prose. C1 clearing remains a local policy.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404

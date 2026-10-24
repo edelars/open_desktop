@@ -2562,3 +2562,43 @@ actual old physical ST(1) tag, and native admission explicitly denies DD E9.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## Local S2-30ai: bounded `FUCOMPP` (`DA E9`)
+
+Accept exactly bare `DA E9` when `Some(X87State)` exists. Before mutation,
+require FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags at the old physical TOP
+and `(TOP+1)&7`, and canonical Normal values for both operands through
+`bounded_x87_fcom_result(state, 1)`. Greater sets the condition field to `0`,
+less to `0x0100`, and equal to `0x4000` via
+`(old_fsw & !0x4700) | relation`. Clearing C1 for this normal case is the
+bounded profile's explicit local deterministic policy.
+
+After both operands pass, set both old physical tags to Empty and set TOP to
+`(old+2)&7`. Keep all ten-byte physical register payloads untouched and do not
+rotate the register array. Preserve all other tags, FCW, unrelated FSW bits,
+FDP/FOP, GPRs and RFLAGS. Set FIP to the instruction-start RIP, advance RIP by
+two and retire exactly once.
+
+Missing state, invalid environment/tag/class, every other DA ModR/M, prefixes,
+REX, WAIT, fetch failure/truncation, STOP and exhausted budget reject without a
+state commit. DA E9 is the only new DA form; DE D9 FCOMPP and all other existing
+forms retain their behavior. Zero, subnormal, infinity, NaN, noncanonical
+encodings, exception delivery, stack faults, `#NM`, native execution and FPU
+feature claims are excluded.
+
+Interpreter coverage spans all eight TOP values, three relations and all 16
+incoming condition fields, including TOP wrap from 6 to 0 and 7 to 1. An unused
+old ST(2) may be Empty with arbitrary payload. Independent invalid operand tags
+and classes, environment, fetch/truncation/STOP/budget boundaries reject
+atomically. Schema and literal fixtures admit exact `dae9`, exact
+`dae9dfe0`, and a genuine invalid old physical ST(1)-tag rejection with no
+stop RIP and budget one. Native admission explicitly denies DA E9.
+
+The Intel SDM revision 093 Vol.2A opcode table and prose on pp.3-402–3-404
+specify two pops, while the pseudocode on p.3-403 depicts one. This bounded
+slice follows the explicit opcode table/prose. C1=0 is local policy for the
+accepted normal case.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

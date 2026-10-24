@@ -4133,3 +4133,42 @@ Independent gpt-6.1-sol medium review completed with no findings.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## S2-30ai — bounded FUCOMPP compare and two-entry physical TOP pop
+
+Added exact bare `DA E9` as a distinct `Fucompp` operation. It preflights the
+existing x87 snapshot and both old physical operands with
+`bounded_x87_fcom_result(state, 1)`, replaces the condition field with greater
+`0`, less `0x0100`, or equal `0x4000`, clears C1 by local deterministic policy,
+empties both old physical tags and advances TOP by two with wrap. Physical
+payload bytes are untouched. FIP/RIP and retirement update once; invalid domain
+and execution-boundary cases preserve full state. The DA decoder accepts only
+ModR/M E9 without prefixes, and native admission explicitly denies the
+operation.
+
+Interpreter vectors cover all eight TOP values × three relations × 16 incoming
+condition fields. They verify TOP=6/7 wrap, an unused Empty old ST(2) with an
+arbitrary payload, independent invalid operand tags/classes, invalid
+environment and fetch/truncation/STOP/budget rejection. Decoder tests enumerate
+all 256 DA ModR/M values and prefixes. Schema and literal CLI fixtures cover
+`dae9`, `dae9dfe0`, and an actual invalid old physical ST(1)-tag no-stop/budget-
+one rejection. The equal-plus-FNSTSW fixture observes FSW and AX `0x5000`, both
+old tags Empty, and two retired instructions.
+
+Intel SDM revision 093 Vol.2A pp.3-402–3-404 says FUCOMPP pops both stack
+entries in the explicit opcode table and prose; its p.3-403 pseudocode depicts
+one pop. This slice follows the explicit table/prose. C1 clearing is local
+policy. General FUCOMPP special-value, exception, stack-fault, `#NM` and native
+semantics remain unverified.
+
+Validation passed: full `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, Linux x86_64 runner target
+check, formatting, and `git diff --check`. `python3 tools/check_layout.py`
+reports the pre-existing unmapped root `.serena/` directory; it was left
+untouched. `graphify update .` rebuilt the graph (3518 nodes, 7523 edges); its
+existing parser warning for `include/open_desktop/host_abi.h` remains. No SSH or
+hardware acceptance was performed.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FUCOM/FUCOMP/FUCOMPP—Unordered Compare Floating-Point Values,” pp.3-402–3-404
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

@@ -459,6 +459,8 @@ pub enum Operation {
     },
     /// Bare `DE D9` FCOMPP, bounded compare then two-entry physical TOP pop.
     Fcompp,
+    /// Bare `DA E9` FUCOMPP, bounded compare then two-entry physical TOP pop.
+    Fucompp,
     /// Bare `DD E1` FUCOM ST(0), ST(1), bounded canonical-Normal comparison.
     Fucom,
     /// Bare `DD E9` FUCOMP ST(0), ST(1), bounded compare then physical TOP pop.
@@ -1000,7 +1002,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let known = (opcode.map == OpcodeMap::Primary
             && (direct_arithmetic(opcode.byte).is_some() || direct_logic(opcode.byte).is_some()))
             || matches!((opcode.map, opcode.byte),
-            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa5 | 0xa8 | 0xa9 | 0xaa | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf6 | 0xf7)
+            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa5 | 0xa8 | 0xa9 | 0xaa | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf6 | 0xf7)
             | (OpcodeMap::Escape0f, 0x00 | 0x40..=0x4f | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
@@ -1111,6 +1113,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         destination: modrm & 7,
                     },
                     _ => return Err(self.unsupported(opcode)),
+                }
+            }
+            (OpcodeMap::Primary, 0xda) => {
+                if prefixes != Prefixes::default() {
+                    return Err(self.unsupported(opcode));
+                }
+                if self.byte()? == 0xe9 {
+                    Operation::Fucompp
+                } else {
+                    return Err(self.unsupported(opcode));
                 }
             }
             (OpcodeMap::Primary, 0xdd) => {
@@ -3350,6 +3362,57 @@ mod tests {
         ));
         assert!(matches!(
             Memory::new(&[0x9b, 0xde, 0xd9]).decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn fucompp_accepts_only_bare_da_e9() {
+        let mut memory = Memory::new(&[0xda, 0xe9]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Fucompp);
+        assert_eq!(instruction.length, 2);
+        assert_eq!(instruction.prefixes, Prefixes::default());
+        assert_eq!(memory.fetched, [0xfff, 0x1000]);
+
+        for modrm in 0u8..=u8::MAX {
+            let decoded = Memory::new(&[0xda, modrm]).decode();
+            assert_eq!(
+                decoded.map(|instruction| instruction.operation),
+                if modrm == 0xe9 {
+                    Ok(Operation::Fucompp)
+                } else {
+                    Err(DecodeError::Unsupported {
+                        opcode: Opcode {
+                            map: OpcodeMap::Primary,
+                            byte: 0xda,
+                        },
+                        length: 2,
+                    })
+                },
+                "DA {modrm:02x}"
+            );
+        }
+        for prefix in [
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+        ]
+        .into_iter()
+        .chain(0x40..=0x4f)
+        {
+            assert!(matches!(
+                Memory::new(&[prefix, 0xda, 0xe9]).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+        }
+        assert!(matches!(
+            Memory::new(&[0xda]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            Memory::new(&[0x9b, 0xda, 0xe9]).decode(),
             Err(DecodeError::Unsupported { .. })
         ));
     }

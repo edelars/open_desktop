@@ -76,6 +76,10 @@ const FCOMPP_EQUAL_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30af_fcompp_equal_fnstsw.case.json");
 const FCOMPP_INVALID_RHS_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30af_fcompp_invalid_rhs_tag.case.json");
+const FUCOMPP_EQUAL_FNSTSW: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ai_fucompp_equal_fnstsw.case.json");
+const FUCOMPP_INVALID_RHS_TAG: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ai_fucompp_invalid_rhs_tag.case.json");
 const GS_BASE_QWORD_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_22b_gs_base_qword_load_alias.case.json");
 const FS_SELECTOR_TO_RAX: &[u8] =
@@ -1531,6 +1535,27 @@ fn local_x87_fcompp_fixture_observes_two_entry_pop_and_rejects_bad_rhs_atomicall
     assert_eq!(observed.state, expected);
 
     let (input, result) = run(FCOMPP_INVALID_RHS_TAG, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    assert_eq!(snapshot(&result).state, input.fixture.initial_state);
+}
+
+#[test]
+fn local_x87_fucompp_fixture_observes_two_entry_pop_and_rejects_bad_rhs_atomically() {
+    let (input, result) = run(FUCOMPP_EQUAL_FNSTSW, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 2);
+    let observed = snapshot(&result);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0004);
+    expected.gpr[0] = HexU64((expected.gpr[0].get() & !0xffff) | 0x5000);
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.status_word = HexU64(0x5000);
+    expected_x87.tag_word = HexU64(0xffff);
+    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+    assert_eq!(observed.state, expected);
+
+    let (input, result) = run(FUCOMPP_INVALID_RHS_TAG, "interpreter", 4);
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
     assert_eq!(count(&result), 0);
     assert_eq!(snapshot(&result).state, input.fixture.initial_state);

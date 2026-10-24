@@ -564,6 +564,7 @@ fn admission_with_tracee_memory(
             | Operation::FcomSt { .. }
             | Operation::FcompSt { .. }
             | Operation::Fcompp
+            | Operation::Fucompp
             | Operation::Fucom
             | Operation::Fucomp
             | Operation::FmulSt0St { .. }
@@ -3699,6 +3700,7 @@ mod tests {
             [0xd8, 0xd7],
             [0xd8, 0xd9],
             [0xde, 0xd9],
+            [0xda, 0xe9],
             [0xd8, 0xc0],
             [0xd8, 0xc1],
             [0xd8, 0xc2],
@@ -3894,6 +3896,7 @@ mod tests {
                     | [0xd8, 0xde]
                     | [0xd8, 0xdf]
                     | [0xdd, 0xe9]
+                    | [0xda, 0xe9]
             ) {
                 input.expected_exit = v2::ExpectedExit::Unsupported;
                 input.stop_rip = None;
