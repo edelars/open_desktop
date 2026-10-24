@@ -237,6 +237,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31r | Bare bounded FLD m80fp [RAX] DB 28, canonical-Normal ten-byte load and push; native closed | S2-31q |
 | [x] | S2-31s | Bare bounded FLD m32fp [RAX] D9 00, exact normal binary32-to-binary80 expansion and push; native closed | S2-31r |
 | [x] | S2-31t | Bare bounded FLD m64fp [RAX] DD 00, exact normal binary64-to-binary80 expansion and push; native closed | S2-31s |
+| [x] | S2-31u | Extend S2-31t bare DD 00 to signed binary64 zero with Zero tag; keep nonzero subnormals and specials unsupported, native closed | S2-31t |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2723,6 +2724,33 @@ x87 gates before access, canonical start/end/crossing/overflow, read #PF/backend
 errors, fetch/truncation/STOP/budget boundaries, exhaustive DD ModR/M and
 prefix preservation, exact `DD 00`, `DD 00 DF E0`, and invalid-class CLI/schema
 fixtures, plus native denial. S2-31 remains partial.
+
+#### S2-31u. Extend bounded `FLD m64fp [RAX]` (`DD 00`) to signed zero
+
+Retain the S2-31t byte encoding, FCW/FSW/Empty-destination gates, complete
+canonical48 Qword range and exactly one Qword read. After that read, accept
+binary64 signed zero in addition to Normal exponent fields 1..2046. Pack +0 as
+ten zero bytes and -0 as ten zero bytes with the final sign byte `0x80`; both
+receive `X87Tag::Zero`. Normal retains its exact integer expansion and Valid
+tag. Nonzero subnormals, infinity and NaNs remain Unsupported after the read
+with no CPU commit. Push/status/FIP/FDP/RIP and native-denial behavior otherwise
+remain as in S2-31t.
+
+Use independent +0/-0 literals across all TOP×RC combinations; retain Normal
+vectors, sticky PE/C1 checks, old ST(0) independence, unrelated slot
+preservation, TOP wrap, canonical-range and single-read checks. Verify
+positive/negative minimum-subnormal rejection after one Qword read. Reclassify
+the former zero rejection fixture to a positive
+nonzero subnormal. The exact `DD 00` and `DD 00 DF E0` CLI fixtures cover
+successful +0, with the composition observing the Zero tag and pushed TOP via
+FNSTSW AX. The earlier S2-31t report remains a record of the Normal-only slice.
+S2-31 stays partial; physical acceptance is deferred to its combined final
+substage.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF pp.470–471; Vol.1 §§8.1.8, 8.1.9 and §8.6
+for x87 state and FIP/FDP. Local status/tag details are the project's bounded
+policy.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
 Value,” pp.3-352–3-353, official PDF p.470; Vol.1 §§8.1.8, 8.1.9 and §8.6 for

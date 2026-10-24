@@ -5142,3 +5142,44 @@ interpreter tests also passed. Formatting and `git diff --check` pass.
 remains untouched. Graphify was refreshed after the final test change. General
 x87 exception delivery, MMU/MMIO and physical x86 acceptance remain outside
 this partial S2-31 slice.
+
+## S2-31u — bounded `FLD m64fp` signed-zero extension
+
+Extended exact bare `DD 00` to accept binary64 +0 and -0 after the existing
+single Qword read. Signed zero expands to the literal ten-byte binary80 zero
+payload, preserving -0 in the final sign byte, and receives `X87Tag::Zero`.
+Normal exponent fields 1..2046 keep the previous exact integer expansion and
+Valid tag. Positive/negative nonzero subnormals, infinity and NaNs still return
+Unsupported after the read without CPU commit. Push gates, complete
+canonical48-range preflight, TOP update/wrap, C1 clearing, PE and other status
+retention, FIP/FDP/RIP and native denial are unchanged.
+
+Independent +0/-0 literals run over all eight TOP values and four supported
+FCW settings. Existing Normal vectors also run over that matrix. The tests
+check signed raw payloads/tags, sticky PE and C1 clearing, old ST(0)
+independence, unrelated slots, one exact unaligned Qword read, and no commit
+for positive/negative minimum-subnormal and other unsupported classes. Exact
+`DD 00` and `DD 00 DF E0` schema/CLI fixtures now exercise successful +0; the
+composition asserts `FNSTSW AX` observed the updated status. The former
+zero-rejection fixture now uses positive minimum subnormal and remains an
+Unsupported no-commit case. The S2-31t report above remains the historical
+Normal-only record.
+
+Validation passed: `cargo test --workspace --all-targets --offline` (687
+tests), `cargo check --workspace --all-targets --offline`,
+`cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu
+--offline` (compile-only), `cargo fmt --all -- --check`, and `git diff --check`.
+The Linux compile emitted existing dead-code warnings in `od-host` and
+`od-runner`. `python3 tools/check_layout.py` reports the pre-existing unmapped
+`.serena/` directory; it was left untouched. Independent review found no
+remaining functional defect after its requested fixture-link, composition
+assertion, and coverage-wording corrections. Graphify is refreshed after the
+final code edits. No Mac mini, native execution, or physical x86 acceptance was
+performed; those remain in the combined final S2-31 substage. General x87
+exception delivery, MMU/MMIO/SMP and physical behavior remain unverified.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF pp.470–471
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. Signed-zero tag and
+packing details are local project policy.

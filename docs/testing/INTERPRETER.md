@@ -451,3 +451,16 @@ range errors, decode/prefix preservation and execution boundaries. Schema and
 CLI fixtures cover exact `DD 00`, `DD 00 DF E0`, and zero-class rejection;
 native admission remains denied. General x87 exceptions and physical x86
 behavior remain unverified. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31t-bounded-fld-m64fp-rax-dd-00), [plan](../plans/STAGE_2.md#s2-31t-bare-bounded-fld-m64fp-rax-dd-00-partial-slice), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31u signed-zero extension
+
+S2-31u extends the S2-31t exact `DD 00` load to accept binary64 `+0` and `-0`
+after its one Qword read. Independent literals require all-zero binary80 for
++0 and sign byte `0x80` for -0, both with the Zero tag. Normal values keep the
+S2-31t conversion and Valid tag. Positive and negative nonzero minimum
+subnormals, infinity and NaNs remain Unsupported without CPU commit after the
+read. The matrix covers all TOP×FCW settings and preserves the existing
+status, destination, address, and native-denial checks. See the [S2-31u CPU
+contract](../specs/CPU_CONTRACT.md#local-s2-31u-bounded-fld-m64fp-rax-dd-00-signed-zero-extension),
+[plan](../plans/STAGE_2.md#s2-31u-extend-bounded-fld-m64fp-rax-dd-00-to-signed-zero),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

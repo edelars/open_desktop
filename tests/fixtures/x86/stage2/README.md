@@ -1812,18 +1812,29 @@ Value,” pp.3-352–3-353, official PDF p.470
 
 ### S2-31t FLD m64fp schema and literal CLI coverage
 
-Fixtures contain exact literal `DD 00` and `DD 00 DF E0` instruction bytes, an
-unaligned eight-byte binary64 source, complete x87 state, and an adjacent
-read-only canary. The composition fixture observes pushed TOP and C1 clearing
-through FNSTSW AX. A third fixture supplies zero, expects Unsupported after one
-Qword read, and verifies unchanged CPU state. The native admission suite denies
-all three. Interpreter tests cover independent raw binary80 outputs for ±1,
-adjacent fractions, minimum/maximum Normal, and exponent +1023 across every
-TOP×FCW combination. Exhaustive DD ModR/M and prefix checks preserve existing
-forms and reject nearby encodings.
+The original S2-31t fixtures contained exact literal `DD 00` and
+`DD 00 DF E0` instruction bytes, an unaligned eight-byte binary64 source,
+complete x87 state and an adjacent read-only canary. The composition fixture
+observes pushed TOP and C1 clearing through FNSTSW AX. At that stage the third
+fixture used zero as an unsupported source. The historical S2-31t report
+records that Normal-only behavior.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
 Value,” pp.3-352–3-353, official PDF p.470
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+
+### S2-31u FLD m64fp signed-zero fixture coverage
+
+The exact `DD 00` and `DD 00 DF E0` fixtures now use a literal positive-zero
+binary64 source and expect a successful push with the Zero tag; the composition
+observes the updated TOP and C1 through FNSTSW AX. The invalid-class fixture
+was changed to positive minimum subnormal and still expects Unsupported after
+one Qword read with no CPU commit. Interpreter literals additionally cover
+negative zero and negative minimum subnormal. Native admission continues to
+deny all three fixtures. See the [S2-31u CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31u-bounded-fld-m64fp-rax-dd-00-signed-zero-extension), [plan](../../../../docs/plans/STAGE_2.md#s2-31u-extend-bounded-fld-m64fp-rax-dd-00-to-signed-zero), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31u--bounded-fld-m64fp-signed-zero-extension).
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF pp.470–471
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
 
 ### S2-31s FLD m32fp schema and literal CLI coverage

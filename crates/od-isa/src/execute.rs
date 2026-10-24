@@ -991,22 +991,31 @@ fn step_tracked_with_stop(
             Ok(value) => value,
             Err(error) => return report_memory_error(error),
         };
-        let source_exponent = ((bits >> 52) & 0x7ff) as u16;
-        if !(1..=2046).contains(&source_exponent) {
-            return Ok(StepOutcome::Unsupported {
-                opcode: instruction.opcode.byte,
-            });
-        }
-        let significand = ((1_u64 << 52) | (bits & 0x000f_ffff_ffff_ffff)) << 11;
-        let binary80_exponent = (i32::from(source_exponent) - 1023 + 16383) as u16;
-        let sign = if bits >> 63 != 0 { 0x8000 } else { 0 };
-        let mut raw = [0_u8; 10];
-        raw[..8].copy_from_slice(&significand.to_le_bytes());
-        raw[8..].copy_from_slice(&(binary80_exponent | sign).to_le_bytes());
+        let (raw, tag) = if bits & 0x7fff_ffff_ffff_ffff == 0 {
+            let mut raw = [0_u8; 10];
+            if bits >> 63 != 0 {
+                raw[9] = 0x80;
+            }
+            (raw, X87Tag::Zero)
+        } else {
+            let source_exponent = ((bits >> 52) & 0x7ff) as u16;
+            if !(1..=2046).contains(&source_exponent) {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            let significand = ((1_u64 << 52) | (bits & 0x000f_ffff_ffff_ffff)) << 11;
+            let binary80_exponent = (i32::from(source_exponent) - 1023 + 16383) as u16;
+            let sign = if bits >> 63 != 0 { 0x8000 } else { 0 };
+            let mut raw = [0_u8; 10];
+            raw[..8].copy_from_slice(&significand.to_le_bytes());
+            raw[8..].copy_from_slice(&(binary80_exponent | sign).to_le_bytes());
+            (raw, X87Tag::Valid)
+        };
         let x87 = state.x87.as_mut().expect("FLD state was prevalidated");
         let new_top = x87.top().wrapping_add(7) & 7;
         x87.registers[destination] = raw;
-        x87.set_tag(destination as u8, X87Tag::Valid);
+        x87.set_tag(destination as u8, tag);
         x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9))) | (u16::from(new_top) << 11);
         x87.instruction_pointer = state.rip;
         x87.data_pointer = address;
@@ -23163,7 +23172,9 @@ mod tests {
 
     #[test]
     fn fld_m64fp_matches_literal_binary80_values_for_every_top_and_control_word() {
-        let vectors: [(u64, [u8; 10]); 6] = [
+        let vectors: [(u64, [u8; 10]); 8] = [
+            (0x0000_0000_0000_0000, [0; 10]),
+            (0x8000_0000_0000_0000, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]),
             (
                 0x3ff0_0000_0000_0000,
                 [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
@@ -23206,7 +23217,7 @@ mod tests {
                         x87.registers[usize::from(physical)] = [0x41 + physical; 10];
                         x87.set_tag(
                             physical,
-                            if physical == destination || physical == top {
+                            if physical == destination {
                                 X87Tag::Empty
                             } else {
                                 X87Tag::Special
@@ -23228,7 +23239,12 @@ mod tests {
                         expected,
                         "TOP={top}, case={case}, FCW={control_word:04x}"
                     );
-                    assert_eq!(after.tag(destination), Some(X87Tag::Valid));
+                    let expected_tag = if source & 0x7fff_ffff_ffff_ffff == 0 {
+                        X87Tag::Zero
+                    } else {
+                        X87Tag::Valid
+                    };
+                    assert_eq!(after.tag(destination), Some(expected_tag));
                     assert_eq!(after.top(), destination);
                     assert_eq!(
                         after.status_word,
@@ -23273,8 +23289,8 @@ mod tests {
             state
         };
         for bits in [
-            0_u64,
-            1,
+            1_u64,
+            0x8000_0000_0000_0001,
             0x000f_ffff_ffff_ffff,
             0x7ff0_0000_0000_0000,
             0xfff0_0000_0000_0000,

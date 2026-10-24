@@ -2212,7 +2212,7 @@ mod tests {
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp.case.json")
                     .as_slice(),
                 1,
-                "00000000000000c0ff3f",
+                "00000000000000000000",
             ),
             (
                 include_bytes!(
@@ -2220,10 +2220,10 @@ mod tests {
                 )
                 .as_slice(),
                 2,
-                "00000000000000c0ff3f",
+                "00000000000000000000",
             ),
         ] {
-            let fixture = v2::Fixture::from_json(bytes).expect("S2-31t fixture schema");
+            let fixture = v2::Fixture::from_json(bytes).expect("S2-31u fixture schema");
             let mut memory =
                 od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
             let result = execute_fixture_v2(&fixture, &mut memory);
@@ -2236,11 +2236,19 @@ mod tests {
                 }
             );
             let Observation::Available { value } = result.snapshot else {
-                panic!("S2-31t fixture must produce observable state")
+                panic!("S2-31u fixture must produce observable state")
             };
             let after = value.state.x87.as_ref().unwrap();
+            assert_eq!(
+                value.state.gpr[0],
+                HexU64(if retired == 1 {
+                    0x0030_0004
+                } else {
+                    0x0030_7d00
+                })
+            );
             assert_eq!(after.status_word, HexU64(0x7d00));
-            assert_eq!(after.tag_word, HexU64(0x3ffc));
+            assert_eq!(after.tag_word, HexU64(0x7ffc));
             assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
             assert_eq!(after.data_pointer, HexU64(0x0030_0004));
             assert_eq!(after.registers[7], raw);
@@ -2249,7 +2257,7 @@ mod tests {
                 .into_iter()
                 .find(|region| region.region_id == "stack")
                 .unwrap();
-            assert_eq!(stack.bytes_hex, "000000000000f83f");
+            assert_eq!(stack.bytes_hex, "0000000000000000");
             let canary = memory
                 .snapshot()
                 .into_iter()

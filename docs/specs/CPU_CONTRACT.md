@@ -2789,13 +2789,13 @@ snapshot. It requires FCW exactly `0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`,
 physical ST(0) is irrelevant. Checked address addition and canonical48 checks
 cover the full eight-byte `[RAX,RAX+7]` range before exactly one Qword read.
 
-After the read, only binary64 Normal exponent fields 1..2046 are accepted.
-Zeros, subnormals, infinities and NaNs return Unsupported with no CPU commit.
-The conversion is integer field expansion: the 53-bit significand is shifted
-left 11 places, the exponent becomes `source_exp - 1023 + 16383`, and the sign
-is copied to the binary80 sign field. This includes the complete unbiased
-binary64 range -1022..=+1023; the store conversion's narrower exponent range
-does not apply.
+At the original S2-31t slice, only binary64 Normal exponent fields 1..2046
+were accepted. Zero, subnormals, infinities and NaNs returned Unsupported
+with no CPU commit. The conversion is integer field expansion: the 53-bit
+significand is shifted left 11 places, the exponent becomes
+`source_exp - 1023 + 16383`, and the sign is copied to the binary80 sign field.
+This includes the complete unbiased binary64 range -1022..=+1023; the store
+conversion's narrower exponent range does not apply.
 
 Success replaces the destination payload and tag with Valid, decrements TOP,
 clears C1 while preserving PE and other status bits, records FIP/FDP, advances
@@ -2814,6 +2814,31 @@ Value,” pp.3-352–3-353, official PDF p.470
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See the
 [Stage 2 plan](../plans/STAGE_2.md#s2-31s-bare-bounded-fld-m32fp-rax-d9-00-partial-slice)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31u: bounded `FLD m64fp [RAX]` signed-zero extension
+
+S2-31u extends the historical Normal-only S2-31t slice. Exact bare `DD 00`,
+the FCW/FSW/Empty-push gates, checked full canonical48 Qword range, and exactly
+one Qword read are unchanged. After the read, binary64 magnitude zero accepts
+either sign: +0 packs to ten zero bytes; -0 packs to ten zero bytes with final
+byte `0x80`; both receive `X87Tag::Zero`. Normal exponent fields 1..2046 retain
+the existing exact integer expansion and `Valid` tag. Nonzero subnormals,
+infinity and NaNs remain Unsupported after that one read, with no CPU commit.
+
+Success pushes to physical `(old_TOP+7)&7`, clears C1 and retains PE and other
+status bits, updates FIP/FDP/RIP and retires once. Other payloads/tags, GPRs,
+RFLAGS, FCW and FOP remain unchanged. Sticky PE/C1 behavior, old ST(0)
+independence, TOP wrap, all TOP×RC pairs, independent signed-zero/subnormal
+literals, exact schema/CLI fixtures and native denial are covered. The
+S2-31t report remains historical evidence for the prior Normal-only domain.
+General x87 exception delivery, physical behavior and MMU/MMIO/SMP remain
+unverified; S2-31 and ISSUE-019 stay open.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF pp.470–471
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. The bounded Zero
+packing and tag policy above is local project policy.
 
 ## Local S2-31j: bounded `FSTP m32fp [RAX]` (`D9 18`)
 

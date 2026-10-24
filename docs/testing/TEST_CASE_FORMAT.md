@@ -224,3 +224,14 @@ the actual source tag is invalid; when ST(1) is unrelated it stays Valid.
 Existing `i=1` invalid-RHS fixtures remain valid. Missing x87 state, arbitrary
 special values, unrelated invalid tags and non-exact code strings do not form
 part of this reject profile.
+
+## S2-31u literal FLD m64fp fixture profile
+
+The S2-31u `s2-long-x87-state-v1` fixtures use only exact `dd00` or
+`dd00dfe0` programs. A successful fixture may supply binary64 signed zero or a
+Normal source; signed zero is a successful input and the runner checks that its
+result has the corresponding Zero tag. A no-stop, budget-one rejection fixture
+for `dd00` is admitted only when its exact eight-byte source is a nonzero
+binary64 subnormal (either sign); its expected exit is Unsupported. Zero is
+not admitted by this rejection rule. Neighboring source classes, code bytes
+and instruction boundaries remain subject to the existing exact x87 profile.

@@ -222,3 +222,11 @@ admission remain unsupported; the broader S2-31 exception and physical scopes
 remain open. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31r-bounded-fld-m80fp-rax-db-28),
 [fixtures](../../tests/fixtures/x86/stage2/README.md), and
 [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
+
+S2-31t added exact bare `DD 00` (`FLD m64fp [RAX]`) for Normal binary64 and
+expanded it to binary80 using integer fields. S2-31u extends that same bounded
+load to signed zero: +0 becomes ten zero bytes, -0 keeps its sign in the last
+byte, and both receive the Zero tag. Normal remains unchanged; nonzero
+subnormals, infinity and NaNs still reject after one Qword read without CPU
+commit. Native x87 admission remains closed, and physical acceptance remains
+part of the combined final S2-31 substage. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31u-bounded-fld-m64fp-rax-dd-00-signed-zero-extension), [fixtures](../../tests/fixtures/x86/stage2/README.md), and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-31u--bounded-fld-m64fp-signed-zero-extension).

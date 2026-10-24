@@ -1090,7 +1090,7 @@ impl Fixture {
                                 .is_some_and(|source| source.eq_ignore_ascii_case("00000000"))
                         })
                 });
-            let is_fld_m64_non_normal_rejected = code_bytes == "dd00"
+            let is_fld_m64_nonzero_subnormal_rejected = code_bytes == "dd00"
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
                 && self.memory.iter().any(|region| {
@@ -1104,8 +1104,12 @@ impl Fixture {
                             region
                                 .initial_bytes_hex
                                 .get(start..end)
-                                .is_some_and(|source| {
-                                    source.eq_ignore_ascii_case("0000000000000000")
+                                .and_then(|source| {
+                                    u64::from_str_radix(source, 16).ok().map(u64::swap_bytes)
+                                })
+                                .is_some_and(|bits| {
+                                    bits & 0x7ff0_0000_0000_0000 == 0
+                                        && bits & 0x000f_ffff_ffff_ffff != 0
                                 })
                         })
                 });
@@ -1210,7 +1214,7 @@ impl Fixture {
                     || is_fist_word_environment_rejected
                     || is_fld_m80_non_normal_rejected
                     || is_fld_m32_non_normal_rejected
-                    || is_fld_m64_non_normal_rejected
+                    || is_fld_m64_nonzero_subnormal_rejected
                     || is_fcom_source_rejected
                     || is_fcomp_source_rejected
                     || is_fcompp_source_rejected
