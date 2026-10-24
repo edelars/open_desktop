@@ -1367,6 +1367,25 @@ Control Word,” pp.3-388–3-389 (`D9 /7`); Vol.1 §§8.1.8, 8.1.9 and §8.6 fo
 x87 state and FIP/FDP context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
+### S2-31h FNSTSW m2byte schema and literal coverage
+
+The schema admits exact bare `DD 38` and `DD 38 DF E0` (FNSTSW AX), while
+prefixes—including waiting `9B DD 38`—and neighboring DD forms remain
+unsupported. Literal fixtures cover FSW `0000`, mixed `45a5`, `ffff`, arbitrary
+FCW/status with Empty tags and payload/pointer sentinels, an unaligned
+split-region Word store with canaries, and canonical48 crossing rejection.
+The composition case observes the same FSW through AX after storing it. Local
+interpreter checks cover exactly one Word write with no data read, full x87/GPR/
+RFLAGS preservation, write permission/backend failure and fetch/stop/budget
+boundaries. Native x87 admission explicitly denies `DD 38`. C0-C3 preservation
+is local deterministic policy without native-equivalence evidence; the slice
+does not establish `#MF`, `#NM`/CR0, MMU, MMIO, SMP, or physical x86 behavior.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FSTSW/FNSTSW—Store x87 FPU
+Status Word,” pp.3-392–3-393 (`DD /7`); Vol.1 §§8.1.8, 8.1.9 and 8.3.12
+([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
 ### S2-31f FISTP m64int schema and literal coverage
 
 The schema admits exact `DF 38` and `DF 38 DF E0` (FNSTSW AX), with prefixes

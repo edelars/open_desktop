@@ -4651,3 +4651,34 @@ Normative source: Intel SDM revision 093, Vol.2A, “FSTCW/FNSTCW—Store x87 FP
 Control Word,” pp.3-388–3-389 (`D9 /7`); Vol.1 §§8.1.8, 8.1.9 and §8.6 for
 x87 state and FIP/FDP context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
+## S2-31h — bounded `FNSTSW m2byte [RAX]` partial slice
+
+Added exact bare `DD 38` in Long64 with an existing x87 snapshot. The
+interpreter stores the raw pre-operation FSW through one atomic little-endian
+Word write to canonical `[RAX, RAX+1]`; it issues no data read and imposes no
+FCW/FSW or stack/tag/TOP gate. A successful store changes only RIP by two and
+retires once, preserving GPRs, RFLAGS and every x87 field. Local policy also
+preserves C0-C3 without claiming native equivalence. Missing state, canonical
+range failures, store errors, and fetch/stop/budget boundaries leave CPU state
+uncommitted; memory errors propagate. Exact `DD 38` and `DD 38 DF E0` schema
+coverage is present, and native admission explicitly denies FNSTSW m2byte.
+
+Literal fixtures cover FSW `0000`, mixed `45a5`, `ffff`, arbitrary FCW/status,
+Empty tags, pointer and payload sentinels, unaligned canaries, FNSTSW AX
+composition and canonical48 crossing. Interpreter vectors additionally check
+single Word/no-read access, missing state, write permission/backend failure,
+canonical lower and upper boundaries, fetch/truncation, STOP and budget
+atomicity. Waiting `9B DD 38`, `#MF`, `#NM`/CR0, MMU translation, MMIO, SMP and
+physical x86 behavior remain outside the slice; this does not complete S2-31.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+and `git diff --check`. `graphify update .` refreshed the graph. The native
+runner's Linux x86_64-only unit tests and physical x86/Mac mini checks were not
+run on this host; native execution remains explicitly denied by the code path.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FSTSW/FNSTSW—Store x87 FPU Status Word,” pp.3-392–3-393 (`DD /7`); Vol.1
+§§8.1.8, 8.1.9 and 8.3.12 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).

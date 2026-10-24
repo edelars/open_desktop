@@ -559,6 +559,7 @@ fn admission_with_tracee_memory(
             | Operation::Fnclex
             | Operation::FnstswAx
             | Operation::FnstcwM16Rax
+            | Operation::FnstswM16Rax
             | Operation::Fchs
             | Operation::Fabs
             | Operation::Ftst
@@ -1823,6 +1824,14 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31g_fnstcw_m16int_fnstsw.case.json")
                 .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31g_fnstcw_m16int_noncanonical_crossing.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31h_fnstsw_m16_status_0000.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31h_fnstsw_m16_mixed_state.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31h_fnstsw_m16_status_ffff_fnstsw_ax.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31h_fnstsw_m16_noncanonical_crossing.case.json")
                 .as_slice(),
             include_bytes!(
                 "../../../tests/fixtures/x86/stage2/s2_31c_fist_m32int_fnstsw.case.json"
@@ -3741,6 +3750,7 @@ mod tests {
             [0xdf, 0xf1],
             [0xd9, 0xe0],
             [0xd9, 0xfc],
+            [0xdd, 0x38],
             [0xdd, 0xd0],
             [0xdd, 0xd1],
             [0xdd, 0xd2],

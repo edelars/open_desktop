@@ -227,6 +227,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31e | Bare bounded FIST m16int [RAX] DF 10, partial slice | S2-31d |
 | [x] | S2-31f | Bare bounded FISTP m64int [RAX] DF 38, partial slice | S2-31e |
 | [x] | S2-31g | Bare bounded FNSTCW m2byte [RAX] D9 38, snapshot-preserving Word store; native closed | S2-31f |
+| [x] | S2-31h | Bare bounded FNSTSW m2byte [RAX] DD 38, raw-FSW snapshot-preserving Word store; native closed | S2-31g |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2119,6 +2120,27 @@ check. This slice does not complete S2-31.
 **Результат:** реализовано и проверено на workspace fixtures/interpreter tests;
 native execution remains explicitly denied. See the S2-31g report and CPU
 contract for validation and scope.
+
+#### S2-31h. Bare bounded `FNSTSW m2byte [RAX]` (`DD 38`), partial slice
+
+Implement only exact bare `DD 38` in Long64 with an existing x87 snapshot and
+the fixed Word destination `[RAX]`. Store the raw pre-operation FSW little-
+endian through one atomic GuestMemory Word write; do not read destination data,
+inspect stack tags/TOP, or gate on FCW/FSW values. Validate the full canonical48
+two-byte destination before the store. On success, change only RIP and retire
+once; preserve GPRs, RFLAGS and the entire x87 snapshot, including C0-C3 by
+local policy without a native-equivalence claim. Address/store/fetch/missing-
+state/stop/budget failures must not commit CPU state; propagate memory errors.
+Admit exact `DD 38` and optionally exact `DD 38 DF E0` composition; reject
+prefixes, waiting `9B DD 38`, and neighboring DD forms. Native execution stays
+closed. Add literal FSW `0000`, mixed and `ffff` fixtures, arbitrary FCW/status,
+Empty tags and sentinels, canaries, canonical and access failures, execution
+boundaries, composition, and explicit native denial. This local slice does
+not deliver `#MF` or `#NM`, model CR0, MMU, MMIO, or complete S2-31.
+
+**Результат:** implemented and checked with workspace fixtures/interpreter
+tests; native execution remains explicitly denied. See the S2-31h report and
+CPU contract for validation and scope.
 
 ### S2-32. Остальные обязательные x87 формы
 

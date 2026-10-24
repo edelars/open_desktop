@@ -2881,6 +2881,39 @@ x87 state and instruction-pointer/data-pointer context ([official Vol.2A
 PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
+## Local S2-31h: bounded `FNSTSW m2byte [RAX]` (`DD 38`)
+
+The interpreter admits only exact bare `DD 38` in Long64 with an existing x87
+snapshot. It stores the raw pre-operation FSW little-endian through one atomic
+`GuestMemory::write_integer` Word write to `[RAX]`. It performs no data read,
+stack/tag/TOP classification, FCW/FSW gate, or arithmetic exception check. The
+complete two-byte destination must be canonical48 before the write. Only after
+a successful store does RIP advance by two and retire once. GPRs, RFLAGS, and
+the entire x87 snapshot remain unchanged, including C0-C3 by local deterministic
+policy; this does not claim native equivalence for those architecturally
+undefined bits.
+
+Missing x87 state, address validation, store error, fetch/truncation, stop, and
+budget failures leave CPU state uncommitted. Memory errors propagate. The exact
+schema admits `DD 38` and `DD 38 DF E0` (FNSTSW AX); prefixes, including waiting
+`9B DD 38`, and neighboring DD forms are rejected. There is no `#MF` delivery
+for this no-wait form and no `#NM`/CR0 behavior claim. Native admission
+explicitly denies the operation.
+
+Literal fixtures cover raw FSW `0000`, mixed status, and `ffff`; arbitrary FCW
+and FSW with Empty tags and x87/GPR sentinels; unaligned Word canaries; exact
+FNSTSW AX composition; and canonical-range rejection. Interpreter tests cover
+one Word write with no data read, complete snapshot preservation, missing
+state, write permission/backend failure, both canonical boundaries, fetch
+failure, stop, and budget exhaustion. These local FlatMemory checks do not
+establish MMU translation, page-walk behavior, MMIO ordering, `#MF` delivery,
+`#NM`/CR0 behavior, or physical x86 equivalence.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FSTSW/FNSTSW—Store x87 FPU
+Status Word,” pp.3-392–3-393 (`DD /7`); Vol.1 §§8.1.8, 8.1.9 and 8.3.12 for
+x87 state and condition-code context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
 ## Local S2-31a: bounded `FRNDINT` (`D9 FC`)
 
 The interpreter admits only bare `D9 FC` in an existing x87-state snapshot.
