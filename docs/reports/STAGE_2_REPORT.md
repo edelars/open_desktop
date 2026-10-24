@@ -2594,6 +2594,7 @@ parse warning (tracked by ISSUE-010). No physical Mac mini check was performed
 or required for this integer helper. S2-29 and the S2-28 umbrella remain open
 under ISSUE-019.
 
+
 ## S2-29j — pure unsigned rational nearest-integer ties-to-even (partial)
 
 Added `round_quotient_ties_even(q, r, d)`, a pure unsigned helper for rounding
@@ -6299,3 +6300,29 @@ all-target checks, Linux x86_64 runner cross-check and formatting passed.
 The layout checker reports the existing unmapped `.serena/` directory, which
 was left untouched. Native runtime and physical acceptance remain deferred
 under ISSUE-019.
+
+
+<a id="s2-31be--exact-binary64-subnormal-results-through-m64-stores"></a>
+
+## S2-31be — exact binary64 subnormal results through bounded m64 stores
+
+Exact DD10/DD18 stores now pack exactly representable binary64 subnormal
+results from canonical Normal binary80 sources with exponents -1074 through
+-1023. The integer downshift is independent of RC and requires every
+discarded bit to be zero. Inexact tiny results and values below the minimum
+subnormal remain Unsupported before memory access. No new DE, UE or PE is
+generated; sticky status, gates, normal conversion, addressing and store/pop
+ordering remain unchanged.
+
+Coverage includes signed minimum/adjacent/maximum subnormal values, nontrivial
+fractions, all shifts and their low-bit rejection neighbors, 1.5 minimum
+subnormal, half-step above maximum subnormal, exponent -1075 and minimum normal.
+DD00 FLD→DD10/DD18 composition proves DE retention without UE/PE. Signed CLI
+fixtures include bare FST and FSTP with FNSTSW; JIT/native denial and write/
+range-fault atomicity are covered. `cargo test --workspace --offline` passed
+(801 tests); workspace and Linux x86_64 all-target checks and
+`cargo fmt --all -- --check` passed. The Linux-only native admission test was
+compile-checked but not executed on this macOS host. `tools/check_layout.py`
+reports the pre-existing unmapped `.serena/` directory, which was preserved;
+`git diff --check` passed. Independent review is pending. Native runtime and
+physical acceptance remain deferred under ISSUE-019.

@@ -267,6 +267,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bb | Extend exact D910/D918 finite binary32 stores through exponent 127; reject rounded exponent 128 before access | S2-31az, S2-31av |
 | [x] | S2-31bc | Extend exact DD10/DD18 finite binary64 stores through exponent 1023; reject rounded exponent 1024 before access | S2-31ba, S2-31bb |
 | [x] | S2-31bd | Store exact m32 subnormal results from canonical Normal binary80 sources with integer downshift only | S2-31bb, S2-31bc |
+| [x] | S2-31be | Store exact m64 subnormal results from canonical Normal binary80 sources with integer downshift only | S2-31bc, S2-31bd |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3691,7 +3692,8 @@ significand rounding and all four FCWs. Normalize a rounded significand carry
 before the final exponent check: carry from 1022 to 1023 is valid; carry from
 1023 to 1024 returns Unsupported before memory access. A source already at
 exponent 1024 also remains Unsupported. Do not synthesize masked overflow or
-set OE. Keep the minimum exponent, subnormal-result rejection, status/control
+set OE. At this S2-31bc stage, keep the minimum exponent and subnormal-result
+rejection; S2-31be later adds exact subnormal outputs. Preserve status/control
 gates, source classes/tags, addressing, status and FSTP pop ordering unchanged.
 
 Cover both signs and opcodes across TOPs, all FCWs and incoming IE/DE/PE;
@@ -3728,3 +3730,31 @@ exponent -150 and minimum normal. Include D900 subnormal FLD→D910/FSTP
 composition proving DE retention without PE, full-state write/range fault
 atomicity, CLI fixtures with FNSTSW, and explicit JIT/native denial. Native
 runtime and physical acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31be-exact-binary64-subnormal-results-through-m64-stores"></a>
+
+#### S2-31be. Store exact binary64 subnormal results through bounded m64 FST/FSTP
+
+Extend only exact DD10/DD18 m64 stores for a Valid-tagged canonical binary80
+Normal source with unbiased exponent `-1074..=-1023`. Convert by integer
+downshift `shift = -exponent - 1011` (12..63); accept only if every discarded
+significand bit is zero and the result fraction is `1..=0x000fffffffffffff`.
+Preserve sign. This exact path is independent of FCW rounding mode and adds no
+DE, UE or PE. Inexact results, exponents below -1074, other tags/classes and
+malformed encodings remain Unsupported before data access. Keep the existing
+normal conversion, minimum-normal boundary, FCW/FSW gates, addressing, atomic
+Qword write, status policy and FSTP pop-after-write ordering.
+
+Cover minimum and adjacent subnormal, maximum subnormal, nontrivial fractions
+and minimum-normal control across both signs/opcodes, all TOPs/FCWs and all
+incoming IE/DE/PE combinations. Exercise every shift with nonzero discarded
+bits, 1.5 minimum subnormal, half-step above maximum subnormal and exponent
+-1075 rejection. Include DD00 subnormal FLD→DD10/DD18 compositions proving exact
+recovery and DE retention without UE/PE, write/range-fault atomicity, signed
+CLI fixtures including FNSTSW, and explicit JIT/native denial. `cargo test --workspace --offline` passed (801 tests);
+workspace and Linux x86_64 all-target checks, and `cargo fmt --all -- --check`
+passed. The Linux-only native admission test was compile-checked but not run on
+macOS. Layout checking reports the pre-existing unmapped `.serena/` directory,
+which was preserved. Native runtime and physical acceptance remain deferred
+under ISSUE-019; independent review is pending.

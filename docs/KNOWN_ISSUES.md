@@ -456,3 +456,15 @@
   [plan](plans/STAGE_2.md#s2-31bd-exact-binary32-subnormal-results-through-m32-stores),
   [report](reports/STAGE_2_REPORT.md#s2-31bd--exact-binary32-subnormal-results-through-m32-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31be evidence:** exact DD10/DD18 stores now admit only representable
+  binary64 subnormal results from canonical Normal binary80 sources with
+  exponents -1074 through -1023. Integer downshift rejects nonzero discarded
+  bits and values below the minimum subnormal before data access. Sticky flags
+  remain unchanged and no DE/UE/PE is generated. Boundary, FLD→store,
+  write/range atomicity, CLI and JIT/native denial coverage is included.
+  Native runtime and physical acceptance remain deferred under ISSUE-019. See
+  [S2-31be CPU contract](specs/CPU_CONTRACT.md#local-s2-31be-exact-binary64-subnormal-results),
+  [plan](plans/STAGE_2.md#s2-31be-exact-binary64-subnormal-results-through-m64-stores),
+  [report](reports/STAGE_2_REPORT.md#s2-31be--exact-binary64-subnormal-results-through-m64-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

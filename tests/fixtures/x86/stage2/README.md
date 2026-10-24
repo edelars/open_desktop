@@ -2306,3 +2306,16 @@ subnormal FLD followed by D910, proving DE is retained without PE. See the
 [S2-31bd CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bd-exact-binary32-subnormal-results),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bd-exact-binary32-subnormal-results-through-m32-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bd--exact-binary32-subnormal-results-through-m32-stores).
+
+
+### S2-31be exact binary64 subnormal store fixtures
+
+The positive bare DD10 fixture stores the minimum binary64 subnormal from a
+canonical binary80 source while retaining DE. The negative DD18/DFE0 fixture
+stores the signed minimum subnormal and observes sticky DE after the pop. Both
+run through the schema/CLI interpreter path and are explicitly denied by JIT
+and native admission. A direct DD00 FLD→DD10/DD18 composition test verifies
+exact recovery and DE retention without UE or PE. See the
+[S2-31be CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31be-exact-binary64-subnormal-results),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31be-exact-binary64-subnormal-results-through-m64-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31be--exact-binary64-subnormal-results-through-m64-stores).

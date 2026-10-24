@@ -200,6 +200,12 @@ const FST_M32_POSITIVE_MIN_SUBNORMAL: &[u8] = include_bytes!(
 const FSTP_M32_NEGATIVE_MIN_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bd_fstp_m32fp_negative_min_subnormal_fnstsw.case.json"
 );
+const FST_M64_POSITIVE_MIN_SUBNORMAL: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31be_fst_m64fp_positive_min_subnormal.case.json"
+);
+const FSTP_M64_NEGATIVE_MIN_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31be_fstp_m64fp_negative_min_subnormal_fnstsw.case.json"
+);
 const FSTP_M64_NEGATIVE_SNAN_STICKY_IE_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31ay_fstp_m64fp_negative_snan_sticky_ie_fnstsw.case.json"
 );
@@ -3316,6 +3322,22 @@ fn v2_jit_denies_exact_m32_subnormal_store_fixtures_without_fallback() {
     for fixture in [
         FST_M32_POSITIVE_MIN_SUBNORMAL,
         FSTP_M32_NEGATIVE_MIN_SUBNORMAL_FNSTSW,
+    ] {
+        let (_, result) = run(fixture, "jit", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
+fn v2_jit_denies_exact_m64_subnormal_store_fixtures_without_fallback() {
+    for fixture in [
+        FST_M64_POSITIVE_MIN_SUBNORMAL,
+        FSTP_M64_NEGATIVE_MIN_SUBNORMAL_FNSTSW,
     ] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));

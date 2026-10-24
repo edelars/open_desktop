@@ -4367,6 +4367,7 @@ slice. See the [plan](../plans/STAGE_2.md#s2-31au-store-canonical-binary80-quiet
 [report](../reports/STAGE_2_REPORT.md#s2-31au--canonical-quietnan-binary80-to-binary64-stores),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
 
+
 <a id="local-s2-31ay-admit-sticky-ie-fstfstp-m32-m64"></a>
 
 ## Local S2-31ay: masked sticky IE in m32/m64 `FST/FSTP [RAX]`
@@ -4571,10 +4572,11 @@ carry from 1023 to 1024 returns Unsupported before destination access. A
 source already at exponent 1024 also remains Unsupported. This path does not
 deliver masked overflow or set OE.
 
-Keep the minimum exponent, subnormal-result rejection, `FSW & 0x80dc == 0`
-gate, source classes/tags, addressing, and post-write status/pointer/pop
-behavior unchanged. Rejected sources leave all CPU state and destination bytes
-unchanged. Successful stores retain sticky IE/DE/PE and only generate PE for
+At this S2-31bc stage, subnormal-result rejection remains in place; S2-31be
+later adds exact subnormal outputs. Keep the minimum exponent,
+`FSW & 0x80dc == 0` gate, source classes/tags, addressing, and post-write
+status/pointer/pop behavior unchanged. Rejected sources leave all CPU state and
+destination bytes unchanged. Successful stores retain sticky IE/DE/PE and only generate PE for
 inexact finite rounding; SNaN IE behavior remains unchanged. DD10 preserves
 TOP; DD18 pops only after its atomic Qword write succeeds.
 
@@ -4622,4 +4624,35 @@ general unmasked exception delivery remain unchanged. JIT/native admission,
 native runtime and physical acceptance remain deferred under ISSUE-019. See
 the [plan](../plans/STAGE_2.md#s2-31bd-exact-binary32-subnormal-results-through-m32-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31bd--exact-binary32-subnormal-results-through-m32-stores),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31be-exact-binary64-subnormal-results"></a>
+
+## Local S2-31be: exact subnormal results through bounded m64 `FST/FSTP [RAX]`
+
+For exact `DD 10` and `DD 18`, accept a Valid-tagged canonical Normal binary80
+source with unbiased exponent `-1074..=-1023` only when its exact value is
+representable as a binary64 subnormal. Integer conversion uses
+`shift = -exponent - 1011` (12..63), requires all discarded significand bits
+to be zero, and requires the fraction to be `1..=0x000fffffffffffff`. Preserve
+the sign. The conversion is independent of RC and adds no DE, UE or PE.
+
+Inexact subnormal results, source exponents below -1074, invalid tags/classes,
+pseudo-encodings and malformed sources remain Unsupported before destination
+access. Existing FCWs, `FSW & 0x80dc == 0`, normal conversion and minimum-normal
+behavior remain unchanged. Sticky IE/DE/PE are preserved, C1 follows the exact
+store clear policy, and C0/C2/C3 follow the existing conversion policy. A
+denied write or failed canonical48 Qword range check leaves CPU state and
+destination memory unchanged; DD18 pops only after successful storage.
+
+Signed minimum, adjacent and maximum-subnormal vectors, nontrivial fractions,
+all shift-boundary rejects, 1.5 minimum subnormal, the half-step above maximum
+subnormal and exponent -1075 are covered across TOP/FCW/sticky-flag matrices.
+Minimum normal remains a normal-path control. DD00 subnormal FLD→DD10/DD18
+composition proves DE retention without UE/PE; literal CLI fixtures exercise
+bare FST and FSTP/FNSTSW. JIT/native admission remains closed. The Intel SDM
+defines masked underflow only for tiny inexact results [Vol. 1, §4.9.1.5](https://cdrdv2.intel.com/929351/253665-093-sdm-vol-1.pdf#page=111); native runtime and physical acceptance remain deferred under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31be-exact-binary64-subnormal-results-through-m64-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31be--exact-binary64-subnormal-results-through-m64-stores),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
