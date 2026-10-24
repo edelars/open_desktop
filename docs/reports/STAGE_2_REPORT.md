@@ -4649,7 +4649,7 @@ exception behavior, MMU translation, MMIO or SMP.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FSTCW/FNSTCW—Store x87 FPU
 Control Word,” pp.3-388–3-389 (`D9 /7`); Vol.1 §§8.1.8, 8.1.9 and §8.6 for
-x87 state and FIP/FDP context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+x87 state and FIP/FDP context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=506),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
 ## S2-31h — bounded `FNSTSW m2byte [RAX]` partial slice
@@ -4680,7 +4680,7 @@ run on this host; native execution remains explicitly denied by the code path.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FSTSW/FNSTSW—Store x87 FPU Status Word,” pp.3-392–3-393 (`DD /7`); Vol.1
-§§8.1.8, 8.1.9 and 8.3.12 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+§§8.1.8, 8.1.9 and 8.3.12 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=510),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
 ## S2-31i — bounded `FLDCW m2byte [RAX]` partial slice
@@ -4712,7 +4712,7 @@ admission remains explicitly denied.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FLDCW—Load x87 FPU Control Word,” pp.3-356–3-357 (`D9 /5`); Vol.1 §§8.1.8,
-8.1.9 and §8.6 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+8.1.9 and §8.6 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=474),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
 ## S2-31j — bounded `FSTP m32fp` partial slice
@@ -4752,8 +4752,8 @@ not establish hardware exception priority, general x87 exception delivery,
 MMU/page-walk behavior, MMIO or SMP, and does not complete S2-31.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
-Point Value,” pp.3-350–3-351 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and §8.6
-([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+Point Value,” pp.3-386–3-387 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and §8.6
+([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
 ## S2-31k — bounded `FST m32fp` partial slice
@@ -4790,6 +4790,48 @@ exception priority, general x87 exception delivery, MMU/page-walk behavior,
 MMIO or SMP, and does not complete S2-31.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
-Point Value,” pp.3-350–3-351 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and §8.6
-([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+Point Value,” pp.3-386–3-387 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and §8.6
+([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
+## S2-31l — bounded `FSTP m64fp` partial slice
+
+Added exact bare `DD 18` as `FSTP m64fp [RAX]` in Long64. The conversion
+preflights a Valid old physical TOP with a canonical-Normal binary80 source,
+the four exact all-masked PC64 FCWs, and `FSW & 0x80df == 0`. It computes
+`q=s>>11`, `r=s&0x7ff`, `d=0x800` and reuses the integer quotient-rounding
+helper. Binary64 bits are packed directly; the local unbiased exponent range
+is -1022..1022, intentionally excluding exponent 1023. No host floating-point
+cast is used.
+
+The executor validates the complete canonical48 Qword range, performs one
+atomic Qword write with no data read, then empties old TOP, advances TOP,
+updates sticky PE/C1, records FIP/FDP, advances RIP by two and retires once.
+Architectural store faults map through the guest-fault reporting helper;
+backend failures remain diagnostic errors. Other payloads/tags, FCW/FOP and
+unrelated state are preserved, with C0/C2/C3 retained by local policy.
+
+Two handwritten schema-v2 fixtures cover exact `DD 18` and `DD 18 DF E0`
+composition. Independent interpreter literals cover signs and RC, exact and
+tie boundaries, discarded bits, exponent endpoints/carry, all TOP values
+including wrap, PE/C1, memory canaries, one-write/no-read, noncanonical and
+crossing ranges, backend write failure, injected architectural `#PF`, invalid
+environment/source, and fetch/truncation/STOP/budget boundaries. Exhaustive
+DD decoder tests preserve existing register/status operations and reject
+neighbors, tested prefixes, REX and truncation. Native admission explicitly
+denies `FSTP m64fp`.
+
+Validation passed: `cargo test --workspace --offline`, `cargo check --workspace
+--all-targets --offline`, `cargo fmt --all -- --check`, and `git diff --check`.
+`graphify update .` refreshed the graph. `python3 tools/check_layout.py` still
+reports the pre-existing unmapped root `.serena/` directory, which was present
+before this task and left untouched. Independent review is pending. Physical
+x86/Mac mini checks were not run and remain part of the single final S2-31
+acceptance substage. This partial slice does not establish hardware exception
+priority, general x87 exception delivery, MMU/page-walk behavior, MMIO or SMP,
+and does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-386–3-387 (`DD /2`/`DD /3`)
+([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.

@@ -567,6 +567,7 @@ fn admission_with_tracee_memory(
             | Operation::Frndint
             | Operation::FstM32FpRax
             | Operation::FstpM32FpRax
+            | Operation::FstpM64FpRax
             | Operation::FistM32IntRax
             | Operation::FistpM32IntRax
             | Operation::FistpM64IntRax
@@ -1856,13 +1857,21 @@ mod tests {
                 "../../../tests/fixtures/x86/stage2/s2_31e_fist_m16int_fnstsw_tie.case.json"
             )
             .as_slice(),
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_31l_fstp_m64fp.case.json"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_31l_fstp_m64fp_fnstsw.case.json"
+            )
+            .as_slice(),
         ] {
             let fixture = Fixture::from_json(bytes).unwrap();
             let actual = fixture.fixture.initial_state.to_cpu().unwrap();
             let mut decoder = FlatMemory::from_fixture(&fixture.fixture).unwrap();
             assert!(
                 admission(&fixture.fixture, &mut decoder, &actual).is_err(),
-                "bounded FIST forms must remain outside native admission"
+                "bounded x87 forms must remain outside native admission"
             );
         }
     }

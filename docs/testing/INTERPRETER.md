@@ -343,3 +343,15 @@ failure atomicity. The profile does not claim x87 exception delivery, hardware
 exception priority, native equivalence or physical x86 confirmation. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31k-bounded-fst-m32fp-rax-d9-10)
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31l x87 conversion slice
+
+The exact bare `DD 18` (`FSTP m64fp [RAX]`) profile uses integer-only
+binary80-to-binary64 rounding, a canonical48 Qword preflight, and one atomic
+write before popping the old physical TOP. It intentionally accepts source
+exponents only from -1022 through 1022, despite finite binary64 values at
+exponent 1023. Literal fixtures cover `DD 18` and `DD 18 DF E0`; focused
+interpreter tests cover rounding, stack state, memory atomicity and faults.
+Native x87 admission remains closed, and no physical x86 acceptance is claimed.
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31l-bounded-fstp-m64fp-rax-dd-18)
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).

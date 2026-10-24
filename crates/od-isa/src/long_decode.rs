@@ -449,6 +449,8 @@ pub enum Operation {
     FldcwM16Rax,
     /// Bare `DD 38` FNSTSW m2byte at [RAX], preserving the x87 snapshot.
     FnstswM16Rax,
+    /// Bare `DD 18` FSTP m64fp at [RAX], bounded finite profile.
+    FstpM64FpRax,
     /// Bare `D9 E0` FCHS, flipping the sign of canonical-Normal ST(0) only.
     Fchs,
     /// Bare `D9 E1` FABS, clearing the sign of canonical-Normal ST(0) only.
@@ -1207,6 +1209,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 if modrm == 0x38 {
                     Operation::FnstswM16Rax
+                } else if modrm == 0x18 {
+                    Operation::FstpM64FpRax
                 } else if modrm == 0xe1 {
                     Operation::Fucom
                 } else if modrm == 0xe9 {
@@ -2658,7 +2662,11 @@ mod tests {
     }
 
     #[test]
-    fn dd_accepts_only_bounded_fnstsw_fst_fstp_fucom_and_fucomp_encodings() {
+    fn dd_accepts_only_bounded_fstp_m64fp_fnstsw_fst_fstp_fucom_and_fucomp_encodings() {
+        let decoded = Memory::new(&[0xdd, 0x18]).decode().unwrap();
+        assert_eq!(decoded.operation, Operation::FstpM64FpRax);
+        assert_eq!(decoded.length, 2);
+        assert_eq!(decoded.prefixes, Prefixes::default());
         let mut memory = Memory::new(&[0xdd, 0x38]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::FnstswM16Rax);
@@ -2704,6 +2712,8 @@ mod tests {
                     })
                 } else if modrm == 0x38 {
                     Ok(Operation::FnstswM16Rax)
+                } else if modrm == 0x18 {
+                    Ok(Operation::FstpM64FpRax)
                 } else if modrm == 0xe1 {
                     Ok(Operation::Fucom)
                 } else if modrm == 0xe9 {
@@ -2723,8 +2733,11 @@ mod tests {
 
         for bytes in [
             &[0x9b, 0xdd, 0x38][..],
+            &[0x9b, 0xdd, 0x18][..],
             &[0xf0, 0xdd, 0x38],
+            &[0xf0, 0xdd, 0x18],
             &[0x66, 0xdd, 0x38],
+            &[0x66, 0xdd, 0x18],
             &[0xf0, 0xdd, 0xd9][..],
             &[0xf2, 0xdd, 0xd9],
             &[0xf3, 0xdd, 0xd9],
@@ -2739,6 +2752,18 @@ mod tests {
             &[0x40, 0xdd, 0xd9],
             &[0x48, 0xdd, 0xd9],
             &[0x9b, 0xdd, 0xd9],
+            &[0xf1, 0xdd, 0x18],
+            &[0xf2, 0xdd, 0x18],
+            &[0xf3, 0xdd, 0x18],
+            &[0x26, 0xdd, 0x18],
+            &[0x2e, 0xdd, 0x18],
+            &[0x36, 0xdd, 0x18],
+            &[0x3e, 0xdd, 0x18],
+            &[0x64, 0xdd, 0x18],
+            &[0x65, 0xdd, 0x18],
+            &[0x67, 0xdd, 0x18],
+            &[0x40, 0xdd, 0x18],
+            &[0x48, 0xdd, 0x18],
         ] {
             assert!(
                 matches!(
@@ -2755,7 +2780,12 @@ mod tests {
                 access: AccessKind::Fetch,
             }))
         ));
-        for bytes in [&[0xdd, 0xd8][..], &[0xdd, 0xdf], &[0xdd, 0xe1]] {
+        for bytes in [
+            &[0xdd, 0x18][..],
+            &[0xdd, 0xd8],
+            &[0xdd, 0xdf],
+            &[0xdd, 0xe1],
+        ] {
             let mut memory = Memory::new(bytes);
             memory.fault_at = Some(1);
             assert!(matches!(

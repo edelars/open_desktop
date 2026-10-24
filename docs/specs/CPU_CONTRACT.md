@@ -2704,8 +2704,8 @@ walk, MMIO ordering, physical x86 behavior, exception delivery, or hardware
 exception priority. This local slice does not complete S2-31.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
-Point Value,” pp.3-350–3-351 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and §8.6
-for x87 state and FIP/FDP context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+Point Value,” pp.3-386–3-387 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and §8.6
+for x87 state and FIP/FDP context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
 ## Local S2-31k: bounded `FST m32fp [RAX]` (`D9 10`)
@@ -2745,9 +2745,50 @@ not establish MMU/page walks, MMIO, physical x86 behavior, exception delivery,
 or hardware exception priority. This slice does not complete S2-31.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
-Point Value,” pp.3-350–3-351 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and §8.6
-([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+Point Value,” pp.3-386–3-387 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and §8.6
+([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
+## Local S2-31l: bounded `FSTP m64fp [RAX]` (`DD 18`)
+
+The interpreter admits only exact bare `DD 18` in Long64 with an existing x87
+snapshot. The old physical TOP tag must be Valid and its raw binary80 payload
+canonical Normal. Accept only FCW `0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`, and
+require `FSW & 0x80df == 0`; sticky PE and C0/C2/C3 are permitted. For
+significand `s`, calculate `q=s>>11`, `r=s&0x7ff`, and `d=0x800`, then use the
+shared integer-only `round_quotient_magnitude(sign,q,r,d,RC)`. On carry to
+`2^53`, shift the rounded quotient right and increment the unbiased exponent.
+This local result profile accepts exponents -1022..1022; exponent 1023 is
+intentionally excluded although finite binary64 values exist there. Pack the
+sign bit, biased exponent and 52-bit fraction directly. No host floating-point
+cast is used.
+
+Before data access, preflight conversion and the complete canonical48 Qword
+range `[RAX,RAX+7]`. Issue exactly one atomic Qword write and no read. Only
+after the write succeeds, empty old physical TOP, advance TOP modulo eight,
+set PE sticky iff `r != 0`, and set C1 iff rounding increased magnitude
+(exact results clear C1 by local policy). Preserve all eight raw payloads,
+every tag except old TOP, FCW/FOP, C0/C2/C3 and other CPU state. Record FIP as
+instruction-start RIP and FDP as RAX, advance RIP by two and retire once.
+Architectural write faults map through the guest-fault report path; backend
+errors remain diagnostic errors.
+
+Independent integer literals cover both signs and four RC modes, exact,
+below-half, half-even, half-odd, above-half, discarded-bit boundaries,
+exponent endpoints and carry rejection. Interpreter checks cover all TOPs and
+wrap, payload/tag sentinels, PE/C1, one-write/no-read, canaries, noncanonical
+and crossing ranges, backend errors, injected `#PF`, invalid source and
+environment before memory, fetch/truncation/STOP/budget. Two local schema-v2
+fixtures cover exact `DD 18` and `DD 18 DF E0` composition. This slice adds no other FSTP m64fp ModR/M or addressing form; prefixes, REX
+and WAIT are rejected for this operation. Existing DD register/status forms
+retain their current behavior. Native
+admission explicitly denies this operation. This partial slice does not
+complete S2-31 or claim physical x86 acceptance.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-386–3-387 (`DD /2`/`DD /3`)
+([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
 
 ## Local S2-31b: bounded `FISTP m32int [RAX]` (`DB 18`)
 

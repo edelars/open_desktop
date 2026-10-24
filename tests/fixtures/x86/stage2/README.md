@@ -1364,7 +1364,7 @@ MMU translation, MMIO, SMP or physical x86 behavior.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FSTCW/FNSTCW—Store x87 FPU
 Control Word,” pp.3-388–3-389 (`D9 /7`); Vol.1 §§8.1.8, 8.1.9 and §8.6 for
-x87 state and FIP/FDP context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+x87 state and FIP/FDP context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=506),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
 ### S2-31h FNSTSW m2byte schema and literal coverage
@@ -1383,7 +1383,7 @@ does not establish `#MF`, `#NM`/CR0, MMU, MMIO, SMP, or physical x86 behavior.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FSTSW/FNSTSW—Store x87 FPU
 Status Word,” pp.3-392–3-393 (`DD /7`); Vol.1 §§8.1.8, 8.1.9 and 8.3.12
-([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=510),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
 ### S2-31i FLDCW m2byte schema and literal coverage
@@ -1403,7 +1403,7 @@ exceptions, `#MF`, or `#NM`/CR0 and makes no physical execution claim.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FLDCW—Load x87 FPU Control
 Word,” pp.3-356–3-357 (`D9 /5`); Vol.1 §§8.1.8, 8.1.9 and §8.6 ([official
-Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=474),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
 ### S2-31j FSTP m32fp schema and literal CLI coverage
@@ -1422,7 +1422,7 @@ fixtures and flat-memory checks do not establish hardware exception priority,
 general x87 exception delivery, MMU, MMIO, SMP, or physical x86 behavior.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
-Point Value,” pp.3-350–3-351 (`D9 /2`/`D9 /3`); see also the local bounded
+Point Value,” pp.3-386–3-387 (`D9 /2`/`D9 /3`); see also the local bounded
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31j-bounded-fstp-m32fp-rax-d9-18).
 
 ### S2-31k FST m32fp schema and literal CLI coverage
@@ -1440,8 +1440,30 @@ No hardware exception-priority, MMU, MMIO, SMP or physical x86 behavior is
 claimed.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
-Point Value,” pp.3-350–3-351 (`D9 /2`/`D9 /3`); see also the local bounded
+Point Value,” pp.3-386–3-387 (`D9 /2`/`D9 /3`); see also the local bounded
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31k-bounded-fst-m32fp-rax-d9-10).
+
+### S2-31l FSTP m64fp schema and literal CLI coverage
+
+The schema admits exact bare `DD 18` and exact `DD 18 DF E0` (FNSTSW AX);
+other FSTP m64fp ModR/M/addressing forms, prefixes, REX and WAIT remain
+unsupported for this operation; existing DD register/status forms retain
+their current behavior. Two
+handwritten schema-v2 fixtures use a canonical-Normal 1.5 source and a Qword
+destination. The CLI verifies stored binary64 bits `0x3ff8000000000000`, the
+old TOP tag becoming Empty, TOP advance, preserved payloads, FIP/FDP and the
+FNSTSW-observed status. Independent interpreter vectors cover both signs and
+all RC modes, ties and discarded-bit boundaries, exponent endpoints and
+carry rejection, all TOP values including wrap, PE/C1, canaries, one atomic
+Qword write with no read, canonical range checks, backend errors and
+architectural `#PF` atomicity. Native x87 admission remains closed. These
+local checks do not establish hardware exception priority, MMU, MMIO, SMP or
+physical x86 behavior.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-386–3-387 (`DD /2`/`DD /3`)
+([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
+see the local bounded [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31l-bounded-fstp-m64fp-rax-dd-18).
 
 ### S2-31f FISTP m64int schema and literal coverage
 

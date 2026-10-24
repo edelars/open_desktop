@@ -2219,6 +2219,37 @@ does not complete S2-31.
 native execution remains explicitly denied. See the S2-31k report and CPU
 contract for validation and scope.
 
+#### S2-31l. Bare bounded `FSTP m64fp [RAX]` (`DD 18`), partial slice
+
+Implement only exact bare `DD 18` in Long64 with an existing x87 snapshot and
+fixed Qword destination `[RAX]`. Require a Valid old physical TOP whose raw
+binary80 payload is canonical Normal; accept FCW exactly `037f/077f/0b7f/0f7f`
+and require `FSW & 0x80df == 0`. For significand `s`, calculate
+`q=s>>11`, `r=s&0x7ff`, `d=0x800`, then reuse
+`round_quotient_magnitude(sign,q,r,d,RC)`. On a carry to `2^53`, shift `q`
+right and increment the unbiased exponent. This local profile admits only
+exponents -1022..1022; exponent 1023 is intentionally excluded even though
+finite binary64 values exist there. Pack binary64 sign, biased exponent and
+fraction bits directly, without host floating-point casts.
+
+Preflight conversion and the complete canonical48 Qword range before data
+access, then perform exactly one atomic Qword write and no read. Only after
+success empty old TOP, advance TOP modulo eight, set sticky PE iff `r != 0`,
+and set C1 iff rounding increased magnitude (exact results clear C1 by local
+policy). Preserve all payloads/tags except the old TOP tag, FCW/FOP, C0/C2/C3
+and unrelated state. Record FIP/FDP, advance RIP by two and retire once.
+Architectural store faults use the guest-fault reporting path; backend errors
+remain diagnostics. Cover exact `DD 18` and `DD 18 DF E0` fixtures, both signs
+under all RC modes, ties and discarded-bit boundaries, exponent/carry edges,
+all TOPs including wrap, memory atomicity and execution boundaries. Reject
+neighbors, ModR/M/addressing alternatives, prefixes, REX, WAIT and truncation;
+native admission remains explicitly closed. This partial slice does not
+complete S2-31 or claim physical x86 acceptance.
+
+**Результат:** реализовано, проверено локальными fixture/interpreter tests;
+native admission остаётся закрытым. Финальные Mac mini/physical checks остаются
+в одном завершающем подэтапе S2-31. Подробности — в отчёте и CPU contract.
+
 ### S2-32. Остальные обязательные x87 формы
 
 1. По матрице профиля отдельно реализовать нужные remainder, scale, square root, transcendental и прочие оставшиеся формы. Одно семейство — отдельное изменение.
