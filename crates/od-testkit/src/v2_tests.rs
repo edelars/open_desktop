@@ -847,6 +847,60 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
 }
 
 #[test]
+fn x87_fcompp_schema_admits_exact_codes_and_actual_bad_rhs_rejection() {
+    let mut success = x87_fixture().fixture;
+    let code = success
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "ded9".into();
+    code.length = 2;
+    code.comparison_mask_hex = "ffff".into();
+    success.instruction_budget = 1;
+    success.stop_rip = Some(HexU64(success.initial_state.rip.get() + 2));
+    assert!(Fixture::from_json(&success.to_json().unwrap()).is_ok());
+
+    let mut observation = success.clone();
+    let code = observation
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "ded9dfe0".into();
+    code.length = 4;
+    code.comparison_mask_hex = "ffffffff".into();
+    observation.instruction_budget = 2;
+    observation.stop_rip = Some(HexU64(observation.initial_state.rip.get() + 4));
+    assert!(Fixture::from_json(&observation.to_json().unwrap()).is_ok());
+
+    let mut rejected = success.clone();
+    rejected.stop_rip = None;
+    rejected.expected_exit = ExpectedExit::Unsupported;
+    let x87 = rejected.initial_state.x87.as_mut().unwrap();
+    let top = ((x87.status_word.get() >> 11) & 7) as u8;
+    let rhs = (top + 1) & 7;
+    x87.tag_word = HexU64(x87.tag_word.get() | (3 << (u32::from(rhs) * 2)));
+    assert!(Fixture::from_json(&rejected.to_json().unwrap()).is_ok());
+
+    let mut false_rejection = rejected.clone();
+    false_rejection.initial_state.x87.as_mut().unwrap().tag_word = HexU64(0);
+    assert!(false_rejection.validate().is_err());
+    for bytes in ["66ded9", "9bded9", "ded8", "deda"] {
+        let mut unsupported = success.clone();
+        let code = unsupported
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = bytes.into();
+        code.length = (bytes.len() / 2) as u32;
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        assert!(unsupported.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
 fn result_rejects_observed_fs_base_different_from_initial() {
     let input = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_22a_fs_base_qword_load_alias.case.json"

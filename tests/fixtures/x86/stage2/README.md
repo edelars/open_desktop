@@ -1313,3 +1313,16 @@ all eight encodings.
 
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326.
+
+### S2-30af FCOMPP schema and literal CLI coverage
+
+The schema admits exactly bare `DE D9` and the exact `DE D9 DF E0` FNSTSW AX
+observation sequence. The literal success fixture checks the compare status and
+two-entry physical TOP pop through the CLI. A separate `DE D9` fixture has an
+invalid actual old ST(1) tag, no stop RIP and budget one, proving atomic
+rejection. Schema validation ties that rejection rule to the physical tag
+selected by the input TOP. Interpreter vectors cover every TOP, relation and
+initial condition field; native admission denies `DE D9`.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326.

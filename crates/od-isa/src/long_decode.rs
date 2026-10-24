@@ -457,6 +457,8 @@ pub enum Operation {
     FcompSt {
         source: u8,
     },
+    /// Bare `DE D9` FCOMPP, bounded compare then two-entry physical TOP pop.
+    Fcompp,
     /// Bare `DD D8+i` FSTP ST(i), exact Normal source and physical TOP pop only.
     FstpSti {
         destination: u8,
@@ -1100,6 +1102,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xe8..=0xef => Operation::FsubpStSt0 {
                         destination: modrm & 7,
                     },
+                    0xd9 => Operation::Fcompp,
                     0xf8..=0xff => Operation::FdivpStSt0 {
                         destination: modrm & 7,
                     },
@@ -3239,6 +3242,7 @@ mod tests {
                     0xf8..=0xff => Ok(Operation::FdivpStSt0 {
                         destination: modrm & 7,
                     }),
+                    0xd9 => Ok(Operation::Fcompp),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
@@ -3274,6 +3278,72 @@ mod tests {
     }
 
     #[test]
+    fn fcompp_accepts_only_bare_de_d9_and_preserves_existing_de_ranges() {
+        let mut memory = Memory::new(&[0xde, 0xd9]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Fcompp);
+        assert_eq!(instruction.length, 2);
+        assert_eq!(instruction.prefixes, Prefixes::default());
+        assert_eq!(memory.fetched, [0xfff, 0x1000]);
+
+        for modrm in 0u8..=u8::MAX {
+            let decoded = Memory::new(&[0xde, modrm]).decode();
+            assert_eq!(
+                decoded.map(|instruction| instruction.operation),
+                match modrm {
+                    0xc0..=0xc7 => Ok(Operation::FaddpStSt0 {
+                        destination: modrm & 7
+                    }),
+                    0xc8..=0xcf => Ok(Operation::FmulpStSt0 {
+                        destination: modrm & 7
+                    }),
+                    0xd9 => Ok(Operation::Fcompp),
+                    0xe0..=0xe7 => Ok(Operation::FsubrpStSt0 {
+                        destination: modrm & 7
+                    }),
+                    0xe8..=0xef => Ok(Operation::FsubpStSt0 {
+                        destination: modrm & 7
+                    }),
+                    0xf0..=0xf7 => Ok(Operation::FdivrpStSt0 {
+                        destination: modrm & 7
+                    }),
+                    0xf8..=0xff => Ok(Operation::FdivpStSt0 {
+                        destination: modrm & 7
+                    }),
+                    _ => Err(DecodeError::Unsupported {
+                        opcode: Opcode {
+                            map: OpcodeMap::Primary,
+                            byte: 0xde,
+                        },
+                        length: 2,
+                    }),
+                },
+                "DE {modrm:02x}"
+            );
+        }
+        for prefix in [0xf0, 0xf2, 0xf3, 0x2e, 0x64, 0x66, 0x67, 0x9b]
+            .into_iter()
+            .chain(0x40..=0x4f)
+        {
+            assert!(matches!(
+                Memory::new(&[prefix, 0xde, 0xd9]).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+        }
+        assert!(matches!(
+            Memory::new(&[0xde]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            Memory::new(&[0x9b, 0xde, 0xd9]).decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
     fn fsubp_sti_st0_accepts_only_bare_de_e8_through_ef() {
         for destination in 0u8..=7 {
             let mut memory = Memory::new(&[0xde, 0xe8 | destination]);
@@ -3306,6 +3376,7 @@ mod tests {
                     0xf8..=0xff => Ok(Operation::FdivpStSt0 {
                         destination: modrm & 7
                     }),
+                    0xd9 => Ok(Operation::Fcompp),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
@@ -3386,6 +3457,7 @@ mod tests {
                     0xf8..=0xff => Ok(Operation::FdivpStSt0 {
                         destination: modrm & 7
                     }),
+                    0xd9 => Ok(Operation::Fcompp),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,

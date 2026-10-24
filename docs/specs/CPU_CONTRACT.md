@@ -2463,3 +2463,34 @@ eight compare encodings.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## Local S2-30af: bounded `FCOMPP` (`DE D9`)
+
+This slice admits exactly bare `DE D9`. It reuses the bounded canonical-Normal
+compare gate for old physical ST(0) and ST(1): x87 state exists, FCW is
+`0x037f`, `FSW & 0x80ff` is clear, and both old physical tags are Valid with
+canonical Normal binary80 payloads. Both operands are fully preflighted before
+any mutation.
+
+The compare replaces C0/C1/C2/C3 with greater=`0`, less=`0x0100`, equal=`0x4000`
+using `(old_fsw & !0x4700) | result`. Commit marks old physical TOP and
+`(TOP+1)&7` Empty, advances TOP to `(old_top+2)&7`, and does not rotate or
+rewrite any raw payload. All other six tags, FCW, remaining FSW fields, FDP/FOP,
+GPRs, RFLAGS and other CPU state are preserved. FIP receives instruction-start
+RIP; RIP advances by two and the instruction retires once. Rejection leaves the
+complete state unchanged.
+
+Only `DE D9` is added. Existing DE arithmetic remains intact; `DE D8` and
+`DE DA..DF` remain unsupported. Prefixes, REX, WAIT, truncation/fetch failure,
+memory operands, specials, exceptions, native execution and FPU feature claims
+remain outside this slice. Literal interpreter coverage checks all TOP values
+including 6→0 and 7→1, all 16 initial condition fields and three relations,
+physical payload/tag sentinels (including an unused Empty old ST(2)), and
+independent bad-lhs/bad-rhs plus environment and execution-boundary atomicity.
+The schema admits exact `DE D9` and `DE D9 DF E0`; its separate no-stop,
+budget-one rejection rule requires an actually invalid old ST(1) tag. Native
+admission explicitly denies `Operation::Fcompp` and `DE D9`.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

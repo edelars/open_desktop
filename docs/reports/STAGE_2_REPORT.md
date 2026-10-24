@@ -4032,3 +4032,45 @@ execution and FPU feature claims remain unverified; ISSUE-019 remains open.
 Normative source: Intel SDM revision 093, Vol.2A,
 “FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## S2-30af — bounded FCOMPP compare and two-entry physical TOP pop
+
+Bare `DE D9` compares old physical ST(0) with old ST(1) using the bounded
+canonical-Normal comparison helper. After complete preflight it replaces the
+FSW condition field, empties both source tags, advances TOP by two with wrap,
+and leaves the physical register byte array untouched. The operation records
+FIP, advances RIP by two and retires once; invalid operands and execution
+boundaries reject atomically. Existing DE arithmetic maps remain intact and
+other DE compare encodings remain unsupported.
+
+Interpreter vectors cover all eight TOP positions, all three relations and all
+16 initial condition fields; TOP=6 and TOP=7 verify wrap to 0 and 1. Tests use
+raw-register sentinels and an Empty unused old ST(2), independent invalid lhs/rhs
+cases, invalid environment, fetch failure, truncation, STOP and zero budget.
+The schema accepts exact `ded9` and `ded9dfe0`, and requires the separate
+no-stop/budget-one rejection case to contain a bad actual old ST(1) tag. Two
+handwritten literal fixtures cover the FNSTSW AX observation sequence and
+atomic invalid-rhs rejection. Native admission explicitly denies FCOMPP.
+
+Validation passed: `cargo test --workspace --offline` (300 `od-isa` tests,
+70 runner fixture integration tests, 156 `od-testkit` tests, 8 x86-runner
+library tests and all remaining workspace suites), `cargo check --workspace
+--all-targets --offline`, Linux x86_64 `cargo check -p od-x86-runner --target
+x86_64-unknown-linux-gnu --all-targets --offline`, `cargo fmt --all -- --check`,
+and `git diff --check`. The new literal CLI success/rejection test and the schema
+rule tests passed. `python3 tools/check_layout.py` reports the pre-existing
+unmapped root `.serena/` directory; it was left untouched. `graphify update .`
+rebuilt the graph (3487 nodes, 7462 edges); its existing parser warning for
+`include/open_desktop/host_abi.h` remains. Native deny vectors compile on this
+arm64 macOS host but were not executed on Linux; no SSH or physical-hardware
+checks were run. Independent review caught a provenance description mismatch in the
+invalid-RHS fixture; its source text now describes the actual `DE D9` program.
+The focused CLI fixture and schema tests passed again after that correction;
+follow-up independent review confirmed the provenance fix with no findings.
+
+Full x87 architectural behavior, special values, exception delivery, native
+execution and FPU feature claims remain unverified; ISSUE-019 remains open.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
