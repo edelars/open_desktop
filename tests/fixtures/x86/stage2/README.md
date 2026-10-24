@@ -1204,6 +1204,24 @@ budget atomicity. Native x87 admission explicitly denies D9 E4.
 Normative source: Intel SDM revision 093, Vol.2A, “FTST—Test,” pp.3-400–3-401
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+### S2-30ab x87 schema and fixture coverage
+
+The schema admits bare `D8 D1` FCOM ST(1) and the exact four-byte
+`D8 D1 DF E0` sequence used to observe its status through FNSTSW AX. Three
+literal success fixtures cover ST(0)>ST(1), equality, and ST(0)<ST(1), with
+physical register/tag sentinels. `s2_30ab_fcom_st1_invalid_rhs_tag.case.json`
+has canonical-Normal ST(1) bytes but an Empty tag, `stop_rip: null`, and budget
+one; the CLI confirms unchanged full state and zero retirement. Interpreter
+vectors cover all TOP values and condition-code inputs, sign/exponent/all-bit
+significand ordering, both operands' independent invalid tags/classes,
+environment rejection, and fetch/truncation/STOP/budget atomicity. Exhaustive
+D8 ModR/M checks keep arithmetic neighbors intact; native admission explicitly
+denies `D8 D1`.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ### S2-30x x87 schema and fixture coverage
 
 The schema admits all eight bare `DD D0+i` FST ST(i) encodings. The literal

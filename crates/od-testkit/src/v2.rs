@@ -714,6 +714,8 @@ impl Fixture {
                 "d9e0" => ("d9e0", 2),
                 "d9e1" => ("d9e1", 2),
                 "d9e4" => ("d9e4", 2),
+                "d8d1" => ("d8d1", 2),
+                "d8d1dfe0" => ("d8d1dfe0", 4),
                 _ if code_bytes.len() == 4
                     && code_bytes.starts_with("d8c")
                     && matches!(code_bytes.as_bytes()[3], b'0'..=b'f') =>
@@ -843,11 +845,13 @@ impl Fixture {
             let is_fchs_source_rejected = code_bytes == "d9e0" && self.stop_rip.is_none();
             let is_fabs_source_rejected = code_bytes == "d9e1" && self.stop_rip.is_none();
             let is_ftst_source_rejected = code_bytes == "d9e4" && self.stop_rip.is_none();
+            let is_fcom_st1_source_rejected = code_bytes == "d8d1" && self.stop_rip.is_none();
+            let expected_budget = if code_bytes == "d8d1dfe0" { 2 } else { 1 };
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length
                 || !code.permissions.execute
                 || !code.initial_bytes_hex.eq_ignore_ascii_case(expected_bytes)
-                || self.instruction_budget != 1
+                || self.instruction_budget != expected_budget
                 || if is_fsub_alias_unsupported
                     || is_fmulp_i0_unsupported
                     || is_fdiv_inexact_unsupported
@@ -861,6 +865,7 @@ impl Fixture {
                     || is_fchs_source_rejected
                     || is_fabs_source_rejected
                     || is_ftst_source_rejected
+                    || is_fcom_st1_source_rejected
                 {
                     self.stop_rip.is_some() || self.expected_exit != ExpectedExit::Unsupported
                 } else {

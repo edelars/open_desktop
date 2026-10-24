@@ -449,6 +449,8 @@ pub enum Operation {
     Fabs,
     /// Bare `D9 E4` FTST, comparing canonical-Normal ST(0) with zero.
     Ftst,
+    /// Bare `D8 D1` FCOM ST(1), bounded canonical-Normal register compare.
+    FcomSt1,
     /// Bare `DD D8+i` FSTP ST(i), exact Normal source and physical TOP pop only.
     FstpSti {
         destination: u8,
@@ -1033,6 +1035,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 let modrm = self.byte()?;
                 match modrm {
+                    0xd1 => Operation::FcomSt1,
                     0xc0..=0xc7 => Operation::FaddSt0St { source: modrm & 7 },
                     0xc8..=0xcf => Operation::FmulSt0St { source: modrm & 7 },
                     0xe0..=0xe7 => Operation::FsubSt0St { source: modrm & 7 },
@@ -2483,6 +2486,7 @@ mod tests {
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
+                    0xd1 => Ok(Operation::FcomSt1),
                     0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
                     0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
@@ -2639,6 +2643,7 @@ mod tests {
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
+                    0xd1 => Ok(Operation::FcomSt1),
                     0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
                     0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
@@ -2716,6 +2721,7 @@ mod tests {
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
+                    0xd1 => Ok(Operation::FcomSt1),
                     0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
                     0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),
@@ -2775,6 +2781,7 @@ mod tests {
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
+                    0xd1 => Ok(Operation::FcomSt1),
                     0xc0..=0xc7 => Ok(Operation::FaddSt0St { source: modrm & 7 }),
                     0xc8..=0xcf => Ok(Operation::FmulSt0St { source: modrm & 7 }),
                     0xe0..=0xe7 => Ok(Operation::FsubSt0St { source: modrm & 7 }),

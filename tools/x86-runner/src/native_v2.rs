@@ -561,6 +561,7 @@ fn admission_with_tracee_memory(
             | Operation::Fchs
             | Operation::Fabs
             | Operation::Ftst
+            | Operation::FcomSt1
             | Operation::FmulSt0St { .. }
             | Operation::FdivSt0St { .. }
             | Operation::FdivrSt0St { .. }
@@ -3830,9 +3831,11 @@ mod tests {
             [0xd9, 0xe0],
             [0xd9, 0xe1],
             [0xd9, 0xe4],
+            [0xd8, 0xd1],
         ] {
             let mut input = fixture(&code).fixture;
             input.profile = v2::Profile::LongX87StateV1;
+            input.instruction_budget = 1;
             input.initial_state.x87 = Some(v2::X87Snapshot::from(
                 &od_isa::state::X87State::fixture_seed(),
             ));
@@ -3857,13 +3860,18 @@ mod tests {
                     | [0xde, 0xc8]
                     | [0xde, 0xe8]
                     | [0xd9, 0xe4]
+                    | [0xd8, 0xd1]
             ) {
                 input.expected_exit = v2::ExpectedExit::Unsupported;
                 input.stop_rip = None;
             } else {
                 input.stop_rip = Some(HexU64(0x1002));
             }
-            let loaded = Fixture::from_json(&input.to_json().unwrap()).unwrap();
+            let json = input
+                .to_json()
+                .unwrap_or_else(|error| panic!("code={code:02x?}: {error:?}"));
+            let loaded = Fixture::from_json(&json)
+                .unwrap_or_else(|error| panic!("code={code:02x?}: {error:?}"));
             assert!(matches!(
                 execute(&loaded).outcome,
                 Outcome::Unsupported { .. }

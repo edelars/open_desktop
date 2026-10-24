@@ -2312,3 +2312,42 @@ D9 E4.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FTST—Test,” pp.3-400–3-401
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## Local S2-30ab: bounded `FCOM ST(1)` (`D8 D1`)
+
+The interpreter accepts exactly the unprefixed two-byte encoding `D8 D1` with
+an existing `Some(X87State)`, FCW `0x037f`, `FSW & 0x80ff == 0`, Valid tags at
+both old physical TOP (lhs ST(0)) and `(TOP+1)&7` (rhs ST(1)), and canonical
+Normal binary80 operands. Both operands are fully validated before any state
+change. Comparison uses the finite exponent and all 64 significand bits; it
+does not convert through host floating point or subtract the operands.
+
+The result replaces the complete condition-code field with C0/C1/C2/C3 values
+`0000` when ST(0)>ST(1), `0001` when ST(0)<ST(1), and `1000` when equal
+(bit order C3,C2,C1,C0). Commit is `(old_fsw & !0x4700) | result`; this clears
+C1/C2 and replaces all four condition bits. TOP, tags, all physical raw
+payloads, FCW, every other FSW bit, FDP/FOP and all remaining CPU state are
+preserved. FIP receives instruction-start RIP, RIP advances by two, and the
+instruction retires once.
+
+Missing x87 state/environment, either invalid tag or either non-Normal operand,
+other comparison forms and unsupported D8 encodings, prefixes/REX/WAIT,
+truncation, fetch failure, STOP and exhausted budget reject without state
+commit. Existing D8 arithmetic forms remain admitted. No pop, FCOMP/FCOMPP/
+FUCOM, memory operand, NaN/zero/subnormal behavior, exception delivery,
+#NM/WAIT, native admission or CPUID/FPU feature claim is included.
+
+Coverage includes all eight TOP values, all three orderings, positive and
+negative same-sign comparisons, opposite signs in both orders, exponent and
+low-significand-bit ordering, minimum/maximum Normal boundaries, every initial
+condition-code combination, complete physical-register sentinels, independent
+invalid tag/class/environment rejection for both operands, and fetch/truncate/
+STOP/budget atomicity. Three literal fixtures cover greater/equal/less results;
+an Empty-tag ST(1) fixture is a real `stop_rip: null`, budget-one rejection.
+The CLI also checks `FCOM ST(1)` followed by `FNSTSW AX`. The schema admits only
+the exact instruction and this observation sequence, and native x87 admission
+explicitly denies the instruction.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).

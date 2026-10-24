@@ -3863,3 +3863,49 @@ Validation passed: `cargo test --workspace --offline`,
 directory; it was left untouched. Linux native admission tests were not run on
 the arm64 macOS host. No Mac mini, SSH or physical-hardware checks were run.
 Independent gpt-6.1-sol medium review completed with no findings.
+
+## S2-30ab — bounded FCOM ST(1) exact Normal compare
+
+Added exact bare `D8 D1` decode as `FcomSt1`; the existing D8 arithmetic ranges
+remain unchanged. Before commit, the interpreter requires existing x87 state,
+FCW `0x037f`, clear `FSW & 0x80ff`, Valid tags for both old physical TOP and
+`(TOP+1)&7`, and canonical-Normal binary80 values. Numeric ordering uses sign,
+finite exponent and all 64 significand bits, without host-float conversion or
+subtraction. Commit replaces only FSW condition bits with greater=`0`,
+less=`0x0100`, equal=`0x4000`, records instruction-start RIP in FIP, advances
+RIP by two, and retires once. No register, tag, environment, other status,
+GPR, RFLAGS or unrelated x87 payload changes. Both operands are checked before
+mutation; invalid state rejects atomically.
+
+Local vectors cover all TOP values, all 16 initial condition-code combinations,
+all order relations, positive/negative same-sign order, opposite signs in both
+orders, exponent and low-significand-bit distinctions, and minimum/maximum
+Normal values. Full-state rejection vectors exercise each operand's invalid
+tag/class and bad FCW/FSW, plus missing x87 state and fetch/truncation/STOP/
+budget boundaries. Three handwritten fixtures cover greater/equal/less; a
+fourth has Normal ST(1) payload bytes with an Empty tag and uses no stop address
+and budget one. The CLI checks all four and the exact `FCOM ST(1)`→`FNSTSW AX`
+sequence. The fixture schema admits the exact instruction, its real rejection
+case, and only that bounded two-instruction observation sequence. Native admission
+has an explicit `FcomSt1` deny arm, and the Linux-only native deny regression passes
+in an amd64 Rust 1.99 Docker container. No physical x86 guest execution, SSH or Mac
+mini run was made.
+General x87 comparison semantics, exceptions, special values, stack effects,
+native execution and FPU feature claims remain unverified; ISSUE-019 remains
+open.
+
+Normative source: Intel SDM revision 093, Vol.2A,
+“FCOM/FCOMP/FCOMPP—Compare Floating-Point Values,” pp.3-324–3-326
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
+--offline`, focused D8 decoder/schema/interpreter/CLI tests,
+Docker `cargo test -p od-x86-runner --target x86_64-unknown-linux-gnu
+x87_instructions_are_rejected_by_native_profile_and_instruction_admission`,
+`cargo fmt --all -- --check`, `git diff --check`, and `graphify update .`.
+`python3 tools/check_layout.py` reports the pre-existing unmapped root
+`.serena/` directory; it was left untouched. Independent review findings for
+the native deny arm, D8 arithmetic wording, and a stale plan link were corrected;
+follow-up review reported no remaining findings.

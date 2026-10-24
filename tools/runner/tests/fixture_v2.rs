@@ -45,6 +45,14 @@ const FTST_NEGATIVE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30aa_ftst_negative.case.json");
 const FTST_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30aa_ftst_invalid_source.case.json");
+const FCOM_ST1_GREATER: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ab_fcom_st1_greater.case.json");
+const FCOM_ST1_EQUAL: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ab_fcom_st1_equal.case.json");
+const FCOM_ST1_LESS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ab_fcom_st1_less.case.json");
+const FCOM_ST1_INVALID_RHS_TAG: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ab_fcom_st1_invalid_rhs_tag.case.json");
 const GS_BASE_QWORD_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_22b_gs_base_qword_load_alias.case.json");
 const FS_SELECTOR_TO_RAX: &[u8] =
@@ -1311,6 +1319,63 @@ fn local_x87_ftst_empty_tag_fixture_is_atomic_in_the_cli_runner() {
     assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
     assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
     assert_eq!(observed.state.x87, input.fixture.initial_state.x87);
+}
+
+#[test]
+fn local_x87_fcom_st1_literal_fixtures_set_greater_equal_and_less_conditions() {
+    for (fixture, condition) in [
+        (FCOM_ST1_GREATER, 0u64),
+        (FCOM_ST1_EQUAL, 0x4000),
+        (FCOM_ST1_LESS, 0x0100),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 1);
+        let observed = snapshot(&result);
+        let mut expected = input.fixture.initial_state.clone();
+        expected.rip = HexU64(0x0010_0002);
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.status_word = HexU64(condition);
+        expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+        assert_eq!(observed.state, expected);
+    }
+}
+
+#[test]
+fn local_x87_fcom_st1_invalid_rhs_tag_fixture_is_atomic_with_budget_one() {
+    let (input, result) = run(FCOM_ST1_INVALID_RHS_TAG, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state, input.fixture.initial_state);
+}
+
+#[test]
+fn local_x87_fcom_st1_composes_with_fnstsw_ax() {
+    let mut fixture = Fixture::from_json(FCOM_ST1_LESS).unwrap().fixture;
+    fixture.case_id = "local_x87_fcom_st1_fnstsw_ax".into();
+    fixture.instruction_budget = 2;
+    fixture.stop_rip = Some(HexU64(0x0010_0004));
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.length = 4;
+    code.initial_bytes_hex = "d8d1dfe0".into();
+    code.comparison_mask_hex = "ffffffff".into();
+    let bytes = fixture.to_json().unwrap();
+    let (input, result) = run(&bytes, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 2);
+    let observed = snapshot(&result);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0004);
+    expected.gpr[0] = HexU64((expected.gpr[0].get() & !0xffff) | 0x0100);
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.status_word = HexU64(0x0100);
+    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+    assert_eq!(observed.state, expected);
 }
 
 #[test]

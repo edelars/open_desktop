@@ -208,6 +208,33 @@ fn x87_schema_admits_d9_ftst_and_a_budget_one_source_rejection() {
 }
 
 #[test]
+fn x87_schema_admits_fcom_st1_and_budget_one_two_operand_rejection() {
+    let mut fixture = x87_fixture().fixture;
+    fixture.case_id = "local_fcom_st1".into();
+    fixture.instruction_budget = 1;
+    fixture.stop_rip = Some(HexU64(0x1002));
+    fixture.expected_exit = ExpectedExit::StopAddress;
+    {
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = 2;
+        code.initial_bytes_hex = "d8d1".into();
+        code.comparison_mask_hex = "ffff".into();
+    }
+    fixture.validate().unwrap();
+
+    fixture.stop_rip = None;
+    fixture.expected_exit = ExpectedExit::Unsupported;
+    fixture.validate().unwrap();
+
+    fixture.stop_rip = Some(HexU64(0x1002));
+    assert!(fixture.validate().is_err());
+}
+
+#[test]
 fn conversion_is_explicit_and_has_its_own_digest() {
     let raw = include_bytes!("../../../tests/fixtures/x86/s0_09_mov_imm64.case.json");
     let old = crate::case::Fixture::from_json(raw).unwrap();
