@@ -404,3 +404,17 @@
   [plan](plans/STAGE_2.md#s2-31az-admit-sticky-de-in-bounded-m32-m64-fst-fstp),
   [report](reports/STAGE_2_REPORT.md#s2-31az--sticky-de-in-bounded-m32-m64-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31ba evidence:** exact DB38 raw FSTP now admits pre-existing masked IE
+  and DE alongside PE by changing only its local gate to `0x80dc`. It preserves
+  source bytes and incoming IE/DE/PE, generates no status flags, clears C1,
+  preserves C0/C2/C3, and changes TOP/tag only after its one atomic ten-byte
+  write. The existing source/tag pairs and all FCW/address checks remain.
+  Cross-width subnormal/SNaN FLD compositions, raw-SNaN narrow-FST composition,
+  all eight sticky combinations, forbidden controls, fault atomicity, CLI,
+  JIT-denial and x86-target native-denial coverage are included. Native runtime
+  is unexecuted on this arm64 host and physical acceptance remains deferred to
+  the final combined S2-31 substage under ISSUE-019. See [S2-31ba CPU contract](specs/CPU_CONTRACT.md#local-s2-31ba-sticky-ie-de-raw-fstp-m80fp-db-38),
+  [plan](plans/STAGE_2.md#s2-31ba-admit-sticky-ie-de-to-raw-binary80-fstp),
+  [report](reports/STAGE_2_REPORT.md#s2-31ba--sticky-ie-de-on-raw-binary80-fstp-m80fp),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

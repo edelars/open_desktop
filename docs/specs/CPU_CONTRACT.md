@@ -2668,8 +2668,9 @@ Normative source: Intel SDM revision 093, Vol.2A,
 The interpreter admits only exact bare `DB 38` in Long64 with an existing x87
 snapshot. The old physical TOP tag must be Valid and its original ten-byte
 binary80 payload must classify as canonical Normal. Accept FCW `0x037f`,
-`0x077f`, `0x0b7f`, or `0x0f7f`, and require `FSW & 0x80df == 0`; sticky PE and
-C1 are allowed. The destination receives the exact original bytes, with no
+`0x077f`, `0x0b7f`, or `0x0f7f`, and initially require `FSW & 0x80df == 0`;
+S2-31ba later widens the current DB38 gate to `FSW & 0x80dc == 0`, admitting
+sticky IE/DE/PE. The destination receives the exact original bytes, with no
 conversion or host floating-point operation.
 
 Before data access, validate the complete canonical48 ten-byte range
@@ -2711,14 +2712,16 @@ Exact `DB 38` additionally accepts a canonical binary80 QuietNaN only with a
 physical Special tag: exponent `0x7fff`, explicit integer bit one, quiet
 fraction bit one, either sign, and arbitrary remaining payload. Copy the raw
 ten bytes unchanged, including sign and payload. Do not normalize, round, use
-host floating point, or set new status flags. Preserve PE and existing C1 and
-C0/C2/C3 policy.
+host floating point, or set new status flags. Preserve incoming IE/DE/PE and
+C0/C2/C3; clear C1. S2-31ba widens the current DB38 gate to
+`FSW & 0x80dc == 0`.
 
-Retain four FCWs and `FSW & 0x80df == 0`. Validate the full canonical48
-ten-byte range, perform exactly one atomic write/no read, and pop/advance TOP
-only after success. Existing Valid+Normal, Zero+Zero, and Special+Infinity
-pairs remain accepted. SNaN, pseudo-QNaN/SNaN, pseudo-infinity, unnormal,
-pseudo-denormal, other classes and mismatched tags reject before access.
+Retain four FCWs and the current `FSW & 0x80dc == 0` gate. Validate the full
+canonical48 ten-byte range, perform exactly one atomic write/no read, and
+pop/advance TOP only after success. Existing Valid+Normal, Zero+Zero, and
+Special+Infinity pairs remain accepted. SNaN, pseudo-QNaN/SNaN, pseudo-infinity,
+unnormal, pseudo-denormal, other classes and mismatched tags reject before
+access.
 Native/JIT admission stays closed. The canonical binary80 QNaN layout is
 specified by Intel SDM Vol.1 Table 4-3 (revision 090); DB /7 FSTP m80fp is in
 Vol.2A pp.3-386–3-387 ([official revision 093 PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=503)).
@@ -2735,7 +2738,8 @@ physical TOP tagged Special: exponent `0x7fff`, explicit integer bit one,
 quiet bit zero, and a nonzero remaining fraction, with either sign. Copy the
 raw ten bytes unchanged. In particular, do not set the quiet bit, alter the
 payload, or add IE or any other status flag. Keep the current C1-clear and
-PE/C0/C2/C3-preserve store policy, the four FCWs, and `FSW & 0x80df == 0`.
+IE/DE/PE/C0/C2/C3-preserve store policy, the four FCWs, and the S2-31ba
+`FSW & 0x80dc == 0` gate.
 
 Validate the full canonical48 ten-byte range, perform one atomic write/no read,
 and pop/advance TOP only after successful write. Valid+Normal, Zero+Zero,
@@ -2756,8 +2760,8 @@ Exact `DB 38` additionally accepts canonical binary80 subnormal only with
 physical TOP tagged Special: exponent zero, explicit integer bit zero, and
 nonzero fraction, with either sign. Copy the raw ten bytes unchanged. Do not
 normalize, flush, round, or add DE/UE/PE or any other status flags. Keep the
-current C1-clear and PE/C0/C2/C3-preserve store policy, four FCWs, and
-`FSW & 0x80df == 0` gate.
+current C1-clear and IE/DE/PE/C0/C2/C3-preserve store policy, four FCWs, and
+the S2-31ba `FSW & 0x80dc == 0` gate.
 
 Validate the full canonical48 ten-byte range, perform one atomic write/no read,
 and pop/advance TOP only after successful write. Valid+Normal, Zero+Zero,
@@ -4265,8 +4269,9 @@ unchanged, so positive zero is `00000000000000000000` and negative zero is
 `00000000000000000080`. Mismatched tag/payload pairs remain Unsupported before
 operand access.
 
-The existing four FCWs and `FSW & 0x80df == 0` gate remain. Zero creates no
-new status flags, preserves PE and C0/C2/C3, and clears C1. After complete
+The existing four FCWs remain; S2-31ba widens the current DB38 gate to
+`FSW & 0x80dc == 0`. Zero creates no new status flags, preserves IE/DE/PE and
+C0/C2/C3, and clears C1. After complete
 canonical48 ten-byte preflight, exactly one atomic write occurs and no data read
 is performed. Only successful writes pop/empty physical TOP and advance TOP;
 all raw payloads and existing pointer/retirement behavior are preserved.
@@ -4283,8 +4288,9 @@ Valid+canonical-Normal and Zero+canonical-Zero pairs remain accepted.
 Pseudo-infinity, NaNs, finite special classes, unnormal encodings, and infinity
 with Valid/Zero/Empty tags remain Unsupported before data access.
 
-Retain the four FCWs and `FSW & 0x80df == 0` store gate. Infinity adds no flags,
-preserves PE and C0/C2/C3, and clears C1 under the existing local policy.
+Retain the four FCWs and the S2-31ba `FSW & 0x80dc == 0` store gate. Infinity
+adds no flags, preserves IE/DE/PE and C0/C2/C3, and clears C1 under the
+existing local policy.
 Validate the complete canonical48 ten-byte range and perform exactly one atomic
 write/no read; pop and advance TOP only after success. Preserve all payloads,
 pointers, and retirement behavior. JIT/native admission remains denied. The
@@ -4486,4 +4492,36 @@ retaining DE. Binary32/64 subnormal store results remain Unsupported.
 admission and physical acceptance remain deferred under ISSUE-019. See the
 [plan](../plans/STAGE_2.md#s2-31az-admit-sticky-de-in-bounded-m32-m64-fst-fstp),
 [report](../reports/STAGE_2_REPORT.md#s2-31az--sticky-de-in-bounded-m32-m64-stores),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31ba-sticky-ie-de-raw-fstp-m80fp-db-38"></a>
+
+## Local S2-31ba: sticky IE/DE on raw `FSTP m80fp [RAX]` (`DB 38`)
+
+Only `bounded_x87_m80fp_source` widens its FSW gate from
+`FSW & 0x80df == 0` to `FSW & 0x80dc == 0`. This admits masked sticky IE and DE
+alongside PE while continuing to reject ZE, OE, UE, SF, ES and B. Keep the four
+FCWs and current source/tag pairs unchanged: Valid+canonical Normal,
+Zero+canonical Zero, and Special+canonical Infinity, QNaN, SNaN or Subnormal.
+Pseudo-denormals, unnormals and mismatched tags remain Unsupported before
+memory access.
+
+The store copies all ten source bytes exactly; it neither normalizes or quiets
+the encoding nor generates status flags. Preserve incoming IE/DE/PE and C0/C2/C3,
+clear C1, and update TOP/tag only after the complete canonical48 ten-byte range
+has passed preflight and the one atomic write succeeds. Write failure leaves the
+full CPU state and destination bytes unchanged.
+
+Cross-width masked sequences preserve the load result and its flags: binary32
+or binary64 subnormal FLD followed by DB38 stores a canonical binary80 Normal
+while retaining DE without UE/PE; binary32/64 SNaN FLD followed by DB38 stores
+the quieted binary80 QNaN with IE; raw binary80 SNaN FLD followed by narrow FST
+and DB38 stores the original signaling encoding with IE. `FNSTSW` observes the
+sticky flags; `FNCLEX` clears them. General x87 exception delivery, JIT/native
+admission, native runtime execution and physical acceptance remain outside this
+bounded slice under ISSUE-019. DB /7 FSTP m80fp is specified in Intel SDM
+revision 093 Vol.2A pp.3-386–3-387 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=503)).
+See the [plan](../plans/STAGE_2.md#s2-31ba-admit-sticky-ie-de-to-raw-binary80-fstp),
+[report](../reports/STAGE_2_REPORT.md#s2-31ba--sticky-ie-de-on-raw-binary80-fstp-m80fp),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).

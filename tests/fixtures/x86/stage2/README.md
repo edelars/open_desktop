@@ -2254,3 +2254,16 @@ Physical acceptance remains deferred under ISSUE-019. See the
 [S2-31az CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31az-admit-sticky-de-m32-m64-fstfstp),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31az-admit-sticky-de-in-bounded-m32-m64-fst-fstp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31az--sticky-de-in-bounded-m32-m64-stores).
+
+
+### S2-31ba sticky IE/DE raw DB38 fixtures
+
+The positive bare DB38 fixture and negative DB38/DFE0/FNSTSW fixture start
+with masked IE, DE and PE set. Both preserve the exact raw ten-byte binary80
+source through an atomic store and pop, retain all three sticky flags, and
+observe status `0x4d23` after the pop. Interpreter/schema reachability and
+explicit JIT denial are tested; the native-admission unit test is compiled for
+the x86 runner target. Native runtime and physical behavior remain deferred
+under ISSUE-019. See the [S2-31ba CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ba-sticky-ie-de-raw-fstp-m80fp-db-38),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ba-admit-sticky-ie-de-to-raw-binary80-fstp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ba--sticky-ie-de-on-raw-binary80-fstp-m80fp).

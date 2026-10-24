@@ -6192,3 +6192,31 @@ reports only the pre-existing unmapped `.serena/` directory, which was left
 untouched. Independent review is pending. Native runtime and physical
 acceptance remain deferred to the final combined S2-31 substage under
 ISSUE-019.
+
+
+<a id="s2-31ba--sticky-ie-de-on-raw-binary80-fstp-m80fp"></a>
+
+## S2-31ba — sticky IE/DE on raw binary80 FSTP m80fp
+
+Only the exact DB38 raw-store helper now admits masked sticky IE and DE
+alongside PE, by changing its local `FSW & 0x80df == 0` predicate to
+`FSW & 0x80dc == 0`. The four FCWs, accepted tag/class pairs, full canonical48
+range check, one atomic ten-byte write and post-success pop remain unchanged.
+The operation copies raw source bytes exactly, adds no status flags, preserves
+IE/DE/PE and C0/C2/C3, and clears C1. ZE/OE/UE/SF/ES/B and malformed class/tag
+pairs still reject before data access.
+
+Unit coverage exercises all eight incoming IE/DE/PE combinations across every
+accepted class/sign, FCW and TOP, plus forbidden bits and full-state write/range
+failure atomicity. Cross-width tests cover binary32/64 subnormal loads followed
+by DB38 with DE and no UE/PE, binary32/64 SNaN loads followed by raw stores with
+quieted payload and IE, and raw m80 SNaN load→m32 FST→DB38 preserving the
+signaling source bytes with IE. Two literal fixtures run through the
+interpreter; explicit JIT and native-admission denial are checked. Focused
+ISA/CLI/JIT checks passed. The offline workspace suite passed 782 tests with
+zero failures; workspace all-target checking and Linux x86_64 all-target checks
+for `od-runner` and `od-x86-runner` passed. Formatting and diff checks passed.
+Graphify updated successfully (4,143 nodes, 8,532 edges, 209 communities). The
+layout checker reports only the pre-existing
+unmapped `.serena/` directory, which was left untouched. Independent review is
+pending. Native runtime and physical acceptance remain deferred under ISSUE-019.

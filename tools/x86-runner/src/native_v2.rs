@@ -1916,6 +1916,10 @@ mod tests {
                 .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31at_fstp_m80fp_negative_subnormal_fnstsw.case.json")
                 .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ba_fstp_m80fp_sticky_status.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ba_fstp_m80fp_negative_snan_sticky_fnstsw.case.json")
+                .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp.case.json")
                 .as_slice(),
             include_bytes!(
@@ -4192,6 +4196,19 @@ mod tests {
         for bytes in [
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31az_fld_m32_subnormal_fst_m64fp.case.json").as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31az_fld_m32_largest_negative_subnormal_fstp_m64fp_fnstsw.case.json").as_slice(),
+        ] {
+            let loaded = Fixture::from_json(bytes).unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
+        }
+    }
+
+    #[test]
+    fn s2_31ba_sticky_status_m80_store_fixtures_remain_outside_native_admission() {
+        for bytes in [
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ba_fstp_m80fp_sticky_status.case.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ba_fstp_m80fp_negative_snan_sticky_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
             let actual = loaded.fixture.initial_state.to_cpu().unwrap();

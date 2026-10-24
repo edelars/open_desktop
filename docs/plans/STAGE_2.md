@@ -263,6 +263,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ax | Convert Special-tagged canonical binary80 SignalingNaN through exact D910/D918 stores, quieting binary32 and setting sticky IE | S2-31av, S2-31aw |
 | [x] | S2-31ay | Admit masked sticky IE only in exact D910/D918 and DD10/DD18 stores; preserve sticky IE/PE and successful SNaN status | S2-31ax |
 | [ ] | S2-31az | Admit masked sticky DE in the same bounded m32/m64 FST/FSTP helpers; retain IE/DE/PE and keep subnormal store results unsupported | S2-31ay |
+| [x] | S2-31ba | Admit masked sticky IE/DE in exact raw DB38 FSTP m80fp stores; preserve bytes and pop atomically | S2-31az |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3602,6 +3603,29 @@ FNSTSW/FNCLEX, repeated stores, forbidden environment controls, full-state
 fault atomicity, CLI fixtures, and JIT/native denial. Native runtime and
 physical acceptance remain deferred to the final combined S2-31 substage under
 ISSUE-019.
+
+
+<a id="s2-31ba-admit-sticky-ie-de-to-raw-binary80-fstp"></a>
+
+#### S2-31ba. Admit sticky IE/DE on exact raw DB38 FSTP m80fp
+
+Relax only `bounded_x87_m80fp_source` from `FSW & 0x80df == 0` to
+`FSW & 0x80dc == 0`, admitting masked sticky IE and DE alongside PE while
+continuing to reject ZE, OE, UE, SF, ES and B. Keep the four FCWs and all
+existing tag/class pairs unchanged: Valid+Normal, Zero+Zero, and
+Special+Infinity/QNaN/SNaN/Subnormal. Pseudo-denormals, unnormals and tag/class
+mismatches remain Unsupported before data access.
+
+DB38 copies all ten bytes unchanged, generates no flags, preserves incoming
+IE/DE/PE and C0/C2/C3, and clears C1. Validate the full canonical48 ten-byte
+range and complete the single atomic write before changing status, pointers,
+RIP, or popping old TOP. Cover all eight sticky combinations across source
+classes/signs, FCWs and TOP wrap; subnormal m32/m64 FLD→DB38 retains DE without
+UE/PE, m32/m64 SNaN FLD→DB38 retains the quieted QNaN and IE, and raw m80
+SNaN FLD→narrow FST→DB38 retains its signaling bytes while carrying IE.
+Include forbidden environment gates, full-state write/range fault atomicity,
+FNSTSW, FNCLEX, literal interpreter fixtures, and explicit JIT/native denial.
+Native runtime and physical acceptance remain deferred under ISSUE-019.
 
 
 <a id="s2-31ax-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m32fp"></a>
