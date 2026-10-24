@@ -2502,6 +2502,8 @@ mod tests {
             ("0100000000000080ff7f", false),
             ("00000000000000c0ff7f", true),
             ("0100000000000040ff7f", false),
+            ("0100000000000000ff7f", false),
+            ("0100000000000000ffff", false),
         ] {
             let mut nearby = template.clone();
             nearby["memory"][1]["initial_bytes_hex"] = serde_json::Value::String(raw.into());

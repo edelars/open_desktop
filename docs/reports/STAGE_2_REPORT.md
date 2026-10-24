@@ -5426,5 +5426,8 @@ the CLI fixture test (1), and the JIT-denial integration test (1) passed.
 workspace); workspace and Linux x86 runner checks, `cargo fmt --all -- --check`,
 and `git diff --check` passed. `graphify update .` completed. The layout check
 reports the pre-existing unmapped `.serena/` directory; it was left untouched.
-Independent review is pending. Mac mini and physical x86 tests were not run;
-physical acceptance remains deferred to the combined final S2-31 substage.
+Independent gpt-6.1-sol medium review found no remaining defects. It identified
+missing pseudo-signaling-NaN neighbor vectors; signed cases were added to the
+interpreter and schema/CLI checks, and the focused tests plus formatting/diff
+checks passed again. Mac mini and physical x86 tests were not run; physical
+acceptance remains deferred to the combined final S2-31 substage.
