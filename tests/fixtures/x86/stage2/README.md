@@ -1313,6 +1313,22 @@ denies D9 FC.
 Normative source: Intel SDM revision 093, Vol.2A, “FRNDINT—Round to Integer,”
 p.3-372 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=490)).
 
+### S2-31b FISTP m32int schema and literal coverage
+
+The schema admits only bare `DB 18` and exact `DB 18 DF E0` (FNSTSW AX).
+Literal cases cover a successful unaligned Dword write split across adjacent
+fixture regions, the exact FNSTSW composition, an Empty old physical TOP tag,
+and a signed-i32 overflow. The two success cases preserve all raw x87 payloads,
+record the destination linear address in FDP, pop exactly one physical slot,
+and make the stored bytes observable. No-stop/budget-one unsupported cases
+preserve their full CPU and memory snapshots. Injected store permission and
+architectural faults are exercised by interpreter tests. Native admission
+explicitly rejects FISTP; flat fixture RAM does not establish MMU, page-walk,
+MMIO, SMP, or physical x86 behavior.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer”
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
 Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
 

@@ -221,6 +221,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30am | Bare `DF E9` FUCOMIP ST(0), ST(1), bounded canonical-Normal compare to RFLAGS and one physical TOP pop; native closed | S2-30al |
 | [x] | S2-30an | Bare indexed DB/DF register FCOMI-family forms for ST(i), bounded canonical-Normal compare and optional physical TOP pop; native closed | S2-30am |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
+| [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2015,6 +2016,21 @@ RIP and one retirement; preserve tags, TOP and unrelated state. C0/C2/C3 are
 retained by local policy. Reject unsupported values, environment, prefixes,
 and execution boundaries atomically. Native admission remains closed. This
 does not complete S2-31 or define general x87 exceptions.
+
+#### S2-31b. Bare bounded `FISTP m32int [RAX]` (`DB 18`), partial slice
+
+Implement only bare `DB 18` in Long64 with a canonical 4-byte RAX destination
+and an existing x87 snapshot. Preflight the old physical TOP tag and canonical
+Normal source; accept unbiased exponent 0..31, the four existing all-masked
+PC64 control words, and `FSW & 0x80df == 0`. Use integer quotient/remainder
+rounding and accept only rounded values in signed i32 range. Out-of-domain and
+overflow inputs are Unsupported before data access. Validate the entire
+canonical48 destination before exactly one atomic Dword write; only after
+success empty old TOP, advance TOP, update sticky PE/C1, FIP/FDP/RIP and retire
+once. Preserve every x87 payload and unrelated state. Test exact `DB 18` and
+`DB 18 DF E0` fixtures, overflow and store-fault atomicity, and the one-write,
+no-read memory contract. Native admission remains closed. This is a local
+partial slice and does not complete S2-31 or model x87 exception delivery.
 
 ### S2-32. Остальные обязательные x87 формы
 

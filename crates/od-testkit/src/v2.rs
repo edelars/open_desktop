@@ -761,6 +761,8 @@ impl Fixture {
                 "ded9dfe0" => ("ded9dfe0", 4),
                 "d9fcdfe0" => ("d9fcdfe0", 4),
                 "d9fc" => ("d9fc", 2),
+                "db18" => ("db18", 2),
+                "db18dfe0" => ("db18dfe0", 4),
                 _ if code_bytes.len() == 4
                     && code_bytes.starts_with("d8c")
                     && matches!(code_bytes.as_bytes()[3], b'0'..=b'f') =>
@@ -897,6 +899,27 @@ impl Fixture {
                     let top = ((x87.status_word.get() >> 11) & 7) as u8;
                     (x87.tag_word.get() >> (u32::from(top) * 2)) & 3 != 0
                 });
+            let is_fistp_overflow_rejected = code_bytes == "db18"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
+                    let exponent = u16::from_le_bytes([
+                        u8::from_str_radix(&x87.registers[usize::from(top)][16..18], 16)
+                            .unwrap_or(0),
+                        u8::from_str_radix(&x87.registers[usize::from(top)][18..20], 16)
+                            .unwrap_or(0)
+                            & 0x7f,
+                    ]) & 0x7fff;
+                    exponent >= 0x401e
+                });
+            let is_fistp_tag_rejected = code_bytes == "db18"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as u32;
+                    (x87.tag_word.get() >> (top * 2)) & 3 != 0
+                });
             let is_fcom_source_rejected = code_bytes.len() == 4
                 && code_bytes.starts_with("d8d")
                 && matches!(code_bytes.as_bytes()[3], b'0'..=b'7')
@@ -975,6 +998,8 @@ impl Fixture {
                     || is_fabs_source_rejected
                     || is_ftst_source_rejected
                     || is_frndint_source_rejected
+                    || is_fistp_overflow_rejected
+                    || is_fistp_tag_rejected
                     || is_fcom_source_rejected
                     || is_fcomp_source_rejected
                     || is_fcompp_source_rejected

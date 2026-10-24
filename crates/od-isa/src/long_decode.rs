@@ -451,6 +451,8 @@ pub enum Operation {
     Ftst,
     /// Bare `D9 FC` FRNDINT in the bounded PC64/finite Normal profile.
     Frndint,
+    /// Bare `DB 18` FISTP dword integer at [RAX], bounded finite profile.
+    FistpM32IntRax,
     /// Bare `D8 D0+i` FCOM ST(i), bounded canonical-Normal register compare.
     FcomSt {
         source: u8,
@@ -1078,6 +1080,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 match modrm {
                     0xe2 => Operation::Fnclex,
                     0xe3 => Operation::Fninit,
+                    0x18 => Operation::FistpM32IntRax,
                     _ => indexed_x87_compare(opcode.byte, modrm)
                         .ok_or_else(|| self.unsupported(opcode))?,
                 }
@@ -2254,6 +2257,7 @@ mod tests {
                 match second {
                     0xe2 => Ok(Operation::Fnclex),
                     0xe3 => Ok(Operation::Fninit),
+                    0x18 => Ok(Operation::FistpM32IntRax),
                     _ if indexed_x87_compare(0xdb, second).is_some() => {
                         Ok(indexed_x87_compare(0xdb, second).unwrap())
                     }
@@ -2342,6 +2346,7 @@ mod tests {
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
+                    0x18 => Ok(Operation::FistpM32IntRax),
                     0xe2 => Ok(Operation::Fnclex),
                     0xe3 => Ok(Operation::Fninit),
                     _ if indexed_x87_compare(0xdb, modrm).is_some() => {
@@ -2513,6 +2518,8 @@ mod tests {
                     Ok(Operation::Fnclex)
                 } else if opcode == 0xdb && modrm == 0xe3 {
                     Ok(Operation::Fninit)
+                } else if opcode == 0xdb && modrm == 0x18 {
+                    Ok(Operation::FistpM32IntRax)
                 } else if opcode == 0xdf && modrm == 0xe0 {
                     Ok(Operation::FnstswAx)
                 } else if let Some(operation) = indexed_x87_compare(opcode, modrm) {

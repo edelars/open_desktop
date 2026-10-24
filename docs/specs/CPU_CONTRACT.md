@@ -2663,6 +2663,44 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## Local S2-31b: bounded `FISTP m32int [RAX]` (`DB 18`)
+
+The interpreter admits only bare `DB 18` in Long64: a Dword store through
+RAX, with address size 64, no index/displacement/segment override, and a full
+canonical48 check over all four bytes. Preflight requires an existing x87
+snapshot, one of FCW `0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`, and
+`FSW & 0x80df == 0`; sticky PE is allowed. Only the old physical TOP tag and
+payload are inspected. The tag must be Valid, the raw binary80 value canonical
+Normal, and its unbiased exponent 0..31. Other physical tags and register
+payloads remain unexamined.
+
+For significand `s`, exponent `e`, and `k=63-e`, compute `d=1<<k`,
+`q=s>>k`, and `r=s&(d-1)`, then use integer-only
+`round_quotient_magnitude(sign,q,r,d,RC)`. Accept a rounded magnitude at most
+`0x7fffffff` for positive inputs and `0x80000000` for negative inputs. Encode
+the low 32 bits with unsigned two's-complement arithmetic. Any unsupported
+source, out-of-domain value or signed-i32 overflow returns Unsupported before
+the data access.
+
+After source preflight, validate the complete canonical48 range using
+`MemoryOperand::access_address_48`. Issue exactly one `GuestMemory::write_integer`
+Dword store, with no data read. Store errors propagate unchanged; x87 and CPU
+state remain unchanged and the backend's atomic-write contract leaves RAM
+unchanged. Only after success, mark the old physical TOP tag Empty, increment
+TOP modulo eight, set PE sticky iff `r != 0`, set C1 iff rounded magnitude
+exceeds `q`, record FIP as the starting RIP and FDP as the destination linear
+address, then advance RIP by two and retire once. Preserve all eight raw
+payloads, FCW, FOP, C0/C2/C3, other status bits, GPRs, RFLAGS and unrelated
+state. Flat fixture mapping/permission errors are not translated to #PF.
+
+The schema admits only exact `DB 18` or `DB 18 DF E0` programs; native x87
+admission explicitly denies this operation. This local slice does not model
+unmasked exceptions, deferred delivery, stack faults, CR0/#NM, MMIO, SMP,
+translation/page walks, or general x87 semantics. It does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
+pp.3-358–3-359 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ## Local S2-31a: bounded `FRNDINT` (`D9 FC`)
 
 The interpreter admits only bare `D9 FC` in an existing x87-state snapshot.

@@ -371,6 +371,18 @@ fn step_tracked_with_stop(
     } else {
         None
     };
+    let fistp_m32int = if instruction.operation == Operation::FistpM32IntRax {
+        match bounded_x87_fistp_m32int_result(state) {
+            Some(result) => Some(result),
+            None => {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+        }
+    } else {
+        None
+    };
     if let Operation::FcomSt { source } = instruction.operation
         && bounded_x87_fcom_result(state, source).is_none()
     {
@@ -434,6 +446,7 @@ fn step_tracked_with_stop(
         | Operation::Fabs
         | Operation::Ftst
         | Operation::Frndint
+        | Operation::FistpM32IntRax
         | Operation::FcomSt { .. }
         | Operation::FcompSt { .. }
         | Operation::Fcompp
@@ -777,6 +790,36 @@ fn step_tracked_with_stop(
             opcode: instruction.opcode.byte,
         });
     }
+    if let Some((value, inexact, incremented)) = fistp_m32int {
+        // S2-31b has one admitted addressing form. Validate the complete
+        // canonical linear range only after x87 preflight, then issue one
+        // integer write. No CPU state changes until that write succeeds.
+        let destination = MemoryOperand {
+            base: AddressBase::Register(Register::Rax),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: OperandSize::Qword,
+            size: OperandSize::Dword,
+        };
+        let address = match destination.access_address_48(state, next_rip) {
+            Ok(address) => address,
+            Err(error) => return report_memory_error(error),
+        };
+        memory.write_integer(address, context, OperandSize::Dword, u64::from(value))?;
+        let x87 = state.x87.as_mut().expect("FISTP state was prevalidated");
+        let old_top = x87.top();
+        x87.set_tag(old_top, X87Tag::Empty);
+        let new_top = old_top.wrapping_add(1) & 7;
+        x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9)))
+            | (u16::from(new_top) << 11)
+            | if inexact { 0x0020 } else { 0 }
+            | if incremented { 0x0200 } else { 0 };
+        x87.instruction_pointer = state.rip;
+        x87.data_pointer = address;
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
     match instruction.operation {
         Operation::Fninit => state
             .x87
@@ -809,6 +852,7 @@ fn step_tracked_with_stop(
             x87.status_word &= !(1 << 9);
             x87.instruction_pointer = state.rip;
         }
+        Operation::FistpM32IntRax => unreachable!("FISTP commits in its prevalidated store path"),
         Operation::Fabs => {
             let mut source =
                 bounded_x87_normal_st0_source(state).expect("FABS source was prevalidated");
@@ -2043,6 +2087,55 @@ fn bounded_x87_frndint_result(state: &LongModeState) -> Option<([u8; 10], bool, 
     )?
     .to_bytes();
     Some((result, inexact, incremented))
+}
+
+/// Preflight bare `DB 18` for the local bounded FISTP m32int profile.
+/// The raw x87 payload is left untouched; the caller commits the physical tag,
+/// TOP and status effects only after the destination write succeeds.
+fn bounded_x87_fistp_m32int_result(state: &LongModeState) -> Option<(u32, bool, bool)> {
+    let x87 = state.x87.as_ref()?;
+    if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
+        || x87.status_word & 0x80df != 0
+    {
+        return None;
+    }
+    let top = x87.top();
+    if x87.tag(top)? != X87Tag::Valid {
+        return None;
+    }
+    let finite = X87Binary80::from_bytes(x87.registers[usize::from(top)]).normalize_finite()?;
+    if finite.source_class() != X87Binary80Class::Normal || !(0..=31).contains(&finite.exponent()) {
+        return None;
+    }
+    let shift = 63 - finite.exponent() as u32;
+    let denominator = 1_u64 << shift;
+    let significand = finite.significand();
+    let quotient = significand >> shift;
+    let remainder = significand & (denominator - 1);
+    let rounding = match x87.control_word {
+        0x037f => RationalRoundingMode::NearestTiesEven,
+        0x077f => RationalRoundingMode::TowardNegative,
+        0x0b7f => RationalRoundingMode::TowardPositive,
+        0x0f7f => RationalRoundingMode::TowardZero,
+        _ => return None,
+    };
+    let magnitude =
+        round_quotient_magnitude(finite.sign(), quotient, remainder, denominator, rounding)?;
+    let limit = if finite.sign() {
+        0x8000_0000_u128
+    } else {
+        0x7fff_ffff_u128
+    };
+    if magnitude > limit {
+        return None;
+    }
+    let low = magnitude as u32;
+    let encoded = if finite.sign() {
+        0_u32.wrapping_sub(low)
+    } else {
+        low
+    };
+    Some((encoded, remainder != 0, magnitude > u128::from(quotient)))
 }
 
 /// Compare old physical ST(0) and ST(i) without converting through a host
@@ -18540,6 +18633,298 @@ mod tests {
             );
             assert_eq!(result.status_word & 0x0220, 0x0220);
             assert_eq!(state.rip, 0x8282);
+        }
+    }
+
+    #[test]
+    fn fistp_m32int_commits_one_exact_store_before_popping_physical_top() {
+        let mut state = LongModeState::default();
+        state.rip = 0x8300;
+        state.gpr[Register::Rax as usize] = 0x1005;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0x3820; // TOP=7, sticky PE already set.
+        x87.registers[7] = binary80_normal(0xc000_0000_0000_0000, 0x3fff, false); // +1.5
+        x87.set_tag(7, X87Tag::Valid);
+        state.x87 = Some(x87);
+        let registers_before = state.x87.as_ref().unwrap().registers;
+        let mut memory = Memory::at(&[0xdb, 0x18], state.rip);
+        memory.bytes = vec![0xaa; 32];
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(&memory.bytes[5..9], &[2, 0, 0, 0]);
+        assert_eq!(&memory.bytes[..5], &[0xaa; 5]);
+        assert_eq!(&memory.bytes[9..], &[0xaa; 23]);
+        assert_eq!(
+            memory.accesses,
+            vec![(AccessKind::Write, 0x1005, 4)],
+            "FISTP must issue one write and no data read"
+        );
+        let result = state.x87.as_ref().unwrap();
+        assert_eq!(
+            result.registers, registers_before,
+            "FISTP preserves payload bytes"
+        );
+        assert_eq!(result.tag(7), Some(X87Tag::Empty));
+        assert_eq!(result.top(), 0);
+        assert_eq!(result.status_word & 0x0e20, 0x0220);
+        assert_eq!(result.status_word & 0x0100, 0);
+        assert_eq!(result.instruction_pointer, 0x8300);
+        assert_eq!(result.data_pointer, 0x1005);
+        assert_eq!(state.rip, 0x8302);
+    }
+
+    #[test]
+    fn fistp_m32int_rejects_overflow_before_data_access_and_keeps_faults_atomic() {
+        let setup = || {
+            let mut state = LongModeState::default();
+            state.rip = 0x8340;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0;
+            x87.registers[0] = binary80_normal(1 << 63, 0x401e, false); // +2^31
+            x87.set_tag(0, X87Tag::Valid);
+            state.x87 = Some(x87);
+            state
+        };
+
+        let mut overflow = setup();
+        let before = overflow.clone();
+        let mut memory = Memory::at(&[0xdb, 0x18], overflow.rip);
+        assert_eq!(
+            step(&mut overflow, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xdb })
+        );
+        assert_eq!(overflow, before);
+        assert!(
+            memory.accesses.is_empty(),
+            "overflow must precede data access"
+        );
+
+        let mut denied = setup();
+        denied.x87.as_mut().unwrap().registers[0] = binary80_normal(1 << 63, 0x3fff, false); // +1, representable
+        let before = denied.clone();
+        let mut memory = Memory::at(&[0xdb, 0x18], denied.rip);
+        memory.deny_writes = true;
+        assert!(matches!(
+            step(&mut denied, &mut memory, AccessContext::default()),
+            Err(MemoryError::PermissionDenied {
+                address: 0x1000,
+                access: AccessKind::Write
+            })
+        ));
+        assert_eq!(
+            denied, before,
+            "failed store must not pop or update x87 state"
+        );
+        assert_eq!(memory.accesses, vec![(AccessKind::Write, 0x1000, 4)]);
+
+        let mut injected = setup();
+        injected.x87.as_mut().unwrap().registers[0] = binary80_normal(1 << 63, 0x3fff, false);
+        let before = injected.clone();
+        let mut memory = Memory::at(&[0xdb, 0x18], injected.rip);
+        let ram_before = memory.bytes.clone();
+        memory.error = Some(MemoryError::Architectural(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(2),
+            linear_address: Some(0x1000),
+        }));
+        memory.error_kind = Some(AccessKind::Write);
+        assert_eq!(
+            step(&mut injected, &mut memory, AccessContext::default()),
+            Err(MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(2),
+                linear_address: Some(0x1000),
+            }))
+        );
+        assert_eq!(
+            injected, before,
+            "faulting store must leave CPU state unchanged"
+        );
+        assert_eq!(
+            memory.bytes, ram_before,
+            "faulting store must leave RAM unchanged"
+        );
+
+        let mut address_fault = setup();
+        address_fault.gpr[Register::Rax as usize] = 0x0000_7fff_ffff_fffe;
+        address_fault.x87.as_mut().unwrap().registers[0] = binary80_normal(1 << 63, 0x3fff, false);
+        let before = address_fault.clone();
+        let mut memory = Memory::at(&[0xdb, 0x18], address_fault.rip);
+        assert_eq!(
+            step(&mut address_fault, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }))
+        );
+        assert_eq!(address_fault, before);
+        assert!(
+            memory.accesses.is_empty(),
+            "canonical range failure precedes store"
+        );
+    }
+
+    #[test]
+    fn fistp_m32int_accepts_negative_i32_minimum_with_unsigned_encoding() {
+        let mut state = LongModeState::default();
+        state.rip = 0x8380;
+        state.gpr[Register::Rax as usize] = 0x1000;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x0f7f;
+        x87.status_word = 0;
+        x87.registers[0] = binary80_normal(1 << 63, 0x401e, true); // -2^31
+        x87.set_tag(0, X87Tag::Valid);
+        state.x87 = Some(x87);
+        let mut memory = Memory::at(&[0xdb, 0x18], state.rip);
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(&memory.bytes[..4], &[0, 0, 0, 0x80]);
+        assert_eq!(state.x87.as_ref().unwrap().tag(0), Some(X87Tag::Empty));
+        assert_eq!(state.x87.as_ref().unwrap().status_word & 0x0220, 0);
+    }
+
+    #[test]
+    fn fistp_m32int_matches_literal_rounding_and_signed_boundary_oracles() {
+        fn execute_case(raw: [u8; 10], fcw: u16, expected: Option<(u32, u16)>, label: &str) {
+            let mut state = LongModeState::default();
+            state.rip = 0x8400;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = fcw;
+            x87.status_word = 0x4500; // Preserve C0/C2/C3 through FISTP.
+            x87.registers[0] = raw;
+            x87.set_tag(0, X87Tag::Valid);
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xdb, 0x18, 0xdf, 0xe0], state.rip);
+            memory.bytes = vec![0xa5; 32];
+
+            let outcome = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 2,
+                    stop_rip: Some(0x8404),
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            match expected {
+                Some((stored, status_bits)) => {
+                    assert_eq!(outcome.exit, RunExit::StopAddress, "{label}");
+                    assert_eq!(outcome.instructions_executed, 2, "{label}");
+                    assert_eq!(&memory.bytes[..4], &stored.to_le_bytes(), "{label}");
+                    assert_eq!(&memory.bytes[4..], &[0xa5; 28], "{label}");
+                    assert_eq!(
+                        memory.accesses,
+                        vec![(AccessKind::Write, 0x1000, 4)],
+                        "{label}"
+                    );
+                    let x87 = state.x87.as_ref().unwrap();
+                    let expected_fsw = (0x4500 & !(7 << 11 | 1 << 9)) | (1 << 11) | status_bits;
+                    assert_eq!(x87.status_word, expected_fsw, "{label}");
+                    assert_eq!(
+                        state.gpr[Register::Rax as usize] & 0xffff,
+                        expected_fsw as u64,
+                        "{label}"
+                    );
+                    assert_eq!(x87.tag(0), Some(X87Tag::Empty), "{label}");
+                    assert_eq!(x87.registers[0], raw, "{label}");
+                    assert_eq!(x87.instruction_pointer, 0x8400, "{label}");
+                    assert_eq!(x87.data_pointer, 0x1000, "{label}");
+                }
+                None => {
+                    assert_eq!(
+                        outcome.exit,
+                        RunExit::Unsupported { opcode: 0xdb },
+                        "{label}"
+                    );
+                    assert_eq!(outcome.instructions_executed, 0, "{label}");
+                    assert_eq!(state, before, "{label}");
+                    assert_eq!(&memory.bytes[..4], &[0xa5; 4], "{label}");
+                    assert!(memory.accesses.is_empty(), "{label}");
+                }
+            }
+        }
+
+        // Exact +/-1 and inexact +/-1.5 are literal canonical binary80
+        // encodings. Expected stores/status are independent hand-derived data.
+        let exact_positive = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x3f];
+        let exact_negative = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xbf];
+        let tie_positive = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xff, 0x3f];
+        let tie_negative = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xff, 0xbf];
+        for (fcw, name, expected_positive, flags_positive, expected_negative, flags_negative) in [
+            (0x037f, "RN", 2, 0x220, 0xffff_fffe, 0x220),
+            (0x077f, "RD", 1, 0x020, 0xffff_fffe, 0x220),
+            (0x0b7f, "RU", 2, 0x220, 0xffff_ffff, 0x020),
+            (0x0f7f, "RZ", 1, 0x020, 0xffff_ffff, 0x020),
+        ] {
+            execute_case(
+                exact_positive,
+                fcw,
+                Some((1, 0x800)),
+                &format!("{name} exact +1"),
+            );
+            execute_case(
+                exact_negative,
+                fcw,
+                Some((u32::MAX, 0x800)),
+                &format!("{name} exact -1"),
+            );
+            execute_case(
+                tie_positive,
+                fcw,
+                Some((expected_positive, 0x800 | flags_positive)),
+                &format!("{name} +1.5"),
+            );
+            execute_case(
+                tie_negative,
+                fcw,
+                Some((expected_negative, 0x800 | flags_negative)),
+                &format!("{name} -1.5"),
+            );
+        }
+
+        // +2147483647.5: LE 00000000ffffffff1d40. RN/RU overflow to +2^31;
+        // RD/RZ retain INT32_MAX. -2147483648.5: LE 00000080000000801ec0.
+        // RN/RU/RZ retain INT32_MIN; RD overflows to -2147483649.
+        let positive_boundary = [0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x1d, 0x40];
+        let negative_boundary = [0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x1e, 0xc0];
+        for (fcw, name) in [
+            (0x037f, "RN"),
+            (0x077f, "RD"),
+            (0x0b7f, "RU"),
+            (0x0f7f, "RZ"),
+        ] {
+            let positive = match fcw {
+                0x077f | 0x0f7f => Some((0x7fff_ffff, 0x820)),
+                _ => None,
+            };
+            let negative = match fcw {
+                0x077f => None,
+                _ => Some((0x8000_0000, 0x820)),
+            };
+            execute_case(
+                positive_boundary,
+                fcw,
+                positive,
+                &format!("{name} +i32 boundary"),
+            );
+            execute_case(
+                negative_boundary,
+                fcw,
+                negative,
+                &format!("{name} -i32 boundary"),
+            );
         }
     }
 }

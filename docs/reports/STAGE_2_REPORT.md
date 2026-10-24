@@ -4247,6 +4247,55 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## S2-31b — bounded `FISTP m32int [RAX]` partial slice
+
+Added only bare `DB 18` as a fixed Dword store through RAX in Long64. The
+interpreter preflights existing x87 state, all-masked PC64 FCW, the bounded
+FSW mask, old physical TOP Valid tag, canonical-Normal binary80 input, and
+unbiased exponent 0..31. It rounds with integer quotient/remainder arithmetic
+under the four admitted RC values, rejects signed-i32 overflow before data
+access, and encodes negative results with unsigned two's-complement arithmetic.
+
+After the conversion succeeds, the executor validates the entire canonical48
+four-byte range, then issues one `write_integer` Dword access with no data read.
+The CPU remains unchanged until that write succeeds. Store errors retain their
+existing types; an injected architectural #PF remains the memory backend's
+reported error, and flat mapping/permission failures are not converted into
+guest faults. Successful commit empties old physical TOP, advances TOP, keeps
+PE sticky and sets it for a remainder, updates C1 from magnitude increment,
+records FIP/FDP, and advances RIP. All x87 raw payload bytes survive.
+
+Four literal fixtures cover `db18`, `db18dfe0`, invalid-TOP rejection, and
+signed-i32 overflow rejection without data access. Interpreter tests cover the
+unaligned exact four-byte store and canaries, no data read, one write, overflow
+before access, permission failure atomicity, canonical-range rejection, the
+negative i32 minimum, and an injected #PF with unchanged CPU and RAM. The
+literal runner test checks split-region output bytes, FSW/TOP/tag/payload/FIP/FDP
+state, and no-commit snapshots for invalid tag and overflow. Decoder
+enumeration, schema validation, and explicit native denial are included.
+The follow-up literal-oracle test runs exact and inexact positive/negative
+values through all four RC modes, then checks raw `+2147483647.5` and
+`-2147483648.5` binary80 inputs against hand-stated signed-boundary results.
+Each success observes FSW in AX through FNSTSW and checks memory bytes; each
+rounding-induced overflow verifies zero retirement and no store.
+
+Validation passed: `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, Linux x86_64 compile-only
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
+--offline`, `cargo fmt --all -- --check`, and `git diff --check`. The native
+admission regression is Linux-only and was compile-checked, not executed on
+this macOS host. `python3 tools/check_layout.py` reports the pre-existing
+unmapped root `.serena/` directory; it was left untouched. `graphify update .`
+rebuilt the graph to 3614 nodes, 7710 edges and 211 communities; the existing
+parser warning for `include/open_desktop/host_abi.h` remains. A Sol follow-up
+review of the literal RC/boundary coverage and report found no actionable
+issues. Physical x86 execution and MMU/page-walk behavior were not tested.
+This partial slice does not complete S2-31 or general x87 exception semantics;
+final Mac mini acceptance remains deferred to the last S2-31 slice.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer”
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ## S2-30ak — bounded FCOMIP ST(0), ST(1) to RFLAGS and pop
 
 Added exactly bare `DF F1` as `Operation::Fcomip`. DF decoding now admits
