@@ -208,3 +208,14 @@ Rust stable 1.99.1 установлен в пользовательский ка
 MCP отложен: CLI с JSON и Python orchestration уже поддерживают fixture execution, comparison, seeded batches, manifests и process scenarios. Пересмотр нужен только при конкретном interactive IDE use case или внешнем workflow, которому нужен структурированный вызов без CLI.
 
 Порядок подключения следующей группы инструкций описан в [ADDING_ISA_GROUP.md](ADDING_ISA_GROUP.md); проверенный пример ADD/SUB/CMP остаётся ограничен одним Intel host и текущими register-only forms.
+
+## Local x87 slices are not physical-oracle claims
+
+The local schema-v2 x87-state profile admits handwritten bounded cases for
+`D9 18` (`FSTP m32fp [RAX]`) and its exact `D9 18 DF E0` status-observation
+composition. These fixtures are checked only by the interpreter and local
+fixture RAM. They are excluded from the physical/native oracle suite because
+native x87 state observation and admission remain closed. Their passing result
+does not establish binary32 hardware equivalence, x87 exception priority or
+delivery, MMU/page-walk behavior, MMIO, SMP, or physical x86 behavior. See the
+[S2-31j report](../reports/STAGE_2_REPORT.md#s2-31j--bounded-fstp-m32fp-partial-slice).

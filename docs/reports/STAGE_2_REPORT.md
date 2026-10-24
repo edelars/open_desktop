@@ -4714,3 +4714,44 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FLDCW—Load x87 FPU Control Word,” pp.3-356–3-357 (`D9 /5`); Vol.1 §§8.1.8,
 8.1.9 and §8.6 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
+## S2-31j — bounded `FSTP m32fp` partial slice
+
+Added exact bare `D9 18` as `FSTP m32fp [RAX]` in Long64. The implementation
+preflights only the Valid old physical TOP and canonical-Normal raw binary80
+payload, accepts unbiased exponents -126..126, the four exact all-masked PC64
+FCWs and `FSW & 0x80df == 0`, then rounds entirely with integer significand,
+remainder and the shared quotient-rounding helper. It directly encodes finite
+normal binary32 bits; input exponents -127/127 and a carry from exponent 126
+to 127 reject before data access. No host floating-point conversion is used.
+
+On success, the executor validates the complete canonical48 Dword destination,
+performs one atomic Dword write with no data read, then empties old TOP, advances
+TOP, sets sticky PE for an inexact result and sets C1 iff magnitude rounded up.
+It records old RIP in FIP and the destination in FDP, advances RIP by two and
+retires once. Raw payloads, other tags, FCW/FOP and unrelated state are
+preserved; C0/C2/C3 follow the local retain policy. The schema accepts exact
+`D9 18` and exact `D9 18 DF E0`; fixtures observe `+1.5` stored as
+`0x3fc00000` and the post-pop FSW through AX.
+
+Independent literal interpreter tests cover all TOPs, even/odd ties, positive
+and negative directed modes, exact and inexact PE/C1 state, minimum/maximum
+normal exponents, exponent/carry rejections, canaries, one-write/no-read,
+canonical crossing, store failure, invalid source/environment, missing state,
+fetch truncation, STOP and budget boundaries. The runner CLI fixture test also
+checks the exact two byte strings, payload/tag state and FIP/FDP composition.
+Native x87 admission remains closed.
+
+Validation passed: `cargo test --workspace --offline`, `cargo check --workspace
+--all-targets --offline`, `cargo fmt --all -- --check`, and `git diff --check`.
+`graphify update .` refreshed the code graph. `python3 tools/check_layout.py`
+still reports the pre-existing unmapped root `.serena/` directory, which was
+present before this task and left untouched. Physical x86 and Mac mini checks
+were not run; they remain for the final combined stage. This local slice does
+not establish hardware exception priority, general x87 exception delivery,
+MMU/page-walk behavior, MMIO or SMP, and does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-350–3-351 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and §8.6
+([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).

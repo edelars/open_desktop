@@ -321,3 +321,13 @@ fixture mapping/permissions, переполнение адреса или вну
 regions, границы 4096/16384, overflow и отсутствие частичной записи при ошибке.
 Отдельные regressions проверяют отказ permission во втором смежном region
 без изменения RAM/read destination и срабатывание injected error ровно один раз.
+
+## Local S2-31j x87 conversion slice
+
+The exact bare `D9 18` (`FSTP m32fp [RAX]`) profile uses integer-only
+binary80-to-binary32 rounding, a canonical48 Dword preflight, and one atomic
+write before popping the old physical TOP. Local vectors and the exact
+`D9 18 DF E0` fixture cover RC, ties, exponent boundaries, status, canaries,
+and failure atomicity. The profile rejects out-of-domain values before data
+access; it does not claim x87 exception delivery, hardware exception priority,
+native equivalence, or physical x86 confirmation. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31j-bounded-fstp-m32fp-rax-d9-18) and [fixtures](../../tests/fixtures/x86/stage2/README.md).

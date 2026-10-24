@@ -1406,6 +1406,25 @@ Word,” pp.3-356–3-357 (`D9 /5`); Vol.1 §§8.1.8, 8.1.9 and §8.6 ([official
 Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 
+### S2-31j FSTP m32fp schema and literal CLI coverage
+
+The schema admits exact bare `D9 18` and exact `D9 18 DF E0` (FNSTSW AX);
+prefixes, WAIT and neighboring D9 bytes remain unsupported. The two handwritten
+fixtures use an aligned, mapped Dword destination, a +1.5 binary80 source,
+preserved payload sentinels and an observable post-pop status. The CLI test
+checks the stored binary32 bits `0x3fc00000`, TOP/tag update, preserved payloads, FIP/FDP,
+and FNSTSW AX composition. Interpreter vectors independently cover all TOPs,
+even/odd ties, sign-sensitive directed rounding, minimum/maximum normal
+exponents, carry from exponent 126, rejected exponents -127/127, C1/PE state,
+canaries, one atomic write with no data read, canonical crossing, store fault,
+and rejection before data access. Native x87 admission remains closed. These
+fixtures and flat-memory checks do not establish hardware exception priority,
+general x87 exception delivery, MMU, MMIO, SMP, or physical x86 behavior.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-350–3-351 (`D9 /2`/`D9 /3`); see also the local bounded
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31j-bounded-fstp-m32fp-rax-d9-18).
+
 ### S2-31f FISTP m64int schema and literal coverage
 
 The schema admits exact `DF 38` and `DF 38 DF E0` (FNSTSW AX), with prefixes

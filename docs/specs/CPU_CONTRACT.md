@@ -2663,6 +2663,51 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## Local S2-31j: bounded `FSTP m32fp [RAX]` (`D9 18`)
+
+The interpreter admits only exact bare `D9 18` in Long64 with an existing x87
+snapshot. Preflight examines the old physical TOP tag and payload only. The tag
+must be Valid, the raw binary80 value must classify as canonical Normal, and
+the unbiased exponent must be -126..126. FCW must equal `0x037f`, `0x077f`,
+`0x0b7f`, or `0x0f7f`; require `FSW & 0x80df == 0`. Sticky PE and condition
+codes are permitted. No host floating-point conversion is used.
+
+For binary80 significand `s`, derive the 24-bit quotient `q=s>>40`, remainder
+`r=s & ((1<<40)-1)`, and denominator `d=1<<40`. Use
+`round_quotient_magnitude(sign,q,r,d,RC)`. The rounded magnitude must remain a
+normal 24-bit significand. A carry to `2^24` shifts the significand right and
+increments the unbiased exponent; if that produces exponent 127, reject before
+memory access. Input exponents outside -126..126 are rejected, so this profile
+does not produce binary32 subnormals, infinities, or NaNs. Encode sign,
+exponent+127 and fraction directly as IEEE-754 binary32 bits.
+
+After preflight, check the complete canonical48 Dword range `[RAX,RAX+3]` and
+perform exactly one atomic `GuestMemory::write_integer` Dword store. The
+instruction performs no data read. Only after that write succeeds, mark old
+physical TOP Empty, advance TOP by one modulo eight, set PE sticky iff `r != 0`,
+and set C1 iff rounding increased the magnitude (exact results clear C1 by
+local policy). Preserve C0/C2/C3 by local deterministic policy, all eight raw
+payloads, other tags, FCW/FOP and unrelated state. Record the instruction-start
+RIP in FIP and the destination linear address in FDP; advance RIP by two and
+retire once.
+
+Literal fixtures cover exact `D9 18` and `D9 18 DF E0` composition. Interpreter
+vectors cover all TOP values, 1.0, even/odd ties, positive/negative directed
+rounding, minimum/maximum normal exponents, carry from exponent 126, rejected
+exponents -127/127, C1/PE behavior, canaries and one-write/no-read behavior.
+Missing state, invalid FCW/FSW/tag/class/exponent, complete-range canonical
+failure, store errors and fetch/truncation/STOP/budget boundaries leave CPU
+state uncommitted; rejected source/environment/range cases access no data.
+Prefixes, WAIT and other D9 bytes remain unsupported. Native x87 admission
+explicitly denies this operation. Flat-memory tests do not establish MMU/page
+walk, MMIO ordering, physical x86 behavior, exception delivery, or hardware
+exception priority. This local slice does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-350–3-351 (`D9 /2`/`D9 /3`); Vol.1 §§8.1.8, 8.1.9 and §8.6
+for x87 state and FIP/FDP context ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
+[official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
+
 ## Local S2-31b: bounded `FISTP m32int [RAX]` (`DB 18`)
 
 The interpreter admits only bare `DB 18` in Long64: a Dword store through

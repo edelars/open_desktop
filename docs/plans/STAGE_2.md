@@ -229,6 +229,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31g | Bare bounded FNSTCW m2byte [RAX] D9 38, snapshot-preserving Word store; native closed | S2-31f |
 | [x] | S2-31h | Bare bounded FNSTSW m2byte [RAX] DD 38, raw-FSW snapshot-preserving Word store; native closed | S2-31g |
 | [x] | S2-31i | Bare bounded FLDCW m2byte [RAX] D9 28, validated Word load and local RC control; native closed | S2-31h |
+| [x] | S2-31j | Bare bounded FSTP m32fp [RAX] D9 18, integer binary80-to-binary32 conversion and atomic Dword store; native closed | S2-31i |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2163,6 +2164,34 @@ or complete S2-31.
 **Результат:** implemented and checked with workspace fixtures/interpreter
 tests; native execution remains explicitly denied. See the S2-31i report and
 CPU contract for validation and scope.
+
+#### S2-31j. Bare bounded `FSTP m32fp [RAX]` (`D9 18`), partial slice
+
+Implement only exact bare `D9 18` in Long64 with an existing x87 snapshot and
+fixed Dword destination `[RAX]`. Require a Valid old physical TOP with a
+canonical Normal raw binary80 source whose unbiased exponent is -126..126;
+accept only FCW `037f/077f/0b7f/0f7f` and `FSW & 0x80df == 0`. Convert using
+integer bits (`q=significand>>40`, remainder over `2^40`) and the shared exact
+quotient-rounding helper. Pack only a finite normal binary32 result; reject
+subnormal/overflow exponents, including a rounding carry from exponent 126 to
+127, before data access. No host floating-point conversion is permitted.
+
+Validate the full canonical48 Dword range and issue exactly one atomic
+GuestMemory write with no data read. Only after success empty the old physical
+TOP tag, advance TOP, update sticky PE and C1 (C1 means rounded magnitude up;
+exact results clear it under local policy), record FIP/FDP, advance RIP by two
+and retire once. Preserve all payloads, other tags, FCW/FOP and unrelated
+state; C0/C2/C3 are retained by deterministic local policy. Check literal
+`D9 18` and exact `D9 18 DF E0` fixtures, ties, signed directed rounding,
+normal exponent endpoints, carry/range rejects, every TOP, canaries,
+atomic memory faults, canonical range, and fetch/truncation/STOP/budget
+boundaries. Reject prefixes, WAIT and neighboring D9 forms; native admission
+remains closed. This partial slice does not claim hardware exception priority
+or general x87 exception delivery and does not complete S2-31.
+
+**Результат:** implemented and checked with local fixtures/interpreter tests;
+native execution remains explicitly denied. See the S2-31j report and CPU
+contract for validation and scope.
 
 ### S2-32. Остальные обязательные x87 формы
 

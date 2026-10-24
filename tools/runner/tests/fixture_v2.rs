@@ -43,6 +43,10 @@ const FRNDINT_INVALID_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_invalid_tag.case.json");
 const FLDCW_FRNDINT_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31i_fldcw_frndint_fnstsw.case.json");
+const FSTP_M32FP: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31j_fstp_m32fp.case.json");
+const FSTP_M32FP_FNSTSW: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31j_fstp_m32fp_fnstsw.case.json");
 const FABS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30z_fabs_normal.case.json");
 const FABS_INVALID_SOURCE: &[u8] =
@@ -1359,6 +1363,47 @@ fn local_x87_frndint_invalid_tag_fixture_is_atomic() {
     assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
     assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
     assert_eq!(observed.state.x87, input.fixture.initial_state.x87);
+}
+
+#[test]
+fn local_x87_fstp_m32fp_fixtures_store_binary32_then_pop_and_observe_fsw() {
+    for (fixture, expected_rax, expected_rip, expected_status, bytes) in [
+        (
+            FSTP_M32FP,
+            0x0000_0000_0030_0004,
+            0x0010_0002,
+            0x4d00,
+            "0000c03f",
+        ),
+        (
+            FSTP_M32FP_FNSTSW,
+            0x0000_0000_0030_4d00,
+            0x0010_0004,
+            0x4d00,
+            "0000c03f",
+        ),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), input.fixture.instruction_budget);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.rip, HexU64(expected_rip));
+        assert_eq!(observed.state.gpr[0], HexU64(expected_rax));
+        let x87 = observed.state.x87.as_ref().unwrap();
+        let initial = input.fixture.initial_state.x87.as_ref().unwrap();
+        assert_eq!(x87.registers, initial.registers);
+        assert_eq!(x87.control_word, initial.control_word);
+        assert_eq!(x87.status_word, HexU64(expected_status));
+        assert_eq!(x87.tag_word, HexU64(0xffff));
+        assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
+        assert_eq!(x87.data_pointer, HexU64(0x300004));
+        let stack = observed
+            .memory
+            .iter()
+            .find(|region| region.region_id == "stack")
+            .unwrap();
+        assert_eq!(&stack.bytes_hex[8..16], bytes);
+    }
 }
 
 #[test]

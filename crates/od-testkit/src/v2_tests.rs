@@ -195,7 +195,7 @@ fn x87_schema_admits_d9_ftst_fnstcw_and_a_budget_one_source_rejection() {
         let accepted = candidate.validate().is_ok();
         assert_eq!(
             accepted,
-            matches!(second, 0x28 | 0x38 | 0xe0 | 0xe1 | 0xe4 | 0xfc),
+            matches!(second, 0x18 | 0x28 | 0x38 | 0xe0 | 0xe1 | 0xe4 | 0xfc),
             "D9 {second:02x}"
         );
     }
@@ -564,6 +564,24 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     fistp_m64_fnstsw.stop_rip = Some(HexU64(0x1004));
     fistp_m64_fnstsw.instruction_budget = 2;
     assert!(Fixture::from_json(&fistp_m64_fnstsw.to_json().unwrap()).is_ok());
+
+    for (bytes, length, stop, budget) in [("d918", 2, 0x1002, 1), ("d918dfe0", 4, 0x1004, 2)] {
+        let mut fstp_m32fp = fixture.clone();
+        let code = fstp_m32fp
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = length;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(length as usize);
+        fstp_m32fp.stop_rip = Some(HexU64(stop));
+        fstp_m32fp.instruction_budget = budget;
+        assert!(
+            Fixture::from_json(&fstp_m32fp.to_json().unwrap()).is_ok(),
+            "{bytes}"
+        );
+    }
 
     let mut fnclex = fixture.clone();
     let code = fnclex

@@ -457,6 +457,8 @@ pub enum Operation {
     Ftst,
     /// Bare `D9 FC` FRNDINT in the bounded PC64/finite Normal profile.
     Frndint,
+    /// Bare `D9 18` FSTP m32fp at [RAX], bounded finite profile.
+    FstpM32FpRax,
     /// Bare `DB 18` FISTP dword integer at [RAX], bounded finite profile.
     FistpM32IntRax,
     /// Bare `DF 18` FISTP word integer at [RAX], bounded finite profile.
@@ -1226,6 +1228,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 match self.byte()? {
                     0x28 => Operation::FldcwM16Rax,
                     0x38 => Operation::FnstcwM16Rax,
+                    0x18 => Operation::FstpM32FpRax,
                     0xe0 => Operation::Fchs,
                     0xe1 => Operation::Fabs,
                     0xe4 => Operation::Ftst,
@@ -2760,7 +2763,7 @@ mod tests {
     }
 
     #[test]
-    fn d9_accepts_only_bare_fldcw_fchs_fabs_ftst_frndint_and_fnstcw_m16_rax() {
+    fn d9_accepts_only_bare_fldcw_fstp_fchs_fabs_ftst_frndint_and_fnstcw_m16_rax() {
         let mut memory = Memory::new(&[0xd9, 0xe0]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::Fchs);
@@ -2774,6 +2777,8 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 if second == 0x28 {
                     Ok(Operation::FldcwM16Rax)
+                } else if second == 0x18 {
+                    Ok(Operation::FstpM32FpRax)
                 } else if second == 0x38 {
                     Ok(Operation::FnstcwM16Rax)
                 } else if second == 0xe0 {
