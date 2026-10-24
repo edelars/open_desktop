@@ -588,7 +588,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             write: false,
             execute: false,
         },
-        initial_bytes_hex: "00".repeat(8),
+        initial_bytes_hex: "0000000001000000".into(),
         comparison_mask_hex: "ff".repeat(8),
     });
     invalid_fld_m32.stop_rip = None;

@@ -464,3 +464,16 @@ status, destination, address, and native-denial checks. See the [S2-31u CPU
 contract](../specs/CPU_CONTRACT.md#local-s2-31u-bounded-fld-m64fp-rax-dd-00-signed-zero-extension),
 [plan](../plans/STAGE_2.md#s2-31u-extend-bounded-fld-m64fp-rax-dd-00-to-signed-zero),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31v signed-zero extension
+
+S2-31v extends the bounded `D9 00` binary32 load to accept +0 and -0 after its
+single Dword read. The payload is ten zero bytes for +0 or ten zero bytes with
+the final sign byte `0x80` for -0; both use the Zero tag. Existing Normal
+expansion and all pre-read x87/range gates remain unchanged. Nonzero
+subnormals, infinity and NaNs remain Unsupported after the read with no CPU
+commit. Literal zero vectors cover both signs over all TOP×FCW pairs; separate
+single-setup rejection cases verify both signs of minimum subnormal after one
+Dword read. Schema/CLI fixtures assert both
+signed payloads, while the Unsupported fixture uses positive minimum
+subnormal. See the [S2-31v CPU contract](../specs/CPU_CONTRACT.md#local-s2-31v-bounded-fld-m32fp-rax-d9-00-signed-zero-extension).

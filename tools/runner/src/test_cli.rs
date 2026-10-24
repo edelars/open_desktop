@@ -2103,13 +2103,14 @@ mod tests {
     }
 
     #[test]
-    fn fld_m32fp_literal_fixtures_expand_binary32_and_reject_bad_class() {
-        for (bytes, expected_rax, expected_raw, retired) in [
+    fn fld_m32fp_literal_fixtures_expand_binary32_signed_zero_and_reject_bad_class() {
+        for (bytes, expected_rax, expected_raw, expected_tag_word, retired) in [
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp.case.json")
                     .as_slice(),
                 0x0000_0000_0030_0004,
-                "0000000000000080ff3f",
+                "00000000000000000000",
+                0x7ffc,
                 1,
             ),
             (
@@ -2118,7 +2119,8 @@ mod tests {
                 )
                 .as_slice(),
                 0x0000_0000_0030_7d00,
-                "0000000000010080ff3f",
+                "00000000000000000080",
+                0x7ffc,
                 2,
             ),
         ] {
@@ -2140,7 +2142,7 @@ mod tests {
             assert_eq!(value.state.gpr[0], HexU64(expected_rax));
             let after = value.state.x87.as_ref().unwrap();
             assert_eq!(after.status_word, HexU64(0x7d00));
-            assert_eq!(after.tag_word, HexU64(0x3ffc));
+            assert_eq!(after.tag_word, HexU64(expected_tag_word));
             assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
             assert_eq!(after.data_pointer, HexU64(0x0030_0004));
             assert_eq!(after.registers[7], expected_raw);
@@ -2203,6 +2205,25 @@ mod tests {
             .find(|region| region.region_id == "canary")
             .unwrap();
         assert_eq!(canary.bytes_hex, "a5");
+
+        let invalid_json: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp_invalid_class.case.json"
+        ))
+        .unwrap();
+        for rejected_bytes in ["00000000", "0000803f", "0000807f"] {
+            let mut near_miss = invalid_json.clone();
+            near_miss["memory"][1]["initial_bytes_hex"] =
+                serde_json::Value::String(rejected_bytes.into());
+            assert!(
+                v2::Fixture::from_json(&serde_json::to_vec(&near_miss).unwrap()).is_err(),
+                "S2-31v schema must not admit Unsupported for {rejected_bytes}"
+            );
+        }
+        let mut negative_subnormal = invalid_json;
+        negative_subnormal["memory"][1]["initial_bytes_hex"] =
+            serde_json::Value::String("01000080".into());
+        v2::Fixture::from_json(&serde_json::to_vec(&negative_subnormal).unwrap())
+            .expect("negative nonzero subnormal is an admitted Unsupported case");
     }
 
     #[test]

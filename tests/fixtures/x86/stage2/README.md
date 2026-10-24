@@ -1842,8 +1842,9 @@ Value,” pp.3-352–3-353, official PDF pp.470–471
 Fixtures contain exact literal `D9 00` and `D9 00 DF E0` instruction bytes,
 an unaligned four-byte binary32 source, full x87 state and an adjacent
 read-only canary. The composition case observes the pushed TOP and C1 clearing
-through FNSTSW AX. A third fixture supplies zero, expects Unsupported after
-the one Dword read, and keeps the CPU snapshot unchanged. The native admission
+through FNSTSW AX. At the original S2-31s slice, the third fixture supplied
+zero and expected Unsupported; S2-31v reclassifies it to positive minimum
+subnormal. The native admission
 tests explicitly deny all three fixtures. Interpreter checks cover the full
 TOP × FCW matrix using independent binary80 literals for signed one, adjacent
 fractions, minimum/maximum Normal values and exponent 127; they also cover
@@ -1854,3 +1855,16 @@ decode checks retain the existing forms and reject all prefix variants.
 Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
 Value,” pp.3-352–3-353, official PDF p.470
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+
+### S2-31v FLD m32fp signed-zero fixture coverage
+
+The exact `D9 00` and `D9 00 DF E0` fixtures load positive and negative
+binary32 zero respectively. CLI assertions check the pushed Zero tag and raw
+signed binary80 payload; the composition observes TOP and C1 through FNSTSW
+AX. The invalid-class fixture supplies positive minimum subnormal and expects
+Unsupported with no CPU commit after one Dword read. Interpreter literals cover
+both signed zeros over all TOP×FCW pairs and separately reject both signed
+minimum subnormals after one Dword read.
+Schema exception admission is limited to a nonzero binary32 subnormal with
+exact `D9 00`, budget one and no stop RIP. Native admission continues to deny
+all fixtures. See the [S2-31v CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31v-bounded-fld-m32fp-rax-d9-00-signed-zero-extension), [plan](../../../../docs/plans/STAGE_2.md#s2-31v-extend-bounded-fld-m32fp-rax-d9-00-to-signed-zero), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31v--bounded-fld-m32fp-signed-zero-extension).

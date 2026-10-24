@@ -5183,3 +5183,42 @@ Value,” pp.3-352–3-353, official PDF pp.470–471
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. Signed-zero tag and
 packing details are local project policy.
+
+## S2-31v — bounded `FLD m32fp` signed-zero extension
+
+Extended exact bare `D9 00` to accept binary32 +0 and -0 after its existing
+single Dword read. Signed zero expands to the exact ten-byte binary80 payload,
+including sign byte `0x80` for -0, and receives `X87Tag::Zero`. Normal exponent
+fields 1..254 retain the prior integer expansion and Valid tag. Nonzero
+subnormals, infinity and NaNs still return Unsupported after the read without
+CPU commit. The x87 gates, full canonical48 Dword preflight, single access,
+push/TOP/status/FIP/FDP/RIP behavior and native denial remain unchanged.
+
+Independent signed-zero literals cover all eight TOP values and four supported
+FCW settings alongside the preserved Normal vectors. Both signs of minimum
+subnormal are rejected after one Dword read in separate single-setup cases.
+The `D9 00` and `D9 00 DF E0` schema/CLI fixtures cover +0 and -0, and assert
+the resulting Zero tag and signed binary80 payload. The invalid-class fixture
+now uses positive minimum subnormal. Schema admission of Unsupported is
+narrowed to a nonzero binary32 subnormal for exact `D9 00`, budget one and no
+stop RIP; zero, Normal and infinity near-misses are rejected by tests.
+
+Validation passed: `cargo test --workspace --all-targets --offline` (687
+tests), `cargo check --workspace --all-targets --offline`, and the same
+workspace check for `x86_64-unknown-linux-gnu` (compile-only). Focused FLD m32
+interpreter and runner tests passed. `cargo fmt --all -- --check` and
+`git diff --check` passed. `graphify update .` refreshed the graph. The layout
+check exits with the pre-existing unmapped root `.serena/` directory; it was
+left untouched. The Linux compile emitted existing
+dead-code warnings in `od-host` and `od-runner`. Independent review found no
+remaining defects after correcting the contract anchor and qualifying the
+minimum-subnormal coverage wording. No
+Mac mini, native execution, or physical x86 acceptance was performed; those
+remain in the combined final S2-31 substage. General x87 exception delivery,
+MMU/MMIO/SMP and physical behavior remain unverified.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF pp.470–471
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. Signed-zero tag and
+packing details are local project policy.

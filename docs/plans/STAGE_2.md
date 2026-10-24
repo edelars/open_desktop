@@ -2756,6 +2756,33 @@ Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
 Value,” pp.3-352–3-353, official PDF p.470; Vol.1 §§8.1.8, 8.1.9 and §8.6 for
 x87 state and FIP/FDP.
 
+#### S2-31v. Extend bounded `FLD m32fp [RAX]` (`D9 00`) to signed zero
+
+Keep the exact D9 00 encoding, existing x87 state and FCW/FSW/Empty-destination
+gates, checked complete canonical48 Dword range, and exactly one Dword read.
+After the read, accept either sign of binary32 zero: pack +0 as ten zero bytes,
+-0 with the final sign byte `0x80`, and assign `X87Tag::Zero`. Preserve the
+existing integer expansion and Valid tag for Normal exponent fields 1..254.
+Nonzero subnormals, infinity and NaNs remain Unsupported after the read with
+no CPU commit. Preserve push/TOP/C1/status/FIP/FDP/RIP and native-denial
+policies; do not add reads or writes.
+
+Add independent ±0 literals across all TOP×RC pairs and retain all Normal
+vectors. Keep ±minimum-subnormal rejection after one read. Change the former
+zero-rejection schema/CLI fixture to positive minimum subnormal and narrow its
+exact exception predicate to nonzero binary32 subnormal under bare D9 00,
+budget one and no stop RIP. Update success D9 00 and D9 00 DF E0 fixtures and
+CLI assertions to cover Zero tag and signed payloads. Document the current
+contract in the CPU contract, interpreter and fixture notes; preserve the
+historical S2-31s report and add this result separately. S2-31 and ISSUE-019
+remain open; physical acceptance stays in the combined final substage.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF pp.470–471
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. Signed-zero packing
+and tag details follow local policy.
+
 #### S2-30an. Bare indexed FCOMI-family register forms
 
 Generalize the four existing `i=1` forms to exact bare DB/DF register bytes:

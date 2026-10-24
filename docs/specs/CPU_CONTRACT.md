@@ -2781,6 +2781,33 @@ decode coverage preserves the existing D9 forms and rejects all prefixes.
 Physical x86 behavior, general x87 exception delivery, MMU/MMIO/SMP and native
 x87 state remain unverified; S2-31 stays partial under ISSUE-019.
 
+## Local S2-31v: bounded `FLD m32fp [RAX]` (`D9 00`) signed-zero extension
+
+S2-31v extends exact bare `D9 00` to accept binary32 +0 and -0 after the
+existing one Dword read. All x87 state, FCW, FSW, Empty destination, canonical48
+range, fetch and encoding gates remain unchanged. A source whose magnitude
+bits are zero packs to ten zero bytes for +0 or ten zero bytes with final byte
+`0x80` for -0; both set the destination tag to Zero. Normal exponent fields
+1..254 keep the existing integer expansion and Valid tag. Nonzero subnormals,
+infinity and NaNs remain Unsupported after the read without CPU commit.
+
+The push, TOP wrap, C1 clearing, PE and condition-code retention, FIP/FDP/RIP,
+retirement, fault and backend-error behavior are unchanged. Tests include both
+signed zeros over every TOP×FCW pair, preserve the existing Normal vectors, and
+verify positive/negative minimum-subnormal rejection after exactly one Dword
+read. Exact `D9 00` and `D9 00 DF E0` schema/CLI fixtures assert Zero tags and
+signed payloads. The Unsupported fixture uses positive minimum subnormal; the
+schema admits that result only for a nonzero binary32 subnormal with exact
+`D9 00`, budget one and no stop RIP. Native admission remains explicitly
+denied. General x87 exception delivery and physical x86 acceptance remain
+outside this partial slice; S2-31 and ISSUE-019 remain open.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF pp.470–471
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. Signed-zero packing
+and tag details are local project policy.
+
 ## Local S2-31t: bounded `FLD m64fp [RAX]` (`DD 00`)
 
 The interpreter admits only exact bare `DD 00` in Long64 with an existing x87

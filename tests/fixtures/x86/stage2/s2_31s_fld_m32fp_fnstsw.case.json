@@ -4,9 +4,9 @@
   "profile": "s2-long-x87-state-v1",
   "provenance": {
     "kind": "project_fixture",
-    "source": "Handwritten exact d900dfe0 bytes, binary32 source, and literal x87 state; expected behavior follows the local bounded S2-31s contract.",
-    "specification": "Intel SDM revision 093, Vol.2A, FLD m32fp entry; local bounded S2-31s contract.",
-    "specification_version": "Intel SDM revision 093; project S2-31s"
+    "source": "Handwritten exact d900dfe0 bytes, negative-zero binary32 source, and literal x87 state; expected behavior follows the local bounded S2-31v contract.",
+    "specification": "Intel SDM revision 093, Vol.2A, FLD m32fp entry; local bounded S2-31v signed-zero extension.",
+    "specification_version": "Intel SDM revision 093; project S2-31v"
   },
   "seed": null,
   "converted_from_v1_sha256": null,
@@ -73,7 +73,7 @@
         "write": false,
         "execute": false
       },
-      "initial_bytes_hex": "0100803f",
+      "initial_bytes_hex": "00000080",
       "comparison_mask_hex": "ffffffff"
     },
     {

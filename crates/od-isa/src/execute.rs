@@ -955,22 +955,31 @@ fn step_tracked_with_stop(
             Ok(value) => value as u32,
             Err(error) => return report_memory_error(error),
         };
-        let source_exponent = (bits >> 23) & 0xff;
-        if !(1..=254).contains(&source_exponent) {
-            return Ok(StepOutcome::Unsupported {
-                opcode: instruction.opcode.byte,
-            });
-        }
-        let significand = ((1_u64 << 23) | u64::from(bits & 0x7f_ffff)) << 40;
-        let binary80_exponent = (source_exponent as i32 - 127 + 16383) as u16;
-        let sign = if bits >> 31 != 0 { 0x8000 } else { 0 };
-        let mut raw = [0_u8; 10];
-        raw[..8].copy_from_slice(&significand.to_le_bytes());
-        raw[8..].copy_from_slice(&(binary80_exponent | sign).to_le_bytes());
+        let (raw, tag) = if bits & 0x7fff_ffff == 0 {
+            let mut raw = [0_u8; 10];
+            if bits >> 31 != 0 {
+                raw[9] = 0x80;
+            }
+            (raw, X87Tag::Zero)
+        } else {
+            let source_exponent = (bits >> 23) & 0xff;
+            if !(1..=254).contains(&source_exponent) {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            let significand = ((1_u64 << 23) | u64::from(bits & 0x7f_ffff)) << 40;
+            let binary80_exponent = (source_exponent as i32 - 127 + 16383) as u16;
+            let sign = if bits >> 31 != 0 { 0x8000 } else { 0 };
+            let mut raw = [0_u8; 10];
+            raw[..8].copy_from_slice(&significand.to_le_bytes());
+            raw[8..].copy_from_slice(&(binary80_exponent | sign).to_le_bytes());
+            (raw, X87Tag::Valid)
+        };
         let x87 = state.x87.as_mut().expect("FLD state was prevalidated");
         let new_top = x87.top().wrapping_add(7) & 7;
         x87.registers[destination] = raw;
-        x87.set_tag(destination as u8, X87Tag::Valid);
+        x87.set_tag(destination as u8, tag);
         x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9))) | (u16::from(new_top) << 11);
         x87.instruction_pointer = state.rip;
         x87.data_pointer = address;
@@ -23072,35 +23081,47 @@ mod tests {
 
     #[test]
     fn fld_m32fp_matches_raw_binary80_literals_for_every_top_and_control_word() {
-        let vectors: [([u8; 4], [u8; 10]); 6] = [
+        let vectors: [([u8; 4], [u8; 10], X87Tag); 8] = [
+            ([0x00, 0x00, 0x00, 0x00], [0; 10], X87Tag::Zero),
+            (
+                [0x00, 0x00, 0x00, 0x80],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                X87Tag::Zero,
+            ),
             (
                 [0x00, 0x00, 0x80, 0x3f],
                 [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                X87Tag::Valid,
             ),
             (
                 [0x00, 0x00, 0x80, 0xbf],
                 [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xbf],
+                X87Tag::Valid,
             ),
             (
                 [0x01, 0x00, 0x80, 0x3f],
                 [0, 0, 0, 0, 0, 1, 0, 0x80, 0xff, 0x3f],
+                X87Tag::Valid,
             ),
             (
                 [0xff, 0xff, 0x7f, 0x7f],
                 [0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0x7e, 0x40],
+                X87Tag::Valid,
             ),
             (
                 [0x00, 0x00, 0x80, 0x00],
                 [0, 0, 0, 0, 0, 0, 0, 0x80, 0x81, 0x3f],
+                X87Tag::Valid,
             ),
             (
                 [0x00, 0x00, 0x00, 0x3f],
                 [0, 0, 0, 0, 0, 0, 0, 0x80, 0xfe, 0x3f],
+                X87Tag::Valid,
             ),
         ];
         let control_words = [0x037f, 0x077f, 0x0b7f, 0x0f7f];
         for top in 0..8_u8 {
-            for (case, (source, expected)) in vectors.into_iter().enumerate() {
+            for (case, (source, expected, expected_tag)) in vectors.into_iter().enumerate() {
                 for control_word in control_words {
                     let destination = top.wrapping_add(7) & 7;
                     let mut state = LongModeState::default();
@@ -23139,7 +23160,7 @@ mod tests {
                     );
                     let after = state.x87.as_ref().unwrap();
                     assert_eq!(after.registers[usize::from(destination)], expected);
-                    assert_eq!(after.tag(destination), Some(X87Tag::Valid));
+                    assert_eq!(after.tag(destination), Some(expected_tag));
                     assert_eq!(after.top(), destination);
                     assert_eq!(
                         after.status_word,
@@ -23439,7 +23460,8 @@ mod tests {
             state
         };
         for bits in [
-            0x0000_0000_u32,
+            0x0000_0001_u32,
+            0x8000_0001,
             0x007f_ffff,
             0x7f80_0000,
             0xff80_0000,
