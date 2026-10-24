@@ -1970,6 +1970,10 @@ mod tests {
                 .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ap_fstp_m64fp_negative_infinity_fnstsw.case.json")
                 .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aq_fst_m32fp_positive_infinity.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aq_fstp_m32fp_negative_infinity_fnstsw.case.json")
+                .as_slice(),
         ] {
             let fixture = Fixture::from_json(bytes).unwrap();
             let actual = fixture.fixture.initial_state.to_cpu().unwrap();

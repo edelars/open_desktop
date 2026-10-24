@@ -40,3 +40,8 @@ Bounded `FST/FSTP m64fp` (`DD 10`/`DD 18`) also stores canonical signed
 binary80 infinity from a Special-tagged TOP as exact binary64 infinity. The
 one-write/no-read and post-success-pop rules remain; native/JIT admission stays
 closed.
+
+Bounded `FST/FSTP m32fp` (`D9 10`/`D9 18`) also stores canonical signed
+binary80 infinity from a Special-tagged TOP as exact binary32 infinity. The
+one-write/no-read and post-success-pop rules remain; native/JIT admission stays
+closed.

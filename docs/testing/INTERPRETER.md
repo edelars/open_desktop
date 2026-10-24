@@ -466,6 +466,15 @@ contract](../specs/CPU_CONTRACT.md#local-s2-31u-bounded-fld-m64fp-rax-dd-00-sign
 [plan](../plans/STAGE_2.md#s2-31u-extend-bounded-fld-m64fp-rax-dd-00-to-signed-zero),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+
+## Local S2-31aq signed-infinity m32 stores
+
+Exact D910/D918 accepts canonical binary80 infinity only with a Special tag
+and emits signed binary32 infinity by integer-field conversion. It adds no
+status flags and preserves PE. The checked Dword write is atomic and has no
+data read; D918 pops only after success. Normal and signed-zero behavior stays
+unchanged. See the [S2-31aq contract](../specs/CPU_CONTRACT.md#local-s2-31aq-signed-infinity-fstfstp-m32fp-rax).
+
 ## Local S2-31v signed-zero extension (historical)
 
 S2-31v extends the bounded `D9 00` binary32 load to accept +0 and -0 after its

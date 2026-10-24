@@ -440,3 +440,15 @@ Positive bare and negative `DD 18 DF E0` fixtures are schema/CLI reachable and
 observe the FSTP status with FNSTSW. See the [S2-31ap contract](../specs/CPU_CONTRACT.md#local-s2-31ap-signed-infinity-fstfstp-m64fp-rax),
 [plan](../plans/STAGE_2.md#s2-31ap-store-canonical-signed-binary80-infinity-through-bounded-m64-fstfstp),
 and [report](../reports/STAGE_2_REPORT.md#s2-31ap--signed-infinity-stores-for-bounded-m64-fstfstp).
+
+
+### S2-31aq signed-infinity m32 FST/FSTP fixtures
+
+Exact `D9 10`/`D9 18` accept a Special-tagged canonical binary80 infinity and
+expect literal binary32 `+∞` (`0000807f`) or `-∞` (`000080ff`). Positive bare
+FST and negative FSTP+FNSTSW fixtures exercise both instructions through
+schema and CLI; both are included in native denial. Pseudo-infinity, NaNs,
+other Special classes, mismatched tags, and forbidden status reject before the
+write. See the [S2-31aq contract](../specs/CPU_CONTRACT.md#local-s2-31aq-signed-infinity-fstfstp-m32fp-rax),
+[plan](../plans/STAGE_2.md#s2-31aq-store-canonical-signed-binary80-infinity-through-bounded-m32-fstfstp),
+and [report](../reports/STAGE_2_REPORT.md#s2-31aq-signed-infinity-stores-for-bounded-m32-fstfstp).

@@ -3417,3 +3417,21 @@ both signs/opcodes over TOP×FCW×PE/C1, sentinels/wrap, all-width FLD-to-store
 compositions, invalid neighboring classes and tag mismatches, write/range
 atomicity, normal/zero regressions, literal CLI/FNSTSW fixtures, and
 native/JIT denial.
+
+#### S2-31aq. Store canonical signed binary80 infinity through bounded m32 FST/FSTP
+
+Extend only exact `D9 10` (`FST m32fp [RAX]`) and `D9 18`
+(`FSTP m32fp [RAX]`) so physical TOP may also be a Special-tagged canonical
+binary80 infinity (exponent `0x7fff`, explicit integer bit one, zero fraction).
+Convert using integer fields to binary32 `+∞` (`0000807f`) or `-∞`
+(`000080ff`), with exact-result indicators false and no new flags. Preserve PE
+and the existing C1/C0/C2/C3 policy. Retain the four FCWs and
+`FSW & 0x80df == 0` gate.
+
+Preflight the complete canonical48 Dword range and perform one atomic Dword
+write with no data read. FST preserves TOP, tags, and payloads; FSTP pops only
+after successful write. Keep Normal and signed-zero paths unchanged. Reject
+pseudo-infinity, NaNs, other Special classes, and mismatched tags before
+access. Cover signed infinity across both opcodes and TOP×FCW×PE/C1,
+cross-width FLD compositions, boundaries/faults, CLI/FNSTSW fixtures, and
+native/JIT denial.

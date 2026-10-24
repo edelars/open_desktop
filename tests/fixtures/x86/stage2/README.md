@@ -2141,3 +2141,14 @@ specials, mismatched tags and forbidden status reject before the write. See the
 [S2-31ap CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ap-signed-infinity-fstfstp-m64fp-rax),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31ap-store-canonical-signed-binary80-infinity-through-bounded-m64-fstfstp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ap--signed-infinity-stores-for-bounded-m64-fstfstp).
+
+
+### S2-31aq signed-infinity m32 FST/FSTP fixtures
+
+Exact D910/D918 accept a Special-tagged canonical binary80 infinity and emit
+literal binary32 `+∞` (`0000807f`) or `-∞` (`000080ff`). The positive bare FST
+and negative FSTP+FNSTSW fixtures are schema/CLI reachable and included in
+native denial. Noncanonical neighbors, mismatched tags, and forbidden status
+reject before access. See the [S2-31aq CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31aq-signed-infinity-fstfstp-m32fp-rax),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31aq-store-canonical-signed-binary80-infinity-through-bounded-m32-fstfstp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31aq-signed-infinity-stores-for-bounded-m32-fstfstp).

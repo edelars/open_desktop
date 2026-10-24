@@ -285,3 +285,14 @@
   [plan](plans/STAGE_2.md#s2-31ap-store-canonical-signed-binary80-infinity-through-bounded-m64-fstfstp),
   [report](reports/STAGE_2_REPORT.md#s2-31ap--signed-infinity-stores-for-bounded-m64-fstfstp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31aq evidence:** exact D910/D918 now store Special-tagged canonical
+  binary80 infinity as signed binary32 infinity using integer fields. The
+  existing FCW/FSW gates, one-write/no-read Dword access, and post-success FSTP
+  pop remain. Normal/zero paths and native/JIT denial are unchanged. Full
+  general x87 exception delivery and physical behavior remain open under
+  ISSUE-019; the final combined S2-31 substage owns physical acceptance. See
+  [S2-31aq CPU contract](specs/CPU_CONTRACT.md#local-s2-31aq-signed-infinity-fstfstp-m32fp-rax),
+  [plan](plans/STAGE_2.md#s2-31aq-store-canonical-signed-binary80-infinity-through-bounded-m32-fstfstp),
+  [report](reports/STAGE_2_REPORT.md#s2-31aq-signed-infinity-stores-for-bounded-m32-fstfstp),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

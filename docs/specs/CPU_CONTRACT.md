@@ -4247,3 +4247,25 @@ listed in Vol.2A pp.3-386–3-387 ([official PDF, pp.3-386–3-387](https://cdrd
 See the [S2-31ap plan](../plans/STAGE_2.md#s2-31ap-store-canonical-signed-binary80-infinity-through-bounded-m64-fstfstp),
 [report](../reports/STAGE_2_REPORT.md#s2-31ap--signed-infinity-stores-for-bounded-m64-fstfstp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+## Local S2-31aq: signed-infinity `FST/FSTP m32fp [RAX]`
+
+Exact `D9 10` and `D9 18` accept canonical binary80 infinity only when
+physical TOP has the Special tag, exponent `0x7fff`, explicit integer bit set,
+and zero fraction. Integer-field conversion emits binary32 `+∞` bytes
+`0000807f` or `-∞` bytes `000080ff`; the exact-result indicators are false.
+This path adds no status flags and preserves PE, with C1/C0/C2/C3 following the
+existing exact-store policy.
+
+Retain the four admitted FCWs and `FSW & 0x80df == 0` gate. Check the complete
+canonical48 Dword range before exactly one atomic write; perform no data read.
+D910 preserves TOP, tags, and payloads. D918 pops only after successful write.
+Normal and signed-zero behavior remains unchanged. Pseudo-infinity, NaNs,
+other Special classes, and mismatched tags reject before access. JIT/native
+admission stays closed. The canonical infinity encoding follows Intel SDM
+revision 093 Vol.1 §8.2.2/Table 8-3; FST/FSTP m32fp semantics are in Vol.2A
+pp.3-386–3-387 ([official PDF, pp.3-386–3-387](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
+See the [S2-31aq plan](../plans/STAGE_2.md#s2-31aq-store-canonical-signed-binary80-infinity-through-bounded-m32-fstfstp),
+[report](../reports/STAGE_2_REPORT.md#s2-31aq-signed-infinity-stores-for-bounded-m32-fstfstp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

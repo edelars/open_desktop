@@ -5911,3 +5911,30 @@ architecture-gated and were not executed on this arm64 host; the x86 runner
 target compiled successfully. Physical validation remains deferred to the
 combined final S2-31 substage. Independent `gpt-6.1-sol` review at medium
 reasoning found no concrete findings.
+
+
+## S2-31aq — signed-infinity stores for bounded m32 FST/FSTP
+
+Exact D910/D918 now accept only canonical binary80 infinity with the physical
+TOP tagged Special, converting sign and exponent by integer fields to literal
+binary32 infinity bytes. The path is exact, adds no flags, preserves PE, and
+retains existing store status policy. A full Dword range check precedes one
+atomic write/no read; D910 preserves stack state and D918 pops only after the
+write succeeds. Normal and signed-zero stores are unchanged. Tests cover both
+signs/opcodes across TOP×FCW×PE/C1, all-width FLD composition, malformed
+neighbors and mismatched tags, atomic write/range failures, CLI/FNSTSW fixtures,
+and native/JIT denial. Intel SDM revision 093 Vol.1 §8.2.2/Table 8-3 and Vol.2A
+pp.3-386–3-387 support the bounded encoding and instruction contract.
+
+Focused `od-isa` coverage passed (10 selected tests), including signed
+TOP×FCW×PE/C1 matrices, class/tag and forbidden-status pre-access rejection,
+fault/boundary atomicity, and m32/m64/m80 load-to-store compositions. The new
+runner CLI test passed with the positive bare and negative DFE0/FNSTSW fixtures;
+it exercises the normal fixture schema and execution path. The full offline
+workspace suite passed (735 tests, 0 failures), all-target workspace check,
+Linux x86 `od-x86-runner` all-target check, formatting, and diff checks passed.
+Graphify rebuilt to 4016 nodes and 8349 edges. The layout checker reports only
+the pre-existing unmapped `.serena/` directory, left untouched. Architecture-
+gated native runtime denial was not executed on this local arm64 host; the
+Linux x86 runner target compiled. Physical validation remains deferred to the
+combined final S2-31 substage. Independent review is pending.

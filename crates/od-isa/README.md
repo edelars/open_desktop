@@ -258,3 +258,9 @@ S2-31ap extends exact DD10/DD18 m64 stores to Special-tagged canonical
 binary80 infinity, using integer fields to emit signed binary64 infinity with
 no new flags. Qword write ordering, FST/FSTP stack behavior, and native/JIT
 denial remain bounded. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31ap-signed-infinity-fstfstp-m64fp-rax).
+
+
+Bounded `FST/FSTP m32fp` (`D9 10`/`D9 18`) also stores canonical signed
+binary80 infinity from a Special-tagged TOP as exact binary32 infinity. The
+one-write/no-read and post-success-pop rules remain; native/JIT admission stays
+closed.
