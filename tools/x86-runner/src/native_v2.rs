@@ -1904,6 +1904,10 @@ mod tests {
                 "../../../tests/fixtures/x86/stage2/s2_31ao_fstp_m80fp_negative_infinity_fnstsw.case.json"
             )
             .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ar_fstp_m80fp_qnan.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ar_fstp_m80fp_negative_indefinite_fnstsw.case.json")
+                .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp.case.json")
                 .as_slice(),
             include_bytes!(

@@ -452,3 +452,15 @@ other Special classes, mismatched tags, and forbidden status reject before the
 write. See the [S2-31aq contract](../specs/CPU_CONTRACT.md#local-s2-31aq-signed-infinity-fstfstp-m32fp-rax),
 [plan](../plans/STAGE_2.md#s2-31aq-store-canonical-signed-binary80-infinity-through-bounded-m32-fstfstp),
 and [report](../reports/STAGE_2_REPORT.md#s2-31aq--signed-infinity-stores-for-bounded-m32-fstfstp).
+
+
+### S2-31ar canonical QuietNaN DB38 fixtures
+
+Exact DB38 fixtures may use a Special-tagged canonical binary80 QuietNaN and
+expect all ten raw bytes to remain unchanged. Positive bare payload-bearing
+QNaN and negative-indefinite DFE0/FNSTSW fixtures are schema/CLI reachable and
+included in native denial; JIT denial is checked through both fixtures. SNaN,
+pseudo-QNaN, other unsupported encodings, and mismatched tags are rejection
+neighbors. See the [S2-31ar contract](../specs/CPU_CONTRACT.md#local-s2-31ar-canonical-quietnan-fstp-m80fp-rax-db-38),
+[plan](../plans/STAGE_2.md#s2-31ar-store-canonical-binary80-quietnan-through-bounded-fstp-m80fp),
+and [report](../reports/STAGE_2_REPORT.md#s2-31ar--canonical-quietnan-binary80-store-through-bounded-fstp-m80fp).

@@ -740,3 +740,11 @@ no flags and preserves PE. One Qword write precedes any DD18 pop; DD10 retains
 the source stack. Normal and zero stores are unchanged. Tests cover TOP×FCW,
 signed values, fault/range atomicity, all-width loads, fixture/CLI reachability,
 and native/JIT denial. See the [S2-31ap contract](../specs/CPU_CONTRACT.md#local-s2-31ap-signed-infinity-fstfstp-m64fp-rax).
+
+
+## Local S2-31ar canonical QuietNaN m80 store
+
+Exact DB38 accepts a Special-tagged canonical binary80 QuietNaN and copies all
+10 bytes unchanged. It adds no flags, retains the existing FCW/FSW gate, performs
+one atomic write/no read, and pops only after success. SNaN, pseudo-QNaN and
+mismatched tag/class pairs reject before access. See the [S2-31ar contract](../specs/CPU_CONTRACT.md#local-s2-31ar-canonical-quietnan-fstp-m80fp-rax-db-38).

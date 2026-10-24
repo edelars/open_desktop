@@ -2702,6 +2702,30 @@ Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See also the
 [Stage 2 plan](../plans/STAGE_2.md#s2-31q-bare-bounded-fstp-m80fp-rax-db-38-partial-slice)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+
+<a id="local-s2-31ar-canonical-quietnan-fstp-m80fp-rax-db-38"></a>
+
+## Local S2-31ar: canonical QuietNaN `FSTP m80fp [RAX]` (`DB 38`)
+
+Exact `DB 38` additionally accepts a canonical binary80 QuietNaN only with a
+physical Special tag: exponent `0x7fff`, explicit integer bit one, quiet
+fraction bit one, either sign, and arbitrary remaining payload. Copy the raw
+ten bytes unchanged, including sign and payload. Do not normalize, round, use
+host floating point, or set new status flags. Preserve PE and existing C1 and
+C0/C2/C3 policy.
+
+Retain four FCWs and `FSW & 0x80df == 0`. Validate the full canonical48
+ten-byte range, perform exactly one atomic write/no read, and pop/advance TOP
+only after success. Existing Valid+Normal, Zero+Zero, and Special+Infinity
+pairs remain accepted. SNaN, pseudo-QNaN/SNaN, pseudo-infinity, unnormal,
+pseudo-denormal, other classes and mismatched tags reject before access.
+Native/JIT admission stays closed. The canonical binary80 QNaN layout is
+specified by Intel SDM Vol.1 Table 4-3 (revision 090); DB /7 FSTP m80fp is in
+Vol.2A pp.3-386–3-387 ([official revision 093 PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=503)).
+See the [S2-31ar plan](../plans/STAGE_2.md#s2-31ar-store-canonical-binary80-quietnan-through-bounded-fstp-m80fp),
+[report](../reports/STAGE_2_REPORT.md#s2-31ar--canonical-quietnan-binary80-store-through-bounded-fstp-m80fp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
 ## Local S2-31r: bounded `FLD m80fp [RAX]` (`DB 28`)
 
 The interpreter admits only exact bare `DB 28` in Long64 with existing x87

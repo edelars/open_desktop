@@ -5939,4 +5939,32 @@ Graphify rebuilt to 4016 nodes and 8349 edges. The layout checker reports only
 the pre-existing unmapped `.serena/` directory, left untouched. Architecture-
 gated native runtime denial was not executed on this local arm64 host; the
 Linux x86 runner target compiled. Physical validation remains deferred to the
-combined final S2-31 substage. Independent review is pending.
+combined final S2-31 substage. Independent `gpt-6.1-sol` review at medium
+reasoning found no remaining findings after the explicit report-anchor fix in
+commit `79808a5`.
+
+
+<a id="s2-31ar--canonical-quietnan-binary80-store-through-bounded-fstp-m80fp"></a>
+
+## S2-31ar — canonical QuietNaN binary80 store through bounded FSTP m80fp
+
+Exact DB38 now preserves the raw ten bytes of a canonical binary80 QuietNaN
+only when physical TOP is tagged Special. It adds no flags, preserves PE and
+the existing condition-code policy, and performs one atomic ten-byte write
+with no data read before popping. Existing Normal, signed-zero, and infinity
+paths remain. Tests cover both signs, negative indefinite, quiet-only/low/
+middle/maximum payloads across TOP×FCW×PE/C1, cross-width FLD composition,
+neighbor-class/tag rejection, write/range atomicity, CLI/FNSTSW fixtures, and
+native/JIT denial. Intel SDM Vol.1 Table 4-3 and revision 093 Vol.2A
+pp.3-386–3-387 support the narrow value and instruction contract.
+
+Focused `od-isa` store matrices, source/tag rejection, write/range atomicity,
+and cross-width composition tests passed. The runner CLI/FNSTSW fixture test and
+JIT-denial test passed. The full offline workspace suite passed (740 tests,
+0 failures); workspace all-target check, Linux x86 runner all-target check,
+formatting, and diff checks passed. Graphify update completed successfully
+with no topology changes. The layout checker reports the pre-existing unmapped
+`.serena/` directory, left untouched. Architecture-gated native runtime denial
+was not executed on this arm64 host; the Linux x86 runner target compiled.
+Physical validation remains deferred to the combined final S2-31 substage.
+Independent review is pending.

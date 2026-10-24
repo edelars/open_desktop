@@ -125,6 +125,11 @@ const FLD_M80_SNAN: &[u8] =
 const FLD_M80_PSEUDO_DENORMAL: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31ad_fld_m80fp_pseudo_denormal.case.json"
 );
+const FSTP_M80_QNAN: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ar_fstp_m80fp_qnan.case.json");
+const FSTP_M80_NEGATIVE_INDEFINITE_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31ar_fstp_m80fp_negative_indefinite_fnstsw.case.json"
+);
 const FABS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30z_fabs_normal.case.json");
 const FABS_INVALID_SOURCE: &[u8] =
@@ -3010,6 +3015,19 @@ fn v2_jit_denies_m80_infinity_load_without_interpreter_fallback() {
 #[test]
 fn v2_jit_denies_m80_special_loads_without_interpreter_fallback() {
     for fixture in [FLD_M80_QNAN, FLD_M80_SNAN, FLD_M80_PSEUDO_DENORMAL] {
+        let (_, result) = run(fixture, "jit", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
+fn v2_jit_denies_m80_qnan_stores_without_interpreter_fallback() {
+    for fixture in [FSTP_M80_QNAN, FSTP_M80_NEGATIVE_INDEFINITE_FNSTSW] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));

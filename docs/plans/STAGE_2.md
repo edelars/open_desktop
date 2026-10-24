@@ -3435,3 +3435,22 @@ pseudo-infinity, NaNs, other Special classes, and mismatched tags before
 access. Cover signed infinity across both opcodes and TOP×FCW×PE/C1,
 cross-width FLD compositions, boundaries/faults, CLI/FNSTSW fixtures, and
 native/JIT denial.
+
+<a id="s2-31ar-store-canonical-binary80-quietnan-through-bounded-fstp-m80fp"></a>
+
+#### S2-31ar. Store canonical binary80 QuietNaN through bounded FSTP m80fp
+
+Extend only exact `DB 38` (`FSTP m80fp [RAX]`) so physical TOP may also be a
+Special-tagged canonical binary80 QuietNaN: exponent `0x7fff`, explicit
+integer bit one, quiet fraction bit one, and any remaining payload/sign. Copy
+the original ten bytes unchanged; do not normalize, round, use host floating
+point, or add status flags. Preserve PE and C1/C0/C2/C3 under the existing raw
+store policy, retaining the four FCWs and `FSW & 0x80df == 0` gate.
+
+Preflight the full canonical48 ten-byte range and perform one atomic write/no
+read; pop and advance TOP only after successful write. Preserve all payloads,
+pointers, and retirement behavior. Keep Valid+Normal, Zero+Zero, and
+Special+Infinity paths. Reject SNaN, pseudo-QNaN, pseudo-SNaN, pseudo-infinity,
+finite special classes, and mismatched tags before access. Cover both signs,
+quiet-only/low/middle/max payloads including negative indefinite, TOP×FCW×PE/C1,
+cross-width FLD compositions, faults/range, CLI/FNSTSW, and native/JIT denial.

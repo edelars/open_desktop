@@ -2152,3 +2152,14 @@ native denial. Noncanonical neighbors, mismatched tags, and forbidden status
 reject before access. See the [S2-31aq CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31aq-signed-infinity-fstfstp-m32fp-rax),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31aq-store-canonical-signed-binary80-infinity-through-bounded-m32-fstfstp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31aq--signed-infinity-stores-for-bounded-m32-fstfstp).
+
+
+### S2-31ar canonical QuietNaN DB38 fixtures
+
+Exact DB38 preserves all ten bytes for a Special-tagged canonical binary80
+QuietNaN. The positive bare payload fixture and negative-indefinite DFE0/FNSTSW
+fixture exercise schema/CLI reachability, with native denial and JIT-denial
+coverage. SNaNs, pseudo-QNaNs and mismatched tag/class pairs reject before
+access. See the [S2-31ar CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ar-canonical-quietnan-fstp-m80fp-rax-db-38),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ar-store-canonical-binary80-quietnan-through-bounded-fstp-m80fp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ar--canonical-quietnan-binary80-store-through-bounded-fstp-m80fp).

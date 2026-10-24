@@ -45,3 +45,7 @@ Bounded `FST/FSTP m32fp` (`D9 10`/`D9 18`) also stores canonical signed
 binary80 infinity from a Special-tagged TOP as exact binary32 infinity. The
 one-write/no-read and post-success-pop rules remain; native/JIT admission stays
 closed.
+
+Bounded `FSTP m80fp` (`DB 38`) also preserves canonical binary80 QuietNaNs
+byte-for-byte when physical TOP is Special-tagged. It adds no flags and pops
+only after the atomic ten-byte write; native/JIT admission stays closed.
