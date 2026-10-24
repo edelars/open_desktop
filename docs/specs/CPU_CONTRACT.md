@@ -4191,7 +4191,7 @@ sequences; repeated SNaNs; second-read fault atomicity; each forbidden status
 bit before read; and unchanged rejection for unrelated x87 gates. The exact
 D900/DD00 budget-one/no-stop schema cases now require a forbidden status bit
 instead of relying on a rejected operand class. Existing CLI/FNSTSW SNaN
-fixtures observe sticky IE. See the [S2-31ak plan](../plans/STAGE_2.md#s2-31ak-preserve-sticky-ie-de-pe-across-exact-m32m64-fld-loads), [report](../reports/STAGE_2_REPORT.md#s2-31ak--sticky-ie-de-pe-across-bounded-m32m64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+fixtures observe sticky IE. See the [S2-31ak plan](../plans/STAGE_2.md#s2-31ak-preserve-sticky-iedepe-across-exact-m32m64-fld-loads), [report](../reports/STAGE_2_REPORT.md#s2-31ak--sticky-iedepe-across-bounded-m32m64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
 Intel SDM revision 093 Vol.1 §4.8.3.5 and Table 4-8 describe SNaN quieting by
 setting the most-significant fraction bit and the masked-invalid response;
@@ -4216,8 +4216,8 @@ when storing binary32 `+0` (`00000000`) or `-0` (`00000080`). The existing
 Normal conversion path is unchanged; a Zero tag with a nonzero/pseudo payload,
 or a non-Zero tag with a zero payload, remains Unsupported before data access.
 
-Retain the existing four FCWs and the S2-31ay `FSW & 0x80de == 0` gate, which permits
-sticky PE and C1. An exact zero store adds no status flags, preserves PE, and
+Retain the existing four FCWs and current S2-31az `FSW & 0x80dc == 0` gate, which permits
+sticky IE/DE/PE and C1. An exact zero store adds no status flags, preserves IE/DE/PE, and
 clears C1 under the local exact-result policy. Check the full canonical48
 Dword range before exactly one atomic Dword write; do not read data memory.
 Only after a successful write may D918 empty old physical TOP and advance TOP.
@@ -4241,8 +4241,8 @@ sign bit in binary64 `+0` (`0000000000000000`) or `-0`
 tag with a nonzero/pseudo payload, or a non-Zero tag with zero payload,
 remains Unsupported before data access.
 
-Retain the existing four FCWs and the S2-31ay `FSW & 0x80de == 0` gate. Sticky PE and C1
-may enter; exact zero preserves PE, adds no flags, and clears C1. Check the
+Retain the existing four FCWs and current S2-31az `FSW & 0x80dc == 0` gate. Sticky IE/DE/PE and C1
+may enter; exact zero preserves IE/DE/PE, adds no flags, and clears C1. Check the
 complete canonical48 Qword range before exactly one atomic Qword write; do not
 read data memory. Only after a successful write may DD18 empty old physical
 TOP and advance TOP. DD10 preserves TOP, all tags and all raw payloads. Store
@@ -4303,7 +4303,7 @@ binary64 infinity: `+∞` bytes `000000000000f07f`, `-∞` bytes
 new status flag. Preserve a preexisting PE; clear C1 under the local exact-store
 policy, with C0/C2/C3 unchanged.
 
-Retain the four admitted FCWs and `FSW & 0x80de == 0` gate. The complete
+Retain the four admitted FCWs and current `FSW & 0x80dc == 0` gate. The complete
 canonical48 Qword range is checked before exactly one atomic write; no data read
 is performed. DD10 preserves TOP, tags and all raw payloads. DD18 empties old
 physical TOP and advances TOP only after successful write. Existing Normal
@@ -4326,7 +4326,7 @@ and zero fraction. Integer-field conversion emits binary32 `+∞` bytes
 This path adds no status flags and preserves PE, with C1/C0/C2/C3 following the
 existing exact-store policy.
 
-Retain the four admitted FCWs and `FSW & 0x80de == 0` gate. Check the complete
+Retain the four admitted FCWs and current `FSW & 0x80dc == 0` gate. Check the complete
 canonical48 Dword range before exactly one atomic write; perform no data read.
 D910 preserves TOP, tags, and payloads. D918 pops only after successful write.
 Normal and signed-zero behavior remains unchanged. Pseudo-infinity, NaNs,
@@ -4351,7 +4351,7 @@ under this bounded policy: it does not round, set PE or IE, or use host floating
 point. Preserve sticky PE and clear C1; C0/C2/C3 follow the existing local
 store policy.
 
-Retain the four FCWs and `FSW & 0x80de == 0` gate. Preflight the full
+Retain the four FCWs and current `FSW & 0x80dc == 0` gate. Preflight the full
 canonical48 Qword range, then make exactly one atomic write and no data read.
 DD10 preserves TOP/tags/payloads; DD18 pops only after successful write. Keep
 Normal, Zero and Infinity behavior. SNaN, pseudo-NaN, other special encodings,
@@ -4396,7 +4396,7 @@ and truncate lower 11 bits without rounding or PE. Add sticky IE after the
 Qword write succeeds; retain PE and clear C1. Under the admitted profile ES,
 B, and SF stay clear. The ten-byte source register payload is never rewritten.
 
-Keep the four FCWs and `FSW & 0x80de == 0` gate, canonical48 full-Qword
+Keep the four FCWs and current `FSW & 0x80dc == 0` gate, canonical48 full-Qword
 preflight, one atomic write/no data read, and existing pointer/retirement
 policy. DD10 preserves the stack; DD18 empties old TOP and advances TOP only
 after a successful store. `FNSTSW` observes IE; a subsequent m32/m64 store
@@ -4425,7 +4425,7 @@ rounding. This bounded conversion adds no flags, including PE, and does not use
 host floating point. Preserve sticky PE and clear C1 under the existing exact
 store policy.
 
-Retain the four FCWs and `FSW & 0x80de == 0` gate. Preflight the full
+Retain the four FCWs and current `FSW & 0x80dc == 0` gate. Preflight the full
 canonical48 Dword range and perform exactly one atomic write/no data read. D910
 preserves TOP/tags/payloads; D918 pops only after a successful write. Keep
 Normal, Zero and Infinity behavior. SNaNs, pseudo-NaNs, other special classes,
@@ -4449,7 +4449,7 @@ rounding or PE. Set sticky IE only after the full-range Dword write succeeds;
 preserve PE and the source register bytes. The admitted masked profile leaves
 ES/B/SF clear and clears C1 under the existing exact-store policy.
 
-Keep four FCWs and `FSW & 0x80de == 0`. Preflight the full canonical48 Dword
+Keep four FCWs and current `FSW & 0x80dc == 0`. Preflight the full canonical48 Dword
 range and perform exactly one atomic write/no data read. D910 preserves TOP,
 tags and payloads; D918 empties old TOP and advances only after a successful
 write. QNaNs retain their S2-31av no-new-flags behavior. `FNSTSW` observes IE;
