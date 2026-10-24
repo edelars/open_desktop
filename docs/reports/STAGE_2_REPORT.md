@@ -6080,3 +6080,26 @@ of commit `57f93d5` was clean: six QuietNaN ISA tests plus CLI fixture and JIT
 denial tests passed. The review confirmed source-class/tag gates, canonical48
 Dword prevalidation, and that the write precedes status and pop changes. Native
 runtime was not verified; physical acceptance remains deferred under ISSUE-019.
+
+
+<a id="s2-31aw--canonical-signalingnan-binary80-to-binary64-stores"></a>
+
+## S2-31aw — canonical SignalingNaN binary80 stores through m64
+
+Exact DD10/DD18 now accept only a Special-tagged canonical binary80 SNaN. The
+binary64 result preserves sign and the upper 51 payload bits, sets the quiet
+bit, and truncates the lower 11 bits without PE. Sticky IE is committed only
+after the atomic Qword write succeeds; PE is preserved, ES/B/SF remain clear,
+the raw source remains unchanged, and DD18 pops only after the write. FCW/FSW
+gates and normal/zero/infinity/QNaN paths are unchanged.
+
+Six focused test functions passed: the signed payload matrix, fault/range
+atomicity, IE plus FNCLEX recovery, malformed-class/tag/environment rejection,
+CLI/FNSTSW fixtures, and JIT denial. The full offline workspace suite passed
+(765 tests, zero failures); workspace all-target check and Linux x86_64 runner
+all-target check passed. Formatting, diff and fixture-link checks passed.
+Graphify rebuilt successfully (4,094 nodes, 8,461 edges, 208 communities).
+The layout check reports only the pre-existing unmapped `.serena/` directory,
+which was left untouched. Native runtime and physical behavior remain
+unverified on this arm64 host and are deferred to the final combined acceptance
+substage under ISSUE-019. Independent review is pending.

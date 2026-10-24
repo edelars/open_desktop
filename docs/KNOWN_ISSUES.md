@@ -349,3 +349,15 @@
   [plan](plans/STAGE_2.md#s2-31av-store-canonical-binary80-quietnan-through-bounded-fstfstp-m32fp),
   [report](reports/STAGE_2_REPORT.md#s2-31av--canonical-quietnan-binary80-to-binary32-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31aw evidence:** exact DD10/DD18 m64 stores now accept canonical
+  Special-tagged binary80 SNaNs, quiet the binary64 destination, and add sticky
+  IE only after a successful atomic write. The upper 51 payload bits and sign
+  survive, the lower 11 truncate without PE, and the raw source remains
+  unchanged; DD18 pops only after success. FSW gates, PE, C1/TOP behavior and
+  ES/B/SF policy are covered along with FNCLEX recovery; native runtime and physical
+  acceptance remain unverified and deferred to the final combined S2-31
+  substage. See [S2-31aw CPU contract](specs/CPU_CONTRACT.md#local-s2-31aw-canonical-signalingnan-fstfstp-m64fp-rax-dd-10-dd-18),
+  [plan](plans/STAGE_2.md#s2-31aw-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m64fp),
+  [report](reports/STAGE_2_REPORT.md#s2-31aw--canonical-signalingnan-binary80-to-binary64-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

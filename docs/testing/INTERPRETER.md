@@ -782,3 +782,15 @@ truncates lower 40 fraction bits without rounding or new flags. Signed payload
 boundaries, all-width FLD-to-store sequences, status preservation, atomic
 write/pop behavior, CLI/FNSTSW and JIT/native denial are covered. See the
 [S2-31av contract](../specs/CPU_CONTRACT.md#local-s2-31av-canonical-quietnan-fstfstp-m32fp-rax-d9-10-d9-18).
+
+
+## Local S2-31aw masked binary80 SignalingNaN to binary64 stores
+
+Exact DD10/DD18 accepts Special-tagged canonical binary80 SNaNs, quiets the
+binary64 output, preserves sign and upper 51 payload bits, and sets IE only
+after a successful atomic write. Lower 11 payload bits truncate without PE; PE
+is preserved and the source's ten bytes are unchanged. The matrix covers signs,
+opcodes, TOP, FCWs, PE/C1, truncation boundaries, faults, FNSTSW and FNCLEX
+recovery. CLI fixtures run in the interpreter and are denied by JIT/native;
+native runtime and physical acceptance remain deferred under ISSUE-019. See the
+[S2-31aw CPU contract](../specs/CPU_CONTRACT.md#local-s2-31aw-canonical-signalingnan-fstfstp-m64fp-rax-dd-10-dd-18).

@@ -502,3 +502,15 @@ FNSTSW. Both are schema/CLI reachable and included in native/JIT denial. See
 the [S2-31av contract](../specs/CPU_CONTRACT.md#local-s2-31av-canonical-quietnan-fstfstp-m32fp-rax-d9-10-d9-18),
 [plan](../plans/STAGE_2.md#s2-31av-store-canonical-binary80-quietnan-through-bounded-fstfstp-m32fp),
 and [report](../reports/STAGE_2_REPORT.md#s2-31av--canonical-quietnan-binary80-to-binary32-stores).
+
+
+## S2-31aw canonical SignalingNaN m64 stores
+
+The positive bare DD10 fixture and negative DD18/DFE0/FNSTSW fixture use
+Special-tagged canonical binary80 SNaNs. Expected binary64 values preserve sign,
+quiet the NaN, and retain the upper 51 payload bits; sticky IE is observed only
+after the Qword write, while PE and the raw source payload are preserved. Both
+fixtures are schema/CLI reachable and explicitly denied by JIT/native. See the
+[S2-31aw contract](../specs/CPU_CONTRACT.md#local-s2-31aw-canonical-signalingnan-fstfstp-m64fp-rax-dd-10-dd-18),
+[plan](../plans/STAGE_2.md#s2-31aw-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m64fp),
+and [report](../reports/STAGE_2_REPORT.md#s2-31aw--canonical-signalingnan-binary80-to-binary64-stores).

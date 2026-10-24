@@ -259,6 +259,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ap | Extend exact DD10/DD18 m64 stores to canonical signed binary80 infinity and binary64 infinity | S2-31am |
 | [x] | S2-31au | Convert Special-tagged canonical binary80 QuietNaN through exact DD10/DD18 stores with payload truncation | S2-31ap, S2-31at |
 | [x] | S2-31av | Convert Special-tagged canonical binary80 QuietNaN through exact D910/D918 stores with binary32 payload truncation | S2-31aq, S2-31au |
+| [x] | S2-31aw | Convert Special-tagged canonical binary80 SignalingNaN through exact DD10/DD18 stores, quieting binary64 and setting sticky IE | S2-31au |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3534,3 +3535,28 @@ stack. Keep Normal, signed-zero and Infinity behavior. Reject SNaNs, pseudo-NaNs
 other special classes and mismatched tags before access. Cover signed values and
 payload boundaries across TOP×FCW×PE/C1, cross-width FLD-to-store composition,
 fault/range atomicity, CLI/FNSTSW fixtures, and native/JIT denial.
+
+
+<a id="s2-31aw-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m64fp"></a>
+
+#### S2-31aw. Store canonical binary80 SignalingNaN through bounded m64 FST/FSTP
+
+Extend only exact `DD 10` (`FST m64fp [RAX]`) and `DD 18` (`FSTP
+m64fp [RAX]`) for a Special-tagged canonical binary80 SignalingNaN. Convert by
+integer fields, preserving the sign and upper 51 payload bits while setting the
+binary64 quiet bit; discard the lower 11 bits without PE. Set sticky IE only
+after the single atomic Qword write succeeds; preserve PE and leave ES/B/SF
+clear. Keep the current FCWs, `FSW & 0x80df == 0` entry gate, C1-clear policy,
+and FST/FSTP state transition rules. The source's ten bytes remain unchanged;
+DD18 pops only after a successful write.
+
+Preflight the complete canonical48 Qword range and perform one write/no read.
+Reject pseudo-SNaNs, QNaNs with mismatched tags, pseudo-infinities, other
+unsupported encodings, occupied or Empty source tags, and forbidden environment
+bits before memory access. Cover both signs/opcodes across TOP×FCW×PE/C1,
+payload bits around the 11-bit truncation boundary, QNaN/SNaN differential,
+write/range atomicity, IE/FNSTSW/FNCLEX recovery, CLI fixtures and native/JIT
+denial. Intel SDM revision 093 Vol. 2A's FST/FSTP entry defines NaN identity
+preservation on narrowing stores and the masked invalid-operation behavior is
+described in Vol. 1 §8.5.1 ([official Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505),
+[official Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436#page=232)).

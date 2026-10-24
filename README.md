@@ -8,6 +8,8 @@ Bounded `FST m32fp`/`FSTP m32fp` (`D9 10`/`D9 18`) also store canonical signed b
 
 The matching bounded `FST m64fp`/`FSTP m64fp` (`DD 10`/`DD 18`) forms store canonical signed binary80 zero as binary64 `+0` or `-0`, with the same post-write pop rule.
 
+Those bounded m64 store forms also quiet canonical Special-tagged binary80 SignalingNaNs in the binary64 destination and set sticky IE only after a successful atomic write; the raw x87 source remains unchanged. Native/JIT admission and physical acceptance remain deferred.
+
 ## Начало работы
 
 1. Прочитать [правила проекта](AGENTS.md) и [карту каталогов](docs/PROJECT_LAYOUT.md).

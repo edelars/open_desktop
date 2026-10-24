@@ -4362,6 +4362,34 @@ slice. See the [plan](../plans/STAGE_2.md#s2-31au-store-canonical-binary80-quiet
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
 
 
+<a id="local-s2-31aw-canonical-signalingnan-fstfstp-m64fp-rax-dd-10-dd-18"></a>
+
+## Local S2-31aw: masked canonical SignalingNaN `FST/FSTP m64fp [RAX]`
+
+Exact `DD 10` and `DD 18` accept a canonical binary80 SignalingNaN only when
+physical TOP is Special-tagged, exponent is `0x7fff`, the explicit integer bit
+is one, the quiet bit is clear, and the fraction is nonzero. Convert by integer
+fields: preserve sign and the upper 51 payload bits, set binary64's quiet bit,
+and truncate lower 11 bits without rounding or PE. Add sticky IE after the
+Qword write succeeds; retain PE and clear C1. Under the admitted profile ES,
+B, and SF stay clear. The ten-byte source register payload is never rewritten.
+
+Keep the four FCWs and `FSW & 0x80df == 0` gate, canonical48 full-Qword
+preflight, one atomic write/no data read, and existing pointer/retirement
+policy. DD10 preserves the stack; DD18 empties old TOP and advances TOP only
+after a successful store. `FNSTSW` observes IE, after which `FNCLEX` clears it
+and the store gate admits a subsequent operation. QNaNs continue through the
+S2-31au no-new-flags path; pseudo-SNaNs, malformed payloads, mismatched tags,
+and forbidden environment bits reject before access. JIT/native admission and
+general unmasked exception delivery remain outside scope. This narrow masked
+behavior follows Intel SDM revision 093 Vol. 2A FST/FSTP and Vol. 1 §8.5.1
+([Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505),
+[Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436#page=232)).
+See the [plan](../plans/STAGE_2.md#s2-31aw-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m64fp),
+[report](../reports/STAGE_2_REPORT.md#s2-31aw--canonical-signalingnan-binary80-to-binary64-stores),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+
 <a id="local-s2-31av-canonical-quietnan-fstfstp-m32fp-rax-d9-10-d9-18"></a>
 
 ## Local S2-31av: canonical QuietNaN `FST/FSTP m32fp [RAX]`

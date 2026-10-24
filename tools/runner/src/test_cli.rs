@@ -3261,6 +3261,54 @@ mod tests {
     }
 
     #[test]
+    fn fst_m64fp_signaling_nan_fixtures_quiet_payload_and_observe_ie() {
+        for (name, bytes, expected_rax, expected_status, expected_tag_word, raw_nan, stored) in [
+            (
+                "positive FST m64 signaling NaN",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aw_fst_m64fp_positive_signaling_nan.case.json").as_slice(),
+                0x0030_0004,
+                0x4501,
+                0xfffe,
+                "0100000000000080ff7f",
+                "000000000000f87f",
+            ),
+            (
+                "negative FSTP m64 signaling NaN with FNSTSW",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aw_fstp_m64fp_negative_signaling_nan_fnstsw.case.json").as_slice(),
+                0x0030_4d01,
+                0x4d01,
+                0xffff,
+                "f0debc9a78563492ffff",
+                "9b5713cf8a46faff",
+            ),
+        ] {
+            let fixture = v2::Fixture::from_json(bytes)
+                .unwrap_or_else(|error| panic!("{name}: invalid fixture schema: {error}"));
+            let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::StopAddress {}), "{name}");
+            let Observation::Available { value } = result.snapshot else {
+                panic!("{name}: expected observable CPU state");
+            };
+            assert_eq!(value.state.gpr[0], HexU64(expected_rax), "{name}");
+            assert_eq!(value.state.rip, fixture.fixture.stop_rip.unwrap(), "{name}");
+            let x87 = value.state.x87.as_ref().unwrap();
+            assert_eq!(x87.status_word, HexU64(expected_status), "{name}");
+            assert_eq!(x87.tag_word, HexU64(expected_tag_word), "{name}");
+            assert_eq!(x87.registers[0], raw_nan, "{name}");
+            assert_eq!(x87.instruction_pointer, HexU64(0x0010_0000), "{name}");
+            assert_eq!(x87.data_pointer, HexU64(0x0030_0004), "{name}");
+            let stack = memory
+                .snapshot()
+                .into_iter()
+                .find(|region| region.region_id == "stack")
+                .unwrap();
+            assert_eq!(&stack.bytes_hex[8..24], stored, "{name}");
+        }
+    }
+
+    #[test]
     fn fst_m64fp_literal_fixtures_store_without_pop_and_compose_with_fnstsw() {
         for (bytes, expected_rax, retired) in [
             (

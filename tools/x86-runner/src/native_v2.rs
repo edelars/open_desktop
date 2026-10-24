@@ -1986,6 +1986,10 @@ mod tests {
                 .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31au_fstp_m64fp_negative_quiet_nan_fnstsw.case.json")
                 .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aw_fst_m64fp_positive_signaling_nan.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aw_fstp_m64fp_negative_signaling_nan_fnstsw.case.json")
+                .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aq_fst_m32fp_positive_infinity.case.json")
                 .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31aq_fstp_m32fp_negative_infinity_fnstsw.case.json")
