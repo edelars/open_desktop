@@ -2663,6 +2663,41 @@ Normative source: Intel SDM revision 093, Vol.2A,
 “FCOMI/FCOMIP/FUCOMI/FUCOMIP—Compare Floating-Point Values,” pp.3-327–3-329
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## Local S2-31a: bounded `FRNDINT` (`D9 FC`)
+
+The interpreter admits only bare `D9 FC` in an existing x87-state snapshot.
+Preflight reads the old physical TOP tag and payload only: the tag must be
+Valid, the raw value canonical Normal, and its unbiased exponent must be 0..62.
+Other physical tags and payloads are not examined. FCW must be exactly one of
+`0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`, selecting PC64, all exception masks,
+and nearest-even, toward-negative, toward-positive, or toward-zero RC. Require
+`FSW & 0x80df == 0`: all exception/status failure bits except sticky PE must be
+clear; TOP and condition codes are allowed.
+
+For significand `s`, exponent `e`, and `k=63-e`, preflight computes
+`d=1<<k`, `q=s>>k`, and `r=s&(d-1)`, then calls the integer-only
+`round_quotient_magnitude(sign,q,r,d,RC)`. It packs the nonzero rounded integer
+with `pack_normal_rounded_significand(sign,floor(log2(m)),m<<(63-n),64)`.
+This includes values that round to either signed `2^63`; no host integer cast is
+used. The source domain ensures `m` is nonzero.
+
+Commit replaces only the old physical TOP payload. PE is set sticky exactly
+when `r != 0`; C1 is set exactly when rounded magnitude exceeds `q`, otherwise
+cleared. C0/C2/C3 retain their concrete values as an explicit local policy.
+Tags, TOP, FCW, FDP, FOP, GPR, RFLAGS and all other state are preserved; FIP is
+set to the starting RIP, RIP advances by two, and the instruction retires once.
+Every unsupported source/environment and fetch, truncation, STOP or budget
+boundary is atomic. The fixture schema accepts only `D9 FC` or the exact
+`D9 FC DF E0` FNSTSW composition; native execution explicitly rejects D9 FC.
+
+This local slice does not model zero/subnormal/special values, other exponent
+ranges, PC settings, unmasked exceptions, pending/deferred delivery, CR0/#NM,
+WAIT, memory forms, or general x87 semantics. It does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FRNDINT—Round to Integer,”
+p.3-372; Vol.1 §§8.1.9 and 8.5.6
+([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=490)).
+
 ## Local S2-30al: bounded `FUCOMI ST(0), ST(1)` (`DB E9`)
 
 Accept exactly bare `DB E9`. Before mutation call

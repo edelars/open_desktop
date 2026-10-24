@@ -35,6 +35,12 @@ const FCHS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30y_fchs_normal.case.json");
 const FCHS_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30y_fchs_invalid_source.case.json");
+const FRNDINT_TIE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_tie.case.json");
+const FRNDINT_FNSTSW: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_fnstsw.case.json");
+const FRNDINT_INVALID_TAG: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_invalid_tag.case.json");
 const FABS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30z_fabs_normal.case.json");
 const FABS_INVALID_SOURCE: &[u8] =
@@ -1309,6 +1315,41 @@ fn local_x87_fchs_fixture_cli_flips_only_the_st0_sign_and_clears_c1() {
 #[test]
 fn local_x87_fchs_invalid_source_fixture_is_atomic_in_the_cli_runner() {
     let (input, result) = run(FCHS_INVALID_SOURCE, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, input.fixture.initial_state.rip);
+    assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    assert_eq!(observed.state.x87, input.fixture.initial_state.x87);
+}
+
+#[test]
+fn local_x87_frndint_tie_and_fnstsw_fixtures_observe_result_and_status() {
+    for (fixture, expected_rax, expected_rip) in [
+        (FRNDINT_TIE, 0, 0x0010_0002),
+        (FRNDINT_FNSTSW, 0x4720, 0x0010_0004),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), input.fixture.instruction_budget);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.rip, HexU64(expected_rip));
+        assert_eq!(observed.state.gpr[0], HexU64(expected_rax));
+        let x87 = observed.state.x87.as_ref().unwrap();
+        assert_eq!(x87.registers[0], "00000000000000800040");
+        assert_eq!(x87.status_word, HexU64(0x4720));
+        assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
+        assert_eq!(
+            x87.tag_word,
+            input.fixture.initial_state.x87.as_ref().unwrap().tag_word
+        );
+    }
+}
+
+#[test]
+fn local_x87_frndint_invalid_tag_fixture_is_atomic() {
+    let (input, result) = run(FRNDINT_INVALID_TAG, "interpreter", 4);
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
     assert_eq!(count(&result), 0);
     let observed = snapshot(&result);

@@ -2003,6 +2003,19 @@ Normative source: Intel SDM revision 093, Vol.2A, “FTST—Test,” pp.3-400–
 
 **Готово:** value, status, stack и exception state совпадают в оговорённом профиле; неизвестные поля не скрыты общей маской.
 
+#### S2-31a. Bare bounded `FRNDINT` (`D9 FC`), partial slice
+
+Implement only register-only FRNDINT for a Valid physical TOP holding a raw
+canonical Normal whose unbiased exponent is 0..62. Accept FCW exactly
+`037f/077f/0b7f/0f7f` (PC64, all masks, each RC) and require
+`FSW & 0x80df == 0`; sticky PE may be present. Use integer quotient/remainder
+rounding and the existing normal packer, including the ±2^63 boundary without
+host integer conversion. Commit only old physical TOP's payload, PE/C1, FIP,
+RIP and one retirement; preserve tags, TOP and unrelated state. C0/C2/C3 are
+retained by local policy. Reject unsupported values, environment, prefixes,
+and execution boundaries atomically. Native admission remains closed. This
+does not complete S2-31 or define general x87 exceptions.
+
 ### S2-32. Остальные обязательные x87 формы
 
 1. По матрице профиля отдельно реализовать нужные remainder, scale, square root, transcendental и прочие оставшиеся формы. Одно семейство — отдельное изменение.

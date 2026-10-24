@@ -449,6 +449,8 @@ pub enum Operation {
     Fabs,
     /// Bare `D9 E4` FTST, comparing canonical-Normal ST(0) with zero.
     Ftst,
+    /// Bare `D9 FC` FRNDINT in the bounded PC64/finite Normal profile.
+    Frndint,
     /// Bare `D8 D0+i` FCOM ST(i), bounded canonical-Normal register compare.
     FcomSt {
         source: u8,
@@ -1202,6 +1204,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xe0 => Operation::Fchs,
                     0xe1 => Operation::Fabs,
                     0xe4 => Operation::Ftst,
+                    0xfc => Operation::Frndint,
                     _ => return Err(self.unsupported(opcode)),
                 }
             }
@@ -2656,7 +2659,7 @@ mod tests {
     }
 
     #[test]
-    fn d9_accepts_only_bare_fchs_fabs_and_ftst() {
+    fn d9_accepts_only_bare_fchs_fabs_ftst_and_frndint() {
         let mut memory = Memory::new(&[0xd9, 0xe0]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::Fchs);
@@ -2674,6 +2677,8 @@ mod tests {
                     Ok(Operation::Fabs)
                 } else if second == 0xe4 {
                     Ok(Operation::Ftst)
+                } else if second == 0xfc {
+                    Ok(Operation::Frndint)
                 } else {
                     Err(DecodeError::Unsupported {
                         opcode: Opcode {
@@ -2715,6 +2720,18 @@ mod tests {
                     Err(DecodeError::Unsupported { .. })
                 ),
                 "{bytes:02x?}"
+            );
+        }
+
+        for prefix in [
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x40, 0x48, 0x9b,
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(&[prefix, 0xd9, 0xfc]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "prefix {prefix:02x}"
             );
         }
         assert!(matches!(
@@ -6553,6 +6570,7 @@ mod tests {
                 }
             }
         }
+
         // Group selectors ignore REX.R. TEST has no F6/F7 /1 alias in this
         // documented slice; accepting undocumented encodings is not required.
         for (code, kind) in [

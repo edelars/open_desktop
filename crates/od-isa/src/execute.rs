@@ -11,7 +11,7 @@ use crate::state::X87Tag;
 use crate::x87::{
     RationalRoundingMode, X87Binary80, X87Binary80Class, add_finite_same_exponent,
     divide_finite_significands, multiply_finite_significands, normalize_exact_magnitude,
-    pack_normal_rounded_significand, round_pack_exact_coefficient,
+    pack_normal_rounded_significand, round_pack_exact_coefficient, round_quotient_magnitude,
 };
 use crate::{FsDescriptorCache, LongModeState, OperandSize, Register, RegisterView};
 
@@ -359,6 +359,18 @@ fn step_tracked_with_stop(
             opcode: instruction.opcode.byte,
         });
     }
+    let frndint = if instruction.operation == Operation::Frndint {
+        match bounded_x87_frndint_result(state) {
+            Some(result) => Some(result),
+            None => {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+        }
+    } else {
+        None
+    };
     if let Operation::FcomSt { source } = instruction.operation
         && bounded_x87_fcom_result(state, source).is_none()
     {
@@ -421,6 +433,7 @@ fn step_tracked_with_stop(
         | Operation::Fchs
         | Operation::Fabs
         | Operation::Ftst
+        | Operation::Frndint
         | Operation::FcomSt { .. }
         | Operation::FcompSt { .. }
         | Operation::Fcompp
@@ -812,6 +825,18 @@ fn step_tracked_with_stop(
             let negative = source[9] & 0x80 != 0;
             let x87 = state.x87.as_mut().expect("FTST state was prevalidated");
             x87.status_word = (x87.status_word & !0x4700) | if negative { 0x0100 } else { 0 };
+            x87.instruction_pointer = state.rip;
+        }
+        Operation::Frndint => {
+            let (result, inexact, incremented) = frndint.expect("FRNDINT result was prevalidated");
+            let x87 = state.x87.as_mut().expect("FRNDINT state was prevalidated");
+            let top = usize::from(x87.top());
+            x87.registers[top] = result;
+            // This bounded profile retains C0/C2/C3 locally; FRNDINT changes
+            // C1 to reflect magnitude increment and accumulates PE as sticky.
+            x87.status_word = (x87.status_word & !0x0200)
+                | if inexact { 0x0020 } else { 0 }
+                | if incremented { 0x0200 } else { 0 };
             x87.instruction_pointer = state.rip;
         }
         Operation::FcomSt { source } => {
@@ -1972,6 +1997,52 @@ fn bounded_x87_normal_st0_source(state: &LongModeState) -> Option<[u8; 10]> {
         return None;
     }
     Some(source)
+}
+
+/// Preflight the bounded register-only FRNDINT slice and return the packed
+/// result plus precision/increment status. Other physical tags and registers
+/// are deliberately not inspected.
+fn bounded_x87_frndint_result(state: &LongModeState) -> Option<([u8; 10], bool, bool)> {
+    let x87 = state.x87.as_ref()?;
+    if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
+        || x87.status_word & 0x80df != 0
+    {
+        return None;
+    }
+    let top = x87.top();
+    let raw = x87.registers[usize::from(top)];
+    if x87.tag(top)? != X87Tag::Valid {
+        return None;
+    }
+    let finite = X87Binary80::from_bytes(raw).normalize_finite()?;
+    if finite.source_class() != X87Binary80Class::Normal || !(0..=62).contains(&finite.exponent()) {
+        return None;
+    }
+    let shift = 63 - finite.exponent() as u32;
+    let denominator = 1_u64 << shift;
+    let significand = finite.significand();
+    let quotient = significand >> shift;
+    let remainder = significand & (denominator - 1);
+    let rounding = match x87.control_word {
+        0x037f => RationalRoundingMode::NearestTiesEven,
+        0x077f => RationalRoundingMode::TowardNegative,
+        0x0b7f => RationalRoundingMode::TowardPositive,
+        0x0f7f => RationalRoundingMode::TowardZero,
+        _ => return None,
+    };
+    let magnitude =
+        round_quotient_magnitude(finite.sign(), quotient, remainder, denominator, rounding)?;
+    let inexact = remainder != 0;
+    let incremented = magnitude > u128::from(quotient);
+    let exponent = (u128::BITS - 1 - magnitude.leading_zeros()) as i32;
+    let result = pack_normal_rounded_significand(
+        finite.sign(),
+        exponent,
+        magnitude << (63 - exponent as u32),
+        64,
+    )?
+    .to_bytes();
+    Some((result, inexact, incremented))
 }
 
 /// Compare old physical ST(0) and ST(i) without converting through a host
@@ -18082,6 +18153,393 @@ mod tests {
             );
             assert_eq!(outcome.instructions_executed, 0);
             assert_eq!(state, before);
+        }
+    }
+
+    #[test]
+    fn frndint_rounds_every_top_sign_rounding_mode_and_fraction_boundary() {
+        let denominator = 1_u64 << 62;
+        let fractions = [0, denominator / 2 - 1, denominator / 2, denominator / 2 + 1];
+        for top in 0_u8..8 {
+            for (control_word, mode) in [
+                (0x037f, RationalRoundingMode::NearestTiesEven),
+                (0x077f, RationalRoundingMode::TowardNegative),
+                (0x0b7f, RationalRoundingMode::TowardPositive),
+                (0x0f7f, RationalRoundingMode::TowardZero),
+            ] {
+                for negative in [false, true] {
+                    for remainder in fractions {
+                        for sticky_pe in [false, true] {
+                            let raw = binary80_normal((1 << 63) | remainder, 0x4000, negative);
+                            let mut state = LongModeState::default();
+                            state.rip = 0x8100;
+                            state.gpr =
+                                std::array::from_fn(|index| 0x1234_5678_9abc_def0 ^ index as u64);
+                            state.rflags = 0x0bad_f00d_0123_4567;
+                            let mut x87 = crate::state::X87State::fixture_seed();
+                            x87.control_word = control_word;
+                            x87.status_word = (u16::from(top) << 11)
+                                | 0x4500
+                                | 0x0200
+                                | u16::from(sticky_pe) * 0x0020;
+                            x87.tag_word = u16::MAX;
+                            for physical in 0_u8..8 {
+                                x87.registers[usize::from(physical)] = [0x20 + physical; 10];
+                            }
+                            x87.registers[usize::from(top)] = raw;
+                            x87.set_tag(top, X87Tag::Valid);
+                            x87.instruction_pointer = 0x1234;
+                            x87.data_pointer = 0x5678;
+                            x87.last_opcode = 0x05aa;
+                            state.x87 = Some(x87);
+                            let before = state.clone();
+                            let quotient = 2;
+                            let magnitude = round_quotient_magnitude(
+                                negative,
+                                quotient,
+                                remainder,
+                                denominator,
+                                mode,
+                            )
+                            .unwrap();
+                            let n = (u128::BITS - 1 - magnitude.leading_zeros()) as i32;
+                            let expected_raw = pack_normal_rounded_significand(
+                                negative,
+                                n,
+                                magnitude << (63 - n as u32),
+                                64,
+                            )
+                            .unwrap()
+                            .to_bytes();
+                            let inexact = remainder != 0;
+                            let incremented = magnitude > u128::from(quotient);
+                            let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+                            assert_eq!(
+                                step(&mut state, &mut memory, AccessContext::default()),
+                                Ok(StepOutcome::Advanced)
+                            );
+                            let result = state.x87.as_ref().unwrap();
+                            assert_eq!(result.registers[usize::from(top)], expected_raw);
+                            for physical in 0_u8..8 {
+                                if physical != top {
+                                    assert_eq!(
+                                        result.registers[usize::from(physical)],
+                                        before.x87.as_ref().unwrap().registers
+                                            [usize::from(physical)]
+                                    );
+                                }
+                                assert_eq!(
+                                    result.tag(physical),
+                                    before.x87.as_ref().unwrap().tag(physical)
+                                );
+                            }
+                            let old_status = before.x87.as_ref().unwrap().status_word;
+                            let expected_status = (old_status & !0x0200)
+                                | if inexact { 0x0020 } else { 0 }
+                                | if incremented { 0x0200 } else { 0 };
+                            assert_eq!(result.status_word, expected_status);
+                            assert_eq!(result.control_word, control_word);
+                            assert_eq!(result.instruction_pointer, before.rip);
+                            assert_eq!(result.data_pointer, 0x5678);
+                            assert_eq!(result.last_opcode, 0x05aa);
+                            assert_eq!(result.tag_word, before.x87.as_ref().unwrap().tag_word);
+                            assert_eq!(state.gpr, before.gpr);
+                            assert_eq!(state.rflags, before.rflags);
+                            assert_eq!(state.rip, before.rip + 2);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn frndint_matches_independent_literal_binary80_rounding_vectors() {
+        // Hand-calculated exact binary80 encodings and status words; expected
+        // answers intentionally do not use the production rounding/packing helpers.
+        let vectors: &[(&[u8; 10], u16, u16, &[u8; 10], u16)] = &[
+            // Exact +1.0 preserves C bits and has no new exception/status.
+            (
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                0x037f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                0x4500,
+            ),
+            // PE is sticky; FRNDINT clears old C1 when magnitude is not incremented.
+            (
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                0x037f,
+                0x4720,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                0x4520,
+            ),
+            // +1.25 rounds to +1 under nearest, down, and toward-zero.
+            (
+                &[0, 0, 0, 0, 0, 0, 0, 0xa0, 0xff, 0x3f],
+                0x037f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                0x4520,
+            ),
+            (
+                &[0, 0, 0, 0, 0, 0, 0, 0xa0, 0xff, 0x3f],
+                0x077f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                0x4520,
+            ),
+            (
+                &[0, 0, 0, 0, 0, 0, 0, 0xa0, 0xff, 0x3f],
+                0x0f7f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                0x4520,
+            ),
+            // +1.25 toward +infinity rounds to +2 and sets C1.
+            (
+                &[0, 0, 0, 0, 0, 0, 0, 0xa0, 0xff, 0x3f],
+                0x0b7f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0x00, 0x40],
+                0x4720,
+            ),
+            // -1.25 toward -infinity rounds to -2 and sets C1.
+            (
+                &[0, 0, 0, 0, 0, 0, 0, 0xa0, 0xff, 0xbf],
+                0x077f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0x00, 0xc0],
+                0x4720,
+            ),
+            // -1.25 toward +infinity and toward zero round to -1.
+            (
+                &[0, 0, 0, 0, 0, 0, 0, 0xa0, 0xff, 0xbf],
+                0x0b7f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xbf],
+                0x4520,
+            ),
+            (
+                &[0, 0, 0, 0, 0, 0, 0, 0xa0, 0xff, 0xbf],
+                0x0f7f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xbf],
+                0x4520,
+            ),
+            // Half ties: 2.5 -> even 2; 3.5 -> even 4 (C1 records increment).
+            (
+                &[0, 0, 0, 0, 0, 0, 0, 0xa0, 0x00, 0x40],
+                0x037f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0x00, 0x40],
+                0x4520,
+            ),
+            (
+                &[0, 0, 0, 0, 0, 0, 0, 0xe0, 0x00, 0x40],
+                0x037f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0x01, 0x40],
+                0x4720,
+            ),
+            // The largest admitted values below ±2^63 round to the signed boundary.
+            (
+                &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3d, 0x40],
+                0x0b7f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0x3e, 0x40],
+                0x4720,
+            ),
+            (
+                &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3d, 0xc0],
+                0x077f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0x3e, 0xc0],
+                0x4720,
+            ),
+            // +1.5 and adjacent significands bracket the tie.
+            (
+                &[0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x3f],
+                0x037f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0x00, 0x40],
+                0x4720,
+            ),
+            (
+                &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xbf, 0xff, 0x3f],
+                0x037f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                0x4520,
+            ),
+            (
+                &[1, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x3f],
+                0x037f,
+                0x4700,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80, 0x00, 0x40],
+                0x4720,
+            ),
+        ];
+
+        for (input, control_word, initial_status, expected_raw, expected_status) in vectors {
+            let mut state = LongModeState::default();
+            state.rip = 0x8180;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = *control_word;
+            x87.status_word = *initial_status;
+            x87.registers[0] = **input;
+            x87.set_tag(0, X87Tag::Valid);
+            state.x87 = Some(x87);
+            let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced),
+                "input={input:02x?}, FCW={control_word:04x}"
+            );
+            let result = state.x87.as_ref().unwrap();
+            assert_eq!(result.registers[0], **expected_raw);
+            assert_eq!(result.status_word, *expected_status);
+            assert_eq!(state.rip, 0x8182);
+        }
+    }
+
+    #[test]
+    fn frndint_rejects_invalid_environment_source_and_execution_boundaries_atomically() {
+        let normal = binary80_normal(1 << 63, 0x3fff, false);
+        let mut rejected = Vec::new();
+        for control_word in [0x027f, 0x077e, 0x0bff, 0x1f7f] {
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = control_word;
+            x87.registers[0] = normal;
+            x87.set_tag(0, X87Tag::Valid);
+            rejected.push(x87);
+        }
+        for status_word in [0x0001, 0x0040, 0x0080, 0x8000, 0x1000] {
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = status_word;
+            x87.registers[0] = normal;
+            x87.set_tag(0, X87Tag::Valid);
+            rejected.push(x87);
+        }
+        for raw in [
+            binary80_normal(1 << 63, 0x3ffe, false),               // e=-1
+            binary80_normal(1 << 63, 0x403e, false),               // e=63
+            [0; 10],                                               // zero
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],                        // subnormal
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0],                     // pseudo-denormal
+            binary80_normal(1 << 63, 0x7fff, false),               // infinity
+            binary80_normal(0xc000_0000_0000_0000, 0x7fff, false), // quiet NaN
+            binary80_normal(0x8000_0000_0000_0001, 0x7fff, false), // signaling NaN
+            [0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x7f],                  // pseudo-infinity
+            [1, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x7f],                  // pseudo-NaN
+            binary80_normal(1 << 62, 0x3fff, false),               // unnormal
+        ] {
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0;
+            x87.registers[0] = raw;
+            x87.set_tag(0, X87Tag::Valid);
+            rejected.push(x87);
+        }
+        for tag in [X87Tag::Zero, X87Tag::Special, X87Tag::Empty] {
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0;
+            x87.registers[0] = normal;
+            x87.set_tag(0, tag);
+            rejected.push(x87);
+        }
+        for (index, x87) in rejected.into_iter().enumerate() {
+            let mut state = LongModeState::default();
+            state.rip = 0x8200;
+            state.gpr = [0xfeed_face_cafe_beef; 16];
+            state.rflags = 0x0bad_f00d_0123_4567;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xd9 }),
+                "rejection={index}"
+            );
+            assert_eq!(state, before, "rejection={index}");
+        }
+
+        let mut missing = LongModeState::default();
+        missing.rip = 0x8240;
+        let before = missing.clone();
+        let mut memory = Memory::at(&[0xd9, 0xfc], missing.rip);
+        assert_eq!(
+            step(&mut missing, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xd9 })
+        );
+        assert_eq!(missing, before);
+
+        for (bytes, stop_rip, budget, fetch_fault) in [
+            (&[0xd9][..], None, 1, false),
+            (&[0xd9, 0xfc][..], Some(0x8240), 1, false),
+            (&[0xd9, 0xfc][..], None, 0, false),
+            (&[0xd9, 0xfc][..], None, 1, true),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x8240;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0;
+            x87.registers[0] = normal;
+            x87.set_tag(0, X87Tag::Valid);
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(bytes, state.rip);
+            if fetch_fault {
+                memory.fetch_error = Some((
+                    state.rip + 1,
+                    MemoryError::Unmapped {
+                        address: state.rip + 1,
+                        access: AccessKind::Fetch,
+                    },
+                ));
+            }
+            let outcome = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(outcome.instructions_executed, 0);
+            assert_eq!(state, before);
+        }
+    }
+
+    #[test]
+    fn frndint_handles_signed_two_to_63_boundary_without_i64_conversion() {
+        for (negative, control_word) in [(false, 0x0b7f), (true, 0x077f)] {
+            let mut state = LongModeState::default();
+            state.rip = 0x8280;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = control_word;
+            x87.status_word = 0;
+            x87.registers[0] = binary80_normal(u64::MAX, 0x403d, negative);
+            x87.set_tag(0, X87Tag::Valid);
+            state.x87 = Some(x87);
+            let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            let result = state.x87.as_ref().unwrap();
+            assert_eq!(
+                result.registers[0],
+                binary80_normal(1 << 63, 0x403e, negative)
+            );
+            assert_eq!(result.status_word & 0x0220, 0x0220);
+            assert_eq!(state.rip, 0x8282);
         }
     }
 }

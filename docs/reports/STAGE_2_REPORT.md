@@ -3854,6 +3854,7 @@ covered by its existing `D9 E0` vector and arm.
 Normative source: Intel SDM revision 093, Vol.2A, “FTST—Test,” pp.3-400–3-401
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+
 Validation passed: the full `cargo test --workspace --offline` suite completed
 successfully three times, including after the final shared FCOMI/FUCOMI commit
 arm; `cargo check --workspace --all-targets --offline` and Linux x86_64 compile-only
@@ -3864,6 +3865,38 @@ arm; `cargo check --workspace --all-targets --offline` and Linux x86_64 compile-
 directory; it was left untouched. Linux native admission tests were not run on
 the arm64 macOS host. No Mac mini, SSH or physical-hardware checks were run.
 Independent gpt-6.1-sol medium review completed with no findings.
+
+## S2-31a — bounded register-only FRNDINT partial slice
+
+Implemented bare `D9 FC` for canonical Normal binary80 values in physical ST(0)
+with unbiased exponent `0..62`, the four PC64/all-masked FCW values, and all four
+rounding modes. The result is computed with integer-only rounding and packed
+before commit. Unsupported encodings, invalid state/environment, special
+values, exponent boundaries, and execution boundaries reject atomically. The
+native backend remains explicitly closed. Literal fixtures cover +1.5 ties,
+FNSTSW observation, and an Empty physical-TOP rejection. Interpreter tests also
+use hand-calculated raw binary80/status tables for exact +1.0, sticky PE, every
+rounding direction for signed +1.25/-1.25, even/odd half ties, adjacent values
+around +1.5, and signed values immediately below 2^63. These expected bytes do
+not call the production rounding or packing helpers. S2-31 remains partial; this
+does not implement full FRNDINT architectural behavior.
+
+Validation passed: focused `cargo test -p od-isa --offline frndint` (5 tests),
+full `cargo test --workspace --offline` (329 `od-isa` tests and all workspace
+suites),
+`cargo check --workspace --all-targets --offline`, Linux x86_64 compile-only
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
+--offline`, `cargo fmt --all -- --check`, and `git diff --check`. The Linux-only
+native admission regression was compile-checked but could not be executed on
+this macOS host. `python3 tools/check_layout.py` reports only the pre-existing
+unmapped root `.serena/` directory, which was left untouched. `graphify update .`
+completed with 3603 nodes, 7689 edges, and 209 communities; the existing
+extractor warning for `include/open_desktop/host_abi.h` remains. Physical x86
+execution, native x87 state comparison, exception delivery, and out-of-slice
+inputs were not tested.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FRNDINT—Round to Integer,”
+p.3-372 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
 ## S2-30ab — bounded FCOM ST(1) exact Normal compare
 

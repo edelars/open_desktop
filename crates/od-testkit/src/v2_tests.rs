@@ -195,7 +195,7 @@ fn x87_schema_admits_d9_ftst_and_a_budget_one_source_rejection() {
         let accepted = candidate.validate().is_ok();
         assert_eq!(
             accepted,
-            matches!(second, 0xe0 | 0xe1 | 0xe4),
+            matches!(second, 0xe0 | 0xe1 | 0xe4 | 0xfc),
             "D9 {second:02x}"
         );
     }

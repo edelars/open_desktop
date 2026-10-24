@@ -1296,6 +1296,23 @@ denies `D9 E1`.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FABS—Absolute Value,” p.3-309 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=427)).
 
+### S2-31a FRNDINT schema and fixture coverage
+
+The schema admits bare `D9 FC` and the exact four-byte composition
+`D9 FC DF E0` (FNSTSW AX). The success fixture rounds a positive 1.5 tie to
+2.0 under nearest-even, setting sticky PE and C1 while preserving
+C0/C2/C3; the composition fixture makes the resulting FSW observable in AX.
+The no-stop, budget-one fixture has an Empty old physical TOP tag and confirms
+atomic Unsupported. Interpreter vectors cover all TOP×RC×sign×exact/tie/
+below/above combinations, prior sticky PE, condition-bit retention, both signed
+2^63 results, rejected exponent endpoints and raw classes, invalid environment,
+and fetch/truncation/STOP/budget boundaries. RC values and pre-existing PE are
+accepted only by the FRNDINT interpreter gate; native admission explicitly
+denies D9 FC.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FRNDINT—Round to Integer,”
+p.3-372 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=490)).
+
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
 Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
 
