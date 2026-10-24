@@ -4878,3 +4878,41 @@ Point Value,” pp.3-386–3-387 (`DD /2` FST, `DD /3` FSTP)
 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504),
 [official PDF, Vol.2A p.3-387](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
+
+## S2-31n — bounded `FILD m32int` partial slice
+
+Added exact bare `DB 00` in Long64. Preflight requires an existing x87
+snapshot, FCW exactly `037f/077f/0b7f/0f7f`, `FSW & 0x80df == 0`, and an Empty
+tag at physical `(old_TOP+7)&7`; it deliberately ignores old TOP's tag and
+all unrelated tags/payloads. The complete canonical48 Dword source range is
+validated before one typed Dword read. After that read succeeds, signed i32
+values are normalized to exact canonical binary80 by integer arithmetic only,
+then the payload/tag and TOP are committed together with C1 clear and FIP/FDP/
+RIP updates. Zero is ten zero bytes with a Zero tag. C0/C2/C3 retention is an
+explicit local policy because these bits are undefined for this form.
+
+Independent literal vectors cover zero, ±1/2/3, `2^24±1`, i32 maximum and
+minimum. Interpreter matrices cover all TOP values including 0→7 wrap, all
+four RC settings, an Empty old ST(0), stale destination payload replacement,
+and preservation of the other seven tags/payloads and unrelated CPU state.
+Atomic reject checks cover missing state, each environment gate, nonempty
+destination before memory, canonical-start/crossing errors, architectural
+read fault, backend failure, fetch/truncation/STOP/zero-budget boundaries.
+Exhaustive DB ModR/M and prefix checks accept only `DB 00`; two schema-v2
+fixtures cover exact `DB 00` and `DB 00 DF E0` composition. Native x87
+admission explicitly denies FILD.
+
+Validation passed: focused FILD interpreter, decoder, fixture/schema, CLI and
+JIT-denial checks; `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+and `git diff --check`. `graphify update .` refreshed the graph. The layout
+checker reports only the pre-existing unmapped root `.serena/` directory, which
+was left untouched. No Mac mini or physical acceptance was run; all physical
+x86 acceptance remains reserved for one combined final S2-31 substage. This
+partial local implementation does not complete S2-31 or establish hardware
+exception delivery or fault priority.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
+pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
+[official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.

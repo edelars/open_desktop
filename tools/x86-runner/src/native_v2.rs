@@ -574,6 +574,7 @@ fn admission_with_tracee_memory(
             | Operation::FistpM64IntRax
             | Operation::FistpM16IntRax
             | Operation::FistM16IntRax
+            | Operation::FildM32IntRax
             | Operation::FcomSt { .. }
             | Operation::Fcomi { .. }
             | Operation::Fcomip { .. }
@@ -3760,6 +3761,7 @@ mod tests {
     #[test]
     fn x87_instructions_are_rejected_by_native_profile_and_instruction_admission() {
         for code in [
+            [0xdb, 0x00],
             [0xdb, 0xe3],
             [0xdb, 0xe2],
             [0xdb, 0xe9],

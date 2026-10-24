@@ -2083,6 +2083,57 @@ mod tests {
     }
 
     #[test]
+    fn fild_m32_literal_fixtures_push_to_st7_and_compose_with_fnstsw() {
+        for (bytes, expected_rax, retired) in [
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31n_fild_m32int_success.case.json"
+                )
+                .as_slice(),
+                0x0000_0000_0030_0001,
+                1,
+            ),
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31n_fild_m32int_fnstsw.case.json"
+                )
+                .as_slice(),
+                0x0000_0000_0030_7d00,
+                2,
+            ),
+        ] {
+            let fixture = v2::Fixture::from_json(bytes).expect("S2-31n fixture schema");
+            let mut memory =
+                od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available {
+                    value: HexU64(retired)
+                }
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("S2-31n fixture must produce an observable state");
+            };
+            assert_eq!(value.state.gpr[0], HexU64(expected_rax));
+            let after = value.state.x87.as_ref().unwrap();
+            assert_eq!(after.status_word, HexU64(0x7d00));
+            assert_eq!(after.tag_word, HexU64(0x3ffc));
+            assert_eq!(after.registers[7], "0000000000000080ff3f");
+            assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
+            assert_eq!(after.data_pointer, HexU64(0x0030_0001));
+            let memory_after = memory.snapshot();
+            let source_left = memory_after
+                .iter()
+                .find(|region| region.region_id == "data_left")
+                .unwrap();
+            assert_eq!(source_left.bytes_hex, "01");
+        }
+    }
+
+    #[test]
     fn fistp_m16int_literal_fixtures_cover_rounding_edges_and_rejections() {
         let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/x86/stage2");

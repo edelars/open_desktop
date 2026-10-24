@@ -387,6 +387,7 @@ mod tests {
         for code in [
             &[0x49, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0][..],
             &[0x48, 0x03, 0xc4],
+            &[0xdb, 0x00],
         ] {
             assert!(matches!(compile(code), Err(JitError::Decode(_))));
         }

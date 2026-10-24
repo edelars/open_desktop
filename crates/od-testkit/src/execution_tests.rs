@@ -768,6 +768,53 @@ fn fnstcw_literal_fixtures_check_raw_store_snapshot_and_fault_boundaries() {
 }
 
 #[test]
+fn fild_m32_literal_fixtures_push_independent_binary80_and_observe_status() {
+    let directory = arithmetic_fixture_directory();
+    for case_id in ["s2_31n_fild_m32int_success", "s2_31n_fild_m32int_fnstsw"] {
+        let raw = std::fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let input = Fixture::from_json(&raw).unwrap().fixture;
+        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+        let before_memory = memory.snapshot();
+        let mut state = input
+            .initial_state
+            .to_cpu_for(crate::v2::Profile::LongX87StateV1)
+            .unwrap();
+        let mut expected = state.clone();
+        let composition = case_id.ends_with("fnstsw");
+        let expected_rip = input.initial_state.rip.get() + if composition { 4 } else { 2 };
+        expected.rip = expected_rip;
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.registers[7] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f];
+        expected_x87.tag_word = 0x3ffc;
+        expected_x87.status_word = 0x7d00;
+        expected_x87.instruction_pointer = input.initial_state.rip.get();
+        expected_x87.data_pointer = input.initial_state.gpr[Register::Rax as usize].get();
+        if composition {
+            expected.gpr[Register::Rax as usize] = (expected.gpr[Register::Rax as usize] & !0xffff)
+                | u64::from(expected_x87.status_word);
+        }
+
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress, "{case_id}");
+        assert_eq!(
+            result.instructions_executed,
+            if composition { 2 } else { 1 }
+        );
+        assert_eq!(state, expected, "{case_id}");
+        assert_eq!(
+            state.x87.as_ref().unwrap().registers[7],
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f]
+        );
+        assert_eq!(memory.snapshot(), before_memory, "FILD must not write RAM");
+    }
+}
+
+#[test]
 fn fnstsw_literal_fixtures_check_raw_store_snapshot_composition_and_faults() {
     let directory = arithmetic_fixture_directory();
     for case_id in [

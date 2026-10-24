@@ -475,6 +475,8 @@ pub enum Operation {
     FistM16IntRax,
     /// Bare `DB 10` FIST dword integer at [RAX], bounded finite profile.
     FistM32IntRax,
+    /// Bare `DB 00` FILD dword integer at [RAX], bounded stack-push profile.
+    FildM32IntRax,
     /// Bare `D8 D0+i` FCOM ST(i), bounded canonical-Normal register compare.
     FcomSt {
         source: u8,
@@ -1100,6 +1102,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 let modrm = self.byte()?;
                 match modrm {
+                    0x00 => Operation::FildM32IntRax,
                     0xe2 => Operation::Fnclex,
                     0xe3 => Operation::Fninit,
                     0x10 => Operation::FistM32IntRax,
@@ -2312,6 +2315,7 @@ mod tests {
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match second {
+                    0x00 => Ok(Operation::FildM32IntRax),
                     0xe2 => Ok(Operation::Fnclex),
                     0xe3 => Ok(Operation::Fninit),
                     0x10 => Ok(Operation::FistM32IntRax),
@@ -2337,7 +2341,7 @@ mod tests {
         .into_iter()
         .chain(0x40..=0x4f)
         {
-            for second in [0x10, 0x18, 0xe2, 0xe3, 0xe9, 0xf1] {
+            for second in [0x00, 0x10, 0x18, 0xe2, 0xe3, 0xe9, 0xf1] {
                 assert!(matches!(
                     Memory::new(&[prefix, 0xdb, second]).decode(),
                     Err(DecodeError::Unsupported { .. })
@@ -2404,6 +2408,7 @@ mod tests {
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
+                    0x00 => Ok(Operation::FildM32IntRax),
                     0x10 => Ok(Operation::FistM32IntRax),
                     0x18 => Ok(Operation::FistpM32IntRax),
                     0xe2 => Ok(Operation::Fnclex),
@@ -2606,6 +2611,8 @@ mod tests {
                     Ok(Operation::Fnclex)
                 } else if opcode == 0xdb && modrm == 0xe3 {
                     Ok(Operation::Fninit)
+                } else if opcode == 0xdb && modrm == 0x00 {
+                    Ok(Operation::FildM32IntRax)
                 } else if opcode == 0xdb && modrm == 0x10 {
                     Ok(Operation::FistM32IntRax)
                 } else if opcode == 0xdb && modrm == 0x18 {

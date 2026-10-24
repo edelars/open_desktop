@@ -370,3 +370,14 @@ C1 behavior are local deterministic policies. Native x87 admission stays
 closed; these checks do not establish physical x86 behavior. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31m-bounded-fst-m64fp-rax-dd-10)
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31n x87 integer-load slice
+
+Exact bare `DB 00` (`FILD m32int [RAX]`) requires the bounded FCW/FSW gates
+and an Empty physical `(TOP+7)&7` target before memory access. One
+canonical48-checked Dword read feeds an integer-only exact binary80 packer;
+success pushes the payload/tag, clears C1, records FIP/FDP and retires once.
+The old ST(0) tag and all unrelated tags/payloads remain uninspected and
+unchanged. The `DB 00 DF E0` fixture observes the new status through FNSTSW AX.
+Native x87 admission stays closed; general exception delivery, hardware fault
+priority and physical x86 behavior remain open. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31n-bounded-fild-m32int-rax-db-00), [plan](../plans/STAGE_2.md#s2-31n-bare-bounded-fild-m32int-rax-db-00-partial-slice), and [fixtures](../../tests/fixtures/x86/stage2/README.md).

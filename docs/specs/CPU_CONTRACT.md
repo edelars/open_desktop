@@ -2834,6 +2834,45 @@ Point Value,” pp.3-386–3-387 (`DD /2` FST and `DD /3` FSTP)
 [official PDF, Vol.2A p.3-387](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
 
+## Local S2-31n: bounded `FILD m32int [RAX]` (`DB 00`)
+
+The Long64 interpreter accepts only exact bare `DB 00` with an existing x87
+snapshot. It requires FCW exactly `0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`,
+`FSW & 0x80df == 0`, and an Empty tag at physical destination
+`(old_TOP+7)&7`. It deliberately does not inspect the old physical TOP tag,
+the destination's old payload, or the other seven tags/payloads. Validate the
+complete canonical48 Dword range `[RAX,RAX+3]` before exactly one typed Dword
+read; no data writes occur.
+
+After a successful read, sign-extend the Dword as i32 and convert it exactly
+to binary80 using integer arithmetic. Zero becomes ten zero bytes with a Zero
+tag. For nonzero values, widen to i64 before taking the absolute value, then
+use `e=floor(log2(magnitude))`, significand `magnitude << (63-e)`, biased
+exponent `16383+e`, and the source sign bit. Commit the payload and Valid/Zero
+tag to the physical destination, set TOP to that destination, clear C1, set
+FIP to starting RIP and FDP to RAX, advance RIP by two, and retire once.
+Preserve FCW/FOP, GPR/RFLAGS and all seven unrelated tags/payloads. C0/C2/C3
+retention is an explicit local policy because they are undefined for this
+operation; this is not a hardware guarantee. Existing Empty old ST(0) is
+allowed. A nonempty destination is Unsupported before data access.
+
+Architectural memory read faults map through the guest-fault path and backend
+failures remain diagnostic errors. Invalid environment/destination,
+noncanonical start or crossing range, read failures, fetch/truncation, STOP,
+and zero budget leave CPU state and RAM unchanged. The implementation makes no
+hardware combined-fault priority claim. Decoder coverage exhausts all DB
+ModR/M values and prefixes; within the FILD family only `DB 00` is accepted,
+while existing DB forms remain supported. Fixtures cover exact
+`DB 00` and exact `DB 00 DF E0` composition. Native x87 admission explicitly
+denies FILD. The slice does not model general x87 exceptions, `#NM`, MMU/MMIO,
+SMP, or physical x86 acceptance, and does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FILD—Load Integer,”
+pp.3-342–3-343
+([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460),
+[official PDF, Vol.2A p.3-343](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=461));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 stack state and FIP/FDP.
+
 ## Local S2-31b: bounded `FISTP m32int [RAX]` (`DB 18`)
 
 The interpreter admits only bare `DB 18` in Long64: a Dword store through
