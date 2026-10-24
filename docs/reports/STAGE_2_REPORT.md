@@ -6212,14 +6212,14 @@ failure atomicity. Cross-width tests cover binary32/64 subnormal loads followed
 by DB38 with DE and no UE/PE, binary32/64 SNaN loads followed by raw stores with
 quieted payload and IE, and raw m80 SNaN load→m32 FST→DB38 preserving the
 signaling source bytes with IE. Two literal fixtures run through the
-interpreter; explicit JIT and native-admission denial are checked. Focused
+interpreter; explicit JIT and native-admission denial are checked. The clean
+independent review passed 17 FSTP m80 tests and 8 raw-m80 composition tests; its
+runner test timed out, while the parent validation passed the full workspace
+and Linux x86_64 checks below. Focused
 ISA/CLI/JIT checks passed. The offline workspace suite passed 782 tests with
 zero failures; workspace all-target checking and Linux x86_64 all-target checks
 for `od-runner` and `od-x86-runner` passed. Formatting and diff checks passed.
 Graphify updated successfully (4,143 nodes, 8,532 edges, 209 communities). The
 layout checker reports only the pre-existing
 unmapped `.serena/` directory, which was left untouched. Independent review is
-clean. The independent reviewer passed 17 FSTP m80 tests and 8 raw-m80
-composition tests; its runner test timed out, while the parent validation passed
-the full workspace and Linux x86_64 checks above. Native runtime and physical
-acceptance remain deferred under ISSUE-019.
+clean. Native runtime and physical acceptance remain deferred under ISSUE-019.
