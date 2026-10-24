@@ -764,3 +764,12 @@ physical TOP. It preserves sign and fraction bytes, adds no flags, validates
 the full ten-byte destination, writes once, and pops only after success.
 Pseudo-denormals and mismatched tag/class pairs reject before access. See the
 [S2-31at contract](../specs/CPU_CONTRACT.md#local-s2-31at-canonical-subnormal-fstp-m80fp-rax-db-38).
+
+
+## Local S2-31au canonical QuietNaN binary64 stores
+
+Exact DD10/DD18 accepts Special-tagged canonical binary80 QuietNaNs, converting
+by integer fields and truncating the lower 11 fraction bits without rounding or
+new flags. Cross-width values, payload boundaries, status preservation, atomic
+write/pop behavior, CLI/FNSTSW and JIT/native denial are covered. See the
+[S2-31au contract](../specs/CPU_CONTRACT.md#local-s2-31au-canonical-quietnan-fstfstp-m64fp-rax-dd-10-dd-18).

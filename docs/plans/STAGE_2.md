@@ -257,6 +257,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31an | Extend exact DB38 FSTP m80fp to canonical signed binary80 zero with raw ten-byte store | S2-31am |
 | [x] | S2-31ao | Extend exact DB38 FSTP m80fp to canonical signed binary80 infinity with raw ten-byte store | S2-31an |
 | [x] | S2-31ap | Extend exact DD10/DD18 m64 stores to canonical signed binary80 infinity and binary64 infinity | S2-31am |
+| [x] | S2-31au | Convert Special-tagged canonical binary80 QuietNaN through exact DD10/DD18 stores with payload truncation | S2-31ap, S2-31at |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3493,3 +3494,23 @@ before access. Cover both signs and payload boundaries/interior across
 TOP×FCW×PE/C1, m80 subnormal FLD-to-store composition, write/range atomicity,
 literal DB38/DB38 DFE0 fixtures, and native/JIT denial. This does not implement
 general exception delivery or physical x86 acceptance.
+
+
+<a id="s2-31au-store-canonical-binary80-quietnan-through-bounded-fstfstp-m64fp"></a>
+
+#### S2-31au. Store canonical binary80 QuietNaN through bounded m64 FST/FSTP
+
+Extend only exact `DD 10` (`FST m64fp [RAX]`) and `DD 18` (`FSTP
+m64fp [RAX]`) so a Special-tagged canonical binary80 QuietNaN is converted
+by integer fields to binary64. Preserve sign and the upper 52 fraction bits;
+truncate the lower 11 binary80 payload bits without rounding. Set no new flags,
+preserve PE, and clear C1 under the existing exact-store policy. Keep four
+FCWs and `FSW & 0x80df == 0`.
+
+Check the complete canonical48 Qword range, issue exactly one atomic write/no
+read, and pop only after a successful DD18 write. DD10 preserves TOP, tags and
+payloads. Keep Normal, signed-zero and infinity paths unchanged; reject SNaNs,
+pseudo-NaNs, other special classes and mismatched tags before access. Cover
+both signs/opcodes across TOP×FCW×PE/C1 and payload boundaries, cross-width
+FLD-to-store composition, fault/range atomicity, CLI/FNSTSW fixtures, and
+native/JIT denial.

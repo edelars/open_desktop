@@ -2181,3 +2181,15 @@ negative subnormal and observes FNSTSW. Both preserve all ten bytes and add no
 flags. See the [S2-31at CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31at-canonical-subnormal-fstp-m80fp-rax-db-38),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31at-store-canonical-binary80-subnormal-through-bounded-fstp-m80fp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31at--canonical-subnormal-binary80-store-through-bounded-fstp-m80fp).
+
+
+### S2-31au canonical QuietNaN m64 FST/FSTP fixtures
+
+Exact DD10/DD18 accepts a Special-tagged canonical binary80 QuietNaN and emits
+binary64 with the same sign and upper 52 fraction bits, truncating the lower
+11. Positive bare FST and negative DFE0/FNSTSW FSTP fixtures exercise both
+operations through schema/CLI; both are explicitly denied by native and JIT.
+SNaNs and malformed/tag-mismatched classes remain rejection neighbors. See the
+[S2-31au CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31au-canonical-quietnan-fstfstp-m64fp-rax-dd-10-dd-18),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31au-store-canonical-binary80-quietnan-through-bounded-fstfstp-m64fp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31au--canonical-quietnan-binary80-to-binary64-stores).

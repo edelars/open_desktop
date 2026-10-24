@@ -6024,3 +6024,28 @@ four runner tests; positive fixtures exercised the interpreter and JIT/native
 denial paths. Native runtime denial was not executed on this arm64 host; the
 Linux x86 runner target compiled. Physical validation remains pending for the
 combined final S2-31 substage.
+
+
+<a id="s2-31au--canonical-quietnan-binary80-to-binary64-stores"></a>
+
+## S2-31au — canonical QuietNaN binary80 to binary64 stores
+
+Exact DD10/DD18 now accept Special-tagged canonical binary80 QuietNaNs and
+convert by integer fields, preserving sign and the upper 52 fraction bits while
+truncating the lower 11. The path adds no flags, preserves PE and clears C1.
+Existing FCW/FSW gates, one-write/no-read Qword behavior, DD10 preservation and
+post-success DD18 pop remain unchanged. SNaNs and malformed/tag-mismatched
+classes reject before access; Normal, zero, infinity and native/JIT gates stay
+unchanged.
+
+Focused verification passed: conversion matrices across both opcodes, signs, all
+TOPs and FCWs, PE/C1, and quiet-only/low/intermediate/maximum payloads;
+cross-width FLD-to-store composition; rejection and Qword fault/range atomicity;
+positive bare and negative DFE0/FNSTSW CLI fixtures; and JIT-denial fixtures.
+The full offline workspace suite passed (755 tests, 0 failures), workspace
+all-target check passed, Linux x86_64 runner all-target check passed, and
+formatting passed. Graphify update completed (4068 nodes, 8423 edges, 207
+communities). The layout check reports the pre-existing unmapped `.serena/`
+directory, left untouched. Native runtime execution was not performed on this
+arm64 host; physical acceptance remains deferred to the final combined S2-31
+substage. Independent review is pending.
