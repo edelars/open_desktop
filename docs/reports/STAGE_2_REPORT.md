@@ -5864,4 +5864,5 @@ negative DFE0/FNSTSW fixtures, and native/JIT denial. The full offline workspace
 suite passed (720 tests); workspace all-target checks, Linux x86 runner check,
 formatting and diff checks passed. The layout checker reports the existing
 unmapped `.serena/` directory, which remains untouched. Graphify was updated;
-its final extraction reported no topology changes. Independent review is pending.
+its final extraction reported no topology changes. Independent `gpt-6.1-sol`
+medium review was clean after the report-link correction in commit `4c9aba19`.
