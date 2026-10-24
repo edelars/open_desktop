@@ -5967,4 +5967,6 @@ with no topology changes. The layout checker reports the pre-existing unmapped
 `.serena/` directory, left untouched. Architecture-gated native runtime denial
 was not executed on this arm64 host; the Linux x86 runner target compiled.
 Physical validation remains deferred to the combined final S2-31 substage.
-Independent review is pending.
+Independent `gpt-6.1-sol` medium review found no code or coverage findings. It
+identified a plan wording issue about C1; the plan now correctly states that
+C1 clears while PE and C0/C2/C3 are preserved.

@@ -3444,8 +3444,8 @@ Extend only exact `DB 38` (`FSTP m80fp [RAX]`) so physical TOP may also be a
 Special-tagged canonical binary80 QuietNaN: exponent `0x7fff`, explicit
 integer bit one, quiet fraction bit one, and any remaining payload/sign. Copy
 the original ten bytes unchanged; do not normalize, round, use host floating
-point, or add status flags. Preserve PE and C1/C0/C2/C3 under the existing raw
-store policy, retaining the four FCWs and `FSW & 0x80df == 0` gate.
+point, or add status flags. Clear C1 and preserve PE and C0/C2/C3 under the
+existing raw-store policy, retaining the four FCWs and `FSW & 0x80df == 0` gate.
 
 Preflight the full canonical48 ten-byte range and perform one atomic write/no
 read; pop and advance TOP only after successful write. Preserve all payloads,
