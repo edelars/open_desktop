@@ -6219,4 +6219,7 @@ for `od-runner` and `od-x86-runner` passed. Formatting and diff checks passed.
 Graphify updated successfully (4,143 nodes, 8,532 edges, 209 communities). The
 layout checker reports only the pre-existing
 unmapped `.serena/` directory, which was left untouched. Independent review is
-pending. Native runtime and physical acceptance remain deferred under ISSUE-019.
+clean. The independent reviewer passed 17 FSTP m80 tests and 8 raw-m80
+composition tests; its runner test timed out, while the parent validation passed
+the full workspace and Linux x86_64 checks above. Native runtime and physical
+acceptance remain deferred under ISSUE-019.
