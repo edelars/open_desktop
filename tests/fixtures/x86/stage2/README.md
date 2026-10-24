@@ -1329,6 +1329,22 @@ MMIO, SMP, or physical x86 behavior.
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer”
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+### S2-31c FIST m32int schema and literal coverage
+
+The schema admits only bare `DB 10` and exact `DB 10 DF E0` (FNSTSW AX).
+Literal cases execute the same unaligned split-region Dword write as S2-31b
+and then optionally observe FSW through AX. They verify that FIST retains the
+old TOP, tag word and raw payloads while recording FIP/FDP and setting sticky
+PE/C1. Additional literal cases reject an Empty old physical TOP tag and
+signed-i32 overflow without changing the snapshot or data memory. Interpreter
+checks cover all four rounding controls, signed values, signed-i32 overflow
+before access, the one-write/no-read contract, and store fault atomicity. Native
+x87 admission explicitly denies FIST. Flat fixture RAM
+does not establish MMU, page-walk, MMIO, SMP, or physical x86 behavior.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer”
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating-Point
 Value,” pp.3-386–3-387 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
 

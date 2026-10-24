@@ -1827,6 +1827,22 @@ mod tests {
                 .as_slice(),
                 0x0000_0000_0030_4f20,
             ),
+            (
+                "s2_31c_fist_m32int_success.case.json",
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31c_fist_m32int_success.case.json"
+                )
+                .as_slice(),
+                0x0000_0000_0030_0001,
+            ),
+            (
+                "s2_31c_fist_m32int_fnstsw.case.json",
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31c_fist_m32int_fnstsw.case.json"
+                )
+                .as_slice(),
+                0x0000_0000_0030_4720,
+            ),
         ] {
             let fixture = v2::Fixture::from_json(bytes)
                 .unwrap_or_else(|error| panic!("{name} failed schema validation: {error}"));
@@ -1851,8 +1867,11 @@ mod tests {
             let before = fixture.fixture.initial_state.x87.as_ref().unwrap();
             let after = value.state.x87.as_ref().unwrap();
             assert_eq!(value.state.gpr[0], HexU64(expected_rax), "{name}");
-            assert_eq!(after.status_word, HexU64(0x4f20), "{name}");
-            assert_eq!(after.tag_word, HexU64(0xffff), "{name}");
+            let is_fist = name.contains("31c");
+            let expected_fsw = if is_fist { 0x4720 } else { 0x4f20 };
+            let expected_tags = if is_fist { 0xfffc } else { 0xffff };
+            assert_eq!(after.status_word, HexU64(expected_fsw), "{name}");
+            assert_eq!(after.tag_word, HexU64(expected_tags), "{name}");
             assert_eq!(after.registers, before.registers, "{name}");
             assert_eq!(after.instruction_pointer, HexU64(0x100000), "{name}");
             assert_eq!(after.data_pointer, HexU64(0x300001), "{name}");
@@ -1885,6 +1904,20 @@ mod tests {
                 )
                 .as_slice(),
             ),
+            (
+                "s2_31c_fist_m32int_invalid_tag.case.json",
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31c_fist_m32int_invalid_tag.case.json"
+                )
+                .as_slice(),
+            ),
+            (
+                "s2_31c_fist_m32int_overflow.case.json",
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31c_fist_m32int_overflow.case.json"
+                )
+                .as_slice(),
+            ),
         ] {
             let fixture = v2::Fixture::from_json(bytes)
                 .unwrap_or_else(|error| panic!("{name} failed schema validation: {error}"));
@@ -1908,5 +1941,28 @@ mod tests {
             assert_eq!(value.state, fixture.fixture.initial_state, "{name}");
             assert_eq!(memory.snapshot(), initial_memory, "{name}");
         }
+
+        let mut nearby_form: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31c_fist_m32int_success.case.json"
+        ))
+        .unwrap();
+        nearby_form["memory"][0]["initial_bytes_hex"] = serde_json::Value::String("db11".into());
+        assert!(
+            v2::Fixture::from_json(&serde_json::to_vec(&nearby_form).unwrap()).is_err(),
+            "the literal schema must reject nearby DB ModR/M forms"
+        );
+
+        let mut exact_min_must_execute: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31c_fist_m32int_success.case.json"
+        ))
+        .unwrap();
+        exact_min_must_execute["initial_state"]["x87"]["registers"][0] =
+            serde_json::Value::String("00000000000000801ec0".into());
+        exact_min_must_execute["stop_rip"] = serde_json::Value::Null;
+        exact_min_must_execute["expected_exit"] = serde_json::Value::String("unsupported".into());
+        assert!(
+            v2::Fixture::from_json(&serde_json::to_vec(&exact_min_must_execute).unwrap()).is_err(),
+            "the schema must not classify exact negative 2^31 as an overflow rejection"
+        );
     }
 }

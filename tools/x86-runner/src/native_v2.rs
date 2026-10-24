@@ -562,6 +562,7 @@ fn admission_with_tracee_memory(
             | Operation::Fabs
             | Operation::Ftst
             | Operation::Frndint
+            | Operation::FistM32IntRax
             | Operation::FistpM32IntRax
             | Operation::FcomSt { .. }
             | Operation::Fcomi { .. }
@@ -1796,6 +1797,28 @@ mod tests {
                 .unwrap_err()
                 .contains("stack access outside fixture range")
         );
+    }
+
+    #[test]
+    fn bounded_fist_literal_fixtures_remain_outside_native_admission() {
+        for bytes in [
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_31c_fist_m32int_success.case.json"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_31c_fist_m32int_fnstsw.case.json"
+            )
+            .as_slice(),
+        ] {
+            let fixture = Fixture::from_json(bytes).unwrap();
+            let actual = fixture.fixture.initial_state.to_cpu().unwrap();
+            let mut decoder = FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            assert!(
+                admission(&fixture.fixture, &mut decoder, &actual).is_err(),
+                "bounded FIST must remain outside native admission"
+            );
+        }
     }
 
     #[test]

@@ -222,6 +222,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30an | Bare indexed DB/DF register FCOMI-family forms for ST(i), bounded canonical-Normal compare and optional physical TOP pop; native closed | S2-30am |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
+| [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2031,6 +2032,19 @@ once. Preserve every x87 payload and unrelated state. Test exact `DB 18` and
 `DB 18 DF E0` fixtures, overflow and store-fault atomicity, and the one-write,
 no-read memory contract. Native admission remains closed. This is a local
 partial slice and does not complete S2-31 or model x87 exception delivery.
+
+#### S2-31c. Bare bounded `FIST m32int [RAX]` (`DB 10`), partial slice
+
+Implement only bare `DB 10` in Long64 with canonical Dword destination `[RAX]`
+and an existing x87 snapshot. Reuse S2-31b's canonical-Normal physical ST(0),
+exponent 0..31, exact four FCW values, FSW gate, integer RC rounding and
+post-rounded signed-i32 bounds. Validate the complete canonical48 destination
+before one atomic Dword write. On success update sticky PE/C1, FIP/FDP/RIP and
+retire once; preserve TOP, every tag, all payloads and unrelated state. Failure
+before or during the write leaves architectural state unchanged. Accept only
+literal `DB 10` and exact `DB 10 DF E0` fixtures, reject prefixes and nearby
+forms, and explicitly deny native admission. This local slice does not complete
+S2-31 or model general x87 exception delivery.
 
 ### S2-32. Остальные обязательные x87 формы
 

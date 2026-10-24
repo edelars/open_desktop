@@ -4296,6 +4296,43 @@ final Mac mini acceptance remains deferred to the last S2-31 slice.
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer”
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## S2-31c — bounded `FIST m32int [RAX]` partial slice
+
+Added only bare `DB 10` as a fixed Dword store through RAX in Long64. The
+bounded preflight and integer quotient/remainder rounding reuse the FISTP
+conversion domain: canonical-Normal old physical ST(0), unbiased exponent
+0..31, one of the four all-masked PC64 control words, `FSW & 0x80df == 0`, and
+a post-rounded signed-i32 result. Overflow and unsupported state reject before
+data access.
+
+The executor validates the complete canonical48 Dword destination and issues
+one atomic `write_integer` call without a data read. CPU state remains unchanged
+until the store succeeds. Successful commit updates sticky PE/C1, FIP/FDP,
+RIP and retirement while preserving TOP, all physical tags, every raw x87
+payload and unrelated state. Store errors retain existing types and do not
+commit CPU/x87 state. Native x87 admission explicitly denies `FIST`.
+
+Literal fixtures cover exact `db10` and `db10dfe0` (FNSTSW AX) programs with an
+unaligned Dword store split across adjacent memory regions, plus Empty-TOP and
++2^32 overflow rejections. Interpreter checks cover all four RC modes on
+positive/negative half-way values, exact signed-i32 endpoints, PE/C1 behavior,
+TOP/tag/payload preservation, overflow before access, canonical-range and
+permission-fault atomicity, the FIST→FISTP sequence, and the
+single-write/no-read contract. Decoder enumeration confirms only ModR/M 10 is
+added for DB and prefixes remain rejected. `cargo test -p od-isa --offline`,
+the literal runner schema/CLI test, workspace all-target check, formatting and
+diff checks passed. A Linux-only native admission regression was added but not
+run on this macOS host; physical x86 execution was not run.
+`graphify update .` refreshed the graph to 3624 nodes, 7728 edges and 205
+communities; its existing warning for `include/open_desktop/host_abi.h` remains.
+
+Flat fixture RAM does not establish MMU/page-walk behavior, MMIO, SMP, physical
+x86 execution or architectural exception delivery. This partial slice does
+not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer”
+([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ## S2-30ak — bounded FCOMIP ST(0), ST(1) to RFLAGS and pop
 
 Added exactly bare `DF F1` as `Operation::Fcomip`. DF decoding now admits
