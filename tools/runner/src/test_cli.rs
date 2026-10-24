@@ -2350,8 +2350,28 @@ mod tests {
                 "00000000000000000080",
                 0x7ffc,
             ),
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31x_fld_m80fp_subnormal.case.json"
+                )
+                .as_slice(),
+                0x0000_0000_0030_0004,
+                1,
+                "01000000000000000000",
+                0xbffc,
+            ),
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31x_fld_m80fp_largest_negative_subnormal_fnstsw.case.json"
+                )
+                .as_slice(),
+                0x0000_0000_0030_7d00,
+                2,
+                "ffffffffffffff7f0080",
+                0xbffc,
+            ),
         ] {
-            let fixture = v2::Fixture::from_json(bytes).expect("S2-31r fixture schema");
+            let fixture = v2::Fixture::from_json(bytes).expect("S2-31x fixture schema");
             let mut memory =
                 od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
             let result = execute_fixture_v2(&fixture, &mut memory);
@@ -2370,6 +2390,11 @@ mod tests {
             let after = value.state.x87.as_ref().unwrap();
             assert_eq!(after.status_word, HexU64(0x7d00));
             assert_eq!(after.tag_word, HexU64(expected_tag_word));
+            assert_eq!(
+                (after.tag_word.get() >> 14) & 3,
+                if expected_tag_word == 0xbffc { 0b10 } else { 0b01 }
+            );
+            assert_eq!(after.status_word.get() & 0x0012, 0, "no new DE/UE");
             assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
             assert_eq!(after.data_pointer, HexU64(0x0030_0004));
             assert_eq!(after.registers[7], expected_raw);
@@ -2438,11 +2463,13 @@ mod tests {
         ))
         .unwrap();
         for (raw, should_be_admitted) in [
-            ("01000000000000000000", true),
-            ("01000000000000000080", true),
+            ("01000000000000000000", false),
+            ("01000000000000000080", false),
             ("00000000000000000000", false),
             ("00000000000000000080", false),
-            ("00000000000000800000", false),
+            ("00000000000000800000", true),
+            ("00000000000000800080", false),
+            ("ffffffffffffff7f0000", false),
             ("0000000000000080003f", false),
             ("0000000000000080ff7f", false),
         ] {
@@ -2452,7 +2479,7 @@ mod tests {
             assert_eq!(
                 parsed.is_ok(),
                 should_be_admitted,
-                "S2-31w schema admission for raw binary80 {raw}"
+                "S2-31x schema admission for raw binary80 {raw}"
             );
         }
     }

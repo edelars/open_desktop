@@ -2778,6 +2778,44 @@ budget one and no stop RIP.
 [historical S2-31r report](../reports/STAGE_2_REPORT.md#s2-31r--bounded-fld-m80fp-partial-slice),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+## Local S2-31x: bounded `FLD m80fp [RAX]` (`DB 28`) canonical subnormal extension
+
+This supersedes the S2-31w class decision while preserving its gates and
+history. Exact bare `DB 28` requires the same x87 state, FCW
+`0x037f`/`0x077f`/`0x0b7f`/`0x0f7f`, `FSW & 0x80df == 0`, Empty physical
+destination, checked canonical48 ten-byte range, and exactly one raw read.
+After the read, preserve canonical Normal bytes and assign Valid; preserve
+signed-zero bytes and assign Zero; preserve canonical nonzero binary80
+Subnormal bytes and assign Special. Subnormal means exponent zero, explicit
+integer bit clear, and nonzero fraction. No normalization or generic tag
+inference occurs.
+
+The existing push, TOP wrap, C1 clear, sticky PE and unrelated status
+preservation, FCW/FOP, other tags/payloads, FIP/FDP/RIP update and one
+retirement remain unchanged. No DE, UE or PE status bit is added. A
+pseudo-denormal (exponent zero with explicit integer bit set), infinity, NaN,
+unnormal or pseudo-special remains Unsupported after exactly one read and
+without CPU commit. Faults/backend denial and fetch/truncation/STOP/budget
+behavior remain unchanged. Native x87 admission remains closed.
+
+Independent literals cover positive/negative minimum, largest and interior
+subnormals across TOP×FCW with unrelated tags/payloads. CLI fixtures cover
+positive minimum `DB 28` and negative largest `DB 28 DF E0`. The narrow
+schema/CLI Unsupported exception now uses positive pseudo-denormal under exact
+`DB 28`, budget one and no stop RIP; a negative pseudo-denormal and other
+special classes remain excluded. The S2-31w section above remains the
+historical signed-zero result.
+
+Normative source: Intel SDM revision 093, Vol.2A FLD m80fp pp.3-352–3-353
+(official PDF p.470)
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+That entry specifies no `#D` for this m80fp source. No binary32/binary64
+denormal behavior is inferred. General exception delivery and physical
+acceptance remain outside this local slice. See the
+[Stage 2 plan](../plans/STAGE_2.md#s2-31x-extend-bounded-fld-m80fp-rax-db-28-to-canonical-subnormals),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[S2-31x report](../reports/STAGE_2_REPORT.md#s2-31x--bounded-fld-m80fp-canonical-subnormal-extension).
+
 ## Local S2-31s: bounded `FLD m32fp [RAX]` (`D9 00`)
 
 The interpreter admits only exact bare `D9 00` in Long64 with existing x87

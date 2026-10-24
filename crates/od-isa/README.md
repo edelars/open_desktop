@@ -223,6 +223,16 @@ remain open. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31
 [fixtures](../../tests/fixtures/x86/stage2/README.md), and
 [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
 
+S2-31x extends that same exact `DB 28` path to canonical nonzero binary80
+subnormals. It copies all ten bytes unchanged and pushes with `X87Tag::Special`;
+Normal and signed-zero behavior retain their Valid and Zero tags. Pseudo-
+denormals and other unsupported classes reject after the single read without
+commit. The current bounded gates and status policy remain unchanged, native
+x87 admission stays closed, and the SDM m80fp form specifies no `#D`. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31x-bounded-fld-m80fp-rax-db-28-canonical-subnormal-extension),
+[fixtures](../../tests/fixtures/x86/stage2/README.md), and
+[Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-31x--bounded-fld-m80fp-canonical-subnormal-extension).
+
 S2-31t added exact bare `DD 00` (`FLD m64fp [RAX]`) for Normal binary64 and
 expanded it to binary80 using integer fields. S2-31u extends that same bounded
 load to signed zero: +0 becomes ten zero bytes, -0 keeps its sign in the last

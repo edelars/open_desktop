@@ -238,6 +238,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31s | Bare bounded FLD m32fp [RAX] D9 00, exact normal binary32-to-binary80 expansion and push; native closed | S2-31r |
 | [x] | S2-31t | Bare bounded FLD m64fp [RAX] DD 00, exact normal binary64-to-binary80 expansion and push; native closed | S2-31s |
 | [x] | S2-31u | Extend S2-31t bare DD 00 to signed binary64 zero with Zero tag; keep nonzero subnormals and specials unsupported, native closed | S2-31t |
+| [x] | S2-31x | Extend exact DB 28 FLD m80fp to canonical nonzero binary80 subnormals with Special tag; native closed | S2-31w |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2811,6 +2812,33 @@ Value,” pp.3-352–3-353, official PDF p.470
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. The no-#D statement
 is specific to FLD m80fp. Broader denormal/unmasked policy is deferred.
+
+#### S2-31x. Extend bounded `FLD m80fp [RAX]` (`DB 28`) to canonical subnormals
+
+Preserve the exact `DB 28` instruction, S2-31w FCW/FSW/Empty-destination
+gates, complete canonical48 ten-byte range check, and exactly one read. Keep
+Normal as a byte-preserving Valid push and signed zero as a byte-preserving
+Zero push. Accept canonical nonzero binary80 Subnormal only when exponent and
+explicit integer bit are zero and the fraction is nonzero; copy all ten raw
+bytes exactly and set the pushed tag to Special. Do not normalize the payload
+or derive the tag from numeric magnitude. Preserve the existing push, C1, PE,
+FIP/FDP/RIP and retirement behavior, with no added DE/UE/PE status effects.
+
+After the single read, continue to reject pseudo-denormals, infinity, NaNs,
+unnormals and pseudo-special classes atomically. Reclassify the narrow
+DB 28/budget-one/no-stop Unsupported fixture and schema exception from positive
+minimum subnormal to positive pseudo-denormal; reject the negative
+pseudo-denormal and retain other special-class rejection vectors. Native x87
+admission remains closed. Add literal raw vectors for signed minimum,
+largest and interior subnormals across every TOP×FCW combination, plus exact
+`DB 28` and `DB 28 DF E0` success fixtures. Preserve the S2-31w history.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF p.470
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+The m80fp entry defines no `#D`; do not infer binary32/binary64 denormal
+behavior from this entry. Broader denormal/unmasked exception semantics and
+physical acceptance remain outside this slice.
 
 #### S2-30an. Bare indexed FCOMI-family register forms
 

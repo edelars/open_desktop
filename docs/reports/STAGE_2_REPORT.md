@@ -5263,3 +5263,43 @@ Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
 Value,” pp.3-352–3-353, official PDF p.470
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
+
+## S2-31x — bounded `FLD m80fp` canonical-subnormal extension
+
+Extended the existing exact bare `DB 28` load to accept canonical nonzero
+binary80 subnormal inputs. The same FCW/FSW/Empty-destination gates, checked
+canonical48 ten-byte range and exactly one raw read remain in force. Normal
+and signed-zero values preserve their ten bytes with Valid and Zero tags;
+subnormals preserve all ten bytes and receive `X87Tag::Special`. The existing
+push, TOP, C1, sticky PE, FIP/FDP/RIP and retirement behavior remains
+unchanged. No DE/UE/PE status bits are added. Pseudo-denormal, infinity, NaN,
+unnormal and pseudo-special values remain Unsupported after the read without
+CPU commit. Native x87 admission stays denied.
+
+Literal subnormal vectors cover positive/negative minimum, largest and
+interior values for every TOP and accepted FCW, with unrelated tags and
+payloads. Assertions verify byte preservation, the Special tag, one exact
+ten-byte read, preserved FSW and absence of new DE/UE. Positive-minimum and
+negative-largest literals cover `DB 28` and `DB 28 DF E0` fixture/CLI
+composition. The invalid fixture is reclassified as positive pseudo-denormal;
+the narrow Unsupported schema profile remains exact DB 28, budget one and no
+stop RIP. The corresponding predicate admits that pseudo-denormal only, and
+rejects negative pseudo-denormal, canonical subnormal and other near misses.
+S2-31w remains the historical signed-zero result.
+
+Validation passed: `cargo test --workspace --all-targets --offline`,
+`cargo check --workspace --all-targets --offline`, and the same all-target
+workspace check for `x86_64-unknown-linux-gnu` (compile-only). The Linux check
+reported existing dead-code warnings in `od-host` and `od-runner`.
+`cargo fmt --all -- --check` and `git diff --check` passed. The actual runner
+CLI produced the expected raw payload, Special tag, FSW, and retirement count
+for both success fixtures; the pseudo-denormal fixture returned Unsupported
+with zero retirements and unchanged CPU/memory. `python3 tools/check_layout.py`
+reports the pre-existing unmapped `.serena/` directory; it was left untouched.
+Independent `gpt-6.1-sol` medium review and targeted re-review found no
+remaining defects. `graphify update .` refreshed the graph after code edits.
+No Mac mini or physical x86 tests were run; physical acceptance remains in the
+combined final S2-31 substage. The SDM revision 093 Vol.2A FLD m80fp entry,
+pp.3-352–3-353 (official PDF p.470), specifies no `#D` for this source format.
+No binary32/binary64 denormal behavior is inferred. Broader exception delivery
+remains open under ISSUE-019.

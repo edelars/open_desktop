@@ -1090,9 +1090,7 @@ impl Fixture {
                                                 );
                                                 let sign_exponent =
                                                     u16::from_le_bytes([bytes[8], bytes[9]]);
-                                                sign_exponent & 0x7fff == 0
-                                                    && significand != 0
-                                                    && significand & (1 << 63) == 0
+                                                sign_exponent == 0 && significand == 1 << 63
                                             }
                                         }
                                         None => false,

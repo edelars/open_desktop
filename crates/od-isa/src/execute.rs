@@ -1053,6 +1053,7 @@ fn step_tracked_with_stop(
         let tag = match X87Binary80::from_bytes(raw).classify() {
             X87Binary80Class::Normal => X87Tag::Valid,
             X87Binary80Class::Zero => X87Tag::Zero,
+            X87Binary80Class::Subnormal => X87Tag::Special,
             _ => {
                 return Ok(StepOutcome::Unsupported {
                     opcode: instruction.opcode.byte,
@@ -23596,7 +23597,7 @@ mod tests {
     }
 
     #[test]
-    fn fld_m80fp_reads_one_exact_normal_or_signed_zero_and_pushes_every_top() {
+    fn fld_m80fp_reads_one_exact_normal_zero_or_subnormal_and_pushes_every_top() {
         let literals = [
             [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0x3f],
             [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xff, 0xbf],
@@ -23604,6 +23605,12 @@ mod tests {
             [0xf1, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0xd2, 0xfe, 0x7f],
             [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80],
+            [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80],
+            [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0x00, 0x00],
+            [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0x00, 0x80],
+            [0x35, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [0x35, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80],
         ];
         for top in 0..8_u8 {
             for (index, raw) in literals.into_iter().enumerate() {
@@ -23648,10 +23655,10 @@ mod tests {
                     assert_eq!(after.registers[usize::from(destination)], raw);
                     assert_eq!(
                         after.tag(destination),
-                        Some(if index < 4 {
-                            X87Tag::Valid
-                        } else {
-                            X87Tag::Zero
+                        Some(match index {
+                            0..=3 => X87Tag::Valid,
+                            4..=5 => X87Tag::Zero,
+                            _ => X87Tag::Special,
                         })
                     );
                     assert_eq!(after.top(), destination);
@@ -23753,9 +23760,8 @@ mod tests {
         assert!(memory.accesses.is_empty());
 
         let invalid_classes = [
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
             [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x80],
             [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
             [0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x7f],
             [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xff],
