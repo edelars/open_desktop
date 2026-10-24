@@ -4464,3 +4464,26 @@ follows Intel SDM revision 093 Vol. 2A FST/FSTP and Vol. 1 §8.5.1
 the [plan](../plans/STAGE_2.md#s2-31ax-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m32fp),
 [report](../reports/STAGE_2_REPORT.md#s2-31ax--canonical-signalingnan-binary80-to-binary32-stores),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31az-admit-sticky-de-m32-m64-fstfstp"></a>
+
+## Local S2-31az: admit sticky DE in bounded m32/m64 `FST/FSTP [RAX]`
+
+Only the exact D910/D918 m32 and DD10/DD18 m64 conversion helpers widen their
+FSW gate from `FSW & 0x80de == 0` to `FSW & 0x80dc == 0`. This admits masked
+sticky DE alongside IE and PE while continuing to reject ZE, OE, UE, SF, ES,
+and B. The FCW whitelist, source classes/tags, canonical finite-result range,
+addressing and all other x87 gates remain unchanged.
+
+Successful stores preserve incoming IE/DE/PE. SNaN conversion ORs IE and an
+inexact finite conversion ORs PE only after the full-range atomic write
+succeeds; stores do not generate DE. ES/B remain clear. FSTP changes TOP/tag
+only after the write succeeds. A minimum or largest binary32 subnormal loaded
+by D900 can therefore be stored as an exact binary64 normal by DD10/DD18 while
+retaining DE. Binary32/64 subnormal store results remain Unsupported.
+`FNSTSW` observes the retained status and `FNCLEX` clears it. JIT/native
+admission and physical acceptance remain deferred under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31az-admit-sticky-de-in-bounded-m32-m64-fst-fstp),
+[report](../reports/STAGE_2_REPORT.md#s2-31az--sticky-de-in-bounded-m32-m64-stores),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).

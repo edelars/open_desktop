@@ -388,3 +388,19 @@
   [plan](plans/STAGE_2.md#s2-31aw-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m64fp),
   [report](reports/STAGE_2_REPORT.md#s2-31aw--canonical-signalingnan-binary80-to-binary64-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31az evidence:** exact D910/D918 and DD10/DD18 store helpers now admit
+  sticky masked DE together with IE/PE by changing only their local FSW mask to
+  `0x80dc`. ZE/OE/UE/SF/ES/B, FCWs, classes/tags, finite-result limits and other
+  x87 gates remain unchanged. Incoming IE/DE/PE is preserved; SNaN adds IE and
+  inexact finite conversion adds PE only after the atomic write, with no new DE.
+  Cross-width binary32-subnormal FLD→binary64 FST/FSTP fixtures pass through
+  interpreter; explicit JIT-denial checks pass, and native-admission denial is
+  covered by an x86-target unit test that compiled but could not run on this
+  arm64 host. The full offline workspace suite passed 775 tests and workspace
+  plus Linux x86_64 runner checks passed. Independent review remains pending.
+  Native runtime and physical acceptance remain deferred to the final combined
+  S2-31 substage under ISSUE-019. See [S2-31az CPU contract](specs/CPU_CONTRACT.md#local-s2-31az-admit-sticky-de-m32-m64-fstfstp),
+  [plan](plans/STAGE_2.md#s2-31az-admit-sticky-de-in-bounded-m32-m64-fst-fstp),
+  [report](reports/STAGE_2_REPORT.md#s2-31az--sticky-de-in-bounded-m32-m64-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

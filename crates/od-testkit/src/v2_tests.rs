@@ -570,6 +570,23 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         fld_m32.stop_rip = Some(HexU64(stop_rip));
         assert!(Fixture::from_json(&fld_m32.to_json().unwrap()).is_ok());
     }
+    for (bytes, length, stop_rip, budget) in [
+        ("d900dd10", 4_usize, 0x1004_u64, 2_u64),
+        ("d900dd18dfe0", 6_usize, 0x1006_u64, 3_u64),
+    ] {
+        let mut subnormal_store = fixture.clone();
+        let code = subnormal_store
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = length as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(length);
+        subnormal_store.instruction_budget = budget;
+        subnormal_store.stop_rip = Some(HexU64(stop_rip));
+        assert!(Fixture::from_json(&subnormal_store.to_json().unwrap()).is_ok());
+    }
     let mut invalid_fld_m32 = fixture.clone();
     let code = invalid_fld_m32
         .memory

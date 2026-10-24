@@ -2239,3 +2239,18 @@ reachable and included in JIT denial checks; native execution remains outside
 the current runner. See the [S2-31ay CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ay-admit-sticky-ie-fstfstp-m32-m64),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31ay-admit-sticky-ie-in-bounded-m32-m64-fst-fstp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ay--sticky-ie-m32-m64-stores).
+
+
+### S2-31az sticky IE/DE/PE m32/m64 store compositions
+
+The positive D900/DD10 fixture loads minimum binary32 subnormal and stores the
+exact binary64 normal bytes `000000000000a036`, retaining DE. The negative
+largest-subnormal D900/DD18/DFE0 fixture stores `000000c0ffff0fb8`, pops only
+after the write, and observes retained DE with FNSTSW. Both exact programs are
+schema/CLI reachable and explicitly denied by JIT without fallback. Native
+admission denial is covered by the x86 runner's profile test; that test
+cross-compiles here but native runtime was not executed on this arm64 host.
+Physical acceptance remains deferred under ISSUE-019. See the
+[S2-31az CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31az-admit-sticky-de-m32-m64-fstfstp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31az-admit-sticky-de-in-bounded-m32-m64-fst-fstp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31az--sticky-de-in-bounded-m32-m64-stores).

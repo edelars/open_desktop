@@ -6163,3 +6163,32 @@ unmapped `.serena/` directory, which was left untouched. The Linux runner check
 reports existing unused calibration-helper warnings. Independent review is
 pending. Native runtime and physical acceptance remain deferred under
 ISSUE-019.
+
+
+<a id="s2-31az--sticky-de-in-bounded-m32-m64-stores"></a>
+
+## S2-31az — sticky DE in bounded m32/m64 stores
+
+The exact D910/D918 and DD10/DD18 conversion helpers now admit sticky masked
+DE by changing only their local status mask from `0x80de` to `0x80dc`. IE, DE,
+and PE are preserved; SNaN conversion adds IE and inexact finite conversion
+adds PE only after a successful full-range atomic write. The store path does
+not generate DE. ZE/OE/UE/SF/ES/B, FCWs, source classes/tags, finite-result
+limits and all unrelated x87 gates remain unchanged. Store results that would
+be binary32/64 subnormals continue to reject before access.
+
+Coverage includes all eight incoming IE/DE/PE combinations, TOP×FCW and source
+classes, forbidden-status controls, fault atomicity, FNSTSW/FNCLEX, repeated
+stores, and binary32 subnormal FLD followed by binary64 FST/FSTP for both signs.
+Two literal sequence fixtures execute through the runner's interpreter path
+and are explicitly denied by JIT without fallback. The native-admission unit
+test now checks both fixtures on the x86 runner target; it cross-compiles on
+this arm64 host but cannot execute here. Focused ISA, fixture, schema, and JIT
+checks passed. The full offline workspace suite passed 775 tests with zero
+failures; workspace all-target checking and Linux x86_64 runner all-target
+checking passed. Formatting and diff checks passed. Graphify updated
+successfully (4,129 nodes, 8,510 edges, 210 communities). The layout checker
+reports only the pre-existing unmapped `.serena/` directory, which was left
+untouched. Independent review is pending. Native runtime and physical
+acceptance remain deferred to the final combined S2-31 substage under
+ISSUE-019.

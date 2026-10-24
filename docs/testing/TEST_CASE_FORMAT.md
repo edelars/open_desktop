@@ -538,3 +538,16 @@ classes; native runtime and physical acceptance remain deferred under
 ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ay-admit-sticky-ie-fstfstp-m32-m64),
 [plan](../plans/STAGE_2.md#s2-31ay-admit-sticky-ie-in-bounded-m32-m64-fst-fstp),
 and [report](../reports/STAGE_2_REPORT.md#s2-31ay--sticky-ie-m32-m64-stores).
+
+
+## S2-31az sticky IE/DE/PE m32/m64 store fixtures
+
+The two S2-31az schema-v2 fixtures exercise exact D900 followed by DD10 or
+DD18, with FNSTSW in the pop case. They preserve the DE set by a masked
+binary32 subnormal load, then verify exact binary64-normal output; the negative
+largest-subnormal case also checks pop and status observation. Fixture schema
+admission is limited to these two exact composition programs. The standalone
+S2-31y load fixtures and unrelated x87 gates are unchanged. See the
+[S2-31az contract](../specs/CPU_CONTRACT.md#local-s2-31az-admit-sticky-de-m32-m64-fstfstp),
+[plan](../plans/STAGE_2.md#s2-31az-admit-sticky-de-in-bounded-m32-m64-fst-fstp),
+and [report](../reports/STAGE_2_REPORT.md#s2-31az--sticky-de-in-bounded-m32-m64-stores).

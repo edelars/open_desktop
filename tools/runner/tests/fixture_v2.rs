@@ -80,6 +80,12 @@ const FLD_M32_SUBNORMAL: &[u8] =
 const FLD_M32_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31y_fld_m32fp_negative_min_subnormal_fnstsw.case.json"
 );
+const FLD_M32_SUBNORMAL_FST_M64: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31az_fld_m32_subnormal_fst_m64fp.case.json"
+);
+const FLD_M32_NEGATIVE_LARGEST_SUBNORMAL_FSTP_M64_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31az_fld_m32_largest_negative_subnormal_fstp_m64fp_fnstsw.case.json"
+);
 const FLD_M32_INFINITY: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31af_fld_m32fp_infinity.case.json");
 const FLD_M32_INFINITY_FNSTSW: &[u8] = include_bytes!(
@@ -1539,6 +1545,57 @@ fn local_x87_fld_m32fp_subnormal_fixtures_normalize_and_set_de() {
         assert_eq!((x87.tag_word.get() >> 14) & 3, 0);
         assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
         assert_eq!(x87.data_pointer, input.fixture.initial_state.gpr[0]);
+    }
+}
+
+#[test]
+fn local_x87_fld_m32_subnormal_to_m64_stores_preserve_de() {
+    for (
+        fixture,
+        expected_rax,
+        expected_rip,
+        payload,
+        expected_status,
+        expected_tag_word,
+        output,
+    ) in [
+        (
+            FLD_M32_SUBNORMAL_FST_M64,
+            0x0000_0000_0030_0004,
+            0x0010_0004,
+            "00000000000000806a3f",
+            0x7d02,
+            0x3ffc,
+            "000000000000a036",
+        ),
+        (
+            FLD_M32_NEGATIVE_LARGEST_SUBNORMAL_FSTP_M64_FNSTSW,
+            0x0000_0000_0030_4502,
+            0x0010_0006,
+            "0000000000feffff80bf",
+            0x4502,
+            0xfffc,
+            "000000c0ffff0fb8",
+        ),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), input.fixture.instruction_budget);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.rip, HexU64(expected_rip));
+        assert_eq!(observed.state.gpr[0], HexU64(expected_rax));
+        let x87 = observed.state.x87.as_ref().unwrap();
+        assert_eq!(x87.registers[7], payload);
+        assert_eq!(x87.status_word, HexU64(expected_status));
+        assert_eq!(x87.tag_word, HexU64(expected_tag_word));
+        assert_eq!(x87.instruction_pointer, HexU64(0x0010_0002));
+        assert_eq!(x87.data_pointer, HexU64(0x0030_0004));
+        let stack = observed
+            .memory
+            .iter()
+            .find(|region| region.region_id == "stack")
+            .unwrap();
+        assert_eq!(&stack.bytes_hex[..16], output);
     }
 }
 
@@ -3092,6 +3149,22 @@ fn v2_jit_denies_m80_snan_stores_without_interpreter_fallback() {
 #[test]
 fn v2_jit_denies_m80_subnormal_stores_without_interpreter_fallback() {
     for fixture in [FSTP_M80_SUBNORMAL, FSTP_M80_NEGATIVE_SUBNORMAL_FNSTSW] {
+        let (_, result) = run(fixture, "jit", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
+fn v2_jit_denies_m32_subnormal_to_m64_stores_without_interpreter_fallback() {
+    for fixture in [
+        FLD_M32_SUBNORMAL_FST_M64,
+        FLD_M32_NEGATIVE_LARGEST_SUBNORMAL_FSTP_M64_FNSTSW,
+    ] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));

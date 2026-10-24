@@ -819,3 +819,15 @@ sequences, CLI fixtures with incoming IE, FNSTSW/FNCLEX, and JIT denial cover
 the change. Other x87 gates and native admission remain unchanged; native
 runtime and physical acceptance remain deferred under ISSUE-019. See the
 [S2-31ay CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ay-admit-sticky-ie-fstfstp-m32-m64).
+
+
+## Local S2-31az sticky DE in bounded m32/m64 stores
+
+The exact D910/D918 and DD10/DD18 store helpers now admit pre-existing masked
+DE along with IE/PE (`FSW & 0x80dc == 0`). All incoming IE/DE/PE combinations
+remain sticky; SNaN adds IE and inexact finite conversion adds PE only after
+the atomic write, with no new DE. Other forbidden status bits and every
+unrelated x87 gate remain unchanged. Binary32 subnormal FLD followed by m64
+FST/FSTP confirms the loaded value converts to binary64 normal while carrying
+DE forward. Binary32/64 subnormal store results remain unsupported. See the
+[S2-31az contract](../specs/CPU_CONTRACT.md#local-s2-31az-admit-sticky-de-m32-m64-fstfstp).

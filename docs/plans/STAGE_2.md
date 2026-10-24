@@ -262,6 +262,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31aw | Convert Special-tagged canonical binary80 SignalingNaN through exact DD10/DD18 stores, quieting binary64 and setting sticky IE | S2-31au |
 | [x] | S2-31ax | Convert Special-tagged canonical binary80 SignalingNaN through exact D910/D918 stores, quieting binary32 and setting sticky IE | S2-31av, S2-31aw |
 | [x] | S2-31ay | Admit masked sticky IE only in exact D910/D918 and DD10/DD18 stores; preserve sticky IE/PE and successful SNaN status | S2-31ax |
+| [ ] | S2-31az | Admit masked sticky DE in the same bounded m32/m64 FST/FSTP helpers; retain IE/DE/PE and keep subnormal store results unsupported | S2-31ay |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3579,6 +3580,28 @@ after success. Add repeated-store and SNaN-load-to-quiet-store sequences with
 FNSTSW/FNCLEX, plus fault, class, tag, FCW, forbidden-status, CLI, and JIT/native
 admission checks. FNCLEX remains available to clear status flags but is no
 longer required between otherwise admitted m32/m64 stores after SNaN.
+
+
+<a id="s2-31az-admit-sticky-de-in-bounded-m32-m64-fst-fstp"></a>
+
+#### S2-31az. Admit sticky DE in bounded m32/m64 FST/FSTP
+
+Relax only the status predicates in D910/D918 and DD10/DD18 from
+`FSW & 0x80de == 0` to `FSW & 0x80dc == 0`. This admits existing masked IE, DE,
+and PE while continuing to reject ZE, OE, UE, SF, ES, and B. Keep the FCW
+whitelist, source classes/tags, finite-result limits, addressing and every
+unrelated x87 status gate unchanged. Preserve incoming IE/DE/PE; successful
+SNaN conversion adds IE and an inexact finite conversion adds PE only after the
+atomic write, with no newly generated DE. The full-range write must succeed
+before status, pointers, RIP, or FSTP pop state commits.
+
+Cover all eight incoming IE/DE/PE combinations, subnormal-result rejection,
+SNaN and inexact-normal stores with DE already set, and exact binary32
+subnormal FLD-to-binary64 FST/FSTP composition for both signs. Include
+FNSTSW/FNCLEX, repeated stores, forbidden environment controls, full-state
+fault atomicity, CLI fixtures, and JIT/native denial. Native runtime and
+physical acceptance remain deferred to the final combined S2-31 substage under
+ISSUE-019.
 
 
 <a id="s2-31ax-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m32fp"></a>
