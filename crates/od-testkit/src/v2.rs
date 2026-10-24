@@ -767,6 +767,8 @@ impl Fixture {
                 "db10dfe0" => ("db10dfe0", 4),
                 "df18" => ("df18", 2),
                 "df18dfe0" => ("df18dfe0", 4),
+                "df38" => ("df38", 2),
+                "df38dfe0" => ("df38dfe0", 4),
                 "df10" => ("df10", 2),
                 "df10dfe0" => ("df10dfe0", 4),
                 _ if code_bytes.len() == 4
@@ -969,6 +971,13 @@ impl Fixture {
                     !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
                         || x87.status_word.get() & 0x80df != 0
                 });
+            let is_fistp_qword_overflow_rejected = code_bytes == "df38"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as usize;
+                    x87.registers[top].eq_ignore_ascii_case("00000000000000803e40")
+                });
             let is_fist_word_overflow_rejected = code_bytes == "df10"
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
@@ -1083,6 +1092,7 @@ impl Fixture {
                     || is_fistp_word_exponent_rejected
                     || is_fistp_word_tag_rejected
                     || is_fistp_word_environment_rejected
+                    || is_fistp_qword_overflow_rejected
                     || is_fist_word_overflow_rejected
                     || is_fist_word_exponent_rejected
                     || is_fist_word_tag_rejected

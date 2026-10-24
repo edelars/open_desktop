@@ -508,6 +508,28 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     code.initial_bytes_hex = "dfe0".into();
     assert!(Fixture::from_json(&fnstsw.to_json().unwrap()).is_ok());
 
+    let mut fistp_m64 = fixture.clone();
+    let code = fistp_m64
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "df38".into();
+    assert!(Fixture::from_json(&fistp_m64.to_json().unwrap()).is_ok());
+
+    let mut fistp_m64_fnstsw = fistp_m64.clone();
+    let code = fistp_m64_fnstsw
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.length = 4;
+    code.initial_bytes_hex = "df38dfe0".into();
+    code.comparison_mask_hex = "ffffffff".into();
+    fistp_m64_fnstsw.stop_rip = Some(HexU64(0x1004));
+    fistp_m64_fnstsw.instruction_budget = 2;
+    assert!(Fixture::from_json(&fistp_m64_fnstsw.to_json().unwrap()).is_ok());
+
     let mut fnclex = fixture.clone();
     let code = fnclex
         .memory

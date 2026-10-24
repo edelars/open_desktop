@@ -564,6 +564,7 @@ fn admission_with_tracee_memory(
             | Operation::Frndint
             | Operation::FistM32IntRax
             | Operation::FistpM32IntRax
+            | Operation::FistpM64IntRax
             | Operation::FistpM16IntRax
             | Operation::FistM16IntRax
             | Operation::FcomSt { .. }

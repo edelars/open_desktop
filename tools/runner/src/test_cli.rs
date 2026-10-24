@@ -2195,4 +2195,99 @@ mod tests {
             assert_eq!(value.state, fixture.fixture.initial_state, "{name}");
         }
     }
+
+    #[test]
+    fn fistp_m64int_literal_fixtures_cover_qword_boundaries_and_overflow() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2");
+        for (suffix, expected, count, rax_after) in [
+            (
+                "exact_max",
+                0x7fff_ffff_ffff_ffff_u64,
+                1_u64,
+                0x0000_0000_0030_0001_u64,
+            ),
+            (
+                "negative_min_fnstsw",
+                0x8000_0000_0000_0000_u64,
+                2_u64,
+                0x0000_0000_0030_4d00_u64,
+            ),
+        ] {
+            let name = format!("s2_31f_fistp_m64int_{suffix}.case.json");
+            let bytes = std::fs::read(directory.join(&name)).unwrap();
+            let fixture = v2::Fixture::from_json(&bytes)
+                .unwrap_or_else(|error| panic!("{name} failed schema validation: {error}"));
+            let before = fixture.fixture.initial_state.clone();
+            let mut memory =
+                od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(
+                matches!(result.outcome, v2::Outcome::StopAddress {}),
+                "{name}"
+            );
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available {
+                    value: HexU64(count)
+                },
+                "{name}"
+            );
+            let regions = memory.snapshot();
+            let left = regions.iter().find(|r| r.region_id == "data_left").unwrap();
+            let right = regions
+                .iter()
+                .find(|r| r.region_id == "data_right")
+                .unwrap();
+            let bytes = expected.to_le_bytes();
+            assert_eq!(left.bytes_hex, format!("{:02x}", bytes[0]), "{name}");
+            assert_eq!(
+                right.bytes_hex,
+                format!(
+                    "{}3344556677889900",
+                    bytes[1..]
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                ),
+                "{name}"
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("{name} snapshot unavailable");
+            };
+            let mut expected_state = before;
+            expected_state.rip = HexU64(0x100000 + 2 * count);
+            expected_state.gpr[0] = HexU64(rax_after);
+            let expected_x87 = expected_state.x87.as_mut().unwrap();
+            expected_x87.status_word = HexU64(0x4d00);
+            expected_x87.tag_word = HexU64(0xffff);
+            expected_x87.instruction_pointer = HexU64(0x100000);
+            expected_x87.data_pointer = HexU64(0x300001);
+            assert_eq!(value.state, expected_state, "{name}: full CPU state");
+        }
+
+        let name = "s2_31f_fistp_m64int_positive_overflow.case.json";
+        let bytes = std::fs::read(directory.join(name)).unwrap();
+        let fixture = v2::Fixture::from_json(&bytes)
+            .unwrap_or_else(|error| panic!("{name} failed schema validation: {error}"));
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let initial_memory = memory.snapshot();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(
+            matches!(result.outcome, v2::Outcome::Unsupported { .. }),
+            "{name}"
+        );
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(0) },
+            "{name}"
+        );
+        assert_eq!(memory.snapshot(), initial_memory, "{name}");
+        let Observation::Available { value } = result.snapshot else {
+            panic!("{name} snapshot unavailable");
+        };
+        assert_eq!(value.state, fixture.fixture.initial_state, "{name}");
+    }
 }

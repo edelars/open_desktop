@@ -2800,6 +2800,51 @@ x87 semantics and does not complete S2-31.
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
 pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## Local S2-31f: bounded `FISTP m64int [RAX]` (`DF 38`)
+
+The interpreter admits only bare `DF 38` in Long64 as an eight-byte Qword
+store through RAX, with no index, displacement, or segment override. Preflight
+requires an existing x87 snapshot, FCW exactly `0x037f`, `0x077f`, `0x0b7f`, or
+`0x0f7f`, and `FSW & 0x80df == 0`; sticky PE is allowed. Only old physical TOP
+is read. Its tag must be Valid, its binary80 encoding canonical Normal, and
+its unbiased exponent 0..63. Other physical tags and payloads are not
+examined.
+
+For significand `s`, exponent `e`, and `shift = 63 - e`, calculate
+`denominator = 1 << shift`, `quotient = s >> shift`, and
+`remainder = s & (denominator - 1)`. This includes `e=63`, where shift is
+zero, denominator is one, and remainder is zero. Apply the existing
+integer-only `round_quotient_magnitude(sign, quotient, remainder, denominator,
+RC)` helper. Before narrowing, accept positive magnitudes through
+`0x7fff_ffff_ffff_ffff` and negative magnitudes through
+`0x8000_0000_0000_0000`; encode accepted output with unsigned 64-bit
+two's-complement arithmetic. Overflow and unsupported source/configuration
+return Unsupported before data access. This limited policy does not produce
+the architectural indefinite integer result for masked invalid conversion.
+
+After conversion, validate the complete canonical48 eight-byte range with
+`MemoryOperand::access_address_48`, then issue exactly one atomic
+`GuestMemory::write_integer` Qword store without reading destination data.
+Store errors propagate unchanged and leave CPU/x87 state and RAM unchanged.
+Only after success, mark old physical TOP Empty, advance TOP modulo eight,
+keep PE sticky and set it when the conversion had a remainder, set C1 iff
+rounding increased magnitude, record FIP as old RIP and FDP as RAX, advance
+RIP by two and retire once. Preserve all other tags, raw payloads, FCW/FOP,
+condition codes, GPRs and RFLAGS.
+
+Literal fixtures cover exact `DF 38`, exact `DF 38 DF E0` FNSTSW observation,
+Qword canaries, signed-i64 maximum/minimum and positive overflow. Interpreter
+vectors independently cover all RC/sign ties, negative 2^63 in every RC mode,
+`2^63 - 0.5` in all four RC modes, positive 2^63, negative `2^63+1`, exponent
+64, TOP wrap, canonical-range rejection and atomic permission/#PF store
+failures. Prefixes and nearby forms are rejected; native x87 admission
+explicitly denies `FISTP m64int`. Exception delivery, the indefinite-value
+path, MMU translation, MMIO, SMP and physical-x86 behavior remain outside this
+slice, which does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
+pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ## Local S2-31a: bounded `FRNDINT` (`D9 FC`)
 
 The interpreter admits only bare `D9 FC` in an existing x87-state snapshot.

@@ -225,6 +225,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
 | [x] | S2-31e | Bare bounded FIST m16int [RAX] DF 10, partial slice | S2-31d |
+| [x] | S2-31f | Bare bounded FISTP m64int [RAX] DF 38, partial slice | S2-31e |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2078,6 +2079,27 @@ store preserve architectural state and memory. Add literal `DF 10` and exact
 overflow and invalid tag/status/control/exponent cases; reject prefixes and
 nearby forms, and explicitly deny native admission. This local slice does not
 model general x87 exception delivery or complete S2-31.
+
+#### S2-31f. Bare bounded `FISTP m64int [RAX]` (`DF 38`), partial slice
+
+Implement only bare `DF 38` in Long64 with an eight-byte `[RAX]` destination
+and existing x87 state. Require canonical-Normal old physical TOP, unbiased
+exponent 0..63, FCW exactly `0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`, and
+`FSW & 0x80df == 0` (sticky PE is allowed). Reuse integer quotient/remainder
+rounding with `shift = 63 - exponent`; exponent 63 uses shift zero, divisor
+one and zero remainder. Compare the rounded `u128` magnitude with the signed
+i64 limit before narrowing, then encode the accepted result as unsigned
+64-bit two's complement. Rounded overflow is Unsupported before data access;
+this bounded profile does not write the ISA indefinite value or deliver x87
+exceptions. Validate the complete canonical48 eight-byte range, perform one
+atomic Qword write with no data read, then empty old TOP, advance TOP, update
+sticky PE/C1, record FIP/FDP, advance RIP by two and retire once. Preserve all
+other x87 payloads/tags and unrelated state. Add independent literal binary80
+ties, signed boundaries, `2^63 - 0.5` RC cases, exponent 64 rejection,
+canaries, canonical/access-fault and TOP-wrap coverage. Admit exact `DF 38`
+and optionally `DF 38 DF E0`; reject prefixes/neighbors and deny native x87
+admission. Exception delivery remains unmodeled; this does not complete
+S2-31.
 
 ### S2-32. Остальные обязательные x87 формы
 

@@ -4400,6 +4400,46 @@ or general x87 semantics. It does not complete S2-31.
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
 pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## S2-31f — bounded `FISTP m64int [RAX]` partial slice
+
+Added only bare `DF 38` as a fixed Qword store through RAX in Long64. The
+shared quotient/remainder conversion now supports signed i16, i32 and i64
+outputs. For `DF 38`, preflight accepts canonical-Normal old physical TOP,
+unbiased exponent 0..63, exact all-masked PC64 FCW values, and
+`FSW & 0x80df == 0`; exponent 63 takes the zero-shift, denominator-one exact
+path. Rounded magnitude is checked in `u128` against asymmetric signed-i64
+limits before narrowing, then represented by unsigned two's-complement Qword
+encoding. Unsupported inputs and rounded overflow return Unsupported before
+memory access.
+
+Execution checks the complete canonical48 Qword range and issues one atomic
+Qword `write_integer` without a data read. Only a successful store empties old
+physical TOP, advances TOP once with wrap, updates sticky PE/C1, records
+FIP/FDP, advances RIP and retires. Raw x87 payloads and all unrelated state
+remain preserved. Literal fixture and interpreter coverage includes the exact
+signed-i64 boundaries, positive overflow, `2^63 - 0.5` under all four RC
+modes, all RCs for negative `2^63`, all four sign/tie RC combinations,
+exponent 64 rejection, canaries, canonical-range rejection and write
+permission/#PF atomicity. The schema and decoder admit only exact `DF 38`
+(plus `DF 38 DF E0` status observation); prefixes and neighboring encodings
+remain unsupported. Native x87 admission explicitly denies this operation.
+
+Verification passed: `cargo test -p od-isa fistp_m64int --offline`,
+`cargo test -p od-testkit --offline`, the focused runner literal-fixture test,
+the full workspace suite, workspace all-target check, formatting, diff checks
+and `graphify update .` (3651 nodes, 7780 edges, 213 communities; the existing
+parser warning for `include/open_desktop/host_abi.h` remains).
+`python3 tools/check_layout.py` reports the pre-existing unmapped `.serena/`
+directory, which was left untouched. This host did not run physical x86 or Mac
+mini checks. Flat fixture RAM does not establish MMU/page
+walks, MMIO, SMP or architectural exception delivery. In this bounded profile
+overflow is Unsupported rather than the architectural indefinite integer
+result, and x87 exception delivery remains unmodeled. This does not complete
+S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
+pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ## S2-30ak — bounded FCOMIP ST(0), ST(1) to RFLAGS and pop
 
 Added exactly bare `DF F1` as `Operation::Fcomip`. DF decoding now admits

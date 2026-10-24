@@ -1347,6 +1347,23 @@ physical x86 behavior.
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
 pp.3-347–3-349 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+### S2-31f FISTP m64int schema and literal coverage
+
+The schema admits exact `DF 38` and `DF 38 DF E0` (FNSTSW AX), with prefixes
+and neighboring encodings rejected. Literal CLI fixtures cover an unaligned
+Qword crossing adjacent regions, exact signed-i64 maximum and minimum, TOP
+pop, the FNSTSW-observed status, and positive 2^63 rejection before any data
+write. Interpreter vectors separately cover positive/negative ties under all
+four RC modes, negative 2^63 under every RC, `2^63 - 0.5` under all four RC
+modes, negative `2^63+1`, exponent 64, canaries, canonical48 rejection,
+permission failure and injected #PF atomicity. Native x87 admission explicitly
+denies `DF 38`. Overflow uses this bounded profile's Unsupported result rather
+than architectural indefinite integer encoding; x87 exception delivery,
+MMU/page walks, MMIO, SMP and physical execution remain unmodeled.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
+pp.3-347–3-349 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ### S2-31e FIST m16int schema and literal coverage
 
 The schema admits only bare `DF 10` and exact `DF 10 DF E0` (FNSTSW AX).
