@@ -5562,7 +5562,8 @@ JIT denial and native-profile checks; full workspace suite (695 tests);
 architecture-gated native-denial test compiles for Linux x86 but does not
 execute on this local arm64 host. `python3 tools/check_layout.py` reports the
 pre-existing unmapped root `.serena` directory, which was left untouched.
-Independent gpt-6.1-sol medium review is pending. See the
-[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ae-bounded-fld-m64fp-rax-dd-00-signed-infinities),
+Independent gpt-6.1-sol medium review found no concrete defects in conversion,
+gates, status preservation, NaN rejection, fixtures, denial paths or docs. See
+the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ae-bounded-fld-m64fp-rax-dd-00-signed-infinities),
 [plan](../plans/STAGE_2.md#s2-31ae-extend-bounded-fld-m64fp-rax-dd-00-to-infinities),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
