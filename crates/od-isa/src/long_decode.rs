@@ -451,6 +451,8 @@ pub enum Operation {
     FnstswM16Rax,
     /// Bare `DD 18` FSTP m64fp at [RAX], bounded finite profile.
     FstpM64FpRax,
+    /// Bare `DD 10` FST m64fp at [RAX], bounded finite profile.
+    FstM64FpRax,
     /// Bare `D9 E0` FCHS, flipping the sign of canonical-Normal ST(0) only.
     Fchs,
     /// Bare `D9 E1` FABS, clearing the sign of canonical-Normal ST(0) only.
@@ -1209,6 +1211,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 if modrm == 0x38 {
                     Operation::FnstswM16Rax
+                } else if modrm == 0x10 {
+                    Operation::FstM64FpRax
                 } else if modrm == 0x18 {
                     Operation::FstpM64FpRax
                 } else if modrm == 0xe1 {
@@ -2662,7 +2666,11 @@ mod tests {
     }
 
     #[test]
-    fn dd_accepts_only_bounded_fstp_m64fp_fnstsw_fst_fstp_fucom_and_fucomp_encodings() {
+    fn dd_accepts_only_bounded_m64fp_fst_fstp_fnstsw_fst_fstp_fucom_and_fucomp_encodings() {
+        let decoded = Memory::new(&[0xdd, 0x10]).decode().unwrap();
+        assert_eq!(decoded.operation, Operation::FstM64FpRax);
+        assert_eq!(decoded.length, 2);
+        assert_eq!(decoded.prefixes, Prefixes::default());
         let decoded = Memory::new(&[0xdd, 0x18]).decode().unwrap();
         assert_eq!(decoded.operation, Operation::FstpM64FpRax);
         assert_eq!(decoded.length, 2);
@@ -2712,6 +2720,8 @@ mod tests {
                     })
                 } else if modrm == 0x38 {
                     Ok(Operation::FnstswM16Rax)
+                } else if modrm == 0x10 {
+                    Ok(Operation::FstM64FpRax)
                 } else if modrm == 0x18 {
                     Ok(Operation::FstpM64FpRax)
                 } else if modrm == 0xe1 {
@@ -2733,10 +2743,13 @@ mod tests {
 
         for bytes in [
             &[0x9b, 0xdd, 0x38][..],
+            &[0x9b, 0xdd, 0x10][..],
             &[0x9b, 0xdd, 0x18][..],
             &[0xf0, 0xdd, 0x38],
+            &[0xf0, 0xdd, 0x10],
             &[0xf0, 0xdd, 0x18],
             &[0x66, 0xdd, 0x38],
+            &[0x66, 0xdd, 0x10],
             &[0x66, 0xdd, 0x18],
             &[0xf0, 0xdd, 0xd9][..],
             &[0xf2, 0xdd, 0xd9],

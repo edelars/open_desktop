@@ -1465,6 +1465,30 @@ Point Value,” pp.3-386–3-387 (`DD /2`/`DD /3`)
 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
 see the local bounded [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31l-bounded-fstp-m64fp-rax-dd-18).
 
+### S2-31m FST m64fp schema and literal CLI coverage
+
+The schema admits exact bare `DD 10` and exact `DD 10 DF E0` (FNSTSW AX);
+other DD ModR/M/addressing forms, prefixes, REX and WAIT remain unsupported
+for this operation, while existing DD register/status forms retain their
+behavior. Two handwritten schema-v2 fixtures use a canonical-Normal 1.5
+source and Qword destination. CLI checks verify binary64 bytes
+`0x3ff8000000000000`, unchanged TOP/tag word/raw registers and the
+FNSTSW-observed status. Interpreter checks use independent rounding literals
+for both signs and four RC modes, exact/tie-adjacent/discarded-bit values,
+exponent endpoints and carry rejection. They also cover every TOP including
+TOP 7, no-pop source preservation after inexact conversion, canaries, one
+Qword write/no read, separate noncanonical-start and canonical-crossing
+ranges, backend and architectural store failures, invalid source/environment,
+and fetch/truncation/STOP/budget boundaries. Native x87 admission explicitly
+denies this operation. These local tests do not establish hardware exception
+priority, MMU, MMIO, SMP or physical x86 behavior.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-386–3-387 (`DD /2` FST, `DD /3` FSTP)
+([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504),
+[official PDF, Vol.2A p.3-387](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505));
+see the local bounded [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31m-bounded-fst-m64fp-rax-dd-10).
+
 ### S2-31f FISTP m64int schema and literal coverage
 
 The schema admits exact `DF 38` and `DF 38 DF E0` (FNSTSW AX), with prefixes

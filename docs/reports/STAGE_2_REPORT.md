@@ -4835,3 +4835,46 @@ Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
 Point Value,” pp.3-386–3-387 (`DD /2`/`DD /3`)
 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
+
+## S2-31m — bounded `FST m64fp` partial slice
+
+Added exact bare `DD 10` as `FST m64fp [RAX]` in Long64. It reuses the
+unchanged S2-31l `bounded_x87_m64fp_result` conversion and the same Valid
+physical TOP, canonical-Normal source, four exact PC64/all-masked FCWs and
+`FSW & 0x80df == 0` gates. Integer-only conversion packs binary64 bits and
+keeps the local original/rounded exponent interval at -1022..1022, excluding
+1023 even though finite binary64 values exist there.
+
+The executor validates the full canonical48 Qword range and makes one atomic
+Qword write without a data read. After success it commits sticky PE/C1,
+FIP/FDP, RIP+2 and one retirement while preserving TOP, every tag, every raw
+payload including unrounded ST(0), FCW/FOP, C0/C2/C3 and unrelated state.
+Condition-code retention and exact-result C1 clearing are deterministic local
+policies. Architectural store faults map to guest faults; backend write
+failures remain diagnostic errors. Native admission explicitly denies FST.
+
+Literal interpreter vectors use independently stated binary64 results for
+signs, all RC modes, exact and half-adjacent values, discarded-bit boundaries,
+exponent endpoints and carry rejection. Additional checks cover all eight TOP
+positions, no-pop payload/tag sentinels, the unrounded inexact source, Qword
+bytes/canaries, one-write/no-read, separate noncanonical-start and
+canonical-crossing cases, backend failure, injected `#PF`, invalid
+source/environment, and fetch/truncation/STOP/budget boundaries. Two
+handwritten schema-v2 fixtures cover exact `DD 10` and `DD 10 DF E0` CLI
+composition. Existing DD decoder forms remain preserved.
+
+Validation passed: focused S2-31m tests, `cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+and `git diff --check`. `graphify update .` refreshed the graph. The layout
+checker reports the pre-existing unmapped root `.serena/` directory; it was
+left untouched. No Mac mini or physical acceptance was run. Flat fixture RAM
+does not establish MMU, MMIO, SMP, physical x86 behavior, exception delivery or
+hardware exception priority. Independent `gpt-6.1-sol` review found no
+remaining findings after two test/comment observations were corrected and
+re-reviewed. This partial slice does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-386–3-387 (`DD /2` FST, `DD /3` FSTP)
+([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504),
+[official PDF, Vol.2A p.3-387](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.

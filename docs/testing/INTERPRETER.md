@@ -355,3 +355,18 @@ interpreter tests cover rounding, stack state, memory atomicity and faults.
 Native x87 admission remains closed, and no physical x86 acceptance is claimed.
 See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31l-bounded-fstp-m64fp-rax-dd-18)
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31m x87 conversion slice
+
+Exact bare `DD 10` (`FST m64fp [RAX]`) reuses the S2-31l integer-only
+binary80-to-binary64 conversion, environment gates, and -1022..1022 local
+exponent interval. It validates the canonical48 Qword range before one
+atomic write with no read, then updates PE/C1 and FIP/FDP/RIP while preserving
+TOP, all tags and all raw payloads, including unrounded ST(0). Literal fixtures
+cover `DD 10` and `DD 10 DF E0`; interpreter checks cover independent RC/tie
+values, all TOP positions, canaries, address and store faults, invalid
+preflight state, and execution boundaries. The C0/C2/C3 retention and exact
+C1 behavior are local deterministic policies. Native x87 admission stays
+closed; these checks do not establish physical x86 behavior. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31m-bounded-fst-m64fp-rax-dd-10)
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).

@@ -2790,6 +2790,50 @@ Point Value,” pp.3-386–3-387 (`DD /2`/`DD /3`)
 ([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
 
+## Local S2-31m: bounded `FST m64fp [RAX]` (`DD 10`)
+
+The interpreter admits only exact bare `DD 10` in Long64. It reuses the
+unchanged `bounded_x87_m64fp_result` conversion and therefore has the same
+preflight gates as S2-31l: existing x87 state, Valid old physical TOP tag,
+canonical-Normal raw binary80 source, FCW exactly `0x037f`, `0x077f`,
+`0x0b7f`, or `0x0f7f`, and `FSW & 0x80df == 0`. For significand `s`, it
+rounds `q=s>>11`, `r=s&0x7ff`, `d=0x800` with integer quotient/remainder
+rounding according to RC and packs binary64 bits directly. Original and
+rounded unbiased exponents must both remain in -1022..1022. Exponent 1023 is
+excluded by this bounded local profile although some finite binary64 values
+exist there. No host floating-point cast is used.
+
+Before data access, validate the complete canonical48 Qword range
+`[RAX,RAX+7]`; make exactly one atomic Qword write and no data read. Only after
+success, set sticky PE iff `r != 0`, and set C1 iff rounding increased
+magnitude (exact results clear C1 by local policy). Record instruction-start
+RIP in FIP and RAX in FDP, advance RIP by two and retire once. Preserve TOP,
+all physical tags, all eight raw payloads including the unrounded old ST(0),
+FCW/FOP, C0/C2/C3 and unrelated state. This preservation of condition-code
+bits and exact C1 handling are deterministic local policies, not hardware
+guarantees. Architectural store faults use the guest-fault path; backend
+diagnostics remain errors.
+
+Independent literal binary64 values cover both signs, all RCs, exact,
+below-half, half-even, half-odd and above-half inputs, discarded-bit and
+exponent boundaries, and carry rejection. Interpreter checks cover no-pop
+preservation for all TOP values including TOP 7, all tag/payload sentinels,
+the unrounded ST(0) after inexact conversion, Qword bytes/canaries, one-write
+and no-read behavior, distinct noncanonical-start and canonical-crossing
+ranges, backend write error, injected architectural `#PF`, invalid
+source/environment before access, and fetch/truncation/STOP/budget atomicity.
+Literal fixtures admit exact bare `DD 10` and exact `DD 10 DF E0` composition.
+Prefixes, REX, WAIT and neighboring DD forms remain unsupported; native x87
+admission explicitly denies this operation. Flat memory does not establish
+MMU/page walks, MMIO, SMP, physical x86 behavior, exception delivery, or
+hardware exception priority. This local slice does not complete S2-31.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FST/FSTP—Store Floating
+Point Value,” pp.3-386–3-387 (`DD /2` FST and `DD /3` FSTP)
+([official PDF, Vol.2A p.3-386](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504),
+[official PDF, Vol.2A p.3-387](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505));
+Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
+
 ## Local S2-31b: bounded `FISTP m32int [RAX]` (`DB 18`)
 
 The interpreter admits only bare `DB 18` in Long64: a Dword store through

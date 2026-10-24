@@ -231,6 +231,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31i | Bare bounded FLDCW m2byte [RAX] D9 28, validated Word load and local RC control; native closed | S2-31h |
 | [x] | S2-31j | Bare bounded FSTP m32fp [RAX] D9 18, integer binary80-to-binary32 conversion and atomic Dword store; native closed | S2-31i |
 | [x] | S2-31k | Bare bounded FST m32fp [RAX] D9 10, shared binary80-to-binary32 conversion and atomic Dword store without pop; native closed | S2-31j |
+| [x] | S2-31l | Bare bounded FSTP m64fp [RAX] DD 18, shared binary80-to-binary64 conversion and atomic Qword store with pop; native closed | S2-31k |
+| [x] | S2-31m | Bare bounded FST m64fp [RAX] DD 10, shared binary80-to-binary64 conversion and atomic Qword store without pop; native closed | S2-31l |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2247,6 +2249,33 @@ native admission remains explicitly closed. This partial slice does not
 complete S2-31 or claim physical x86 acceptance.
 
 **Результат:** реализовано, проверено локальными fixture/interpreter tests;
+native admission остаётся закрытым. Финальные Mac mini/physical checks остаются
+в одном завершающем подэтапе S2-31. Подробности — в отчёте и CPU contract.
+
+#### S2-31m. Bare bounded `FST m64fp [RAX]` (`DD 10`), partial slice
+
+Implement only exact bare `DD 10` in Long64 with an existing x87 snapshot and
+fixed Qword destination `[RAX]`. Reuse unchanged S2-31l
+`bounded_x87_m64fp_result`: Valid old physical TOP, canonical-Normal raw
+binary80 source, FCW exactly `037f/077f/0b7f/0f7f`, and `FSW & 0x80df == 0`.
+The integer-only binary64 profile accepts original and rounded unbiased
+exponents -1022..1022, intentionally excluding exponent 1023; carry into that
+excluded range rejects before data access.
+
+Preflight the converted value and complete canonical48 range `[RAX,RAX+7]`,
+then issue exactly one atomic Qword write with no read. After success, set PE
+sticky iff conversion discarded nonzero bits, set C1 iff rounding increased
+magnitude (exact results clear C1 by local policy), record FIP/FDP, advance RIP
+by two and retire once. Preserve TOP, every physical tag, all eight raw
+payloads (including the unrounded old ST(0)), FCW/FOP, C0/C2/C3 and unrelated
+state. Architectural store faults map to the guest-fault path; backend failures
+remain diagnostic errors. Reject prefixes, REX, WAIT, neighbors and
+truncation; native admission remains closed. Literal DD10 and DD10+FNSTSW AX
+fixtures and independent rounding, preservation, canonical-range, store-fault,
+fetch/STOP/budget checks define this partial local policy; it does not complete
+S2-31 or claim physical x86 acceptance.
+
+**Результат:** реализовано и проверено локальными fixtures/interpreter tests;
 native admission остаётся закрытым. Финальные Mac mini/physical checks остаются
 в одном завершающем подэтапе S2-31. Подробности — в отчёте и CPU contract.
 
