@@ -6110,3 +6110,28 @@ successful full-range atomic write, and correct FST/FSTP state transitions
 under the existing IE/FNCLEX gate. The independent review exercised 17 m64
 ISA tests, the CLI fixture, and JIT denial. Native runtime was not executed on
 the arm64 host; physical validation remains deferred under ISSUE-019.
+
+
+<a id="s2-31ax--canonical-signalingnan-binary80-to-binary32-stores"></a>
+
+## S2-31ax — canonical SignalingNaN binary80 to binary32 stores
+
+Exact D910/D918 now accept Special-tagged canonical binary80 SNaNs and convert
+by integer fields to quiet binary32 values. The sign and upper 22 payload bits
+are retained, lower 40 bits truncate without rounding or PE, and sticky IE is
+committed only after a successful atomic Dword write. PE and all ten source
+bytes are preserved; D910 keeps TOP/tags and D918 pops only after success. The
+existing four FCWs and `FSW & 0x80df == 0` gate remain, so a later store is
+blocked until FNCLEX clears IE. QNaN conversion remains a no-new-flags path.
+
+Focused coverage includes both signs/opcodes over TOP×FCW×PE/C1 and payload
+bits 39/40, QNaN/SNaN status differentiation, write/range atomicity, and
+FNSTSW/FNCLEX recovery. The focused m32 ISA suite passed (14 tests), the runner
+m32 unit/CLI batch passed (4 tests), and fixture/JIT denial passed (2 tests).
+Positive D910 and negative D918/DFE0 fixtures run through the CLI; both are
+explicitly denied by JIT/native admission. The full offline workspace suite
+passed (769 tests, zero failures); workspace all-target check, Linux x86_64
+runner all-target check, formatting, and diff checks passed. Graphify updated
+successfully. The layout check reports only the pre-existing unmapped
+`.serena/` directory, which was left untouched. Independent review is pending.
+Native runtime and physical acceptance remain deferred under ISSUE-019.

@@ -514,3 +514,15 @@ fixtures are schema/CLI reachable and explicitly denied by JIT/native. See the
 [S2-31aw contract](../specs/CPU_CONTRACT.md#local-s2-31aw-canonical-signalingnan-fstfstp-m64fp-rax-dd-10-dd-18),
 [plan](../plans/STAGE_2.md#s2-31aw-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m64fp),
 and [report](../reports/STAGE_2_REPORT.md#s2-31aw--canonical-signalingnan-binary80-to-binary64-stores).
+
+
+## S2-31ax canonical SignalingNaN m32 stores
+
+The positive bare D910 fixture stores a quieted positive binary32 NaN and
+observes sticky IE. The negative D918/DFE0 fixture preserves the upper 22
+payload bits, pops only after writing, and observes IE through FNSTSW. Both
+fixtures retain their binary80 source bytes, execute through the interpreter,
+and are denied by JIT/native admission. See the
+[S2-31ax contract](../specs/CPU_CONTRACT.md#local-s2-31ax-canonical-signalingnan-fstfstp-m32fp-rax-d9-10-d9-18),
+[plan](../plans/STAGE_2.md#s2-31ax-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m32fp),
+and [report](../reports/STAGE_2_REPORT.md#s2-31ax--canonical-signalingnan-binary80-to-binary32-stores).

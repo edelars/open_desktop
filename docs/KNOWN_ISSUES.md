@@ -286,6 +286,18 @@
   [report](reports/STAGE_2_REPORT.md#s2-31ap--signed-infinity-stores-for-bounded-m64-fstfstp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
 
+- **S2-31ax evidence:** exact D910/D918 m32 stores now convert Special-tagged
+  canonical binary80 SNaNs to quiet binary32 values, preserving sign and the
+  upper 22 payload bits while truncating lower 40 without PE. Sticky IE is
+  committed only after the atomic Dword write succeeds; source bytes and sticky
+  PE remain unchanged, and D918 pops only after success. The store gate blocks
+  subsequent stores until FNCLEX clears IE. Native runtime and physical
+  acceptance remain unverified and deferred to the final combined S2-31
+  substage under ISSUE-019. See [S2-31ax CPU contract](specs/CPU_CONTRACT.md#local-s2-31ax-canonical-signalingnan-fstfstp-m32fp-rax-d9-10-d9-18),
+  [plan](plans/STAGE_2.md#s2-31ax-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m32fp),
+  [report](reports/STAGE_2_REPORT.md#s2-31ax--canonical-signalingnan-binary80-to-binary32-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
 - **S2-31aq evidence:** exact D910/D918 now store Special-tagged canonical
   binary80 infinity as signed binary32 infinity using integer fields. The
   existing FCW/FSW gates, one-write/no-read Dword access, and post-success FSTP

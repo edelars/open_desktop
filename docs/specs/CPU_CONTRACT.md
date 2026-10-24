@@ -4411,3 +4411,32 @@ general exception delivery and physical acceptance remain outside this slice.
 See the [plan](../plans/STAGE_2.md#s2-31av-store-canonical-binary80-quietnan-through-bounded-fstfstp-m32fp),
 [report](../reports/STAGE_2_REPORT.md#s2-31av--canonical-quietnan-binary80-to-binary32-stores),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31ax-canonical-signalingnan-fstfstp-m32fp-rax-d9-10-d9-18"></a>
+
+## Local S2-31ax: masked canonical SignalingNaN `FST/FSTP m32fp [RAX]`
+
+Exact `D9 10` and `D9 18` accept a canonical binary80 SignalingNaN only when
+physical TOP is Special-tagged, exponent is `0x7fff`, the explicit integer bit
+is one, the quiet bit is clear, and the fraction is nonzero. Convert by
+integer fields: preserve sign, set binary32's quiet bit, copy fraction bits
+61..40 as its remaining 22 payload bits, and truncate low 40 bits without
+rounding or PE. Set sticky IE only after the full-range Dword write succeeds;
+preserve PE and the source register bytes. The admitted masked profile leaves
+ES/B/SF clear and clears C1 under the existing exact-store policy.
+
+Keep four FCWs and `FSW & 0x80df == 0`. Preflight the full canonical48 Dword
+range and perform exactly one atomic write/no data read. D910 preserves TOP,
+tags and payloads; D918 empties old TOP and advances only after a successful
+write. QNaNs retain their S2-31av no-new-flags behavior. `FNSTSW` observes IE;
+the existing IE gate blocks a subsequent store until `FNCLEX` clears it.
+Pseudo-SNaNs, other special classes, and mismatched tags reject before access.
+JIT/native admission, unmasked exception delivery, native runtime execution,
+and physical acceptance remain outside scope. This bounded masked behavior
+follows Intel SDM revision 093 Vol. 2A FST/FSTP and Vol. 1 §8.5.1
+([Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505),
+[Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436#page=232)). See
+the [plan](../plans/STAGE_2.md#s2-31ax-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m32fp),
+[report](../reports/STAGE_2_REPORT.md#s2-31ax--canonical-signalingnan-binary80-to-binary32-stores),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md).

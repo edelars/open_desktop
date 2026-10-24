@@ -260,6 +260,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31au | Convert Special-tagged canonical binary80 QuietNaN through exact DD10/DD18 stores with payload truncation | S2-31ap, S2-31at |
 | [x] | S2-31av | Convert Special-tagged canonical binary80 QuietNaN through exact D910/D918 stores with binary32 payload truncation | S2-31aq, S2-31au |
 | [x] | S2-31aw | Convert Special-tagged canonical binary80 SignalingNaN through exact DD10/DD18 stores, quieting binary64 and setting sticky IE | S2-31au |
+| [x] | S2-31ax | Convert Special-tagged canonical binary80 SignalingNaN through exact D910/D918 stores, quieting binary32 and setting sticky IE | S2-31av, S2-31aw |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3559,4 +3560,28 @@ write/range atomicity, IE/FNSTSW/FNCLEX recovery, CLI fixtures and native/JIT
 denial. Intel SDM revision 093 Vol. 2A's FST/FSTP entry defines NaN identity
 preservation on narrowing stores and the masked invalid-operation behavior is
 described in Vol. 1 §8.5.1 ([official Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505),
+[official Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436#page=232)).
+
+
+<a id="s2-31ax-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m32fp"></a>
+
+#### S2-31ax. Store canonical binary80 SignalingNaN through bounded m32 FST/FSTP
+
+Extend only exact `D9 10` (`FST m32fp [RAX]`) and `D9 18` (`FSTP
+m32fp [RAX]`) for a Special-tagged canonical binary80 SignalingNaN. Convert by
+integer fields: preserve sign, quiet the binary32 result, retain the upper 22
+payload bits, and truncate lower 40 bits without rounding or PE. Add sticky IE
+only after the atomic Dword write succeeds; preserve PE and source bytes. Keep
+the existing four FCWs, `FSW & 0x80df == 0` gate, and C1-clear/status policy.
+
+Preflight the complete canonical48 Dword range and perform one atomic write/no
+read. D910 preserves TOP/tags/payloads; D918 pops only after successful write.
+Keep Normal, Zero, Infinity and QNaN paths unchanged. Reject pseudo-SNaNs, other
+special classes, mismatched tags, and forbidden environment bits before access.
+Cover signs/opcodes across TOP×FCW×PE/C1, source payload bits 39/40, QNaN/SNaN
+status differential, write/range atomicity, IE/FNSTSW/FNCLEX recovery, literal
+CLI fixtures, and native/JIT denial. General unmasked exception delivery,
+native runtime admission and physical acceptance remain outside this slice.
+The masked invalid-operation result follows Intel SDM revision 093 Vol. 2A
+FST/FSTP and Vol. 1 §8.5.1 ([official Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505),
 [official Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436#page=232)).

@@ -2216,3 +2216,14 @@ retain the source bytes, are schema/CLI reachable, and are included in native
 and JIT denial. See the [S2-31aw CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31aw-canonical-signalingnan-fstfstp-m64fp-rax-dd-10-dd-18),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31aw-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m64fp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31aw--canonical-signalingnan-binary80-to-binary64-stores).
+
+
+### S2-31ax canonical SignalingNaN m32 FST/FSTP fixtures
+
+The positive bare D910 fixture quiets a minimum-payload binary80 SNaN in the
+binary32 destination and observes sticky IE. The negative D918/DFE0 fixture
+preserves the upper 22 payload bits and observes IE through FNSTSW after pop.
+Both retain the source bytes, execute through schema/CLI, and are included in
+native and JIT denial. See the [S2-31ax CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ax-canonical-signalingnan-fstfstp-m32fp-rax-d9-10-d9-18),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ax-store-canonical-binary80-signalingnan-through-bounded-fstfstp-m32fp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ax--canonical-signalingnan-binary80-to-binary32-stores).

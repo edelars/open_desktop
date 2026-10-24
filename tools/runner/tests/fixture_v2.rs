@@ -157,6 +157,11 @@ const FST_M32_QNAN: &[u8] =
 const FSTP_M32_NEGATIVE_QNAN_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31av_fstp_m32fp_negative_qnan_payload_fnstsw.case.json"
 );
+const FST_M32_SNAN: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ax_fst_m32fp_positive_snan.case.json");
+const FSTP_M32_NEGATIVE_SNAN_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31ax_fstp_m32fp_negative_snan_payload_fnstsw.case.json"
+);
 const FABS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30z_fabs_normal.case.json");
 const FABS_INVALID_SOURCE: &[u8] =
@@ -3120,6 +3125,19 @@ fn v2_jit_denies_m64_snan_stores_without_interpreter_fallback() {
 #[test]
 fn v2_jit_denies_m32_qnan_stores_without_interpreter_fallback() {
     for fixture in [FST_M32_QNAN, FSTP_M32_NEGATIVE_QNAN_FNSTSW] {
+        let (_, result) = run(fixture, "jit", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
+fn v2_jit_denies_m32_snan_stores_without_interpreter_fallback() {
+    for fixture in [FST_M32_SNAN, FSTP_M32_NEGATIVE_SNAN_FNSTSW] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));

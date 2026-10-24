@@ -794,3 +794,15 @@ opcodes, TOP, FCWs, PE/C1, truncation boundaries, faults, FNSTSW and FNCLEX
 recovery. CLI fixtures run in the interpreter and are denied by JIT/native;
 native runtime and physical acceptance remain deferred under ISSUE-019. See the
 [S2-31aw CPU contract](../specs/CPU_CONTRACT.md#local-s2-31aw-canonical-signalingnan-fstfstp-m64fp-rax-dd-10-dd-18).
+
+
+## Local S2-31ax masked binary80 SignalingNaN to binary32 stores
+
+Exact D910/D918 quiet a canonical Special-tagged binary80 SNaN into binary32,
+preserving sign and the upper 22 payload bits while truncating lower 40 without
+rounding or PE. Sticky IE commits only after successful atomic Dword write;
+PE and source bytes remain unchanged. The all-TOP/FCW and payload-boundary
+matrix, QNaN differential, faults, FNSTSW/FNCLEX recovery, interpreter
+fixtures and JIT/native denial are covered. Native runtime and physical
+acceptance remain deferred under ISSUE-019. See the
+[S2-31ax CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ax-canonical-signalingnan-fstfstp-m32fp-rax-d9-10-d9-18).
