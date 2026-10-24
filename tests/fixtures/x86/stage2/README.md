@@ -2106,3 +2106,14 @@ preservation and FSTP pop/tag changes only after the Qword write. Interpreter
 tests span TOP×FCW×sign×PE/C1, cross-width FLD-zero roundtrips, invalid source
 and status gates, write faults and canonical boundaries. JIT/native admission
 remains closed. See [S2-31am CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31am-signed-zero-fst-m64fp-and-fstp-m64fp), [plan](../../../../docs/plans/STAGE_2.md#s2-31am-store-signed-binary80-zero-through-bounded-m64-fstfstp), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31am--signed-zero-stores-for-bounded-m64-fstfstp).
+
+
+### S2-31an signed-zero m80 FSTP fixtures
+
+Exact `DB 38` accepts either a Valid-tagged canonical Normal source or a
+Zero-tagged canonical binary80 zero. The positive bare fixture stores ten zero
+bytes; the negative `DB 38 DF E0` fixture stores the sign byte in the final
+position and observes the post-pop FSW through FNSTSW. Both are schema/CLI
+reachable and included in native-denial coverage. Tag/payload mismatches remain
+pre-access rejects, the ten-byte store remains atomic, and native/JIT admission
+remains closed. See [S2-31an CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31an-signed-zero-fstp-m80fp-rax-db-38), [plan](../../../../docs/plans/STAGE_2.md#s2-31an-store-canonical-signed-binary80-zero-through-bounded-fstp-m80fp), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31an---signed-zero-binary80-stores-through-bounded-fstp-m80fp).

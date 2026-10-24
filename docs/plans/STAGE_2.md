@@ -254,6 +254,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ak | Permit sticky IE/DE/PE only on exact D900/DD00 FLD gates; retain all other status gates | S2-31aj |
 | [x] | S2-31al | Extend exact D910/D918 m32 stores to canonical signed binary80 zero and atomic signed binary32 zero | S2-31ak |
 | [x] | S2-31am | Extend exact DD10/DD18 m64 stores to canonical signed binary80 zero and atomic signed binary64 zero | S2-31al |
+| [x] | S2-31an | Extend exact DB38 FSTP m80fp to canonical signed binary80 zero with raw ten-byte store | S2-31am |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3359,3 +3360,22 @@ payloads before access; preserve Normal conversion and its local exponent
 limits. Cover both signs across TOP×FCW×incoming PE/C1, cross-width FLD-zero
 compositions, source/environment rejection, exact memory boundaries and store
 faults, literal CLI/FNSTSW fixtures, and explicit native/JIT denial.
+
+
+#### S2-31an. Store canonical signed binary80 zero through bounded FSTP m80fp
+
+Extend only exact `DB 38` (`FSTP m80fp [RAX]`) so physical TOP may be either
+the existing Valid + canonical-Normal pair or a Zero tag + canonical binary80
+Zero (`exponent=0`, all 64 significand bits zero). Preserve all ten source
+bytes, including the sign (`+0` `00000000000000000000`, `-0`
+`00000000000000000080`). Do not round, normalize, or create status flags.
+Retain the four FCWs and `FSW & 0x80df` gate; preserve PE and C0/C2/C3, and
+clear C1 under the existing local policy.
+
+Preflight the complete canonical48 ten-byte range and perform one atomic write
+with no data read. Pop/empty old physical TOP and advance TOP only after a
+successful write. Preserve all payloads and existing pointer/retirement
+behavior. Reject malformed tag/payload pairs before memory access. Cover both
+signs across TOP×FCW×PE/C1, canaries, cross-width zero-load compositions, wrap,
+source/environment rejection, store faults and range edges, literal CLI/FNSTSW
+fixtures, and native/JIT denial.

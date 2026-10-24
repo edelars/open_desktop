@@ -25,3 +25,8 @@ cargo check --workspace --all-targets --offline
 Используются Cargo/Rust stable с edition 2024 и системные macOS SDK. Версии компилятора, SDK и macOS нужно записывать вместе с замерами. Точная фиксация toolchain и воспроизводимый app build входят в этап 0; Xcode project и подписанная VMHost-сборка ещё не созданы.
 
 `work/` предназначен для промежуточных файлов, `outputs/` — для готовых deliverables. Долговечная документация хранится в `docs/`.
+
+
+Bounded `FSTP m80fp` (`DB 38`) also preserves canonical signed binary80 zero
+when the physical TOP tag is Zero, copying the raw ten bytes and popping only
+after the atomic store succeeds. Native/JIT admission remains closed.

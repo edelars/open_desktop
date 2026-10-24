@@ -705,3 +705,11 @@ write succeeds. Coverage includes TOP×FCW×sign×PE/C1, cross-width FLD-zero
 roundtrips, mismatched tags/payloads, forbidden status, backend and #PF
 failures, canonical boundary behavior, CLI/FNSTSW, and native/JIT denial.
 See the [S2-31am contract](../specs/CPU_CONTRACT.md#local-s2-31am-signed-zero-fst-m64fp-and-fstp-m64fp).
+
+
+## Local S2-31an signed-zero raw binary80 store
+
+The exact `DB 38` FSTP m80fp path accepts canonical signed zero when physical
+TOP is tagged Zero. It copies the original ten bytes unchanged, performs one
+atomic ten-byte write and no data read, and pops only after success. Valid-tagged
+canonical Normal behavior is unchanged. See the [S2-31an contract](../specs/CPU_CONTRACT.md#local-s2-31an-signed-zero-fstp-m80fp-rax-db-38).

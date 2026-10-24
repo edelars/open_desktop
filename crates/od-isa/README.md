@@ -240,3 +240,9 @@ byte, and both receive the Zero tag. Normal remains unchanged; nonzero
 subnormals, infinity and NaNs still reject after one Qword read without CPU
 commit. Native x87 admission remains closed, and physical acceptance remains
 part of the combined final S2-31 substage. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31u-bounded-fld-m64fp-rax-dd-00-signed-zero-extension), [fixtures](../../tests/fixtures/x86/stage2/README.md), and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-31u--bounded-fld-m64fp-signed-zero-extension).
+
+
+S2-31an extends exact `DB 38` to a Zero-tagged canonical binary80 zero. It
+preserves all ten bytes (including sign), keeps the one-write/no-read and
+post-success pop rules, and leaves native/JIT admission closed; see the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31an-signed-zero-fstp-m80fp-rax-db-38).

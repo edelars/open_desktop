@@ -408,3 +408,14 @@ on a special-value source; use an environment/boundary predicate. Positive
 bare and negative `DF E0` fixtures cover FST and FSTP, and must be included in
 CLI/schema and native-denial tests. Native/JIT admission remains denied. See
 [S2-31am CPU contract](../specs/CPU_CONTRACT.md#local-s2-31am-signed-zero-fst-m64fp-and-fstp-m64fp), [plan](../plans/STAGE_2.md#s2-31am-store-signed-binary80-zero-through-bounded-m64-fstfstp), and [report](../reports/STAGE_2_REPORT.md#s2-31am--signed-zero-stores-for-bounded-m64-fstfstp).
+
+
+## S2-31an signed-zero m80 FSTP
+
+The exact bounded `DB 38` profile accepts canonical binary80 zero only with a
+Zero tag (or the existing canonical Normal with Valid tag). Use a matching
+`Zero`/all-zero-exponent-and-significand pair to test signed-zero storage. The
+raw ten bytes, including sign, are copied unchanged. Invalid pairs are
+interpreter rejects before data access; invalid-environment fixtures must use a
+forbidden status bit, invalid FCW, or boundary condition rather than relying on
+a value-class rejection. See the [S2-31an contract](../specs/CPU_CONTRACT.md#local-s2-31an-signed-zero-fstp-m80fp-rax-db-38), [plan](../plans/STAGE_2.md#s2-31an-store-canonical-signed-binary80-zero-through-bounded-fstp-m80fp), and [report](../reports/STAGE_2_REPORT.md#s2-31an---signed-zero-binary80-stores-through-bounded-fstp-m80fp).

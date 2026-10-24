@@ -5844,3 +5844,24 @@ final S2-31 substage.
 See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31am-signed-zero-fst-m64fp-and-fstp-m64fp),
 [plan](../plans/STAGE_2.md#s2-31am-store-signed-binary80-zero-through-bounded-m64-fstfstp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+## S2-31an — signed-zero binary80 stores through bounded FSTP m80fp
+
+Exact bare `DB 38` now accepts a Zero tag only when the raw binary80 payload is
+canonical zero (zero exponent and all 64 significand bits clear), alongside
+the existing Valid-tagged canonical Normal source. It writes all ten bytes
+unchanged, preserving the sign and representation. Existing FCW and
+`FSW & 0x80df` gates remain; no status flags are added, PE and C0/C2/C3 are
+preserved, and C1 clears. The one atomic ten-byte write occurs after complete
+canonical48 preflight and without a data read; TOP/tag pop happens only after
+success.
+
+Coverage includes both signs across TOP×FCW×PE/C1, canaries, exact one-write
+accounting, wrap, m32/m64/m80 load-to-store compositions, mismatched source
+rejection, canonical-range and overflow atomicity, literal positive bare and
+negative DFE0/FNSTSW fixtures, and native/JIT denial. The full offline workspace
+suite passed (720 tests); workspace all-target checks, Linux x86 runner check,
+formatting and diff checks passed. The layout checker reports the existing
+unmapped `.serena/` directory, which remains untouched. Graphify was updated;
+its final extraction reported no topology changes. Independent review is pending.

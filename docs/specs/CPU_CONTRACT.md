@@ -4186,3 +4186,20 @@ gate bit, denied and architectural write failures, canonical upper-boundary
 behavior, FST preservation and FSTP pop. Positive bare and negative
 DFE0/FNSTSW fixtures are exercised by CLI/schema and native-denial checks; JIT
 decode denial remains explicit. See the [S2-31am plan](../plans/STAGE_2.md#s2-31am-store-signed-binary80-zero-through-bounded-m64-fstfstp), [report](../reports/STAGE_2_REPORT.md#s2-31am--signed-zero-stores-for-bounded-m64-fstfstp), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+## Local S2-31an: signed-zero `FSTP m80fp [RAX]` (`DB 38`)
+
+Exact `DB 38` accepts either the already-supported Valid-tagged canonical
+Normal binary80 source or a Zero-tagged canonical binary80 zero whose exponent
+and all 64 significand bits are zero. It writes the original ten bytes
+unchanged, so positive zero is `00000000000000000000` and negative zero is
+`00000000000000000080`. Mismatched tag/payload pairs remain Unsupported before
+operand access.
+
+The existing four FCWs and `FSW & 0x80df == 0` gate remain. Zero creates no
+new status flags, preserves PE and C0/C2/C3, and clears C1. After complete
+canonical48 ten-byte preflight, exactly one atomic write occurs and no data read
+is performed. Only successful writes pop/empty physical TOP and advance TOP;
+all raw payloads and existing pointer/retirement behavior are preserved.
+Native/JIT admission remains closed. See the [S2-31an plan](../plans/STAGE_2.md#s2-31an-store-canonical-signed-binary80-zero-through-bounded-fstp-m80fp), [report](../reports/STAGE_2_REPORT.md#s2-31an---signed-zero-binary80-stores-through-bounded-fstp-m80fp), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
