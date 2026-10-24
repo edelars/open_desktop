@@ -1810,6 +1810,22 @@ Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
 Value,” pp.3-352–3-353, official PDF p.470
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
 
+### S2-31t FLD m64fp schema and literal CLI coverage
+
+Fixtures contain exact literal `DD 00` and `DD 00 DF E0` instruction bytes, an
+unaligned eight-byte binary64 source, complete x87 state, and an adjacent
+read-only canary. The composition fixture observes pushed TOP and C1 clearing
+through FNSTSW AX. A third fixture supplies zero, expects Unsupported after one
+Qword read, and verifies unchanged CPU state. The native admission suite denies
+all three. Interpreter tests cover independent raw binary80 outputs for ±1,
+adjacent fractions, minimum/maximum Normal, and exponent +1023 across every
+TOP×FCW combination. Exhaustive DD ModR/M and prefix checks preserve existing
+forms and reject nearby encodings.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF p.470
+([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)).
+
 ### S2-31s FLD m32fp schema and literal CLI coverage
 
 Fixtures contain exact literal `D9 00` and `D9 00 DF E0` instruction bytes,

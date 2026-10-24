@@ -457,6 +457,8 @@ pub enum Operation {
     FldM80FpRax,
     /// Bare `DD 10` FST m64fp at [RAX], bounded finite profile.
     FstM64FpRax,
+    /// Bare `DD 00` FLD m64fp at [RAX], bounded Normal binary64 stack push.
+    FldM64FpRax,
     /// Bare `D9 E0` FCHS, flipping the sign of canonical-Normal ST(0) only.
     Fchs,
     /// Bare `D9 E1` FABS, clearing the sign of canonical-Normal ST(0) only.
@@ -1226,7 +1228,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 let modrm = self.byte()?;
-                if modrm == 0x38 {
+                if modrm == 0x00 {
+                    Operation::FldM64FpRax
+                } else if modrm == 0x38 {
                     Operation::FnstswM16Rax
                 } else if modrm == 0x10 {
                     Operation::FstM64FpRax
@@ -2758,6 +2762,10 @@ mod tests {
 
     #[test]
     fn dd_accepts_only_bounded_m64fp_fst_fstp_fnstsw_fst_fstp_fucom_and_fucomp_encodings() {
+        let fld = Memory::new(&[0xdd, 0x00]).decode().unwrap();
+        assert_eq!(fld.operation, Operation::FldM64FpRax);
+        assert_eq!(fld.length, 2);
+        assert_eq!(fld.prefixes, Prefixes::default());
         let decoded = Memory::new(&[0xdd, 0x10]).decode().unwrap();
         assert_eq!(decoded.operation, Operation::FstM64FpRax);
         assert_eq!(decoded.length, 2);
@@ -2809,6 +2817,8 @@ mod tests {
                     Ok(Operation::FstpSti {
                         destination: modrm & 7,
                     })
+                } else if modrm == 0x00 {
+                    Ok(Operation::FldM64FpRax)
                 } else if modrm == 0x38 {
                     Ok(Operation::FnstswM16Rax)
                 } else if modrm == 0x10 {

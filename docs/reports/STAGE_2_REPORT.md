@@ -5117,3 +5117,28 @@ Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
 Value,” pp.3-352–3-353 ([official PDF, Vol.2A p.3-352](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470),
 [official PDF, Vol.2A p.3-353](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=471));
 Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP.
+
+## S2-31t — bounded `FLD m64fp` partial slice
+
+Added exact bare `DD 00` in Long64. The interpreter validates the bounded x87
+push environment and complete canonical48 Qword range before one Qword read,
+then expands only binary64 Normal values into binary80 with integer field
+operations. Unbiased exponent +1023 is accepted. Success updates the destination
+payload/tag, TOP, C1, FIP/FDP and RIP while retaining PE and unrelated state;
+special source classes reject after the read without commit. Exact `DD 00`,
+`DD 00 DF E0`, and invalid-class fixtures are schema-checked and run by the
+headless CLI. Native admission explicitly denies all three.
+
+Interpreter coverage uses independent raw binary80 literals for signed one, an
+adjacent fraction, minimum and maximum Normal, and exponent +1023 over every
+TOP×FCW pair. Invalid-class and x87-gate cases verify read ordering and no
+commit; exact access, canaries, fault mapping, fetch/truncation/STOP/budget
+atomicity, and exhaustive DD decode are covered. `cargo test --workspace
+--all-targets --offline` passed all 687 tests. `cargo check --workspace
+--all-targets --offline` and the same workspace check for
+`x86_64-unknown-linux-gnu` pass. The final focused rerun of the two new FLD m64
+interpreter tests also passed. Formatting and `git diff --check` pass.
+`tools/check_layout.py` reports the existing unmapped `.serena/` directory; it
+remains untouched. Graphify was refreshed after the final test change. General
+x87 exception delivery, MMU/MMIO and physical x86 acceptance remain outside
+this partial S2-31 slice.

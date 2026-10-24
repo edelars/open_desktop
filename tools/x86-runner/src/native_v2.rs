@@ -562,6 +562,7 @@ fn admission_with_tracee_memory(
             | Operation::FnstswM16Rax
             | Operation::FldcwM16Rax
             | Operation::FldM32FpRax
+            | Operation::FldM64FpRax
             | Operation::Fchs
             | Operation::Fabs
             | Operation::Ftst
@@ -1897,6 +1898,12 @@ mod tests {
                 "../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp_invalid_class.case.json"
             )
             .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp_fnstsw.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp_invalid_class.case.json")
+                .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31m_fst_m64fp.case.json")
                 .as_slice(),
             include_bytes!(

@@ -438,3 +438,16 @@ backend/#PF writes, and fetch/truncation/STOP/zero-budget atomicity. Schema and
 CLI fixtures contain literal `DB 38` and `DB 38 DF E0`; native admission denies
 the operation. General exception delivery, MMU/MMIO, and physical x86 behavior
 remain outside this local slice. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31q-bounded-fstp-m80fp-rax-db-38), [Stage 2 plan](../plans/STAGE_2.md#s2-31q-bare-bounded-fstp-m80fp-rax-db-38-partial-slice), and [report](../reports/STAGE_2_REPORT.md).
+
+## Local S2-31t x87 binary64 load slice
+
+Exact bare `DD 00` (`FLD m64fp [RAX]`) performs one unaligned-capable Qword
+read and expands only binary64 Normal values into canonical binary80 using
+integer fields. Independent literals cover ±1, adjacent fractions, minimum
+Normal, maximum Normal, and unbiased exponent +1023 across all TOP×FCW pairs.
+The tests check push/status policy, preserved x87 slots and unrelated CPU
+state, invalid classes after one read, invalid gates before access, canonical
+range errors, decode/prefix preservation and execution boundaries. Schema and
+CLI fixtures cover exact `DD 00`, `DD 00 DF E0`, and zero-class rejection;
+native admission remains denied. General x87 exceptions and physical x86
+behavior remain unverified. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31t-bounded-fld-m64fp-rax-dd-00), [plan](../plans/STAGE_2.md#s2-31t-bare-bounded-fld-m64fp-rax-dd-00-partial-slice), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

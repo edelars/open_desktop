@@ -2206,6 +2206,101 @@ mod tests {
     }
 
     #[test]
+    fn fld_m64fp_literal_fixtures_expand_binary64_and_reject_bad_class() {
+        for (bytes, retired, raw) in [
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp.case.json")
+                    .as_slice(),
+                1,
+                "00000000000000c0ff3f",
+            ),
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp_fnstsw.case.json"
+                )
+                .as_slice(),
+                2,
+                "00000000000000c0ff3f",
+            ),
+        ] {
+            let fixture = v2::Fixture::from_json(bytes).expect("S2-31t fixture schema");
+            let mut memory =
+                od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available {
+                    value: HexU64(retired)
+                }
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("S2-31t fixture must produce observable state")
+            };
+            let after = value.state.x87.as_ref().unwrap();
+            assert_eq!(after.status_word, HexU64(0x7d00));
+            assert_eq!(after.tag_word, HexU64(0x3ffc));
+            assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
+            assert_eq!(after.data_pointer, HexU64(0x0030_0004));
+            assert_eq!(after.registers[7], raw);
+            let stack = memory
+                .snapshot()
+                .into_iter()
+                .find(|region| region.region_id == "stack")
+                .unwrap();
+            assert_eq!(stack.bytes_hex, "000000000000f83f");
+            let canary = memory
+                .snapshot()
+                .into_iter()
+                .find(|region| region.region_id == "canary")
+                .unwrap();
+            assert_eq!(canary.bytes_hex, "a5");
+        }
+        let invalid = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp_invalid_class.case.json"
+        ))
+        .expect("invalid-class fixture schema");
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&invalid.fixture).unwrap();
+        let result = execute_fixture_v2(&invalid, &mut memory);
+        result.validate_for(&invalid).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::Unsupported { .. }));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(0) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("invalid-class rejection must preserve an observable state")
+        };
+        assert_eq!(value.state, invalid.fixture.initial_state);
+        let stack = memory
+            .snapshot()
+            .into_iter()
+            .find(|region| region.region_id == "stack")
+            .unwrap();
+        assert_eq!(stack.bytes_hex, invalid.fixture.memory[1].initial_bytes_hex);
+        let template: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp.case.json"
+        ))
+        .unwrap();
+        for bytes in ["dd01", "dd08", "48dd00", "9bdd00", "67dd00", "dd00dfe1"] {
+            let mut nearby = template.clone();
+            nearby["memory"][0]["initial_bytes_hex"] = serde_json::Value::String(bytes.into());
+            nearby["memory"][0]["length"] = serde_json::Value::from(bytes.len() / 2);
+            nearby["memory"][0]["comparison_mask_hex"] =
+                serde_json::Value::String("ff".repeat(bytes.len() / 2));
+            nearby["stop_rip"] = serde_json::Value::String(format!(
+                "0x{:016x}",
+                0x0010_0000 + (bytes.len() / 2) as u64
+            ));
+            assert!(
+                v2::Fixture::from_json(&serde_json::to_vec(&nearby).unwrap()).is_err(),
+                "S2-31t schema must reject {bytes}"
+            );
+        }
+    }
+
+    #[test]
     fn fld_m80fp_literal_fixtures_load_raw_binary80_and_reject_bad_class() {
         for (bytes, expected_rax, retired) in [
             (

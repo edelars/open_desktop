@@ -236,6 +236,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31q | Bare bounded FSTP m80fp [RAX] DB 38, exact ten-byte binary80 store and pop; native closed | S2-31p |
 | [x] | S2-31r | Bare bounded FLD m80fp [RAX] DB 28, canonical-Normal ten-byte load and push; native closed | S2-31q |
 | [x] | S2-31s | Bare bounded FLD m32fp [RAX] D9 00, exact normal binary32-to-binary80 expansion and push; native closed | S2-31r |
+| [x] | S2-31t | Bare bounded FLD m64fp [RAX] DD 00, exact normal binary64-to-binary80 expansion and push; native closed | S2-31s |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -2687,6 +2688,41 @@ after one read; invalid x87 gates before access; canonical crossing and checked
 overflow; read #PF/backend failures; fetch/truncation/STOP/budget rejection;
 exhaustive D9 ModR/M and prefix preservation; exact `D9 00`, `D9 00 DF E0`, and
 invalid-class schema/CLI fixtures; and native denial. S2-31 remains partial.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
+Value,” pp.3-352–3-353, official PDF p.470; Vol.1 §§8.1.8, 8.1.9 and §8.6 for
+x87 state and FIP/FDP.
+
+#### S2-31t. Bare bounded `FLD m64fp [RAX]` (`DD 00`), partial slice
+
+Add only exact bare `DD 00` in Long64, preserving every other DD form and
+prefix rejection. Require the existing bounded push environment: FCW
+`037f/077f/0b7f/0f7f`, `FSW & 0x80df == 0`, and Empty physical destination
+`(old_TOP+7)&7`; old ST(0) is irrelevant. Preflight checked canonical48
+`[RAX,RAX+7]`, then issue exactly one Qword read. Accept only binary64 Normal
+values with exponent field 1..2046; zero, subnormal, infinity, and NaN reject
+after the read without CPU commit. Expand by integer fields:
+`((1<<52)|(fraction))<<11` for the binary80 significand and
+`source_exp - 1023 + 16383` for the exponent, preserving sign. Include the full
+unbiased range -1022..=+1023, especially +1023; do not use the narrower
+binary80-to-binary64 store helper.
+
+Success writes the expanded payload and Valid tag to the destination,
+decrements TOP, clears C1 while retaining PE and other status, and retains
+C0/C2/C3 under the local policy. It records FIP/FDP, advances RIP by two and
+retires once. Memory faults use the guest-fault path; backend failures remain
+diagnostics. Native admission explicitly denies FLD m64fp. This partial slice
+does not model special-value loads, general x87 exceptions, or the remaining
+S2-31 umbrella.
+
+Coverage uses independent raw binary80 literals for ±1, adjacent fractions,
+minimum and maximum Normal and exponent +1023 over every TOP×RC pair. It also
+checks sticky PE/C1 and preserved status/tags/slots, one unaligned exact Qword
+read/no writes and canaries, invalid values after exactly one read, invalid
+x87 gates before access, canonical start/end/crossing/overflow, read #PF/backend
+errors, fetch/truncation/STOP/budget boundaries, exhaustive DD ModR/M and
+prefix preservation, exact `DD 00`, `DD 00 DF E0`, and invalid-class CLI/schema
+fixtures, plus native denial. S2-31 remains partial.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
 Value,” pp.3-352–3-353, official PDF p.470; Vol.1 §§8.1.8, 8.1.9 and §8.6 for

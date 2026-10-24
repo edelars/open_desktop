@@ -2781,6 +2781,33 @@ decode coverage preserves the existing D9 forms and rejects all prefixes.
 Physical x86 behavior, general x87 exception delivery, MMU/MMIO/SMP and native
 x87 state remain unverified; S2-31 stays partial under ISSUE-019.
 
+## Local S2-31t: bounded `FLD m64fp [RAX]` (`DD 00`)
+
+The interpreter admits only exact bare `DD 00` in Long64 with an existing x87
+snapshot. It requires FCW exactly `0x037f`, `0x077f`, `0x0b7f`, or `0x0f7f`,
+`FSW & 0x80df == 0`, and Empty physical push destination `(TOP+7)&7`; old
+physical ST(0) is irrelevant. Checked address addition and canonical48 checks
+cover the full eight-byte `[RAX,RAX+7]` range before exactly one Qword read.
+
+After the read, only binary64 Normal exponent fields 1..2046 are accepted.
+Zeros, subnormals, infinities and NaNs return Unsupported with no CPU commit.
+The conversion is integer field expansion: the 53-bit significand is shifted
+left 11 places, the exponent becomes `source_exp - 1023 + 16383`, and the sign
+is copied to the binary80 sign field. This includes the complete unbiased
+binary64 range -1022..=+1023; the store conversion's narrower exponent range
+does not apply.
+
+Success replaces the destination payload and tag with Valid, decrements TOP,
+clears C1 while preserving PE and other status bits, records FIP/FDP, advances
+RIP by two and retires once. C0/C2/C3 are retained by local policy. GPRs,
+RFLAGS, FCW, FOP, other tags and payloads remain unchanged. Read faults preserve
+CPU state and follow the existing guest-fault/backend-diagnostic path. Native
+admission remains closed. Independent raw binary80 tests and exact `DD 00`,
+`DD 00 DF E0`, and invalid-class fixtures cover the bounded profile; prefix
+and neighboring encodings remain rejected. This does not define general x87
+exception delivery, physical x86 acceptance, MMU/MMIO behavior, or complete
+S2-31.
+
 Normative source: Intel SDM revision 093, Vol.2A, “FLD—Load Floating-Point
 Value,” pp.3-352–3-353, official PDF p.470
 ([Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));

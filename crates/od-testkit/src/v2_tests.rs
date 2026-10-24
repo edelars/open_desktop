@@ -197,7 +197,7 @@ fn x87_schema_admits_d9_fst_ftst_fnstcw_and_a_budget_one_source_rejection() {
             accepted,
             matches!(
                 second,
-                0x10 | 0x18 | 0x28 | 0x38 | 0xe0 | 0xe1 | 0xe4 | 0xfc
+                0x00 | 0x10 | 0x18 | 0x28 | 0x38 | 0xe0 | 0xe1 | 0xe4 | 0xfc
             ),
             "D9 {second:02x}"
         );
