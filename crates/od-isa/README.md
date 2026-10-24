@@ -273,3 +273,7 @@ only after the atomic ten-byte write; native/JIT admission stays closed.
 Exact `DB 38` also accepts Special-tagged canonical binary80 SignalingNaNs in
 the bounded S2-31as raw-store path. It preserves all ten bytes, including the
 signaling bit and payload, and adds no status flags. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31as-canonical-signalingnan-fstp-m80fp-rax-db-38).
+
+Exact `DB 38` also accepts Special-tagged canonical binary80 subnormals in the
+bounded S2-31at raw-store path. It preserves sign and fraction bytes and adds
+no flags. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31at-canonical-subnormal-fstp-m80fp-rax-db-38).

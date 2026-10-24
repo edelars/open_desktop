@@ -54,3 +54,7 @@ Exact `DB 38` also raw-stores canonical binary80 SignalingNaNs without
 quieting or setting status flags in the bounded S2-31as interpreter slice.
 General x87 exception delivery and physical acceptance remain deferred; see
 the [CPU contract](docs/specs/CPU_CONTRACT.md#local-s2-31as-canonical-signalingnan-fstp-m80fp-rax-db-38).
+
+Exact `DB 38` also preserves canonical binary80 subnormals byte-for-byte in
+the bounded S2-31at interpreter slice, without normalization or new flags.
+Physical acceptance remains deferred; see the [CPU contract](docs/specs/CPU_CONTRACT.md#local-s2-31at-canonical-subnormal-fstp-m80fp-rax-db-38).

@@ -2172,3 +2172,12 @@ payload SNaN and observes FNSTSW. Both preserve all ten bytes, including the
 clear quiet bit, and add no flags. See the [S2-31as CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31as-canonical-signalingnan-fstp-m80fp-rax-db-38),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31as-store-canonical-binary80-signalingnan-through-bounded-fstp-m80fp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31as--canonical-signalingnan-binary80-store-through-bounded-fstp-m80fp).
+
+### S2-31at canonical-subnormal DB38 fixtures
+
+The positive bare `DB 38` fixture stores the minimum canonical binary80
+subnormal. The negative `DB 38 DF E0` fixture stores the maximum-payload
+negative subnormal and observes FNSTSW. Both preserve all ten bytes and add no
+flags. See the [S2-31at CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31at-canonical-subnormal-fstp-m80fp-rax-db-38),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31at-store-canonical-binary80-subnormal-through-bounded-fstp-m80fp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31at--canonical-subnormal-binary80-store-through-bounded-fstp-m80fp).

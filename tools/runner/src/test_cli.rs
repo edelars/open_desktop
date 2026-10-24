@@ -2287,6 +2287,52 @@ mod tests {
     }
 
     #[test]
+    fn fstp_m80fp_literal_subnormal_fixtures_preserve_raw_bytes_and_run_fnstsw() {
+        for (bytes, expected_rax, retired, raw) in [
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31at_fstp_m80fp_subnormal.case.json")
+                    .as_slice(),
+                0x0000_0000_0030_0008,
+                1,
+                "01000000000000000000",
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31at_fstp_m80fp_negative_subnormal_fnstsw.case.json")
+                    .as_slice(),
+                0x0000_0000_0030_4d00,
+                2,
+                "ffffffffffffff7f0080",
+            ),
+        ] {
+            let fixture = v2::Fixture::from_json(bytes).expect("S2-31at fixture schema");
+            let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(retired) }
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("S2-31at fixture must produce an observable state");
+            };
+            assert_eq!(value.state.gpr[0], HexU64(expected_rax));
+            let after = value.state.x87.as_ref().unwrap();
+            assert_eq!(after.status_word, HexU64(0x4d00));
+            assert_eq!(after.tag_word, HexU64(0xffff));
+            assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
+            assert_eq!(after.data_pointer, HexU64(0x0030_0008));
+            assert_eq!(
+                after.registers,
+                fixture.fixture.initial_state.x87.as_ref().unwrap().registers
+            );
+            let stack = memory.snapshot().into_iter()
+                .find(|region| region.region_id == "stack").unwrap();
+            assert_eq!(&stack.bytes_hex[16..36], raw);
+        }
+    }
+
+    #[test]
     fn fld_m32fp_literal_fixtures_expand_binary32_values_and_reject_bad_class() {
         for (bytes, expected_rax, expected_raw, expected_tag_word, retired, expected_status) in [
             (

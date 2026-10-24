@@ -317,3 +317,13 @@
   [plan](plans/STAGE_2.md#s2-31as-store-canonical-binary80-signalingnan-through-bounded-fstp-m80fp),
   [report](reports/STAGE_2_REPORT.md#s2-31as--canonical-signalingnan-binary80-store-through-bounded-fstp-m80fp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31at evidence:** exact DB38 now also raw-stores canonical binary80
+  subnormals from a Special-tagged TOP, preserving sign and all fraction bits
+  without new DE/UE/PE. Existing status gates, one-write/no-read access, and
+  pop-after-success remain. General x87 exception delivery and physical
+  behavior remain open under ISSUE-019; physical acceptance belongs to the
+  combined final S2-31 substage. See [S2-31at CPU contract](specs/CPU_CONTRACT.md#local-s2-31at-canonical-subnormal-fstp-m80fp-rax-db-38),
+  [plan](plans/STAGE_2.md#s2-31at-store-canonical-binary80-subnormal-through-bounded-fstp-m80fp),
+  [report](reports/STAGE_2_REPORT.md#s2-31at--canonical-subnormal-binary80-store-through-bounded-fstp-m80fp),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

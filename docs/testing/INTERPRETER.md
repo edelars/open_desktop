@@ -756,3 +756,11 @@ physical TOP. It preserves sign, payload, and the clear quiet bit, adds no
 flags, validates the full ten-byte destination, writes once, and pops only
 after success. Pseudo-SNaNs and mismatched tag/class pairs reject before
 access. See the [S2-31as contract](../specs/CPU_CONTRACT.md#local-s2-31as-canonical-signalingnan-fstp-m80fp-rax-db-38).
+
+## Local S2-31at canonical-subnormal m80 store
+
+Exact `DB 38` may raw-store canonical binary80 subnormal from Special-tagged
+physical TOP. It preserves sign and fraction bytes, adds no flags, validates
+the full ten-byte destination, writes once, and pops only after success.
+Pseudo-denormals and mismatched tag/class pairs reject before access. See the
+[S2-31at contract](../specs/CPU_CONTRACT.md#local-s2-31at-canonical-subnormal-fstp-m80fp-rax-db-38).

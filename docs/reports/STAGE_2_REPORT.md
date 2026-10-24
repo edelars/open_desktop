@@ -5999,3 +5999,25 @@ composition test, one CLI fixture test, and two relevant JIT-denial tests. The
 Intel FST/FSTP entry explicitly exempts double extended-precision stores from
 the SNaN invalid-operation exception ([Intel SDM revision 093, Vol.2A, p.3-387,
 official PDF p.505](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=505)).
+
+<a id="s2-31at--canonical-subnormal-binary80-store-through-bounded-fstp-m80fp"></a>
+
+## S2-31at — canonical subnormal binary80 store through bounded FSTP m80fp
+
+Exact DB38 now also preserves the full ten-byte encoding of canonical binary80
+subnormals only when physical TOP is tagged Special. Sign and fraction remain
+unchanged; the store adds no DE/UE/PE or other flags. It retains the existing
+environment gates, atomic one-write/no-read behavior, and pop-after-success
+semantics. Existing Normal, Zero, Infinity, QuietNaN, and SignalingNaN paths
+remain supported; pseudo-denormals and mismatched tags reject before access.
+
+The focused `od-isa` subnormal matrix, m80 FLD-to-store composition,
+pre-access class/tag rejection, and write/range atomicity tests passed. The
+positive bare and negative DFE0/FNSTSW fixtures pass the runner CLI and JIT-
+denial tests. The full offline workspace suite passed (750 tests, 0 failures);
+workspace all-target check, Linux x86 runner all-target check, formatting, and
+diff checks passed. Graphify updated to 4055 nodes and 8404 edges. The layout
+checker reports the pre-existing unmapped `.serena/` directory, left untouched.
+Architecture-gated native runtime denial was not executed on this arm64 host;
+the Linux x86 runner target compiled. Physical validation and independent
+review are pending.

@@ -473,3 +473,12 @@ SignalingNaN and checks FNSTSW; both have exact opcode budgets, memory images,
 and stop predicates. See the [S2-31as contract](../specs/CPU_CONTRACT.md#local-s2-31as-canonical-signalingnan-fstp-m80fp-rax-db-38),
 [plan](../plans/STAGE_2.md#s2-31as-store-canonical-binary80-signalingnan-through-bounded-fstp-m80fp),
 and [report](../reports/STAGE_2_REPORT.md#s2-31as--canonical-signalingnan-binary80-store-through-bounded-fstp-m80fp).
+
+### S2-31at canonical-subnormal DB38 fixtures
+
+The positive bare `DB 38` fixture stores a minimum binary80 subnormal
+unchanged. The negative `DB 38 DF E0` fixture stores a maximum-payload
+subnormal and checks FNSTSW; both have exact opcode budgets, memory images,
+and stop predicates. See the [S2-31at contract](../specs/CPU_CONTRACT.md#local-s2-31at-canonical-subnormal-fstp-m80fp-rax-db-38),
+[plan](../plans/STAGE_2.md#s2-31at-store-canonical-binary80-subnormal-through-bounded-fstp-m80fp),
+and [report](../reports/STAGE_2_REPORT.md#s2-31at--canonical-subnormal-binary80-store-through-bounded-fstp-m80fp).

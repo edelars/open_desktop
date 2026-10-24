@@ -3473,3 +3473,23 @@ classes or mismatched tags before access. Cover both signs and minimum/low/
 middle/maximum payloads across TOP×FCW×PE/C1, raw m80 FLD-to-store composition,
 failure atomicity, literal DB38/DB38 DFE0 fixtures, and native/JIT denial.
 This does not implement general exception delivery or physical x86 acceptance.
+
+<a id="s2-31at-store-canonical-binary80-subnormal-through-bounded-fstp-m80fp"></a>
+
+#### S2-31at. Store canonical binary80 subnormal through bounded FSTP m80fp
+
+Extend only exact `DB 38` so physical TOP may also be a Special-tagged
+canonical binary80 subnormal: exponent zero, explicit integer bit zero, and a
+nonzero fraction, with either sign. Copy all ten bytes unchanged; do not
+normalize, flush, round, use host floating point, or set DE/UE/PE or other new
+flags. Keep the four FCWs, `FSW & 0x80df == 0`, C1-clear, and PE/C0/C2/C3-
+preserve store policy.
+
+Preflight the full canonical48 ten-byte range and perform one atomic write/no
+read; pop and advance TOP only after success. Preserve Valid+Normal,
+Zero+Zero, and Special-tagged Infinity, QuietNaN, and SignalingNaN paths.
+Reject pseudo-denormals and other unsupported encodings or mismatched tags
+before access. Cover both signs and payload boundaries/interior across
+TOP×FCW×PE/C1, m80 subnormal FLD-to-store composition, write/range atomicity,
+literal DB38/DB38 DFE0 fixtures, and native/JIT denial. This does not implement
+general exception delivery or physical x86 acceptance.

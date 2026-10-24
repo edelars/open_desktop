@@ -2748,6 +2748,28 @@ See the [S2-31as plan](../plans/STAGE_2.md#s2-31as-store-canonical-binary80-sign
 [report](../reports/STAGE_2_REPORT.md#s2-31as--canonical-signalingnan-binary80-store-through-bounded-fstp-m80fp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+<a id="local-s2-31at-canonical-subnormal-fstp-m80fp-rax-db-38"></a>
+
+## Local S2-31at: canonical subnormal `FSTP m80fp [RAX]` (`DB 38`)
+
+Exact `DB 38` additionally accepts canonical binary80 subnormal only with
+physical TOP tagged Special: exponent zero, explicit integer bit zero, and
+nonzero fraction, with either sign. Copy the raw ten bytes unchanged. Do not
+normalize, flush, round, or add DE/UE/PE or any other status flags. Keep the
+current C1-clear and PE/C0/C2/C3-preserve store policy, four FCWs, and
+`FSW & 0x80df == 0` gate.
+
+Validate the full canonical48 ten-byte range, perform one atomic write/no read,
+and pop/advance TOP only after successful write. Valid+Normal, Zero+Zero,
+Special+Infinity, Special+QuietNaN, and Special+SignalingNaN remain accepted.
+Pseudo-denormal, other unsupported encodings, and mismatched tags reject
+before access. Native/JIT admission stays closed. The binary80 encoding and
+reconstructed tag class follow Intel SDM revision 093 Vol.1 Tables 4-3 and
+8-3; Vol.2A pp.3-386–3-387 documents DB /7 FSTP m80fp ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=503)).
+See the [S2-31at plan](../plans/STAGE_2.md#s2-31at-store-canonical-binary80-subnormal-through-bounded-fstp-m80fp),
+[report](../reports/STAGE_2_REPORT.md#s2-31at--canonical-subnormal-binary80-store-through-bounded-fstp-m80fp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
 ## Local S2-31r: bounded `FLD m80fp [RAX]` (`DB 28`)
 
 The interpreter admits only exact bare `DB 28` in Long64 with existing x87

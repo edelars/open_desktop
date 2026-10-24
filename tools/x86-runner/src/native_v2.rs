@@ -1912,6 +1912,10 @@ mod tests {
                 .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31as_fstp_m80fp_negative_snan_payload_fnstsw.case.json")
                 .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31at_fstp_m80fp_subnormal.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31at_fstp_m80fp_negative_subnormal_fnstsw.case.json")
+                .as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31s_fld_m32fp.case.json")
                 .as_slice(),
             include_bytes!(
