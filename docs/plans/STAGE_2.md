@@ -297,6 +297,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31cf | Convert canonical masked binary80 signaling NaN to integer indefinite for DB10/DB18 m32 FIST/FISTP | S2-31cc |
 | [x] | S2-31cg | Convert canonical masked binary80 signaling NaN to integer indefinite for DF10/DF18 m16 FIST/FISTP | S2-31cd |
 | [x] | S2-31ch | Convert canonical masked binary80 signaling NaN to integer indefinite for DF38 m64 FISTP | S2-31ce |
+| [x] | S2-31ci | Admit sticky IE on bounded DB10/DB18/DF10/DF18/DF38 integer stores | S2-31br, S2-31ch |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3894,6 +3895,30 @@ SNaN preservation, m32/m64 underflow FST followed by raw m80 FSTP from the
 unchanged source, FNSTSW/FNCLEX, forbidden statuses, FCW controls, fault/range
 atomicity, CLI fixtures, and JIT/native denial. Native runtime and physical
 acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31ci-admit-sticky-ie-on-bounded-integer-stores"></a>
+
+#### S2-31ci. Admit sticky IE on bounded integer stores
+
+Only the shared entry gate for bare DB 10, DB 18, DF 10, DF 18 and DF 38
+changes from FSW & 0x80df == 0 to FSW & 0x80de == 0. This admits incoming IE
+and PE together or independently while continuing to reject DE, ZE, OE, UE,
+SF, ES and B. FCWs, source/tag classes, finite limits, addressing, and all
+FILD/FRNDINT/floating-store gates remain unchanged. Incoming IE/PE stay sticky;
+only the current conversion may add flags, and historical IE does not force
+integer-indefinite or synthesize PE. C1 is recomputed from the current
+operation. Preserve C0/C2/C3 and source bytes, and commit flags, pointers, RIP,
+TOP and tag changes only after the atomic store succeeds.
+
+Cover the four incoming IE/PE combinations across both signs, zero, exact and
+inexact Normal, fractional, infinity, QNaN and SNaN sources, all five forms,
+four RCs, every TOP and both incoming C1 states (17,920 combinations). Also
+cover masked-invalid FIST followed by FISTP without FNCLEX, exact finite store
+under IE with PE clear, IE+PE write/range atomicity and IE combined with each
+forbidden status bit across all forms, FNSTSW/FNCLEX, CLI fixtures and
+JIT/native denial. Native runtime and physical acceptance remain deferred under
+ISSUE-019.
 
 <a id="s2-31bs-admit-sticky-oe-to-raw-binary80-fstp"></a>
 

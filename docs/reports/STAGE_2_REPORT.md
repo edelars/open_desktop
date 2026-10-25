@@ -7209,6 +7209,43 @@ denial coverage but did not execute it. `cargo fmt --all -- --check` and
 Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
 
 
+<a id="s2-31ci--sticky-ie-on-bounded-integer-stores"></a>
+
+## S2-31ci — sticky IE on bounded integer stores
+
+The entry gate for the five existing bounded integer stores (DB 10, DB 18,
+DF 10, DF 18, and DF 38) now masks `0x80de` instead of `0x80df`. Incoming IE
+and PE are admitted and preserved; DE, ZE, OE, UE, SF, ES, and B remain
+rejected. Conversion-specific PE/C1 behavior, source bytes, FCW, classes,
+addressing, and post-write state/pop ordering are unchanged. The 17,920-case
+matrix crosses seven source classes, both signs, five forms, four FCWs, eight
+TOP values, four IE/PE states, and both incoming C1 states. All five forms also
+have incoming IE|PE denied-write and canonical-range atomicity checks, plus
+IE|each-forbidden-status pre-access rejection.
+
+Composition tests cover masked SNaN FIST followed by FISTP without FNCLEX,
+then exact finite FISTP while IE remains sticky and PE stays clear; FNSTSW
+observes status, and FNCLEX clears it. Two literal CLI fixtures cover SNaN
+FIST/FNSTSW and exact finite FISTP/FNSTSW under incoming IE. Their CLI and JIT
+denial tests passed, as did focused matrix (1/1), atomicity/forbidden-status
+(1/1), composition (1/1), and both fixture CLI tests (1/1 each). Historical
+m16 FIST/FISTP invalid-status fixtures were corrected from IE-only to DE
+status and their CLI tests passed. `cargo test --workspace --offline` passed
+932 tests: 543 `od-isa`, 4 `od-jit`, 6 `od-host`, 72 runner CLI, 132
+fixture/JIT, 166 `od-testkit`, 8 x86-runner library, and 1 x86-runner main;
+all doc-tests passed. Host `cargo check --workspace --all-targets --offline`
+and Linux x86_64 `cargo check --workspace --all-targets --offline --target
+x86_64-unknown-linux-gnu` passed. Linux emitted existing dead-code warnings in
+od-host and od-runner. `cargo fmt --all -- --check` and `git diff --check`
+passed. `graphify update .` rebuilt the graph to 4,479 nodes, 9,109 edges,
+and 179 communities; documentation anchors were checked.
+The native-denial test compiled in Linux all-target checks but is not executed
+on this arm64 host; native runtime and physical x86 acceptance remain deferred
+under ISSUE-019.
+
+Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+
 <a id="s2-31ch--masked-binary80-snan-through-m64-fistp"></a>
 
 ## S2-31ch — masked binary80 signaling NaN through m64 FISTP

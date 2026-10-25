@@ -784,3 +784,16 @@
   [plan](plans/STAGE_2.md#s2-31ch-masked-binary80-snan-through-bounded-m64-fistp),
   [report](reports/STAGE_2_REPORT.md#s2-31ch--masked-binary80-snan-through-m64-fistp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+- **S2-31ci evidence:** incoming sticky IE is admitted only at the five
+  bounded integer-store gates (DB 10, DB 18, DF 10, DF 18, DF 38), alongside
+  already accepted PE. DE/ZE/OE/UE/SF/ES/B remain rejected. The 17,920-case
+  matrix covers accepted source classes/signs/forms/FCWs/TOP and historical
+  C1; all-form IE+PE write/range atomicity and IE-plus-forbidden-status
+  controls pass. Masked-invalid FIST→FISTP without FNCLEX, IE-only exact finite
+  storage, FNSTSW/FNCLEX, two CLI fixtures and JIT/native denial are covered.
+  Native runtime and physical x86 behavior remain unverified; S2-31 and
+  ISSUE-019 remain open. See
+  [contract](specs/CPU_CONTRACT.md#local-s2-31ci-admit-sticky-ie-bounded-integer-stores),
+  [plan](plans/STAGE_2.md#s2-31ci-admit-sticky-ie-on-bounded-integer-stores),
+  [report](reports/STAGE_2_REPORT.md#s2-31ci--sticky-ie-on-bounded-integer-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

@@ -5402,3 +5402,36 @@ behavior remain deferred under ISSUE-019. See the
 [plan](../plans/STAGE_2.md#s2-31ch-masked-binary80-snan-through-bounded-m64-fistp),
 [report](../reports/STAGE_2_REPORT.md#s2-31ch--masked-binary80-snan-through-m64-fistp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31ci-admit-sticky-ie-bounded-integer-stores"></a>
+
+## Local S2-31ci: admit sticky IE on bounded integer stores
+
+Only bare DB 10, DB 18, DF 10, DF 18 and DF 38 integer-store forms change
+their entry status mask from 0x80df to 0x80de. This admits incoming IE and PE
+together or independently, while DE/ZE/OE/UE/SF/ES/B remain blocked. The FCW
+whitelist, source/tag classes, finite bounds, addressing and post-write
+FIST/FISTP commit rules do not change. FILD, FRNDINT, floating stores and every
+other x87 gate remain unchanged.
+
+Preserve incoming IE/PE. Historical IE does not force an indefinite integer
+and does not synthesize PE; only flags produced by the current conversion are
+added after its successful atomic write. C1 reflects only the current
+conversion, while C0/C2/C3 and raw source bytes are preserved. Status, pointers,
+RIP and pop/tag updates remain post-write, so failed writes and range faults
+leave the full architectural state and memory unchanged.
+
+The independent result matrix crosses zero, exact/inexact Normal, fraction,
+infinity, QNaN and SNaN with both signs, all five forms, four FCWs, every TOP,
+four incoming IE/PE combinations and both incoming C1 states (17,920 cases).
+Additional tests cover IE-only exact finite conversion, masked-invalid FIST to
+FISTP without FNCLEX, IE+PE write/range atomicity and IE combined with each
+forbidden status bit across the five forms. Literal CLI fixtures show
+masked-invalid status and exact finite storage under sticky IE; direct
+FNSTSW/FNCLEX composition observes then clears exception flags. JIT/native
+admission remains closed; native runtime and physical x86 behavior are
+unverified under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31ci-admit-sticky-ie-on-bounded-integer-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31ci--sticky-ie-on-bounded-integer-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

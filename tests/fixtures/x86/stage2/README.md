@@ -2678,3 +2678,20 @@ and native admission remain closed. See the [S2-31ch CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ch-masked-canonical-snan-fistp-m64int),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31ch-masked-binary80-snan-through-bounded-m64-fistp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ch--masked-binary80-snan-through-m64-fistp).
+
+
+### S2-31ci sticky IE FIST/FISTP fixtures
+
+The SNaN DB 10 fixture observes masked-invalid IE with FNSTSW AX, without
+adding PE or changing the raw signaling source. The exact finite DB 18 fixture
+starts with IE set and PE clear, stores integer 1 rather than
+integer-indefinite, and observes retained IE with FNSTSW. A separate
+interpreter composition test runs masked-invalid FIST, SNaN FISTP and exact
+finite FISTP in sequence without FNCLEX, then observes and clears exception
+flags. ISA tests cover all five integer-store forms, both signs, all RCs/TOPs,
+four IE/PE input combinations, both prior C1 states, and IE+PE write/range
+atomicity plus IE combined with each forbidden FSW bit. JIT/native admission
+remains closed. See the [S2-31ci CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ci-admit-sticky-ie-bounded-integer-stores),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ci-admit-sticky-ie-on-bounded-integer-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ci--sticky-ie-on-bounded-integer-stores).

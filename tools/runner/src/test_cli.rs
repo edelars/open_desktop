@@ -4629,6 +4629,95 @@ mod tests {
     }
 
     #[test]
+    fn fist_m32int_signaling_nan_fixture_observes_ie_with_fnstsw() {
+        let bytes =
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ci_fist_snan_fnstsw.case.json");
+        let fixture = v2::Fixture::from_json(bytes).expect("S2-31ci FIST fixture schema");
+        let before = fixture.fixture.initial_state.clone();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(2) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("S2-31ci FIST fixture snapshot unavailable");
+        };
+        let initial_x87 = before.x87.as_ref().unwrap();
+        let after = value.state.x87.as_ref().unwrap();
+        assert_eq!(value.state.gpr[0], HexU64(0x0030_4501));
+        assert_eq!(after.status_word, HexU64(0x4501));
+        assert_eq!(after.tag_word, HexU64(0xfffe));
+        assert_eq!(after.registers, initial_x87.registers);
+        assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
+        assert_eq!(after.data_pointer, HexU64(0x0030_0001));
+        let regions = memory.snapshot();
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "data_left")
+                .unwrap()
+                .bytes_hex,
+            "00"
+        );
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "data_right")
+                .unwrap()
+                .bytes_hex,
+            "000080eeff11223344556677889900"
+        );
+    }
+
+    #[test]
+    fn fistp_m32int_exact_fixture_preserves_incoming_ie_without_pe() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31ci_fistp_exact_ie_fnstsw.case.json"
+        );
+        let fixture = v2::Fixture::from_json(bytes).expect("S2-31ci exact-store fixture schema");
+        let before = fixture.fixture.initial_state.clone();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(2) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("S2-31ci exact-store fixture snapshot unavailable");
+        };
+        let initial_x87 = before.x87.as_ref().unwrap();
+        let after = value.state.x87.as_ref().unwrap();
+        assert_eq!(value.state.gpr[0], HexU64(0x0030_4d01));
+        assert_eq!(after.status_word, HexU64(0x4d01));
+        assert_eq!(after.tag_word, HexU64(0xffff));
+        assert_eq!(after.registers, initial_x87.registers);
+        assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
+        assert_eq!(after.data_pointer, HexU64(0x0030_0001));
+        let regions = memory.snapshot();
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "data_left")
+                .unwrap()
+                .bytes_hex,
+            "01"
+        );
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "data_right")
+                .unwrap()
+                .bytes_hex,
+            "000000eeff11223344556677889900"
+        );
+    }
+
+    #[test]
     fn fistp_m64int_infinity_fixture_observes_ie_with_fnstsw() {
         let bytes = include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31cb_fistp_m64int_negative_infinity_fnstsw.case.json"
