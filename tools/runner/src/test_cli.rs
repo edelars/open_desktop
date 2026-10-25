@@ -890,6 +890,43 @@ mod tests {
         assert_eq!(observed.last_opcode, before.last_opcode);
     }
 
+    #[test]
+    fn frndint_loaded_negative_infinity_literal_fixture_preserves_raw_value() {
+        let fixture = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31de_frndint_negative_infinity_fnstsw.case.json"
+        ))
+        .expect("S2-31de FLD/FRNDINT fixture schema");
+        let initial = fixture.fixture.initial_state.clone();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(3) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("S2-31de composition must expose the complete state");
+        };
+        assert_eq!(value.state.rip, HexU64(0x0010_0006));
+        assert_eq!(value.state.gpr[0].0 & 0xffff, 0x6520);
+        let observed = value.state.x87.unwrap();
+        let before = initial.x87.unwrap();
+        assert_eq!((observed.status_word.0 >> 11) & 7, 4);
+        assert_eq!(observed.registers[4], "0000000000000080ffff");
+        assert_eq!(observed.tag_word.0 & (3 << 8), 2 << 8);
+        assert_eq!(observed.status_word, HexU64(0x6520));
+        assert_eq!(observed.control_word, before.control_word);
+        assert_eq!(observed.instruction_pointer, HexU64(initial.rip.0 + 2));
+        assert_eq!(observed.data_pointer, HexU64(0x0000000000400000));
+        assert_eq!(observed.last_opcode, before.last_opcode);
+        for physical in 0..8 {
+            if physical != 4 {
+                assert_eq!(observed.registers[physical], before.registers[physical]);
+            }
+        }
+    }
+
     fn old() -> LoadedFixture {
         Fixture::from_json(include_bytes!(
             "../../../tests/fixtures/x86/s0_09_mov_imm64.case.json"

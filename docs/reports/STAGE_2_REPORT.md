@@ -4072,6 +4072,43 @@ literal CLI fixture test
 `include/open_desktop/host_abi.h` remains. Physical x86/native execution and
 Linux runtime denial tests were not run on this arm64 macOS host.
 
+## S2-31de — canonical signed infinity through bounded FRNDINT
+
+Bare `D9 FC` now accepts canonical positive or negative binary80 infinity only
+with a Special tag, exact explicit integer bit, exponent `0x7fff`, and zero
+fraction. It preserves the raw value, tag, TOP, sticky PE and C0/C2/C3; clears
+C1; records FIP; advances RIP by two; and retires once. The FCW whitelist and
+`FSW & 0x80df` gate are unchanged. Pseudo-infinities, NaNs, other exponent or
+fraction patterns, tag mismatches, and invalid controls/status remain atomic
+rejections. Existing zero and Normal paths are unchanged.
+
+The 256-case test matrix spans sign, all four FCWs, all eight TOP values, PE,
+and prior C1 while comparing literal raw bytes and the full expected x87
+snapshot. Additional rejects cover pseudo-infinity, NaN payloads, malformed
+Special values, mismatched tags and environment gates. The literal CLI fixture
+loads negative infinity from m80 memory, executes `FRNDINT`, and observes the
+status with `FNSTSW AX`; it checks the pushed raw payload, Special tag, TOP,
+pointers, canary state and status. The corresponding JIT request returns
+Unsupported without interpreter fallback. Native x87 admission remains
+explicitly denied. Physical x86 acceptance and general exception behavior
+remain deferred to the combined final S2-31 substage under ISSUE-019.
+
+Validation passed: all 9 focused `cargo test -p od-isa --offline frndint`
+tests, the literal CLI fixture test
+`cargo test -p od-runner --offline frndint_loaded_negative_infinity_literal_fixture_preserves_raw_value`,
+and the JIT denial test
+`cargo test -p od-runner --offline v2_jit_denies_loaded_infinity_frndint_without_interpreter_fallback`.
+Host `cargo check --workspace --all-targets --offline` and Linux x86_64
+`cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu --offline`
+passed; the cross-check reports existing dead-code warnings in `od-host` and
+`od-runner`. `cargo fmt --all -- --check`, `git diff --check`, and
+`python3 tools/check_layout.py` passed. `graphify update .` refreshed the graph
+to 4674 nodes, 9439 edges, and 180 communities; its existing extractor warning
+for `include/open_desktop/host_abi.h` remains. The Linux native-denial test was
+compile-checked but not run on this arm64 macOS host. Independent gpt-6.1-sol
+review reported no code, fixture, or contract findings. Physical x86 execution
+and Mac mini acceptance remain deferred to the combined final S2-31 substage.
+
 ## S2-30ab — bounded FCOM ST(1) exact Normal compare
 
 Added exact bare `D8 D1` decode as `FcomSt1`; the existing D8 arithmetic ranges

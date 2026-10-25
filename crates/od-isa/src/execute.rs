@@ -2644,6 +2644,12 @@ fn bounded_x87_frndint_result(state: &LongModeState) -> Option<([u8; 10], bool, 
             raw[..8].iter().all(|byte| *byte == 0) && (raw[8..] == [0, 0] || raw[8..] == [0, 0x80]);
         return canonical_zero.then_some((raw, false, false));
     }
+    if tag == X87Tag::Special {
+        let canonical_infinity = raw[..8] == [0, 0, 0, 0, 0, 0, 0, 0x80]
+            && raw[8] == 0xff
+            && matches!(raw[9], 0x7f | 0xff);
+        return canonical_infinity.then_some((raw, false, false));
+    }
     if tag != X87Tag::Valid {
         return None;
     }
@@ -19609,6 +19615,7 @@ mod tests {
                             );
 
                             assert_eq!(outcome.instructions_executed, 1);
+                            assert!(memory.accesses.is_empty());
                             let result = state.x87.as_ref().unwrap();
                             let mut expected_x87 = before.x87.unwrap();
                             expected_x87.instruction_pointer = before.rip;
@@ -19616,6 +19623,78 @@ mod tests {
                             assert_eq!(result, &expected_x87);
                             assert_eq!(result.registers[usize::from(top)], zero);
                             assert_eq!(result.tag(top), Some(X87Tag::Zero));
+                            assert_eq!(state.gpr, before.gpr);
+                            assert_eq!(state.rflags, before.rflags);
+                            assert_eq!(state.rip, before.rip + 2);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn frndint_preserves_canonical_signed_infinity_for_every_top_control_and_status_case() {
+        for top in 0_u8..8 {
+            for control_word in [0x037f, 0x077f, 0x0b7f, 0x0f7f] {
+                for negative in [false, true] {
+                    for sticky_pe in [false, true] {
+                        for old_c1 in [false, true] {
+                            let mut infinity = [0; 10];
+                            infinity[7] = 0x80;
+                            infinity[8] = 0xff;
+                            infinity[9] = if negative { 0xff } else { 0x7f };
+                            let condition_bits = match (top + u8::from(negative)) % 4 {
+                                0 => 0,
+                                1 => 0x0100,
+                                2 => 0x0400,
+                                _ => 0x4500,
+                            };
+                            let old_status = (u16::from(top) << 11)
+                                | condition_bits
+                                | u16::from(sticky_pe) * 0x0020
+                                | u16::from(old_c1) * 0x0200;
+                            let mut x87 = crate::state::X87State::fixture_seed();
+                            x87.control_word = control_word;
+                            x87.status_word = old_status;
+                            for physical in 0_u8..8 {
+                                x87.registers[usize::from(physical)] = [0x30 + physical; 10];
+                                x87.set_tag(physical, X87Tag::Valid);
+                            }
+                            x87.registers[usize::from(top)] = infinity;
+                            x87.set_tag(top, X87Tag::Special);
+                            x87.instruction_pointer = 0x1234;
+                            x87.data_pointer = 0x5678;
+                            x87.last_opcode = 0x05aa;
+
+                            let mut state = LongModeState::default();
+                            state.rip = 0x8300;
+                            state.gpr =
+                                std::array::from_fn(|index| 0x1234_5678_9abc_def0 ^ index as u64);
+                            state.rflags = 0x0bad_f00d_0123_4567;
+                            state.x87 = Some(x87);
+                            let before = state.clone();
+                            let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+                            let outcome = run(
+                                &mut state,
+                                &mut memory,
+                                RunConfig {
+                                    instruction_budget: 1,
+                                    stop_rip: None,
+                                    context: AccessContext::default(),
+                                },
+                                || false,
+                            );
+
+                            assert_eq!(outcome.instructions_executed, 1);
+                            assert!(memory.accesses.is_empty());
+                            let result = state.x87.as_ref().unwrap();
+                            let mut expected_x87 = before.x87.unwrap();
+                            expected_x87.instruction_pointer = before.rip;
+                            expected_x87.status_word &= !0x0200;
+                            assert_eq!(result, &expected_x87);
+                            assert_eq!(result.registers[usize::from(top)], infinity);
+                            assert_eq!(result.tag(top), Some(X87Tag::Special));
                             assert_eq!(state.gpr, before.gpr);
                             assert_eq!(state.rflags, before.rflags);
                             assert_eq!(state.rip, before.rip + 2);
@@ -19920,7 +19999,9 @@ mod tests {
             binary80_normal(0xc000_0000_0000_0000, 0x7fff, false), // quiet NaN
             binary80_normal(0x8000_0000_0000_0001, 0x7fff, false), // signaling NaN
             [0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x7f],                  // pseudo-infinity
+            [0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff],                  // negative pseudo-infinity
             [1, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x7f],                  // pseudo-NaN
+            binary80_normal(0x8000_0000_0000_0001, 0xffff, false), // negative-exponent NaN
             binary80_normal(1 << 62, 0x3fff, false),               // unnormal
         ] {
             let mut x87 = crate::state::X87State::fixture_seed();
@@ -19944,12 +20025,30 @@ mod tests {
             ([0, 0, 0, 0, 0, 0, 0, 0, 0, 0], X87Tag::Valid),
             ([0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80], X87Tag::Special),
             ([0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80], X87Tag::Empty),
+            (binary80_normal(1 << 63, 0x7fff, false), X87Tag::Valid),
+            (binary80_normal(1 << 63, 0xffff, true), X87Tag::Zero),
+            (binary80_normal(1 << 63, 0x7fff, false), X87Tag::Empty),
+            (binary80_normal(1 << 63, 0xffff, true), X87Tag::Valid),
         ] {
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = 0x037f;
             x87.status_word = 0;
             x87.registers[0] = raw;
             x87.set_tag(0, tag);
+            rejected.push(x87);
+        }
+        for raw in [
+            [0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x7f], // Special-tagged pseudo-infinity
+            [1, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f], // Special-tagged nonzero-fraction NaN
+            [0, 0, 0, 0, 0, 0, 0, 0x40, 0xff, 0x7f], // Special-tagged wrong integer bit
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0xfe, 0x7f], // Special-tagged wrong exponent
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f], // Special-tagged normal exponent
+        ] {
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0;
+            x87.registers[0] = raw;
+            x87.set_tag(0, X87Tag::Special);
             rejected.push(x87);
         }
         for (index, x87) in rejected.into_iter().enumerate() {

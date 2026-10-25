@@ -223,6 +223,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
 | [x] | S2-31dd | Admit canonical Normal binary80 exact integers with e=63..16383 to D9 FC; preserve raw bytes/status except C1; native closed | S2-31dc |
+| [x] | S2-31de | Admit canonical signed infinity with Special tag to D9 FC; preserve raw bytes/status except C1; native/JIT closed | S2-31dd, S2-31aa |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -2143,6 +2144,30 @@ with exponent 63 (exact identity without new PE); matrix coverage spans literal
 exponents 63, 64, 127, 1023, 16383; four significand patterns; both signs; all
 TOPs/FCWs; and incoming PE/C1. Native/JIT denial and physical acceptance
 remain unchanged; this does not complete S2-31 or define general exceptions.
+
+#### S2-31de. Admit canonical signed infinity to bounded `FRNDINT` (`D9 FC`)
+
+Extend only the exact bare S2-31a gate to accept physical TOP tagged Special
+when the raw ten-byte value is canonical signed binary80 infinity: significand
+`0x8000000000000000`, exponent/sign field exactly `0x7fff` or `0xffff`. Preserve
+all ten bytes, Special tag, TOP, PE and C0/C2/C3; clear C1 and add no flags.
+Keep the four-FCW whitelist and `FSW & 0x80df == 0` unchanged. Preserve FDP/FOP
+and unrelated state, set FIP to the starting RIP, advance RIP by two, and
+retire once without data or stack access.
+
+Reject pseudo-infinity (J=0), NaNs and any nonzero fraction, wrong exponent,
+wrong tag, invalid controls/status, prefixes and fetch/truncation/STOP/budget
+boundaries atomically. Preserve existing zero and Normal behavior. A 256-case
+matrix spans sign×FCW×TOP×PE×C1 with independent raw/status expectations. Add a
+literal CLI composition that loads a supported signed infinity with `FLD
+m80fp`, executes `FRNDINT`, observes FSW with `FNSTSW AX`, and checks payload,
+tag/TOP, pointers and state. JIT/native admission remains closed. Physical x86
+acceptance stays with the combined final S2-31 substage; this does not define
+general x87 exception behavior.
+
+Normative source: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3 (binary80
+infinity encoding) and Vol.2A “FRNDINT—Round to Integer,” p.3-372, plus
+“FLD—Load Floating-Point Value” for the existing m80 load form.
 
 #### S2-31b. Bare bounded `FISTP m32int [RAX]` (`DB 18`), partial slice
 

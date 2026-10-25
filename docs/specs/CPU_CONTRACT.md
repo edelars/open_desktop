@@ -3957,6 +3957,31 @@ behavior remain open under ISSUE-019.
 Normative source: Intel SDM revision 093, Vol.2A, “FRNDINT—Round to Integer,”
 p.3-372; Vol.1 §§8.1.9 and 8.5.6 (same sources as S2-31a above).
 
+## Local S2-31de: canonical signed-infinity `FRNDINT` (`D9 FC`)
+
+The existing bare register-only `D9 FC` gate additionally accepts physical
+TOP only when its tag is Special and its raw binary80 bytes encode canonical
+signed infinity: significand `0x8000000000000000` and sign/exponent field
+`0x7fff` or `0xffff`. It preserves all ten bytes, Special tag, TOP, sticky PE,
+and C0/C2/C3; C1 is cleared and no exception flags are added. The exact four
+FCW values and `FSW & 0x80df == 0` status mask are unchanged. FDP/FOP and all
+unrelated state are preserved, FIP receives the starting RIP, RIP advances by
+two, and one instruction retires. No data or stack access occurs.
+
+Pseudo-infinity, NaNs, nonzero fractions, wrong exponents/tags, invalid
+controls/status, prefixes and fetch/truncation/STOP/budget boundaries remain
+Unsupported or unretired atomically. Existing zero and Normal paths are
+unchanged. The 256-case interpreter matrix covers both signs, four FCWs, all
+TOPs, incoming PE and both C1 values with independent complete-state
+expectations. A literal `FLD m80fp` → `FRNDINT` → `FNSTSW AX` fixture loads
+negative infinity and observes the retained payload and status. JIT/native x87
+admission remains denied; physical x86 acceptance and general exception
+delivery are outside this local contract under ISSUE-019.
+
+Normative encoding source: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3;
+instruction sources are Vol.2A “FLD—Load Floating-Point Value” and
+“FRNDINT—Round to Integer,” p.3-372.
+
 ## Local S2-30al: bounded `FUCOMI ST(0), ST(1)` (`DB E9`)
 
 Accept exactly bare `DB E9`. Before mutation call

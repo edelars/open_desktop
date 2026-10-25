@@ -1334,6 +1334,19 @@ Interpreter coverage adds the exponent/significand/sign/TOP/FCW/PE/C1 matrix
 and the e=62 fractional boundary. Native/JIT denial remains active. See the
 [S2-31dd CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dd-exact-integer-normal-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dd-admit-exact-integer-normal-values-to-bounded-frndint-d9-fc), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dd--exact-integer-normal-values-through-bounded-frndint).
 
+### S2-31de FRNDINT canonical signed-infinity composition
+
+The literal `s2_31de_frndint_negative_infinity_fnstsw.case.json` executes
+`FLD m80fp`, bare `D9 FC`, then `DF E0` on negative canonical binary80
+infinity. The test checks the raw ten-byte payload, Special tag, resulting TOP,
+FIP/FDP/FOP, unchanged unrelated register bytes, and `FNSTSW AX` observation.
+The interpreter separately checks all sign×FCW×TOP×PE×C1 cases and rejects
+pseudo-infinity, NaNs, malformed fractions/exponents and tag mismatches. The
+JIT remains denied and native admission stays fail-closed. See the [S2-31de
+CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31de-canonical-signed-infinity-frndint-d9-fc),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31de-admit-canonical-signed-infinity-to-bounded-frndint-d9-fc),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31de--canonical-signed-infinity-through-bounded-frndint).
+
 ### S2-31b FISTP m32int schema and literal coverage
 
 The schema admits only bare `DB 18` and exact `DB 18 DF E0` (FNSTSW AX).

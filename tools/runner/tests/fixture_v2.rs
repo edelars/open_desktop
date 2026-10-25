@@ -41,6 +41,9 @@ const FRNDINT_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_fnstsw.case.json");
 const FRNDINT_INVALID_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_invalid_tag.case.json");
+const FRNDINT_INFINITY: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31de_frndint_negative_infinity_fnstsw.case.json"
+);
 const FLDCW_FRNDINT_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31i_fldcw_frndint_fnstsw.case.json");
 const FSTP_M32FP: &[u8] =
@@ -3186,6 +3189,17 @@ fn v2_jit_has_explicit_unsupported_result_without_interpreter_fallback() {
 #[test]
 fn v2_jit_explicitly_denies_bounded_fldcw_without_interpreter_fallback() {
     let (_, result) = run(FLDCW_FRNDINT_FNSTSW, "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    assert!(matches!(
+        result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn v2_jit_denies_loaded_infinity_frndint_without_interpreter_fallback() {
+    let (_, result) = run(FRNDINT_INFINITY, "jit", 4);
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
     assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
     assert!(matches!(
