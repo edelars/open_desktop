@@ -268,6 +268,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bc | Extend exact DD10/DD18 finite binary64 stores through exponent 1023; reject rounded exponent 1024 before access | S2-31ba, S2-31bb |
 | [x] | S2-31bd | Store exact m32 subnormal results from canonical Normal binary80 sources with integer downshift only | S2-31bb, S2-31bc |
 | [x] | S2-31be | Store exact m64 subnormal results from canonical Normal binary80 sources with integer downshift only | S2-31bc, S2-31bd |
+| [x] | S2-31bf | Round masked inexact D910/D918 m32 subnormal results; reject zero and minimum-normal promotion | S2-31bd |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3731,6 +3732,9 @@ composition proving DE retention without PE, full-state write/range fault
 atomicity, CLI fixtures with FNSTSW, and explicit JIT/native denial. Native
 runtime and physical acceptance remain deferred under ISSUE-019.
 
+S2-31bf extends this exact-only stage with masked, rounded inexact results
+that remain nonzero binary32 subnormals.
+
 
 <a id="s2-31be-exact-binary64-subnormal-results-through-m64-stores"></a>
 
@@ -3758,3 +3762,32 @@ passed. The Linux-only native admission test was compile-checked but not run on
 macOS. Layout checking reports the pre-existing unmapped `.serena/` directory,
 which was preserved. Native runtime and physical acceptance remain deferred
 under ISSUE-019; independent review is pending.
+
+
+<a id="s2-31bf-masked-inexact-binary32-subnormal-results-through-m32-stores"></a>
+
+#### S2-31bf. Round masked inexact binary32 subnormal results through bounded m32 FST/FSTP
+
+Extend only D9 10/D9 18 for Valid-tagged canonical Normal binary80 sources
+with unbiased exponent `-149..=-127`. Convert with integer quotient/remainder
+using `shift = -exponent - 86` (41..63), then round by FCW with sign-aware
+directed modes. Accept only rounded fractions `1..=0x7fffff`; reject a result
+rounded to zero, a source below -149, or a carry/promotion to minimum normal
+before memory access. Preserve the existing exact-subnormal behavior.
+
+For accepted inexact subnormal results, after the atomic Dword write add sticky
+UE+PE (`0x30`), with no DE. C1 reports whether rounding increased magnitude.
+Do not commit flags, instruction/data pointers, or the FSTP pop before storage
+succeeds. Keep FCW and `FSW & 0x80dc == 0` gates; this rejects a pre-existing UE.
+Other widths, operations, tags/classes and JIT/native admission remain closed.
+
+Cover 1.5 and 2.5 times minimum subnormal, both signs, all RC modes and tie
+neighbors; all shifts 41..63; maximum-subnormal directed rounding versus
+minimum-normal promotion rejection; both opcodes/TOPs, incoming IE/DE/PE,
+FNSTSW and FNCLEX, write/range-fault atomicity, forbidden classes/tags,
+CLI fixtures, and JIT/native denial. Validation passed: 21 focused m32fp ISA
+tests, CLI fixture and JIT-denial tests, 806 workspace tests, workspace and
+Linux x86_64 all-target checks, and formatting. Layout checking reports the
+pre-existing unmapped `.serena/` directory, left untouched. Linux-only native
+admission was compile-checked but not executed. Independent review is pending;
+native runtime and physical acceptance remain deferred under ISSUE-019.

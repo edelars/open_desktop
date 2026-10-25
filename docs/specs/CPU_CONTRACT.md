@@ -4626,6 +4626,9 @@ the [plan](../plans/STAGE_2.md#s2-31bd-exact-binary32-subnormal-results-through-
 [report](../reports/STAGE_2_REPORT.md#s2-31bd--exact-binary32-subnormal-results-through-m32-stores),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
 
+S2-31bf extends the exact-only m32 subnormal result policy with masked inexact
+rounding when the stored result remains a nonzero binary32 subnormal.
+
 
 <a id="local-s2-31be-exact-binary64-subnormal-results"></a>
 
@@ -4656,3 +4659,37 @@ defines masked underflow only for tiny inexact results [Vol. 1, §4.9.1.5](https
 [plan](../plans/STAGE_2.md#s2-31be-exact-binary64-subnormal-results-through-m64-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31be--exact-binary64-subnormal-results-through-m64-stores),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31bf-masked-inexact-binary32-subnormal-results"></a>
+
+## Local S2-31bf: masked inexact subnormal results through m32 FST/FSTP
+
+For only `D9 10` and `D9 18`, extend the bounded binary32 store path to
+Valid-tagged canonical Normal binary80 sources with unbiased exponent
+`-149..=-127`. Use integer quotient/remainder with
+`shift = -exponent - 86` (41..63) and the accepted FCW's sign-aware rounding
+mode. A rounded fraction of `1..=0x7fffff` is a supported binary32 subnormal.
+A zero result, a source below -149, or promotion/carry to minimum normal remains
+Unsupported before data access. Existing exact-subnormal stores keep their
+status behavior.
+
+An accepted inexact subnormal store adds sticky UE+PE (`0x0030`) and no DE.
+C1 is set only when rounding increases the result magnitude; existing IE/DE/PE
+remain sticky. The current FCW set and `FSW & 0x80dc == 0` gate remain in force,
+so a pre-existing UE rejects the operation. Compute the rounded result before
+access, but commit flags, FIP/DIP, and an FSTP pop only after the atomic Dword
+write succeeds. Denied writes and canonical-range failures preserve full CPU
+state and destination bytes.
+
+Literal coverage includes 1.5 and 2.5 minimum-subnormal multiples, both signs,
+all rounding modes, tie neighbors, every shift 41..63, and maximum-subnormal
+directed rounding versus promotion rejection. Matrices cover both opcodes, all
+TOP values and sticky IE/DE/PE combinations. CLI fixtures expose UE+PE with
+FNSTSW; local instruction composition verifies FNCLEX clears them. Forbidden
+tags/classes, the FSW UE gate and store atomicity are checked. JIT/native
+admission stays closed; native runtime and physical acceptance remain deferred
+under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31bf-masked-inexact-binary32-subnormal-results-through-m32-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31bf--masked-inexact-binary32-subnormal-results-through-m32-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

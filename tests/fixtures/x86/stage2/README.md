@@ -2319,3 +2319,15 @@ exact recovery and DE retention without UE or PE. See the
 [S2-31be CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31be-exact-binary64-subnormal-results),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31be-exact-binary64-subnormal-results-through-m64-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31be--exact-binary64-subnormal-results-through-m64-stores).
+
+
+### S2-31bf masked inexact binary32 subnormal store fixtures
+
+The positive D910/FNSTSW and negative D918/DFE0/FNSTSW fixtures store rounded
+1.5-minimum-subnormal values and expose sticky UE+PE; the negative FSTP case
+also observes the pop-updated TOP. Direct ISA coverage verifies FNCLEX clears
+the underflow and precision flags. Both fixtures run through the schema/CLI
+interpreter path and remain explicitly denied by JIT and native admission.
+See the [S2-31bf CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bf-masked-inexact-binary32-subnormal-results),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bf-masked-inexact-binary32-subnormal-results-through-m32-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bf--masked-inexact-binary32-subnormal-results-through-m32-stores).

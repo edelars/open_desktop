@@ -6327,3 +6327,31 @@ reports the pre-existing unmapped `.serena/` directory, which was preserved;
 `git diff --check` passed. Independent gpt-6.1-sol review was clean: the 34
 focused m64fp ISA tests, FLD/store roundtrip, CLI fixtures and JIT denial were
 reviewed; native and physical runtime remain deferred under ISSUE-019.
+
+
+<a id="s2-31bf--masked-inexact-binary32-subnormal-results-through-m32-stores"></a>
+
+## S2-31bf — masked inexact binary32 subnormal results through bounded m32 stores
+
+The bounded D9 10/D9 18 m32 store path now rounds canonical Normal binary80
+sources with exponents -149 through -127 using integer quotient/remainder and
+the sign-aware FCW mode. It accepts only rounded nonzero binary32 subnormal
+fractions. Sources below -149, results rounded to zero, and promotion to
+minimum normal remain Unsupported before access. Exact subnormal results retain
+their previous status behavior.
+
+Accepted inexact tiny results add sticky UE+PE (`0x30`) and no DE after the
+atomic Dword write; C1 records a magnitude increment. Pointer updates, flags
+and FSTP pop remain uncommitted on write or range faults. Coverage includes
+1.5/2.5 minimum-subnormal ties and neighbors, every shift 41..63, signed RC
+matrices, maximum-subnormal directed rounding and promotion rejection,
+incoming IE/DE/PE, UE gate and class/tag controls, and FNSTSW/FNCLEX behavior.
+Signed literal CLI fixtures expose UE+PE; JIT/native admission remains closed.
+
+Validation passed: 21 focused m32fp ISA tests, the CLI fixture test, the JIT
+denial test, and `cargo test --workspace --offline` (806 tests). Workspace and
+Linux x86_64 all-target checks, formatting, and diff checks passed. Graphify was
+refreshed. The Linux-native admission test was compile-checked but not executed
+on this macOS host. The layout checker reports the pre-existing unmapped
+`.serena/` directory, preserved. Independent review is pending. Native runtime
+and physical acceptance remain deferred under ISSUE-019.

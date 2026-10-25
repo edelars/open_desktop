@@ -468,3 +468,15 @@
   [plan](plans/STAGE_2.md#s2-31be-exact-binary64-subnormal-results-through-m64-stores),
   [report](reports/STAGE_2_REPORT.md#s2-31be--exact-binary64-subnormal-results-through-m64-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31bf evidence:** masked inexact D910/D918 stores round only canonical
+  Normal binary80 sources in the binary32 subnormal exponent range. They accept
+  nonzero subnormal results, reject zero/minimum-normal promotion before access,
+  and defer sticky UE+PE with C1 magnitude-increment state until after the
+  atomic Dword write. Exact behavior is unchanged; no DE is added. Tie, shift,
+  TOP/FCW/sticky-flag matrices, FNSTSW/FNCLEX, atomicity, CLI and JIT/native
+  denial coverage is included. Native runtime and physical acceptance remain
+  deferred under ISSUE-019. See [CPU contract](specs/CPU_CONTRACT.md#local-s2-31bf-masked-inexact-binary32-subnormal-results),
+  [plan](plans/STAGE_2.md#s2-31bf-masked-inexact-binary32-subnormal-results-through-m32-stores),
+  [report](reports/STAGE_2_REPORT.md#s2-31bf--masked-inexact-binary32-subnormal-results-through-m32-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

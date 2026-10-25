@@ -1,0 +1,85 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_31bf_fstp_m32fp_negative_1_5_minsub_fnstsw",
+  "profile": "s2-long-x87-state-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten literal d918dfe0 bytes, canonical binary80 binary32-subnormal midpoint source, and masked-rounding x87 state; expected behavior follows local S2-31bf masked inexact subnormal conversion.",
+    "specification": "Intel SDM revision 093, Vol.2A, FST/FSTP m32fp and FNSTSW AX entries; local S2-31bf binary32 subnormal rounding policy.",
+    "specification_version": "Intel SDM revision 093; project S2-31bf"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000300004",
+      "0x0000000000000001",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200ffe",
+      "0x00000000003000f8",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000002",
+    "x87": {
+      "registers": [
+        "00000000000000c06abf",
+        "0123456789abcdef0180",
+        "0000000000000080003f",
+        "00000000000000000000",
+        "55aa55aa55aa55aa55aa",
+        "112233445566778899aa",
+        "deadbeefcafebabe0180",
+        "00000000000000000000"
+      ],
+      "control_word": "0x000000000000077f",
+      "status_word": "0x0000000000004502",
+      "tag_word": "0x000000000000fffc",
+      "instruction_pointer": "0x0000000000001234",
+      "data_pointer": "0x0000000000005678",
+      "last_opcode": "0x00000000000005aa"
+    }
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 4,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "d918dfe0",
+      "comparison_mask_hex": "ffffffff"
+    },
+    {
+      "region_id": "stack",
+      "guest_address": "0x0000000000300000",
+      "length": 256,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100004",
+  "instruction_budget": 2,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}
