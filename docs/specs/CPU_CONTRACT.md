@@ -6003,3 +6003,32 @@ mini acceptance remain deferred to the combined final S2-31 substage under
 ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31cz-special-unnormals-m32-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31cz--special-tagged-unnormals-through-m32-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+<a id="local-s2-31da-special-unnormals-m16-fist"></a>
+
+## Local S2-31da: Special-tagged binary80 unnormals through m16 `FIST`/`FISTP`
+
+Only bare `DF 10` and `DF 18` admit a Special-tagged binary80 unnormal whose
+biased exponent is 1..=`0x7ffe`, explicit integer bit J=0, either sign, and
+arbitrary fraction including zero. The conversion writes Word integer-indefinite
+`0x8000`, adds IE and clears C1; it adds no PE/DE/UE/OE/ZE/SF/ES/B and preserves
+incoming sticky flags and C0/C2/C3. The existing FCW whitelist
+`0x037f`, `0x077f`, `0x0b7f`, `0x0f7f`, FSW gate `FSW & 0x80c0 == 0`, bare
+Long64 RAX form, complete canonical48 Word preflight, one atomic Word write/no
+read, ten raw source bytes and write-before-commit ordering are retained. FIST
+keeps TOP; FISTP empties the old physical TOP and increments TOP only after a
+successful write.
+
+Exponent zero and `0x7fff` behavior, J=1 encodings, pseudo-denormals and wrong
+tags retain their existing behavior. The m32 unnormal path remains as defined
+by S2-31cz; m64 unnormal, FLD composition, unmasked delivery and JIT/native
+admission remain unsupported. The independent matrix has 196,608 cases (3
+exponents × 4 fractions × 2 signs × 4 FCWs × 2 forms × 8 TOP values × 64 sticky
+combinations × 2 prior C1 values). Separate checks cover the zero-significand
+unsupported-format case, E=0/E=0x7fff and J=1 boundaries, rejection/fault
+atomicity, status visibility, raw source bytes, canaries and stack behavior.
+Physical x86 and Mac mini
+acceptance remain deferred to the combined S2-31 substage under ISSUE-019. See
+the [plan](../plans/STAGE_2.md#s2-31da-special-unnormals-m16-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31da--special-tagged-unnormals-through-m16-fist),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

@@ -2950,3 +2950,19 @@ denied; FLD composition and unmasked delivery are excluded. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cz-special-unnormals-m32-fist),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cz-special-unnormals-m32-fist),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cz--special-tagged-unnormals-through-m32-fist).
+
+### S2-31da Special-tagged unnormal m16 FISTP fixture
+
+`s2_31da_fistp_m16int_negative_unnormal.case.json` seeds a Special-tagged
+negative binary80 unnormal (exponent `0x3fff`, J=0, fraction
+`0x4000000000000000`) and executes literal `DF 18`. It checks Word
+integer-indefinite between canaries, sticky IE, unchanged raw source, and the
+popped TOP/tag. The ISA matrix covers three finite exponents, four fractions,
+both signs, four FCWs, both DF forms, every TOP, all 64 sticky combinations and
+both prior C1 values. Exponent boundaries, J=1, wrong tags, unchanged m32 and
+excluded m64 forms, forbidden controls/status, and denied-write/canonical-range
+atomicity are also checked. FNSTSW/FNCLEX observes and clears IE; JIT/native
+admission remains denied. FLD composition and unmasked delivery are excluded. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31da-special-unnormals-m16-fist),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31da-special-unnormals-m16-fist), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31da--special-tagged-unnormals-through-m16-fist).

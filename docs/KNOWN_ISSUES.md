@@ -1027,3 +1027,14 @@
   [plan](plans/STAGE_2.md#s2-31cz-special-unnormals-m32-fist),
   [report](reports/STAGE_2_REPORT.md#s2-31cz--special-tagged-unnormals-through-m32-fist),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31da evidence:** bare DF10/DF18 m16 FIST/FISTP now admit only
+  Special-tagged finite-exponent binary80 unnormals (J=0); the 196,608-case
+  literal matrix checks Word indefinite, IE without PE/DE, flags/status, raw
+  payload, canaries and stack behavior. Boundary/tag/width/control rejects,
+  write/range atomicity, FNSTSW/FNCLEX, CLI fixture and JIT/native denial are
+  covered. Mac mini and physical x86 acceptance remain deferred; ISSUE-019
+  stays open. See [contract](specs/CPU_CONTRACT.md#local-s2-31da-special-unnormals-m16-fist),
+  [plan](plans/STAGE_2.md#s2-31da-special-unnormals-m16-fist),
+  [report](reports/STAGE_2_REPORT.md#s2-31da--special-tagged-unnormals-through-m16-fist),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

@@ -8054,3 +8054,33 @@ native runtime execution remain deferred to the combined final S2-31 substage
 under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cz-special-unnormals-m32-fist),
 [plan](../plans/STAGE_2.md#s2-31cz-special-unnormals-m32-fist), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+<a id="s2-31da--special-tagged-unnormals-through-m16-fist"></a>
+
+## S2-31da — Special-tagged unnormals through m16 FIST/FISTP
+
+Only bare `DF 10`/`DF 18` now admit Special-tagged binary80 unnormals with
+biased exponent 1..=`0x7ffe`, J=0, either sign and any fraction. Masked
+unsupported-format conversion stores Word integer-indefinite `0x8000`, adds IE,
+clears C1, and adds no PE/DE/UE/OE/ZE/SF/ES/B. Incoming sticky status and
+C0/C2/C3, raw ten-byte source and the established write-before-commit behavior
+are preserved; C1 is cleared. FIST retains TOP; FISTP pops after a successful
+store.
+
+The independent matrix covers 196,608 inputs across exponents 1/`0x3fff`/
+`0x7ffe`, four fractions including zero, signs, all FCWs, both forms, TOP,
+sticky combinations and prior C1. Checks also cover boundaries and adjacent
+encodings, malformed tags, excluded widths, control/status gates, IE without
+PE/DE, raw bytes, canaries, FNSTSW/FNCLEX, denied-write and canonical48 atomicity,
+a seeded `DF 18` CLI fixture, and JIT/native denial. No FLD composition is
+claimed.
+
+Validation passed: all 1,010 workspace tests, including the 592 `od-isa`
+tests and 89 CLI tests; focused unnormal coverage; host and Linux
+`cargo check --workspace --all-targets --offline`; the seeded CLI fixture; fmt,
+diff and layout checks. The native-admission regression is platform-gated and
+compiled but was not run on this macOS host. Independent gpt-6.1-sol review was
+clean. Physical x86 and Mac mini acceptance remain deferred to the combined
+final S2-31 substage under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31da-special-unnormals-m16-fist),
+[plan](../plans/STAGE_2.md#s2-31da-special-unnormals-m16-fist), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md).

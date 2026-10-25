@@ -313,6 +313,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31cw | Convert Special-tagged binary80 pseudo-NaNs through DB10/DB18 m32 FIST/FISTP | S2-31cv |
 | [x] | S2-31cx | Convert Special-tagged binary80 pseudo-NaNs through DF10/DF18 m16 FIST/FISTP | S2-31cw |
 | [x] | S2-31cz | Convert Special-tagged binary80 unnormals through DB10/DB18 m32 FIST/FISTP | S2-31cy |
+| [x] | S2-31da | Convert Special-tagged binary80 unnormals through DF10/DF18 m16 FIST/FISTP | S2-31cz |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4899,4 +4900,28 @@ atomicity, FNSTSW/FNCLEX, a seeded CLI fixture and JIT/native denial. Physical
 x86 and Mac mini acceptance remain part of the combined final S2-31 substage
 under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cz-special-unnormals-m32-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31cz--special-tagged-unnormals-through-m32-fist),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+<a id="s2-31da-special-unnormals-m16-fist"></a>
+
+#### S2-31da. Convert Special-tagged unnormals through m16 `FIST`/`FISTP`
+
+Only bare `DF 10` and `DF 18` admit a Special-tagged binary80 unnormal with
+biased exponent 1 through `0x7ffe`, J=0, either sign, and any fraction. Store
+Word integer-indefinite `0x8000`, add IE, clear C1, and add no PE/DE/UE/OE/ZE/
+SF/ES/B. Preserve incoming sticky flags and C0/C2/C3. Keep the existing FCW/FSW
+gates, bare Long64 RAX addressing, canonical48 Word preflight, atomic write/no
+read, raw source bytes, and write-before-commit ordering. FIST retains TOP; FISTP
+pops only after a successful write.
+
+Coverage mirrors S2-31cz: 196,608 independent cases across three exponents,
+four fractions, both signs, four FCWs, both forms, all TOP values, 64 sticky
+combinations, and both prior C1 values. It also checks zero-significand
+unnormals, boundaries, J=1, other tags/classes and widths, controls, IE without
+PE/DE, status controls, raw bytes, canaries, pop behavior, denied writes,
+canonical-range atomicity, FNSTSW/FNCLEX, the seeded CLI fixture and JIT/native
+denial. m32 behavior remains covered by S2-31cz. No FLD composition, unmasked
+delivery, physical x86 or Mac mini acceptance is claimed; those remain deferred
+to the combined S2-31 acceptance under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31da-special-unnormals-m16-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31da--special-tagged-unnormals-through-m16-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
