@@ -4042,6 +4042,36 @@ nodes, 9415 edges, and 172 communities. Physical x86/native execution and Linux
 runtime denial tests were not run on the arm64 macOS host; the final combined
 S2-31 substage remains responsible for physical acceptance.
 
+## S2-31dd — exact-integer Normal values through bounded FRNDINT
+
+Extended bare `D9 FC` to admit Valid canonical-Normal binary80 values with
+unbiased exponent `63..=16383`. Since these values are exact integers, the
+preflight returns their original ten bytes before computing `63-e`, rounding,
+or packing. Success preserves every tag, TOP, PE, C0/C2/C3, FDP/FOP and
+unrelated state, clears C1, records FIP, advances RIP by two and retires once.
+The FCW whitelist and `FSW & 0x80df` mask are unchanged. Invalid tags, J=0,
+exponent `0x7fff`, forbidden controls/status and execution boundaries remain
+atomic rejects. Native/JIT admission remains closed and no data or stack access
+was added.
+
+The focused matrix spans exponents 63, 64, 127, 1023, 16383; four literal
+significand patterns; both signs; all eight TOP values; all four FCWs; and PE/C1
+combinations. The explicit e=62 fractional versus e=63 identity boundary
+confirms rounding/PE versus exact preservation. A literal FNSTSW fixture checks
+the CLI-visible result and status. Physical x87 comparison and general
+exception delivery remain unverified under ISSUE-019.
+
+Validation passed: focused `cargo test -p od-isa --offline frndint` (8 tests),
+literal CLI fixture test
+`cargo test -p od-runner --offline frndint_large_exact_integer_literal_fnstsw_fixture_preserves_raw_value` (1 test),
+`cargo check --workspace --all-targets --offline`, and Linux x86_64 compile-only
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets --offline`.
+`cargo fmt --all -- --check`, `git diff --check`, and
+`python3 tools/check_layout.py` passed. `graphify update .` rebuilt 4666 nodes,
+9427 edges, and 182 communities; its existing extractor warning for
+`include/open_desktop/host_abi.h` remains. Physical x86/native execution and
+Linux runtime denial tests were not run on this arm64 macOS host.
+
 ## S2-30ab — bounded FCOM ST(1) exact Normal compare
 
 Added exact bare `D8 D1` decode as `FcomSt1`; the existing D8 arithmetic ranges

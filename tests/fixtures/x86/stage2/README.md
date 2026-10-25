@@ -1324,6 +1324,16 @@ interpreter separately covers both signs and all sign×FCW×TOP×PE×C1 cases. T
 existing S2-31a positive tie fixture remains as the Normal-rounding CLI
 regression. Native/JIT denial remains active. See the [S2-31dc CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dc-canonical-signed-zero-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dc-admit-signed-zero-to-bounded-frndint-d9-fc), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dc--canonical-signed-zero-through-bounded-frndint).
 
+### S2-31dd FRNDINT exact-integer Normal composition
+
+The literal `s2_31dd_frndint_large_exact_integer_fnstsw.case.json` runs bare
+`D9 FC` followed by `DF E0` on a canonical-Normal binary80 value with
+unbiased exponent 63 and a mixed significand. It confirms byte-for-byte
+identity, sticky PE/C0/C2/C3 retention, C1 clearing, and FNSTSW visibility.
+Interpreter coverage adds the exponent/significand/sign/TOP/FCW/PE/C1 matrix
+and the e=62 fractional boundary. Native/JIT denial remains active. See the
+[S2-31dd CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dd-exact-integer-normal-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dd-admit-exact-integer-normal-values-to-bounded-frndint-d9-fc), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dd--exact-integer-normal-values-through-bounded-frndint).
+
 ### S2-31b FISTP m32int schema and literal coverage
 
 The schema admits only bare `DB 18` and exact `DB 18 DF E0` (FNSTSW AX).

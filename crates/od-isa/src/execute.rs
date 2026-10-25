@@ -2648,7 +2648,16 @@ fn bounded_x87_frndint_result(state: &LongModeState) -> Option<([u8; 10], bool, 
         return None;
     }
     let finite = X87Binary80::from_bytes(raw).normalize_finite()?;
-    if finite.source_class() != X87Binary80Class::Normal || !(0..=62).contains(&finite.exponent()) {
+    if finite.source_class() != X87Binary80Class::Normal {
+        return None;
+    }
+    // For canonical Normal inputs with e >= 63, every represented value is
+    // already integral. Keep the raw encoding exactly and avoid computing a
+    // negative shift or routing a potentially huge integer through packing.
+    if (63..=16383).contains(&finite.exponent()) {
+        return Some((raw, false, false));
+    }
+    if !(0..=62).contains(&finite.exponent()) {
         return None;
     }
     let shift = 63 - finite.exponent() as u32;
@@ -19618,6 +19627,119 @@ mod tests {
     }
 
     #[test]
+    fn frndint_preserves_exact_integer_normals_across_binary80_exponent_range() {
+        let exponents = [63, 64, 127, 1023, 16383];
+        let significands = [
+            1_u64 << 63,
+            (1_u64 << 63) + 1,
+            0xa55a_1234_5678_9abc,
+            u64::MAX,
+        ];
+
+        for exponent in exponents {
+            for significand in significands {
+                for negative in [false, true] {
+                    let raw = binary80_normal(significand, (exponent + 16383) as u16, negative);
+                    for top in 0_u8..8 {
+                        for control_word in [0x037f, 0x077f, 0x0b7f, 0x0f7f] {
+                            for sticky_pe in [false, true] {
+                                for old_c1 in [false, true] {
+                                    let mut x87 = crate::state::X87State::fixture_seed();
+                                    x87.control_word = control_word;
+                                    let retained_conditions = match (exponent + top as i32) % 4 {
+                                        0 => 0,
+                                        1 => 0x0100,
+                                        2 => 0x0400,
+                                        _ => 0x4500,
+                                    };
+                                    x87.status_word = (u16::from(top) << 11)
+                                        | retained_conditions
+                                        | u16::from(sticky_pe) * 0x0020
+                                        | u16::from(old_c1) * 0x0200;
+                                    x87.data_pointer = 0x1234_5678_9abc_def0;
+                                    x87.instruction_pointer = 0x0fed_cba9_8765_4321;
+                                    x87.last_opcode = 0x05aa;
+                                    for physical in 0_u8..8 {
+                                        x87.registers[usize::from(physical)] =
+                                            [0x30 + physical; 10];
+                                        x87.set_tag(physical, X87Tag::Valid);
+                                    }
+                                    x87.registers[usize::from(top)] = raw;
+                                    let old_tag_word = x87.tag_word;
+                                    let expected_status = x87.status_word & !0x0200;
+                                    let mut state = LongModeState::default();
+                                    state.rip = 0x8180;
+                                    state.x87 = Some(x87);
+                                    let before = state.clone();
+                                    let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+
+                                    assert_eq!(
+                                        step(&mut state, &mut memory, AccessContext::default()),
+                                        Ok(StepOutcome::Advanced),
+                                        "e={exponent}, sig={significand:#018x}, sign={negative}, TOP={top}, FCW={control_word:#06x}"
+                                    );
+                                    let result = state.x87.as_ref().unwrap();
+                                    let original = before.x87.as_ref().unwrap();
+                                    assert_eq!(result.registers, original.registers);
+                                    assert_eq!(result.tag_word, old_tag_word);
+                                    assert_eq!(result.status_word, expected_status);
+                                    assert_eq!(result.control_word, control_word);
+                                    assert_eq!(result.data_pointer, original.data_pointer);
+                                    assert_eq!(result.last_opcode, original.last_opcode);
+                                    assert_eq!(result.instruction_pointer, before.rip);
+                                    assert_eq!(state.gpr, before.gpr);
+                                    assert_eq!(state.rflags, before.rflags);
+                                    assert_eq!(state.rip, before.rip + 2);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn frndint_e62_fraction_rounds_but_e63_is_exact_identity() {
+        for (exponent, raw_significand, initial_status, expected_raw, expected_status) in [
+            (
+                62,
+                (1_u64 << 63) | 1,
+                0x0700,
+                binary80_normal(1_u64 << 63, 0x403d, false),
+                0x0520,
+            ),
+            (
+                63,
+                (1_u64 << 63) | 1,
+                0x0700,
+                binary80_normal((1_u64 << 63) | 1, 0x403e, false),
+                0x0500,
+            ),
+        ] {
+            let raw = binary80_normal(raw_significand, (exponent + 16383) as u16, false);
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = initial_status;
+            x87.registers[0] = raw;
+            x87.set_tag(0, X87Tag::Valid);
+            let mut state = LongModeState::default();
+            state.rip = 0x8180;
+            state.x87 = Some(x87);
+            let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            let result = state.x87.as_ref().unwrap();
+            assert_eq!(result.registers[0], expected_raw);
+            assert_eq!(result.status_word, expected_status);
+            assert_eq!(state.rip, 0x8182);
+        }
+    }
+
+    #[test]
     fn frndint_matches_independent_literal_binary80_rounding_vectors() {
         // Hand-calculated exact binary80 encodings and status words; expected
         // answers intentionally do not use the production rounding/packing helpers.
@@ -19789,7 +19911,7 @@ mod tests {
         }
         for raw in [
             binary80_normal(1 << 63, 0x3ffe, false),               // e=-1
-            binary80_normal(1 << 63, 0x403e, false),               // e=63
+            binary80_normal(1 << 62, 0x403e, false),               // e=63 with J=0
             [0; 10],                                               // zero
             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],                     // valid-tag negative zero
             [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],                        // subnormal

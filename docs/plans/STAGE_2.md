@@ -222,6 +222,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30an | Bare indexed DB/DF register FCOMI-family forms for ST(i), bounded canonical-Normal compare and optional physical TOP pop; native closed | S2-30am |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
+| [x] | S2-31dd | Admit canonical Normal binary80 exact integers with e=63..16383 to D9 FC; preserve raw bytes/status except C1; native closed | S2-31dc |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -2125,6 +2126,23 @@ C1; literal CLI coverage composes negative zero with FNSTSW AX. FNCLEX,
 prefix/decode, and native/JIT denial remain covered by their existing gates.
 Physical acceptance remains with the combined final S2-31 substage; this does
 not complete S2-31 or expand x87 exception delivery.
+
+#### S2-31dd. Admit exact-integer Normal values to bounded `FRNDINT` (`D9 FC`)
+
+Extend the existing bare S2-31a register-only gate to canonical Normal values
+with unbiased exponent `63..=16383` (biased exponent `0x403e..=0x7ffe`). With
+the Valid physical TOP tag, J=1, either sign, and any fraction, the represented
+value is already an integer: preserve its ten raw bytes, all tags and TOP;
+clear C1, add no flags, and preserve PE and C0/C2/C3. Return this identity
+before computing `63-e` or invoking the integer rounding/packing path. Keep the
+FCW whitelist and `FSW & 0x80df` mask unchanged. Preserve FDP/FOP and unrelated
+state, set FIP to old RIP, advance RIP by two and retire once. Reject malformed
+or tag-mismatched values, other classes and invalid controls/status atomically.
+The boundary coverage compares fractional exponent 62 (normal rounding and PE)
+with exponent 63 (exact identity without new PE); matrix coverage spans literal
+exponents 63, 64, 127, 1023, 16383; four significand patterns; both signs; all
+TOPs/FCWs; and incoming PE/C1. Native/JIT denial and physical acceptance
+remain unchanged; this does not complete S2-31 or define general exceptions.
 
 #### S2-31b. Bare bounded `FISTP m32int [RAX]` (`DB 18`), partial slice
 

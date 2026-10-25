@@ -3921,7 +3921,7 @@ by two, and the instruction retires once. No data memory is accessed and no
 stack change occurs.
 
 Mismatched tags and zero-like malformed payloads remain Unsupported, as do
-fractional/large Normals outside S2-31a, subnormals, pseudo-denormals,
+large Normals outside the S2-31dd range, subnormals, pseudo-denormals,
 infinities, NaNs, unnormals and pseudo-special encodings. Invalid controls,
 status bits, prefixes and fetch/truncation/STOP/budget boundaries preserve the
 complete state. Tests include a 256-case sign×FCW×TOP×PE×C1 matrix, concrete
@@ -3930,6 +3930,29 @@ FNSTSW composition, and the unchanged Normal rounding regression. Native x87
 and JIT admission remain explicitly closed. FLD m80fp→FRNDINT composition is
 not currently covered by a fixture. Physical acceptance remains part of the
 combined final S2-31 substage, and S2-31 remains partial under ISSUE-019.
+
+## Local S2-31dd: exact-integer Normal `FRNDINT` (`D9 FC`)
+
+Extend the S2-31a Normal source domain to canonical binary80 values with
+unbiased exponent `63..=16383` (biased exponent `0x403e..=0x7ffe`), Valid old
+physical TOP tag, J=1, either sign, and any fraction. These values are already
+integral, so success returns the original ten bytes unchanged, preserves every
+tag and TOP, clears C1, adds no exception flags, and preserves PE and C0/C2/C3.
+The identity branch occurs before `63-e` is computed and before rounding or
+packing. FCW remains exactly one of `0x037f/0x077f/0x0b7f/0x0f7f`, and
+`FSW & 0x80df` must be zero. FDP/FOP and unrelated state are preserved; FIP is
+old RIP, RIP advances by two, and retirement is one. No memory or stack access
+occurs. Wrong tags, malformed J/exponent encodings, special values, subnormals,
+low-exponent Normals outside the existing S2-31a rounding profile, and invalid
+environment remain Unsupported atomically.
+
+Tests cover exponents 63, 64, 127, 1023, and 16383 against minimum,
+successor, mixed, and maximum significands; both signs; all FCWs/TOPs; and
+incoming PE and C1. The exponent-62 fractional boundary still rounds and sets
+PE, while exponent 63 is an exact identity with no new PE. A literal
+FNSTSW-composition fixture observes the retained status and raw bytes. Native
+x87/JIT admission remains closed; physical acceptance and general exception
+behavior remain open under ISSUE-019.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FRNDINT—Round to Integer,”
 p.3-372; Vol.1 §§8.1.9 and 8.5.6 (same sources as S2-31a above).
