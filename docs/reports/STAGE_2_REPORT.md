@@ -8562,3 +8562,18 @@ Table 8-3. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dp-special-tagged-binary80-pseudo-denormal-frndint-d9-fc),
 [plan](../plans/STAGE_2.md#s2-31dp-special-tagged-binary80-pseudo-denormal-through-bounded-frndint),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dp-frndint-pseudo-denormal-fixture).
+
+### Open x87 denormal question for integer stores
+
+The current canonical-subnormal integer-store slices (`S2-31cq/cr/cs`) expect
+PE without newly setting DE. Intel SDM revision 093 Vol.1 §§8.2.2, 8.4.1 and
+8.5.2 say pseudo-denormals act as denormal operands, classify FIST/FISTP as
+arithmetic, and require #D for an arithmetic denormal operand; the dedicated
+Vol.2A FIST/FISTP entry on pp. 3-347–348 lists #IS/#IA/#P but omits #D. The
+new-DE behavior is therefore unresolved, not a confirmed implementation bug.
+Do not infer hardware behavior from the local PE-only fixtures. ISSUE-019
+records a targeted final combined Mac mini check using canonical-subnormal and
+pseudo-denormal sources with initial DE=0 through m16/m32 FIST/FISTP and m64
+FISTP across RC; compare DE, PE, result, TOP and destination. Defer any FISTP
+pseudo-denormal implementation until that question has evidence and a reviewed
+contract.
