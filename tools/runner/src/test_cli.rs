@@ -3355,6 +3355,15 @@ mod tests {
                 "0200000000000000",
             ),
             (
+                "FST positive 0.75 minimum binary64 subnormal",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bk_fst_m64fp_positive_0_75_minsub_fnstsw.case.json").as_slice(),
+                0x0030_4732,
+                0x4732,
+                0xfffc,
+                "00000000000000c0cc3b",
+                "0100000000000000",
+            ),
+            (
                 "FSTP negative 1.5 minimum binary64 subnormal with FNSTSW",
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bg_fstp_m64fp_negative_1_5_minsub_fnstsw.case.json").as_slice(),
                 0x0030_4f32,

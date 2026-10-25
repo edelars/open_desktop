@@ -224,6 +224,9 @@ const FSTP_M64_NEGATIVE_MIN_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
 const FST_M64_POSITIVE_INEXACT_SUBNORMAL: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bg_fst_m64fp_positive_1_5_minsub.case.json"
 );
+const FST_M64_EXTREME_UNDERFLOW_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31bk_fst_m64fp_positive_0_75_minsub_fnstsw.case.json"
+);
 const FSTP_M64_NEGATIVE_INEXACT_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bg_fstp_m64fp_negative_1_5_minsub_fnstsw.case.json"
 );
@@ -3406,6 +3409,7 @@ fn v2_jit_denies_exact_m64_subnormal_store_fixtures_without_fallback() {
 fn v2_jit_denies_masked_inexact_m64_subnormal_store_fixtures_without_fallback() {
     for fixture in [
         FST_M64_POSITIVE_INEXACT_SUBNORMAL,
+        FST_M64_EXTREME_UNDERFLOW_FNSTSW,
         FSTP_M64_NEGATIVE_INEXACT_SUBNORMAL_FNSTSW,
     ] {
         let (_, result) = run(fixture, "jit", 4);

@@ -6486,3 +6486,30 @@ preserved. Native runtime and physical acceptance remain deferred under
 ISSUE-019. Independent Sol-medium review was clean, including all 470 `od-isa`
 tests, CLI and JIT checks, and 519,456 exact-integer rounding oracle combinations; native runtime
 and physical acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31bk--extreme-binary64-underflow-to-zero-or-minimum-subnormal"></a>
+
+## S2-31bk — round extreme binary64 underflow to zero or minimum subnormal
+
+The bounded DD 10/DD 18 conversion now accepts canonical Normal binary80
+exponents -16382 through -1075 and rounds directly to signed zero or signed
+minimum subnormal under RC. Exponent -1075 uses an explicit significand
+comparison at the exact half-way point, avoiding oversized shifts. Accepted
+results always add sticky UE+PE after successful atomic Qword storage; C1 tracks
+selection of the minimum subnormal. Exact conversion behavior, source bytes,
+FCW/FSW gates and atomic state/pop commit are preserved.
+
+Coverage includes below/equal/above half, lowest exponent, both signs and RCs,
+all 16 sticky IE/DE/UE/PE states, both opcodes/TOPs, signed zero, exact minimum
+control, FNSTSW/FNCLEX, m64-to-raw-m80 composition, write/range atomicity,
+forbidden source/gate cases, and CLI/JIT/native denial. Validation passed: the
+full offline workspace suite (816 passed, 0 failed), including all 471 `od-isa`
+tests; the CLI fixture group (50 passed); and schema-v2 fixture/JIT denial
+tests (110 passed). Host and Linux x86_64 workspace all-target checks passed,
+as did Linux x86_64 native-runner test-code typechecking. Formatting, fixture
+JSON, documentation anchors, and `git diff --check` passed. `graphify update .`
+completed with 4242 nodes, 8684 edges, and 181 communities. The layout checker
+reports only the pre-existing unmapped `.serena/` directory, preserved. Native
+runtime and physical acceptance remain deferred under ISSUE-019; independent
+review is pending.

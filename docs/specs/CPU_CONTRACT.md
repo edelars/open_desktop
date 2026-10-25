@@ -4783,3 +4783,24 @@ CLI/JIT/native denial. Native runtime and physical acceptance remain deferred
 under ISSUE-019. See [plan](../plans/STAGE_2.md#s2-31bj-round-extreme-underflow-through-binary32-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31bj--extreme-binary32-underflow-to-zero-or-minimum-subnormal),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+## Local S2-31bk: extreme binary64 underflow to zero or minimum subnormal
+
+Only bounded `DD 10` and `DD 18` accept canonical Normal binary80 exponents
+from -16382 through -1075. Convert directly to signed zero or signed minimum
+binary64 subnormal under the existing four FCWs. At exponent -1075, compare the
+significand with the exact half-way value; below -1075, only directed rounding
+away from zero selects the minimum subnormal. This avoids shifting by the full
+exponent distance. All admitted values are inexact: after a successful atomic
+Qword write, set sticky UE+PE and set C1 iff minimum subnormal is selected.
+Preserve sign on zero and leave the binary80 source unchanged.
+
+FCW/FSW gates, tags, exact conversions and atomic status/pointer/RIP/FSTP-pop
+commit remain unchanged. Coverage includes half-neighbors, lowest exponent, both
+signs/RCs, all TOPs/opcodes/sticky IE/DE/UE/PE combinations, exact-minimum
+control, FNSTSW/FNCLEX, raw-m80 composition, faults, forbidden classes/gates, and
+CLI/JIT/native denial. Native runtime and physical acceptance remain deferred
+under ISSUE-019. See [plan](../plans/STAGE_2.md#s2-31bk-round-extreme-underflow-through-binary64-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31bk--extreme-binary64-underflow-to-zero-or-minimum-subnormal),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

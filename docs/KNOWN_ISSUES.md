@@ -525,3 +525,12 @@
   [plan](plans/STAGE_2.md#s2-31bj-round-extreme-underflow-through-binary32-stores),
   and [report](reports/STAGE_2_REPORT.md#s2-31bj--extreme-binary32-underflow-to-zero-or-minimum-subnormal).
   Native runtime and physical acceptance remain deferred under ISSUE-019.
+
+- **S2-31bk evidence:** bounded DD 10/DD 18 now round canonical binary80
+  exponents -16382..=-1075 directly to signed zero or minimum binary64 subnormal,
+  using an explicit half comparison at -1075 and avoiding oversized shifts.
+  Inexact UE+PE and C1 commit only after atomic storage. CLI/JIT/native denial and
+  ISA matrix coverage are documented in [contract](specs/CPU_CONTRACT.md#local-s2-31bk-extreme-binary64-underflow-to-zero-or-minimum-subnormal),
+  [plan](plans/STAGE_2.md#s2-31bk-round-extreme-underflow-through-binary64-stores),
+  and [report](reports/STAGE_2_REPORT.md#s2-31bk--extreme-binary64-underflow-to-zero-or-minimum-subnormal).
+  Native runtime and physical acceptance remain deferred under ISSUE-019.

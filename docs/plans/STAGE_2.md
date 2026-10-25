@@ -273,6 +273,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bh | Allow sticky UE in the bounded m32/m64 FST/FSTP gates without synthesizing PE from UE alone | S2-31bg |
 | [x] | S2-31bi | Allow sticky UE in the raw DB38 FSTP m80fp gate without generating flags | S2-31bh |
 | [x] | S2-31bj | Round extreme binary32 underflow directly to signed zero or minimum subnormal | S2-31bf, S2-31bh |
+| [x] | S2-31bk | Round extreme binary64 underflow directly to signed zero or minimum subnormal | S2-31bg, S2-31bh |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3873,3 +3874,20 @@ signed zero, exact-minimum control, both opcodes and every TOP, all 16 sticky
 IE/DE/UE/PE states, FNSTSW/FNCLEX, m32-underflow to raw-m80 preservation,
 write/range atomicity, forbidden classes/tags/gates, and CLI/JIT/native denial.
 Native runtime and physical acceptance remain deferred under ISSUE-019.
+
+
+#### S2-31bk. Round extreme underflow through binary64 stores
+
+Extend only bounded `DD 10`/`DD 18` for canonical Normal binary80 sources with
+unbiased exponents -16382 through -1075. Round directly to signed zero or
+signed minimum subnormal under the existing FCWs; at -1075 compare the
+significand with the exact half-way value without an oversized shift. Every
+admitted result is inexact and commits UE+PE after the atomic Qword write. Set C1
+iff minimum subnormal is selected. Preserve source bytes/sign, FCW/FSW gates,
+exact behavior, and atomic status/pointer/pop commit.
+
+Cover below/equal/above half, lowest source exponent, both signs and RCs, signed
+zero, exact-minimum control, both opcodes and all TOPs, all 16 sticky IE/DE/UE/PE
+states, FNSTSW/FNCLEX, m64-underflow to raw-m80 preservation, Qword write/range
+atomicity, forbidden classes/tags/gates, and CLI/JIT/native denial. Native runtime
+and physical acceptance remain deferred under ISSUE-019.
