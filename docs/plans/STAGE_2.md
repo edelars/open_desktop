@@ -282,7 +282,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bq | Accept DD10/DD18 exponent-1023 rounding carry to signed binary64 infinity with sticky OE+PE and C1 | S2-31bc, S2-31bh |
 | [x] | S2-31br | Admit prior sticky IE/DE/OE/UE/PE on bounded m32/m64 stores while preserving conversion-specific flags | S2-31bq |
 | [x] | S2-31bs | Admit prior sticky OE on exact raw DB38 FSTP m80fp stores without changing source bytes or generating flags | S2-31bi, S2-31bp, S2-31bq |
-| [x] | S2-31bt | Admit canonical signed binary80 zero for D910/D918 FIST/FISTP m32int as exact integer zero | S2-31b, S2-31c |
+| [x] | S2-31bt | Admit canonical signed binary80 zero for DB10/DB18 FIST/FISTP m32int as exact integer zero | S2-31b, S2-31c |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
