@@ -2762,3 +2762,16 @@ test. JIT and native admission remain closed. See the
 [S2-31cm CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cm-admit-sticky-de-bounded-integer-stores),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cm-admit-sticky-de-on-bounded-integer-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cm--sticky-de-on-bounded-integer-stores).
+
+
+### S2-31cn sticky UE integer-store fixtures
+
+The m32 `DB 18` and m64 `DF 38` fixtures seed the canonical binary80 Normal
+value 1.5 times the minimum binary32 subnormal and incoming UE. Nearest
+FISTP rounds to integer zero, adds PE, retains UE, pops after the write, and
+exposes FSW `0x4d30` with FNSTSW. JIT and native admission remain closed. The
+ISA composition test also executes FST m32 first, producing UE|PE, then checks
+all five bounded integer forms across signs and FCWs. See the
+[S2-31cn CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cn-admit-sticky-ue-bounded-integer-stores),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31cn-admit-sticky-ue-on-bounded-integer-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cn--sticky-ue-on-bounded-integer-stores).

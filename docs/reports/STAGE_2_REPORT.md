@@ -7529,3 +7529,39 @@ the local arm64 host (0 tests run by the specific filter); it compiled as part
 of the Linux all-target check.
 
 Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31cn--sticky-ue-on-bounded-integer-stores"></a>
+
+## S2-31cn — sticky UE on bounded integer stores
+
+Only the shared bounded-integer entry mask changed, from `0x80dc` to
+`0x80cc`, for DB10, DB18, DF10, DF18 and DF38. This admits and preserves
+incoming UE independently with IE/DE/PE, while ZE/OE/SF/ES/B remain denied.
+UE by itself does not alter the integer value or synthesize IE/PE; C1 remains
+specific to the current conversion. FCW/source/address/range gates, atomic
+write-before-state commit, FIST/FISTP stack behavior, and the separate FLD
+gates are unchanged. Raw binary80 subnormal and pseudo-denormal sources remain
+unsupported.
+
+Focused checks passed: the 71,680-case matrix spans seven existing admitted
+source classes, both signs, five forms, four FCWs, eight TOP values, all 16
+IE/DE/UE/PE combinations and both incoming C1 states; 40 actual FST m32→integer
+composition cases cover both signs and all FCWs/forms; five-form UE-bearing
+write/range atomicity and UE|forbidden-status rejection pass; the stale m32
+infinity rejection test passes with UE removed from its negative environment
+controls. Two literal m32/m64 FISTP/FNSTSW fixtures pass CLI execution and JIT
+denial. The native admission-denial filter matched zero tests on the local arm64 host;
+the Linux x86_64 all-target check compiled that test but did not execute it.
+
+Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+`cargo test --workspace --offline` passed 953 tests: 6 `od-host`, 552 `od-isa`,
+4 `od-jit`, 79 runner CLI, 137 fixture/JIT, 166 `od-testkit`, 8 x86-runner
+library and 1 x86-runner main; all doc-tests passed. Host
+`cargo check --workspace --all-targets --offline` and Linux x86_64
+`cargo check --workspace --all-targets --offline --target
+x86_64-unknown-linux-gnu` passed. `cargo fmt --all -- --check` and
+`git diff --check` passed. `graphify update .` rebuilt the graph to 4,525 nodes, 9,184 edges and 181
+communities. Documentation anchors and fixture references were checked. Native
+runtime and physical x86 acceptance remain deferred under ISSUE-019.

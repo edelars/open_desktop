@@ -852,3 +852,16 @@
   [plan](plans/STAGE_2.md#s2-31cm-admit-sticky-de-on-bounded-integer-stores),
   [report](reports/STAGE_2_REPORT.md#s2-31cm--sticky-de-on-bounded-integer-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31cn evidence:** the same five bounded integer stores now admit and
+  preserve sticky UE alongside IE/DE/PE via the shared `0x80cc` mask. UE alone
+  does not alter the integer result or add IE/PE; current C1 is recomputed.
+  The 71,680-case sticky matrix, 40-case FST m32 underflow composition, and
+  five-form UE-bearing write/range atomicity plus UE|forbidden-status checks
+  pass. New m32/m64 CLI fixtures verify UE survives FISTP and FNSTSW. JIT/native
+  admission remains closed; native runtime and physical x86 behavior remain
+  unverified, and S2-31/ISSUE-019 remain open. See
+  [contract](specs/CPU_CONTRACT.md#local-s2-31cn-admit-sticky-ue-bounded-integer-stores),
+  [plan](plans/STAGE_2.md#s2-31cn-admit-sticky-ue-on-bounded-integer-stores),
+  [report](reports/STAGE_2_REPORT.md#s2-31cn--sticky-ue-on-bounded-integer-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

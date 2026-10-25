@@ -5557,3 +5557,32 @@ x86 acceptance remain deferred under ISSUE-019. See the
 [plan](../plans/STAGE_2.md#s2-31cm-admit-sticky-de-on-bounded-integer-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31cm--sticky-de-on-bounded-integer-stores),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31cn-admit-sticky-ue-bounded-integer-stores"></a>
+
+## Local S2-31cn: admit sticky UE on bounded integer stores
+
+Only the existing bare `DB 10`, `DB 18`, `DF 10`, `DF 18` and `DF 38` bounded
+integer-store forms now admit incoming UE. Their shared entry condition is
+`FSW & 0x80cc == 0`: IE, DE, UE and PE are preserved independently, while
+ZE/OE/SF/ES/B remain rejected. Historical UE by itself does not alter the
+rounded integer or synthesize IE/PE. Current-operation flags and C1 remain
+operation-specific and commit only after the atomic Dword/Word/Qword write.
+FCW, source/tag/class/range/address rules and FIST/FISTP pop ordering are
+unchanged. Raw binary80 subnormal and pseudo-denormal integer operands remain
+unsupported.
+
+The matrix covers 71,680 combinations across seven admitted classes, both
+signs, five forms, four FCWs, eight TOP values, all IE/DE/UE/PE combinations
+and both prior C1 values. Forty FST m32→integer-store composition cases first
+produce sticky UE|PE from 1.5 times the minimum binary32 subnormal, then verify
+that each store preserves UE|PE and recomputes C1. Five-form denied-write and
+canonical-range tests preserve full state/memory with IE|DE|UE|PE set; UE
+combined with each remaining forbidden status rejects before access. Literal
+CLI fixtures cover m32/m64 FISTP followed by FNSTSW. JIT/native admission
+remains denied, while native runtime and physical x86 acceptance remain
+deferred under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31cn-admit-sticky-ue-on-bounded-integer-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31cn--sticky-ue-on-bounded-integer-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

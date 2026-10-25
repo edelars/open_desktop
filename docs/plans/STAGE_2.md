@@ -302,6 +302,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ck | Convert finite rounded i16 overflow to integer-indefinite for DF10/DF18 | S2-31ci, S2-31cj |
 | [x] | S2-31cl | Convert finite rounded i64 overflow to integer-indefinite for DF38 | S2-31ci, S2-31cj, S2-31ck |
 | [x] | S2-31cm | Admit sticky DE on bounded integer stores after masked FLD subnormal composition | S2-31ci, S2-31cl |
+| [x] | S2-31cn | Admit sticky UE on the five bounded integer-store forms | S2-31cm |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4515,4 +4516,32 @@ covered by the ISA test. JIT/native admission and physical execution remain
 closed/deferred. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cm-admit-sticky-de-bounded-integer-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31cm--sticky-de-on-bounded-integer-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cn-admit-sticky-ue-on-bounded-integer-stores"></a>
+
+#### S2-31cn. Admit sticky UE on bounded integer stores
+
+Admit incoming UE only on the existing DB 10, DB 18, DF 10, DF 18 and DF 38
+integer-store forms by changing their shared FSW mask from `0x80dc` to
+`0x80cc`. This admits and preserves IE/DE/UE/PE independently while ZE/OE/
+SF/ES/B remain rejected. Historical UE does not alter the current conversion
+or synthesize IE/PE; C1 and new conversion flags remain operation-specific and
+commit only after the atomic destination write. FCW, source classes, range,
+addressing and stack behavior remain unchanged, including rejection of raw
+binary80 subnormal and pseudo-denormal integer operands.
+
+The sticky matrix covers 71,680 cases: seven admitted source classes, both
+signs, five forms, four FCWs, eight TOP values, all 16 IE/DE/UE/PE combinations
+and both prior C1 states. A 40-case FST m32→integer-store composition matrix
+creates sticky UE|PE from a 1.5-minimum-binary32-subnormal source, then checks
+that integer conversion preserves those flags and recomputes C1 for each sign,
+rounding mode and store form. Five-form write/range faults preserve full state
+and memory with IE|DE|UE|PE incoming; UE combined with each remaining forbidden
+FSW bit rejects before memory access. Two literal FISTP/FNSTSW fixtures seed
+the canonical binary80 source and incoming UE because the fixture schema allows
+only this instruction pair. JIT/native admission and physical execution remain
+closed/deferred. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cn-admit-sticky-ue-bounded-integer-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31cn--sticky-ue-on-bounded-integer-stores),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
