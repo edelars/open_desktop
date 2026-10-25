@@ -6348,10 +6348,12 @@ matrices, maximum-subnormal directed rounding and promotion rejection,
 incoming IE/DE/PE, UE gate and class/tag controls, and FNSTSW/FNCLEX behavior.
 Signed literal CLI fixtures expose UE+PE; JIT/native admission remains closed.
 
-Validation passed: 21 focused m32fp ISA tests, the CLI fixture test, and the
-JIT-denial test. The broad workspace test invocation timed out after CLI output,
-so it produced no aggregate result and is not recorded as passing. Workspace
-and Linux x86_64 all-target checks, formatting, and diff checks passed.
+Validation passed: 21 focused m32fp ISA tests, the CLI fixture test, the
+JIT-denial test, and the full `cargo test --workspace --offline` run (806 passed,
+0 failed). Workspace and Linux x86_64 all-target checks, formatting, and diff
+checks passed. The independent reviewer's separate broad runner filter timed out
+after its CLI unit test; that timeout is distinct from the passing implementation
+suite reported above.
 `graphify update .` completed its AST-only pass and found no code-graph topology
 changes. The Linux-native admission test was compile-checked but not executed
 on this macOS host. The layout checker reports the pre-existing
