@@ -312,6 +312,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31cu | Convert Special-tagged binary80 pseudo-infinity through DF10/DF18 m16 FIST/FISTP | S2-31ct |
 | [x] | S2-31cw | Convert Special-tagged binary80 pseudo-NaNs through DB10/DB18 m32 FIST/FISTP | S2-31cv |
 | [x] | S2-31cx | Convert Special-tagged binary80 pseudo-NaNs through DF10/DF18 m16 FIST/FISTP | S2-31cw |
+| [x] | S2-31cz | Convert Special-tagged binary80 unnormals through DB10/DB18 m32 FIST/FISTP | S2-31cy |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4871,4 +4872,31 @@ FNSTSW/FNCLEX, a directly seeded fixture, and JIT/native denial. Mac mini and
 physical x86 acceptance remain part of the combined final S2-31 substage under
 ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cy-special-pseudo-nan-m64-fistp),
 [report](../reports/STAGE_2_REPORT.md#s2-31cy--special-tagged-pseudo-nan-through-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cz-special-unnormals-m32-fist"></a>
+
+#### S2-31cz. Convert Special-tagged binary80 unnormals through m32 `FIST`/`FISTP`
+
+Only bare `DB 10` and `DB 18` admit a Special-tagged binary80 unnormal with
+biased exponent 1 through `0x7ffe`, J=0, either sign, and any 64-bit
+significand fraction. Store Dword integer-indefinite `0x80000000`, add IE,
+clear C1, and add no PE/DE/UE/OE/ZE/SF/ES/B. Preserve incoming sticky flags
+and C0/C2/C3. Retain FCWs `0x037f`, `0x077f`, `0x0b7f`, `0x0f7f`,
+`FSW & 0x80c0 == 0`, bare Long64 RAX addressing, full canonical48 Dword
+preflight, one atomic write/no read, raw ten-byte source, and write-before-
+commit ordering. FIST retains TOP; FISTP pops only after a successful write.
+
+Exponent zero and `0x7fff` paths remain unchanged, as do J=1 encodings,
+pseudo-denormals, m16/m64, wrong tags and FLD. Unmasked delivery and JIT/native
+admission remain unsupported. Coverage crosses exponents 1/`0x3fff`/`0x7ffe`,
+four significands, both signs, all four FCWs, both forms, every TOP, all 64
+sticky combinations and both prior C1 values (196,608 cases), with independent
+Dword/status expectations. Also cover boundaries, other tags/classes and widths,
+IE without PE/DE, raw payload/pop/TOP, canaries, denied-write/canonical-range
+atomicity, FNSTSW/FNCLEX, a seeded CLI fixture and JIT/native denial. Physical
+x86 and Mac mini acceptance remain part of the combined final S2-31 substage
+under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cz-special-unnormals-m32-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31cz--special-tagged-unnormals-through-m32-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

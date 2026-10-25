@@ -2932,3 +2932,21 @@ behavior. JIT/native admission remains denied; FLD and unmasked delivery remain
 outside the slice. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cy-special-pseudo-nan-m64-fistp),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cy-special-pseudo-nan-m64-fistp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cy--special-tagged-pseudo-nan-through-m64-fistp).
+
+
+### S2-31cz Special-tagged unnormal m32 FISTP fixture
+
+`s2_31cz_fistp_m32int_negative_unnormal.case.json` seeds a
+Special-tagged negative binary80 unnormal (exponent `0x3fff`, J=0, fraction
+`0x4000000000000000`), then executes literal `DB 18`. It checks Dword
+integer-indefinite between canaries, sticky IE, raw source retention, and the
+popped TOP/tag. Separate ISA composition coverage observes IE with FNSTSW and
+clears it with FNCLEX. ISA coverage
+crosses three finite nonzero exponents, four fractions, both signs, four FCWs,
+both DB forms, every TOP, all 64 sticky combinations and both prior C1 values.
+Wrong tags, exponent boundaries, m16/m64, forbidden controls/status, and
+denied-write/canonical-range atomicity are covered. JIT/native admission stays
+denied; FLD composition and unmasked delivery are excluded. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cz-special-unnormals-m32-fist),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31cz-special-unnormals-m32-fist),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cz--special-tagged-unnormals-through-m32-fist).

@@ -1014,3 +1014,16 @@
   [plan](plans/STAGE_2.md#s2-31cy-special-pseudo-nan-m64-fistp),
   [report](reports/STAGE_2_REPORT.md#s2-31cy--special-tagged-pseudo-nan-through-m64-fistp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31cz evidence:** only bare DB10/DB18 m32 FIST/FISTP admit a
+  Special-tagged unnormal with biased exponent 1..=`0x7ffe`, J=0 and arbitrary
+  fraction. The independent 196,608-case exponent/fraction/sign/FCW/form/TOP/
+  sticky/C1 matrix checks Dword indefinite, IE without PE/DE, status and raw
+  payload preservation, canaries, one write/no read and TOP/tag behavior.
+  Boundary/source/control rejects, write/range atomicity, FNSTSW/FNCLEX, a
+  seeded CLI fixture, and JIT/native denial are covered. Physical x86 and Mac
+  mini acceptance remain deferred to the combined S2-31 substage; ISSUE-019
+  remains open. See [contract](specs/CPU_CONTRACT.md#local-s2-31cz-special-unnormals-m32-fist),
+  [plan](plans/STAGE_2.md#s2-31cz-special-unnormals-m32-fist),
+  [report](reports/STAGE_2_REPORT.md#s2-31cz--special-tagged-unnormals-through-m32-fist),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

@@ -5970,3 +5970,36 @@ m32 behavior is covered by their unchanged regression matrices. See the
 [plan](../plans/STAGE_2.md#s2-31cy-special-pseudo-nan-m64-fistp),
 [report](../reports/STAGE_2_REPORT.md#s2-31cy--special-tagged-pseudo-nan-through-m64-fistp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31cz-special-unnormals-m32-fist"></a>
+
+## Local S2-31cz: Special-tagged binary80 unnormals through m32 `FIST`/`FISTP`
+
+Only bare `DB 10` and `DB 18` admit a Special-tagged binary80 unnormal with
+biased exponent 1 through `0x7ffe`, explicit integer bit J=0, either sign, and
+any fraction including zero. Each conversion stores Dword integer-indefinite
+`0x80000000`, adds IE, clears C1, and adds no PE/DE/UE/OE/ZE/SF/ES/B. Preserve
+all incoming sticky flags and C0/C2/C3. Retain the FCW whitelist
+`0x037f`, `0x077f`, `0x0b7f`, `0x0f7f`, the `FSW & 0x80c0 == 0` gate, bare
+Long64 RAX, full canonical48 Dword preflight, one atomic Dword write/no read,
+raw ten-byte source preservation, and write-before-commit behavior. FIST keeps
+TOP; FISTP empties the old physical TOP and increments TOP only after a
+successful write.
+
+Exponent-zero and exponent-`0x7fff` cases retain their existing behavior.
+J=1 canonical encodings, pseudo-denormals, wrong tags, m16/m64 forms, FLD and
+unmasked delivery are not extended; JIT/native admission remains closed.
+
+Independent literal coverage crosses exponents 1/`0x3fff`/`0x7ffe`, fractions
+0/1/`0x4000_0000_0000_0000`/`0x7fff_ffff_ffff_ffff`, both signs, four FCWs,
+both forms, all TOP values, 64 historical sticky combinations and both prior
+C1 values (196,608 cases). It checks integer-indefinite bytes/status, IE without
+PE/DE, preserved flags/source, canaries, one write/no read, and TOP/tag rules.
+Rejections/faults cover malformed classes/tags, boundaries, other widths,
+forbidden controls/status, denied writes and canonical48 crossing. FNSTSW then
+FNCLEX and the seeded CLI fixture observe and clear IE. Physical x86 and Mac
+mini acceptance remain deferred to the combined final S2-31 substage under
+ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31cz-special-unnormals-m32-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31cz--special-tagged-unnormals-through-m32-fist),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

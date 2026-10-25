@@ -4601,6 +4601,18 @@ mod tests {
     }
 
     #[test]
+    fn s2_31cz_unnormal_fistp_m32_fixture_remains_outside_native_admission() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31cz_fistp_m32int_negative_unnormal.case.json"
+        )
+        .as_slice();
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
+    }
+
+    #[test]
     fn s2_31cu_pseudo_infinity_fistp_m16_fixture_remains_outside_native_admission() {
         let bytes = include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31cu_fistp_m16int_negative_pseudo_infinity_fnstsw.case.json"

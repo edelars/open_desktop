@@ -8014,3 +8014,43 @@ substage under ISSUE-019.
 See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cy-special-pseudo-nan-m64-fistp),
 [plan](../plans/STAGE_2.md#s2-31cy-special-pseudo-nan-m64-fistp), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cz--special-tagged-unnormals-through-m32-fist"></a>
+
+## S2-31cz — Special-tagged unnormals through m32 FIST/FISTP
+
+Only bare `DB 10` and `DB 18` now admit a Special-tagged binary80 unnormal
+with biased exponent 1 through `0x7ffe`, J=0, either sign, and any significand
+fraction including zero. The conversion stores Dword integer-indefinite
+`0x80000000`, adds IE, clears C1, and adds no PE/DE/UE/OE/ZE/SF/ES/B. Incoming
+sticky flags and C0/C2/C3 are preserved. Existing FCW/FSW gates, bare RAX
+addressing, canonical48 Dword preflight, one atomic write/no read, raw source
+bytes, write-before-commit, and FIST/FISTP TOP behavior remain in force.
+
+The independent matrix covers 3 exponents × 4 fractions × both signs × 4 FCWs
+× both forms × 8 TOP values × 64 sticky combinations × both old C1 values
+(196,608 cases). Explicit controls cover E=0 subnormal, E=0/J=1
+pseudo-denormal rejection, J=1 finite Normal, and E=0x7fff canonical infinity,
+plus malformed tags, excluded m16/m64 forms, controls/status, write denial and
+canonical-range crossing. A seeded `DB 18` CLI fixture checks store bytes,
+canaries, IE, original raw bytes and TOP pop. A separate ISA sequence checks
+FNSTSW observation and FNCLEX clearing; the fixture intentionally stays a
+single exact x87 operation under the existing fixture schema. `od_jit::compile`
+and native admission remain denied. No FLD composition is claimed.
+
+Validation passed: focused unnormal ISA tests (matrix, boundaries, rejections,
+fault atomicity and FNSTSW/FNCLEX), the seeded CLI fixture, and
+`cargo test --workspace --offline`. Host
+`cargo check --workspace --all-targets --offline` passed. Linux x86_64
+`cargo check --workspace --all-targets --offline --target x86_64-unknown-linux-gnu`
+passed with existing dead-code warnings in `od-host` and `od-runner`; the
+Linux-gated native admission test was compiled but not executed on this Mac
+host. `cargo fmt --all -- --check`, `git diff --check`, and
+`python3 tools/check_layout.py` passed. Graphify refreshed to 4,632 nodes,
+9,366 edges and 183 communities; its existing parse warning for
+`include/open_desktop/host_abi.h` remained. Physical x86/Mac mini acceptance and
+native runtime execution remain deferred to the combined final S2-31 substage
+under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cz-special-unnormals-m32-fist),
+[plan](../plans/STAGE_2.md#s2-31cz-special-unnormals-m32-fist), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md).
