@@ -3622,6 +3622,8 @@ physical acceptance remain deferred to the final combined S2-31 substage under
 ISSUE-019.
 
 
+<a id="s2-31br-admit-sticky-status-on-bounded-m32m64-stores"></a>
+
 #### S2-31br. Admit sticky IE/DE/OE/UE/PE on bounded m32/m64 stores
 
 Only bounded D910/D918 and DD10/DD18 widen their status gate from
