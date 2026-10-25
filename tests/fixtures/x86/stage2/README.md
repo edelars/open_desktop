@@ -2797,3 +2797,17 @@ only seeded ZE; they do not execute division or produce ZE. JIT and native
 admission remain denied. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cp-admit-historical-sticky-ze-bounded-integer-stores),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cp-admit-historical-sticky-ze-on-bounded-integer-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cp--historical-sticky-ze-on-bounded-integer-stores).
+
+
+### S2-31cq canonical-subnormal m32 FISTP fixture
+
+`s2_31cq_fistp_m32int_negative_subnormal_fnstsw.case.json` seeds a
+Special-tagged negative canonical binary80 subnormal under
+round-toward-negative, then executes literal `DB 18` and `DF E0`. It exercises
+the Dword store and sticky PE/C1 observation. The instruction implementation
+also has a unit composition that loads the raw ten-byte subnormal with FLD m80,
+executes FIST and FISTP, observes with FNSTSW, and clears flags with FNCLEX. JIT/native
+admission remains denied. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cq-canonical-subnormal-m32-fist),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31cq-canonical-subnormal-m32-fist),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cq--canonical-subnormal-m32-fist).

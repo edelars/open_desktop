@@ -894,3 +894,14 @@
   [plan](plans/STAGE_2.md#s2-31cp-admit-historical-sticky-ze-on-bounded-integer-stores),
   [report](reports/STAGE_2_REPORT.md#s2-31cp--historical-sticky-ze-on-bounded-integer-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31cq evidence:** only bare DB10/DB18 m32 integer stores now admit
+  Special-tagged canonical binary80 subnormals. The complete 65,536-case
+  sign/RC/opcode/TOP/sticky-flag/C1 matrix, FLD m80 composition, invalid-class
+  controls, write/range atomicity, FISTP/FNSTSW CLI fixture, FNCLEX composition
+  and JIT/native denial are tracked in the linked report. This does not resolve the broader
+  S2-31/ISSUE-019 scope: native runtime and physical x86 acceptance remain
+  deferred to the combined final substage. See [contract](specs/CPU_CONTRACT.md#local-s2-31cq-canonical-subnormal-m32-fist),
+  [plan](plans/STAGE_2.md#s2-31cq-canonical-subnormal-m32-fist),
+  [report](reports/STAGE_2_REPORT.md#s2-31cq--canonical-subnormal-m32-fist),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

@@ -3630,6 +3630,51 @@ fn v2_jit_denies_canonical_signaling_nan_fistp_m32_fixture_without_fallback() {
 }
 
 #[test]
+fn local_x87_fistp_m32_subnormal_fixture_observes_pe_with_fnstsw() {
+    let fixture = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_31cq_fistp_m32int_negative_subnormal_fnstsw.case.json"
+    );
+    let (input, result) = run(fixture, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), input.fixture.instruction_budget);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0004));
+    assert_eq!(observed.state.gpr[0].get() & 0xffff, 0x4e20);
+    let x87 = observed.state.x87.as_ref().unwrap();
+    assert_eq!(x87.status_word, HexU64(0x4e20));
+    assert_eq!(x87.tag_word, HexU64(0xffff));
+    assert_eq!(x87.registers[0], "02000000000000000080");
+    assert_eq!(x87.instruction_pointer, HexU64(0x0010_0000));
+    assert_eq!(x87.data_pointer, HexU64(0x0030_0001));
+    let data_left = observed
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data_left")
+        .unwrap();
+    let data_right = observed
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data_right")
+        .unwrap();
+    assert_eq!(data_left.bytes_hex, "ff");
+    assert_eq!(&data_right.bytes_hex[..6], "ffffff");
+}
+
+#[test]
+fn v2_jit_denies_canonical_subnormal_fistp_m32_fixture_without_fallback() {
+    let fixture = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_31cq_fistp_m32int_negative_subnormal_fnstsw.case.json"
+    );
+    let (_, result) = run(fixture, "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    assert!(matches!(
+        result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn v2_jit_denies_canonical_infinity_fistp_m16_fixture_without_fallback() {
     let fixture = include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_31ca_fistp_m16int_negative_infinity_fnstsw.case.json"

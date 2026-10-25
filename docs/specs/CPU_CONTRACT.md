@@ -5648,3 +5648,43 @@ deferred to the combined final S2-31 substage. See the
 [stage plan](../plans/STAGE_2.md#s2-31cp-admit-historical-sticky-ze-on-bounded-integer-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31cp--historical-sticky-ze-on-bounded-integer-stores),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31cq-canonical-subnormal-m32-fist"></a>
+
+## Local S2-31cq: canonical binary80 subnormals through m32 `FIST`/`FISTP`
+
+Only exact bare `DB 10` and `DB 18` admit a Special-tagged canonical nonzero
+binary80 subnormal: exponent field zero, J=0 and fraction nonzero. The value's
+magnitude is less than one half. For nearest-even and toward-zero, store zero;
+toward-negative stores `0xffffffff` only for a negative source; toward-positive
+stores `1` only for a positive source. Every admitted conversion adds sticky PE
+because each source is inexact as an integer. C1 is recomputed and is set iff
+the result magnitude is one. No DE, UE, IE, OE, ZE, SF, ES or B flag is newly
+generated. Preserve incoming IE/DE/ZE/OE/UE/PE independently under the existing
+`FSW & 0x80c0 == 0` gate, and retain C0/C2/C3. FCW remains exactly
+`037f/077f/0b7f/0f7f`.
+
+Retain the full canonical48 four-byte destination preflight and exactly one
+atomic Dword write without a data read. Commit PE/C1, instruction/data pointers
+and RIP only after successful write. FIST preserves TOP and tags; FISTP empties
+old physical TOP and advances it after successful write. Preserve the raw
+ten-byte ST(0) payload. The source gate remains width-limited: m16/m64,
+pseudo-denormals, malformed encodings, mismatched tags, unmasked delivery and
+general exception delivery remain unsupported. The class test admits only
+exponent-zero, J=0, nonzero-fraction encodings; zero, pseudo-denormal and
+unnormal encodings do not pass.
+
+The local matrix covers 65,536 combinations: four fractions (`1`, `2`,
+`0x4000000000000000`, `0x7fffffffffffffff`), both signs, four RCs, FIST and
+FISTP, eight TOP values, all 64 incoming sticky-flag combinations and both
+prior C1 values. Additional checks compose FLD m80 with both stores, reject
+wrong tags and noncanonical classes and m16/m64 forms before data access,
+preserve full CPU/memory state on write/range faults, and observe PE through
+FNSTSW before FNCLEX clears the sticky exception flags. A literal CLI fixture
+seeds a negative subnormal and executes FISTP/FNSTSW; the FLD m80 composition
+also executes FISTP/FNSTSW/FNCLEX. JIT/native admission remains denied.
+Physical x86 and native runtime acceptance remain deferred
+under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31cq-canonical-subnormal-m32-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31cq--canonical-subnormal-m32-fist),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

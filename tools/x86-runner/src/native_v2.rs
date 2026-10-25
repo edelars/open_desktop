@@ -3959,6 +3959,8 @@ mod tests {
     fn x87_instructions_are_rejected_by_native_profile_and_instruction_admission() {
         for code in [
             [0xdb, 0x00],
+            [0xdb, 0x10],
+            [0xdb, 0x18],
             [0xdb, 0x28],
             [0xdb, 0xe3],
             [0xdb, 0xe2],

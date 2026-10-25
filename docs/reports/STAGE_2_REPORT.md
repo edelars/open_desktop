@@ -7639,3 +7639,44 @@ the combined final S2-31 substage under ISSUE-019. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cp-admit-historical-sticky-ze-bounded-integer-stores),
 [plan](../plans/STAGE_2.md#s2-31cp-admit-historical-sticky-ze-on-bounded-integer-stores),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cq--canonical-subnormal-m32-fist"></a>
+
+## S2-31cq — canonical binary80 subnormals through m32 FIST/FISTP
+
+The bounded DB10/DB18 m32 integer-store path now admits Special-tagged
+canonical nonzero binary80 subnormals (exponent zero, J=0, nonzero fraction).
+All such magnitudes are below one half. RN/TZ produce zero; RD produces -1
+only for negative inputs; RU produces +1 only for positive inputs. Each
+conversion sets PE, and current C1 is set exactly for a result magnitude of
+one. No other current exception flags are added. The existing FCW whitelist,
+FSW mask `0x80c0`, six historical sticky flags, Dword range preflight,
+atomic one-write/no-read contract, and post-write FIST/FISTP commit behavior
+remain in force. m16/m64 and pseudo-denormal/malformed sources remain closed.
+
+The 65,536-case matrix spans the four requested fraction payloads, both signs,
+four RC settings, both opcodes, all eight TOP positions, 64 combinations of
+incoming IE/DE/ZE/OE/UE/PE, and both prior C1 values. It checks output bytes,
+all FSW bits, raw payload/tag preservation, TOP behavior, and one Dword write
+with no read. A literal FLD m80→FIST→FISTP unit composition checks status and
+pop effects. Wrong tag/class and m16/m64 controls reject before access; write
+and canonical-range faults preserve full state and memory. The new literal CLI
+fixture executes FISTP/FNSTSW on a negative subnormal; the FLD m80 composition
+also checks FNCLEX after status observation. JIT/native admission remains
+denied.
+
+`cargo test --workspace --offline` passed 962 tests: `od-host` (6), `od-isa`
+(556), `od-jit` (4), `od-runner` CLI (81), fixture/JIT (140), `od-testkit`
+(166), and `od-x86-runner` (8 library, 1 binary); all doc-tests passed.
+Host and Linux x86_64 `cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, and `git diff --check` passed. The graph refreshed
+to 4,546 nodes, 9,217 edges and 181 communities. `tools/check_layout.py` reports
+the unmapped `.serena/` session directory; it was preserved and excluded from
+the commit. The native x87-denial test is
+Linux-only and did not execute on this macOS arm64 host; the Linux all-target
+check compiled the changed path. Physical x86 validation and native runtime
+support remain deferred under ISSUE-019; S2-31 remains partial. See
+the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cq-canonical-subnormal-m32-fist),
+[plan](../plans/STAGE_2.md#s2-31cq-canonical-subnormal-m32-fist), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md).

@@ -305,6 +305,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31cn | Admit sticky UE on the five bounded integer-store forms | S2-31cm |
 | [x] | S2-31co | Admit sticky OE on the five bounded integer-store forms | S2-31cn |
 | [x] | S2-31cp | Admit historical sticky ZE on the five bounded integer-store forms | S2-31co |
+| [x] | S2-31cq | Admit Special-tagged canonical binary80 subnormals only through DB10/DB18 m32 FIST/FISTP | S2-31cp |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4596,4 +4597,30 @@ stays denied. Physical x86 and native runtime acceptance remain deferred to
 the combined final S2-31 substage. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cp-admit-historical-sticky-ze-bounded-integer-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31cp--historical-sticky-ze-on-bounded-integer-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cq-canonical-subnormal-m32-fist"></a>
+
+#### S2-31cq. Admit canonical binary80 subnormals through m32 `FIST`/`FISTP`
+
+Only bare DB 10 and DB 18 admit a Special-tagged canonical nonzero binary80
+subnormal: exponent zero, explicit integer bit J zero, and nonzero fraction.
+Such values are strictly below one half. RN/TZ store zero; RD stores -1 only
+for a negative source; RU stores +1 only for a positive source. Every admitted
+conversion adds PE, and C1 is set exactly when the stored magnitude is one.
+No other exception/status flags are generated. Preserve the six incoming
+sticky flags under the existing `0x80c0` FSW mask and preserve C0/C2/C3. Keep
+the FCW whitelist, full canonical48 Dword preflight, one write/no read,
+write-before-commit ordering, source payload preservation and FIST/FISTP TOP
+rules. m16/m64, pseudo-denormals, malformed/tag-mismatched inputs and unmasked
+delivery remain unsupported.
+
+Cover four literal fraction payloads, both signs, all RC values/opcodes/TOPs,
+64 incoming sticky-flag combinations and both old C1 values (65,536 cases),
+plus FLD m80 composition, invalid classes/tags, write/range atomicity,
+FNSTSW/FNCLEX composition, literal CLI observation and JIT/native denial. This local
+extension does not complete S2-31 or ISSUE-019. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cq-canonical-subnormal-m32-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31cq--canonical-subnormal-m32-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
