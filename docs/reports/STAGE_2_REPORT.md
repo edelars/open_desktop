@@ -6484,5 +6484,5 @@ fixture JSON, documentation anchors, and `git diff --check` passed.
 The layout checker reports only the pre-existing unmapped `.serena/` directory,
 preserved. Native runtime and physical acceptance remain deferred under
 ISSUE-019. Independent Sol-medium review was clean, including all 470 `od-isa`
-tests, CLI and JIT checks, and 519,456 x86 oracle combinations; native runtime
+tests, CLI and JIT checks, and 519,456 exact-integer rounding oracle combinations; native runtime
 and physical acceptance remain deferred under ISSUE-019.
