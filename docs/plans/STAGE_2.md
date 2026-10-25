@@ -5202,3 +5202,23 @@ outside this slice; final host acceptance remains under ISSUE-019. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31db-special-unnormals-m64-fistp),
 [report](../reports/STAGE_2_REPORT.md#s2-31db--special-tagged-unnormals-through-m64-fistp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+## S2-31do — canonical binary80 subnormal through bounded FRNDINT
+
+For Long64 bare `D9 FC`, admit only a Special-tagged old physical ST(0) whose
+raw encoding is a canonical nonzero binary80 subnormal (biased exponent zero,
+J=0, nonzero fraction). Preserve existing pseudo-denormal, malformed, class,
+tag, control and status rejection boundaries. All admitted magnitudes are
+below one-half: RN/RZ yield signed zero; RD yields -1 for negative and +0 for
+positive; RU yields +1 for positive and -0 for negative. Each operation adds
+sticky DE and PE, with C1 set only for ±1. Zero results become Zero-tagged;
+one results become Valid-tagged. Preserve C0/C2/C3, TOP, unrelated state,
+metadata and the existing all-masked/status gates. Propagate current DE only
+through the local FRNDINT preflight/commit tuple.
+
+Add an independent min/max/two-interior fraction × sign × RC × TOP × prior
+DE/PE/C1 matrix, legal sticky IE/SF pairings, full canaries, repeat FRNDINT,
+FNSTSW/FNCLEX and atomic malformed/pseudo-denormal/tag/control/status rejects.
+Add one literal seeded `D9 FC DF E0` fixture with explicit project-fixture
+provenance. Keep JIT/native admission closed; physical x86 and Mac mini checks
+remain for the combined final S2-31 acceptance substage and must not be run as
+part of this implementation substage.

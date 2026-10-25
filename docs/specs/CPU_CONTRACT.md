@@ -4203,6 +4203,39 @@ pseudo-denormals, malformed encodings, mismatched tags, unmasked exceptions,
 and general x87 exception delivery remain outside this slice. Physical
 acceptance is deferred to the combined final S2-31 substage under ISSUE-019.
 
+## Local S2-31do: canonical binary80 subnormal `FRNDINT` (`D9 FC`)
+
+Extend the existing bare register-only Long64 `D9 FC` gate only for physical
+ST(0) tagged Special whose raw bytes are a canonical nonzero binary80 subnormal:
+biased exponent zero, J=0, and nonzero fraction, with either sign. Pseudo-
+denormals, malformed encodings, tag mismatches, and unsupported neighboring
+raw encodings remain Unsupported atomically. Existing admitted Zero, Normal,
+infinity and NaN paths are unchanged. The exact
+four-FCW whitelist and current `FSW & 0x8080 == 0`, SF-requires-IE status gate
+remain in force; sticky IE, DE, PE and SF+IE are retained.
+
+Every admitted magnitude is below one-half. RN and RZ return signed zero;
+RD returns -1 for negative input and +0 for positive input; RU returns +1 for
+positive input and -0 for negative input. Every execution adds sticky DE and
+PE. C1 is set exactly for either signed-one result and otherwise cleared; C0,
+C2, C3, TOP, FCW, unrelated tags/registers, FDP/FOP, GPRs and RFLAGS are
+preserved. Result one uses canonical binary80 with Valid tag; result zero uses
+signed zero with Zero tag. FIP receives old RIP and RIP advances by two. No
+data memory or stack access occurs. Current DE is carried through the local
+preflight/commit tuple; this does not introduce a general exception framework.
+
+Coverage includes minimum and maximum canonical fractions plus two interior
+fractions across sign, RC, TOP, prior DE/PE/C1 and legal IE/SF pairings, complete
+state canaries, repeat FRNDINT, FNSTSW/FNCLEX and atomic neighbor rejects. The
+seeded literal `D9 FC DF E0` fixture uses explicit `project_fixture`
+provenance; it is not native evidence. JIT/native admission remains denied.
+Physical x86 and Mac mini acceptance, unmasked exception delivery and broader
+x87 semantics remain deferred to the combined final S2-31 substage under
+ISSUE-019.
+
+Normative source: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3 and Vol.2A
+“FRNDINT—Round to Integer,” p.3-372.
+
 ## Local S2-30al: bounded `FUCOMI ST(0), ST(1)` (`DB E9`)
 
 Accept exactly bare `DB E9`. Before mutation call

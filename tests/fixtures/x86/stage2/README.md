@@ -3136,3 +3136,13 @@ composition and unmasked delivery are excluded. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31db-special-unnormals-m64-fistp),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31db-special-unnormals-m64-fistp), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31db--special-tagged-unnormals-through-m64-fistp).
+## S2-31do FRNDINT canonical subnormal fixture
+
+The seeded literal `s2_31do_frndint_seeded_subnormal_fnstsw.case.json` runs
+`D9 FC DF E0` with Special-tagged canonical positive binary80 subnormal
+fraction `0x123` and sticky IE/DE/PE in the initial project fixture state.
+FRNDINT produces positive zero with Zero tag, retains DE/PE and the other
+seeded status, and FNSTSW AX exposes `0x6d23`. Provenance is explicitly
+`project_fixture`: these initial flags and bytes are handwritten fixture
+state, not evidence from native x86 execution. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31do-canonical-binary80-subnormal-frndint-d9-fc),
+[plan](../../../../docs/plans/STAGE_2.md), and [report](../../../../docs/reports/STAGE_2_REPORT.md).

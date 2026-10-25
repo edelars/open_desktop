@@ -8482,3 +8482,35 @@ Sol-medium review found three coverage/documentation issues; all were corrected
 and the follow-up review found no remaining issues. The x86-only native-admission
 runtime test was not run on this Apple Silicon host. Physical x86/Mac mini
 acceptance remains deferred to the combined final S2-31 substage under ISSUE-019.
+## S2-31do — canonical binary80 subnormal through bounded FRNDINT
+
+Bare Long64 `D9 FC` now admits only a Special-tagged physical ST(0) with
+canonical binary80 subnormal bytes (exponent zero, J=0, nonzero fraction).
+All inputs are below one-half: RN/RZ return signed zero, RD returns -1 only
+for negative inputs, and RU returns +1 only for positive inputs. Each admitted
+operation sets sticky DE and PE; C1 is set only for ±1. Commits set the result
+tag to Zero or Valid as appropriate while preserving other flags, tags,
+registers, TOP, FDP/FOP and unrelated state; FIP receives the instruction's
+old RIP. Current DE passes through the
+existing FRNDINT preflight/commit tuple. Pseudo-denormal, malformed, mismatch,
+control, status and execution-boundary rejects remain atomic; JIT/native remain
+denied.
+
+Local coverage crosses minimum/maximum and two interior fractions with sign,
+four RC modes, all TOP values, prior DE/PE/C1 and legal IE/SF combinations,
+checking full state canaries and no memory access. Repeat FRNDINT, FNSTSW AX,
+FNCLEX and zero re-entry are covered. The seeded literal
+`s2_31do_frndint_seeded_subnormal_fnstsw.case.json` is explicitly a
+`project_fixture`; its initial state is not native evidence.
+
+Validation passed: focused `cargo test -p od-isa --offline frndint` (23 tests),
+the new 6,144-case subnormal matrix/reject test, and the focused
+`od-runner` seeded-fixture test. A literal CLI interpreter run retired two
+instructions and observed AX/FSW `0x6d23`, positive zero, and Zero tag.
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, `git diff --check`, and `graphify update .`
+passed. No Mac mini, SSH or physical x86 run was performed; those remain
+part of the combined final S2-31 acceptance substage under ISSUE-019. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31do-canonical-binary80-subnormal-frndint-d9-fc),
+[plan](../plans/STAGE_2.md#s2-31do-canonical-binary80-subnormal-through-bounded-frndint),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31do-frndint-canonical-subnormal-fixture).

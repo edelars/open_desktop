@@ -1060,3 +1060,13 @@
   [plan](plans/STAGE_2.md#s2-31db-special-unnormals-m64-fistp),
   [report](reports/STAGE_2_REPORT.md#s2-31db--special-tagged-unnormals-through-m64-fistp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+- **S2-31do evidence:** bare Long64 `D9 FC` admits canonical Special-tagged
+  nonzero binary80 subnormals and adds current DE+PE with signed-zero/±1
+  rounding and Zero/Valid result tags. The independent state matrix, atomic
+  neighbors, repeated FRNDINT, FNSTSW/FNCLEX and seeded
+  `project_fixture` composition are local evidence only. JIT/native, physical
+  x86 and Mac mini acceptance remain deferred to the combined final S2-31
+  substage; ISSUE-019 remains open. See [CPU contract](specs/CPU_CONTRACT.md#local-s2-31do-canonical-binary80-subnormal-frndint-d9-fc),
+  [plan](plans/STAGE_2.md#s2-31do-canonical-binary80-subnormal-through-bounded-frndint),
+  [report](reports/STAGE_2_REPORT.md#s2-31do--canonical-binary80-subnormal-through-bounded-frndint),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md#s2-31do-frndint-canonical-subnormal-fixture).
