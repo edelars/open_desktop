@@ -6603,3 +6603,8 @@ and 184 communities. The cross-target check emitted existing dead-code warnings
 in `od-host`/`od-runner`; no errors. `tools/check_layout.py` reported only the
 preserved unmapped `.serena/` directory; it was left untouched. Physical x86
 acceptance remains deferred to the combined S2-31 substage under ISSUE-019.
+
+Independent gpt-6.1-sol medium review of commit `eda15b9` was clean. The review
+confirmed 481 `od-isa` tests, both minimum-normal interpreter fixtures and their
+JIT denial. Native runtime and physical x86 acceptance remain deferred to the
+combined S2-31 acceptance substage.
