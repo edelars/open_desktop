@@ -2931,6 +2931,36 @@ and physical behavior remain deferred under ISSUE-019. See the
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
 
+<a id="local-s2-31cb-masked-canonical-infinity-fistp-m64int"></a>
+
+## Local S2-31cb: masked canonical infinity through m64 `FISTP` (`DF 38`)
+
+Only bare `DF 38` admits Special-tagged canonical binary80 infinity:
+significand `0x8000000000000000` and sign/exponent word `0x7fff` or `0xffff`.
+With an existing admitted FCW (all exceptions masked), either sign and every
+RC mode store Qword integer indefinite `0x8000000000000000`. After the atomic
+Qword write, set sticky IE, clear C1, preserve incoming PE and C0/C2/C3, and
+add no PE/DE/OE/UE/SF; ES/B remain clear. The existing FSW gate continues to
+reject incoming IE.
+
+Keep bare Long64 RAX addressing, canonical48 eight-byte preflight, raw source
+bytes, one write/no read, and post-write commit. FISTP empties old TOP and
+increments TOP modulo eight only after successful write. Exact finite -2^63
+produces the same Qword bits without IE. NaNs, pseudo-infinity, malformed
+specials, mismatched tags, finite overflow, prefixed forms, and unmasked
+delivery remain outside this extension; no FIST m64 form is added.
+
+Coverage includes both signs, all admitted FCWs, every TOP, incoming PE/C1,
+tag/class/control/prefix rejection, Qword canaries and write/range atomicity,
+exact -2^63 distinction, and a literal FISTP/FNSTSW fixture. A direct
+FISTP/FNSTSW/FNCLEX sequence verifies IE observation and clearing. JIT/native
+denial remains explicit; native runtime and physical behavior remain deferred
+under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31cb-masked-binary80-infinity-through-bounded-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31cb--masked-binary80-infinity-through-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
 <a id="local-s2-31bs-sticky-oe-on-raw-binary80-fstp-m80fp"></a>
 
 ## Local S2-31bs: sticky OE on raw `FSTP m80fp [RAX]` (`DB 38`)

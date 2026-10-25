@@ -7049,8 +7049,8 @@ both signs and every RC mode store Word integer indefinite `0x8000`. After a
 successful atomic Word write, IE is sticky, C1 clears, incoming PE and
 C0/C2/C3 remain preserved, and no PE/DE/OE/UE/SF or ES/B is added. Raw source
 bytes, addressing, FSW gate, and post-write FIST/FISTP commit/pop remain
-unchanged; m32 behavior is unchanged, while m64 and other classes remain
-unsupported.
+unchanged; m32 behavior is unchanged, and m64 is outside this slice. The
+separate DF38 infinity case is covered by S2-31cb below.
 
 The ISA matrix crosses both signs, four FCWs, both opcodes, all TOP values,
 and incoming PE/C1. Rejections cover mismatched tags, noncanonical special
@@ -7074,4 +7074,41 @@ execute it. `cargo fmt --all -- --check` and `git diff --check` passed.
 directory as unmapped; it remains untracked and excluded. Changed S2-31ca plan,
 contract, report and README links were manually cross-checked. `graphify update
 .` rebuilt the graph to 4,398 nodes, 8,958 edges and 181 communities. Native
+runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+<a id="s2-31cb--masked-binary80-infinity-through-m64-fistp"></a>
+
+## S2-31cb — masked binary80 infinity through m64 FISTP
+
+Only bare `DF 38` now admits Special-tagged canonical binary80 positive or
+negative infinity (significand `0x8000000000000000`, sign/exponent `0x7fff` or
+`0xffff`). Under the existing masked FCW whitelist, both signs and every RC
+mode store Qword integer indefinite `0x8000000000000000`. After a successful
+atomic Qword write, IE is sticky, C1 clears, incoming PE and C0/C2/C3 remain
+preserved, and no PE/DE/OE/UE/SF or ES/B is added. Raw source bytes, addressing,
+FSW gate, and post-write FISTP commit/pop behavior remain unchanged; no FIST
+m64 form is added.
+
+The ISA matrix crosses signs, all admitted FCWs, TOP values, and incoming
+PE/C1. A paired exact -2^63 case verifies that finite minimum and infinity
+store the same Qword bits while only infinity sets IE. Rejection tests cover
+mismatched tags, NaNs, pseudo-infinity, malformed specials, FCW/FSW gates and
+prefixes. Fault tests assert complete state/memory atomicity for denied and
+backend Qword writes and canonical48 range failures. A negative-infinity
+FISTP/FNSTSW CLI fixture observes IE and the popped TOP/tag; a direct
+FISTP/FNSTSW/FNCLEX sequence verifies observation and clearing. JIT/native
+admission remains closed.
+
+Focused `cargo test -p od-isa fistp_m64int_ --offline` passed 14/14, including
+the infinity matrix, finite -2^63 distinction, rejection, fault and FNSTSW/
+FNCLEX tests. The m16 and m32 infinity rejection regressions each passed 1/1
+after removing their obsolete DF38 rejection. The CLI fixture and JIT denial
+passed 1/1 each. The full `cargo test --workspace --offline` suite passed 895
+tests: 522 `od-isa`, 4 `od-jit`, 6 host, 64 runner CLI, 124 fixture/JIT, 166
+testkit, 8 x86-runner library and 1 x86-runner main; all doc-tests passed.
+Host and Linux x86_64 all-target checks passed; Linux compiled native-denial
+coverage but did not execute it. Formatting, diff and S2-31cb anchor checks
+passed. `python3 tools/check_layout.py` reports only the preserved root
+`.serena/` directory as unmapped; it remains excluded. `graphify update .`
+rebuilt the graph to 4,409 nodes, 8,981 edges and 175 communities. Native
 runtime and physical x86 acceptance remain deferred under ISSUE-019.
