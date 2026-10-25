@@ -1909,6 +1909,10 @@ mod tests {
             )
             .as_slice(),
             include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_31cg_fistp_m16int_negative_snan_fnstsw.case.json"
+            )
+            .as_slice(),
+            include_bytes!(
                 "../../../tests/fixtures/x86/stage2/s2_31cb_fistp_m64int_negative_infinity_fnstsw.case.json"
             )
             .as_slice(),
@@ -4451,6 +4455,18 @@ mod tests {
     fn s2_31cf_masked_signaling_nan_fist_m32_fixture_remains_outside_native_admission() {
         let bytes = include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31cf_fistp_m32int_negative_snan_fnstsw.case.json"
+        )
+        .as_slice();
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
+    }
+
+    #[test]
+    fn s2_31cg_masked_signaling_nan_fist_m16_fixture_remains_outside_native_admission() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31cg_fistp_m16int_negative_snan_fnstsw.case.json"
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();

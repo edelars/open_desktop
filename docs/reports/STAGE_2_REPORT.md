@@ -7240,3 +7240,39 @@ to 4,446 nodes, 9,050 edges and 180 communities; documentation anchors were
 checked.
 
 Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31cg--masked-binary80-snan-through-m16-fistfstp"></a>
+
+## S2-31cg — masked binary80 signaling NaN through m16 FIST/FISTP
+
+Only bare `DF 10` and `DF 18` admit Special-tagged canonical binary80 SNaNs:
+exponent `0x7fff`, either sign, J=1, quiet bit=0, and nonzero lower 62-bit
+payload. Every admitted sign, payload and RC stores Word integer indefinite
+`0x8000`; after the atomic Word write, IE is set and C1 cleared, incoming
+PE/C0/C2/C3 are preserved, and no other flags are added. Raw SNaN bytes remain
+unchanged for FIST and FISTP. The m32 SNaN path remains unchanged, and m64 stays
+unsupported.
+
+The matrix crosses four payload shapes × both signs × four FCWs × both opcodes
+× eight TOP values × PE/C1 (2,048 cases). Rejections cover J=0 pseudo-NaNs,
+tag mismatches, all FSW gate bits, invalid FCW, prefixes, m64, canonical-range
+faults and denied writes with full-state/memory preservation. A literal
+FISTP/FNSTSW fixture and direct FNSTSW/FNCLEX composition observe and clear IE.
+Focused tests passed: m16 matrix 1/1; m16 observation/rejection/fault 2/2;
+stale m16 QNaN and infinity rejection regressions 1/1 each; prior m32 SNaN
+matrix 1/1 and observation/rejection/fault 2/2; CLI fixture 1/1; JIT denial
+1/1. The m32 width fence was
+updated to keep only DF38 outside the m16/m32 admitted SNaN widths. The
+native-denial test is architecture-gated, was compiled for Linux x86_64, and
+did not run on the local arm64 host.
+
+`cargo test --workspace --offline` passed 920 tests: 537 `od-isa`, 4 `od-jit`,
+6 `od-host`, 69 runner CLI, 129 fixture/JIT, 166 `od-testkit`, 8 x86-runner
+library and 1 x86-runner main; all doc-tests passed. Host and Linux x86_64
+`cargo check --workspace --all-targets --offline` passed. `cargo fmt --all --
+--check` and `git diff --check` passed. `graphify update .` confirmed the graph
+to 4,456 nodes, 9,068 edges and 165 communities; the native-denial test
+compiled for Linux x86_64 and remains unexecuted on the arm64 host.
+
+Native runtime and physical x86 acceptance remain deferred under ISSUE-019.

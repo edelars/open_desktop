@@ -2649,3 +2649,17 @@ native admission remain closed. See the [S2-31cf CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cf-masked-canonical-snan-fist-m32int),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cf-masked-binary80-snan-through-bounded-m32-fist),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cf--masked-binary80-snan-through-m32-fistfstp).
+
+
+### S2-31cg masked signaling-NaN FISTP m16int fixture
+
+The negative canonical signaling-NaN `DF 18` fixture stores Word integer
+indefinite `0x8000` under masked exceptions and composes with FNSTSW to observe
+IE and the popped TOP/tag. The raw SNaN payload remains unchanged. ISA coverage
+crosses four payload shapes, both signs, all admitted FCWs, both opcodes,
+every TOP and incoming PE/C1 (2,048 cases); it rejects J=0 pseudo-NaNs,
+mismatched tags, and checks Word write/range atomicity. JIT and native admission
+remain closed. See the [S2-31cg CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cg-masked-canonical-snan-fist-m16int),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31cg-masked-binary80-snan-through-bounded-m16-fist),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cg--masked-binary80-snan-through-m16-fistfstp).
