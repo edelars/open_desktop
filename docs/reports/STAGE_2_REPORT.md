@@ -7209,6 +7209,37 @@ denial coverage but did not execute it. `cargo fmt --all -- --check` and
 Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
 
 
+<a id="s2-31ch--masked-binary80-snan-through-m64-fistp"></a>
+
+## S2-31ch — masked binary80 signaling NaN through m64 FISTP
+
+Only bare `DF 38` admits Special-tagged canonical binary80 SNaNs: exponent
+`0x7fff`, either sign, J=1, quiet bit=0, and nonzero lower 62-bit payload.
+Every admitted payload, sign and FCW stores Qword integer indefinite
+`0x8000000000000000`. After the successful atomic write, IE is set and C1 is
+cleared; incoming PE/C0/C2/C3 are preserved, and no other flags are added.
+The raw signaling source remains unchanged through FISTP. The existing FSW
+gate continues to reject incoming IE; no non-pop m64 form is admitted.
+
+The matrix crosses four payload patterns × both signs × four FCWs × every TOP
+× incoming PE/C1 (1,024 cases). Tests also cover FNSTSW/FNCLEX observation,
+J=0 pseudo-NaNs, tag/class/control/prefix rejection, Qword write/range
+atomicity, and raw source preservation. Focused ISA SNaN tests passed 15/15;
+the CLI fixture and JIT-denial tests passed 1/1 each. `cargo test --workspace
+--offline` passed 925 tests: 6 `od-host`, 540 `od-isa`, 4 `od-jit`, 70 runner
+CLI, 130 fixture/JIT, 166 `od-testkit`, 8 x86-runner library, and 1 x86-runner
+main; all doc-tests passed. Host `cargo check --workspace --all-targets
+--offline` and Linux x86_64 `cargo check --workspace --all-targets --offline
+--target x86_64-unknown-linux-gnu` passed. The Linux check emitted existing
+dead-code warnings in host/runner. The native-denial test is architecture-
+gated: its test code compiled in the Linux all-target build, but the local
+arm64 runner did not execute it. No native runtime or physical x86 acceptance
+is claimed. `cargo fmt --all -- --check` passed, and `graphify update .`
+rebuilt the graph to 4,466 nodes, 9,086 edges, and 172 communities.
+
+Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+
 <a id="s2-31cf--masked-binary80-snan-through-m32-fistfstp"></a>
 
 ## S2-31cf — masked binary80 signaling NaN through m32 FIST/FISTP
@@ -7252,7 +7283,8 @@ payload. Every admitted sign, payload and RC stores Word integer indefinite
 `0x8000`; after the atomic Word write, IE is set and C1 cleared, incoming
 PE/C0/C2/C3 are preserved, and no other flags are added. Raw SNaN bytes remain
 unchanged for FIST and FISTP. The m32 SNaN path remains unchanged, and m64 stays
-unsupported.
+outside this m16 slice; its exact `DF 38` FISTP form is added separately in
+S2-31ch.
 
 The matrix crosses four payload shapes × both signs × four FCWs × both opcodes
 × eight TOP values × PE/C1 (2,048 cases). Rejections cover J=0 pseudo-NaNs,

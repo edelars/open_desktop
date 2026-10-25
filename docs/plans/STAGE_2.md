@@ -296,6 +296,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ce | Convert canonical masked binary80 quiet NaN to integer indefinite for DF38 m64 FISTP | S2-31cb |
 | [x] | S2-31cf | Convert canonical masked binary80 signaling NaN to integer indefinite for DB10/DB18 m32 FIST/FISTP | S2-31cc |
 | [x] | S2-31cg | Convert canonical masked binary80 signaling NaN to integer indefinite for DF10/DF18 m16 FIST/FISTP | S2-31cd |
+| [x] | S2-31ch | Convert canonical masked binary80 signaling NaN to integer indefinite for DF38 m64 FISTP | S2-31ce |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4350,11 +4351,33 @@ nonzero lower 62-bit payload. Under the existing admitted masked FCWs, store
 Word integer indefinite `0x8000` for every payload, sign and RC. After the
 atomic Word write, add sticky IE, clear C1, preserve incoming PE and C0/C2/C3,
 and add no PE/DE/OE/UE/SF or ES/B. Preserve raw SNaN bytes through FIST and
-FISTP; the m32 SNaN slice is unchanged and m64 remains unsupported.
+FISTP; the m32 SNaN slice is unchanged and m64 is handled separately in
+S2-31ch.
 
 Coverage crosses four payload patterns, both signs, all admitted FCWs, both
 opcodes, every TOP and incoming PE/C1 (2,048 cases). Reject J=0 pseudo-NaNs,
-mismatched tags, invalid controls, prefixes, m64, and canonical-range/write
-faults atomically. A literal FISTP/FNSTSW fixture and direct FNSTSW/FNCLEX
+mismatched tags, invalid controls, prefixes, and canonical-range/write faults
+atomically. The former m64 `DF 38` rejection was superseded when S2-31ch
+admitted that form. A literal FISTP/FNSTSW fixture and direct FNSTSW/FNCLEX
 sequence observe and clear IE. JIT/native admission remains closed; native
 runtime and physical acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31ch-masked-binary80-snan-through-bounded-m64-fistp"></a>
+
+#### S2-31ch. Convert masked binary80 signaling NaN through bounded m64 `FISTP`
+
+Extend only bare `DF 38` for Special-tagged canonical binary80 signaling NaNs:
+exponent `0x7fff`, either sign, J=1, quiet bit=0, and nonzero lower 62-bit
+payload. Under the existing admitted masked FCWs, store Qword integer
+indefinite `0x8000000000000000` for every payload, sign and RC. After the
+atomic Qword write, add sticky IE, clear C1, preserve incoming PE and C0/C2/C3,
+and add no PE/DE/OE/UE/SF or ES/B. Preserve raw SNaN bytes through FISTP;
+m16/m32 SNaN behavior stays unchanged.
+
+Coverage crosses four payload patterns × both signs × four FCWs × every TOP
+× incoming PE/C1 (1,024 cases). Reject J=0 pseudo-NaNs, mismatched tags,
+invalid controls, prefixes and canonical-range/write faults atomically. A
+literal FISTP/FNSTSW fixture and direct FNSTSW/FNCLEX sequence observe and
+clear IE. JIT/native admission remains closed; native runtime and physical
+acceptance remain deferred under ISSUE-019.

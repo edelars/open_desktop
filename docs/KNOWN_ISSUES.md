@@ -765,10 +765,22 @@
   binary80 SNaNs for m16 FIST/FISTP, storing Word integer indefinite, setting
   IE, clearing C1 and preserving raw source bytes. The four-payload
   sign×FCW×opcode×TOP×PE/C1 matrix has 2,048 cases; pseudo-NaN/tag/control/
-  prefix/m64 and write/range atomicity controls, CLI/FNSTSW, JIT denial, and
-  Linux x86_64 native-denial compile coverage are included. Physical x86 and
+  prefix and write/range atomicity controls, CLI/FNSTSW, JIT denial, and Linux
+  x86_64 native-denial compile coverage are included. The former m64 `DF 38`
+  denial was superseded by S2-31ch. Physical x86 and
   native runtime behavior remain unverified; S2-31 and ISSUE-019 remain open.
   See [contract](specs/CPU_CONTRACT.md#local-s2-31cg-masked-canonical-snan-fist-m16int),
   [plan](plans/STAGE_2.md#s2-31cg-masked-binary80-snan-through-bounded-m16-fist),
   [report](reports/STAGE_2_REPORT.md#s2-31cg--masked-binary80-snan-through-m16-fistfstp),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+- **S2-31ch evidence:** bare `DF 38` admits canonical Special-tagged binary80
+  SNaNs for m64 `FISTP`, storing Qword integer indefinite, setting IE, clearing
+  C1 and preserving raw source bytes. The 1,024-case payload/sign/FCW/TOP/
+  PE/C1 matrix includes Qword write/range atomicity, malformed class/tag and
+  control rejection, FNSTSW/FNCLEX, CLI fixture and JIT denial. Native denial
+  is architecture-gated and compiled in the Linux x86_64 check; native runtime
+  and physical behavior remain unverified. S2-31 and ISSUE-019 remain open.
+  See [contract](specs/CPU_CONTRACT.md#local-s2-31ch-masked-canonical-snan-fistp-m64int),
+  [plan](plans/STAGE_2.md#s2-31ch-masked-binary80-snan-through-bounded-m64-fistp),
+  [report](reports/STAGE_2_REPORT.md#s2-31ch--masked-binary80-snan-through-m64-fistp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).

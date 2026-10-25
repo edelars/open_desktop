@@ -2659,7 +2659,22 @@ IE and the popped TOP/tag. The raw SNaN payload remains unchanged. ISA coverage
 crosses four payload shapes, both signs, all admitted FCWs, both opcodes,
 every TOP and incoming PE/C1 (2,048 cases); it rejects J=0 pseudo-NaNs,
 mismatched tags, and checks Word write/range atomicity. JIT and native admission
-remain closed. See the [S2-31cg CPU
+remain closed. The exact m64 `DF 38` form is handled separately in S2-31ch.
+See the [S2-31cg CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cg-masked-canonical-snan-fist-m16int),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cg-masked-binary80-snan-through-bounded-m16-fist),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cg--masked-binary80-snan-through-m16-fistfstp).
+
+
+### S2-31ch masked signaling-NaN FISTP m64int fixture
+
+The negative canonical signaling-NaN `DF 38` fixture stores Qword integer
+indefinite `0x8000000000000000` under masked exceptions and composes with
+FNSTSW to observe IE and the popped TOP/tag. The raw SNaN source payload stays
+unchanged after FISTP. ISA coverage crosses four payload shapes, both signs,
+all admitted FCWs, every TOP and incoming PE/C1 (1,024 cases); it rejects J=0
+pseudo-NaNs and mismatched tags, and checks Qword write/range atomicity. JIT
+and native admission remain closed. See the [S2-31ch CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ch-masked-canonical-snan-fistp-m64int),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ch-masked-binary80-snan-through-bounded-m64-fistp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ch--masked-binary80-snan-through-m64-fistp).

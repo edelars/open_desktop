@@ -5339,7 +5339,8 @@ IE, clear C1, preserve incoming PE and C0/C2/C3, and add no PE/DE/OE/UE/SF or
 ES/B. Preserve the raw signaling source bytes and existing addressing and
 post-write FIST/FISTP commit/pop behavior. Canonical infinity and QNaN remain
 covered by earlier slices; J=0 pseudo-NaNs, mismatched tags, finite overflow,
-m16/m64 SNaNs, and unmasked delivery remain unsupported.
+and unmasked delivery remain unsupported. The m16 and m64 SNaN operations are
+outside this m32 slice and are specified separately in S2-31cg and S2-31ch.
 
 Coverage includes four payload shapes, both signs, all admitted FCWs, both
 opcodes, every TOP and incoming PE/C1 (2,048 combinations), with source-byte,
@@ -5361,14 +5362,43 @@ payload. Under the existing FCW whitelist, either sign and every RC mode store
 Word integer indefinite `0x8000`. After the atomic Word write, set sticky IE,
 clear C1, preserve incoming PE and C0/C2/C3, and add no PE/DE/OE/UE/SF or ES/B.
 Preserve raw signaling source bytes and the current addressing and post-write
-FIST/FISTP state/pop behavior. The m32 SNaN behavior is unchanged; m64 SNaN,
-J=0 pseudo-NaNs, mismatched tags and unmasked delivery remain unsupported.
+FIST/FISTP state/pop behavior. The m32 SNaN behavior is unchanged; J=0
+pseudo-NaNs, mismatched tags and unmasked delivery remain unsupported. The m64
+SNaN form is specified separately in S2-31ch.
 
 Coverage includes four payload patterns, both signs, all admitted FCWs, both
 opcodes, every TOP and incoming PE/C1 (2,048 combinations), raw source/tag/pop
-preservation, one Word write/no read, class/tag/control/prefix/m64 rejection,
-range and write atomicity, and FNSTSW/FNCLEX. JIT/native admission remains
+preservation, one Word write/no read, class/tag/control/prefix rejection,
+range and write atomicity, and FNSTSW/FNCLEX. The former m64 `DF 38` denial is
+superseded by S2-31ch. JIT/native admission remains
 closed; native runtime and physical behavior remain deferred under ISSUE-019.
 See the [plan](../plans/STAGE_2.md#s2-31cg-masked-binary80-snan-through-bounded-m16-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31cg--masked-binary80-snan-through-m16-fistfstp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31ch-masked-canonical-snan-fistp-m64int"></a>
+
+## Local S2-31ch: masked canonical signaling NaN through m64 `FISTP` (`DF 38`)
+
+Only bare `DF 38` admits Special-tagged canonical binary80 SNaNs: exponent
+`0x7fff`, either sign, J=1, quiet bit=0, and a nonzero lower 62-bit payload.
+Under the existing FCW whitelist, either sign and every RC mode store Qword
+integer indefinite `0x8000000000000000`. After the atomic Qword write, set
+sticky IE, clear C1, preserve incoming PE and C0/C2/C3, and add no
+PE/DE/OE/UE/SF or ES/B. Preserve raw signaling source bytes and post-write
+FISTP commit/pop behavior. The existing FSW gate rejects incoming IE.
+
+Keep bare Long64 RAX addressing, full canonical48 Qword preflight, one write/no
+read, and raw payload preservation. J=0 pseudo-NaNs, malformed or mismatched
+tags, finite overflow and unmasked delivery remain unsupported. Existing m16
+and m32 SNaN paths are unchanged; no non-pop m64 form is admitted.
+
+Coverage includes four payload patterns, both signs, all FCWs, every TOP and
+incoming PE/C1 (1,024 combinations), source/tag/pop preservation, class/tag/
+control/prefix rejection, Qword canaries, range/write atomicity and
+FNSTSW/FNCLEX. JIT/native admission remains closed; native runtime and physical
+behavior remain deferred under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31ch-masked-binary80-snan-through-bounded-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31ch--masked-binary80-snan-through-m64-fistp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
