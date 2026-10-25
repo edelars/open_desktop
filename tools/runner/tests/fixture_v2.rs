@@ -51,6 +51,9 @@ const FRNDINT_SEEDED_OE_FNSTSW: &[u8] =
 const FRNDINT_SEEDED_ZE_OE_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31dm_frndint_seeded_ze_oe_fnstsw.case.json"
 );
+const FRNDINT_SEEDED_SF_IE_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31dn_frndint_seeded_sf_ie_fnstsw.case.json"
+);
 const FST_M32_OVERFLOW_FRNDINT_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31dl_fst_m32_overflow_frndint_fnstsw.case.json"
 );
@@ -1702,6 +1705,23 @@ fn local_x87_frndint_admits_seeded_ze_and_preserves_it_in_fnstsw() {
 }
 
 #[test]
+fn local_x87_frndint_admits_seeded_sf_with_ie_and_observes_recomputed_c1() {
+    let (input, result) = run(FRNDINT_SEEDED_SF_IE_FNSTSW, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 2);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0004));
+    assert_eq!(observed.state.gpr[0], HexU64(0x0041));
+    let x87 = observed.state.x87.as_ref().unwrap();
+    assert_eq!(x87.status_word, HexU64(0x0041));
+    assert_eq!(x87.registers[0], "0000000000000080ff3f");
+    assert_eq!(
+        x87.tag_word,
+        input.fixture.initial_state.x87.as_ref().unwrap().tag_word
+    );
+}
+
+#[test]
 fn local_x87_fild_m64int_fixtures_load_signed_qword_and_observe_status() {
     for (fixture, expected_rax, expected_rip) in [
         (FILD_M64INT, 0x0000_0000_0030_0001, 0x0010_0002),
@@ -3329,8 +3349,12 @@ fn v2_jit_denies_loaded_infinity_frndint_without_interpreter_fallback() {
 }
 
 #[test]
-fn v2_jit_denies_sticky_oe_frndint_fixtures_without_interpreter_fallback() {
-    for fixture in [FRNDINT_SEEDED_OE_FNSTSW, FST_M32_OVERFLOW_FRNDINT_FNSTSW] {
+fn v2_jit_denies_sticky_oe_and_sf_ie_frndint_without_interpreter_fallback() {
+    for fixture in [
+        FRNDINT_SEEDED_OE_FNSTSW,
+        FRNDINT_SEEDED_SF_IE_FNSTSW,
+        FST_M32_OVERFLOW_FRNDINT_FNSTSW,
+    ] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));

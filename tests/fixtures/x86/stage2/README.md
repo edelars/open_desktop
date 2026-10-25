@@ -1442,6 +1442,20 @@ and prior C1; SF/ES/B remain atomic rejects. JIT/native admissions remain
 closed. Physical x86/Mac mini acceptance is deferred to the combined final
 S2-31 substage under ISSUE-019. See the [S2-31dm CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dm-historical-sticky-ze-in-bounded-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dm-admit-historical-sticky-ze-to-bounded-frndint-d9-fc), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dm--historical-sticky-ze-through-bounded-frndint).
 
+### S2-31dn FRNDINT historical SF+IE admission
+
+The literal `s2_31dn_frndint_seeded_sf_ie_fnstsw.case.json` runs exactly
+`D9 FC DF E0` with canonical binary80 `1.0`, FCW `0x037f`, and initial FSW
+`0x0241` (SF+IE+C1). FRNDINT preserves SF+IE and recomputes C1 to zero;
+FNSTSW AX observes `0x0041`. Provenance is `project_fixture`: IE and SF are
+seeded in the initial snapshot, not produced by guest code. The fixture is not
+native evidence. The independent interpreter matrix combines SF+IE with every
+DE/ZE/OE/UE/PE subset across all supported source classes/signs/FCWs/TOPs/prior
+C1; SF-only (including current SNaN), ES and B remain rejected. Re-entry and
+FNCLEX are covered by the existing signaling-NaN sequence. Physical x86/Mac
+mini acceptance remains deferred to the combined final S2-31 substage under
+ISSUE-019. See the [S2-31dn CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dn-historical-sfie-in-bounded-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dn--historical-sticky-sf-with-ie-through-bounded-frndint).
+
 ### S2-31di FRNDINT small Normal values
 
 The literal `s2_31di_frndint_min_normal_to_negative_zero_fnstsw.case.json`

@@ -8448,3 +8448,37 @@ final S2-31 substage under ISSUE-019. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dm-historical-sticky-ze-in-bounded-frndint-d9-fc),
 [plan](../plans/STAGE_2.md#s2-31dm-admit-historical-sticky-ze-to-bounded-frndint-d9-fc),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+## S2-31dn — historical sticky SF with IE through bounded FRNDINT
+
+The bare register-only `D9 FC` gate now uses the base predicate
+`FSW & 0x8080 == 0` plus a guard that rejects SF when IE is absent. This admits
+historical SF only together with IE; both remain sticky. Historical DE/ZE/OE/UE/PE
+are independently admitted. Current rounding and current exception behavior,
+source/tag domains, exact FCWs, and metadata are unchanged; C1 is recomputed from
+the current result. SF-only, ES and B remain atomic rejects, including SF-only
+with current SNaN. Empty/mismatched/raw-malformed sources remain rejected.
+JIT/native and pending/#MF/WAIT behavior are unchanged.
+
+The independent matrix covers 32,768 combinations of SF+IE, 32 DE/ZE/OE/UE/PE
+subsets, eight source classes, both signs, four FCWs, all TOP values and prior
+C1. The seeded project_fixture `D9 FC DF E0` case starts from source `1.0`,
+FCW `0x037f`, and FSW `0x0241`; FRNDINT clears prior C1 but preserves SF+IE,
+so FNSTSW AX returns `0x0041`. Its provenance explicitly records that IE+SF
+are set in the initial snapshot, not produced by the guest, and it is not native
+evidence. Existing SNaN re-entry/FNCLEX coverage is retained. The normative
+basis is Intel SDM revision 093 Vol.1 §8.1.3.4 p.8-6 and §8.5.1.1 p.8-26,
+and Vol.2A FRNDINT p.3-372.
+
+Focused verification passed: `cargo test -p od-isa --offline frndint` ran 21
+matching tests; `cargo test -p od-runner --offline frndint` ran 17 matching
+tests (including the seeded CLI and JIT-denial fixtures). Formatting,
+`cargo check --workspace --all-targets --offline`, `python3 tools/check_layout.py`
+and `git diff --check` passed. `graphify update .` refreshed the graph to 4,743
+nodes, 9,552 edges and 176 communities; existing extraction warnings remain for
+the public ABI header and files without supported symbols. Independent
+Sol-medium review found three coverage/documentation issues; all were corrected
+and the follow-up review found no remaining issues. The x86-only native-admission
+runtime test was not run on this Apple Silicon host. Physical x86/Mac mini
+acceptance remains deferred to the combined final S2-31 substage under ISSUE-019.

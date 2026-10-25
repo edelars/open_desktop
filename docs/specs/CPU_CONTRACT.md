@@ -4144,6 +4144,35 @@ explicitly identifies the ZE as seeded, with no producer in the guest code.
 Physical x86/Mac mini acceptance and general x87 exception delivery remain
 deferred to the combined final S2-31 acceptance substage under ISSUE-019.
 
+## Local S2-31dn: historical SF+IE in bounded `FRNDINT` (`D9 FC`)
+
+For the existing bare register-only `D9 FC` slice, retain FCWs
+`0x037f/0x077f/0x0b7f/0x0f7f`. The base status gate is
+`FSW & 0x8080 == 0`; an additional guard rejects when SF is set without IE.
+Therefore ES/B always reject, and SF-only rejects, while historical SF is
+admitted only with IE. Historical SF+IE and independent DE/ZE/OE/UE/PE remain
+sticky. Existing source and tag domains are unchanged: Empty, mismatched and
+raw-malformed sources remain Unsupported atomically. Current FRNDINT behavior
+still determines new IE/PE and the result; status commit preserves old C1 only
+as input to the clear operation, then sets C1 solely from the current rounded
+result. Both SF and IE survive successful FRNDINT. JIT/native admission remains
+closed. ES/B and pending/#MF/WAIT behavior are unchanged.
+
+The independent matrix covers SF+IE × 32 combinations of DE/ZE/OE/UE/PE ×
+eight source classes × both signs × four FCWs × all TOP values × both prior C1
+values (32,768 cases). Separate controls reject SF-only for ordinary and
+current-SNaN inputs and retain ES/B rejection; existing malformed/empty/tag
+mismatch controls remain active. The seeded literal `D9 FC DF E0` fixture
+starts with source 1.0, FCW `0x037f`, and FSW `0x0241`, then observes
+AX/FSW `0x0041`: IE and SF are present in its initial project_fixture snapshot,
+not produced by a guest instruction, and the fixture is not native evidence.
+The normative basis is Intel SDM revision 093 Vol.1 §8.1.3.4 p.8-6
+([official volume](https://cdrdv2-public.intel.com/v1/dl/getContent/671436)) and
+§8.5.1.1 p.8-26 (stack fault sets IE+SF), plus Vol.2A FRNDINT p.3-372
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=490)).
+Physical x86 acceptance and general exception delivery remain deferred to the
+combined final S2-31 acceptance substage under ISSUE-019.
+
 ## Local S2-31di: small canonical-Normal `FRNDINT` (`D9 FC`)
 
 Extend the exact bare register-only S2-31a gate to admit only Valid-tagged,

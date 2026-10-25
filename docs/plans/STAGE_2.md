@@ -230,6 +230,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dj | Admit historical sticky DE at bounded D9 FC while preserving DE and current rounding/exception effects; native/JIT closed | S2-31dh |
 | [x] | S2-31dk | Admit historical sticky UE at bounded D9 FC while preserving UE and independent current PE/IE effects; native/JIT closed | S2-31dj |
 | [x] | S2-31dm | Admit historical sticky ZE at bounded D9 FC while preserving independent current PE/IE effects; native/JIT closed | S2-31dl |
+| [x] | S2-31dn | Admit historical SF only together with IE at bounded D9 FC; preserve both while recomputing C1; native/JIT closed | S2-31dm |
 | [x] | S2-31di | Admit canonical Normal binary80 fractions with e=-16382..-1 to D9 FC via comparison-based rounding; produce signed Zero or Valid ±1 with PE/C1; native/JIT closed | S2-31dh |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
@@ -2317,6 +2318,30 @@ ZE and sticky flags present. Add an exact seeded `D9 FC DF E0` CLI fixture
 whose FNSTSW expectation includes ZE; provenance must state that ZE is
 explicitly seeded and no guest producer is present. Physical x86 and Mac mini
 acceptance remain part of the combined final S2-31 substage under ISSUE-019.
+
+#### S2-31dn. Admit historical SF together with IE to bounded `FRNDINT` (`D9 FC`)
+
+Retain the exact FCW whitelist `0x037f/0x077f/0x0b7f/0x0f7f`. Use the base
+status gate `FSW & 0x8080 == 0`, with the additional reject
+`(FSW & SF != 0 && FSW & IE == 0)`. Thus historical SF is admitted only when
+IE is also set; SF-only, ES and B reject atomically. Preserve both historical
+SF and IE, along with DE/ZE/OE/UE/PE independently. FRNDINT continues to derive
+C1 from the current result and never carries prior C1 forward. Empty, mismatched
+and raw-malformed sources remain rejected; existing source/tag domains and
+JIT/native denial stay unchanged.
+
+Add an independent 32,768-case matrix: SF+IE crossed with all 32 DE/ZE/OE/UE/PE
+combinations, eight source classes, both signs, four FCWs, all eight
+TOP values and both prior C1 values. Include SF-only rejects for an ordinary
+source and current SNaN, ES/B rejects, and retain existing empty/mismatch/raw
+malformed rejection coverage. The literal `D9 FC DF E0` fixture starts with
+source `1.0`, FCW `0x037f`, and initial FSW `0x0241`; it observes AX=`0x0041`
+after C1 is recomputed. Fixture provenance must say the IE+SF state is seeded
+in the initial snapshot, not produced by the guest, and is not native evidence.
+The Intel SDM rev.093 basis is Vol.1 §8.1.3.4 p.8-6 and §8.5.1.1 p.8-26,
+plus Vol.2A FRNDINT p.3-372. Re-entry/FNCLEX may use the existing SNaN flow.
+No ES/B, pending/#MF/WAIT semantics are changed. Physical x86 acceptance remains
+one final S2-31 substage under ISSUE-019.
 
 #### S2-31di. Admit small canonical-Normal fractions to bounded `FRNDINT` (`D9 FC`)
 

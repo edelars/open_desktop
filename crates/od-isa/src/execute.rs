@@ -2639,7 +2639,8 @@ fn bounded_x87_normal_st0_source(state: &LongModeState) -> Option<[u8; 10]> {
 fn bounded_x87_frndint_result(state: &LongModeState) -> Option<([u8; 10], bool, bool, bool)> {
     let x87 = state.x87.as_ref()?;
     if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-        || x87.status_word & 0x80c0 != 0
+        || x87.status_word & 0x8080 != 0
+        || (x87.status_word & 0x0040 != 0 && x87.status_word & 0x0001 == 0)
     {
         return None;
     }
@@ -20112,7 +20113,7 @@ mod tests {
     fn frndint_admits_historical_ie_without_changing_current_results_or_flags() {
         let controls = [0x037f, 0x077f, 0x0b7f, 0x0f7f];
         let classes = [
-            "zero", "exact", "inexact", "large", "infinity", "qnan", "snan",
+            "zero", "exact", "inexact", "small", "large", "infinity", "qnan", "snan",
         ];
         for (class_index, class) in classes.into_iter().enumerate() {
             for top in 0_u8..8 {
@@ -20143,7 +20144,7 @@ mod tests {
                                             ];
                                             (raw, X87Tag::Zero, raw, false, false, false)
                                         }
-                                        1 | 3 => {
+                                        1 | 4 => {
                                             let exponent =
                                                 if class_index == 1 { 0x3fff } else { 0x403e };
                                             let raw = binary80_normal(
@@ -20182,7 +20183,34 @@ mod tests {
                                                 nearest_or_increment,
                                             )
                                         }
-                                        4 => {
+                                        3 => {
+                                            let raw = binary80_normal(1 << 63, 0x3ffe, negative);
+                                            let increment = match control_word {
+                                                0x037f => false,
+                                                0x077f => negative,
+                                                0x0b7f => !negative,
+                                                0x0f7f => false,
+                                                _ => unreachable!(),
+                                            };
+                                            let rounded = if increment {
+                                                binary80_normal(1 << 63, 0x3fff, negative)
+                                            } else {
+                                                [
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    if negative { 0x80 } else { 0 },
+                                                ]
+                                            };
+                                            (raw, X87Tag::Valid, rounded, true, false, increment)
+                                        }
+                                        5 => {
                                             let raw = binary80_normal(
                                                 0x8000_0000_0000_0000,
                                                 0x7fff,
@@ -20190,7 +20218,7 @@ mod tests {
                                             );
                                             (raw, X87Tag::Special, raw, false, false, false)
                                         }
-                                        5 => {
+                                        6 => {
                                             let raw = binary80_normal(
                                                 0xc000_0000_0000_0001,
                                                 0x7fff,
@@ -20198,7 +20226,7 @@ mod tests {
                                             );
                                             (raw, X87Tag::Special, raw, false, false, false)
                                         }
-                                        6 => {
+                                        7 => {
                                             let raw = binary80_normal(
                                                 0xa123_4567_89ab_cdef,
                                                 0x7fff,
@@ -20260,6 +20288,16 @@ mod tests {
                                 assert!(memory.accesses.is_empty());
                                 let mut expected_x87 = before.x87.unwrap();
                                 expected_x87.registers[usize::from(top)] = expected_raw;
+                                if class_index == 3 {
+                                    expected_x87.set_tag(
+                                        top,
+                                        if incremented {
+                                            X87Tag::Valid
+                                        } else {
+                                            X87Tag::Zero
+                                        },
+                                    );
+                                }
                                 expected_x87.status_word = (old_status & !0x0200)
                                     | if current_pe { 0x0020 } else { 0 }
                                     | if current_ie { 0x0001 } else { 0 }
@@ -20277,9 +20315,12 @@ mod tests {
         }
 
         // ZE is admitted alongside every IE/DE/OE/UE/PE combination above;
-        // SF, ES and B remain forbidden.
+        // SF without IE, ES and B remain forbidden.
         for forbidden in [0x0040, 0x0080, 0x8000] {
             for admitted in [0_u16, 0x0001, 0x0002, 0x0003] {
+                if forbidden == 0x0040 && admitted & 0x0001 != 0 {
+                    continue;
+                }
                 let status_word = forbidden | 0x0004 | admitted;
                 let mut state = LongModeState::default();
                 state.rip = 0x8380;
@@ -20455,10 +20496,13 @@ mod tests {
             }
         }
 
-        // ZE is admitted; SF/ES/B remain atomic rejects when paired with ZE
-        // and the admitted sticky flags.
+        // ZE is admitted; SF without IE and ES/B remain atomic rejects when
+        // paired with ZE and the admitted sticky flags.
         for forbidden in [0x0040_u16, 0x0080, 0x8000] {
             for admitted in [0_u16, 0x0001, 0x0002, 0x0003, 0x0010, 0x0031] {
+                if forbidden == 0x0040 && admitted & 0x0001 != 0 {
+                    continue;
+                }
                 let mut state = LongModeState::default();
                 state.rip = 0x83c0;
                 let mut x87 = crate::state::X87State::fixture_seed();
@@ -20634,11 +20678,15 @@ mod tests {
             }
         }
 
-        // SF/ES/B remain atomic rejects beside ZE and all admitted stickies.
+        // SF without IE and ES/B remain atomic rejects beside ZE and the
+        // admitted stickies.
         for forbidden in [0x0040_u16, 0x0080, 0x8000] {
             for admitted in [
                 0x0008_u16, 0x0009, 0x000a, 0x000b, 0x0038, 0x0039, 0x003a, 0x003b,
             ] {
+                if forbidden == 0x0040 && admitted & 0x0001 != 0 {
+                    continue;
+                }
                 let mut state = LongModeState::default();
                 state.rip = 0x83f0;
                 let mut x87 = crate::state::X87State::fixture_seed();
@@ -20690,13 +20738,216 @@ mod tests {
     }
 
     #[test]
+    fn frndint_admits_sf_only_with_historical_ie_and_preserves_both() {
+        let controls = [0x037f, 0x077f, 0x0b7f, 0x0f7f];
+        let classes = [
+            "zero", "exact", "inexact", "small", "large", "infinity", "qnan", "snan",
+        ];
+        for (class_index, class) in classes.into_iter().enumerate() {
+            for top in 0_u8..8 {
+                for control_word in controls {
+                    for negative in [false, true] {
+                        for sticky_mask in 0_u16..32 {
+                            let independent_sticky =
+                                (if sticky_mask & 0x01 != 0 { 0x0002 } else { 0 })
+                                    | (if sticky_mask & 0x02 != 0 { 0x0004 } else { 0 })
+                                    | (if sticky_mask & 0x04 != 0 { 0x0008 } else { 0 })
+                                    | (if sticky_mask & 0x08 != 0 { 0x0010 } else { 0 })
+                                    | (if sticky_mask & 0x10 != 0 { 0x0020 } else { 0 });
+                            for prior_c1 in [false, true] {
+                                let (raw, tag, expected_raw, current_pe, current_ie, incremented) =
+                                    match class_index {
+                                        0 => {
+                                            let raw = [
+                                                0,
+                                                0,
+                                                0,
+                                                0,
+                                                0,
+                                                0,
+                                                0,
+                                                0,
+                                                0,
+                                                if negative { 0x80 } else { 0 },
+                                            ];
+                                            (raw, X87Tag::Zero, raw, false, false, false)
+                                        }
+                                        1 | 4 => {
+                                            let exponent =
+                                                if class_index == 1 { 0x3fff } else { 0x403e };
+                                            let raw = binary80_normal(1 << 63, exponent, negative);
+                                            (raw, X87Tag::Valid, raw, false, false, false)
+                                        }
+                                        2 => {
+                                            let raw = binary80_normal(
+                                                0xc000_0000_0000_0000,
+                                                0x3fff,
+                                                negative,
+                                            );
+                                            let increment = match control_word {
+                                                0x037f => true,
+                                                0x077f => negative,
+                                                0x0b7f => !negative,
+                                                0x0f7f => false,
+                                                _ => unreachable!(),
+                                            };
+                                            (
+                                                raw,
+                                                X87Tag::Valid,
+                                                binary80_normal(
+                                                    1 << 63,
+                                                    0x3fff + u16::from(increment),
+                                                    negative,
+                                                ),
+                                                true,
+                                                false,
+                                                increment,
+                                            )
+                                        }
+                                        3 => {
+                                            let raw = binary80_normal(1 << 63, 0x3ffe, negative);
+                                            let increment = match control_word {
+                                                0x037f => false,
+                                                0x077f => negative,
+                                                0x0b7f => !negative,
+                                                0x0f7f => false,
+                                                _ => unreachable!(),
+                                            };
+                                            let rounded = if increment {
+                                                binary80_normal(1 << 63, 0x3fff, negative)
+                                            } else {
+                                                [
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    if negative { 0x80 } else { 0 },
+                                                ]
+                                            };
+                                            (raw, X87Tag::Valid, rounded, true, false, increment)
+                                        }
+                                        5 => {
+                                            let raw = binary80_normal(1 << 63, 0x7fff, negative);
+                                            (raw, X87Tag::Special, raw, false, false, false)
+                                        }
+                                        6 => {
+                                            let raw = binary80_normal(
+                                                0xc000_0000_0000_0001,
+                                                0x7fff,
+                                                negative,
+                                            );
+                                            (raw, X87Tag::Special, raw, false, false, false)
+                                        }
+                                        7 => {
+                                            let raw = binary80_normal(
+                                                0xa123_4567_89ab_cdef,
+                                                0x7fff,
+                                                negative,
+                                            );
+                                            let mut quieted = raw;
+                                            quieted[7] |= 0x40;
+                                            (raw, X87Tag::Special, quieted, false, true, false)
+                                        }
+                                        _ => unreachable!(),
+                                    };
+                                let old_status = (u16::from(top) << 11)
+                                    | 0x0040 // Historical SF is admitted only with IE.
+                                    | 0x0001
+                                    | independent_sticky
+                                    | if prior_c1 { 0x0200 } else { 0 };
+                                let mut x87 = crate::state::X87State::fixture_seed();
+                                x87.control_word = control_word;
+                                x87.status_word = old_status;
+                                for physical in 0_u8..8 {
+                                    x87.registers[usize::from(physical)] = [0x30 + physical; 10];
+                                    x87.set_tag(physical, X87Tag::Valid);
+                                }
+                                x87.registers[usize::from(top)] = raw;
+                                x87.set_tag(top, tag);
+                                x87.instruction_pointer = 0x1234;
+                                x87.data_pointer = 0x5678;
+                                x87.last_opcode = 0x05aa;
+                                let mut state = LongModeState::default();
+                                state.rip = 0x83d0;
+                                state.x87 = Some(x87);
+                                let before = state.clone();
+                                let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+                                assert_eq!(
+                                    step(&mut state, &mut memory, AccessContext::default()),
+                                    Ok(StepOutcome::Advanced),
+                                    "{class}, sign={negative}, FCW={control_word:#06x}, TOP={top}, sticky={independent_sticky:#06x}, C1={prior_c1}"
+                                );
+                                assert!(memory.accesses.is_empty());
+                                let mut expected_x87 = before.x87.unwrap();
+                                expected_x87.registers[usize::from(top)] = expected_raw;
+                                if class_index == 3 {
+                                    expected_x87.set_tag(
+                                        top,
+                                        if incremented {
+                                            X87Tag::Valid
+                                        } else {
+                                            X87Tag::Zero
+                                        },
+                                    );
+                                }
+                                expected_x87.status_word = (old_status & !0x0200)
+                                    | if current_pe { 0x0020 } else { 0 }
+                                    | if current_ie { 0x0001 } else { 0 }
+                                    | if incremented { 0x0200 } else { 0 };
+                                expected_x87.instruction_pointer = before.rip;
+                                assert_eq!(state.x87.as_ref().unwrap(), &expected_x87);
+                                assert_eq!(state.rip, before.rip + 2);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // SF without IE is rejected for both an ordinary source and current SNaN.
+        for raw in [
+            binary80_normal(1 << 63, 0x3fff, false),
+            binary80_normal(0xa123_4567_89ab_cdef, 0x7fff, false),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x83e0;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0x0040;
+            x87.registers[0] = raw;
+            x87.set_tag(
+                0,
+                if raw[8] == 0xff {
+                    X87Tag::Special
+                } else {
+                    X87Tag::Valid
+                },
+            );
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xd9 })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
     fn frndint_signaling_nan_quiets_and_reenters_with_sticky_ie() {
         let raw = binary80_normal(0xa123_4567_89ab_cdef, 0x7fff, true);
         let mut state = LongModeState::default();
         state.rip = 0x8300;
         let mut x87 = crate::state::X87State::fixture_seed();
         x87.control_word = 0x037f;
-        x87.status_word = 0x4520;
+        x87.status_word = 0x4561; // Historical SF is admitted only alongside IE.
         x87.registers[usize::from(x87.top())] = raw;
         x87.set_tag(x87.top(), X87Tag::Special);
         state.x87 = Some(x87);
@@ -20707,7 +20958,7 @@ mod tests {
             Ok(StepOutcome::Advanced)
         );
         let after_first = state.clone();
-        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x4521);
+        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x4561);
         assert_eq!(
             state.x87.as_ref().unwrap().registers[usize::from(state.x87.as_ref().unwrap().top())],
             binary80_normal(0xe123_4567_89ab_cdef, 0x7fff, true)
@@ -20723,7 +20974,7 @@ mod tests {
         expected_second.x87.as_mut().unwrap().instruction_pointer = after_first.rip;
         expected_second.x87.as_mut().unwrap().status_word &= !0x0200;
         assert_eq!(state, expected_second);
-        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x4521);
+        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x4561);
         assert_eq!(
             state.x87.as_ref().unwrap().registers[usize::from(state.x87.as_ref().unwrap().top())],
             binary80_normal(0xe123_4567_89ab_cdef, 0x7fff, true)
@@ -20735,7 +20986,7 @@ mod tests {
             step(&mut state, &mut status_memory, AccessContext::default()),
             Ok(StepOutcome::Advanced)
         );
-        assert_eq!(state.gpr[Register::Rax as usize] & 0xffff, 0x4521);
+        assert_eq!(state.gpr[Register::Rax as usize] & 0xffff, 0x4561);
 
         let mut clear_memory = Memory::at(&[0xdb, 0xe2], state.rip);
         assert_eq!(
