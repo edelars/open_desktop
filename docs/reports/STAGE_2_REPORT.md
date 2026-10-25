@@ -6887,3 +6887,38 @@ preserved root `.serena/` directory as unmapped; it remains excluded from the
 change. `graphify update .` rebuilt the graph to 4,351 nodes, 8,867 edges and
 175 communities. The physical x86 acceptance batch remains deferred under
 ISSUE-019.
+
+
+<a id="s2-31bw--round-binary80-fractions-through-m32-fistfstp"></a>
+
+## S2-31bw — round binary80 fractions through m32 FIST/FISTP
+
+Only bare `DB 10` and `DB 18` now accept a Valid-tagged canonical binary80
+Normal source with unbiased exponent -16382 through -1. The comparison-only
+fraction path stores signed integer zero or one under the four admitted RC
+modes, adds sticky PE for every accepted nonzero fraction, and sets C1 iff the
+rounded magnitude is one. It uses the exact e=-1 half threshold without
+building large shifts or divisors. Existing signed-zero and integer paths,
+source payloads, FCW/FSW/address gates, and FIST/FISTP commit/pop behavior are
+unchanged.
+
+The ISA matrix uses hand-authored literal expected Dword values for both signs
+under RN/RD/RU/RZ and crosses both opcodes, all TOP values, incoming PE/C1,
+exact half and its adjacent encodings, values below one, minimum Normal and
+exponents -2/-63/-64/-65. Rejected tags/classes and environment gates are
+checked before access; separate tests cover write/range atomicity. A negative
+`-0.25` FISTP CLI fixture composes with FNSTSW to observe PE+C1 and TOP pop.
+JIT and native admission remain explicitly denied.
+
+Focused `cargo test -p od-isa fist_m32int_ --offline` passed 8/8; the separate
+fraction write/range atomicity test passed 1/1. The CLI/FNSTSW fixture and JIT
+denial each passed 1/1. The full `cargo test --workspace --offline` suite
+passed 866 tests, including 503 `od-isa`, 59 runner CLI, 119 fixture/JIT, 166
+testkit, 6 host, 4 JIT, and 9 host x86-runner tests. Host and Linux x86_64
+`cargo check --workspace --all-targets --offline` passed; the Linux target
+compiles native-denial tests but does not execute them. `cargo fmt --all --
+--check` and `git diff --check` passed. `python3 tools/check_layout.py` reports
+the preserved root `.serena/` directory as unmapped; it remains excluded from
+this change. `graphify update .` rebuilt the graph to 4,360 nodes, 8,884 edges
+and 182 communities. Native runtime and physical x86 behavior remain deferred
+under ISSUE-019.

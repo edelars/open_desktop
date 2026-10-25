@@ -649,3 +649,14 @@
   remain deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31bv-exact-signed-zero-fistp-m64int-rax-df-38),
   [plan](plans/STAGE_2.md#s2-31bv-exact-signed-zero-fistp-m64int), and
   [report](reports/STAGE_2_REPORT.md#s2-31bv--exact-signed-zero-fistp-m64int).
+
+- **S2-31bw evidence:** bare `DB 10`/`DB 18` now round Valid-tagged canonical
+  binary80 Normal fractions with unbiased exponent -16382 through -1 to signed
+  integer zero or one using the four existing RC modes. All admitted fractions
+  add sticky PE; C1 is set iff magnitude one is selected. Comparisons handle
+  the half threshold without exponent-sized shifts. ISA coverage crosses sign,
+  RC, opcode, TOP, PE/C1, threshold neighbors and extreme exponents; fault/range
+  atomicity, CLI/FNSTSW, and JIT/native denial are covered. Native runtime and
+  physical acceptance remain deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31bw-round-normal-binary80-fractions-m32-fist),
+  [plan](plans/STAGE_2.md#s2-31bw-round-binary80-fractions-through-bounded-m32-fist),
+  and [report](reports/STAGE_2_REPORT.md#s2-31bw--round-binary80-fractions-through-m32-fistfstp).

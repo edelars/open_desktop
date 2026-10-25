@@ -285,6 +285,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bt | Admit canonical signed binary80 zero for DB10/DB18 FIST/FISTP m32int as exact integer zero | S2-31b, S2-31c |
 | [x] | S2-31bu | Admit canonical signed binary80 zero for DF10/DF18 FIST/FISTP m16int as exact integer zero | S2-31d, S2-31e |
 | [x] | S2-31bv | Admit canonical signed binary80 zero for DF38 FISTP m64int as exact integer zero | S2-31d, S2-31e |
+| [x] | S2-31bw | Round canonical Normal binary80 fractions below one through DB10/DB18 m32 integer stores | S2-31bt |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3960,6 +3961,30 @@ Cover sign, RC, TOP, incoming PE/C1, canonical/tag/class rejection, controls
 and prefixes, no-read/single-write behavior, write/range atomicity, signed-i64
 regressions, CLI/FNSTSW fixture, and JIT/native denial. Native runtime and
 physical acceptance remain deferred under ISSUE-019.
+
+<a id="s2-31bw-round-binary80-fractions-through-bounded-m32-fist"></a>
+
+#### S2-31bw. Round Normal binary80 fractions through bounded m32 `FIST`/`FISTP`
+
+Extend only bare `DB 10` and `DB 18` for Valid-tagged canonical binary80
+Normal sources with unbiased exponent -16382 through -1. Every such nonzero
+fraction stores signed integer zero or one according to FCW rounding: nearest
+ties-even returns zero through exact 0.5 and one above it; toward-zero returns
+zero; toward-positive returns one only for positive inputs; toward-negative
+returns minus one only for negative inputs. Every accepted value is inexact
+and adds sticky PE after the atomic Dword write. C1 is set iff magnitude one
+is selected; no other exception flags are generated. Preserve incoming PE,
+source bytes, prior C0/C2/C3, the existing FCW/FSW/address gates, and FIST vs
+FISTP state/pop ordering. Keep existing signed-zero behavior unchanged; this
+new branch does not admit subnormal, pseudo, malformed, or Special-tagged
+sources, and adds no fractional m16/m64 forms.
+
+Use only exponent/significand comparisons for this range; do not construct
+large shifts or divisors. Cover both signs, four RCs, both opcodes, every TOP,
+incoming PE/C1, half and adjacent encodings, values below one, minimum Normal,
+and exponents -2/-63/-64/-65. Preserve zero and ±1 regressions; test forbidden
+classes/environments, range and write atomicity, CLI/FNSTSW, and JIT/native
+denial. Native runtime and physical acceptance remain deferred under ISSUE-019.
 
 #### S2-31bj. Round extreme underflow through binary32 stores
 

@@ -2754,16 +2754,9 @@ fn bounded_x87_fist_integer_result(state: &LongModeState, width: u32) -> Option<
         return None;
     }
     let finite = raw.normalize_finite()?;
-    if finite.source_class() != X87Binary80Class::Normal
-        || !(0..=(width as i32 - 1)).contains(&finite.exponent())
-    {
+    if finite.source_class() != X87Binary80Class::Normal {
         return None;
     }
-    let shift = 63 - finite.exponent() as u32;
-    let denominator = 1_u64 << shift;
-    let significand = finite.significand();
-    let quotient = significand >> shift;
-    let remainder = significand & (denominator - 1);
     let rounding = match x87.control_word {
         0x037f => RationalRoundingMode::NearestTiesEven,
         0x077f => RationalRoundingMode::TowardNegative,
@@ -2771,6 +2764,30 @@ fn bounded_x87_fist_integer_result(state: &LongModeState, width: u32) -> Option<
         0x0f7f => RationalRoundingMode::TowardZero,
         _ => return None,
     };
+    if width == 32 && (-16382..0).contains(&finite.exponent()) {
+        let magnitude = u64::from(match rounding {
+            RationalRoundingMode::NearestTiesEven => {
+                finite.exponent() == -1 && finite.significand() > (1_u64 << 63)
+            }
+            RationalRoundingMode::TowardNegative => finite.sign(),
+            RationalRoundingMode::TowardPositive => !finite.sign(),
+            RationalRoundingMode::TowardZero => false,
+        });
+        let encoded = if finite.sign() {
+            0_u64.wrapping_sub(magnitude)
+        } else {
+            magnitude
+        };
+        return Some((encoded, true, magnitude != 0));
+    }
+    if !(0..=(width as i32 - 1)).contains(&finite.exponent()) {
+        return None;
+    }
+    let shift = 63 - finite.exponent() as u32;
+    let denominator = 1_u64 << shift;
+    let significand = finite.significand();
+    let quotient = significand >> shift;
+    let remainder = significand & (denominator - 1);
     let magnitude =
         round_quotient_magnitude(finite.sign(), quotient, remainder, denominator, rounding)?;
     let negative_limit = 1_u128 << (width - 1);
@@ -20912,6 +20929,263 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn fist_m32int_rounds_normal_fractions_below_one_for_every_environment() {
+        // Hand-authored expected Dword stores per rounding mode and sign:
+        // columns are positive/negative, rows are RN/RD/RU/RZ.
+        let vectors = [
+            (
+                1_u64 << 63,
+                0x3ffe_u16,
+                "exact half",
+                [[0, 0], [0, u32::MAX], [1, 0], [0, 0]],
+            ),
+            (
+                (1_u64 << 63) + 1,
+                0x3ffe,
+                "above half",
+                [[1, u32::MAX], [0, u32::MAX], [1, 0], [0, 0]],
+            ),
+            (
+                u64::MAX,
+                0x3ffd,
+                "immediately below half",
+                [[0, 0], [0, u32::MAX], [1, 0], [0, 0]],
+            ),
+            (
+                u64::MAX,
+                0x3ffe,
+                "immediately below one",
+                [[1, u32::MAX], [0, u32::MAX], [1, 0], [0, 0]],
+            ),
+            (
+                1_u64 << 63,
+                0x0001,
+                "minimum Normal",
+                [[0, 0], [0, u32::MAX], [1, 0], [0, 0]],
+            ),
+            (
+                1_u64 << 63,
+                0x3ffd,
+                "exponent -2",
+                [[0, 0], [0, u32::MAX], [1, 0], [0, 0]],
+            ),
+            (
+                1_u64 << 63,
+                0x3fc0,
+                "exponent -63",
+                [[0, 0], [0, u32::MAX], [1, 0], [0, 0]],
+            ),
+            (
+                1_u64 << 63,
+                0x3fbf,
+                "exponent -64",
+                [[0, 0], [0, u32::MAX], [1, 0], [0, 0]],
+            ),
+            (
+                1_u64 << 63,
+                0x3fbe,
+                "exponent -65",
+                [[0, 0], [0, u32::MAX], [1, 0], [0, 0]],
+            ),
+        ];
+
+        for (significand, exponent_word, label, expected_by_mode) in vectors {
+            for (sign_index, negative) in [false, true].into_iter().enumerate() {
+                let raw = binary80_normal(significand, exponent_word, negative);
+                for (mode_index, control_word) in
+                    [0x037f, 0x077f, 0x0b7f, 0x0f7f].into_iter().enumerate()
+                {
+                    let expected = expected_by_mode[mode_index][sign_index];
+                    for pop in [false, true] {
+                        for top in 0..8_u8 {
+                            for incoming_pe in [false, true] {
+                                for incoming_c1 in [false, true] {
+                                    let mut state = LongModeState::default();
+                                    state.rip = 0x82cc;
+                                    state.gpr[Register::Rax as usize] = 0x1003;
+                                    let mut x87 = crate::state::X87State::fixture_seed();
+                                    x87.control_word = control_word;
+                                    x87.status_word = (u16::from(top) << 11)
+                                        | 0x4500
+                                        | if incoming_pe { 0x0020 } else { 0 }
+                                        | if incoming_c1 { 0x0200 } else { 0 };
+                                    x87.registers[usize::from(top)] = raw;
+                                    x87.set_tag(top, X87Tag::Valid);
+                                    state.x87 = Some(x87);
+                                    let before_registers = state.x87.as_ref().unwrap().registers;
+                                    let before_tags = state.x87.as_ref().unwrap().tag_word;
+                                    let before_status = state.x87.as_ref().unwrap().status_word;
+                                    let bytes = if pop { [0xdb, 0x18] } else { [0xdb, 0x10] };
+                                    let mut memory = Memory::at(&bytes, state.rip);
+                                    memory.bytes = vec![0xa5; 16];
+
+                                    assert_eq!(
+                                        step(&mut state, &mut memory, AccessContext::default()),
+                                        Ok(StepOutcome::Advanced),
+                                        "{label}: FCW={control_word:04x} negative={negative} pop={pop} TOP={top} PE={incoming_pe} C1={incoming_c1}"
+                                    );
+                                    assert_eq!(&memory.bytes[..3], &[0xa5; 3]);
+                                    assert_eq!(&memory.bytes[3..7], &expected.to_le_bytes());
+                                    assert_eq!(&memory.bytes[7..], &[0xa5; 9]);
+                                    assert_eq!(
+                                        memory.accesses,
+                                        vec![(AccessKind::Write, 0x1003, 4)],
+                                        "fractional FIST must issue one Dword write and no read"
+                                    );
+                                    let after = state.x87.as_ref().unwrap();
+                                    assert_eq!(after.registers, before_registers);
+                                    let expected_tags = if pop {
+                                        before_tags | (3_u16 << (u32::from(top) * 2))
+                                    } else {
+                                        before_tags
+                                    };
+                                    assert_eq!(after.tag_word, expected_tags);
+                                    assert_eq!(
+                                        after.top(),
+                                        if pop { top.wrapping_add(1) & 7 } else { top }
+                                    );
+                                    let expected_status = (before_status
+                                        & !(0x0200 | if pop { 7 << 11 } else { 0 }))
+                                        | if pop {
+                                            u16::from(top.wrapping_add(1) & 7) << 11
+                                        } else {
+                                            0
+                                        }
+                                        | 0x0020
+                                        | if expected != 0 { 0x0200 } else { 0 };
+                                    assert_eq!(after.status_word, expected_status);
+                                    assert_eq!(after.instruction_pointer, 0x82cc);
+                                    assert_eq!(after.data_pointer, 0x1003);
+                                    assert_eq!(state.rip, 0x82ce);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fist_m32int_fraction_rejects_noncanonical_classes_before_access() {
+        let fraction = binary80_normal(1_u64 << 63, 0x3ffe, false);
+        let invalid_sources = [
+            (X87Tag::Empty, fraction),
+            (X87Tag::Zero, fraction),
+            (X87Tag::Special, fraction),
+            (X87Tag::Valid, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (X87Tag::Valid, [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0]),
+            (X87Tag::Valid, [1, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+            (X87Tag::Valid, [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f]),
+            (X87Tag::Valid, [0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x7f]),
+        ];
+        for (tag, raw) in invalid_sources {
+            let mut state = LongModeState::default();
+            state.rip = 0x82cd;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0;
+            x87.registers[0] = raw;
+            x87.set_tag(0, tag);
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xdb, 0x18], state.rip);
+            memory.bytes = vec![0xa5; 8];
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xdb }),
+                "tag={tag:?} raw={raw:02x?}"
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.bytes, vec![0xa5; 8]);
+            assert!(memory.accesses.is_empty());
+        }
+
+        for (control_word, status_word) in [
+            (0x027f, 0),
+            (0xa55a, 0),
+            (0x037f, 0x0001),
+            (0x037f, 0x0002),
+            (0x037f, 0x0004),
+            (0x037f, 0x0008),
+            (0x037f, 0x0040),
+            (0x037f, 0x0080),
+            (0x037f, 0x8000),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x82cd;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = control_word;
+            x87.status_word = status_word;
+            x87.registers[0] = fraction;
+            x87.set_tag(0, X87Tag::Valid);
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xdb, 0x18], state.rip);
+            memory.bytes = vec![0xa5; 8];
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xdb }),
+                "FCW={control_word:04x} FSW={status_word:04x}"
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.bytes, vec![0xa5; 8]);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn fistp_m32int_fraction_write_and_range_failures_are_atomic() {
+        let setup = || {
+            let mut state = LongModeState::default();
+            state.rip = 0x82ce;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x077f;
+            x87.status_word = 0x4500;
+            x87.registers[0] = binary80_normal(1_u64 << 63, 0x3ffd, true);
+            x87.set_tag(0, X87Tag::Valid);
+            state.x87 = Some(x87);
+            state
+        };
+
+        let mut denied = setup();
+        let before = denied.clone();
+        let mut memory = Memory::at(&[0xdb, 0x18], denied.rip);
+        memory.bytes = vec![0xa5; 8];
+        memory.deny_writes = true;
+        assert!(matches!(
+            step(&mut denied, &mut memory, AccessContext::default()),
+            Err(MemoryError::PermissionDenied {
+                access: AccessKind::Write,
+                ..
+            })
+        ));
+        assert_eq!(denied, before);
+        assert_eq!(memory.bytes, vec![0xa5; 8]);
+        assert_eq!(memory.accesses, vec![(AccessKind::Write, 0x1000, 4)]);
+
+        let mut range = setup();
+        range.gpr[Register::Rax as usize] = 0x0000_7fff_ffff_fffd;
+        let before = range.clone();
+        let mut memory = Memory::at(&[0xdb, 0x18], range.rip);
+        memory.bytes = vec![0xa5; 8];
+        assert_eq!(
+            step(&mut range, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }))
+        );
+        assert_eq!(range, before);
+        assert_eq!(memory.bytes, vec![0xa5; 8]);
+        assert!(memory.accesses.is_empty());
     }
 
     #[test]
