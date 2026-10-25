@@ -4572,6 +4572,8 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31cn_fistp_m64int_sticky_ue_fnstsw.case.json").as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31co_fistp_m32int_sticky_oe_fnstsw.case.json").as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31co_fistp_m64int_sticky_oe_fnstsw.case.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31cp_fistp_m32int_sticky_ze_fnstsw.case.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31cp_fistp_m64int_sticky_ze_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
             let actual = loaded.fixture.initial_state.to_cpu().unwrap();

@@ -879,3 +879,18 @@
   [plan](plans/STAGE_2.md#s2-31co-admit-sticky-oe-on-bounded-integer-stores),
   [report](reports/STAGE_2_REPORT.md#s2-31co--sticky-oe-on-bounded-integer-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31cp evidence:** bounded DB10/DB18/DF10/DF18/DF38 now admit historical
+  ZE through the shared `0x80c0` FSW gate with IE/DE/OE/UE/PE; SF/ES/B remain
+  rejected. ZE alone has no effect on the current conversion, generated flags,
+  or C1. The 286,720-case matrix, ZE-only and current-PE/current-IE combinations,
+  consecutive stores without FNCLEX, FNSTSW/FNCLEX, five-form all-six-flag fault
+  atomicity, forbidden-status controls, literal fixtures, and JIT/native denial
+  are captured in the report. No ZE-producing form or unmasked delivery was
+  added. Binary80 subnormal and pseudo-denormal integer operands remain outside
+  the bounded profile. Physical x86 acceptance remains deferred to the combined
+  final S2-31 substage under ISSUE-019. See
+  [contract](specs/CPU_CONTRACT.md#local-s2-31cp-admit-historical-sticky-ze-bounded-integer-stores),
+  [plan](plans/STAGE_2.md#s2-31cp-admit-historical-sticky-ze-on-bounded-integer-stores),
+  [report](reports/STAGE_2_REPORT.md#s2-31cp--historical-sticky-ze-on-bounded-integer-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

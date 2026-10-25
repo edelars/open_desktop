@@ -5609,4 +5609,42 @@ indefinite with IE while retaining OE|PE and clearing C1. Five-form write/range
 fault atomicity, OE plus ZE/SF/ES/B rejection, OE-only exact finite conversion,
 invalid re-entry and FNSTSW/FNCLEX are covered. CLI fixtures observe sticky OE
 through FISTP/FNSTSW; JIT/native admission remains denied. Physical x86 and native
-runtime acceptance remain deferred under ISSUE-019. See the [stage plan](../plans/STAGE_2.md#s2-31co-admit-sticky-oe-on-bounded-integer-stores), [report](../reports/STAGE_2_REPORT.md#s2-31co--sticky-oe-on-bounded-integer-stores), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+runtime acceptance remain deferred under ISSUE-019. See the
+[stage plan](../plans/STAGE_2.md#s2-31co-admit-sticky-oe-on-bounded-integer-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31co--sticky-oe-on-bounded-integer-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31cp-admit-historical-sticky-ze-bounded-integer-stores"></a>
+
+## Local S2-31cp: admit historical sticky ZE on bounded integer stores
+
+Only bare `DB 10`, `DB 18`, `DF 10`, `DF 18` and `DF 38` bounded integer
+stores admit incoming historical ZE. Their shared FSW gate changes from
+`FSW & 0x80c4 == 0` to `FSW & 0x80c0 == 0`, preserving IE/DE/ZE/OE/UE/PE
+independently while continuing to reject SF/ES/B. No other x87 gate changes.
+
+ZE by itself does not affect the converted integer, generate a current
+exception flag, or retain incoming C1. Existing conversion PE/IE and the
+current-operation C1 result are committed only after the atomic Word/Dword/
+Qword write. The existing FCW whitelist, seven admitted source/tag classes,
+rounding, addressing, canonical-range checks, payload preservation and
+FIST/FISTP stack behavior remain unchanged. Binary80 subnormal and
+pseudo-denormal integer sources stay unsupported. This is historical-status
+admission only: it adds no division-by-zero operation or ZE delivery, and does
+not model unmasked exception delivery.
+
+The complete matrix covers 286,720 cases: seven source classes, both signs,
+five forms, four admitted FCWs, eight TOP values, 64 IE/DE/ZE/OE/UE/PE
+combinations, and both prior C1 states. It checks ZE-only exact conversion,
+ZE plus current PE/inexact rounding, and ZE plus current IE/invalid conversion.
+Consecutive stores without FNCLEX preserve ZE, then FNSTSW observes and FNCLEX
+clears it. Permission and canonical-range faults across all five forms preserve
+all six sticky flags, full CPU state, and destination bytes. ZE combined with
+SF, ES or B rejects before memory access; unsupported FCWs and source classes
+remain rejected. Literal CLI fixtures seed ZE alone and observe it through
+FISTP/FNSTSW. JIT/native admission remains closed. Physical x86 acceptance is
+deferred to the combined final S2-31 substage. See the
+[stage plan](../plans/STAGE_2.md#s2-31cp-admit-historical-sticky-ze-on-bounded-integer-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31cp--historical-sticky-ze-on-bounded-integer-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

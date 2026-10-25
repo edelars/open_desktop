@@ -7086,6 +7086,8 @@ contract, report and README links were manually cross-checked. `graphify update
 .` rebuilt the graph to 4,398 nodes, 8,958 edges and 181 communities. Native
 runtime and physical x86 acceptance remain deferred under ISSUE-019.
 
+
+
 <a id="s2-31cb--masked-binary80-infinity-through-m64-fistp"></a>
 
 ## S2-31cb — masked binary80 infinity through m64 FISTP
@@ -7598,3 +7600,42 @@ native-denial test filter matched zero tests on the local arm64 host; its
 x86_64 Linux test target compiled in the all-target check. `graphify update .`
 refreshed the graph to 4,532 nodes, 9,195 links and 182 communities. Native
 runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31cp--historical-sticky-ze-on-bounded-integer-stores"></a>
+
+## S2-31cp — historical sticky ZE on bounded integer stores
+
+The shared gate for only DB10/DB18/DF10/DF18/DF38 changed from `0x80c4` to
+`0x80c0`. It admits historical ZE alongside IE/DE/OE/UE/PE and continues to
+reject SF/ES/B. ZE alone leaves the current integer result and exception flags
+unchanged; C1 remains derived from the current conversion. Other x87 gates,
+classes, addressing, FCW, rounding and atomic store ordering are unchanged.
+
+The full 286,720-case matrix spans seven admitted source classes, signs, all
+five forms, FCWs, TOP values, the 64 combinations of IE/DE/ZE/OE/UE/PE and
+prior C1. Specific coverage checks ZE-only exact conversion, ZE plus current
+PE/inexact and ZE plus current IE/invalid conversion. Consecutive stores retain
+ZE without FNCLEX; FNSTSW observes it and FNCLEX clears it. Five-form write and
+canonical-range fault checks preserve all six sticky flags, complete CPU state,
+and memory. ZE plus each SF/ES/B reject is checked before access. Literal CLI
+fixtures seed ZE alone. Unsupported FCW/source controls stay rejected, and
+JIT/native admission remains denied.
+
+`cargo test --workspace --offline` passed 958 unit/integration tests across
+`od-host` (6), `od-isa` (554), `od-jit` (4), `od-runner` CLI (81), fixture/JIT
+(138), `od-testkit` (166), `od-x86-runner` library (8), and binary (1); all
+doc-tests passed. Host `cargo check --workspace --all-targets --offline` and
+Linux x86_64 `cargo check --workspace --all-targets --offline --target
+x86_64-unknown-linux-gnu` passed, as did `cargo fmt --all -- --check` and
+`git diff --check`.
+Linux check emitted the existing dead-code warnings in `od-host` and
+`od-runner`. `tools/check_layout.py` reports the pre-existing unmapped `.serena`
+directory, which is excluded from this task. The native-denial test is
+architecture-gated and did not run on this arm64 host; the Linux x86_64
+all-target check compiled it. `graphify update .` refreshed the graph to 4,538
+nodes, 9,204 edges and 183 communities. Physical x86 checks remain deferred to
+the combined final S2-31 substage under ISSUE-019. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cp-admit-historical-sticky-ze-bounded-integer-stores),
+[plan](../plans/STAGE_2.md#s2-31cp-admit-historical-sticky-ze-on-bounded-integer-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

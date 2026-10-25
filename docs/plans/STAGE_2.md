@@ -304,6 +304,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31cm | Admit sticky DE on bounded integer stores after masked FLD subnormal composition | S2-31ci, S2-31cl |
 | [x] | S2-31cn | Admit sticky UE on the five bounded integer-store forms | S2-31cm |
 | [x] | S2-31co | Admit sticky OE on the five bounded integer-store forms | S2-31cn |
+| [x] | S2-31cp | Admit historical sticky ZE on the five bounded integer-store forms | S2-31co |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4567,4 +4568,32 @@ the canonical binary80 source and incoming UE because the fixture schema allows
 only this instruction pair. JIT/native admission and physical execution remain
 closed/deferred. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cn-admit-sticky-ue-bounded-integer-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31cn--sticky-ue-on-bounded-integer-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cp-admit-historical-sticky-ze-on-bounded-integer-stores"></a>
+
+#### S2-31cp. Admit historical sticky ZE on bounded integer stores
+
+Admit incoming ZE only on the existing DB 10, DB 18, DF 10, DF 18 and DF 38
+integer-store forms by changing the shared FSW gate from `0x80c4` to
+`0x80c0`. Preserve IE/DE/ZE/OE/UE/PE independently; continue rejecting SF/ES/B.
+Historical ZE alone does not change the current result, add flags, or preserve
+prior C1. Other x87 gates, current exception generation, source classes,
+addressing, FCW, rounding, range handling and atomic write-before-state-commit
+remain unchanged. No ZE-producing division form, unmasked delivery, or binary80
+subnormal/pseudo-denormal integer source is included.
+
+Coverage is a 286,720-case matrix across seven admitted source classes, both
+signs, five forms, four FCWs, eight TOP values, all 64 sticky exception
+combinations and both prior C1 values. ZE-only exact, ZE+current PE/inexact and
+ZE+current IE/invalid behavior, two stores without FNCLEX, and FNSTSW/FNCLEX
+observation are checked. Five-form write and canonical-range faults preserve
+all six sticky flags, complete CPU state and memory; ZE combined with SF, ES or
+B rejects before access. Unsupported FCW and source-class controls remain
+rejected. Literal CLI fixtures seed only historical ZE; JIT/native admission
+stays denied. Physical x86 and native runtime acceptance remain deferred to
+the combined final S2-31 substage. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cp-admit-historical-sticky-ze-bounded-integer-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31cp--historical-sticky-ze-on-bounded-integer-stores),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

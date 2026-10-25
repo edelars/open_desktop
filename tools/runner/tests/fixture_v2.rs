@@ -3803,7 +3803,7 @@ fn v2_jit_denies_fld_subnormal_to_integer_store_fixtures_without_fallback() {
 }
 
 #[test]
-fn v2_jit_denies_sticky_oe_integer_store_fixtures_without_fallback() {
+fn v2_jit_denies_sticky_oe_and_ze_integer_store_fixtures_without_fallback() {
     for fixture in [
         include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31co_fistp_m32int_sticky_oe_fnstsw.case.json"
@@ -3811,6 +3811,14 @@ fn v2_jit_denies_sticky_oe_integer_store_fixtures_without_fallback() {
         .as_slice(),
         include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31co_fistp_m64int_sticky_oe_fnstsw.case.json"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31cp_fistp_m32int_sticky_ze_fnstsw.case.json"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31cp_fistp_m64int_sticky_ze_fnstsw.case.json"
         )
         .as_slice(),
     ] {
