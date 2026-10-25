@@ -402,6 +402,17 @@ sequence; it does not change the general fixture schema. Keep the `0x037f`
 FCW and matching physical TOP tag/payload, and preserve a separate literal
 fixture for the exact UE-only case so UE cannot mask an accidental PE producer.
 
+## S2-31dl FRNDINT historical OE fixtures
+
+The `s2_31dl_frndint_seeded_oe_fnstsw.case.json` fixture exercises literal
+`D9 FC DF E0` with exact `1.0` and OE only; FRNDINT must preserve OE without
+creating PE. The `s2_31dl_fst_m32_overflow_frndint_fnstsw.case.json` fixture
+uses literal `D9 10 D9 FC DF E0` over canonical binary80 `(2 − 2^-63) × 2^127`, with
+initial FSW=0. FST m32 produces OE+PE+C1; FRNDINT preserves OE+PE and clears
+C1, and FNSTSW exposes the final status. This reuses the exact composition
+sequence already admitted by the local profile and does not widen the fixture
+schema.
+
 ## S2-31al signed-zero m32 stores
 
 The bounded `D9 10`/`D9 18` store profile admits a binary80 source tagged Zero

@@ -4103,6 +4103,27 @@ pass through FRNDINT. Physical x86/Mac mini acceptance and general x87
 exception behavior remain deferred to the combined final S2-31 acceptance
 substage under ISSUE-019.
 
+## Local S2-31dl: historical sticky OE in bounded `FRNDINT` (`D9 FC`)
+
+The bare register-only `D9 FC` gate now uses `FSW & 0x80c4 == 0`, admitting
+historical OE alongside IE, DE, UE and PE. OE is preserved and does not itself
+create PE. Exact and identity operations keep incoming PE unchanged; current
+inexact Normal rounding adds PE, and current canonical SNaN quieting adds IE
+without PE. The all-masked FCWs, source/tag domain, rounding, C1 behavior,
+metadata and atomicity remain unchanged. ZE, SF, ES and B remain atomic rejects
+when combined with OE and any admitted sticky flags. Native/JIT admission stays
+closed.
+
+Independent interpreter coverage crosses exact and fractional Normal and
+canonical SNaN over signs, all four RCs, every TOP, incoming IE/DE/UE/PE and
+prior C1. Identity coverage includes signed zero, large integral Normal,
+infinity and QNaN. Literal CLI fixtures cover seeded OE and
+`FST m32fp` overflow → `FRNDINT` → `FNSTSW AX` over `(2 − 2^-63) × 2^127`;
+the latter begins with FSW=0,
+checks the store's OE+PE+C1 production, then observes sticky OE+PE after
+FRNDINT clears C1. Physical x86/Mac mini acceptance and general x87 exception
+behavior remain deferred to the combined final S2-31 substage under ISSUE-019.
+
 ## Local S2-31di: small canonical-Normal `FRNDINT` (`D9 FC`)
 
 Extend the exact bare register-only S2-31a gate to admit only Valid-tagged,

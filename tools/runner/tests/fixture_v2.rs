@@ -46,6 +46,11 @@ const FRNDINT_SEEDED_UE_FNSTSW: &[u8] =
 const FST_M32_UNDERFLOW_FRNDINT_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31dk_fst_m32_underflow_frndint_fnstsw.case.json"
 );
+const FRNDINT_SEEDED_OE_FNSTSW: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31dl_frndint_seeded_oe_fnstsw.case.json");
+const FST_M32_OVERFLOW_FRNDINT_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31dl_fst_m32_overflow_frndint_fnstsw.case.json"
+);
 const FRNDINT_INVALID_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_invalid_tag.case.json");
 const FRNDINT_INFINITY: &[u8] = include_bytes!(
@@ -1647,6 +1652,30 @@ fn local_x87_frndint_admits_seeded_ue_and_underflow_composition() {
     assert_eq!(x87.registers[0], "00000000000000000000");
     assert_eq!(x87.tag_word.0 & 0x3, 0x1);
     assert_eq!(x87.status_word, HexU64(0x0030));
+    assert_eq!(x87.instruction_pointer, HexU64(0x0010_0002));
+    assert_eq!(x87.data_pointer, input.fixture.initial_state.gpr[0]);
+}
+
+#[test]
+fn local_x87_frndint_admits_seeded_oe_and_overflow_composition() {
+    let (input, seeded) = run(FRNDINT_SEEDED_OE_FNSTSW, "interpreter", 0);
+    assert!(matches!(seeded.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&seeded), 2);
+    let observed = snapshot(&seeded);
+    assert_eq!(observed.state.gpr[0], HexU64(0x0000_0000_0000_0008));
+    let x87 = observed.state.x87.as_ref().unwrap();
+    assert_eq!(x87.status_word, HexU64(0x0008));
+    assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
+
+    let (input, composed) = run(FST_M32_OVERFLOW_FRNDINT_FNSTSW, "interpreter", 0);
+    assert!(matches!(composed.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&composed), 3);
+    let observed = snapshot(&composed);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0006));
+    assert_eq!(observed.state.gpr[0], HexU64(0x0000_0000_0030_0028));
+    let x87 = observed.state.x87.as_ref().unwrap();
+    assert_eq!(x87.registers[0], "ffffffffffffffff7e40");
+    assert_eq!(x87.status_word, HexU64(0x0028));
     assert_eq!(x87.instruction_pointer, HexU64(0x0010_0002));
     assert_eq!(x87.data_pointer, input.fixture.initial_state.gpr[0]);
 }
@@ -3276,6 +3305,19 @@ fn v2_jit_denies_loaded_infinity_frndint_without_interpreter_fallback() {
         result.instructions_executed,
         Observation::Unavailable { .. }
     ));
+}
+
+#[test]
+fn v2_jit_denies_sticky_oe_frndint_fixtures_without_interpreter_fallback() {
+    for fixture in [FRNDINT_SEEDED_OE_FNSTSW, FST_M32_OVERFLOW_FRNDINT_FNSTSW] {
+        let (_, result) = run(fixture, "jit", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
 }
 
 #[test]

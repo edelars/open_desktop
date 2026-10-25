@@ -8319,6 +8319,37 @@ Physical x86/Mac mini acceptance remains deferred to the combined final S2-31
 substage under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31di-small-canonical-normal-frndint-d9-fc),
 [plan](../plans/STAGE_2.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+## S2-31dl — historical sticky OE through bounded FRNDINT
+
+Changed only the bare `D9 FC` status gate from `FSW & 0x80cc == 0` to
+`FSW & 0x80c4 == 0`. OE is admitted and preserved with IE/DE/UE/PE, without
+creating PE by itself. The independent interpreter matrix spans exact and
+fractional Normal plus canonical SNaN, both signs, all four FCWs, every TOP,
+all IE/DE/UE/PE combinations and old C1. It verifies exact/identity PE
+preservation, current inexact PE, SNaN IE without PE, metadata and result
+payloads; ZE/SF/ES/B rejects remain atomic. A separate ISA sequence checks
+FST m32 overflow produces OE+PE+C1 from FSW=0, then FRNDINT preserves OE+PE
+and clears C1. Literal CLI fixtures cover seeded OE and
+`FST m32fp overflow → FRNDINT → FNSTSW AX` over `(2 − 2^-63) × 2^127`
+with final OE+PE visible. Identity
+smoke covers signed zero, large integral Normal, infinity and QNaN.
+
+Focused `cargo test -p od-isa --offline frndint` passed all 20 matching tests;
+the seeded/composition CLI test and sticky-OE JIT-denial test also passed.
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, and `git diff --check` passed. Graphify refreshed
+the repository graph to 4,730 nodes, 9,533 edges and 176 communities; the
+existing extractor warnings remain for the public ABI header and unsupported
+or symbol-free files. Independent Sol-medium review found the initial fixture
+provenance misstated the source value; it was corrected to `(2 − 2^-63) × 2^127`.
+The existing `d910d9fcdfe0` whitelist entry is reused without widening schema.
+The follow-up Sol-medium review found no remaining issues. Physical x86 and Mac
+mini acceptance remain deferred to the combined final S2-31 substage under
+ISSUE-019; native/JIT remain closed.
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dl-historical-sticky-oe-in-bounded-frndint-d9-fc),
+[plan](../plans/STAGE_2.md#s2-31dl-admit-historical-sticky-oe-to-bounded-frndint-d9-fc),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
 ## S2-31dj — historical sticky DE through bounded FRNDINT
 
 Changed only the bare `D9 FC` status gate from `FSW & 0x80de == 0` to

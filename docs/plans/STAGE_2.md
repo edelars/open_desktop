@@ -2279,6 +2279,25 @@ seeded `D9 FC DF E0` CLI coverage and a composition
 through FRNDINT. Keep JIT/native closed. Physical x86 and Mac mini checks
 remain part of the combined final S2-31 acceptance substage under ISSUE-019.
 
+#### S2-31dl. Admit historical sticky OE to bounded `FRNDINT` (`D9 FC`)
+
+Change only the bounded bare register-only FRNDINT status gate from
+`FSW & 0x80cc == 0` to `FSW & 0x80c4 == 0`, admitting and preserving historical
+OE alongside IE/DE/UE/PE. OE itself does not add PE; exact and identity sources
+retain existing PE, current inexact Normal rounding adds PE, and current SNaN
+quieting adds IE without PE. Preserve the four FCWs, source/tag domains,
+rounding, C1 and metadata. Continue rejecting ZE, SF, ES and B atomically.
+Native/JIT admission remains closed.
+
+Add an independent matrix over IE/DE/UE/PE, C1, four RCs and all TOPs for exact
+and fractional Normal plus canonical SNaN. Include identity smoke for signed
+zero, large integral Normal, infinity and QNaN, literal seeded
+`D9 FC DF E0`, and forbidden OE+ZE/SF/ES/B rejects. Add the exact CLI pattern
+`FST m32 overflow → FRNDINT → FNSTSW AX` starting from FSW=0: verify the store
+producer's OE+PE+C1 and final sticky OE/PE with C1 cleared. Open only this
+composition in the existing fixture schema. Physical x86/Mac mini checks
+remain in the combined final S2-31 acceptance substage under ISSUE-019.
+
 #### S2-31di. Admit small canonical-Normal fractions to bounded `FRNDINT` (`D9 FC`)
 
 Extend the bare register-only gate for a Valid canonical-Normal physical TOP

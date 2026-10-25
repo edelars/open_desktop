@@ -1416,6 +1416,20 @@ forbidden status bits remain atomic rejects; JIT/native stay closed. Physical
 x86 and Mac mini acceptance remain part of the combined final S2-31 acceptance
 substage under ISSUE-019. See the [S2-31dk CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dk-historical-sticky-ue-in-bounded-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dk-admit-historical-sticky-ue-to-bounded-frndint-d9-fc), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dk--historical-sticky-ue-through-bounded-frndint).
 
+### S2-31dl FRNDINT historical OE admission
+
+The seeded `s2_31dl_frndint_seeded_oe_fnstsw.case.json` starts with exact
+binary80 `1.0`, OE only, all-masked FCW `0x037f`, and literal `D9 FC DF E0`;
+FRNDINT preserves OE without generating PE. The
+`s2_31dl_fst_m32_overflow_frndint_fnstsw.case.json` fixture composes literal
+`D9 10 D9 FC DF E0` over canonical binary80 `(2 − 2^-63) × 2^127`, starting
+with FSW=0. FST m32 rounds to binary32 infinity and sets OE+PE+C1; FRNDINT
+preserves OE+PE and clears C1, then FNSTSW observes the final status. The
+fixture reuses the exact sequence already admitted by the existing schema.
+Native/JIT admission stays closed, and
+physical x86/Mac mini acceptance remains part of the combined final S2-31
+substage under ISSUE-019. See the [S2-31dl CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dl-historical-sticky-oe-in-bounded-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dl-admit-historical-sticky-oe-to-bounded-frndint-d9-fc), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dl--historical-sticky-oe-through-bounded-frndint).
+
 ### S2-31di FRNDINT small Normal values
 
 The literal `s2_31di_frndint_min_normal_to_negative_zero_fnstsw.case.json`
