@@ -390,6 +390,18 @@ Unsupported fixture valid. Rejected-environment fixtures should set ZE, OE,
 UE, SF, ES or B (or use an invalid FCW/boundary), independent of operand class.
 This predicate is local to D900/DD00; FILD and m80 retain their own x87 gates.
 
+## S2-31dk FRNDINT historical UE fixtures
+
+The `s2_31dk_frndint_seeded_ue_fnstsw.case.json` fixture exercises exact
+`D9 FC DF E0` with UE set before FRNDINT; exact UE-only must remain UE-only.
+The `s2_31dk_fst_m32_underflow_frndint_fnstsw.case.json` fixture uses the
+literal composition `D9 10 D9 FC DF E0`: FST m32 underflow creates UE+PE,
+FRNDINT on the same inexact value preserves both, and FNSTSW exposes the final
+status. This extends the local x87-state profile by one exact instruction
+sequence; it does not change the general fixture schema. Keep the `0x037f`
+FCW and matching physical TOP tag/payload, and preserve a separate literal
+fixture for the exact UE-only case so UE cannot mask an accidental PE producer.
+
 ## S2-31al signed-zero m32 stores
 
 The bounded `D9 10`/`D9 18` store profile admits a binary80 source tagged Zero

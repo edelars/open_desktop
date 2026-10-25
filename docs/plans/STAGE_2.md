@@ -228,6 +228,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dg | Admit canonical Special-tagged SNaN to D9 FC; set IE and quiet bit while preserving payload; native/JIT closed | S2-31df |
 | [x] | S2-31dh | Admit historical sticky IE at bounded D9 FC while preserving independent current IE/PE effects; native/JIT closed | S2-31dg |
 | [x] | S2-31dj | Admit historical sticky DE at bounded D9 FC while preserving DE and current rounding/exception effects; native/JIT closed | S2-31dh |
+| [x] | S2-31dk | Admit historical sticky UE at bounded D9 FC while preserving UE and independent current PE/IE effects; native/JIT closed | S2-31dj |
 | [x] | S2-31di | Admit canonical Normal binary80 fractions with e=-16382..-1 to D9 FC via comparison-based rounding; produce signed Zero or Valid ±1 with PE/C1; native/JIT closed | S2-31dh |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
@@ -2257,6 +2258,26 @@ FLD's canonical-Normal result retains DE through rounding. Keep the all-masked
 FCW gate unchanged; also cover seeded raw `D9 FC DF E0` with IE/DE/PE already
 sticky under the all-masked FCW. Physical x86 and Mac mini checks belong to the single
 combined final S2-31 acceptance substage under ISSUE-019.
+
+#### S2-31dk. Admit historical sticky UE to bounded `FRNDINT` (`D9 FC`)
+
+Change only the bounded bare register-only FRNDINT status gate from
+`FSW & 0x80dc == 0` to `FSW & 0x80cc == 0`, admitting historical UE alongside
+the existing IE/DE/PE set. Preserve UE. Do not generate PE solely because UE is
+already set: exact and identity operations retain PE as-is, current inexact
+rounding adds PE, and a current canonical SNaN adds IE without adding PE. Keep
+the exact four FCWs, all source/tag domains, rounding, C1 and metadata policy;
+ZE/OE/SF/ES/B and unsupported classes remain atomic rejects. Native/JIT remain
+closed.
+
+Add an independent interpreter matrix over incoming IE/DE/PE combinations,
+prior C1, all four RCs, every TOP, and exact Normal, inexact Normal and
+canonical SNaN sources. Include literal exact UE-only, UE+inexact PE, and
+UE+SNaN IE cases, plus forbidden-status rejects with UE present. Add literal
+seeded `D9 FC DF E0` CLI coverage and a composition
+`FST m32fp underflow → FRNDINT → FNSTSW AX` proving the store-created UE flows
+through FRNDINT. Keep JIT/native closed. Physical x86 and Mac mini checks
+remain part of the combined final S2-31 acceptance substage under ISSUE-019.
 
 #### S2-31di. Admit small canonical-Normal fractions to bounded `FRNDINT` (`D9 FC`)
 

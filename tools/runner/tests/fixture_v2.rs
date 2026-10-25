@@ -41,6 +41,11 @@ const FRNDINT_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_fnstsw.case.json");
 const FRNDINT_SEEDED_DE_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31dj_frndint_seeded_de_fnstsw.case.json");
+const FRNDINT_SEEDED_UE_FNSTSW: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31dk_frndint_seeded_ue_fnstsw.case.json");
+const FST_M32_UNDERFLOW_FRNDINT_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31dk_fst_m32_underflow_frndint_fnstsw.case.json"
+);
 const FRNDINT_INVALID_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_invalid_tag.case.json");
 const FRNDINT_INFINITY: &[u8] = include_bytes!(
@@ -1619,6 +1624,31 @@ fn local_x87_frndint_seeded_de_fnstsw_uses_all_masked_fcw() {
     assert_eq!(x87.status_word, HexU64(0x6d23));
     assert_eq!(x87.registers[5], "00000000000000000080");
     assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
+}
+
+#[test]
+fn local_x87_frndint_admits_seeded_ue_and_underflow_composition() {
+    let (input, seeded) = run(FRNDINT_SEEDED_UE_FNSTSW, "interpreter", 0);
+    assert!(matches!(seeded.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&seeded), 2);
+    let observed = snapshot(&seeded);
+    assert_eq!(observed.state.gpr[0], HexU64(0x0000_0000_0000_0010));
+    let x87 = observed.state.x87.as_ref().unwrap();
+    assert_eq!(x87.status_word, HexU64(0x0010));
+    assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
+
+    let (input, composed) = run(FST_M32_UNDERFLOW_FRNDINT_FNSTSW, "interpreter", 0);
+    assert!(matches!(composed.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&composed), 3);
+    let observed = snapshot(&composed);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0006));
+    assert_eq!(observed.state.gpr[0], HexU64(0x0000_0000_0030_0030));
+    let x87 = observed.state.x87.as_ref().unwrap();
+    assert_eq!(x87.registers[0], "00000000000000000000");
+    assert_eq!(x87.tag_word.0 & 0x3, 0x1);
+    assert_eq!(x87.status_word, HexU64(0x0030));
+    assert_eq!(x87.instruction_pointer, HexU64(0x0010_0002));
+    assert_eq!(x87.data_pointer, input.fixture.initial_state.gpr[0]);
 }
 
 #[test]

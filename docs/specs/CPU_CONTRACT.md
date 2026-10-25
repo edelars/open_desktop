@@ -4080,6 +4080,29 @@ Physical x86/Mac mini acceptance and general x87 exception delivery remain
 open under ISSUE-019 and are deferred to the combined final S2-31 acceptance
 substage.
 
+## Local S2-31dk: historical sticky UE in bounded `FRNDINT` (`D9 FC`)
+
+The bare register-only `D9 FC` gate now uses `FSW & 0x80cc == 0`, admitting
+historical UE alongside the already admitted IE, DE and PE. UE remains sticky.
+An exact or identity source does not create PE from UE alone; current inexact
+Normal rounding adds sticky PE, while a current canonical SNaN adds sticky IE
+and quiets its payload without adding PE. The exact FCW whitelist
+`037f/077f/0b7f/0f7f`, source/tag domains, rounding, C1 recomputation,
+metadata, memory/stack behavior and atomicity are unchanged. ZE, OE, SF, ES and
+B remain rejects even when UE and other admitted sticky bits are present.
+Unsupported classes remain atomic rejects, and native/JIT admission remains
+closed.
+
+Interpreter vectors cross exact Normal, inexact Normal and canonical SNaN
+sources with all four RCs, every TOP, incoming IE/DE/PE combinations and prior
+C1. The exact UE-only case verifies no PE is synthesized, the inexact case
+verifies UE+PE, and SNaN verifies UE+IE without PE. Literal CLI fixtures cover
+seeded exact UE with `D9 FC DF E0` and `FST m32fp` underflow followed by
+`FRNDINT` and `FNSTSW AX`; the latter verifies the store-generated UE and PE
+pass through FRNDINT. Physical x86/Mac mini acceptance and general x87
+exception behavior remain deferred to the combined final S2-31 acceptance
+substage under ISSUE-019.
+
 ## Local S2-31di: small canonical-Normal `FRNDINT` (`D9 FC`)
 
 Extend the exact bare register-only S2-31a gate to admit only Valid-tagged,

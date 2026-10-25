@@ -2639,7 +2639,7 @@ fn bounded_x87_normal_st0_source(state: &LongModeState) -> Option<[u8; 10]> {
 fn bounded_x87_frndint_result(state: &LongModeState) -> Option<([u8; 10], bool, bool, bool)> {
     let x87 = state.x87.as_ref()?;
     if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-        || x87.status_word & 0x80dc != 0
+        || x87.status_word & 0x80cc != 0
     {
         return None;
     }
@@ -20272,8 +20272,8 @@ mod tests {
         }
 
         // Historical IE and DE are admitted independently, but neither masks
-        // any of the other status bits rejected by this bounded gate.
-        for forbidden in [0x0004, 0x0008, 0x0010, 0x0040, 0x0080, 0x8000] {
+        // any other forbidden status bit. Historical UE is now admitted by S2-31dk.
+        for forbidden in [0x0004, 0x0008, 0x0040, 0x0080, 0x8000] {
             for admitted in [0_u16, 0x0001, 0x0002, 0x0003] {
                 let status_word = forbidden | admitted;
                 let mut state = LongModeState::default();
@@ -20346,6 +20346,132 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn frndint_admits_historical_ue_and_preserves_independent_current_effects() {
+        let controls = [0x037f, 0x077f, 0x0b7f, 0x0f7f];
+        let cases = [
+            (
+                "exact",
+                binary80_normal(0x8000_0000_0000_0000, 0x3fff, false),
+                X87Tag::Valid,
+                binary80_normal(0x8000_0000_0000_0000, 0x3fff, false),
+                false,
+                false,
+            ),
+            (
+                "inexact",
+                binary80_normal(0xc000_0000_0000_0000, 0x3fff, false),
+                X87Tag::Valid,
+                [0; 10], // Expected result is recomputed for each RC below.
+                true,
+                false,
+            ),
+            (
+                "snan",
+                binary80_normal(0xa123_4567_89ab_cdef, 0x7fff, false),
+                X87Tag::Special,
+                [0; 10], // Expected result is the source with its quiet bit set.
+                false,
+                true,
+            ),
+        ];
+
+        for (class, raw, tag, expected_base, adds_pe, adds_ie) in cases {
+            for top in 0_u8..8 {
+                for control_word in controls {
+                    for historical_flags in [
+                        0_u16, 0x0001, 0x0002, 0x0003, 0x0020, 0x0021, 0x0022, 0x0023,
+                    ] {
+                        for old_c1 in [false, true] {
+                            let mut expected_raw = expected_base;
+                            let incremented =
+                                class == "inexact" && matches!(control_word, 0x037f | 0x0b7f);
+                            if class == "inexact" {
+                                expected_raw = binary80_normal(
+                                    0x8000_0000_0000_0000,
+                                    0x3fff + u16::from(incremented),
+                                    false,
+                                );
+                            } else if class == "snan" {
+                                expected_raw = raw;
+                                expected_raw[7] |= 0x40;
+                            }
+                            let condition = match top % 4 {
+                                0 => 0,
+                                1 => 0x0100,
+                                2 => 0x0400,
+                                _ => 0x4500,
+                            };
+                            let old_status = (u16::from(top) << 11)
+                                | condition
+                                | 0x0010 // Historical UE under test.
+                                | historical_flags
+                                | u16::from(old_c1) * 0x0200;
+                            let mut x87 = crate::state::X87State::fixture_seed();
+                            x87.control_word = control_word;
+                            x87.status_word = old_status;
+                            for physical in 0_u8..8 {
+                                x87.registers[usize::from(physical)] = [0x30 + physical; 10];
+                                x87.set_tag(physical, X87Tag::Valid);
+                            }
+                            x87.registers[usize::from(top)] = raw;
+                            x87.set_tag(top, tag);
+                            x87.instruction_pointer = 0x1234;
+                            x87.data_pointer = 0x5678;
+                            x87.last_opcode = 0x05aa;
+                            let mut state = LongModeState::default();
+                            state.rip = 0x83a0;
+                            state.x87 = Some(x87);
+                            let before = state.clone();
+                            let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+
+                            assert_eq!(
+                                step(&mut state, &mut memory, AccessContext::default()),
+                                Ok(StepOutcome::Advanced),
+                                "{class}, FCW={control_word:#06x}, TOP={top}, flags={historical_flags:#06x}, C1={old_c1}"
+                            );
+                            assert!(memory.accesses.is_empty());
+                            let mut expected_x87 = before.x87.unwrap();
+                            expected_x87.registers[usize::from(top)] = expected_raw;
+                            expected_x87.status_word = (old_status & !0x0200)
+                                | if adds_pe { 0x0020 } else { 0 }
+                                | if adds_ie { 0x0001 } else { 0 }
+                                | if incremented { 0x0200 } else { 0 };
+                            expected_x87.instruction_pointer = before.rip;
+                            assert_eq!(state.x87.as_ref().unwrap(), &expected_x87);
+                            assert_eq!(state.rip, before.rip + 2);
+                        }
+                    }
+                }
+            }
+        }
+
+        // UE is the sole newly admitted status bit. Other exception and busy
+        // bits remain atomic rejects even when all sticky flags are present.
+        for forbidden in [0x0004_u16, 0x0008, 0x0040, 0x0080, 0x8000] {
+            for admitted in [0_u16, 0x0001, 0x0002, 0x0003, 0x0010, 0x0031] {
+                let mut state = LongModeState::default();
+                state.rip = 0x83c0;
+                let mut x87 = crate::state::X87State::fixture_seed();
+                x87.control_word = 0x037f;
+                x87.status_word = forbidden | admitted;
+                x87.registers[0] = binary80_normal(1 << 63, 0x3fff, false);
+                x87.set_tag(0, X87Tag::Valid);
+                state.x87 = Some(x87);
+                let before = state.clone();
+                let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Unsupported { opcode: 0xd9 }),
+                    "FSW={:#06x}",
+                    forbidden | admitted
+                );
+                assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
             }
         }
     }

@@ -6486,7 +6486,8 @@ failures; workspace all-target checking and Linux x86_64 runner all-target
 checking passed. Formatting and diff checks passed. Graphify updated
 successfully (4,129 nodes, 8,510 edges, 210 communities). The layout checker
 reports only the pre-existing unmapped `.serena/` directory, which was left
-untouched. Independent review is pending. Native runtime and physical
+untouched. Independent read-only Sol-medium review found no blocking correctness,
+atomicity or scope defects. Native runtime and physical
 acceptance remain deferred to the final combined S2-31 substage under
 ISSUE-019.
 
@@ -8351,4 +8352,37 @@ header parser warning remains). Independent `gpt-6.1-sol` medium review
 approved with no concrete defects. Physical x86 and
 Mac mini acceptance remain deferred to the combined final S2-31 substage under
 ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dj-historical-sticky-de-in-bounded-frndint-d9-fc),
+[plan](../plans/STAGE_2.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## S2-31dk — historical sticky UE through bounded FRNDINT
+
+Changed only the bare `D9 FC` status gate from `FSW & 0x80dc == 0` to
+`FSW & 0x80cc == 0`. Historical UE now passes through and remains sticky with
+IE/DE/PE. It does not itself generate PE: exact and identity sources retain
+prior PE, current inexact Normal rounding sets PE, and current canonical SNaN
+quieting sets IE without PE. The all-masked FCWs, source/tag domains, rounding,
+C1, state transitions and metadata are unchanged. ZE/OE/SF/ES/B and unsupported
+classes remain atomic rejects; JIT/native stay closed.
+
+The independent interpreter matrix covers exact Normal, inexact Normal and
+canonical SNaN across all TOPs, FCWs, incoming IE/DE/PE combinations and prior
+C1. Forbidden status rejects are paired with UE and admitted sticky bits. The
+literal seeded `D9 FC DF E0` fixture starts with exact `1.0` and UE only, then
+observes UE without PE. The literal `D9 10 D9 FC DF E0` fixture begins with
+1.5 times the minimum binary32 subnormal: FST m32 creates UE+PE, FRNDINT rounds
+the same value to zero and preserves both, and FNSTSW observes `0x0030`.
+
+Focused `cargo test -p od-isa --offline frndint` passed all 18 matching tests,
+and `cargo test -p od-runner --offline
+local_x87_frndint_admits_seeded_ue_and_underflow_composition` passed its CLI
+fixture test. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, and `git diff --check` passed. Graphify refreshed
+the graph to 4,719 nodes, 9,515 edges and 182 communities; existing extractor
+warnings remain for the public ABI header and files with no supported symbols.
+Independent Sol-medium review found no remaining concrete defects after
+correcting the composition fixture to begin with FSW=0; its focused CLI test was
+rerun and passed. Physical x86 and Mac mini acceptance remain deferred to the
+combined final S2-31 substage under ISSUE-019. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dk-historical-sticky-ue-in-bounded-frndint-d9-fc),
 [plan](../plans/STAGE_2.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
