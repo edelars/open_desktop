@@ -271,6 +271,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bf | Round masked inexact D910/D918 m32 subnormal results; reject zero and minimum-normal promotion | S2-31bd |
 | [x] | S2-31bg | Round masked inexact DD10/DD18 m64 subnormal results; reject zero and minimum-normal promotion | S2-31be |
 | [x] | S2-31bh | Allow sticky UE in the bounded m32/m64 FST/FSTP gates without synthesizing PE from UE alone | S2-31bg |
+| [x] | S2-31bi | Allow sticky UE in the raw DB38 FSTP m80fp gate without generating flags | S2-31bh |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3837,3 +3838,19 @@ rounding modes, opcodes, and TOP values. Exercise repeated underflow, the m32
 underflow-to-exact-m64 composition, FNSTSW/FNCLEX, write/range fault atomicity,
 forbidden status/control values, and CLI/JIT/native admission. Preserve the
 existing ISSUE-019 native-runtime and physical-acceptance deferral.
+
+
+#### S2-31bi. Admit sticky UE in raw binary80 FSTP m80fp
+
+Relax only `bounded_x87_m80fp_source` from `FSW & 0x80dc == 0` to
+`FSW & 0x80cc == 0`, admitting masked IE/DE/UE/PE in any combination while
+rejecting ZE/OE/SF/ES/B. Preserve the existing FCWs, source tag/class pairs,
+ten raw bytes, and no-generated-flags behavior. In particular, UE alone adds
+no IE/PE and the raw source is not normalized or quieted. Perform the single
+atomic ten-byte write before status/pointer/RIP commit and FSTP pop.
+
+Cover all 16 sticky combinations across classes/signs/FCWs/TOP, UE-only raw
+SNaN preservation, m32/m64 underflow FST followed by raw m80 FSTP from the
+unchanged source, FNSTSW/FNCLEX, forbidden statuses, FCW controls, fault/range
+atomicity, CLI fixtures, and JIT/native denial. Native runtime and physical
+acceptance remain deferred under ISSUE-019.

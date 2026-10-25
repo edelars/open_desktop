@@ -2333,18 +2333,27 @@ mod tests {
     }
 
     #[test]
-    fn fstp_m80fp_literal_sticky_status_fixtures_preserve_ie_de_pe() {
-        for (bytes, expected_rax, retired) in [
+    fn fstp_m80fp_literal_sticky_status_fixtures_preserve_ie_de_ue_pe() {
+        for (bytes, expected_rax, expected_status, retired) in [
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ba_fstp_m80fp_sticky_status.case.json")
                     .as_slice(),
                 0x0000_0000_0030_0008,
+                0x4d23,
                 1,
             ),
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ba_fstp_m80fp_negative_snan_sticky_fnstsw.case.json")
                     .as_slice(),
                 0x0000_0000_0030_4d23,
+                0x4d23,
+                2,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bi_fstp_m80fp_negative_snan_sticky_ue_fnstsw.case.json")
+                    .as_slice(),
+                0x0000_0000_0030_4d10,
+                0x4d10,
                 2,
             ),
         ] {
@@ -2362,7 +2371,7 @@ mod tests {
             };
             assert_eq!(value.state.gpr[0], HexU64(expected_rax));
             let after = value.state.x87.as_ref().unwrap();
-            assert_eq!(after.status_word, HexU64(0x4d23));
+            assert_eq!(after.status_word, HexU64(expected_status));
             assert_eq!(after.tag_word, HexU64(0xffff));
             assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
             assert_eq!(after.data_pointer, HexU64(0x0030_0008));

@@ -4745,3 +4745,20 @@ underflow, m32 underflow followed by an exact m64 store from the unchanged
 binary80 source, FNSTSW/FNCLEX, fault atomicity, forbidden status/control
 values, and CLI/JIT/native denial. Native execution and physical acceptance
 remain deferred under ISSUE-019.
+
+
+## Local S2-31bi: sticky UE on raw binary80 FSTP m80fp
+
+Only the bounded `DB 38` helper admits `FSW & 0x80cc == 0`, allowing incoming
+masked IE/DE/UE/PE in any combination while preserving rejection of ZE/OE/SF/ES/B.
+FCWs, accepted source tag/class pairs, the raw ten-byte value, and C1-clear
+policy remain unchanged. The store generates no flags: UE alone does not add
+IE/PE, and signaling NaNs are neither quieted nor normalized. Status, pointers,
+RIP and the FSTP pop commit only after the single atomic ten-byte write
+succeeds.
+
+Coverage includes all 16 sticky combinations across accepted classes/signs,
+FCWs and TOP; UE-only SNaN preservation; m32/m64 underflow followed by raw
+m80 FSTP from the unchanged source; FNSTSW/FNCLEX; forbidden statuses and
+controls; write/range atomicity; and CLI/JIT/native denial. Native execution and
+physical acceptance remain deferred under ISSUE-019.

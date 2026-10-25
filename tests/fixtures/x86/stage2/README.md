@@ -2353,3 +2353,12 @@ ISA coverage exercises repeated stores without FNCLEX. FNCLEX remains available
 to clear exception flags, but consecutive bounded stores no longer require it
 when only admitted sticky flags are set. The fixture runs through the
 interpreter CLI and remains denied by JIT and native admission.
+
+
+### S2-31bi raw m80 store with sticky UE
+
+The literal DB38/DFE0 fixture starts with UE alone and stores a canonical
+negative binary80 signaling NaN unchanged. FNSTSW observes the preserved UE
+without adding IE or PE. Direct ISA coverage also composes m32/m64 underflow
+stores with raw m80 FSTP and checks source-byte preservation. The fixture runs
+through the interpreter CLI and remains denied by JIT and native admission.

@@ -151,6 +151,9 @@ const FSTP_M80_STICKY_STATUS: &[u8] =
 const FSTP_M80_NEGATIVE_SNAN_STICKY_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31ba_fstp_m80fp_negative_snan_sticky_fnstsw.case.json"
 );
+const FSTP_M80_NEGATIVE_SNAN_STICKY_UE_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31bi_fstp_m80fp_negative_snan_sticky_ue_fnstsw.case.json"
+);
 const FST_M64_QNAN: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31au_fst_m64fp_positive_quiet_nan.case.json"
 );
@@ -3211,7 +3214,11 @@ fn v2_jit_denies_m80_subnormal_stores_without_interpreter_fallback() {
 
 #[test]
 fn v2_jit_denies_m80_sticky_status_stores_without_interpreter_fallback() {
-    for fixture in [FSTP_M80_STICKY_STATUS, FSTP_M80_NEGATIVE_SNAN_STICKY_FNSTSW] {
+    for fixture in [
+        FSTP_M80_STICKY_STATUS,
+        FSTP_M80_NEGATIVE_SNAN_STICKY_FNSTSW,
+        FSTP_M80_NEGATIVE_SNAN_STICKY_UE_FNSTSW,
+    ] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));

@@ -504,3 +504,15 @@
   [plan](plans/STAGE_2.md#s2-31bh-admit-sticky-ue-in-bounded-binary32binary64-stores),
   [report](reports/STAGE_2_REPORT.md#s2-31bh--sticky-ue-reentry-for-bounded-m32-m64-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+
+- **S2-31bi evidence:** raw DB38 FSTP m80fp now admits incoming masked UE with
+  IE/DE/PE under the narrowed `0x80cc` gate while retaining the existing source
+  classes/tags, ten-byte payload and no-generated-flags policy. UE-only preserves
+  a signaling NaN without adding IE/PE, normalizing or quieting it. All 16 sticky
+  combinations, cross-width underflow-to-raw-store composition, FNSTSW/FNCLEX,
+  write/range atomicity, CLI, and JIT/native denial are covered. Native runtime
+  and physical acceptance remain deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31bi-sticky-ue-on-raw-binary80-fstp-m80fp),
+  [plan](plans/STAGE_2.md#s2-31bi-admit-sticky-ue-in-raw-binary80-fstp-m80fp),
+  [report](reports/STAGE_2_REPORT.md#s2-31bi--sticky-ue-on-raw-binary80-fstp-m80fp),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

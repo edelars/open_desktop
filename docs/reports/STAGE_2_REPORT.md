@@ -6426,3 +6426,31 @@ clean; it verified all 468 `od-isa` tests, the CLI fixture group, sticky-UE JIT
 denial, and the Linux native-runner test typecheck. The linker failure above was
 reproduced on macOS when attempting to link the Linux test binary; native test
 execution remains unavailable here. Physical acceptance is still deferred.
+
+
+<a id="s2-31bi--sticky-ue-on-raw-binary80-fstp-m80fp"></a>
+
+## S2-31bi — allow sticky UE on raw binary80 FSTP m80fp
+
+The bounded `DB 38` helper now uses `FSW & 0x80cc`, admitting incoming masked
+UE alongside IE/DE/PE while continuing to reject ZE/OE/SF/ES/B. FCWs, accepted
+tag/class pairs, raw ten-byte source preservation, and no-generated-flags
+behavior remain unchanged. UE alone does not add IE or PE; signaling NaNs remain
+raw. Status, pointers, RIP, and pop commit only after the atomic ten-byte write.
+
+Coverage includes all 16 IE/DE/UE/PE combinations across accepted classes,
+signs, FCWs, and TOP; UE-only signaling-NaN preservation; m32/m64 underflow
+followed by raw m80 FSTP from the unchanged source; FNSTSW/FNCLEX; forbidden
+status/control gates; write/range atomicity; and CLI/JIT/native denial.
+
+Validation passed: all 469 `od-isa` unit tests and the full offline workspace
+suite (814 passed, 0 failed). The UE-only CLI fixture group and JIT-denial
+fixture test passed. Host workspace all-target checks and Linux x86_64 workspace
+all-target checks passed, as did Linux x86_64 native-runner test-code checking
+with `cargo check -p od-x86-runner --tests --target x86_64-unknown-linux-gnu
+--offline`. `cargo fmt --all -- --check` and `git diff --check` passed. `graphify update .`
+completed its AST-only pass and rebuilt the graph (4230 nodes, 8668 edges, 215
+communities). The Linux-only native denial test is typechecked but not executed
+on this macOS host; physical acceptance remains deferred under ISSUE-019. The
+layout checker reports the pre-existing unmapped `.serena/` directory,
+preserved. Independent review is pending.
