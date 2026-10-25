@@ -2845,6 +2845,34 @@ behavior remain deferred under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
 
+<a id="local-s2-31by-round-normal-binary80-fractions-m64-fistp"></a>
+
+## Local S2-31by: round Normal binary80 fractions through m64 `FISTP` (`DF 38`)
+
+Only bare `DF 38` admits a Valid-tagged canonical binary80 Normal source with
+unbiased exponent -16382 through -1. It stores Qword zero or signed one using
+the same comparison-only rule as m16/m32: nearest-ties-even stores zero through
+exact 0.5 and signed one above; toward-zero stores zero; directed modes store
+signed one only when rounding away from zero. Every admitted nonzero fraction
+adds sticky PE after the atomic Qword write; C1 is set iff magnitude one is
+selected. No IE/DE/OE/UE is added.
+
+Keep FCW whitelist, `FSW & 0x80df == 0`, bare Long64 RAX addressing, full
+canonical48 Qword-range preflight, source bytes, C0/C2/C3, and FISTP state/pop
+ordering. Incoming PE is preserved. Do not add FIST m64 or alter m16/m32
+fraction behavior. Invalid tags, subnormals, pseudo encodings, malformed
+specials, prefixes, and unsupported forms remain rejected before memory access.
+
+Coverage crosses both signs, all four RCs, every TOP, incoming PE/C1, half
+neighbors, largest fraction below one, minimum Normal, and exponents
+-2/-63/-64/-65, alongside existing signed-zero, ±1, and i64-boundary tests.
+Fault/range atomicity, CLI/FNSTSW, and JIT/native denial are covered. Native
+runtime and physical acceptance remain deferred under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31by-round-normal-binary80-fractions-through-bounded-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31by--round-binary80-fractions-through-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
 <a id="local-s2-31bs-sticky-oe-on-raw-binary80-fstp-m80fp"></a>
 
 ## Local S2-31bs: sticky OE on raw `FSTP m80fp [RAX]` (`DB 38`)

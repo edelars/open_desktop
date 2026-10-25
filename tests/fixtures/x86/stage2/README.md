@@ -2544,3 +2544,15 @@ See the [S2-31bx CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bx-round-normal-binary80-fractions-m16-fist),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bx-round-binary80-fractions-through-bounded-m16-fist),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bx--round-binary80-fractions-through-m16-fistfstp).
+
+### S2-31by fractional FISTP m64int fixture
+
+The negative `-0.25` `DF 38` fixture uses round-toward-negative, stores the
+Qword `0xffffffffffffffff`, and composes with FNSTSW to observe PE+C1 and the
+popped TOP/tag. The ISA matrix checks both signs, all four RCs and TOPs,
+incoming PE/C1, the half threshold and neighbors, largest fraction below one,
+minimum Normal and extreme exponents, rejection classes/gates, and Qword
+write/range atomicity. JIT and native admission remain closed. See the [S2-31by
+CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31by-round-normal-binary80-fractions-m64-fistp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31by-round-normal-binary80-fractions-through-bounded-m64-fistp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31by--round-binary80-fractions-through-m64-fistp).

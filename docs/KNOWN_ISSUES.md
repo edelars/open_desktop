@@ -672,3 +672,14 @@
   [contract](specs/CPU_CONTRACT.md#local-s2-31bx-round-normal-binary80-fractions-m16-fist),
   [plan](plans/STAGE_2.md#s2-31bx-round-binary80-fractions-through-bounded-m16-fist),
   and [report](reports/STAGE_2_REPORT.md#s2-31bx--round-binary80-fractions-through-m16-fistfstp).
+
+- **S2-31by evidence:** bare `DF 38` now rounds Valid-tagged canonical
+  binary80 Normal fractions with unbiased exponent -16382 through -1 to Qword
+  zero or signed one. The existing comparison-only rule adds sticky PE for
+  every admitted fraction and sets C1 iff magnitude one was selected, with no
+  new IE/DE/OE/UE. Coverage includes signs/RC/TOP/PE/C1, threshold neighbors,
+  extreme exponents, rejection controls, Qword canaries, write/range atomicity,
+  CLI/FNSTSW, and JIT/native denial. Native runtime and physical acceptance
+  remain deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31by-round-normal-binary80-fractions-m64-fistp),
+  [plan](plans/STAGE_2.md#s2-31by-round-normal-binary80-fractions-through-bounded-m64-fistp),
+  and [report](reports/STAGE_2_REPORT.md#s2-31by--round-binary80-fractions-through-m64-fistp).

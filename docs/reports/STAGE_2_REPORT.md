@@ -2633,6 +2633,45 @@ physical x86 acceptance remain deferred to the combined final substage under
 ISSUE-019.
 
 
+<a id="s2-31by--round-binary80-fractions-through-m64-fistp"></a>
+
+## S2-31by — round binary80 fractions through m64 FISTP
+
+Only the existing bare `DF 38` (`FISTP m64int [RAX]`) path now admits
+Valid-tagged canonical binary80 Normal values with unbiased exponent -16382
+through -1. It reuses the comparison-only rule already used for m16/m32:
+nearest-ties-even stores zero through exact 0.5 and signed one above; toward-
+zero stores zero; directed rounding stores signed one only when rounding away
+from zero. Every admitted nonzero fraction adds sticky PE after the atomic
+Qword write, C1 reflects whether magnitude one was selected, and no IE/DE/OE/UE
+is added. Source bytes and incoming PE/C0/C2/C3 remain preserved; FISTP tag/TOP
+and pointer state commit only after a successful write. No FIST m64 form was
+added, and m16/m32 behavior is unchanged.
+
+The independent ISA matrix checks literal Qword values for both signs, all
+four RCs, all TOP values, incoming PE/C1, exact half and adjacent values,
+largest fraction below one, minimum Normal, and exponents -2/-63/-64/-65.
+Rejections cover tag/raw mismatches, subnormal, pseudo-denormal, pseudo-normal,
+malformed special, unsupported FCW/FSW, prefix, and the nonexistent DF30 FIST
+form. Qword canaries and denied-write/backend/range-fault atomicity are checked.
+A negative `-0.25` FISTP CLI fixture composes with FNSTSW and observes Qword -1,
+PE+C1, and the popped TOP/tag. JIT denial is asserted; native admission denial
+is retained in the Linux-only test list.
+
+Focused `cargo test -p od-isa fistp_m64int --offline` passed 9/9. The CLI and
+JIT-denial tests each passed 1/1. The full `cargo test --workspace --offline`
+suite passed 876 tests: 509 `od-isa`, 4 `od-jit`, 6 host, 61 runner CLI, 121
+fixture/JIT, 166 testkit, 8 x86-runner library, and 1 x86-runner main; all
+doc-tests passed. Host and Linux x86_64 `cargo check --workspace --all-targets
+--offline` passed; Linux compiled native-admission test code but did not run it.
+The Linux cross-check emitted existing dead-code warnings in `od-host` and
+non-x86 `od-runner` benchmark helpers. Formatting and `git diff --check` passed.
+`python3 tools/check_layout.py` reports the preserved root `.serena/` directory
+as unmapped; it remains excluded from this change. `graphify update .` rebuilt
+the graph to 4,378 nodes, 8,918 edges, and 181 communities. Native runtime and physical x86
+acceptance remain deferred to the combined final substage under ISSUE-019.
+
+
 ## S2-29j — pure unsigned rational nearest-integer ties-to-even (partial)
 
 Added `round_quotient_ties_even(q, r, d)`, a pure unsigned helper for rounding
