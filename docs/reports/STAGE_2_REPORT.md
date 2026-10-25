@@ -6757,3 +6757,36 @@ passed. `graphify update .` rebuilt the graph to 4,318 nodes, 8,814 edges and
 root directory `.serena/`, which was preserved and is not part of the change.
 Native runtime and physical x86 acceptance remain deferred to the combined
 S2-31 acceptance substage under ISSUE-019.
+
+
+<a id="s2-31bs--sticky-oe-on-raw-binary80-fstp-m80fp"></a>
+
+## S2-31bs — sticky OE on raw binary80 FSTP m80fp
+
+Only the DB38 m80 source gate now admits sticky OE, changing its mask from
+`0x80cc` to `0x80c4`. The existing FCW whitelist, exact instruction, source
+tag/class pairs, address checks, raw ten-byte write and post-success pop remain
+unchanged. No conversion or exception flags are generated; an OE-only SNaN is
+stored byte-for-byte without IE/PE. C1 clears as before, while C0/C2/C3 and
+incoming exception bits remain unchanged. Faults leave state and memory
+uncommitted.
+
+The source matrix covers all 32 IE/DE/OE/UE/PE combinations across accepted
+classes, signs, all four FCWs, every TOP, and C1 set/clear. Composition tests
+exercise m32 and m64 overflow followed by raw DB38 without FNCLEX, checking the
+original source bytes, preserved OE+PE, and cleared C1. An OE-only negative SNaN
+CLI fixture verifies raw bytes and FNSTSW `0x0808`; JIT denial is tested, and
+the native-denial fixture test compiles for Linux x86_64.
+
+Validation passed: the focused `od-isa` m80fp suite (18/18), updated CLI
+fixture test, and JIT-denial integration test passed. The full
+`cargo test --workspace --offline` suite passed, including 491 `od-isa` tests.
+Host and Linux x86_64 `cargo check --workspace --all-targets --offline`
+passed. The Linux-target check compiles native-admission test code on this
+macOS host; it does not run it. `cargo fmt --all -- --check` and
+`git diff --check` passed. `graphify update .` rebuilt the graph to 4,324
+nodes, 8,822 edges and 179 communities.
+`python3 tools/check_layout.py` reports the preserved, pre-existing unmapped
+root `.serena/` directory; it is excluded from this change. Native runtime and
+physical acceptance remain deferred to the combined S2-31 acceptance substage
+under ISSUE-019.

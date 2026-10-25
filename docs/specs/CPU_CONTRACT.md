@@ -2704,6 +2704,29 @@ Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See also the
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
 
+<a id="local-s2-31bs-sticky-oe-on-raw-binary80-fstp-m80fp"></a>
+
+## Local S2-31bs: sticky OE on raw `FSTP m80fp [RAX]` (`DB 38`)
+
+Only the bounded `DB 38` source helper admits `FSW & 0x80c4 == 0`, adding
+incoming masked OE to the previously admitted IE/DE/UE/PE flags. ZE, SF, ES and
+B remain rejected. FCWs, exact opcode, source tag/class pairs, addressing and
+raw ten-byte write remain unchanged. The raw source is never normalized or
+quieted, and the instruction generates no exceptions: OE-only signaling-NaN
+stores preserve the source and do not add IE or PE. C1 is cleared as in the
+existing raw path; C0/C2/C3 and incoming flags are preserved. A failed write or
+range check commits no status, pointer, RIP or pop state.
+
+Coverage includes all 32 IE/DE/OE/UE/PE combinations over accepted classes,
+signs, FCWs and TOPs; m32/m64 overflow followed by DB38 without FNCLEX; OE-only
+SNaN raw-byte preservation; incoming-OE fault/range atomicity; FNSTSW/FNCLEX;
+and an OE-only SNaN CLI fixture. JIT and native admission remain denied.
+Native runtime and physical acceptance remain deferred under ISSUE-019. See
+the [plan](../plans/STAGE_2.md#s2-31bs-admit-sticky-oe-to-raw-binary80-fstp),
+[report](../reports/STAGE_2_REPORT.md#s2-31bs--sticky-oe-on-raw-binary80-fstp-m80fp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
 <a id="local-s2-31ar-canonical-quietnan-fstp-m80fp-rax-db-38"></a>
 
 ## Local S2-31ar: canonical QuietNaN `FSTP m80fp [RAX]` (`DB 38`)

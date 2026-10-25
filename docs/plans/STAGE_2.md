@@ -281,6 +281,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bp | Accept D910/D918 exponent-127 rounding carry to signed binary32 infinity with sticky OE+PE and C1 | S2-31bb |
 | [x] | S2-31bq | Accept DD10/DD18 exponent-1023 rounding carry to signed binary64 infinity with sticky OE+PE and C1 | S2-31bc, S2-31bh |
 | [x] | S2-31br | Admit prior sticky IE/DE/OE/UE/PE on bounded m32/m64 stores while preserving conversion-specific flags | S2-31bq |
+| [x] | S2-31bs | Admit prior sticky OE on exact raw DB38 FSTP m80fp stores without changing source bytes or generating flags | S2-31bi, S2-31bp, S2-31bq |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3878,6 +3879,26 @@ SNaN preservation, m32/m64 underflow FST followed by raw m80 FSTP from the
 unchanged source, FNSTSW/FNCLEX, forbidden statuses, FCW controls, fault/range
 atomicity, CLI fixtures, and JIT/native denial. Native runtime and physical
 acceptance remain deferred under ISSUE-019.
+
+<a id="s2-31bs-admit-sticky-oe-to-raw-binary80-fstp"></a>
+
+#### S2-31bs. Admit sticky OE in raw binary80 FSTP m80fp
+
+Relax only `bounded_x87_m80fp_source` from `FSW & 0x80cc == 0` to
+`FSW & 0x80c4 == 0`, admitting masked sticky OE with IE/DE/UE/PE while still
+rejecting ZE, SF, ES and B. Keep the FCW whitelist, source tag/class pairs,
+address preflight and exact `DB 38` form unchanged. Perform no conversion,
+normalization, quieting or flag generation: preserve all ten source bytes and
+incoming exception flags, leave C0/C2/C3 unchanged, and clear C1 as before.
+Only after the single atomic ten-byte write succeeds may status/pointers/RIP
+and the FSTP TOP/tag update commit.
+
+Cover all 32 sticky IE/DE/OE/UE/PE combinations across accepted classes,
+signs, FCWs and TOPs. Include overflow from m32/m64 FST followed by DB38 without
+FNCLEX, OE-only signaling-NaN byte preservation with no IE/PE, incoming-OE
+write/range fault atomicity, FNSTSW/FNCLEX, literal CLI coverage, and explicit
+JIT/native denial. Native runtime and physical acceptance remain deferred
+under ISSUE-019.
 
 #### S2-31bj. Round extreme underflow through binary32 stores
 

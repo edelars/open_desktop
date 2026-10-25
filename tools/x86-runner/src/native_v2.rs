@@ -4205,11 +4205,12 @@ mod tests {
     }
 
     #[test]
-    fn s2_31ba_sticky_status_m80_store_fixtures_remain_outside_native_admission() {
+    fn s2_31ba_bs_sticky_status_m80_store_fixtures_remain_outside_native_admission() {
         for bytes in [
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ba_fstp_m80fp_sticky_status.case.json").as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ba_fstp_m80fp_negative_snan_sticky_fnstsw.case.json").as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bi_fstp_m80fp_negative_snan_sticky_ue_fnstsw.case.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bs_fstp_m80fp_negative_snan_sticky_oe_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
             let actual = loaded.fixture.initial_state.to_cpu().unwrap();

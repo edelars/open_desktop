@@ -604,3 +604,14 @@
   ISSUE-019. See the [contract](specs/CPU_CONTRACT.md#local-s2-31br-sticky-status-admission-for-bounded-m32m64-fstfstp),
   [plan](plans/STAGE_2.md#s2-31br-admit-sticky-status-on-bounded-m32m64-stores),
   and [report](reports/STAGE_2_REPORT.md#s2-31br--sticky-status-admission-for-bounded-m32m64-stores).
+
+- **S2-31bs evidence:** exact DB38 raw FSTP m80fp now admits incoming sticky OE
+  with IE/DE/UE/PE under `FSW & 0x80c4`, while ZE/SF/ES/B remain rejected.
+  The write preserves all ten source bytes and generates no flags; C1 clearing,
+  status, pointers and pop remain atomic after the single write. Coverage spans
+  all 32 sticky combinations, cross-width overflow-to-raw-store composition,
+  OE-only SNaN/CLI, FNSTSW/FNCLEX, fault/range atomicity, and JIT/native denial.
+  Native runtime and physical acceptance remain deferred under ISSUE-019. See
+  [contract](specs/CPU_CONTRACT.md#local-s2-31bs-sticky-oe-on-raw-binary80-fstp-m80fp),
+  [plan](plans/STAGE_2.md#s2-31bs-admit-sticky-oe-to-raw-binary80-fstp),
+  and [report](reports/STAGE_2_REPORT.md#s2-31bs--sticky-oe-on-raw-binary80-fstp-m80fp).

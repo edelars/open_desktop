@@ -2364,6 +2364,19 @@ stores with raw m80 FSTP and checks source-byte preservation. The fixture runs
 through the interpreter CLI and remains denied by JIT and native admission.
 
 
+### S2-31bs raw m80 store with sticky OE
+
+The literal DB38/DFE0 fixture starts with OE only and a canonical negative
+binary80 signaling NaN. It stores all ten bytes unchanged; FNSTSW observes
+`0x0808` after TOP advances, with IE and PE still clear. Direct ISA coverage
+includes all 32 sticky combinations, cross-width overflow followed by DB38
+without FNCLEX, and incoming-OE fault/range atomicity. The interpreter CLI
+accepts the fixture; JIT and native admission deny it. See the [S2-31bs CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bs-sticky-oe-on-raw-binary80-fstp-m80fp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bs-admit-sticky-oe-to-raw-binary80-fstp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bs--sticky-oe-on-raw-binary80-fstp-m80fp).
+
+
 ### S2-31bj extreme binary32 underflow fixture
 
 The positive D910/DFE0 fixture uses a canonical source above half of the minimum

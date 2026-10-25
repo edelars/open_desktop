@@ -2333,7 +2333,7 @@ mod tests {
     }
 
     #[test]
-    fn fstp_m80fp_literal_sticky_status_fixtures_preserve_ie_de_ue_pe() {
+    fn fstp_m80fp_literal_sticky_status_fixtures_preserve_ie_de_oe_ue_pe() {
         for (bytes, expected_rax, expected_status, retired) in [
             (
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ba_fstp_m80fp_sticky_status.case.json")
@@ -2354,6 +2354,13 @@ mod tests {
                     .as_slice(),
                 0x0000_0000_0030_4d10,
                 0x4d10,
+                2,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bs_fstp_m80fp_negative_snan_sticky_oe_fnstsw.case.json")
+                    .as_slice(),
+                0x0000_0000_0030_0808,
+                0x0808,
                 2,
             ),
         ] {
