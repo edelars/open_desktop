@@ -2437,3 +2437,16 @@ the independent UE threshold, signed RC neighbors, TOP/sticky-flag matrices,
 and write/range atomicity. See the [S2-31bo CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bo-binary80-exponent--1023-to-binary64-minimum-normal),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bo-round-exponent--1023-binary80-normals-directly-to-binary64-minimum-normal),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bo--binary80-normal-to-binary64-minimum-normal-rounding).
+
+### S2-31bp exponent-127 binary80 overflow to binary32 infinity fixtures
+
+The positive D910/DFE0 fixture uses the nearest-even halfway value from maximum
+finite binary32 to positive infinity; FNSTSW observes OE+PE and C1. The negative
+D918/DFE0 fixture rounds toward negative to negative infinity, pops TOP, and
+observes OE+PE+C1. Both use Valid-tagged canonical Normal binary80 exponent-127
+sources, run only in the interpreter, and remain denied by JIT/native admission.
+The ISA matrix covers the nearest and directed thresholds, signs, RCs, TOPs,
+sticky flags, exponent-128 rejection, and atomic failures. See the [S2-31bp CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bp-binary80-exponent-127-overflow-to-binary32-infinity),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bp-round-exponent-127-binary80-normals-to-binary32-infinity-on-overflow),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bp--binary80-normal-to-binary32-infinity-on-overflow).

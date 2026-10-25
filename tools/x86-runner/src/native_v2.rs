@@ -4325,6 +4325,19 @@ mod tests {
     }
 
     #[test]
+    fn s2_31bp_binary80_overflow_to_infinity_m32_fixtures_remain_outside_native_admission() {
+        for bytes in [
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bp_fst_m32fp_positive_infinity_overflow_nearest_fnstsw.case.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bp_fstp_m32fp_negative_infinity_overflow_directed_fnstsw.case.json").as_slice(),
+        ] {
+            let loaded = Fixture::from_json(bytes).unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
+        }
+    }
+
+    #[test]
     fn s2_31bm_binary80_subnormal_m64_store_fixtures_remain_outside_native_admission() {
         for bytes in [
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bm_fst_m64fp_positive_min_subnormal_fnstsw.case.json").as_slice(),

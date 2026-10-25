@@ -6647,3 +6647,34 @@ reviewer independently ran 31 m64 ISA tests and checked the destination and UE
 thresholds. Its additional CLI, JIT and native reruns timed out; those reviewer
 reruns are not counted as passing evidence. The implementation's own full
 workspace suite (835 tests), CLI fixtures and JIT denial passed as listed above.
+
+<a id="s2-31bp--binary80-normal-to-binary32-infinity-on-overflow"></a>
+
+## S2-31bp — binary80 Normal to binary32 infinity on overflow
+
+The bounded D910/D918 path now admits Valid-tagged canonical binary80 Normal
+sources at exponent 127 when sign-aware rounding of `S/2^40` carries the 24-bit
+significand to `1<<24`. It stores signed binary32 infinity, then commits sticky
+OE+PE and C1 after a successful atomic Dword write. No IE, DE or UE is added.
+Existing source, FCW/FSW gates, and FST/FSTP state/pointer/pop behavior remain
+unchanged; exponent-128 sources continue to reject before data access.
+
+The exact-integer matrix covers the maximum-finite value and successor, nearest
+predecessor/midpoint/successor, and maximum significand for both signs, all RCs,
+both opcodes, every TOP and all 16 sticky IE/DE/UE/PE combinations. It also
+covers exponent-128 rejection, Dword write/range atomicity, FNSTSW/FNCLEX, and
+sticky-OE re-entry after FNCLEX. Positive nearest FST and negative directed
+FSTP CLI fixtures observe OE+PE+C1; interpreter execution and JIT denial pass.
+Native denial is typechecked in Linux x86_64 all-target validation; native
+execution was not performed.
+
+Validation passed: 30 focused m32 FST/FSTP ISA tests and the full offline
+workspace suite (840 tests). Both CLI fixtures and the new JIT-denial test
+passed. Host and Linux x86_64 `cargo check --workspace --all-targets --offline`
+checks passed; the Linux cross-target check includes native-admission test code
+but is compile-only on this host. `cargo fmt --all -- --check` and
+`git diff --check` passed. `python3 tools/check_layout.py` reports the existing
+unmapped `.serena/` directory, which was preserved. The final `graphify update .`
+rebuilt the graph to 4,301 nodes, 8,789 edges and 212 communities. Native runtime
+and physical x86 acceptance remain deferred to the combined S2-31 acceptance
+substage under ISSUE-019.

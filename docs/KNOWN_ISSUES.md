@@ -574,3 +574,13 @@
   acceptance remain deferred under ISSUE-019. See the [CPU contract](specs/CPU_CONTRACT.md#local-s2-31bo-binary80-exponent--1023-to-binary64-minimum-normal),
   [plan](plans/STAGE_2.md#s2-31bo-round-exponent--1023-binary80-normals-directly-to-binary64-minimum-normal),
   and [report](reports/STAGE_2_REPORT.md#s2-31bo--binary80-normal-to-binary64-minimum-normal-rounding).
+- **S2-31bp evidence:** bounded D910/D918 exponent-127 Normal inputs whose
+  sign-aware rounding carries `S/2^40` to `1<<24` now store signed binary32
+  infinity and commit sticky OE+PE with C1 after the Dword write. The test
+  matrix covers nearest/directed thresholds and neighbors, both signs, RCs,
+  opcodes, TOPs and sticky IE/DE/UE/PE combinations; exponent-128 sources
+  still reject. Atomicity, FNSTSW/FNCLEX, sticky-OE re-entry, CLI and JIT/native
+  denial are covered. Native runtime and physical acceptance remain deferred
+  under ISSUE-019. See the [contract](specs/CPU_CONTRACT.md#local-s2-31bp-binary80-exponent-127-overflow-to-binary32-infinity),
+  [plan](plans/STAGE_2.md#s2-31bp-round-exponent-127-binary80-normals-to-binary32-infinity-on-overflow),
+  and [report](reports/STAGE_2_REPORT.md#s2-31bp--binary80-normal-to-binary32-infinity-on-overflow).

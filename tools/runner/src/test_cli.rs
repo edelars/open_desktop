@@ -3608,6 +3608,57 @@ mod tests {
     }
 
     #[test]
+    fn fst_m32fp_binary80_exponent_127_overflow_fixtures_observe_oe_pe_c1() {
+        for (name, bytes, expected_rax, expected_status, expected_tag, expected_raw, expected_bits) in [
+            (
+                "FST positive exponent-127 binary80 midpoint rounds to infinity",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bp_fst_m32fp_positive_infinity_overflow_nearest_fnstsw.case.json").as_slice(),
+                0x0030_4728,
+                0x4728,
+                0xfffc,
+                "0000000080ffffff7e40",
+                "0000807f",
+            ),
+            (
+                "FSTP negative exponent-127 binary80 toward-negative overflow",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bp_fstp_m32fp_negative_infinity_overflow_directed_fnstsw.case.json").as_slice(),
+                0x0030_4f28,
+                0x4f28,
+                0xffff,
+                "ffffffffffffffff7ec0",
+                "000080ff",
+            ),
+        ] {
+            let fixture = v2::Fixture::from_json(bytes)
+                .unwrap_or_else(|error| panic!("{name}: invalid fixture schema: {error}"));
+            let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(
+                matches!(result.outcome, v2::Outcome::StopAddress {}),
+                "{name}: {:?}",
+                result.outcome
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("{name}: expected observable CPU state");
+            };
+            assert_eq!(value.state.gpr[0], HexU64(expected_rax), "{name}");
+            let x87 = value.state.x87.as_ref().unwrap();
+            assert_eq!(x87.status_word, HexU64(expected_status), "{name}");
+            assert_eq!(x87.tag_word, HexU64(expected_tag), "{name}");
+            assert_eq!(x87.registers[0], expected_raw, "{name}");
+            assert_eq!(x87.instruction_pointer, HexU64(0x0010_0000), "{name}");
+            assert_eq!(x87.data_pointer, HexU64(0x0030_0004), "{name}");
+            let stack = memory
+                .snapshot()
+                .into_iter()
+                .find(|region| region.region_id == "stack")
+                .unwrap();
+            assert_eq!(&stack.bytes_hex[8..16], expected_bits, "{name}");
+        }
+    }
+
+    #[test]
     fn fst_m32fp_quiet_nan_fixtures_preserve_payload_conversion_and_observe_fsw() {
         for (name, bytes, expected_rax, expected_status, expected_tag_word, raw_nan, stored) in [
             (

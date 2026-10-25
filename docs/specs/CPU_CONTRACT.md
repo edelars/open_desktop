@@ -4902,3 +4902,23 @@ atomicity and FNSTSW/FNCLEX. Literal CLI fixtures expose UE+PE+C1 at the
 nearest threshold and PE+C1 without new UE for a negative FSTP directed case;
 JIT and native admission deny both. Native runtime and physical x86 behavior
 remain deferred under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31bo-round-exponent--1023-binary80-normals-directly-to-binary64-minimum-normal), [report](../reports/STAGE_2_REPORT.md#s2-31bo--binary80-normal-to-binary64-minimum-normal-rounding), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31bp: binary80 exponent 127 overflow to binary32 infinity
+
+Only bounded `D9 10` and `D9 18` extend the existing Valid-tagged canonical
+binary80 Normal m32 conversion for exponent 127. When sign-aware rounding of
+`S / 2^40` produces `1 << 24`, store signed binary32 infinity. A successful
+atomic Dword write then commits sticky OE+PE and C1. No IE, DE or UE is
+generated; prior IE/DE/UE/PE remain preserved. The existing FCW whitelist and
+`FSW & 0x80cc == 0` gate remain, so sticky OE blocks later stores until
+FNCLEX. Source bytes and FST/FSTP state/pointer/pop behavior remain unchanged.
+Exponent-128 sources and any other unsupported classes still reject before
+memory access.
+
+An exact-integer matrix covers `0xffffff0000000000`, its successor, the
+nearest-even predecessor/midpoint/successor, and the maximum significand, for
+both signs, every RC, both opcodes, every TOP and all 16 sticky
+IE/DE/UE/PE combinations. Maximum finite output and exponent-128 rejection,
+Dword write/range atomicity, FNSTSW/FNCLEX, sticky-OE re-entry, and literal
+interpreter fixtures with JIT/native denial are covered. Native runtime and
+physical x86 behavior remain deferred under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31bp-round-exponent-127-binary80-normals-to-binary32-infinity-on-overflow), [report](../reports/STAGE_2_REPORT.md#s2-31bp--binary80-normal-to-binary32-infinity-on-overflow), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

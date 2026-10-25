@@ -278,6 +278,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bm | Round Special-tagged canonical binary80 subnormals through DD10/DD18 to signed zero or minimum binary64 subnormal | S2-31bk, S2-31bh |
 | [x] | S2-31bn | Accept direct D910/D918 rounding from binary80 Normal exponent -127 to signed minimum binary32 normal with independent UE rounding | S2-31bf, S2-31bh |
 | [x] | S2-31bo | Accept direct DD10/DD18 rounding from binary80 Normal exponent -1023 to signed minimum binary64 normal with independent UE rounding | S2-31bg, S2-31bh |
+| [x] | S2-31bp | Accept D910/D918 exponent-127 rounding carry to signed binary32 infinity with sticky OE+PE and C1 | S2-31bb |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3618,7 +3619,6 @@ fault atomicity, CLI fixtures, and JIT/native denial. Native runtime and
 physical acceptance remain deferred to the final combined S2-31 substage under
 ISSUE-019.
 
-
 <a id="s2-31ba-admit-sticky-ie-de-to-raw-binary80-fstp"></a>
 
 #### S2-31ba. Admit sticky IE/DE on exact raw DB38 FSTP m80fp
@@ -3973,3 +3973,21 @@ flag combinations; exact maximum-subnormal and minimum-normal controls; an
 exact integer oracle; write/range fault atomicity; FNSTSW/FNCLEX; and literal
 CLI fixtures with JIT/native denial. Native runtime and physical acceptance
 remain deferred under ISSUE-019.
+
+#### S2-31bp. Round exponent-127 binary80 normals to binary32 infinity on overflow
+
+Extend only bounded `D9 10`/`D9 18` for Valid-tagged canonical binary80 Normal
+sources at unbiased exponent 127 when existing sign-aware rounding of
+`S / 2^40` carries the 24-bit significand to `1 << 24`. Store signed binary32
+infinity after a successful atomic Dword write, then add sticky OE+PE and set
+C1. Do not add IE, DE or UE. Keep the current exact FCW set and
+`FSW & 0x80cc == 0` gate, so a later bounded store remains rejected until
+FNCLEX clears OE. Preserve source bytes, all other FST/FSTP behavior and
+write-before-pop/status/pointer commit ordering. Exponent-128 sources remain
+unsupported.
+
+Cover the maximum-finite value, nearest-even midpoint and neighbors, directed
+rounding thresholds, both signs, all RCs/opcodes/TOPs and all 16 sticky
+IE/DE/UE/PE combinations; exponent-128 rejection; Dword write/range atomicity;
+FNSTSW/FNCLEX and sticky-OE gate behavior; and CLI fixtures with JIT/native
+denial. Native runtime and physical acceptance remain deferred under ISSUE-019.
