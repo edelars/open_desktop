@@ -5246,3 +5246,29 @@ native runtime and physical x86 behavior remain deferred under ISSUE-019. See
 the [plan](../plans/STAGE_2.md#s2-31br-admit-sticky-status-on-bounded-m32m64-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31br--sticky-status-admission-for-bounded-m32m64-stores),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31cc-masked-canonical-qnan-fist-m32int"></a>
+
+## Local S2-31cc: masked canonical quiet NaN through m32 `FIST`/`FISTP` (`DB 10`/`DB 18`)
+
+Only bare `DB 10` and `DB 18` admit Special-tagged canonical binary80 quiet
+NaNs: exponent `0x7fff`, either sign, J=1 and quiet bit=1, with any lower
+payload. Under the existing FCW whitelist, either sign and every RC mode store
+Dword integer indefinite `0x80000000`. After the atomic Dword write, set sticky
+IE, clear C1, preserve incoming PE and C0/C2/C3, and add no PE/DE/OE/UE/SF;
+ES/B remain clear. The FSW gate continues to reject incoming IE.
+
+Keep bare Long64 RAX addressing, canonical48 four-byte preflight, raw source
+bytes, one write/no read, and post-write FIST/FISTP commit. FIST retains tag/TOP;
+FISTP empties old TOP and advances it only after successful write. SNaN, J=0
+pseudo-NaNs, malformed or mismatched tags, finite out-of-range inputs, m16/m64
+QNaNs and unmasked delivery remain unsupported.
+
+Coverage includes both signs, representative payloads, admitted FCWs, opcodes,
+TOP and incoming PE/C1, malformed/tag/class rejection, write/range atomicity,
+and FISTP/FNSTSW/FNCLEX observation. JIT/native admission remains closed;
+native runtime and physical behavior remain deferred under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31cc-masked-binary80-qnan-through-bounded-m32-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31cc--masked-binary80-qnan-through-m32-fistfstp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

@@ -7112,3 +7112,34 @@ passed. `python3 tools/check_layout.py` reports only the preserved root
 `.serena/` directory as unmapped; it remains excluded. `graphify update .`
 rebuilt the graph to 4,409 nodes, 8,981 edges and 175 communities. Native
 runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+<a id="s2-31cc--masked-binary80-qnan-through-m32-fistfstp"></a>
+
+## S2-31cc — masked binary80 quiet NaN through m32 FIST/FISTP
+
+Only bare `DB 10` and `DB 18` now admit Special-tagged canonical binary80
+quiet NaNs: exponent `0x7fff`, either sign, J=1, quiet bit=1, and arbitrary
+lower payload. Under the existing FCW whitelist, every sign, payload and RC
+stores Dword integer indefinite `0x80000000`. After a successful atomic write,
+IE is set, C1 clears, incoming PE and C0/C2/C3 are preserved, and no PE/DE/OE/UE/
+SF or ES/B is added. The source remains raw and state/pointers/TOP/RIP commit only
+after the Dword write. SNaN, J=0 pseudo-NaNs, mismatched tags, finite overflow,
+m16/m64 QNaNs and unmasked delivery remain outside this slice.
+
+The ISA matrix crosses four payload patterns, both signs, all four admitted
+FCWs, DB10/DB18, all TOP values and incoming PE/C1. Rejections cover J=0
+quiet-like encodings, SNaN, tags, denied FCW/FSW, a complete operand-size
+prefix, and DF38 m64. Fault coverage checks denied Dword writes and canonical48
+range failures without state or memory changes. Focused tests passed: the 2,048
+combination success matrix 1/1; quiet-NaN rejection/FNSTSW/FNCLEX/fault tests
+2/2; the stale m32-infinity rejection test 1/1 after removing the newly
+admitted canonical QNaN; CLI fixture 1/1; JIT denial 1/1.
+
+`cargo test --workspace --offline` passed 900 tests: 525 `od-isa`, 4 `od-jit`,
+6 host, 65 runner CLI, 125 fixture/JIT, 166 testkit, 8 x86-runner library and
+1 x86-runner main; all doc-tests passed. Host and Linux x86_64
+`cargo check --workspace --all-targets --offline` passed; Linux compiled native
+denial coverage but did not execute it. `cargo fmt --all -- --check` and
+`git diff --check` passed. `graphify update .` rebuilt the graph to 4,418 nodes,
+8,998 edges and 166 communities. Native runtime and physical x86 acceptance
+remain deferred under ISSUE-019.

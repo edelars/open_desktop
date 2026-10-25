@@ -291,6 +291,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bz | Convert canonical masked binary80 infinity to integer indefinite for DB10/DB18 m32 FIST | S2-31bw |
 | [x] | S2-31ca | Convert canonical masked binary80 infinity to integer indefinite for DF10/DF18 m16 FIST | S2-31bx |
 | [x] | S2-31cb | Convert canonical masked binary80 infinity to integer indefinite for DF38 m64 FISTP | S2-31by |
+| [x] | S2-31cc | Convert canonical masked binary80 quiet NaN to integer indefinite for DB10/DB18 m32 FIST/FISTP | S2-31bz |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4246,3 +4247,24 @@ finite versus infinity choices under directed rounding, exponent-1024 rejection,
 Qword write/range fault atomicity, FNSTSW/FNCLEX, and interpreter fixtures with
 JIT/native denial. Native runtime and physical acceptance remain deferred under
 ISSUE-019.
+
+
+<a id="s2-31cc-masked-binary80-qnan-through-bounded-m32-fist"></a>
+
+#### S2-31cc. Convert masked binary80 quiet NaN through bounded m32 `FIST`/`FISTP`
+
+Extend only bare `DB 10` and `DB 18` for Special-tagged canonical binary80
+quiet NaNs: exponent `0x7fff`, either sign, explicit integer bit J=1, quiet
+bit=1, and arbitrary lower payload. Under the existing admitted masked FCWs,
+store Dword integer indefinite `0x80000000` for every payload, sign and RC.
+After the atomic Dword write, add sticky IE, clear C1, preserve incoming PE and
+C0/C2/C3, and add no PE/DE/OE/UE/SF or ES/B. Preserve the raw source and
+existing addressing, gates, and post-write FIST/FISTP commit behavior. SNaN,
+J=0 pseudo-NaNs, mismatched tags, finite overflow, m16/m64 QNaNs, and unmasked
+delivery remain outside this slice.
+
+Coverage crosses four payload shapes, both signs, all admitted FCWs, both
+opcodes, all TOP values, and incoming PE/C1. Rejections include J=0 quiet-like
+encodings, SNaN, tag mismatch, range and write failures; a literal FISTP/FNSTSW
+fixture plus FNSTSW/FNCLEX unit sequence observes and clears IE. JIT/native
+admission remains closed.

@@ -716,3 +716,14 @@
   under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31cb-masked-canonical-infinity-fistp-m64int),
   [plan](plans/STAGE_2.md#s2-31cb-masked-binary80-infinity-through-bounded-m64-fistp),
   and [report](reports/STAGE_2_REPORT.md#s2-31cb--masked-binary80-infinity-through-m64-fistp).
+
+
+- **S2-31cc evidence:** bare `DB 10`/`DB 18` now admit Special-tagged
+  canonical binary80 quiet NaNs (J=1, quiet bit=1) to m32 integer indefinite
+  `0x80000000`. Successful writes add IE and clear C1 while preserving incoming
+  PE/C0/C2/C3 and adding no other exception flags. Tests cover payloads/signs,
+  FCW/opcode/TOP/PE/C1, rejection classes, write/range atomicity, CLI/FNSTSW/
+  FNCLEX and JIT/native denial. Native runtime and physical acceptance remain
+  deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31cc-masked-canonical-qnan-fist-m32int),
+  [plan](plans/STAGE_2.md#s2-31cc-masked-binary80-qnan-through-bounded-m32-fist),
+  and [report](reports/STAGE_2_REPORT.md#s2-31cc--masked-binary80-qnan-through-m32-fistfstp).
