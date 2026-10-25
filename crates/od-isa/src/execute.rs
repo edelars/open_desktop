@@ -2784,10 +2784,11 @@ fn bounded_x87_fist_integer_result(state: &LongModeState, width: u32) -> Option<
 /// integer fields and significand rounding. Signed zero and Infinity require
 /// matching tags and canonical payloads. NaNs require a matching Special tag;
 /// SNaN quieting returns deferred IE for post-store commit. Normal values use
-/// rounding. Exact subnormal outputs from canonical Normal binary80 sources
-/// exact subnormal outputs use integer downshift; masked inexact subnormal
-/// outputs use integer rounding and defer UE+PE until after a successful write.
-/// Zero, minimum-normal promotion and out-of-range results reject before access.
+/// rounding. Exact subnormal outputs use integer downshift; masked inexact
+/// subnormal outputs defer UE+PE until after a successful write. Extreme
+/// underflow sources are admitted as signed zero or minimum subnormal with
+/// UE+PE. Other zero results, minimum-normal promotion and out-of-range results
+/// reject before access.
 fn bounded_x87_m32fp_result(state: &LongModeState) -> Option<(u32, bool, bool, bool, bool)> {
     let x87 = state.x87.as_ref()?;
     if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
