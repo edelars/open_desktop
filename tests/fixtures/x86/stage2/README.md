@@ -2400,3 +2400,15 @@ all TOPs/sticky flags, unchanged raw source and atomic failures. See the
 [S2-31bl CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bl-binary80-subnormal-to-binary32-underflow-rounding),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bl-round-binary80-subnormals-through-binary32-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bl--binary80-subnormal-to-binary32-underflow-rounding).
+
+### S2-31bm binary80 subnormal to binary64 store fixtures
+
+The positive DD10/DFE0 fixture rounds a Special-tagged binary80 subnormal toward
+positive to the minimum binary64 subnormal and observes UE+PE and C1 through
+FNSTSW. The negative DD18/DFE0 fixture rounds toward zero, stores negative zero,
+and observes the popped TOP and UE+PE. Both are interpreter fixtures and remain
+denied by JIT and native admission. Direct ISA coverage verifies all fraction,
+sign, RC, TOP, sticky-flag and atomicity cases, including FNCLEX and raw-m80
+source preservation. See the [S2-31bm CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bm-binary80-subnormal-to-binary64-underflow-rounding),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bm-round-binary80-subnormals-through-binary64-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bm--binary80-subnormal-to-binary64-underflow-rounding).

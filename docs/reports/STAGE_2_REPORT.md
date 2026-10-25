@@ -6538,3 +6538,34 @@ communities. Layout checking reports only the preserved unmapped
 confirmed 25 focused `fst_m32fp` ISA tests, the FLD→FST→FNCLEX→FSTP raw-m80
 composition, CLI/FNSTSW fixture coverage, and JIT denial. Native runtime and
 physical acceptance remain deferred under ISSUE-019.
+
+<a id="s2-31bm--binary80-subnormal-to-binary64-underflow-rounding"></a>
+
+## S2-31bm — binary80 subnormal to binary64 underflow rounding
+
+The bounded DD 10/DD 18 conversion now accepts only Special-tagged canonical
+binary80 Subnormal sources (E=0, J=0, nonzero fraction). These values are below
+half the minimum binary64 subnormal. Existing FCWs select signed zero or the
+signed minimum subnormal by sign and directed rounding. Every accepted
+conversion adds UE+PE and no DE after the Qword write; C1 is set exactly when
+minimum subnormal is selected. The raw source remains unchanged, and
+status/pointer/RIP/FSTP-pop state commits only after a successful write.
+
+The ISA matrix covers fractions 1, 2, `0x4000000000000000`, and
+`0x7fffffffffffffff`, both signs, all four FCWs, both opcodes, every TOP, and
+all 16 sticky IE/DE/UE/PE combinations. Rejection and failure tests cover bad
+tags/classes/FCWs/FSWs, write and canonical-range failures, FNSTSW/FNCLEX, and
+FLD m80 → FST m64 → FNCLEX → raw FSTP m80 source preservation. Literal
+interpreter fixtures observe a minimum-subnormal FST with C1/UE/PE and a
+negative-zero FSTP with the updated TOP. The fixtures are denied by JIT and the
+native-admission test records the corresponding denial.
+
+Validation passed: the full offline workspace suite (825 passed, 0 failed),
+including 478 `od-isa` tests, 51 runner unit tests and 111 schema-v2 fixture
+checks; focused m64 x87 coverage (28 passed); host and Linux x86_64 all-target
+workspace checks; formatting and fixture validation. `tools/check_layout.py` reports the existing
+unmapped `.serena/` directory, which was preserved. The Linux x86_64 check
+typechecks the native-admission test; it was not executed on this Apple Silicon
+host. Native runtime and physical acceptance remain deferred under ISSUE-019.
+`graphify update .` rebuilt the graph with 4264 nodes, 8724 edges, and 188
+communities.

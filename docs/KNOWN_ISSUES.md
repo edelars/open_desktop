@@ -543,3 +543,13 @@
   [plan](plans/STAGE_2.md#s2-31bl-round-binary80-subnormals-through-binary32-stores),
   and [report](reports/STAGE_2_REPORT.md#s2-31bl--binary80-subnormal-to-binary32-underflow-rounding).
   Native runtime and physical acceptance remain deferred under ISSUE-019.
+- **S2-31bm evidence:** bounded DD10/DD18 now accept Special-tagged canonical
+  binary80 subnormal sources and round them directly to signed zero or minimum
+  binary64 subnormal. UE+PE and C1 commit only after successful Qword storage;
+  no DE is added, and FSTP pop/status/pointers remain atomic. Four payloads,
+  signs, RCs, TOPs, sticky flags, invalid encodings/gates, FNSTSW/FNCLEX,
+  raw-m80 preservation, CLI fixtures and JIT denial are covered. Native runtime
+  and physical x86 acceptance remain unverified under open ISSUE-019. See the
+  [S2-31bm CPU contract](specs/CPU_CONTRACT.md#local-s2-31bm-binary80-subnormal-to-binary64-underflow-rounding),
+  [plan](plans/STAGE_2.md#s2-31bm-round-binary80-subnormals-through-binary64-stores),
+  and [report](reports/STAGE_2_REPORT.md#s2-31bm--binary80-subnormal-to-binary64-underflow-rounding).

@@ -4825,3 +4825,25 @@ write/range atomicity, FNSTSW/FNCLEX, and CLI/JIT/native denial. Native runtime
 and physical acceptance remain deferred under ISSUE-019. See [plan](../plans/STAGE_2.md#s2-31bl-round-binary80-subnormals-through-binary32-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31bl--binary80-subnormal-to-binary32-underflow-rounding),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31bm: binary80 subnormal to binary64 underflow rounding
+
+Only bounded `DD 10` and `DD 18` accept Special-tagged canonical binary80
+Subnormal sources (`E=0`, `J=0`, nonzero fraction). Their magnitudes are below
+half of the minimum binary64 subnormal. Nearest and toward-zero store signed
+zero; toward-positive stores positive minimum subnormal or negative zero;
+toward-negative stores negative minimum subnormal or positive zero. Every
+admitted conversion is inexact and underflowed: commit sticky UE+PE after a
+successful atomic Qword write, set no DE, and set C1 iff minimum subnormal is
+selected. Preserve the ten source bytes and the existing FCW/FSW gate, with
+status, pointer, RIP and FSTP-pop state committed atomically. Reject other
+tags, noncanonical encodings and unsupported classes before access.
+
+Coverage includes the four requested fractions, both signs/rounding modes/
+opcodes/all TOPs and all 16 sticky IE/DE/UE/PE combinations, C1 replacement,
+negative signed-zero/minimum-subnormal results, FLD m80→FST m64→FNCLEX→FSTP m80
+preservation, write/range atomicity, invalid classes/tags/gates, FNSTSW/FNCLEX,
+and literal CLI/JIT/native denial. Native runtime and physical acceptance
+remain deferred under ISSUE-019. See [plan](../plans/STAGE_2.md#s2-31bm-round-binary80-subnormals-through-binary64-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31bm--binary80-subnormal-to-binary64-underflow-rounding),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

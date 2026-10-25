@@ -3395,6 +3395,49 @@ mod tests {
     }
 
     #[test]
+    fn fst_m64fp_binary80_subnormal_fixtures_observe_underflow_and_preserve_raw_source() {
+        for (name, bytes, expected_rax, expected_status, expected_tag, expected_raw, expected_bits) in [
+            (
+                "FST positive binary80 subnormal to minimum binary64 subnormal",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bm_fst_m64fp_positive_min_subnormal_fnstsw.case.json").as_slice(),
+                0x0030_4730,
+                0x4730,
+                0xfffe,
+                "01000000000000000000",
+                "0100000000000000",
+            ),
+            (
+                "FSTP negative binary80 subnormal to signed zero",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bm_fstp_m64fp_negative_signed_zero_fnstsw.case.json").as_slice(),
+                0x0030_4d30,
+                0x4d30,
+                0xffff,
+                "01000000000000000080",
+                "0000000000000080",
+            ),
+        ] {
+            let fixture = v2::Fixture::from_json(bytes)
+                .unwrap_or_else(|error| panic!("{name}: invalid fixture schema: {error}"));
+            let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::StopAddress {}), "{name}");
+            let Observation::Available { value } = result.snapshot else {
+                panic!("{name}: expected observable CPU state");
+            };
+            assert_eq!(value.state.gpr[0], HexU64(expected_rax), "{name}: FCW={:04x} FSW={:04x}", value.state.x87.as_ref().unwrap().control_word.0, value.state.x87.as_ref().unwrap().status_word.0);
+            let x87 = value.state.x87.as_ref().unwrap();
+            assert_eq!(x87.status_word, HexU64(expected_status), "{name}");
+            assert_eq!(x87.tag_word, HexU64(expected_tag), "{name}");
+            assert_eq!(x87.registers[0], expected_raw, "{name}");
+            assert_eq!(x87.instruction_pointer, HexU64(0x0010_0000), "{name}");
+            assert_eq!(x87.data_pointer, HexU64(0x0030_0004), "{name}");
+            let stack = memory.snapshot().into_iter().find(|region| region.region_id == "stack").unwrap();
+            assert_eq!(&stack.bytes_hex[8..24], expected_bits, "{name}");
+        }
+    }
+
+    #[test]
     fn fst_m32fp_inexact_subnormal_fixtures_observe_ue_pe_with_fnstsw() {
         for (name, bytes, expected_rax, expected_status, expected_tag, expected_raw, expected_bits) in [
             (
