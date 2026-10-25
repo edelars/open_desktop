@@ -2873,6 +2873,35 @@ runtime and physical acceptance remain deferred under ISSUE-019. See the
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
 
+<a id="local-s2-31bz-masked-canonical-infinity-fist-m32int"></a>
+
+## Local S2-31bz: masked canonical infinity through m32 `FIST`/`FISTP` (`DB 10`/`DB 18`)
+
+Only bare `DB 10` and `DB 18` admit Special-tagged canonical binary80
+infinity: significand `0x8000000000000000` and sign/exponent word `0x7fff` or
+`0xffff`. With an existing admitted FCW (all exceptions masked), either sign
+and every RC mode store integer indefinite `0x80000000`. After the atomic
+Dword write, set sticky IE, clear C1, preserve incoming PE and C0/C2/C3, and
+add no PE/DE/OE/UE/SF; ES/B remain clear. The existing FSW gate continues to
+reject incoming IE.
+
+Keep bare Long64 RAX addressing, canonical48 four-byte preflight, raw source
+bytes, one write/no read, and post-write commit. FIST retains tag/TOP; FISTP
+empties the old TOP and advances it only after successful write. NaNs,
+pseudo-infinity, mismatched tags, finite out-of-range values, m16/m64 and
+unmasked delivery remain outside this extension.
+
+Coverage includes both signs, all admitted FCWs, both opcodes, every TOP,
+incoming PE/C1, canonical/tag/class/control/environment/prefix rejection,
+finite -2^31 distinction, write/range atomicity, and a literal FISTP/FNSTSW
+fixture. A direct FISTP/FNSTSW/FNCLEX composition verifies IE observation and
+clearing. JIT/native denial remains explicit; native runtime and physical
+behavior remain deferred under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31bz-masked-binary80-infinity-through-bounded-m32-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31bz--masked-binary80-infinity-through-m32-fistfstp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
 <a id="local-s2-31bs-sticky-oe-on-raw-binary80-fstp-m80fp"></a>
 
 ## Local S2-31bs: sticky OE on raw `FSTP m80fp [RAX]` (`DB 38`)

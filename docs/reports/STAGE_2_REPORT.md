@@ -2672,6 +2672,44 @@ the graph to 4,378 nodes, 8,918 edges, and 181 communities. Native runtime and p
 acceptance remain deferred to the combined final substage under ISSUE-019.
 
 
+<a id="s2-31bz--masked-binary80-infinity-through-m32-fistfstp"></a>
+
+## S2-31bz — masked binary80 infinity through m32 FIST/FISTP
+
+Only bare `DB 10` and `DB 18` now admit Special-tagged canonical binary80
+positive or negative infinity (significand `0x8000000000000000`,
+sign/exponent `0x7fff` or `0xffff`). Under the existing masked FCW whitelist,
+all signs and RC modes store integer indefinite `0x80000000`. After successful
+atomic Dword write, IE is sticky, C1 clears, incoming PE and C0/C2/C3 remain
+preserved, and no PE/DE/OE/UE/SF or ES/B is added. Source bytes, addressing,
+FSW gate, and post-write FIST/FISTP commit/pop behavior remain bounded; no other
+width, NaN, pseudo-infinity, unmasked delivery, or finite overflow admission
+was added.
+
+The ISA matrix crosses sign, all four admitted FCWs, both opcodes, all TOP
+values, and incoming PE/C1. Rejection tests cover tag/class/malformed special,
+positive finite +2^31, unsupported FCW/FSW and prefixes, plus the DF38 m64 form.
+Write/range fault tests assert complete CPU/memory atomicity. Existing finite
+negative -2^31 remains accepted without IE. The literal negative-infinity
+FISTP/FNSTSW fixture observes IE and the popped TOP/tag; a direct FISTP,
+FNSTSW, FNCLEX sequence observes IE (`0x4901`) and then clears it (`0x4900`).
+JIT and native admission denial remain explicit.
+
+Focused `fist_m32int_` tests passed 10/10; `fistp_m32int_` tests passed 7/7.
+The CLI fixture and JIT-denial tests each passed 1/1. The full
+`cargo test --workspace --offline` suite passed 882 tests: 513 `od-isa`, 4
+`od-jit`, 6 host, 62 runner CLI, 122 fixture/JIT, 166 testkit, 8 x86-runner
+library, and 1 x86-runner main; all doc-tests passed. Host and Linux x86_64
+`cargo check --workspace --all-targets --offline` passed; Linux cross-check
+compiled native-denial coverage but did not execute it. Existing dead-code
+warnings remain in `od-host` and non-x86 runner benchmark helpers.
+`cargo fmt --all -- --check` and `git diff --check` passed. The layout checker
+reports only the preserved root `.serena/` directory as unmapped; it is
+excluded from the change. `graphify update .` rebuilt the graph to 4,388 nodes,
+8,938 edges, and 212 communities. Native runtime and physical x86 acceptance
+remain deferred under ISSUE-019.
+
+
 ## S2-29j — pure unsigned rational nearest-integer ties-to-even (partial)
 
 Added `round_quotient_ties_even(q, r, d)`, a pure unsigned helper for rounding

@@ -2556,3 +2556,16 @@ write/range atomicity. JIT and native admission remain closed. See the [S2-31by
 CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31by-round-normal-binary80-fractions-m64-fistp),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31by-round-normal-binary80-fractions-through-bounded-m64-fistp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31by--round-binary80-fractions-through-m64-fistp).
+
+### S2-31bz masked infinity FISTP m32int fixture
+
+The negative-infinity `DB 18` fixture stores integer indefinite `0x80000000`
+under masked exceptions and composes with FNSTSW to observe IE and the popped
+TOP/tag. A direct ISA sequence composes FISTP with FNSTSW and FNCLEX to verify
+that IE is visible before it is cleared. The unit matrix covers both signs,
+all admitted FCWs, both opcodes, every TOP, incoming PE/C1, malformed/tag/class
+and environment rejection, finite -2^31 distinction, and write/range
+atomicity. JIT and native admission remain closed. See the [S2-31bz CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bz-masked-canonical-infinity-fist-m32int),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bz-masked-binary80-infinity-through-bounded-m32-fist),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bz--masked-binary80-infinity-through-m32-fistfstp).

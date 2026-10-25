@@ -288,6 +288,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bw | Round canonical Normal binary80 fractions below one through DB10/DB18 m32 integer stores | S2-31bt |
 | [x] | S2-31bx | Round canonical Normal binary80 fractions below one through DF10/DF18 m16 integer stores | S2-31bu |
 | [x] | S2-31by | Round canonical Normal binary80 fractions below one through DF38 m64 FISTP | S2-31bv |
+| [x] | S2-31bz | Convert canonical masked binary80 infinity to integer indefinite for DB10/DB18 m32 FIST | S2-31bw |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4029,6 +4030,25 @@ neighbors, largest fraction below one, minimum Normal and exponents
 tag/class/environment rejection, Qword canaries, failed-write and canonical48
 range atomicity, CLI/FNSTSW, and JIT/native denial. Native runtime and physical
 acceptance remain deferred under ISSUE-019.
+
+<a id="s2-31bz-masked-binary80-infinity-through-bounded-m32-fist"></a>
+
+#### S2-31bz. Convert masked binary80 infinity through bounded m32 `FIST`/`FISTP`
+
+Extend only bare `DB 10` and `DB 18` for Special-tagged canonical binary80
+positive or negative infinity (exact significand `0x8000000000000000`,
+sign/exponent `0x7fff` or `0xffff`). Under the existing masked FCW whitelist,
+store the integer-indefinite Dword `0x80000000` regardless of sign or RC. After
+the successful atomic Dword write, add sticky IE, clear C1, preserve incoming
+PE and C0/C2/C3, and add no PE/DE/OE/UE/SF or ES/B. Keep the FSW gate, bare
+Long64 RAX addressing, full canonical48 range preflight, raw source payload,
+and post-write FIST/FISTP state commit. Existing IE rejection remains.
+
+Cover signs, all admitted FCWs, both opcodes, every TOP, incoming PE/C1,
+canonical/tag/class/FCW/FSW/prefix rejection, finite overflow and exact -2^31
+distinction, Dword canaries and write/range atomicity, FNSTSW/FNCLEX, and
+finite/fraction/zero regressions. JIT/native denial remains explicit; native
+runtime and physical acceptance remain deferred under ISSUE-019.
 
 #### S2-31bj. Round extreme underflow through binary32 stores
 

@@ -1889,6 +1889,10 @@ mod tests {
             )
             .as_slice(),
             include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_31bz_fistp_m32int_negative_infinity_fnstsw.case.json"
+            )
+            .as_slice(),
+            include_bytes!(
                 "../../../tests/fixtures/x86/stage2/s2_31bx_fistp_m16int_negative_fraction_fnstsw.case.json"
             )
             .as_slice(),

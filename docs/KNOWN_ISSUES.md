@@ -683,3 +683,14 @@
   remain deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31by-round-normal-binary80-fractions-m64-fistp),
   [plan](plans/STAGE_2.md#s2-31by-round-normal-binary80-fractions-through-bounded-m64-fistp),
   and [report](reports/STAGE_2_REPORT.md#s2-31by--round-binary80-fractions-through-m64-fistp).
+
+- **S2-31bz evidence:** bare `DB 10`/`DB 18` now convert Special-tagged
+  canonical binary80 ±Infinity to Dword integer indefinite `0x80000000` under
+  the admitted masked FCWs. After successful write, IE is sticky, C1 clears,
+  incoming PE and C0/C2/C3 are preserved, and no other exception status is
+  added. Tests cover signs/FCWs/opcodes/TOP/PE/C1, source/control rejection,
+  finite -2^31 distinction, write/range atomicity, CLI/FNSTSW/FNCLEX, and
+  JIT/native denial. Native runtime and physical acceptance remain deferred
+  under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31bz-masked-canonical-infinity-fist-m32int),
+  [plan](plans/STAGE_2.md#s2-31bz-masked-binary80-infinity-through-bounded-m32-fist),
+  and [report](reports/STAGE_2_REPORT.md#s2-31bz--masked-binary80-infinity-through-m32-fistfstp).
