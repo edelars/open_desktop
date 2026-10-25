@@ -4497,6 +4497,38 @@ write/range atomicity, FNSTSW/FNCLEX, CLI, and JIT/native denial. See the
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
 
+<a id="s2-31cv-pseudo-infinity-m64-fistp"></a>
+
+#### S2-31cv. Convert Special-tagged pseudo-infinity through m64 `FISTP`
+
+Only bare `DF 38` admits a Special-tagged binary80 pseudo-infinity with raw
+sign/exponent `0x7fff` or `0xffff` and zero significand (J=0). Store Qword
+integer-indefinite `0x8000000000000000`, add current IE, clear C1, and add no
+PE or other current flags. Preserve historical sticky flags and C0/C2/C3.
+Retain the FCW whitelist, `FSW & 0x80c0` gate, bare Long64 RAX form,
+canonical48 8-byte preflight, and one atomic Qword write without a read.
+Commit status, FIP/FDP/RIP and the single FISTP TOP pop only after the write
+succeeds. Preserve all ten source bytes and raw payload.
+
+Canonical signed zero and canonical J=1 infinity retain their distinct
+existing status behavior. Pseudo-NaNs, unnormals, pseudo-denormals, mismatched
+tags, unmasked or otherwise disallowed controls/status, prefixes, m16/m32
+behavior changes, `FIST m64`, and other forms remain unsupported. FLD m80
+composition is excluded because FLD rejects pseudo-infinity. JIT/native
+admission remains denied; physical x86 acceptance and native runtime remain
+deferred to the combined final S2-31 substage under ISSUE-019.
+
+Coverage crosses both signs × four FCWs × eight TOP positions × 64 sticky
+combinations × two previous C1 values (8,192 cases), checking literal Qword
+bytes/status, IE without PE, C1 clearing, source preservation, tag/pop and TOP
+wrap, canaries, and one-write/no-read access. Rejection and fault cases cover
+malformed neighboring encodings, tag/control gates, denied writes and
+canonical48 crossing. FNSTSW/FNCLEX, a direct seeded CLI fixture, and JIT/native
+denial are included. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cv-pseudo-infinity-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31cv--special-tagged-pseudo-infinity-through-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
 
 
 

@@ -802,6 +802,7 @@ impl Fixture {
                 "df18dfe0" => ("df18dfe0", 4),
                 "df38" => ("df38", 2),
                 "df38dfe0" => ("df38dfe0", 4),
+                "df38dfe0dbe2" => ("df38dfe0dbe2", 6),
                 "df10" => ("df10", 2),
                 "df10dfe0" => ("df10dfe0", 4),
                 _ if code_bytes.len() == 4

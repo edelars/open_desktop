@@ -7849,3 +7849,42 @@ remain deferred to the combined final S2-31 substage under ISSUE-019; this
 extension does not close ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cu-pseudo-infinity-m16-fist),
 [plan](../plans/STAGE_2.md#s2-31cu-pseudo-infinity-m16-fist), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cv--special-tagged-pseudo-infinity-through-m64-fistp"></a>
+
+## S2-31cv — Special-tagged pseudo-infinity through m64 FISTP
+
+Only bare `DF 38` now admits a Special-tagged binary80 pseudo-infinity with
+zero significand and raw sign/exponent `0x7fff` or `0xffff`. It stores Qword
+integer-indefinite `0x8000000000000000`, adds IE, clears C1, adds no new PE or
+other current flags, and preserves historical sticky/condition flags. The
+existing FCW and FSW gates, bare Long64 RAX form, canonical48 eight-byte
+preflight, one atomic Qword write/no read, and write-before-commit order are
+unchanged. FISTP preserves the source's ten raw bytes, empties old physical
+TOP, and advances TOP once, including wrap.
+
+The 8,192-case matrix crosses both signs, four FCWs, all eight TOP positions,
+64 sticky combinations, and both incoming C1 values. Assertions check the
+literal Qword output/status, PE preservation without adding it, IE, C1 clearing,
+source preservation, tag/pop behavior, TOP wrap, canaries and exactly one
+Qword write without a read. Rejection tests cover pseudo-NaNs, unnormals,
+pseudo-denormals, mismatched tags and denied FCW/FSW controls. Canonical signed
+zero and J=1 infinity retain their distinct existing result/status behavior.
+Write-denial and canonical48-crossing cases remain atomic. A direct seeded CLI
+fixture composes `DF 38`, `FNSTSW AX`, and `FNCLEX`; it checks the Qword canaries,
+sticky IE observation, clearing and popped tag. JIT compilation and native
+admission remain denied. FLD composition is excluded.
+
+Validation: the two focused ISA tests and seeded CLI fixture test passed;
+`cargo test --workspace --offline` passed. Host and
+`x86_64-unknown-linux-gnu` `cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, and `git diff --check` passed. The Linux
+all-target check compile-checks the native-denial test; Linux execution was not
+performed on this macOS arm64 host. `python3 tools/check_layout.py` reports the
+pre-existing unmapped `.serena/` directory; it was left untouched. `graphify
+update .` refreshed the graph to 4,592 nodes, 9,288 edges and 181 communities.
+Mac mini validation, physical x86 acceptance and native runtime remain deferred
+to the combined final S2-31 substage under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cv-pseudo-infinity-m64-fistp),
+[plan](../plans/STAGE_2.md#s2-31cv-pseudo-infinity-m64-fistp), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md).

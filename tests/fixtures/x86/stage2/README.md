@@ -2865,3 +2865,18 @@ range faults. JIT/native admission remains denied; FLD composition is excluded
 because FLD does not accept pseudo-infinity. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cu-pseudo-infinity-m16-fist),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cu-pseudo-infinity-m16-fist),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cu--special-tagged-pseudo-infinity-through-m16-fist).
+
+
+### S2-31cv Special-tagged pseudo-infinity m64 FISTP fixture
+
+`s2_31cv_fistp_m64int_negative_pseudo_infinity_fnstsw.case.json` seeds a
+Special-tagged negative J=0 pseudo-infinity with raw sign/exponent `0xffff`,
+then executes literal `DF 38`, `DF E0`, and `DB E2`. It checks Qword
+integer-indefinite between canaries, IE observed by FNSTSW and cleared by
+FNCLEX, raw source retention, and the popped TOP/tag. ISA tests cover both
+signs, the 8,192-case FCW/TOP/sticky/C1 matrix, malformed classes/tags,
+canonical zero/infinity controls, and Qword write/range atomicity. JIT/native
+admission remains denied; FLD composition is excluded because FLD rejects
+pseudo-infinity. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cv-pseudo-infinity-m64-fistp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31cv-pseudo-infinity-m64-fistp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cv--special-tagged-pseudo-infinity-through-m64-fistp).

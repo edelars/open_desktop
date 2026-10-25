@@ -954,3 +954,16 @@
   [plan](plans/STAGE_2.md#s2-31cu-pseudo-infinity-m16-fist),
   [report](reports/STAGE_2_REPORT.md#s2-31cu--special-tagged-pseudo-infinity-through-m16-fist),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31cv evidence:** only bare DF38 m64 FISTP now admits Special-tagged
+  pseudo-infinity with zero significand and raw sign/exponent `0x7fff` or
+  `0xffff`. The 8,192-case FCW/TOP/sticky/C1 matrix, Qword indefinite result,
+  IE-without-new-PE status, raw source retention, TOP wrap, atomic write/range
+  rejection, malformed-class/tag/control checks, seeded FNSTSW/FNCLEX CLI
+  fixture, and JIT/native denial are recorded in the linked report. FLD
+  composition is excluded. Native runtime and physical x86 acceptance remain
+  deferred to the combined final S2-31 substage under ISSUE-019; Mac mini
+  validation remains pending. See [contract](specs/CPU_CONTRACT.md#local-s2-31cv-pseudo-infinity-m64-fistp),
+  [plan](plans/STAGE_2.md#s2-31cv-pseudo-infinity-m64-fistp),
+  [report](reports/STAGE_2_REPORT.md#s2-31cv--special-tagged-pseudo-infinity-through-m64-fistp),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

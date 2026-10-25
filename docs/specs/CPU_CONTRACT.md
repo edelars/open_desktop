@@ -2704,6 +2704,40 @@ Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See also the
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
 
+<a id="local-s2-31cv-pseudo-infinity-m64-fistp"></a>
+
+## Local S2-31cv: Special-tagged pseudo-infinity through m64 `FISTP`
+
+Only bare `DF 38` admits a Special-tagged binary80 pseudo-infinity with exact
+sign/exponent `0x7fff` or `0xffff` and zero significand (J=0). Store Qword
+integer-indefinite `0x8000000000000000`, add IE, clear C1, and add no PE or
+other current exception flags. Preserve historical sticky flags and C0/C2/C3.
+The current FCW whitelist, `FSW & 0x80c0` gate, bare Long64 RAX addressing,
+canonical48 8-byte preflight, and atomic single Qword write/no read remain
+fixed. Commit status, pointers, RIP, and the FISTP pop only after the write
+succeeds; preserve all ten source bytes.
+
+Canonical signed zero continues to store zero without adding flags; canonical
+J=1 infinity retains its established integer-indefinite/IE behavior. Pseudo-
+NaNs, unnormals, pseudo-denormals, mismatched tags, unmasked or otherwise
+disallowed controls/status, prefixes, m16/m32 behavior changes, m64 FIST, and
+other forms remain unsupported. FLD m80 rejects pseudo-infinity, so no FLD
+composition is claimed. JIT/native admission remains closed. Physical x86 and
+native runtime acceptance remain deferred to the combined final S2-31 substage
+under ISSUE-019.
+
+The 8,192-case matrix crosses both signs, four FCWs, eight TOP values, 64
+sticky combinations, and both previous C1 values. Literal assertions cover
+Qword bytes/status, no new PE, C1 clearing, sticky and condition-code
+preservation, raw source payload, pop/TOP wrap, canaries, and exactly one
+Qword write with no read. Rejections and atomicity checks cover malformed
+neighbors, wrong tags, controls, denied writes, and canonical48 faults. A
+seeded CLI fixture verifies FNSTSW/FNCLEX and keeps JIT/native admission denied.
+See the [plan](../plans/STAGE_2.md#s2-31cv-pseudo-infinity-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31cv--special-tagged-pseudo-infinity-through-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
 
 
 <a id="local-s2-31bt-exact-signed-zero-fist-m32int-rax-db-10-db-18"></a>

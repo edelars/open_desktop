@@ -2773,11 +2773,11 @@ fn bounded_x87_fist_integer_result(state: &LongModeState, width: u32) -> Option<
         return Some((encoded, 0x0020, magnitude != 0));
     }
     if matches!(width, 16 | 32 | 64) && tag == X87Tag::Special {
-        // The m16/m32 FIST/FISTP slices admit the exact J=0, zero-fraction
+        // The bounded integer-store slices admit the exact J=0, zero-fraction
         // pseudo-infinity encoding as invalid and store integer-indefinite.
         // Keep this exception narrower than the other special-value paths:
-        // m64 and adjacent pseudo-NaN encodings remain unsupported.
-        if matches!(width, 16 | 32)
+        // adjacent pseudo-NaN encodings remain unsupported.
+        if matches!(width, 16 | 32 | 64)
             && raw.classify() == X87Binary80Class::PseudoInfinity
             && raw.exponent() == 0x7fff
             && raw.significand() == 0
@@ -26466,6 +26466,249 @@ mod tests {
     }
 
     #[test]
+    fn fistp_m64int_special_pseudo_infinity_matrix_preserves_sticky_and_stack_rules() {
+        for sign_exponent in [0x7fff_u16, 0xffff] {
+            let mut raw = [0_u8; 10];
+            raw[8..].copy_from_slice(&sign_exponent.to_le_bytes());
+            assert_eq!(
+                X87Binary80::from_bytes(raw).classify(),
+                X87Binary80Class::PseudoInfinity
+            );
+            for control_word in [0x037f_u16, 0x077f, 0x0b7f, 0x0f7f] {
+                for top in 0_u16..8 {
+                    for historical in 0_u16..64 {
+                        for prior_c1 in [false, true] {
+                            let mut state = LongModeState::default();
+                            state.rip = 0x8487;
+                            state.gpr[Register::Rax as usize] = 0x1003;
+                            let mut x87 = crate::state::X87State::fixture_seed();
+                            x87.control_word = control_word;
+                            let old_fsw = (top << 11)
+                                | 0x4500
+                                | historical
+                                | if prior_c1 { 0x0200 } else { 0 };
+                            x87.status_word = old_fsw;
+                            x87.registers[usize::from(top)] = raw;
+                            x87.set_tag(top as u8, X87Tag::Special);
+                            state.x87 = Some(x87);
+                            let before = state.clone();
+                            let mut memory = Memory::at(&[0xdf, 0x38], state.rip);
+                            memory.bytes = vec![0xa5; 24];
+
+                            assert_eq!(
+                                step(&mut state, &mut memory, AccessContext::default()),
+                                Ok(StepOutcome::Advanced),
+                                "sign_exponent={sign_exponent:#06x} FCW={control_word:#06x} TOP={top} sticky={historical:#04x} C1={prior_c1}"
+                            );
+                            assert_eq!(&memory.bytes[..3], &[0xa5; 3]);
+                            assert_eq!(
+                                &memory.bytes[3..11],
+                                &0x8000_0000_0000_0000_u64.to_le_bytes()
+                            );
+                            assert_eq!(&memory.bytes[11..], &[0xa5; 13]);
+                            assert_eq!(
+                                memory.accesses,
+                                vec![(AccessKind::Write, 0x1003, 8)],
+                                "pseudo-infinity FISTP must issue one Qword write and no read"
+                            );
+                            let after = state.x87.as_ref().unwrap();
+                            assert_eq!(after.registers, before.x87.as_ref().unwrap().registers);
+                            let new_top = top.wrapping_add(1) & 7;
+                            assert_eq!(u16::from(after.top()), new_top);
+                            assert_eq!(
+                                after.tag_word,
+                                before.x87.as_ref().unwrap().tag_word
+                                    | (3_u16 << (u32::from(top) * 2))
+                            );
+                            let expected_fsw =
+                                (old_fsw & !(0x0200 | (7 << 11))) | (new_top << 11) | 0x0001;
+                            assert_eq!(after.status_word, expected_fsw);
+                            assert_eq!(
+                                after.status_word & 0x0020,
+                                old_fsw & 0x0020,
+                                "PE is preserved without being added"
+                            );
+                            assert_ne!(after.status_word & 0x0001, 0, "IE is added");
+                            assert_eq!(after.status_word & 0x0200, 0, "C1 is cleared");
+                            assert_eq!(after.instruction_pointer, 0x8487);
+                            assert_eq!(after.data_pointer, 0x1003);
+                            assert_eq!(state.rip, 0x8489);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fistp_m64int_special_pseudo_infinity_rejects_neighbors_and_faults_atomically() {
+        let pseudo_infinity = binary80_normal(0, 0x7fff, false);
+        let pseudo_qnan = binary80_normal(0x4000_0000_0000_0000, 0x7fff, false);
+        let pseudo_snan = binary80_normal(1, 0x7fff, false);
+        let unnormal = binary80_normal(0x4000_0000_0000_0000, 0x3fff, false);
+        let pseudo_denormal = binary80_normal(0x8000_0000_0000_0000, 0, false);
+        assert_eq!(
+            X87Binary80::from_bytes(unnormal).classify(),
+            X87Binary80Class::Unnormal
+        );
+        assert_eq!(
+            X87Binary80::from_bytes(pseudo_denormal).classify(),
+            X87Binary80Class::PseudoDenormal
+        );
+        for (tag, raw) in [
+            (X87Tag::Valid, pseudo_infinity),
+            (X87Tag::Zero, pseudo_infinity),
+            (X87Tag::Empty, pseudo_infinity),
+            (X87Tag::Special, pseudo_qnan),
+            (X87Tag::Special, pseudo_snan),
+            (X87Tag::Special, unnormal),
+            (X87Tag::Special, pseudo_denormal),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x8487;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.registers[0] = raw;
+            x87.set_tag(0, tag);
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xdf, 0x38], state.rip);
+            memory.bytes = vec![0xa5; 16];
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xdf }),
+                "tag={tag:?} raw={raw:02x?}"
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.bytes, vec![0xa5; 16]);
+            assert!(memory.accesses.is_empty());
+        }
+
+        for (control_word, status_word) in [
+            (0x037e_u16, 0), // invalid-operation mask clear
+            (0x037d, 0),     // denormal-operation mask clear
+            (0x035f, 0),     // precision mask clear
+            (0x037f, 0x0040),
+            (0x037f, 0x0080),
+            (0x037f, 0x8000),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x8487;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = control_word;
+            x87.status_word = status_word;
+            x87.registers[0] = pseudo_infinity;
+            x87.set_tag(0, X87Tag::Special);
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xdf, 0x38], state.rip);
+            memory.bytes = vec![0xa5; 16];
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xdf }),
+                "FCW={control_word:#06x} FSW={status_word:#06x}"
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.bytes, vec![0xa5; 16]);
+            assert!(memory.accesses.is_empty());
+        }
+
+        // Canonical zero stores zero, while canonical infinity stores the
+        // integer-indefinite Qword and adds IE.
+        for (tag, raw, expected_status) in [
+            (X87Tag::Zero, [0; 10], 0x4900),
+            (
+                X87Tag::Special,
+                binary80_normal(0x8000_0000_0000_0000, 0x7fff, false),
+                0x4901,
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x8487;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0x4100;
+            x87.registers[0] = raw;
+            x87.set_tag(0, tag);
+            state.x87 = Some(x87);
+            let mut memory = Memory::at(&[0xdf, 0x38], state.rip);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            let expected = if tag == X87Tag::Zero {
+                0
+            } else {
+                0x8000_0000_0000_0000_u64
+            };
+            assert_eq!(&memory.bytes[..8], &expected.to_le_bytes());
+            assert_eq!(state.x87.as_ref().unwrap().status_word, expected_status);
+        }
+
+        for address in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fffc] {
+            let mut state = LongModeState::default();
+            state.rip = 0x8487;
+            state.gpr[Register::Rax as usize] = address;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0x4720;
+            x87.registers[0] = pseudo_infinity;
+            x87.set_tag(0, X87Tag::Special);
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xdf, 0x38], state.rip);
+            memory.bytes = vec![0xa5; 16];
+            assert!(matches!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Fault(ArchitecturalFault { vector: 13, .. }))
+            ));
+            assert_eq!(state, before);
+            assert_eq!(memory.bytes, vec![0xa5; 16]);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x8487;
+        state.gpr[Register::Rax as usize] = 0x1000;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0x4720;
+        x87.registers[0] = pseudo_infinity;
+        x87.set_tag(0, X87Tag::Special);
+        state.x87 = Some(x87);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0xdf, 0x38], state.rip);
+        memory.bytes = vec![0xa5; 16];
+        memory.deny_writes = true;
+        assert!(matches!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Err(MemoryError::PermissionDenied {
+                access: AccessKind::Write,
+                ..
+            })
+        ));
+        assert_eq!(state, before);
+        assert_eq!(memory.bytes, vec![0xa5; 16]);
+        assert_eq!(memory.accesses, vec![(AccessKind::Write, 0x1000, 8)]);
+
+        let mut injected = before.clone();
+        let mut memory = Memory::at(&[0xdf, 0x38], injected.rip);
+        memory.bytes = vec![0xa5; 16];
+        memory.error = Some(MemoryError::Backend("injected qword write failure".into()));
+        memory.error_kind = Some(AccessKind::Write);
+        assert!(matches!(
+            step(&mut injected, &mut memory, AccessContext::default()),
+            Err(MemoryError::Backend(_))
+        ));
+        assert_eq!(injected, before);
+        assert_eq!(memory.bytes, vec![0xa5; 16]);
+        assert_eq!(memory.accesses, vec![(AccessKind::Write, 0x1000, 8)]);
+    }
+
+    #[test]
     fn fistp_m64int_infinity_fnstsw_fnclex_observes_then_clears_ie() {
         let raw = binary80_normal(0x8000_0000_0000_0000, 0x7fff, true);
         let mut state = LongModeState::default();
@@ -26512,7 +26755,6 @@ mod tests {
             (X87Tag::Empty, infinity),
             (X87Tag::Zero, infinity),
             (X87Tag::Valid, infinity),
-            (X87Tag::Special, binary80_normal(0, 0x7fff, false)),
             (
                 X87Tag::Special,
                 binary80_normal(0x4000_0000_0000_0000, 0x7fff, false),
