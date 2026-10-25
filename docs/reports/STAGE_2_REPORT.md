@@ -6510,6 +6510,7 @@ tests (110 passed). Host and Linux x86_64 workspace all-target checks passed,
 as did Linux x86_64 native-runner test-code typechecking. Formatting, fixture
 JSON, documentation anchors, and `git diff --check` passed. `graphify update .`
 completed with 4242 nodes, 8684 edges, and 181 communities. The layout checker
-reports only the pre-existing unmapped `.serena/` directory, preserved. Native
-runtime and physical acceptance remain deferred under ISSUE-019; independent
-review is pending.
+reports only the pre-existing unmapped `.serena/` directory, preserved. A clean
+independent review confirmed the 471 ISA tests, CLI fixture, and JIT denial;
+the exact-integer rounding oracle covered 489,856 combinations. Native runtime
+and physical acceptance remain deferred under ISSUE-019.
