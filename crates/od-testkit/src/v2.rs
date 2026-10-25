@@ -787,6 +787,9 @@ impl Fixture {
                 "d900dfe0" => ("d900dfe0", 4),
                 "d900dd10" => ("d900dd10", 4),
                 "d900dd18dfe0" => ("d900dd18dfe0", 6),
+                "db2848b80140000000000000df38dfe0dbe2" => {
+                    ("db2848b80140000000000000df38dfe0dbe2", 18)
+                }
                 "db10" => ("db10", 2),
                 "db10dfe0" => ("db10dfe0", 4),
                 "db00" => ("db00", 2),
@@ -1174,10 +1177,13 @@ impl Fixture {
                             }
                     })
             });
-            let expected_budget = match code_bytes.len() {
-                8 => 2,
-                12 => 3,
-                _ => 1,
+            let expected_budget = match code_bytes.as_str() {
+                "db2848b80140000000000000df38dfe0dbe2" => 5,
+                _ => match code_bytes.len() {
+                    8 => 2,
+                    12 => 3,
+                    _ => 1,
+                },
             };
             if code.guest_address != self.initial_state.rip
                 || code.length != expected_length

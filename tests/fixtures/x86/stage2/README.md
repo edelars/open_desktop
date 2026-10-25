@@ -2824,3 +2824,16 @@ m16 stores, observes the status, and clears exception flags with FNCLEX. JIT
 and native admission remain denied. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cr-canonical-subnormal-m16-fist),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cr-canonical-subnormal-m16-fist),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cr--canonical-subnormal-m16-fist).
+
+
+### S2-31cs canonical-subnormal m64 FISTP fixture
+
+`s2_31cs_fld_fistp_m64int_negative_subnormal_fnstsw_fnclex.case.json` loads a
+literal negative binary80 subnormal from unaligned m80 memory, changes RAX to
+an unaligned Qword destination, then executes `DF 38`, `DF E0`, and `DB E2`.
+It checks all-ones Qword storage between sentinels, status observation of PE/C1,
+FNCLEX clearing, TOP wrap/pop and preservation of the popped source's raw ten
+bytes. JIT and native admission remain denied. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cs-canonical-subnormal-m64-fistp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31cs-canonical-subnormal-m64-fistp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cs--canonical-subnormal-m64-fistp).

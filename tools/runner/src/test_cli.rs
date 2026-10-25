@@ -5274,6 +5274,69 @@ mod tests {
     }
 
     #[test]
+    fn fistp_m64int_subnormal_fixture_loads_stores_observes_and_clears_status() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31cs_fld_fistp_m64int_negative_subnormal_fnstsw_fnclex.case.json"
+        );
+        let fixture = v2::Fixture::from_json(bytes).expect("S2-31cs fixture schema");
+        let code_hex = &fixture
+            .fixture
+            .memory
+            .iter()
+            .find(|region| region.region_id == "code")
+            .expect("S2-31cs code region")
+            .initial_bytes_hex;
+        let code = code_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            od_jit::compile(&code).is_err(),
+            "bounded x87 remains JIT-denied"
+        );
+        let before = fixture.fixture.initial_state.clone();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(5) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("S2-31cs fixture snapshot unavailable");
+        };
+        let initial_x87 = before.x87.as_ref().unwrap();
+        let after = value.state.x87.as_ref().unwrap();
+        assert_eq!(value.state.gpr[0], HexU64(0x0220));
+        assert_eq!(after.status_word, HexU64(0x0200));
+        assert_eq!(after.tag_word, initial_x87.tag_word);
+        assert_eq!((after.status_word.get() >> 11) & 7, 0);
+        assert_eq!(after.registers[7], "ffffffffffffff7f0080");
+        assert_ne!(after.registers[7], initial_x87.registers[7]);
+        assert_eq!(after.instruction_pointer, HexU64(0x0010_000c));
+        assert_eq!(after.data_pointer, HexU64(0x0000_4001));
+        let regions = memory.snapshot();
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "qword_output")
+                .unwrap()
+                .bytes_hex,
+            "a5ffffffffffffffffa5a5a5a5a5a5a5"
+        );
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "m80_input")
+                .unwrap()
+                .bytes_hex,
+            "ffffffffffffff7f0080"
+        );
+    }
+
+    #[test]
     fn fistp_m32int_negative_fraction_fixture_rounds_and_observes_status() {
         let bytes = include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31bw_fistp_m32int_negative_fraction_fnstsw.case.json"

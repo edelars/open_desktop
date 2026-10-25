@@ -5723,3 +5723,38 @@ admission denial. Physical x86 and native runtime acceptance remain deferred
 under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31cr-canonical-subnormal-m16-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31cr--canonical-subnormal-m16-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31cs-canonical-subnormal-m64-fistp"></a>
+
+## Local S2-31cs: canonical binary80 subnormal through `FISTP m64int [RAX]` (`DF 38`)
+
+Only bare `DF 38` admits a Special-tagged canonical binary80 nonzero
+subnormal: exponent zero, explicit integer bit J=0, and nonzero fraction.
+Every such magnitude is below one half. With FCW `0x037f` (RN) or `0x0f7f`
+(TZ), store zero; under `0x077f` (RD), store all-ones only for a negative
+source; under `0x0b7f` (RU), store one only for a positive source. Encode
+negative one with unsigned two's-complement arithmetic. Every admitted
+conversion adds sticky PE, and C1 is set exactly when the stored magnitude is
+one. Preserve all incoming sticky exception flags and C0/C2/C3. The existing
+`FSW & 0x80c0 == 0` gate still rejects SF/ES/B; the four-FCW whitelist remains.
+
+Keep Long64, exact bare RAX addressing, and the complete canonical48
+eight-byte preflight. Issue one atomic Qword write and no data read. Only after
+success empty the old physical TOP tag, advance TOP modulo eight, commit PE/C1,
+FIP/FDP/RIP and retirement. Preserve all raw x87 payloads, including the
+popped source's ten bytes, and unrelated state. No FIST m64 form is added.
+Pseudo-denormals, malformed encodings, mismatched tags, unmasked cases,
+prefixes, and other integer-store forms remain outside this extension; m16 and
+m32 subnormal behavior is unchanged.
+
+Coverage includes four literal fractions × both signs × all RC × all TOP × 64
+incoming sticky combinations × both old C1 values (32,768 cases), a literal
+FLD m80→FISTP→FNSTSW/FNCLEX fixture sequence, malformed/class/tag/control
+rejection, Qword canaries, write/range fault atomicity, TOP wrap, and raw source
+preservation. m16/m32 regression checks remain in the workspace. JIT/native
+admission stays denied. Native runtime and physical x86 acceptance remain
+deferred under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31cs-canonical-subnormal-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31cs--canonical-subnormal-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

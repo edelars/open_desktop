@@ -4645,3 +4645,31 @@ FLD m80 composition, source/control rejection, Word canaries, write/range
 atomicity, FNSTSW/FNCLEX, and literal CLI/JIT/native admission checks. Physical
 x86 acceptance remains part of the combined final S2-31 substage under
 ISSUE-019.
+
+<a id="s2-31cs-canonical-subnormal-m64-fistp"></a>
+
+#### S2-31cs. Admit canonical binary80 subnormals through m64 `FISTP`
+
+Extend only bare `DF 38` (`FISTP m64int [RAX]`) for a Special-tagged
+canonical binary80 nonzero subnormal (exponent zero, explicit integer bit
+J=0, nonzero fraction). RN/TZ store zero; RD stores all-ones only for a
+negative source; RU stores one only for a positive source. Every admitted
+conversion adds sticky PE and sets C1 exactly when the rounded magnitude is
+one. Preserve incoming sticky flags and C0/C2/C3 under the existing
+`FSW & 0x80c0` gate. Keep the FCW whitelist, Long64 bare RAX form, canonical48
+eight-byte preflight, one atomic Qword write/no read, and post-write state/RIP/
+pop commit. Preserve the old physical TOP's raw ten-byte payload when popping.
+No `FIST m64` form is added. The m16/m32 paths are unchanged; pseudo-
+denormals, malformed or tag-mismatched sources, unmasked cases, and other
+forms remain unsupported.
+
+Cover four literal fractions × both signs × four RC values × eight TOP values
+× 64 incoming sticky-flag combinations × both old C1 values (32,768 cases),
+plus FLD m80→FISTP→FNSTSW/FNCLEX composition, source/control/status rejects,
+Qword canaries, write/range atomicity, wrap and raw-source preservation,
+m16/m32 regressions, literal CLI observation, and JIT/native denial. Physical
+x86 acceptance remains part of the combined final S2-31 substage under
+ISSUE-019. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cs-canonical-subnormal-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31cs--canonical-subnormal-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

@@ -915,3 +915,15 @@
   [plan](plans/STAGE_2.md#s2-31cr-canonical-subnormal-m16-fist),
   [report](reports/STAGE_2_REPORT.md#s2-31cr--canonical-subnormal-m16-fist),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31cs evidence:** only bare DF38 m64 FISTP now admits
+  Special-tagged canonical binary80 subnormals. The 32,768-case
+  fraction/sign/RC/TOP/sticky/C1 matrix, FLD m80 and FNSTSW/FNCLEX composition,
+  malformed/tag/control rejection, Qword canaries, write/range atomicity,
+  TOP wrap and raw source preservation, literal CLI fixture, and JIT/native
+  denial are tracked in the report. Physical x86 acceptance and native runtime
+  remain deferred to the combined final S2-31 substage under ISSUE-019. See
+  [contract](specs/CPU_CONTRACT.md#local-s2-31cs-canonical-subnormal-m64-fistp),
+  [plan](plans/STAGE_2.md#s2-31cs-canonical-subnormal-m64-fistp),
+  [report](reports/STAGE_2_REPORT.md#s2-31cs--canonical-subnormal-m64-fistp),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

@@ -7717,3 +7717,48 @@ under ISSUE-019. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cr-canonical-subnormal-m16-fist),
 [plan](../plans/STAGE_2.md#s2-31cr-canonical-subnormal-m16-fist), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cs--canonical-subnormal-m64-fistp"></a>
+
+## S2-31cs — canonical binary80 subnormal through m64 FISTP
+
+Only exact bare `DF 38` now admits Special-tagged canonical binary80
+nonzero subnormals (exponent zero, J=0, nonzero fraction). The existing
+integer-only conversion helper applies the bounded subnormal result: RN/TZ
+store zero, RD stores all-ones only for negative input, and RU stores one only
+for positive input. PE is always ORed after a successful Qword write; C1 is
+recomputed from whether the rounded magnitude is one. Existing FCW and
+`FSW & 0x80c0` gates remain in force, including preservation of all six sticky
+flags and C0/C2/C3. `FIST m64` is not introduced. Pseudo-denormals, malformed
+encodings, mismatched tags, and unmasked cases remain unsupported.
+
+The 32,768-case ISA matrix uses four literal fractions, both signs, all four
+RC values, all eight TOP positions, all 64 incoming IE/DE/ZE/OE/UE/PE
+combinations, and both incoming C1 values. It checks literal Qwords, eight-byte
+canaries, exactly one Qword write and no read, sticky/condition status
+preservation, C1, TOP wrap/pop, FIP/FDP/RIP, and preservation of all raw x87
+payloads. Additional checks reject wrong tags, pseudo-denormal, malformed and
+zero operands plus disallowed controls/status. Denied writes and canonical48
+range failures leave state and RAM unchanged. Existing m16/m32 subnormal
+matrix and composition tests remain green.
+
+The literal CLI fixture performs an unaligned `FLD m80`, changes RAX, executes
+`FISTP m64`, observes PE/C1 with `FNSTSW AX`, then clears exception flags with
+`FNCLEX`. It checks the all-ones Qword between sentinels, the raw popped
+subnormal payload, the final TOP/tag/status, and unchanged input bytes. The
+fixture schema recognizes only this exact composed byte sequence. JIT
+translation and native x86 admission both fail closed for this fixture.
+
+Validation on the local macOS arm64 host: `cargo test --workspace --offline`
+passed all 970 tests, including 561 `od-isa`, 82 runner unit, 142 fixture
+integration, and the other workspace targets. The S2-31cs matrix and CLI tests
+also passed independently. `cargo check --workspace --all-targets --offline`,
+the same check for `x86_64-unknown-linux-gnu`, and `cargo fmt --all -- --check`
+passed. The Linux cross-check reports existing dead-code warnings in `od-host`
+and `od-runner`. Linux native-denial tests were compile-checked but not run;
+physical x86 and Mac mini acceptance were not run and remain owned by the
+combined final S2-31 substage under ISSUE-019. No known issue was closed by
+this local interpreter extension. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cs-canonical-subnormal-m64-fistp),
+[plan](../plans/STAGE_2.md#s2-31cs-canonical-subnormal-m64-fistp), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md).
