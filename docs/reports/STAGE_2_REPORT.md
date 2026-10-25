@@ -7037,3 +7037,41 @@ the preserved root `.serena/` directory as unmapped; it remains excluded from
 this change. `graphify update .` rebuilt the graph to 4,360 nodes, 8,884 edges
 and 182 communities. Native runtime and physical x86 behavior remain deferred
 under ISSUE-019.
+
+<a id="s2-31ca--masked-binary80-infinity-through-m16-fistfstp"></a>
+
+## S2-31ca — masked binary80 infinity through m16 FIST/FISTP
+
+Only bare `DF 10` and `DF 18` now admit Special-tagged canonical binary80
+positive or negative infinity (significand `0x8000000000000000`,
+sign/exponent `0x7fff` or `0xffff`). Under the existing masked FCW whitelist,
+both signs and every RC mode store Word integer indefinite `0x8000`. After a
+successful atomic Word write, IE is sticky, C1 clears, incoming PE and
+C0/C2/C3 remain preserved, and no PE/DE/OE/UE/SF or ES/B is added. Raw source
+bytes, addressing, FSW gate, and post-write FIST/FISTP commit/pop remain
+unchanged; m32 behavior is unchanged, while m64 and other classes remain
+unsupported.
+
+The ISA matrix crosses both signs, four FCWs, both opcodes, all TOP values,
+and incoming PE/C1. Rejections cover mismatched tags, noncanonical special
+classes, finite values paired with Special, controls, FSW, prefixes, and the
+m64 form. Fault tests check denied and backend Word writes plus a canonical48
+range crossing, asserting complete CPU/memory atomicity. Existing exact
+-32768 finite coverage remains in the signed-boundary tests. A literal
+negative-infinity FISTP/FNSTSW fixture observes IE and the popped TOP/tag; an
+ISA FISTP/FNSTSW/FNCLEX sequence verifies IE can be observed then cleared. JIT
+and native admission remain closed.
+
+Focused `fist_m16int_` tests passed 10/10 and `fistp_m16int_` tests passed 6/6;
+the corresponding m32 groups passed 10/10 and 7/7 after the helper extension.
+The CLI fixture and JIT-denial tests passed 1/1 each. The full
+`cargo test --workspace --offline` suite passed 888 tests: 517 `od-isa`, 4
+`od-jit`, 6 host, 63 runner CLI, 123 fixture/JIT, 166 testkit, 8 x86-runner
+library and 1 x86-runner main; all doc-tests passed. Host and Linux x86_64
+all-target checks passed; Linux compiled native-denial coverage but did not
+execute it. `cargo fmt --all -- --check` and `git diff --check` passed.
+`python3 tools/check_layout.py` reports only the preserved root `.serena/`
+directory as unmapped; it remains untracked and excluded. Changed S2-31ca plan,
+contract, report and README links were manually cross-checked. `graphify update
+.` rebuilt the graph to 4,398 nodes, 8,958 edges and 181 communities. Native
+runtime and physical x86 acceptance remain deferred under ISSUE-019.

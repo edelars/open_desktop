@@ -694,3 +694,14 @@
   under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31bz-masked-canonical-infinity-fist-m32int),
   [plan](plans/STAGE_2.md#s2-31bz-masked-binary80-infinity-through-bounded-m32-fist),
   and [report](reports/STAGE_2_REPORT.md#s2-31bz--masked-binary80-infinity-through-m32-fistfstp).
+
+- **S2-31ca evidence:** bare `DF 10`/`DF 18` now convert Special-tagged
+  canonical binary80 ±Infinity to Word integer indefinite `0x8000` under the
+  admitted masked FCWs. After successful write, IE is sticky, C1 clears,
+  incoming PE and C0/C2/C3 are preserved, and no other exception status is
+  added. Tests cover signs/FCWs/opcodes/TOP/PE/C1, malformed/tag/class/control
+  rejection, finite -32768 distinction, write/range atomicity, CLI/FNSTSW/FNCLEX,
+  and JIT/native denial. Native runtime and physical acceptance remain deferred
+  under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31ca-masked-canonical-infinity-fist-m16int),
+  [plan](plans/STAGE_2.md#s2-31ca-masked-binary80-infinity-through-bounded-m16-fist),
+  and [report](reports/STAGE_2_REPORT.md#s2-31ca--masked-binary80-infinity-through-m16-fistfstp).
