@@ -6348,10 +6348,13 @@ matrices, maximum-subnormal directed rounding and promotion rejection,
 incoming IE/DE/PE, UE gate and class/tag controls, and FNSTSW/FNCLEX behavior.
 Signed literal CLI fixtures expose UE+PE; JIT/native admission remains closed.
 
-Validation passed: 21 focused m32fp ISA tests, the CLI fixture test, the JIT
-denial test, and `cargo test --workspace --offline` (806 tests). Workspace and
-Linux x86_64 all-target checks, formatting, and diff checks passed. Graphify was
-refreshed. The Linux-native admission test was compile-checked but not executed
-on this macOS host. The layout checker reports the pre-existing unmapped
-`.serena/` directory, preserved. Independent review is pending. Native runtime
+Validation passed: 21 focused m32fp ISA tests, the CLI fixture test, and the
+JIT-denial test. The broad workspace test invocation timed out after CLI output,
+so it produced no aggregate result and is not recorded as passing. Workspace
+and Linux x86_64 all-target checks, formatting, and diff checks passed.
+`graphify update .` completed its AST-only pass and found no code-graph topology
+changes. The Linux-native admission test was compile-checked but not executed
+on this macOS host. The layout checker reports the pre-existing
+unmapped `.serena/` directory, preserved. Independent gpt-6.1-sol review was
+clean, covering the focused ISA, CLI, and JIT-denial evidence. Native runtime
 and physical acceptance remain deferred under ISSUE-019.
