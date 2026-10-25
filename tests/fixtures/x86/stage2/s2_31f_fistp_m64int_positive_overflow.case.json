@@ -4,9 +4,9 @@
   "profile": "s2-long-x87-state-v1",
   "provenance": {
     "kind": "project_fixture",
-    "source": "Handwritten literal DF 38 bytes and binary80 state for bounded S2-31f vector s2_31f_fistp_m64int_positive_overflow; no assembler or emulator.",
-    "specification": "Intel SDM revision 093, Vol.2A, FIST/FISTP entry; local bounded S2-31f contract.",
-    "specification_version": "Intel SDM revision 093; project S2-31f"
+    "source": "Handwritten literal DF 38, DF E0 bytes and binary80 state; the former S2-31f overflow rejection now exercises S2-31cl integer-indefinite/IE and FNSTSW behavior; no assembler or emulator.",
+    "specification": "Intel SDM revision 093, Vol.2A, FIST/FISTP entry; local bounded S2-31cl contract.",
+    "specification_version": "Intel SDM revision 093; project S2-31cl"
   },
   "seed": null,
   "converted_from_v1_sha256": null,
@@ -55,14 +55,14 @@
     {
       "region_id": "code",
       "guest_address": "0x0000000000100000",
-      "length": 2,
+      "length": 4,
       "permissions": {
         "read": true,
         "write": false,
         "execute": true
       },
-      "initial_bytes_hex": "df38",
-      "comparison_mask_hex": "ffff"
+      "initial_bytes_hex": "df38dfe0",
+      "comparison_mask_hex": "ffffffff"
     },
     {
       "region_id": "data_left",
@@ -89,9 +89,9 @@
       "comparison_mask_hex": "ffffffffffffffffffffffffffffff"
     }
   ],
-  "stop_rip": null,
-  "instruction_budget": 1,
+  "stop_rip": "0x0000000000100004",
+  "instruction_budget": 2,
   "wall_timeout_ms": 2000,
   "rflags_mask": "0x0000000000000cd7",
-  "expected_exit": "unsupported"
+  "expected_exit": "stop_address"
 }

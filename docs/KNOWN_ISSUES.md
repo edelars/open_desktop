@@ -803,7 +803,8 @@
   retained for exponents through 31, so values just outside the real range
   that round back into range remain finite; exponent 32 and above classify
   directly invalid. m16/m64, subnormal, malformed and unmasked cases remain
-  outside this S2-31cj slice (m16 finite overflow is extended by S2-31ck).
+  outside this S2-31cj slice (m16 finite overflow is extended by S2-31ck and
+  m64 finite overflow is added by S2-31cl).
   Native runtime and physical x86 checks remain unverified;
   S2-31 and ISSUE-019 remain open. See [contract](specs/CPU_CONTRACT.md#local-s2-31cj-masked-finite-overflow-m32-fist),
   [plan](plans/STAGE_2.md#s2-31cj-masked-finite-overflow-to-m32-fistfstp),
@@ -815,10 +816,24 @@
   finite; exponent 16 and above classify invalid before wide shifts. The prior
   S2-31d/S2-31e overflow and exponent-16 fixtures now execute successfully,
   and S2-31ck adds
-  CLI/FNSTSW examples for invalid overflow and roundback. m32/m64 overflow,
-  subnormal, malformed and unmasked behavior remain outside this slice. Native
+  CLI/FNSTSW examples for invalid overflow and roundback. m32 overflow,
+  subnormal, malformed and unmasked behavior remain outside this slice; m64
+  finite overflow is added by S2-31cl. Native
   runtime and physical x86 checks remain unverified; S2-31 and ISSUE-019 remain
   open. See [contract](specs/CPU_CONTRACT.md#local-s2-31ck-masked-finite-overflow-m16-fist),
   [plan](plans/STAGE_2.md#s2-31ck-masked-finite-overflow-to-m16-fistfstp),
   [report](reports/STAGE_2_REPORT.md#s2-31ck--masked-finite-overflow-to-m16-fistfstp),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+- **S2-31cl evidence:** only bounded `DF 38` now converts canonical
+  Valid-tagged binary80 Normal values whose RC-rounded integer is outside
+  signed i64, storing Qword integer-indefinite and adding IE after the atomic
+  write. Values outside the real bounds that round back into range remain
+  finite, including the negative half-integer counterpart; exponent 64+ is
+  classified without a wide shift. Subnormal, malformed and unmasked behavior
+  remain unsupported. Focused overflow/fault/CLI coverage and final
+  workspace/host/Linux check evidence are recorded in the linked report.
+  Native execution and physical x86 behavior remain deferred; S2-31 and
+  ISSUE-019 remain open. See [contract](specs/CPU_CONTRACT.md#local-s2-31cl-masked-finite-overflow-m64-fistp),
+  [plan](plans/STAGE_2.md#s2-31cl-masked-finite-overflow-to-m64-fistp),
+  [report](reports/STAGE_2_REPORT.md#s2-31cl--masked-finite-overflow-to-m64-fistp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).

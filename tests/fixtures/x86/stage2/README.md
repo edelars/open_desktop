@@ -2732,3 +2732,19 @@ remains closed. See the
 [S2-31ck CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ck-masked-finite-overflow-m16-fist),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31ck-masked-finite-overflow-to-m16-fistfstp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ck--masked-finite-overflow-to-m16-fistfstp).
+
+
+### S2-31cl finite overflow and roundback m64 integer-store fixture
+
+The existing `s2_31f_fistp_m64int_positive_overflow` literal fixture is now
+admitted by S2-31cl. With `DF 38` and `DF E0`, positive `+2^63` stores Qword
+integer-indefinite, adds IE without PE, pops only after the write, and exposes
+FSW `0x4d01` in AX via FNSTSW. Its split memory regions verify the Qword and
+surrounding canaries; the source binary80 payload remains unchanged. ISA
+coverage uses 26 signed literal inputs across all RC/TOP/IE/PE/C1 combinations
+(6,656 executions), including half-integer roundback, exact `i64::MIN`, and
+large exponents. Write-denial and canonical-range faults preserve full state
+and memory. JIT and native admission remain closed. See the
+[S2-31cl CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cl-masked-finite-overflow-m64-fistp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31cl-masked-finite-overflow-to-m64-fistp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cl--masked-finite-overflow-to-m64-fistp).

@@ -5461,8 +5461,9 @@ exponent fractions retain their existing exact comparison-based path.
 
 Keep the FCW whitelist, 0x80de FSW gate, canonical48 Dword preflight, bare RAX
 addressing, one write/no read, raw source bytes, and post-write state commit.
-S2-31ck subsequently extended the m16 overflow path; the m64 overflow path,
-binary80 subnormals, malformed classes and unmasked behavior remain unchanged.
+S2-31ck subsequently extended the m16 overflow path, and S2-31cl adds the
+bounded m64 overflow path. Binary80 subnormals, malformed classes and unmasked
+behavior remain unchanged.
 See the
 [plan](../plans/STAGE_2.md#s2-31cj-masked-finite-overflow-to-m32-fistfstp),
 [report](../reports/STAGE_2_REPORT.md#s2-31cj--masked-finite-overflow-to-m32-fistfstp),
@@ -5486,8 +5487,43 @@ Negative-exponent fractions retain their existing comparison-based path.
 
 Keep the FCW whitelist, 0x80de FSW gate, canonical48 Word preflight, bare RAX
 addressing, one write/no read, raw source bytes, and post-write state commit.
-The m32/m64 overflow paths, binary80 subnormals, malformed classes and
-unmasked behavior remain unchanged. See the
+The m32 overflow path, binary80 subnormals, malformed classes and unmasked
+behavior remain unchanged; S2-31cl later adds bounded m64 finite overflow. See
+the
 [plan](../plans/STAGE_2.md#s2-31ck-masked-finite-overflow-to-m16-fistfstp),
 [report](../reports/STAGE_2_REPORT.md#s2-31ck--masked-finite-overflow-to-m16-fistfstp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31cl-masked-finite-overflow-m64-fistp"></a>
+
+## Local S2-31cl: masked finite overflow through m64 `FISTP` (`DF 38`)
+
+Only bare `DF 38` admits Valid-tagged canonical binary80 Normal values for
+finite rounded overflow handling. Round the exact significand quotient and
+remainder with the existing FCW rounding mode first, then compare the signed
+integer result to `[-2^63, 2^63-1]`. A rounded out-of-range value stores Qword
+integer-indefinite `0x8000000000000000`; only after the atomic Qword write does
+the operation add sticky IE and clear C1. It adds no PE/OE/UE/DE/SF/ES/B and
+preserves incoming IE/PE and C0/C2/C3. Values just outside the real-number
+range that round back into signed range remain finite; inexact roundback adds
+PE and sets C1 only when the rounded magnitude increased.
+
+At unbiased exponent 63, positive magnitudes are out of range; negative
+significand `0x8000000000000000` is exact `i64::MIN`, and larger magnitudes
+are invalid. Exponent 64 and above is invalid without oversized shifts. The
+existing comparison-only fraction path below one is unchanged. Keep the FCW
+whitelist, `FSW & 0x80de` gate, bare RAX, full canonical48 Qword preflight, one
+atomic write/no read, raw source bytes, and post-write status/pointer/RIP/pop
+commit. Subnormals, malformed sources, broader status admission and unmasked
+delivery remain outside this slice.
+
+Independent literal vectors cover both sides of the signed boundaries,
+half-integer roundback, exponent 64/65/16383 with minimum/mixed/maximum
+significands, both signs, all RC modes, TOP values, sticky IE/PE and prior C1.
+Write/range failure tests preserve complete state and memory; FNSTSW/FNCLEX
+observes and clears IE. CLI fixture coverage demonstrates integer-indefinite
+and IE, while JIT/native admission remains closed. See the
+[plan](../plans/STAGE_2.md#s2-31cl-masked-finite-overflow-to-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31cl--masked-finite-overflow-to-m64-fistp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

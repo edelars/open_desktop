@@ -5464,18 +5464,27 @@ mod tests {
     fn fistp_m64int_literal_fixtures_cover_qword_boundaries_and_overflow() {
         let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/x86/stage2");
-        for (suffix, expected, count, rax_after) in [
+        for (suffix, expected, count, rax_after, status_word) in [
             (
                 "exact_max",
                 0x7fff_ffff_ffff_ffff_u64,
                 1_u64,
                 0x0000_0000_0030_0001_u64,
+                0x4d00_u64,
             ),
             (
                 "negative_min_fnstsw",
                 0x8000_0000_0000_0000_u64,
                 2_u64,
                 0x0000_0000_0030_4d00_u64,
+                0x4d00_u64,
+            ),
+            (
+                "positive_overflow",
+                0x8000_0000_0000_0000_u64,
+                2_u64,
+                0x0000_0000_0030_4d01_u64,
+                0x4d01_u64,
             ),
         ] {
             let name = format!("s2_31f_fistp_m64int_{suffix}.case.json");
@@ -5524,34 +5533,11 @@ mod tests {
             expected_state.rip = HexU64(0x100000 + 2 * count);
             expected_state.gpr[0] = HexU64(rax_after);
             let expected_x87 = expected_state.x87.as_mut().unwrap();
-            expected_x87.status_word = HexU64(0x4d00);
+            expected_x87.status_word = HexU64(status_word);
             expected_x87.tag_word = HexU64(0xffff);
             expected_x87.instruction_pointer = HexU64(0x100000);
             expected_x87.data_pointer = HexU64(0x300001);
             assert_eq!(value.state, expected_state, "{name}: full CPU state");
         }
-
-        let name = "s2_31f_fistp_m64int_positive_overflow.case.json";
-        let bytes = std::fs::read(directory.join(name)).unwrap();
-        let fixture = v2::Fixture::from_json(&bytes)
-            .unwrap_or_else(|error| panic!("{name} failed schema validation: {error}"));
-        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
-        let initial_memory = memory.snapshot();
-        let result = execute_fixture_v2(&fixture, &mut memory);
-        result.validate_for(&fixture).unwrap();
-        assert!(
-            matches!(result.outcome, v2::Outcome::Unsupported { .. }),
-            "{name}"
-        );
-        assert_eq!(
-            result.instructions_executed,
-            Observation::Available { value: HexU64(0) },
-            "{name}"
-        );
-        assert_eq!(memory.snapshot(), initial_memory, "{name}");
-        let Observation::Available { value } = result.snapshot else {
-            panic!("{name} snapshot unavailable");
-        };
-        assert_eq!(value.state, fixture.fixture.initial_state, "{name}");
     }
 }

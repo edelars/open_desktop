@@ -2787,7 +2787,7 @@ fn bounded_x87_fist_integer_result(state: &LongModeState, width: u32) -> Option<
         0x0f7f => RationalRoundingMode::TowardZero,
         _ => return None,
     };
-    if (width == 16 && finite.exponent() >= 16) || (width == 32 && finite.exponent() >= 32) {
+    if matches!(width, 16 | 32 | 64) && finite.exponent() >= width as i32 {
         return Some((1_u64 << (width - 1), 0x0001, false));
     }
     if matches!(width, 16 | 32 | 64) && (-16382..0).contains(&finite.exponent()) {
@@ -2824,7 +2824,7 @@ fn bounded_x87_fist_integer_result(state: &LongModeState, width: u32) -> Option<
         positive_limit
     };
     if magnitude > limit {
-        return if matches!(width, 16 | 32) {
+        return if matches!(width, 16 | 32 | 64) {
             Some((1_u64 << (width - 1), 0x0001, false))
         } else {
             None
@@ -26023,8 +26023,24 @@ mod tests {
                 0x20,
                 true,
             ),
-            (0xffff_ffff_ffff_ffff, 0x403d, false, 0, 0x037f, 0, false),
-            (0xffff_ffff_ffff_ffff, 0x403d, false, 0, 0x0b7f, 0, false),
+            (
+                0xffff_ffff_ffff_ffff,
+                0x403d,
+                false,
+                0x8000_0000_0000_0000,
+                0x037f,
+                0x0001,
+                true,
+            ),
+            (
+                0xffff_ffff_ffff_ffff,
+                0x403d,
+                false,
+                0x8000_0000_0000_0000,
+                0x0b7f,
+                0x0001,
+                true,
+            ),
             (
                 0xffff_ffff_ffff_ffff,
                 0x403d,
@@ -26034,9 +26050,33 @@ mod tests {
                 0x20,
                 true,
             ),
-            (0x8000_0000_0000_0000, 0x403e, false, 0, 0x0f7f, 0, false),
-            (0x8000_0000_0000_0001, 0x403e, true, 0, 0x0f7f, 0, false),
-            (0x8000_0000_0000_0000, 0x403f, false, 0, 0x0f7f, 0, false),
+            (
+                0x8000_0000_0000_0000,
+                0x403e,
+                false,
+                0x8000_0000_0000_0000,
+                0x0f7f,
+                0x0001,
+                true,
+            ),
+            (
+                0x8000_0000_0000_0001,
+                0x403e,
+                true,
+                0x8000_0000_0000_0000,
+                0x0f7f,
+                0x0001,
+                true,
+            ),
+            (
+                0x8000_0000_0000_0000,
+                0x403f,
+                false,
+                0x8000_0000_0000_0000,
+                0x0f7f,
+                0x0001,
+                true,
+            ),
         ];
         for (significand, exponent, negative, encoded, control_word, status_bits, accepts) in
             vectors
@@ -26063,7 +26103,7 @@ mod tests {
                 assert_eq!(result.registers, before_registers);
                 assert_eq!(result.tag(3), Some(X87Tag::Empty));
                 assert_eq!(result.top(), 4);
-                assert_eq!(result.status_word & 0x0220, status_bits | 0x0020);
+                assert_eq!(result.status_word & 0x0231, status_bits | 0x0020);
             } else {
                 assert_eq!(outcome, Ok(StepOutcome::Unsupported { opcode: 0xdf }));
                 assert_eq!(state, before);
@@ -26071,6 +26111,358 @@ mod tests {
                 assert!(memory.accesses.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn fistp_m64int_finite_overflow_rounds_before_signed_range_check() {
+        // Each row is a literal binary80 input with independently specified
+        // results for RN, RD, RU and RZ, in that order. In particular, the
+        // same +2^63-0.5 source overflows for RN/RU but rounds back to i64::MAX
+        // for RD/RZ. The negative counterpart rounds to i64::MIN for RN/RD,
+        // and to i64::MIN+1 for RU/RZ.
+        let invalid = (0x8000_0000_0000_0000, 0x0001, false);
+        let rows: [(&str, u64, u16, bool, [(u64, u16, bool); 4]); 26] = [
+            (
+                "positive i64 max exact",
+                0xffff_ffff_ffff_fffe,
+                0x403d,
+                false,
+                [(i64::MAX as u64, 0, false); 4],
+            ),
+            (
+                "positive max minus 0.5",
+                0xffff_ffff_ffff_fffd,
+                0x403d,
+                false,
+                [
+                    (0x7fff_ffff_ffff_fffe, 0x20, false),
+                    (0x7fff_ffff_ffff_fffe, 0x20, false),
+                    (i64::MAX as u64, 0x20, true),
+                    (0x7fff_ffff_ffff_fffe, 0x20, false),
+                ],
+            ),
+            (
+                "positive i64 max plus half",
+                0xffff_ffff_ffff_ffff,
+                0x403d,
+                false,
+                [
+                    invalid,
+                    (i64::MAX as u64, 0x20, false),
+                    invalid,
+                    (i64::MAX as u64, 0x20, false),
+                ],
+            ),
+            (
+                "negative i64 min plus 1.5",
+                0xffff_ffff_ffff_fffd,
+                0x403d,
+                true,
+                [
+                    (0x8000_0000_0000_0002, 0x20, false),
+                    (0x8000_0000_0000_0001, 0x20, true),
+                    (0x8000_0000_0000_0002, 0x20, false),
+                    (0x8000_0000_0000_0002, 0x20, false),
+                ],
+            ),
+            (
+                "negative i64 min plus half",
+                0xffff_ffff_ffff_ffff,
+                0x403d,
+                true,
+                [
+                    (i64::MIN as u64, 0x20, true),
+                    (i64::MIN as u64, 0x20, true),
+                    (0x8000_0000_0000_0001, 0x20, false),
+                    (0x8000_0000_0000_0001, 0x20, false),
+                ],
+            ),
+            (
+                "exact negative i64 min",
+                0x8000_0000_0000_0000,
+                0x403e,
+                true,
+                [(i64::MIN as u64, 0, false); 4],
+            ),
+            (
+                "negative i64 min minus one",
+                0x8000_0000_0000_0001,
+                0x403e,
+                true,
+                [invalid; 4],
+            ),
+            (
+                "positive i64 min magnitude",
+                0x8000_0000_0000_0000,
+                0x403e,
+                false,
+                [invalid; 4],
+            ),
+            (
+                "exponent 64 minimum significand",
+                0x8000_0000_0000_0000,
+                0x403f,
+                false,
+                [invalid; 4],
+            ),
+            (
+                "exponent 64 mixed significand negative",
+                0xb123_4567_89ab_cdef,
+                0x403f,
+                true,
+                [invalid; 4],
+            ),
+            (
+                "exponent 64 maximum significand positive",
+                0xffff_ffff_ffff_ffff,
+                0x403f,
+                false,
+                [invalid; 4],
+            ),
+            (
+                "exponent 64 maximum significand negative",
+                0xffff_ffff_ffff_ffff,
+                0x403f,
+                true,
+                [invalid; 4],
+            ),
+            (
+                "exponent 64 minimum significand negative",
+                0x8000_0000_0000_0000,
+                0x403f,
+                true,
+                [invalid; 4],
+            ),
+            (
+                "exponent 64 mixed significand positive",
+                0xb123_4567_89ab_cdef,
+                0x403f,
+                false,
+                [invalid; 4],
+            ),
+            (
+                "exponent 65 minimum significand positive",
+                0x8000_0000_0000_0000,
+                0x4040,
+                false,
+                [invalid; 4],
+            ),
+            (
+                "exponent 65 mixed significand negative",
+                0xb123_4567_89ab_cdef,
+                0x4040,
+                true,
+                [invalid; 4],
+            ),
+            (
+                "exponent 65 mixed significand positive",
+                0xb123_4567_89ab_cdef,
+                0x4040,
+                false,
+                [invalid; 4],
+            ),
+            (
+                "exponent 65 maximum significand positive",
+                0xffff_ffff_ffff_ffff,
+                0x4040,
+                false,
+                [invalid; 4],
+            ),
+            (
+                "exponent 65 maximum significand negative",
+                0xffff_ffff_ffff_ffff,
+                0x4040,
+                true,
+                [invalid; 4],
+            ),
+            (
+                "exponent 65 minimum significand negative",
+                0x8000_0000_0000_0000,
+                0x4040,
+                true,
+                [invalid; 4],
+            ),
+            (
+                "exponent 16383 minimum significand positive",
+                0x8000_0000_0000_0000,
+                0x7ffe,
+                false,
+                [invalid; 4],
+            ),
+            (
+                "exponent 16383 minimum significand negative",
+                0x8000_0000_0000_0000,
+                0x7ffe,
+                true,
+                [invalid; 4],
+            ),
+            (
+                "exponent 16383 mixed significand positive",
+                0xb123_4567_89ab_cdef,
+                0x7ffe,
+                false,
+                [invalid; 4],
+            ),
+            (
+                "exponent 16383 mixed significand negative",
+                0xb123_4567_89ab_cdef,
+                0x7ffe,
+                true,
+                [invalid; 4],
+            ),
+            (
+                "maximum finite positive",
+                0xffff_ffff_ffff_ffff,
+                0x7ffe,
+                false,
+                [invalid; 4],
+            ),
+            (
+                "maximum finite negative",
+                0xffff_ffff_ffff_ffff,
+                0x7ffe,
+                true,
+                [invalid; 4],
+            ),
+        ];
+        let controls = [0x037f, 0x077f, 0x0b7f, 0x0f7f];
+
+        for (name, significand, exponent, negative, expected_by_rc) in rows {
+            let raw = binary80_normal(significand, exponent, negative);
+            for (control_word, expected) in controls.into_iter().zip(expected_by_rc) {
+                for top in 0..8_u8 {
+                    for incoming_ie in [false, true] {
+                        for incoming_pe in [false, true] {
+                            for incoming_c1 in [false, true] {
+                                let mut state = LongModeState::default();
+                                state.rip = 0x86d0;
+                                state.gpr[Register::Rax as usize] = 0x1003;
+                                let mut x87 = crate::state::X87State::fixture_seed();
+                                x87.control_word = control_word;
+                                x87.status_word = (u16::from(top) << 11)
+                                    | 0x4500
+                                    | if incoming_c1 { 0x0200 } else { 0 }
+                                    | if incoming_ie { 0x0001 } else { 0 }
+                                    | if incoming_pe { 0x0020 } else { 0 };
+                                x87.registers[usize::from(top)] = raw;
+                                x87.set_tag(top, X87Tag::Valid);
+                                state.x87 = Some(x87);
+                                let before = state.clone();
+                                let mut memory = Memory::at(&[0xdf, 0x38], state.rip);
+                                memory.bytes = vec![0xa5; 24];
+
+                                assert_eq!(
+                                    step(&mut state, &mut memory, AccessContext::default()),
+                                    Ok(StepOutcome::Advanced),
+                                    "{name}, FCW={control_word:04x}, TOP={top}, IE={incoming_ie}, PE={incoming_pe}, C1={incoming_c1}"
+                                );
+                                assert_eq!(
+                                    &memory.bytes[3..11],
+                                    &expected.0.to_le_bytes(),
+                                    "{name}, FCW={control_word:04x}, TOP={top}, IE={incoming_ie}, PE={incoming_pe}, C1={incoming_c1}"
+                                );
+                                assert_eq!(memory.accesses, vec![(AccessKind::Write, 0x1003, 8)]);
+                                assert_eq!(&memory.bytes[..3], &[0xa5; 3]);
+                                assert_eq!(&memory.bytes[11..], &[0xa5; 13]);
+
+                                let before_x87 = before.x87.as_ref().unwrap();
+                                let after = state.x87.as_ref().unwrap();
+                                assert_eq!(after.registers, before_x87.registers);
+                                assert_eq!(after.top(), top.wrapping_add(1) & 7);
+                                assert_eq!(after.tag(top), Some(X87Tag::Empty));
+                                let expected_status = (before_x87.status_word & !(0x3800 | 0x0200))
+                                    | (u16::from(top.wrapping_add(1) & 7) << 11)
+                                    | expected.1
+                                    | if expected.2 { 0x0200 } else { 0 };
+                                assert_eq!(
+                                    after.status_word, expected_status,
+                                    "{name}, FCW={control_word:04x}, TOP={top}, IE={incoming_ie}, PE={incoming_pe}, C1={incoming_c1}"
+                                );
+                                assert_eq!(after.instruction_pointer, 0x86d0);
+                                assert_eq!(after.data_pointer, 0x1003);
+                                assert_eq!(state.rip, 0x86d2);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fistp_m64int_finite_overflow_faults_atomically_and_fnclex_clears_ie() {
+        let overflow = binary80_normal(0x8000_0000_0000_0000, 0x403f, false);
+        for (address, deny_write) in [(0x1003, true), (0x0000_7fff_ffff_fff9, false)] {
+            let mut state = LongModeState::default();
+            state.rip = 0x86e0;
+            state.gpr[Register::Rax as usize] = address;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0x4721; // IE, PE, C1 and comparison condition codes.
+            x87.registers[0] = overflow;
+            x87.set_tag(0, X87Tag::Valid);
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xdf, 0x38], state.rip);
+            memory.bytes = vec![0xa5; 24];
+            memory.deny_writes = deny_write;
+
+            if deny_write {
+                assert!(matches!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Err(MemoryError::PermissionDenied {
+                        access: AccessKind::Write,
+                        ..
+                    })
+                ));
+                assert_eq!(memory.accesses, vec![(AccessKind::Write, address, 8)]);
+            } else {
+                assert!(matches!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Fault(ArchitecturalFault { vector: 13, .. }))
+                ));
+                assert!(memory.accesses.is_empty());
+            }
+            assert_eq!(state, before);
+            assert_eq!(memory.bytes, vec![0xa5; 24]);
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x86e0;
+        state.gpr[Register::Rax as usize] = 0x1003;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0x4500;
+        x87.registers[0] = overflow;
+        x87.set_tag(0, X87Tag::Valid);
+        state.x87 = Some(x87);
+        let mut memory = Memory::at(&[0xdf, 0x38, 0xdf, 0xe0, 0xdb, 0xe2], state.rip);
+        memory.bytes = vec![0xa5; 24];
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(
+            &memory.bytes[3..11],
+            &0x8000_0000_0000_0000_u64.to_le_bytes()
+        );
+        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x4d01);
+        assert_eq!(state.x87.as_ref().unwrap().registers[0], overflow);
+        assert_eq!(state.x87.as_ref().unwrap().tag(0), Some(X87Tag::Empty));
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.gpr[Register::Rax as usize] & 0xffff, 0x4d01);
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x4d00);
+        assert_eq!(state.x87.as_ref().unwrap().registers[0], overflow);
+        assert_eq!(memory.accesses, vec![(AccessKind::Write, 0x1003, 8)]);
     }
 
     #[test]

@@ -300,6 +300,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ci | Admit sticky IE on bounded DB10/DB18/DF10/DF18/DF38 integer stores | S2-31br, S2-31ch |
 | [x] | S2-31cj | Convert finite rounded i32 overflow to integer-indefinite for DB10/DB18 | S2-31ci |
 | [x] | S2-31ck | Convert finite rounded i16 overflow to integer-indefinite for DF10/DF18 | S2-31ci, S2-31cj |
+| [x] | S2-31cl | Convert finite rounded i64 overflow to integer-indefinite for DF38 | S2-31ci, S2-31cj, S2-31ck |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3934,9 +3935,9 @@ add PE for an invalid conversion. For exponent `e >= 32`, classify directly as
 invalid. For `0 <= e <= 31`, use the exact significand quotient, guard/sticky
 tail and RC before testing signed bounds; negative-exponent fractions retain
 their comparison-based rounding path. This preserves out-of-range real values
-that round back into range. Keep m16/m64, subnormal, malformed and unmasked
-paths unchanged in this m32 slice; S2-31ck later extends only the m16 overflow
-path.
+that round back into range. Keep m16, subnormal, malformed and unmasked paths
+unchanged in this m32 slice; S2-31ck later extends m16 and S2-31cl later adds
+the m64 overflow path.
 
 Cover signed limits, representable neighbors around both half-integer
 thresholds and ties, all RCs/signs/opcodes/TOP and incoming IE/PE, prior C1,
@@ -3960,8 +3961,8 @@ for an invalid conversion. For exponent `e >= 16`, classify directly as
 invalid; for `0 <= e <= 15`, round the exact significand quotient/remainder
 before testing signed bounds. Negative-exponent fractions retain their
 comparison-based path. Values outside the real interval that round back into
-range remain finite. Keep m32/m64 overflow, subnormal, malformed and unmasked
-paths unchanged.
+range remain finite. Keep m32 overflow, subnormal, malformed and unmasked
+paths unchanged; S2-31cl later adds m64 finite overflow.
 
 Cover signed limits, binary80 neighbors and values around both half-integer
 thresholds, ties under every RC/sign/opcode/TOP, incoming IE/PE and prior C1;
@@ -4457,3 +4458,31 @@ invalid controls, prefixes and canonical-range/write faults atomically. A
 literal FISTP/FNSTSW fixture and direct FNSTSW/FNCLEX sequence observe and
 clear IE. JIT/native admission remains closed; native runtime and physical
 acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31cl-masked-finite-overflow-to-m64-fistp"></a>
+
+#### S2-31cl. Masked finite overflow and roundback to m64 `FISTP`
+
+Extend only bare `DF 38` for Valid-tagged canonical binary80 Normal values.
+Round the exact significand quotient/remainder under the current FCW mode
+before checking signed i64 bounds. If the rounded result is outside
+`[-2^63, 2^63-1]`, write Qword integer-indefinite
+`0x8000000000000000`, then add sticky IE and clear C1 after the atomic Qword
+write. Do not add PE/OE/UE/DE/SF/ES/B; preserve incoming IE/PE and C0/C2/C3.
+Values outside the real-number limits that round back into range remain finite
+results. At exponent 63, positive magnitudes overflow; only negative
+significand `0x8000000000000000` is the exact valid i64 minimum. At exponent 64
+or greater, classify invalid without a wide shift. Existing fractions below
+one retain their comparison-only behavior.
+
+Keep the FCW whitelist, `FSW & 0x80de` gate, bare Long64 RAX addressing,
+canonical48 Qword preflight, one atomic write/no read, raw source preservation,
+and post-write FISTP state/pop commit. Subnormals, malformed sources and
+unmasked delivery remain outside this slice. Coverage includes signed limits
+and adjacent binary80 values, half-integer roundback, exponents 64, 65 and
+16383 with minimum/mixed/maximum significands, all RC/TOP/IE/PE/C1 states,
+write/range atomicity, FNSTSW/FNCLEX, CLI, and JIT/native denial. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cl-masked-finite-overflow-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31cl--masked-finite-overflow-to-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

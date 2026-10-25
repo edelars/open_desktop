@@ -7219,6 +7219,56 @@ denial coverage but did not execute it. `cargo fmt --all -- --check` and
 Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
 
 
+<a id="s2-31cl--masked-finite-overflow-to-m64-fistp"></a>
+
+## S2-31cl — masked finite overflow to m64 `FISTP`
+
+Only bare `DF 38` now converts Valid-tagged canonical binary80 Normal inputs
+that round outside signed i64. The shared integer converter rounds quotient and
+remainder under FCW before comparing the signed bounds. Out-of-range results
+store Qword integer-indefinite and add IE only after successful write, clear
+C1, and add no PE/OE/UE/DE/SF/ES/B. Values that round back into range retain
+finite storage and PE/C1 behavior. Exponent 64+ takes the invalid path without
+shifting by a large amount; exponent 63 accepts only exact negative i64
+minimum at the lower boundary. Existing fractional behavior below one is
+unchanged.
+
+The independent table contains 26 signed literal inputs × four RC modes ×
+eight TOPs × incoming IE × incoming PE × incoming C1 (6,656 executions).
+Boundary vectors include positive i64 max, its adjacent half-integer and its
+neighbor, the negative counterpart, exact i64 min and the next negative
+integer. High-exponent vectors cover 64, 65 and 16383 with minimum, mixed and
+maximum significands and both signs. Tests also distinguish exact i64 min from
+indefinite by IE, prove invalid fractional conversions do not add PE, preserve
+raw source bytes and verify denied-write/canonical-range atomicity plus
+FNSTSW/FNCLEX.
+
+The formerly rejecting S2-31f positive-overflow fixture is now a literal
+`DF 38; DF E0` CLI case: it commits indefinite, pops, observes IE via FNSTSW,
+and preserves the source bytes. The CLI fixture and JIT-denial tests passed
+1/1 each. The native-denial test is architecture-gated and ran 0 tests on the
+local arm64 host; its Linux x86_64 all-target compile succeeded.
+
+The 22 focused `fistp_m64int_` ISA tests passed. `cargo test --workspace
+--offline --quiet` passed 948 tests: 6 `od-host`, 550 `od-isa`, 4 `od-jit`, 77
+runner CLI, 136 fixture/JIT, 166 `od-testkit`, 8 x86-runner library, and 1
+x86-runner main; all doc-test invocations passed. Host
+`cargo check --workspace --all-targets --offline` and Linux x86_64
+`cargo check --workspace --all-targets --offline --target
+x86_64-unknown-linux-gnu` passed. The Linux check emitted existing dead-code
+warnings in `od-host` and `od-runner`; it compiled architecture-gated native
+denial code but did not execute that test on the arm64 host. `cargo fmt --all
+-- --check` and `git diff --check` passed. `python3 tools/check_layout.py` could
+not complete because the preserved untracked `.serena/` root directory is not
+mapped by the repository checker; no layout was changed. `graphify update .`
+rebuilt the graph to 4,511 nodes, 9,164 edges and 183 communities. The S2-31cl
+anchors in the plan, contract, report and fixture README resolve to their
+matching sections. A separate read-only final review found no remaining code,
+fixture or documentation findings.
+
+Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+
 <a id="s2-31cj--masked-finite-overflow-to-m32-fistfstp"></a>
 
 ## S2-31cj — masked finite overflow to m32 `FIST`/`FISTP`
@@ -7231,7 +7281,8 @@ Finite values just outside the real range that round into range remain finite.
 Exponent `e >= 32` takes the invalid path before shifting; exponents 0 through
 31 use exact quotient/remainder rounding, while negative-exponent fractions
 retain their comparison-based path. Other widths/classes remain unchanged by
-this m32 slice; S2-31ck later extends only m16 finite overflow.
+this m32 slice; S2-31ck later extends m16 and S2-31cl later adds m64 finite
+overflow.
 
 The literal oracle crosses 42 vectors (signed limits, neighbors/tie-adjacent
 values and exponents 32/63/64/16383 × minimum/mixed/maximum significands and
@@ -7270,8 +7321,8 @@ C1 after successful write; invalid conversion adds no PE. Values just beyond
 the real bounds that round back into range retain the finite integer result.
 Exponent `e >= 16` is classified before a wide shift; exponents 0 through 15
 use exact quotient/remainder rounding; negative-exponent fractions keep their
-comparison path. m32/m64, subnormal, malformed, and unmasked behavior stays
-unchanged.
+comparison path. m32, subnormal, malformed, and unmasked behavior stays
+unchanged; m64 finite overflow is added later by S2-31cl.
 
 The literal oracle includes 18 signed-boundary/neighbor/tie vectors and six
 exponents (16/31/32/63/64/16383) × three significands × both signs, crossed with
