@@ -2703,7 +2703,6 @@ Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See also the
 [Stage 2 plan](../plans/STAGE_2.md#s2-31q-bare-bounded-fstp-m80fp-rax-db-38-partial-slice)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
-
 <a id="local-s2-31cv-pseudo-infinity-m64-fistp"></a>
 
 ## Local S2-31cv: Special-tagged pseudo-infinity through m64 `FISTP`
@@ -4250,9 +4249,11 @@ either signed-one result. Results use Zero or Valid tags accordingly.
 
 The implementation only extends the exact Special finite branch. The decoder,
 classification, FCW/status gates, preflight/commit atomicity, metadata and
-register-only behavior remain unchanged. Pseudo-infinity/NaN, unnormal,
-malformed inputs, other tags and encoding/tag mismatches remain Unsupported
-atomically. JIT/native admission remains closed.
+register-only behavior remain unchanged. Pseudo-infinity/NaN, malformed
+inputs, other tags and encoding/tag mismatches remain Unsupported atomically.
+At this stage, unnormal inputs were also rejected; S2-31dq below adds their
+separate masked-invalid response without changing this pseudo-denormal path.
+JIT/native admission remains closed.
 
 Coverage compares pseudo-denormal and canonical E=1 Normal encodings over
 fraction 0/1/interior/max, sign, all four RC modes, every TOP, prior DE/PE/C1
@@ -4267,6 +4268,43 @@ deferred to the combined final S2-31 substage under ISSUE-019.
 Normative source: Intel SDM revision 093, Vol.1 §8.2.2 and Table 8-3, and the
 Vol.2A “FRNDINT—Round to Integer” entry, which specifies #D for a denormal
 source operand and #P for a nonintegral result.
+
+<a id="local-s2-31dq-special-unnormal-frndint-d9-fc"></a>
+
+## Local S2-31dq: Special-tagged binary80 unnormal `FRNDINT` (`D9 FC`)
+
+Only exact bare Long64 `D9 FC` accepts this added class: physical TOP must be
+tagged Special and the raw binary80 biased exponent must be 1..=`0x7ffe`, J=0,
+with either sign and any fraction. For the four existing all-masked FCWs
+`0x037f`, `0x077f`, `0x0b7f`, `0x0f7f`, the result is always the fixed negative
+floating-point indefinite `00 00 00 00 00 00 00 c0 ff ff` (little-endian bytes),
+with Special tag. Source sign and payload are discarded. The operation adds
+sticky IE, clears C1, and adds no current DE/PE/SF/ZE/OE/UE. Previously admitted
+sticky IE/DE/ZE/OE/UE/PE are preserved, as is SF only when paired with IE.
+
+This is a local masked-invalid response for an unsupported binary80 encoding.
+The result is the existing canonical binary80 QNaN indefinite, so a repeated
+FRNDINT preserves the ten bytes and adds no new flags. The established FCW and
+FSW admission gates, TOP, unrelated registers/state, FIP/RIP/retirement and
+instruction preflight/commit boundary are unchanged. Mismatched tags/classes,
+other controls/status, malformed encodings and fetch/STOP/budget boundaries
+remain atomic rejects. This does not change FLD's rejection of Unnormal or
+binary80 classification; the existing SNaN quieting path remains separate.
+JIT/native admission remains denied.
+
+The independent expected-value matrix covers exponent 1/interior/`0x7ffe`,
+fraction 0/1/bit62/max, both signs, all RC modes and TOP values, each legal
+historical IE/SF pairing, all combinations of prior DE/ZE/OE/UE/PE, and prior
+C1. Full-state canaries and no-memory-access behavior are checked. Repeat
+FRNDINT plus a literal `D9 FC DF E0 DB E2` project fixture verify QNaN
+re-entry, FNSTSW observation of IE and FNCLEX clearing; the seeded raw Special
+state is project-fixture evidence, not native evidence.
+
+Normative basis: Intel SDM revision 093 Vol.2A “FRNDINT—Round to Integer,”
+p.3-372, lists unsupported format as #IA; Vol.1 Table 8-10 maps an arithmetic
+operation on an unsupported format to the QNaN floating-point indefinite;
+Vol.1 Table 4-3 and §4.8.3.7 define its binary80 encoding. The separate SNaN
+masked response in Table 8-10 is not used here. See the [plan](../plans/STAGE_2.md#s2-31dq-special-tagged-binary80-unnormal-through-bounded-frndint), [report](../reports/STAGE_2_REPORT.md#s2-31dq--special-tagged-binary80-unnormal-through-bounded-frndint), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dq-frndint-unnormal-fixture).
 
 ## Local S2-30al: bounded `FUCOMI ST(0), ST(1)` (`DB E9`)
 

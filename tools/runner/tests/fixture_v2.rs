@@ -41,6 +41,9 @@ const FRNDINT_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_fnstsw.case.json");
 const FRNDINT_SEEDED_DE_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31dj_frndint_seeded_de_fnstsw.case.json");
+const FRNDINT_SEEDED_UNNORMAL_FNSTSW_FNCLEX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31dq_frndint_seeded_unnormal_fnstsw_fnclex.case.json"
+);
 const FRNDINT_SEEDED_UE_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31dk_frndint_seeded_ue_fnstsw.case.json");
 const FST_M32_UNDERFLOW_FRNDINT_FNSTSW: &[u8] = include_bytes!(
@@ -1635,6 +1638,35 @@ fn local_x87_frndint_seeded_de_fnstsw_uses_all_masked_fcw() {
     assert_eq!(x87.status_word, HexU64(0x6d23));
     assert_eq!(x87.registers[5], "00000000000000000080");
     assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
+}
+
+#[test]
+fn local_x87_frndint_seeded_unnormal_fnstsw_fnclex_fixture() {
+    let (input, result) = run(FRNDINT_SEEDED_UNNORMAL_FNSTSW_FNCLEX, "interpreter", 0);
+    assert!(od_jit::compile(&[0xd9, 0xfc]).is_err());
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 3);
+    let observed_state = snapshot(&result);
+    assert_eq!(observed_state.state.rip, HexU64(0x0010_0006));
+    assert_eq!(observed_state.state.gpr[0].0 & 0xffff, 0x4501);
+    let observed = observed_state.state.x87.as_ref().unwrap();
+    let initial = &input.fixture.initial_state;
+    assert_eq!(observed.registers[0], "00000000000000c0ffff");
+    assert_eq!(observed.status_word, HexU64(0x4500));
+    assert_eq!(observed.tag_word, initial.x87.as_ref().unwrap().tag_word);
+    assert_eq!(
+        observed.control_word,
+        initial.x87.as_ref().unwrap().control_word
+    );
+    assert_eq!(observed.instruction_pointer, HexU64(0x0010_0000));
+    assert_eq!(
+        observed.data_pointer,
+        initial.x87.as_ref().unwrap().data_pointer
+    );
+    assert_eq!(
+        observed.last_opcode,
+        initial.x87.as_ref().unwrap().last_opcode
+    );
 }
 
 #[test]

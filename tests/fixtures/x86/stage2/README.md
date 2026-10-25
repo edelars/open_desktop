@@ -3157,3 +3157,16 @@ FRNDINT rounds to positive zero, changes the tag to Zero, and sets DE+PE, which
 FNSTSW exposes as `0x3822` with TOP=7. Provenance is `project_fixture`; it is
 not evidence from native x86 execution. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dp-special-tagged-binary80-pseudo-denormal-frndint-d9-fc),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31dp-special-tagged-binary80-pseudo-denormal-through-bounded-frndint), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dp--special-tagged-binary80-pseudo-denormal-through-bounded-frndint).
+
+## S2-31dq FRNDINT unnormal fixture
+
+The literal `s2_31dq_frndint_seeded_unnormal_fnstsw_fnclex.case.json` starts
+with a raw negative Special-tagged binary80 unnormal seeded directly in the
+project x87 snapshot; it does not load it through FLD. The bytes execute
+`D9 FC DF E0 DB E2`: masked FRNDINT replaces the source with fixed negative
+indefinite `00000000000000c0ffff`, adds IE and clears C1; FNSTSW AX observes
+`0x4501`; FNCLEX clears IE while preserving the QNaN indefinite. The provenance
+is `project_fixture`, not native x86 evidence. JIT/native admission stays
+closed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dq-special-unnormal-frndint-d9-fc),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31dq-special-tagged-binary80-unnormal-through-bounded-frndint), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dq--special-tagged-binary80-unnormal-through-bounded-frndint).

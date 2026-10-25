@@ -5233,7 +5233,9 @@ behavior already implemented for canonical subnormals: RN/RZ signed zero, RD
 negative→-1 otherwise +0, RU positive→+1 otherwise -0; add sticky DE and PE,
 set C1 only for ±1, and assign Zero/Valid tags. Preserve the existing FCW,
 status and atomic commit gates. Do not alter decoder/classification or admit
-pseudo-infinity/NaN, unnormal, malformed encodings or wrong tags.
+pseudo-infinity/NaN, malformed encodings or wrong tags. Unnormal inputs were
+outside this stage and receive a separate masked-invalid slice in S2-31dq
+below.
 
 Compare raw pseudo-denormals against equivalent E=1 canonical Normals across
 fraction 0/1/interior/max, sign, all RC modes, TOP, sticky flags and prior C1:
@@ -5244,3 +5246,24 @@ already bounded x87-state fixture profile accepts it; verify FLD preserves raw
 E=0/J=1/Special and that DE first appears at FRNDINT. Keep JIT/native closed.
 Physical x86 and Mac mini acceptance stay in the combined final S2-31 substage
 under ISSUE-019.
+
+#### S2-31dq. Special-tagged binary80 unnormal through bounded `FRNDINT`
+
+For exact bare Long64 `D9 FC`, accept only a Special-tagged binary80 unnormal:
+biased exponent 1..=`0x7ffe`, J=0, either sign, any fraction. Under the
+existing four all-masked FCWs, return the fixed negative floating-point
+indefinite `00 00 00 00 00 00 00 c0 ff ff`, retain Special tag, add sticky IE,
+clear C1, and add no DE/PE/SF or other current exception. Preserve previously
+admitted sticky IE/DE/ZE/OE/UE/PE and SF only paired with IE. Leave FCW/FSW
+admission gates, TOP, other registers, FIP/RIP/retirement and atomic preflight
+unchanged. Do not widen FLD, the binary80 classifier, or JIT/native admission;
+wrong tags/classes, controls, fetch, STOP and budget rejects remain atomic.
+
+Independent expected-value coverage crosses exponent 1/interior/max, fraction
+0/1/bit62/max, sign, RC, TOP, legal historical sticky flags and prior C1. It
+also checks fixed-result QNaN re-entry, FNSTSW/FNCLEX and neighboring class/tag
+rejects. A literal seeded `D9 FC DF E0 DB E2` fixture begins with raw
+Special-tagged unnormal bytes in project x87 state and is explicitly not native
+evidence. Keep the distinct FISTP DE ambiguity documented under ISSUE-019;
+physical x86 and Mac mini checks remain for the combined final S2-31 acceptance
+substage and must not be run here.

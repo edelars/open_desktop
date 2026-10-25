@@ -760,6 +760,7 @@ impl Fixture {
                 }
                 "ded9dfe0" => ("ded9dfe0", 4),
                 "d9fcdfe0" => ("d9fcdfe0", 4),
+                "d9fcdfe0dbe2" => ("d9fcdfe0dbe2", 6),
                 "d910d9fcdfe0" => ("d910d9fcdfe0", 6),
                 "d900d9fcdfe0" => ("d900d9fcdfe0", 6),
                 "dd00d9fcdfe0" => ("dd00d9fcdfe0", 6),
@@ -1187,6 +1188,7 @@ impl Fixture {
             let expected_budget = match code_bytes.as_str() {
                 "db2848b80140000000000000df38dfe0dbe2" | "db28d9fcdfe0dbe2d9fc" => 5,
                 "db28d9fcd9fcdfe0dbe2d9fc" => 6,
+                "d9fcdfe0dbe2" => 3,
                 _ => match code_bytes.len() {
                     8 => 2,
                     12 => 3,

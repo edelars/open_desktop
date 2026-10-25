@@ -8525,15 +8525,18 @@ and +0 for positive; RU returns +1 for positive and -0 for negative. Each
 operation adds sticky DE+PE, sets C1 only for ±1, and writes a Zero/Valid result
 tag. The existing FCW/status gates, decoder/classifier, preflight/commit tuple,
 metadata and register-only boundary are unchanged. Pseudo-infinity/NaN,
-unnormal, malformed bytes, tag mismatches and wrong tags remain atomic rejects;
-JIT/native admission stays closed.
+malformed bytes, tag mismatches and wrong tags remain atomic rejects. At the
+S2-31dp stage unnormal was also rejected; S2-31dq below now handles that class
+separately as masked invalid. JIT/native admission stays closed.
 
 The independent 6,144-pair matrix compares pseudo-denormal and E=1 canonical
 Normal encodings across fractions 0/1/interior/max, sign, all RCs, every TOP,
 prior DE/PE/C1 and legal IE/SF sticky combinations. It asserts identical full
 post-x87 state after accounting for current DE, including result bytes/tags,
-PE, C1 and all canaries. Neighbor rejects include pseudo-infinity/NaN, unnormal,
-malformed encodings and Valid/Zero tags. A local two-step `FLD m80fp` then
+PE, C1 and all canaries. Neighbor rejects include pseudo-infinity/NaN,
+malformed encodings and Valid/Zero tags. At this stage the matrix also checked
+unnormal rejection; the later S2-31dq matrix supersedes that one boundary. A
+local two-step `FLD m80fp` then
 `FRNDINT` test inspects the intermediate state: FLD preserves raw E=0/J=1 bytes
 and Special tag with clean DE/PE; FRNDINT then returns Zero and adds DE+PE.
 Another sequence covers repeat FRNDINT, FNSTSW, FNCLEX and zero re-entry.
@@ -8562,6 +8565,49 @@ Table 8-3. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dp-special-tagged-binary80-pseudo-denormal-frndint-d9-fc),
 [plan](../plans/STAGE_2.md#s2-31dp-special-tagged-binary80-pseudo-denormal-through-bounded-frndint),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dp-frndint-pseudo-denormal-fixture).
+
+## S2-31dq — Special-tagged binary80 unnormal through bounded FRNDINT
+
+The exact Special-tagged branch of bare Long64 `D9 FC` now accepts binary80
+unnormals with biased exponent 1..`0x7ffe`, J=0, either sign and any fraction.
+Under the unchanged four all-masked FCWs and status gate, it returns fixed
+negative binary80 QNaN indefinite bytes `00 00 00 00 00 00 00 c0 ff ff`, keeps
+the Special tag, adds sticky IE and clears C1. It does not add current DE, PE,
+SF, ZE, OE or UE. Previously admitted sticky IE/DE/ZE/OE/UE/PE and SF paired
+with IE remain preserved. TOP, other registers, FIP/RIP/retirement and
+preflight remain unchanged. The result re-enters as the existing QNaN identity;
+SNaN quieting remains a distinct path. FLD, classification and JIT/native
+admission were not changed.
+
+The independent 147,456-case matrix crosses exponent 1/interior/max, fraction
+0/1/bit62/max, sign, all RC modes and TOPs, each legal historical IE/SF
+pairing, all prior DE/ZE/OE/UE/PE combinations and C1. It checks full x87/GPR/
+RFLAGS canaries and no memory access. Neighbor class/tag, invalid-control and
+status rejects plus fetch/truncation/STOP/budget atomicity are covered. A
+seeded literal `D9 FC DF E0 DB E2` fixture uses raw Special unnormal input in
+the project x87 snapshot, observes AX/FSW `0x4501`, then FNCLEX leaves FSW
+`0x4500` and retains the fixed result. This is project-fixture evidence, not
+native execution.
+
+Normative basis: Intel SDM revision 093 Vol.2A “FRNDINT—Round to Integer,”
+p.3-372, lists unsupported format as #IA. Vol.1 Table 8-10 specifies the
+masked QNaN floating-point indefinite for an arithmetic operation on an
+unsupported format; Table 4-3 and §4.8.3.7 define its binary80 encoding. Table
+8-10 gives SNaNs a separate masked response; that behavior is not reused here.
+The separate FIST/FISTP denormal #D ambiguity under ISSUE-019 remains unchanged.
+
+Validation passed: focused `cargo test -p od-isa --offline frndint` (28 tests),
+the S2-31dq CLI fixture test `cargo test -p od-runner --offline
+local_x87_frndint_seeded_unnormal_fnstsw_fnclex_fixture` (1 test),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, and `git diff --check`. The independent
+gpt-6.1-sol medium review found no code or behavior defects; it noted the
+contract section's placement/reference, which was corrected by placing S2-31dq
+immediately after S2-31dp. `graphify update .` completed at 4,767 nodes, 9,596
+edges and 181 communities; the existing parser warning for
+`include/open_desktop/host_abi.h` remains. No Mac mini, SSH or physical x86
+execution was performed; physical acceptance remains deferred to the combined
+final S2-31 substage under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dq-special-unnormal-frndint-d9-fc), [plan](../plans/STAGE_2.md#s2-31dq-special-tagged-binary80-unnormal-through-bounded-frndint), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dq-frndint-unnormal-fixture).
 
 ### Open x87 denormal question for integer stores
 
