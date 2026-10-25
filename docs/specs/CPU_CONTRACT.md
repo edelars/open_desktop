@@ -5876,9 +5876,11 @@ write-before-commit order and raw ten-byte payload preservation remain. FIST
 retains TOP; FISTP pops once after the write succeeds.
 
 Pseudo-infinity with zero fraction, canonical J=1 QNaNs/SNaNs and non-all-one
-exponents remain distinct. Wrong tags, pseudo-denormals, unnormals, m16/m64
-pseudo-NaNs, FLD and unmasked delivery remain unsupported; there is no
-catch-all unsupported-class branch. JIT/native admission stays closed, and
+exponents remain distinct. At the original S2-31cw boundary, wrong tags,
+pseudo-denormals, unnormals, m16/m64 pseudo-NaNs, FLD and unmasked delivery
+remained unsupported; S2-31cx later extends only the bounded m16 FIST/FISTP
+pseudo-NaN cases below. There is no catch-all unsupported-class branch.
+JIT/native admission stays closed, and
 physical x86 acceptance remains deferred to the combined final S2-31 substage
 under ISSUE-019.
 
@@ -5895,4 +5897,38 @@ observes and clears IE; a direct seeded CLI fixture observes IE with FNSTSW.
 FLD composition is excluded because FLD rejects J=0 pseudo-NaNs. See the
 [plan](../plans/STAGE_2.md#s2-31cw-special-pseudo-nan-m32-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31cw--special-tagged-pseudo-nans-through-m32-fist),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31cx-special-pseudo-nan-m16-fist"></a>
+
+## Local S2-31cx: Special-tagged pseudo-NaNs through m16 `FIST`/`FISTP`
+
+Only bare `DF 10` and `DF 18` admit a Special-tagged binary80 pseudo-NaN
+(exponent `0x7fff`, J=0, nonzero fraction). Both Q-bit variants and either
+sign store Word integer-indefinite `0x8000`, add current IE, and clear C1. They
+add no PE or other current flags and preserve historical sticky flags and
+C0/C2/C3. Keep the existing FCW whitelist, `FSW & 0x80c0` gate, bare Long64
+RAX address, complete canonical48 two-byte preflight, atomic one-write/no-read,
+write-before-commit ordering, and raw ten-byte source preservation. FIST retains
+TOP; FISTP pops once only after the write succeeds.
+
+Pseudo-infinity with zero fraction and canonical J=1 QNaN/SNaN keep their
+existing m16 behavior. Wrong tags, pseudo-denormals, unnormals, non-all-one
+exponents, m64 pseudo-NaNs, FLD and unmasked delivery remain unsupported. The
+m32 pseudo-NaN behavior is unchanged; no generic special-class fallback is
+added. JIT/native admission remains closed, and physical x86 acceptance remains
+deferred to the combined final S2-31 substage under ISSUE-019.
+
+The 65,536-case matrix crosses four nonzero fractions (`1`,
+`0x3fff_ffff_ffff_ffff`, `0x4000_0000_0000_0000`,
+`0x7fff_ffff_ffff_ffff`), both signs, four FCWs, both forms, all TOP values,
+64 sticky combinations and both old C1 values. Independent expectations cover
+Word bytes, IE without PE, C1 clearing, preserved status/source, canaries, one
+write/no read and FIST/FISTP stack effects. Rejection and fault checks cover
+wrong tags, other exponents, pseudo-denormals, unnormals, m64, forbidden
+FCW/FSW, denied writes and canonical48 crossing. ISA FNSTSW/FNCLEX and a
+seeded CLI fixture observe and clear IE. See the
+[plan](../plans/STAGE_2.md#s2-31cx-special-pseudo-nan-m16-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31cx--special-tagged-pseudo-nans-through-m16-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

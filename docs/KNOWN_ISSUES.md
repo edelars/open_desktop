@@ -984,3 +984,19 @@
   [plan](plans/STAGE_2.md#s2-31cw-special-pseudo-nan-m32-fist),
   [report](reports/STAGE_2_REPORT.md#s2-31cw--special-tagged-pseudo-nans-through-m32-fist),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+
+- **S2-31cx evidence:** only bare DF10/DF18 m16 FIST/FISTP admit
+  Special-tagged J=0 binary80 pseudo-NaNs with nonzero fraction, including
+  both bit-62 variants and both signs. The 65,536-case independent matrix
+  checks Word integer-indefinite, IE without PE, C1 clearing, sticky/condition
+  preservation, source bytes, canaries, one write/no read and TOP/tag rules.
+  Wrong tags/classes, other exponents, m64, forbidden controls/status and
+  denied-write/canonical-range atomicity are covered; FNSTSW/FNCLEX, literal
+  CLI, and JIT/native denial checks are included. The m32 behavior remains
+  unchanged. FLD and unmasked delivery remain outside this bounded slice.
+  Physical x86 acceptance and Mac mini validation remain deferred to the
+  combined final S2-31 substage under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31cx-special-pseudo-nan-m16-fist),
+  [plan](plans/STAGE_2.md#s2-31cx-special-pseudo-nan-m16-fist),
+  [report](reports/STAGE_2_REPORT.md#s2-31cx--special-tagged-pseudo-nans-through-m16-fist),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

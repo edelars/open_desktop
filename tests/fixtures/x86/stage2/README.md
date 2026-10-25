@@ -2893,7 +2893,26 @@ FNCLEX clears IE. ISA coverage spans 65,536 FCW/form/TOP/sticky/C1 combinations
 and confirms the existing pseudo-infinity and canonical J=1 QNaN/SNaN behavior
 remains distinct; it rejects non-all-one exponents, wrong tags and m16/m64
 pseudo-NaNs. Write/range faults preserve state and memory. JIT/native admission
-remains denied. FLD composition is excluded because FLD rejects pseudo-NaNs.
+remains denied. At the S2-31cw boundary, m16/m64 pseudo-NaNs were rejected;
+S2-31cx below later admits only the bounded m16 DF10/DF18 cases, while m64
+remains unsupported. FLD composition is excluded because FLD rejects pseudo-NaNs.
 See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cw-special-pseudo-nan-m32-fist),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cw-special-pseudo-nan-m32-fist),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cw--special-tagged-pseudo-nans-through-m32-fist).
+
+
+### S2-31cx Special-tagged pseudo-NaN m16 FISTP fixture
+
+`s2_31cx_fistp_m16int_negative_pseudo_nan_fnstsw.case.json` seeds a
+Special-tagged negative J=0 pseudo-quiet-NaN with significand
+`0x4000000000000001`, then executes literal `DF 18` and `DF E0`. It checks Word
+integer-indefinite at the data region boundary with a preceding byte and
+following bytes preserved, IE observed by FNSTSW, raw source
+preservation, and FISTP TOP/tag behavior. ISA coverage spans 65,536 FCW/form/
+TOP/sticky/C1 combinations, checks canonical pseudo-infinity/QNaN/SNaN controls,
+and rejects wrong tags/classes, other exponents, m64 pseudo-NaNs and forbidden
+controls. Word write and canonical-range faults preserve state and memory. JIT/
+native admission remains denied; FLD and unmasked delivery are outside the
+slice. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cx-special-pseudo-nan-m16-fist),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31cx-special-pseudo-nan-m16-fist),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cx--special-tagged-pseudo-nans-through-m16-fist).

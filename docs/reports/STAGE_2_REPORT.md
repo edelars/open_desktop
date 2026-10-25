@@ -7900,14 +7900,17 @@ sign store Dword integer-indefinite `0x80000000`, add IE without PE or other
 current flags, and clear C1. Historical sticky flags and C0/C2/C3 remain
 preserved. The existing FCW/FSW gates, bare RAX form, canonical48 Dword
 preflight, one-write/no-read ordering, raw ten-byte source and FIST/FISTP
-TOP behavior are unchanged. m16/m64, FLD and unmasked behavior remain closed.
+TOP behavior are unchanged. m16/m64 were closed at the S2-31cw boundary;
+S2-31cx below later admits the bounded m16 cases. m64, FLD and unmasked
+behavior remain closed.
 
 The independent expected-value matrix crosses four literal fractions, both
 signs, four FCWs, both forms, all TOP values, 64 sticky combinations and both
 prior C1 values (65,536 cases). Additional tests preserve the existing
 pseudo-infinity and canonical J=1 QNaN/SNaN behavior, reject wrong tags,
-unnormals, pseudo-denormals, unsupported FCW/FSW and m16/m64 pseudo-NaNs, and
-check Dword write/canonical-range atomicity. An ISA DB18/FNSTSW/FNCLEX
+unnormals, pseudo-denormals, unsupported FCW/FSW and m16/m64 pseudo-NaNs at
+the original S2-31cw boundary, and check Dword write/canonical-range atomicity.
+An ISA DB18/FNSTSW/FNCLEX
 composition observes IE then clears it; the direct CLI fixture is limited to
 DB18/FNSTSW because the fixture schema admits one x87 instruction or the exact
 two-instruction status pair. JIT compilation and native admission remain
@@ -7929,3 +7932,42 @@ See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cw-special-pseudo-nan-m32-fist),
 [plan](../plans/STAGE_2.md#s2-31cw-special-pseudo-nan-m32-fist), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cx--special-tagged-pseudo-nans-through-m16-fist"></a>
+
+## S2-31cx — Special-tagged pseudo-NaNs through m16 FIST/FISTP
+
+Only bare `DF 10` and `DF 18` now admit Special-tagged binary80 pseudo-NaNs
+(exponent `0x7fff`, J=0, nonzero fraction). Either sign and both bit-62
+variants store Word integer-indefinite `0x8000`, add IE without PE or other
+new flags, and clear C1. Historical sticky flags and C0/C2/C3 remain preserved.
+The existing FCW/FSW gates, bare RAX form, canonical48 two-byte preflight,
+one-write/no-read order, raw source bytes and FIST/FISTP TOP behavior remain.
+The m32 pseudo-NaN path is unchanged. Wrong tags/classes, non-all-one
+exponents, m64 pseudo-NaNs, FLD and unmasked delivery remain outside the slice.
+
+The independently expected 65,536-case matrix crosses four nonzero fractions,
+both signs, four FCWs, both forms, all TOP values, 64 sticky combinations and
+both old C1 states. Additional checks cover pseudo-infinity and canonical
+J=1 QNaN/SNaN controls, tag/class/width/control rejection, write/range
+atomicity, Word canaries, FNSTSW/FNCLEX composition, a literal seeded CLI
+fixture, and JIT/native denial. Physical x86 acceptance and Mac mini validation
+remain deferred to the combined final S2-31 substage under ISSUE-019.
+
+Validation: focused ISA matrix/rejection and status-composition tests passed.
+`cargo test --workspace --all-targets --offline --quiet` passed all 993
+unit/integration tests. `cargo test --workspace --doc --offline --quiet` passed
+all 7 doc-test targets; they contain zero examples. Host and
+`x86_64-unknown-linux-gnu` `cargo check --workspace --all-targets --offline`
+passed; Linux emitted existing dead-code warnings in `od-host` and `od-runner`.
+Linux native-denial runtime execution remains unverified on this macOS arm64
+host; only the Linux cross-target compile was run. `cargo fmt --all -- --check`,
+`git diff --check`, and
+`python3 tools/check_layout.py` passed. `graphify update .` completed with
+4,612 nodes, 9,326 edges and 183 communities; its extractor reported the
+existing parse warning for `include/open_desktop/host_abi.h` (no symbols from
+that header). `.serena/` remains a local-tooling exception and no such paths
+were changed or staged. Independent review completed with no findings. Physical Mac mini
+validation remains deferred to the combined final S2-31 substage under
+ISSUE-019.
