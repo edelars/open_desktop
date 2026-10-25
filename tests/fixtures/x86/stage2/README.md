@@ -2487,3 +2487,14 @@ re-entry without FNCLEX, and atomic faults. See the [S2-31br CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31br-sticky-status-admission-for-bounded-m32m64-fstfstp),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31br-admit-sticky-status-on-bounded-m32m64-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31br--sticky-status-admission-for-bounded-m32m64-stores).
+
+### S2-31bt exact signed-zero FIST/FISTP m32int fixtures
+
+The negative-zero `DB 10` and positive-zero `DB 18` fixtures store the literal
+Dword zero and compose with FNSTSW to observe preserved PE, cleared C1, and
+FIST's unchanged versus FISTP's advanced TOP/tag. ISA coverage includes both
+signs, all RCs/TOPs, source/tag/control rejection, and fault/range atomicity.
+JIT and native admission remain closed. See the [S2-31bt CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bt-exact-signed-zero-fist-m32int-rax-db-10-db-18),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bt-exact-signed-zero-fist-m32int),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bt--exact-signed-zero-fist-m32int).

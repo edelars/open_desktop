@@ -615,3 +615,15 @@
   [contract](specs/CPU_CONTRACT.md#local-s2-31bs-sticky-oe-on-raw-binary80-fstp-m80fp),
   [plan](plans/STAGE_2.md#s2-31bs-admit-sticky-oe-to-raw-binary80-fstp),
   and [report](reports/STAGE_2_REPORT.md#s2-31bs--sticky-oe-on-raw-binary80-fstp-m80fp).
+
+- **S2-31bt evidence:** exact `DB 10`/`DB 18` m32 integer stores admit only
+  Zero-tagged canonical binary80 zero with exponent/sign word `0x0000` or
+  `0x8000` and zero significand. Both signs store integer zero under all RC
+  modes, preserve PE and source payloads, and clear C1 after the atomic Dword
+  write. FIST preserves tag/TOP; FISTP pops only after write success. Tests
+  cover sign/RC/opcode/TOP/PE/C1, source and control rejection, and write/range
+  atomicity. CLI fixtures observe each opcode with FNSTSW; JIT/native denial
+  remain explicit. Native runtime and physical acceptance are deferred under
+  ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31bt-exact-signed-zero-fist-m32int-rax-db-10-db-18),
+  [plan](plans/STAGE_2.md#s2-31bt-exact-signed-zero-fist-m32int), and
+  [report](reports/STAGE_2_REPORT.md#s2-31bt--exact-signed-zero-fist-m32int).

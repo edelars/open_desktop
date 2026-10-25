@@ -2704,6 +2704,33 @@ Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See also the
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
 
+<a id="local-s2-31bt-exact-signed-zero-fist-m32int-rax-db-10-db-18"></a>
+
+## Local S2-31bt: exact signed-zero `FIST`/`FISTP m32int [RAX]` (`DB 10`/`DB 18`)
+
+The bounded `DB 10` and `DB 18` forms admit `X87Tag::Zero` only when its raw
+binary80 payload is canonical zero: zero significand and sign/exponent word
+`0x0000` or `0x8000`. Either sign stores the exact Dword integer zero under all
+four admitted RC modes. This conversion generates no exceptions, preserves
+incoming PE, clears C1, and retains the existing C0/C2/C3 behavior.
+
+The existing FCW whitelist, `FSW & 0x80df == 0` gate, bare Long64 RAX form, and
+complete canonical48 Dword range check remain in force. The source payload is
+unchanged. After one atomic Dword write succeeds, FIST updates status and
+pointers while preserving the physical tag and TOP; FISTP additionally empties
+the old TOP tag and advances TOP modulo eight. Write/range failures leave CPU
+state and memory unchanged. This support does not admit m16/m64 zero stores or
+nonzero magnitudes below one.
+
+ISA coverage crosses both signs, four RCs, both opcodes, all TOP values, prior
+PE and C1 states, and checks tag/class/control rejection and fault atomicity.
+Literal CLI fixtures compose each opcode with FNSTSW. JIT and native admission
+remain closed; native runtime and physical behavior remain deferred under
+ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31bt-exact-signed-zero-fist-m32int),
+[report](../reports/STAGE_2_REPORT.md#s2-31bt--exact-signed-zero-fist-m32int),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
 <a id="local-s2-31bs-sticky-oe-on-raw-binary80-fstp-m80fp"></a>
 
 ## Local S2-31bs: sticky OE on raw `FSTP m80fp [RAX]` (`DB 38`)

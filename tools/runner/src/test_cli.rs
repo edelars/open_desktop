@@ -1967,6 +1967,56 @@ mod tests {
     }
 
     #[test]
+    fn fist_m32int_signed_zero_cli_fixtures_store_zero_and_observe_status() {
+        for (name, bytes, expected_rax, expected_fsw, expected_tag_word) in [
+            (
+                "s2_31bt_fist_m32int_negative_zero_fnstsw.case.json",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bt_fist_m32int_negative_zero_fnstsw.case.json").as_slice(),
+                0x0000_0000_0030_4520,
+                0x4520,
+                0xfffd,
+            ),
+            (
+                "s2_31bt_fistp_m32int_positive_zero_fnstsw.case.json",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bt_fistp_m32int_positive_zero_fnstsw.case.json").as_slice(),
+                0x0000_0000_0030_4d20,
+                0x4d20,
+                0xffff,
+            ),
+        ] {
+            let fixture = v2::Fixture::from_json(bytes)
+                .unwrap_or_else(|error| panic!("{name} failed schema validation: {error}"));
+            let before = fixture.fixture.initial_state.clone();
+            let mut memory =
+                od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::StopAddress {}), "{name}");
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(2) },
+                "{name}"
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("{name} must have an observable state");
+            };
+            let after = value.state.x87.as_ref().unwrap();
+            let initial = before.x87.as_ref().unwrap();
+            assert_eq!(value.state.gpr[0], HexU64(expected_rax), "{name}");
+            assert_eq!(after.status_word, HexU64(expected_fsw), "{name}");
+            assert_eq!(after.tag_word, HexU64(expected_tag_word), "{name}");
+            assert_eq!(after.registers, initial.registers, "{name}");
+            assert_eq!(after.instruction_pointer, HexU64(0x100000), "{name}");
+            assert_eq!(after.data_pointer, HexU64(0x300001), "{name}");
+            let regions = memory.snapshot();
+            let left = regions.iter().find(|region| region.region_id == "data_left").unwrap();
+            let right = regions.iter().find(|region| region.region_id == "data_right").unwrap();
+            assert_eq!(left.bytes_hex, "00", "{name}");
+            assert_eq!(right.bytes_hex, "000000eeff11223344556677889900", "{name}");
+        }
+    }
+
+    #[test]
     fn fstp_m64fp_literal_fixtures_store_then_pop_and_compose_with_fnstsw() {
         for (bytes, expected_rax, retired) in [
             (

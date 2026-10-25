@@ -6790,3 +6790,34 @@ nodes, 8,822 edges and 179 communities.
 root `.serena/` directory; it is excluded from this change. Native runtime and
 physical acceptance remain deferred to the combined S2-31 acceptance substage
 under ISSUE-019.
+
+
+<a id="s2-31bt--exact-signed-zero-fist-m32int"></a>
+
+## S2-31bt — exact signed-zero FIST/FISTP m32int
+
+Only bare `DB 10` and `DB 18` now accept `X87Tag::Zero` paired with a canonical
+binary80 zero payload (zero significand and sign/exponent word `0x0000` or
+`0x8000`). Both signs and all four admitted RC modes store integer zero; no new
+flags are generated, incoming PE and source payloads are preserved, and C1 is
+cleared. FIST retains tag/TOP; FISTP updates the old TOP tag and advances TOP
+only after the atomic Dword write. FCW, FSW, addressing, range, and other
+conversion gates are unchanged. m16/m64 and nonzero magnitudes below one remain
+unsupported.
+
+The independent interpreter matrix covers sign × RC × opcode × TOP × PE × C1,
+canonical/tag/class rejection, unsupported FCW/FSW, and write/range atomicity.
+Two CLI fixtures compose negative-zero FIST and positive-zero FISTP with
+FNSTSW. JIT and native denial fixtures are included.
+
+Validation passed: the focused m32 FIST unit suite passed 6/6, the CLI/FNSTSW
+fixture test passed 1/1, and JIT denial passed 1/1. The full
+`cargo test --workspace --offline` suite passed 851 tests, including 494
+`od-isa`, 56 runner CLI, 116 fixture/JIT, and 166 testkit tests. Host and Linux
+x86_64 `cargo check --workspace --all-targets --offline` passed; the Linux
+target compiles native-denial tests but does not execute them. `cargo fmt
+--all -- --check` and `git diff --check` passed. `python3 tools/check_layout.py`
+reports the preserved unmapped root `.serena/` directory, excluded from this
+change. `graphify update .` rebuilt the graph to 4,333 nodes, 8,837 edges and
+189 communities. Native runtime and physical x86 behavior remain deferred to
+the combined S2-31 acceptance substage under ISSUE-019.

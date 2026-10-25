@@ -3496,6 +3496,28 @@ fn v2_jit_denies_m32_store_with_preexisting_sticky_ue_without_fallback() {
 }
 
 #[test]
+fn v2_jit_denies_signed_zero_fist_m32_fixtures_without_interpreter_fallback() {
+    for fixture in [
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31bt_fist_m32int_negative_zero_fnstsw.case.json"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31bt_fistp_m32int_positive_zero_fnstsw.case.json"
+        )
+        .as_slice(),
+    ] {
+        let (_, result) = run(fixture, "jit", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
 fn v2_jit_denies_exact_m64_subnormal_store_fixtures_without_fallback() {
     for fixture in [
         FST_M64_POSITIVE_MIN_SUBNORMAL,
