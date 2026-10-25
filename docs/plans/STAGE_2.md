@@ -298,6 +298,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31cg | Convert canonical masked binary80 signaling NaN to integer indefinite for DF10/DF18 m16 FIST/FISTP | S2-31cd |
 | [x] | S2-31ch | Convert canonical masked binary80 signaling NaN to integer indefinite for DF38 m64 FISTP | S2-31ce |
 | [x] | S2-31ci | Admit sticky IE on bounded DB10/DB18/DF10/DF18/DF38 integer stores | S2-31br, S2-31ch |
+| [x] | S2-31cj | Convert finite rounded i32 overflow to integer-indefinite for DB10/DB18 | S2-31ci |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3638,7 +3639,6 @@ fault atomicity, CLI fixtures, and JIT/native denial. Native runtime and
 physical acceptance remain deferred to the final combined S2-31 substage under
 ISSUE-019.
 
-
 <a id="s2-31br-admit-sticky-status-on-bounded-m32m64-stores"></a>
 
 #### S2-31br. Admit sticky IE/DE/OE/UE/PE on bounded m32/m64 stores
@@ -3919,6 +3919,31 @@ under IE with PE clear, IE+PE write/range atomicity and IE combined with each
 forbidden status bit across all forms, FNSTSW/FNCLEX, CLI fixtures and
 JIT/native denial. Native runtime and physical acceptance remain deferred under
 ISSUE-019.
+
+
+<a id="s2-31cj-masked-finite-overflow-to-m32-fistfstp"></a>
+
+#### S2-31cj. Masked finite overflow to m32 `FIST`/`FISTP`
+
+Only canonical Valid-tagged binary80 Normal inputs to bare `DB 10` and `DB 18`
+gain signed-i32 out-of-range conversion. Round under the admitted RC first;
+rounded values outside `[-2^31, 2^31-1]` store integer-indefinite
+`0x80000000`, then add IE and clear C1 after a successful Dword write. Do not
+add PE for an invalid conversion. For exponent `e >= 32`, classify directly as
+invalid. For `0 <= e <= 31`, use the exact significand quotient, guard/sticky
+tail and RC before testing signed bounds; negative-exponent fractions retain
+their comparison-based rounding path. This preserves out-of-range real values
+that round back into range. Keep m16/m64, subnormal, malformed and unmasked
+paths unchanged.
+
+Cover signed limits, representable neighbors around both half-integer
+thresholds and ties, all RCs/signs/opcodes/TOP and incoming IE/PE, prior C1,
+large exponents 32/63/64/16383 with minimum/mixed/maximum significands, and
+exact `-2^31` versus the same-bit integer-indefinite result. Check invalid
+fractional input adds IE without PE; atomic denied-write/range faults and raw
+source preservation; existing zero/fraction/special regressions; FNSTSW/FNCLEX,
+literal CLI fixtures, and JIT/native denial. Native runtime and physical
+acceptance remain deferred under ISSUE-019.
 
 <a id="s2-31bs-admit-sticky-oe-to-raw-binary80-fstp"></a>
 

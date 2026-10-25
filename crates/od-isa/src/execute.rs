@@ -2787,6 +2787,9 @@ fn bounded_x87_fist_integer_result(state: &LongModeState, width: u32) -> Option<
         0x0f7f => RationalRoundingMode::TowardZero,
         _ => return None,
     };
+    if width == 32 && finite.exponent() >= 32 {
+        return Some((0x8000_0000, 0x0001, false));
+    }
     if matches!(width, 16 | 32 | 64) && (-16382..0).contains(&finite.exponent()) {
         let magnitude = u64::from(match rounding {
             RationalRoundingMode::NearestTiesEven => {
@@ -2821,7 +2824,11 @@ fn bounded_x87_fist_integer_result(state: &LongModeState, width: u32) -> Option<
         positive_limit
     };
     if magnitude > limit {
-        return None;
+        return if width == 32 {
+            Some((0x8000_0000, 0x0001, false))
+        } else {
+            None
+        };
     }
     let low = u64::try_from(magnitude).ok()?;
     let encoded = if finite.sign() {
@@ -11268,7 +11275,7 @@ mod tests {
         let mut add_case = |mut change: Box<dyn FnMut(&mut crate::state::X87State)>| {
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = 0x037f;
-            x87.status_word = 0;
+            x87.status_word = 0x0021; // Existing IE/PE remain sticky across overflow.
             x87.tag_word = 0;
             x87.registers[0] = normal;
             x87.registers[1] = normal;
@@ -21777,10 +21784,6 @@ mod tests {
                 X87Tag::Special,
                 binary80_normal(0x4000_0000_0000_0000, 0x7fff, false),
             ),
-            (
-                X87Tag::Valid,
-                binary80_normal(0x8000_0000_0000_0000, 0x401e, false),
-            ),
         ];
         for (tag, raw) in invalid_sources {
             let mut state = LongModeState::default();
@@ -22133,14 +22136,14 @@ mod tests {
     }
 
     #[test]
-    fn fist_m32int_preserves_state_on_overflow_and_store_faults() {
+    fn fist_m32int_stores_indefinite_on_overflow_and_keeps_faults_atomic() {
         let setup = || {
             let mut state = LongModeState::default();
             state.rip = 0x82e0;
             state.gpr[Register::Rax as usize] = 0x1000;
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = 0x037f;
-            x87.status_word = 0;
+            x87.status_word = 0x0021; // Existing IE/PE remain sticky across overflow.
             x87.registers[0] = binary80_normal(1 << 63, 0x401e, false); // +2^31
             x87.set_tag(0, X87Tag::Valid);
             state.x87 = Some(x87);
@@ -22148,32 +22151,34 @@ mod tests {
         };
 
         let mut overflow = setup();
-        let before = overflow.clone();
         let mut memory = Memory::at(&[0xdb, 0x10], overflow.rip);
         assert_eq!(
             step(&mut overflow, &mut memory, AccessContext::default()),
-            Ok(StepOutcome::Unsupported { opcode: 0xdb })
+            Ok(StepOutcome::Advanced)
         );
-        assert_eq!(overflow, before);
-        assert!(memory.accesses.is_empty());
+        assert_eq!(&memory.bytes[..4], &[0, 0, 0, 0x80]);
+        assert_eq!(memory.accesses, vec![(AccessKind::Write, 0x1000, 4)]);
+        assert_eq!(overflow.x87.as_ref().unwrap().status_word & 0x0221, 0x0021);
+        assert_eq!(overflow.x87.as_ref().unwrap().tag(0), Some(X87Tag::Valid));
 
         let mut denied = setup();
-        denied.x87.as_mut().unwrap().registers[0] = binary80_normal(1 << 63, 0x3fff, false);
         let before = denied.clone();
         let mut memory = Memory::at(&[0xdb, 0x10], denied.rip);
+        let ram_before = memory.bytes.clone();
         memory.deny_writes = true;
         assert!(matches!(
             step(&mut denied, &mut memory, AccessContext::default()),
             Err(MemoryError::PermissionDenied { .. })
         ));
         assert_eq!(denied, before);
+        assert_eq!(memory.bytes, ram_before);
         assert_eq!(memory.accesses, vec![(AccessKind::Write, 0x1000, 4)]);
 
         let mut invalid_range = setup();
         invalid_range.gpr[Register::Rax as usize] = 0x0000_7fff_ffff_fffe;
-        invalid_range.x87.as_mut().unwrap().registers[0] = binary80_normal(1 << 63, 0x3fff, false);
         let before = invalid_range.clone();
         let mut memory = Memory::at(&[0xdb, 0x10], invalid_range.rip);
+        let ram_before = memory.bytes.clone();
         assert_eq!(
             step(&mut invalid_range, &mut memory, AccessContext::default()),
             Ok(StepOutcome::Fault(ArchitecturalFault {
@@ -22183,6 +22188,7 @@ mod tests {
             }))
         );
         assert_eq!(invalid_range, before);
+        assert_eq!(memory.bytes, ram_before);
         assert!(memory.accesses.is_empty());
     }
 
@@ -22260,14 +22266,14 @@ mod tests {
     }
 
     #[test]
-    fn fistp_m32int_rejects_overflow_before_data_access_and_keeps_faults_atomic() {
+    fn fistp_m32int_stores_indefinite_on_overflow_and_keeps_faults_atomic() {
         let setup = || {
             let mut state = LongModeState::default();
             state.rip = 0x8340;
             state.gpr[Register::Rax as usize] = 0x1000;
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = 0x037f;
-            x87.status_word = 0;
+            x87.status_word = 0x0021; // Existing IE/PE remain sticky across overflow.
             x87.registers[0] = binary80_normal(1 << 63, 0x401e, false); // +2^31
             x87.set_tag(0, X87Tag::Valid);
             state.x87 = Some(x87);
@@ -22275,22 +22281,21 @@ mod tests {
         };
 
         let mut overflow = setup();
-        let before = overflow.clone();
         let mut memory = Memory::at(&[0xdb, 0x18], overflow.rip);
         assert_eq!(
             step(&mut overflow, &mut memory, AccessContext::default()),
-            Ok(StepOutcome::Unsupported { opcode: 0xdb })
+            Ok(StepOutcome::Advanced)
         );
-        assert_eq!(overflow, before);
-        assert!(
-            memory.accesses.is_empty(),
-            "overflow must precede data access"
-        );
+        assert_eq!(&memory.bytes[..4], &[0, 0, 0, 0x80]);
+        assert_eq!(memory.accesses, vec![(AccessKind::Write, 0x1000, 4)]);
+        assert_eq!(overflow.x87.as_ref().unwrap().status_word & 0x0221, 0x0021);
+        assert_eq!(overflow.x87.as_ref().unwrap().tag(0), Some(X87Tag::Empty));
+        assert_eq!(overflow.x87.as_ref().unwrap().top(), 1);
 
         let mut denied = setup();
-        denied.x87.as_mut().unwrap().registers[0] = binary80_normal(1 << 63, 0x3fff, false); // +1, representable
         let before = denied.clone();
         let mut memory = Memory::at(&[0xdb, 0x18], denied.rip);
+        let ram_before = memory.bytes.clone();
         memory.deny_writes = true;
         assert!(matches!(
             step(&mut denied, &mut memory, AccessContext::default()),
@@ -22303,10 +22308,10 @@ mod tests {
             denied, before,
             "failed store must not pop or update x87 state"
         );
+        assert_eq!(memory.bytes, ram_before, "failed store must preserve RAM");
         assert_eq!(memory.accesses, vec![(AccessKind::Write, 0x1000, 4)]);
 
         let mut injected = setup();
-        injected.x87.as_mut().unwrap().registers[0] = binary80_normal(1 << 63, 0x3fff, false);
         let before = injected.clone();
         let mut memory = Memory::at(&[0xdb, 0x18], injected.rip);
         let ram_before = memory.bytes.clone();
@@ -22335,9 +22340,9 @@ mod tests {
 
         let mut address_fault = setup();
         address_fault.gpr[Register::Rax as usize] = 0x0000_7fff_ffff_fffe;
-        address_fault.x87.as_mut().unwrap().registers[0] = binary80_normal(1 << 63, 0x3fff, false);
         let before = address_fault.clone();
         let mut memory = Memory::at(&[0xdb, 0x18], address_fault.rip);
+        let ram_before = memory.bytes.clone();
         assert_eq!(
             step(&mut address_fault, &mut memory, AccessContext::default()),
             Ok(StepOutcome::Fault(ArchitecturalFault {
@@ -22347,6 +22352,7 @@ mod tests {
             }))
         );
         assert_eq!(address_fault, before);
+        assert_eq!(memory.bytes, ram_before);
         assert!(
             memory.accesses.is_empty(),
             "canonical range failure precedes store"
@@ -22476,9 +22482,10 @@ mod tests {
             );
         }
 
-        // +2147483647.5: LE 00000000ffffffff1d40. RN/RU overflow to +2^31;
-        // RD/RZ retain INT32_MAX. -2147483648.5: LE 00000080000000801ec0.
-        // RN/RU/RZ retain INT32_MIN; RD overflows to -2147483649.
+        // +2147483647.5: LE 00000000ffffffff1d40. RN/RU produce the
+        // integer-indefinite result; RD/RZ retain INT32_MAX. -2147483648.5:
+        // LE 00000080000000801ec0. RN/RU/RZ retain INT32_MIN; RD
+        // produces integer-indefinite.
         let positive_boundary = [0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x1d, 0x40];
         let negative_boundary = [0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x1e, 0xc0];
         for (fcw, name) in [
@@ -22489,10 +22496,10 @@ mod tests {
         ] {
             let positive = match fcw {
                 0x077f | 0x0f7f => Some((0x7fff_ffff, 0x820)),
-                _ => None,
+                _ => Some((0x8000_0000, 0x801)),
             };
             let negative = match fcw {
-                0x077f => None,
+                0x077f => Some((0x8000_0000, 0x801)),
                 _ => Some((0x8000_0000, 0x820)),
             };
             execute_case(
@@ -22508,6 +22515,343 @@ mod tests {
                 &format!("{name} -i32 boundary"),
             );
         }
+    }
+
+    #[test]
+    fn fist_m32int_finite_overflow_rounds_before_invalid_indefinite() {
+        #[derive(Clone, Copy)]
+        struct Expected {
+            value: u32,
+            flags: u16,
+            c1: bool,
+        }
+
+        let exact = |value| Expected {
+            value,
+            flags: 0,
+            c1: false,
+        };
+        let inexact = |value, c1| Expected {
+            value,
+            flags: 0x0020,
+            c1,
+        };
+        let invalid = Expected {
+            value: 0x8000_0000,
+            flags: 0x0001,
+            c1: false,
+        };
+        let max = 0x7fff_ffff;
+        let min = 0x8000_0000;
+        let boundary_cases = [
+            (
+                "+i32 max exact",
+                0xffff_fffe_0000_0000,
+                0x401d,
+                false,
+                [exact(max); 4],
+            ),
+            (
+                "+i32 max minus one significand ulp",
+                0xffff_fffd_ffff_ffff,
+                0x401d,
+                false,
+                [
+                    inexact(max, true),
+                    inexact(max - 1, false),
+                    inexact(max, true),
+                    inexact(max - 1, false),
+                ],
+            ),
+            (
+                "+i32 max plus one significand ulp",
+                0xffff_fffe_0000_0001,
+                0x401d,
+                false,
+                [
+                    inexact(max, false),
+                    inexact(max, false),
+                    invalid,
+                    inexact(max, false),
+                ],
+            ),
+            (
+                "+i32 max plus quarter",
+                0xffff_fffe_8000_0000,
+                0x401d,
+                false,
+                [
+                    inexact(max, false),
+                    inexact(max, false),
+                    invalid,
+                    inexact(max, false),
+                ],
+            ),
+            (
+                "+i32 max plus half, immediately below tie",
+                0xffff_fffe_ffff_ffff,
+                0x401d,
+                false,
+                [
+                    inexact(max, false),
+                    inexact(max, false),
+                    invalid,
+                    inexact(max, false),
+                ],
+            ),
+            (
+                "+i32 max plus exact half",
+                0xffff_ffff_0000_0000,
+                0x401d,
+                false,
+                [invalid, inexact(max, false), invalid, inexact(max, false)],
+            ),
+            (
+                "+i32 max plus half, immediately above tie",
+                0xffff_ffff_0000_0001,
+                0x401d,
+                false,
+                [invalid, inexact(max, false), invalid, inexact(max, false)],
+            ),
+            (
+                "+i32 max plus three quarters",
+                0xffff_ffff_8000_0000,
+                0x401d,
+                false,
+                [invalid, inexact(max, false), invalid, inexact(max, false)],
+            ),
+            (
+                "+2^31 exact",
+                0x8000_0000_0000_0000,
+                0x401e,
+                false,
+                [invalid; 4],
+            ),
+            (
+                "-i32 min exact, same bits as indefinite",
+                0x8000_0000_0000_0000,
+                0x401e,
+                true,
+                [exact(min); 4],
+            ),
+            (
+                "-2^31 - 2^-32 (e=31, S=0x8000000000000001)",
+                0x8000_0000_0000_0001,
+                0x401e,
+                true,
+                [
+                    inexact(min, false),
+                    invalid,
+                    inexact(min, false),
+                    inexact(min, false),
+                ],
+            ),
+            (
+                "-i32 min minus quarter",
+                0x8000_0000_4000_0000,
+                0x401e,
+                true,
+                [
+                    inexact(min, false),
+                    invalid,
+                    inexact(min, false),
+                    inexact(min, false),
+                ],
+            ),
+            (
+                "-i32 min minus half, immediately below tie",
+                0x8000_0000_7fff_ffff,
+                0x401e,
+                true,
+                [
+                    inexact(min, false),
+                    invalid,
+                    inexact(min, false),
+                    inexact(min, false),
+                ],
+            ),
+            (
+                "-i32 min minus exact half",
+                0x8000_0000_8000_0000,
+                0x401e,
+                true,
+                [
+                    inexact(min, false),
+                    invalid,
+                    inexact(min, false),
+                    inexact(min, false),
+                ],
+            ),
+            (
+                "-i32 min minus half, immediately above tie",
+                0x8000_0000_8000_0001,
+                0x401e,
+                true,
+                [invalid, invalid, inexact(min, false), inexact(min, false)],
+            ),
+            (
+                "-i32 min minus three quarters",
+                0x8000_0000_c000_0000,
+                0x401e,
+                true,
+                [invalid, invalid, inexact(min, false), inexact(min, false)],
+            ),
+            (
+                "-i32 min minus one exact",
+                0x8000_0001_0000_0000,
+                0x401e,
+                true,
+                [invalid; 4],
+            ),
+            (
+                "-2^31 + 2^-33 (e=30, S=0xffffffffffffffff)",
+                0xffff_ffff_ffff_ffff,
+                0x401d,
+                true,
+                [
+                    inexact(min, true),
+                    inexact(min, true),
+                    inexact(min + 1, false),
+                    inexact(min + 1, false),
+                ],
+            ),
+        ];
+        let fcws = [0x037f, 0x077f, 0x0b7f, 0x0f7f];
+
+        let mut cases = boundary_cases.to_vec();
+        for exponent in [0x401f, 0x403e, 0x403f, 0x7ffe] {
+            for significand in [
+                0x8000_0000_0000_0000,
+                0xa555_aaaa_5555_aaaa,
+                0xffff_ffff_ffff_ffff,
+            ] {
+                for negative in [false, true] {
+                    cases.push((
+                        "large exponent finite Normal",
+                        significand,
+                        exponent,
+                        negative,
+                        [invalid; 4],
+                    ));
+                }
+            }
+        }
+
+        for (label, significand, exponent, negative, expected_by_rc) in cases {
+            let raw = binary80_normal(significand, exponent, negative);
+            for (rc, control_word) in fcws.into_iter().enumerate() {
+                let expected = expected_by_rc[rc];
+                for pop in [false, true] {
+                    for top in 0..8_u8 {
+                        for incoming_ie in [false, true] {
+                            for incoming_pe in [false, true] {
+                                for incoming_c1 in [false, true] {
+                                    let mut state = LongModeState::default();
+                                    state.rip = 0x84a0;
+                                    state.gpr[Register::Rax as usize] = 0x1001;
+                                    let mut x87 = crate::state::X87State::fixture_seed();
+                                    x87.control_word = control_word;
+                                    x87.status_word = (u16::from(top) << 11)
+                                        | 0x4500
+                                        | if incoming_ie { 0x0001 } else { 0 }
+                                        | if incoming_pe { 0x0020 } else { 0 }
+                                        | if incoming_c1 { 0x0200 } else { 0 };
+                                    x87.registers[usize::from(top)] = raw;
+                                    x87.set_tag(top, X87Tag::Valid);
+                                    state.x87 = Some(x87);
+                                    let before_registers = state.x87.as_ref().unwrap().registers;
+                                    let before_tags = state.x87.as_ref().unwrap().tag_word;
+                                    let before_status = state.x87.as_ref().unwrap().status_word;
+                                    let code = if pop { [0xdb, 0x18] } else { [0xdb, 0x10] };
+                                    let mut memory = Memory::at(&code, state.rip);
+                                    memory.bytes = vec![0xa5; 16];
+
+                                    assert_eq!(
+                                        step(&mut state, &mut memory, AccessContext::default()),
+                                        Ok(StepOutcome::Advanced),
+                                        "{label} sign={negative} FCW={control_word:04x} pop={pop} TOP={top} IE={incoming_ie} PE={incoming_pe} C1={incoming_c1}"
+                                    );
+                                    assert_eq!(&memory.bytes[..1], &[0xa5]);
+                                    assert_eq!(
+                                        &memory.bytes[1..5],
+                                        &expected.value.to_le_bytes(),
+                                        "{label} sign={negative} RC={rc} pop={pop} TOP={top}"
+                                    );
+                                    assert_eq!(&memory.bytes[5..], &[0xa5; 11]);
+                                    assert_eq!(
+                                        memory.accesses,
+                                        vec![(AccessKind::Write, 0x1001, 4)],
+                                        "{label}: exactly one Dword write and no read"
+                                    );
+                                    let after = state.x87.as_ref().unwrap();
+                                    let new_top = if pop { top.wrapping_add(1) & 7 } else { top };
+                                    assert_eq!(after.registers, before_registers, "{label}");
+                                    assert_eq!(
+                                        after.tag_word,
+                                        if pop {
+                                            before_tags | (3_u16 << (u32::from(top) * 2))
+                                        } else {
+                                            before_tags
+                                        },
+                                        "{label}"
+                                    );
+                                    assert_eq!(after.top(), new_top, "{label}");
+                                    let expected_fsw = (before_status
+                                        & !((if pop { 7 << 11 } else { 0 }) | 0x0200))
+                                        | if pop { u16::from(new_top) << 11 } else { 0 }
+                                        | expected.flags
+                                        | if expected.c1 { 0x0200 } else { 0 };
+                                    assert_eq!(after.status_word, expected_fsw, "{label}");
+                                    assert_eq!(after.instruction_pointer, 0x84a0, "{label}");
+                                    assert_eq!(after.data_pointer, 0x1001, "{label}");
+                                    assert_eq!(state.rip, 0x84a2, "{label}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fistp_m32int_overflow_ie_is_observed_then_cleared_by_fnclex() {
+        let raw = binary80_normal(0xffff_ffff_0000_0000, 0x401d, false); // +2147483647.5
+        let mut state = LongModeState::default();
+        state.rip = 0x84d0;
+        state.gpr[Register::Rax as usize] = 0x1000;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0x4500;
+        x87.registers[0] = raw;
+        x87.set_tag(0, X87Tag::Valid);
+        state.x87 = Some(x87);
+        let mut memory = Memory::at(&[0xdb, 0x18, 0xdf, 0xe0, 0xdb, 0xe2], state.rip);
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(&memory.bytes[..4], &[0, 0, 0, 0x80]);
+        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x4d01);
+        assert_eq!(state.x87.as_ref().unwrap().top(), 1);
+        assert_eq!(state.x87.as_ref().unwrap().registers[0], raw);
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.gpr[Register::Rax as usize] & 0xffff, 0x4d01);
+        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x4d01);
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x4d00);
+        assert_eq!(state.x87.as_ref().unwrap().registers[0], raw);
+        assert_eq!(state.x87.as_ref().unwrap().tag(0), Some(X87Tag::Empty));
+        assert_eq!(state.rip, 0x84d6);
     }
 
     #[test]

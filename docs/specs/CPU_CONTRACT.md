@@ -2703,7 +2703,6 @@ Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See also the
 [Stage 2 plan](../plans/STAGE_2.md#s2-31q-bare-bounded-fstp-m80fp-rax-db-38-partial-slice)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
-
 <a id="local-s2-31bt-exact-signed-zero-fist-m32int-rax-db-10-db-18"></a>
 
 ## Local S2-31bt: exact signed-zero `FIST`/`FISTP m32int [RAX]` (`DB 10`/`DB 18`)
@@ -5434,4 +5433,28 @@ admission remains closed; native runtime and physical x86 behavior are
 unverified under ISSUE-019. See the
 [plan](../plans/STAGE_2.md#s2-31ci-admit-sticky-ie-on-bounded-integer-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31ci--sticky-ie-on-bounded-integer-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31cj-masked-finite-overflow-m32-fist"></a>
+
+## Local S2-31cj: masked finite overflow for m32 `FIST`/`FISTP`
+
+For canonical Valid-tagged binary80 Normal input to bare DB 10/DB 18 only,
+compute the RC-rounded integer before checking signed i32 bounds. If the
+rounded integer is outside `[-2^31, 2^31-1]`, write integer-indefinite
+`0x80000000`, then add IE and clear C1 after the atomic Dword write. Do not add
+PE/OE/UE/DE/SF/ES/B. Preserve incoming IE/PE and C0/C2/C3. An out-of-range
+real value that rounds back into range remains a finite integer result with
+PE and current-operation C1 as appropriate. For unbiased exponent at least 32,
+classify invalid before any wide shift; for exponents 0 through 31, use exact
+significand quotient/remainder rounding before the bounds comparison. Negative
+exponent fractions retain their existing exact comparison-based path.
+
+Keep the FCW whitelist, 0x80de FSW gate, canonical48 Dword preflight, bare RAX
+addressing, one write/no read, raw source bytes, and post-write state commit.
+The m16/m64 overflow paths, binary80 subnormals, malformed classes and
+unmasked behavior remain unchanged. See the
+[plan](../plans/STAGE_2.md#s2-31cj-masked-finite-overflow-to-m32-fistfstp),
+[report](../reports/STAGE_2_REPORT.md#s2-31cj--masked-finite-overflow-to-m32-fistfstp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

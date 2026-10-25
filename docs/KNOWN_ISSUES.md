@@ -797,3 +797,14 @@
   [plan](plans/STAGE_2.md#s2-31ci-admit-sticky-ie-on-bounded-integer-stores),
   [report](reports/STAGE_2_REPORT.md#s2-31ci--sticky-ie-on-bounded-integer-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+- **S2-31cj evidence:** canonical finite binary80 Normal values that round
+  outside signed i32 on bounded DB10/DB18 now store integer-indefinite and add
+  IE after the atomic write. The exact quotient/remainder RC calculation is
+  retained for exponents through 31, so values just outside the real range
+  that round back into range remain finite; exponent 32 and above classify
+  directly invalid. m16/m64, subnormal, malformed and unmasked cases remain
+  outside the slice. Native runtime and physical x86 checks remain unverified;
+  S2-31 and ISSUE-019 remain open. See [contract](specs/CPU_CONTRACT.md#local-s2-31cj-masked-finite-overflow-m32-fist),
+  [plan](plans/STAGE_2.md#s2-31cj-masked-finite-overflow-to-m32-fistfstp),
+  [report](reports/STAGE_2_REPORT.md#s2-31cj--masked-finite-overflow-to-m32-fistfstp),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

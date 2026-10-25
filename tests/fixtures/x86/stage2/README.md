@@ -1318,13 +1318,14 @@ p.3-372 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vo
 The schema admits only bare `DB 18` and exact `DB 18 DF E0` (FNSTSW AX).
 Literal cases cover a successful unaligned Dword write split across adjacent
 fixture regions, the exact FNSTSW composition, an Empty old physical TOP tag,
-and a signed-i32 overflow. The two success cases preserve all raw x87 payloads,
-record the destination linear address in FDP, pop exactly one physical slot,
-and make the stored bytes observable. No-stop/budget-one unsupported cases
-preserve their full CPU and memory snapshots. Injected store permission and
-architectural faults are exercised by interpreter tests. Native admission
-explicitly rejects FISTP; flat fixture RAM does not establish MMU, page-walk,
-MMIO, SMP, or physical x86 behavior.
+and a signed-i32 overflow. The in-range success cases preserve all raw x87
+payloads, record the destination linear address in FDP, pop exactly one
+physical slot, and make the stored bytes observable. The exponent-32 finite
+overflow fixture is now a successful integer-indefinite/IE case under S2-31cj;
+the invalid-tag no-stop case still preserves its full CPU and memory snapshots.
+Injected store permission and architectural faults are exercised by
+interpreter tests. Native admission explicitly rejects FISTP; flat fixture RAM
+does not establish MMU, page-walk, MMIO, SMP, or physical x86 behavior.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer”
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
@@ -1568,11 +1569,12 @@ The schema admits only bare `DB 10` and exact `DB 10 DF E0` (FNSTSW AX).
 Literal cases execute the same unaligned split-region Dword write as S2-31b
 and then optionally observe FSW through AX. They verify that FIST retains the
 old TOP, tag word and raw payloads while recording FIP/FDP and setting sticky
-PE/C1. Additional literal cases reject an Empty old physical TOP tag and
-signed-i32 overflow without changing the snapshot or data memory. Interpreter
-checks cover all four rounding controls, signed values, signed-i32 overflow
-before access, the one-write/no-read contract, and store fault atomicity. Native
-x87 admission explicitly denies FIST. Flat fixture RAM
+PE/C1. The invalid-tag fixture remains rejected; the former exponent-32
+overflow fixture now commits integer-indefinite with IE under S2-31cj.
+Interpreter checks cover all four rounding controls, signed values, exact
+round-before-range overflow, roundback into range, the one-write/no-read
+contract, and store fault atomicity. Native x87 admission explicitly denies
+FIST. Flat fixture RAM
 does not establish MMU, page-walk, MMIO, SMP, or physical x86 behavior.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer”
@@ -2695,3 +2697,18 @@ remains closed. See the [S2-31ci CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ci-admit-sticky-ie-bounded-integer-stores),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31ci-admit-sticky-ie-on-bounded-integer-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ci--sticky-ie-on-bounded-integer-stores).
+
+
+### S2-31cj finite overflow and roundback m32 integer-store fixtures
+
+The DB 18 fixture uses exact `+2147483647.5` under nearest-even, stores Dword
+integer-indefinite and observes IE with PE clear through FNSTSW. The DB 10
+fixture uses `+2147483647.25` under toward-negative rounding; it rounds back to
+`INT32_MAX`, stores that finite result, and observes PE without IE. ISA tests
+cover both opcodes and signs, exact signed limits, adjacent binary80 values
+around both overflow ties, exponents 32/63/64/16383, all RC/TOP/sticky IE/PE
+states and prior C1; overflow write and canonical-range failures preserve full
+state and memory. JIT/native admission remains closed. See the
+[S2-31cj CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cj-masked-finite-overflow-m32-fist),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31cj-masked-finite-overflow-to-m32-fistfstp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cj--masked-finite-overflow-to-m32-fistfstp).

@@ -4513,4 +4513,28 @@ mod tests {
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
+
+    #[test]
+    fn s2_31cj_finite_overflow_fistp_fixture_remains_outside_native_admission() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31cj_fistp_m32int_positive_overflow_fnstsw.case.json"
+        )
+        .as_slice();
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
+    }
+
+    #[test]
+    fn s2_31cj_roundback_fist_fixture_remains_outside_native_admission() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31cj_fist_m32int_positive_roundback_fnstsw.case.json"
+        )
+        .as_slice();
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
+    }
 }

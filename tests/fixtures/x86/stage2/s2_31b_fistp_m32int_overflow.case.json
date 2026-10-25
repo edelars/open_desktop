@@ -4,9 +4,9 @@
   "profile": "s2-long-x87-state-v1",
   "provenance": {
     "kind": "project_fixture",
-    "source": "Handwritten DB18 bytes and literal full x87 state; expected behavior is stated directly by the local bounded S2-31b contract.",
-    "specification": "Intel SDM revision 093, Vol.2A, FIST/FISTP entry; local bounded S2-31b contract.",
-    "specification_version": "Intel SDM revision 093; project S2-31b"
+    "source": "Handwritten DB 18 bytes and exact +2^32 binary80 Normal input; bounded S2-31cj expects masked integer-indefinite with IE after the Dword write.",
+    "specification": "Intel SDM revision 093, Vol.2A, FIST/FISTP entry; local bounded S2-31cj contract.",
+    "specification_version": "Intel SDM revision 093; project S2-31cj"
   },
   "seed": null,
   "converted_from_v1_sha256": null,
@@ -77,9 +77,9 @@
       "comparison_mask_hex": "ffffffffffffffffffffffffffffffff"
     }
   ],
-  "stop_rip": null,
+  "stop_rip": "0x0000000000100002",
   "instruction_budget": 1,
   "wall_timeout_ms": 2000,
   "rflags_mask": "0x0000000000000cd7",
-  "expected_exit": "unsupported"
+  "expected_exit": "stop_address"
 }

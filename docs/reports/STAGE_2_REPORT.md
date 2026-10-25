@@ -7209,6 +7209,45 @@ denial coverage but did not execute it. `cargo fmt --all -- --check` and
 Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
 
 
+<a id="s2-31cj--masked-finite-overflow-to-m32-fistfstp"></a>
+
+## S2-31cj — masked finite overflow to m32 `FIST`/`FISTP`
+
+Canonical Valid-tagged binary80 Normal inputs to bare DB 10/DB 18 now round
+under the existing RC before signed-i32 range testing. If the rounded integer
+is out of range, the Dword result is integer-indefinite `0x80000000` and IE is
+added after a successful write; invalid conversion adds no PE and clears C1.
+Finite values just outside the real range that round into range remain finite.
+Exponent `e >= 32` takes the invalid path before shifting; exponents 0 through
+31 use exact quotient/remainder rounding, while negative-exponent fractions
+retain their comparison-based path. Other widths/classes remain unchanged.
+
+The literal oracle crosses 42 vectors (signed limits, neighbors/tie-adjacent
+values and exponents 32/63/64/16383 × minimum/mixed/maximum significands and
+both signs) with four RCs, both m32 opcodes, every TOP, incoming IE/PE and both
+incoming C1 states (21,504 combinations). It checks status flags, current C1,
+source/pointer/tag preservation, one Dword write/no read, and both exact
+`-2^31` and the same-bit invalid-indefinite result. Overflow write-denial,
+injected write fault and canonical-range tests seed sticky IE|PE and verify
+full state/memory atomicity. Focused m32 tests passed 13/13; the overflow
+FNSTSW/FNCLEX sequence passed 1/1. The two new literal CLI fixtures and the
+two prior exponent-32 CLI fixtures passed; the JIT denials passed 2/2.
+
+`cargo test --workspace --offline --quiet` passed 938 tests: 545 `od-isa`,
+4 `od-jit`, 6 `od-host`, 74 runner CLI, 134 fixture/JIT, 166 `od-testkit`,
+8 x86-runner library, and 1 x86-runner main; all doc-tests passed. Host
+`cargo check --workspace --all-targets --offline` and Linux x86_64
+`cargo check --workspace --all-targets --offline --target x86_64-unknown-linux-gnu`
+passed. The Linux cross-check compiled architecture-gated native denial code;
+it did not execute on the local arm64 host. Existing dead-code warnings in
+`od-host` and `od-runner` appeared on the Linux check. `cargo fmt --all --
+--check` and `git diff --check` passed. `graphify update .` rebuilt the graph
+to 4,491 nodes, 9,129 edges and 170 communities. The S2-31cj contract, plan,
+report and fixture README anchors were checked against their targets.
+
+Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+
 <a id="s2-31ci--sticky-ie-on-bounded-integer-stores"></a>
 
 ## S2-31ci — sticky IE on bounded integer stores
