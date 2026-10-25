@@ -6724,3 +6724,10 @@ independently passed 46 m64fp ISA tests and three runner unit plus three
 integration overflow tests. Its native-run command timed out twice; no native
 runtime pass is claimed. Physical x86 acceptance remains deferred to the
 combined S2-31 acceptance substage under ISSUE-019.
+
+
+Independent gpt-6.1-sol medium review of `962a6b6` was clean. The reviewer
+independently passed 46 m64fp ISA tests and three runner unit plus three
+integration overflow tests. Its native-run command timed out twice; no native
+runtime pass is claimed. Physical x86 acceptance remains deferred to the
+combined S2-31 acceptance substage under ISSUE-019.
