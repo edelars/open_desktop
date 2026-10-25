@@ -6456,3 +6456,31 @@ layout checker reports the pre-existing unmapped `.serena/` directory,
 preserved. Independent Sol-medium review was clean: the 12,288-case sticky-flag
 matrix, 17 raw m80 ISA cases, CLI fixture group, JIT denial, and native test-code
 check were accepted; native runtime and physical acceptance remain deferred.
+
+
+<a id="s2-31bj--extreme-binary32-underflow-to-zero-or-minimum-subnormal"></a>
+
+## S2-31bj — round extreme binary32 underflow to zero or minimum subnormal
+
+The bounded D9 10/D9 18 conversion now accepts canonical Normal binary80
+exponents -16382 through -150 and rounds directly to signed zero or signed
+minimum subnormal under RC. Exponent -150 uses an explicit significand
+comparison at the exact half-way point, avoiding oversized shifts. Accepted
+results always add sticky UE+PE after successful atomic Dword storage; C1 tracks
+selection of the minimum subnormal, including sign-preserving zero results.
+Exact conversion behavior, source bytes, FCW/FSW gates and atomic state/pop
+commit are preserved.
+
+Coverage includes below/equal/above half, lowest exponent, both signs and RCs,
+all 16 sticky IE/DE/UE/PE states, both opcodes/TOPs, signed zero, exact minimum
+control, FNSTSW/FNCLEX, m32-to-raw-m80 composition, write/range atomicity,
+forbidden source/gate cases, and CLI/JIT/native denial. Validation passed: the
+full offline workspace suite (815 passed, 0 failed), including all 470 `od-isa`
+tests; the literal CLI fixture group (50 passed); and the schema-v2 JIT-denial
+group (110 passed). Host workspace and Linux x86_64 workspace all-target checks
+passed, as did Linux x86_64 native-runner test-code typechecking. Formatting,
+fixture JSON, documentation anchors, and `git diff --check` passed.
+`graphify update .` completed with 4236 nodes, 8676 edges, and 192 communities.
+The layout checker reports only the pre-existing unmapped `.serena/` directory,
+preserved. Native runtime and physical acceptance remain deferred under
+ISSUE-019; independent review is pending.

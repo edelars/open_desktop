@@ -516,3 +516,12 @@
   [plan](plans/STAGE_2.md#s2-31bi-admit-sticky-ue-in-raw-binary80-fstp-m80fp),
   [report](reports/STAGE_2_REPORT.md#s2-31bi--sticky-ue-on-raw-binary80-fstp-m80fp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31bj evidence:** bounded D9 10/D9 18 now round canonical binary80
+  exponents -16382..=-150 directly to signed zero or minimum binary32 subnormal,
+  using explicit half comparison at -150 and avoiding oversized shifts.
+  Inexact UE+PE and C1 commit only after atomic storage. CLI/JIT/native denial and
+  ISA matrix coverage are documented in [contract](specs/CPU_CONTRACT.md#local-s2-31bj-extreme-binary32-underflow-to-zero-or-minimum-subnormal),
+  [plan](plans/STAGE_2.md#s2-31bj-round-extreme-underflow-through-binary32-stores),
+  and [report](reports/STAGE_2_REPORT.md#s2-31bj--extreme-binary32-underflow-to-zero-or-minimum-subnormal).
+  Native runtime and physical acceptance remain deferred under ISSUE-019.

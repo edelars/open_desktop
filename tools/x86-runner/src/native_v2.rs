@@ -4276,6 +4276,7 @@ mod tests {
     fn s2_31bf_masked_inexact_m32_subnormal_store_fixtures_remain_outside_native_admission() {
         for bytes in [
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bf_fst_m32fp_positive_1_5_minsub_fnstsw.case.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bj_fst_m32fp_positive_0_75_minsub_fnstsw.case.json").as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bf_fstp_m32fp_negative_1_5_minsub_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();

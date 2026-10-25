@@ -3398,6 +3398,15 @@ mod tests {
                 "02000000",
             ),
             (
+                "FST positive 0.75 minimum subnormal with FNSTSW",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bj_fst_m32fp_positive_0_75_minsub_fnstsw.case.json").as_slice(),
+                0x0030_4732,
+                0x4732,
+                0xfffc,
+                "00000000000000c0693f",
+                "01000000",
+            ),
+            (
                 "FST with pre-existing UE and FNSTSW",
                 include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bh_fst_m32fp_sticky_ue_fnstsw.case.json").as_slice(),
                 0x0030_0230,

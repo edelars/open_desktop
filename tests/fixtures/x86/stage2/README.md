@@ -2362,3 +2362,16 @@ negative binary80 signaling NaN unchanged. FNSTSW observes the preserved UE
 without adding IE or PE. Direct ISA coverage also composes m32/m64 underflow
 stores with raw m80 FSTP and checks source-byte preservation. The fixture runs
 through the interpreter CLI and remains denied by JIT and native admission.
+
+
+### S2-31bj extreme binary32 underflow fixture
+
+The positive D910/DFE0 fixture uses a canonical source above half of the minimum
+binary32 subnormal at exponent -150. Nearest rounding stores the minimum
+subnormal and FNSTSW exposes UE+PE and C1. The fixture runs through the
+interpreter CLI and is explicitly denied by JIT and native admission. Direct ISA
+coverage includes both sides of the tie, signed-zero outcomes, the lowest source
+exponent, and m32-underflow followed by raw m80 FSTP. See the
+[S2-31bj CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bj-extreme-binary32-underflow-to-zero-or-minimum-subnormal),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bj-round-extreme-underflow-through-binary32-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bj--extreme-binary32-underflow-to-zero-or-minimum-subnormal).
