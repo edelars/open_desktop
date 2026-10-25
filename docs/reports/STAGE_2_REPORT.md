@@ -6628,8 +6628,9 @@ opcodes, every TOP and all 16 sticky IE/DE/UE/PE combinations. Maximum-subnormal
 and minimum-normal controls, write/range failures, FNSTSW/FNCLEX, and status
 atomicity are covered. Positive nearest FST and negative directed FSTP fixtures
 show UE+PE+C1 and PE+C1 without new UE, respectively. Both run in the
-interpreter; the new JIT-denial fixture test passes. Native admission coverage
-was typechecked for Linux x86_64, but native execution was not performed.
+interpreter; the implementation's CLI fixture and JIT-denial tests passed.
+Native admission coverage was typechecked for Linux x86_64, but native
+execution was not performed.
 
 Validation passed: 31 focused m64 FST/FSTP ISA tests and the full offline
 workspace suite (835 tests), including the two CLI fixtures and JIT denial.
@@ -6641,4 +6642,8 @@ unmapped `.serena/` directory, which was preserved. `graphify update .` rebuilt
 the graph to 4,289 nodes, 8,769 edges and 178 communities. `git diff --check`
 passed after final whitespace cleanup. Native runtime and physical x86
 acceptance remain deferred to the combined S2-31 acceptance substage under
-ISSUE-019.
+ISSUE-019. Independent gpt-6.1-sol medium review of `e8e097e` was clean. The
+reviewer independently ran 31 m64 ISA tests and checked the destination and UE
+thresholds. Its additional CLI, JIT and native reruns timed out; those reviewer
+reruns are not counted as passing evidence. The implementation's own full
+workspace suite (835 tests), CLI fixtures and JIT denial passed as listed above.
