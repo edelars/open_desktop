@@ -2639,7 +2639,7 @@ fn bounded_x87_normal_st0_source(state: &LongModeState) -> Option<[u8; 10]> {
 fn bounded_x87_frndint_result(state: &LongModeState) -> Option<([u8; 10], bool, bool, bool)> {
     let x87 = state.x87.as_ref()?;
     if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-        || x87.status_word & 0x80c4 != 0
+        || x87.status_word & 0x80c0 != 0
     {
         return None;
     }
@@ -20118,9 +20118,13 @@ mod tests {
             for top in 0_u8..8 {
                 for control_word in controls {
                     for negative in [false, true] {
-                        for historical_flags in [
-                            0_u16, 0x0001, 0x0002, 0x0003, 0x0020, 0x0021, 0x0022, 0x0023,
-                        ] {
+                        for sticky_mask in 0_u16..32 {
+                            let historical_flags =
+                                (if sticky_mask & 0x01 != 0 { 0x0001 } else { 0 })
+                                    | (if sticky_mask & 0x02 != 0 { 0x0002 } else { 0 })
+                                    | (if sticky_mask & 0x04 != 0 { 0x0008 } else { 0 })
+                                    | (if sticky_mask & 0x08 != 0 { 0x0010 } else { 0 })
+                                    | (if sticky_mask & 0x10 != 0 { 0x0020 } else { 0 });
                             for prior_c1 in [false, true] {
                                 let (raw, tag, expected_raw, current_pe, current_ie, incremented) =
                                     match class_index {
@@ -20215,6 +20219,7 @@ mod tests {
                                 let old_status = (u16::from(top) << 11)
                                     | condition_bits
                                     | historical_flags
+                                    | 0x0004
                                     | u16::from(prior_c1) * 0x0200;
                                 let mut x87 = crate::state::X87State::fixture_seed();
                                 x87.control_word = control_word;
@@ -20271,11 +20276,11 @@ mod tests {
             }
         }
 
-        // Historical IE, DE, UE, PE and OE are admitted independently, but
-        // do not mask ZE, SF, ES or B.
-        for forbidden in [0x0004, 0x0040, 0x0080, 0x8000] {
+        // ZE is admitted alongside every IE/DE/OE/UE/PE combination above;
+        // SF, ES and B remain forbidden.
+        for forbidden in [0x0040, 0x0080, 0x8000] {
             for admitted in [0_u16, 0x0001, 0x0002, 0x0003] {
-                let status_word = forbidden | admitted;
+                let status_word = forbidden | 0x0004 | admitted;
                 let mut state = LongModeState::default();
                 state.rip = 0x8380;
                 let mut x87 = crate::state::X87State::fixture_seed();
@@ -20450,15 +20455,15 @@ mod tests {
             }
         }
 
-        // OE is newly admitted; the other exception and busy bits remain
-        // atomic rejects even when all sticky flags are present.
-        for forbidden in [0x0004_u16, 0x0040, 0x0080, 0x8000] {
+        // ZE is admitted; SF/ES/B remain atomic rejects when paired with ZE
+        // and the admitted sticky flags.
+        for forbidden in [0x0040_u16, 0x0080, 0x8000] {
             for admitted in [0_u16, 0x0001, 0x0002, 0x0003, 0x0010, 0x0031] {
                 let mut state = LongModeState::default();
                 state.rip = 0x83c0;
                 let mut x87 = crate::state::X87State::fixture_seed();
                 x87.control_word = 0x037f;
-                x87.status_word = forbidden | admitted;
+                x87.status_word = forbidden | 0x0004 | admitted;
                 x87.registers[0] = binary80_normal(1 << 63, 0x3fff, false);
                 x87.set_tag(0, X87Tag::Valid);
                 state.x87 = Some(x87);
@@ -20468,7 +20473,7 @@ mod tests {
                     step(&mut state, &mut memory, AccessContext::default()),
                     Ok(StepOutcome::Unsupported { opcode: 0xd9 }),
                     "FSW={:#06x}",
-                    forbidden | admitted
+                    forbidden | 0x0004 | admitted
                 );
                 assert_eq!(state, before);
                 assert!(memory.accesses.is_empty());
@@ -20629,9 +20634,8 @@ mod tests {
             }
         }
 
-        // OE is the only newly admitted status bit; every other forbidden
-        // exception/control bit remains an atomic reject beside all stickies.
-        for forbidden in [0x0004_u16, 0x0040, 0x0080, 0x8000] {
+        // SF/ES/B remain atomic rejects beside ZE and all admitted stickies.
+        for forbidden in [0x0040_u16, 0x0080, 0x8000] {
             for admitted in [
                 0x0008_u16, 0x0009, 0x000a, 0x000b, 0x0038, 0x0039, 0x003a, 0x003b,
             ] {
@@ -20639,7 +20643,7 @@ mod tests {
                 state.rip = 0x83f0;
                 let mut x87 = crate::state::X87State::fixture_seed();
                 x87.control_word = 0x037f;
-                x87.status_word = forbidden | admitted;
+                x87.status_word = forbidden | 0x0004 | admitted;
                 x87.registers[0] = binary80_normal(1 << 63, 0x3fff, false);
                 x87.set_tag(0, X87Tag::Valid);
                 state.x87 = Some(x87);
@@ -20649,7 +20653,7 @@ mod tests {
                     step(&mut state, &mut memory, AccessContext::default()),
                     Ok(StepOutcome::Unsupported { opcode: 0xd9 }),
                     "FSW={:#06x}",
-                    forbidden | admitted
+                    forbidden | 0x0004 | admitted
                 );
                 assert_eq!(state, before);
                 assert!(memory.accesses.is_empty());

@@ -8417,3 +8417,34 @@ rerun and passed. Physical x86 and Mac mini acceptance remain deferred to the
 combined final S2-31 substage under ISSUE-019. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dk-historical-sticky-ue-in-bounded-frndint-d9-fc),
 [plan](../plans/STAGE_2.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## S2-31dm — historical sticky ZE through bounded FRNDINT
+
+Changed only the bare `D9 FC` interpreter gate from `FSW & 0x80c4 == 0` to
+`FSW & 0x80c0 == 0`. Historical ZE now passes through and remains sticky;
+FRNDINT itself does not produce ZE. Exact input adds no PE, fractional input
+adds PE, and current SNaN quieting adds IE without PE. Existing IE/DE/OE/UE/PE
+stickies remain independent. The four-FCW whitelist, source/tag domains,
+rounding, metadata, C1 behavior and JIT/native admission are unchanged. No
+FDIV-zero producer or producer-domain change was made.
+
+The existing FRNDINT matrix now crosses ZE with all 32 combinations of
+IE/DE/OE/UE/PE across source class, sign, all four RCs, every TOP and prior C1.
+SF/ES/B remain atomic rejects. A literal seeded `D9 FC DF E0` CLI fixture
+starts with canonical Normal `1.0` and ZE+OE (`FSW=0x000c`), and asserts exact
+`FNSTSW AX=0x000c`; its provenance explicitly says ZE is seeded and no guest
+instruction produces it.
+
+Verification passed: `cargo test -p od-isa --offline frndint` (20 matching
+tests), the exact seeded CLI fixture test,
+`cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, `git diff --check`, and `graphify update .`.
+Independent `gpt-6.1-sol` medium review found two gaps: the SF/ES/B reject
+inputs did not include ZE, and fixture specification metadata still named
+S2-31dl. Both were corrected; targeted re-review found no remaining concrete
+issues. Physical x86 and Mac mini acceptance remain deferred to the combined
+final S2-31 substage under ISSUE-019. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dm-historical-sticky-ze-in-bounded-frndint-d9-fc),
+[plan](../plans/STAGE_2.md#s2-31dm-admit-historical-sticky-ze-to-bounded-frndint-d9-fc),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

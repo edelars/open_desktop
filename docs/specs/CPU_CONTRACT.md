@@ -4124,6 +4124,26 @@ checks the store's OE+PE+C1 production, then observes sticky OE+PE after
 FRNDINT clears C1. Physical x86/Mac mini acceptance and general x87 exception
 behavior remain deferred to the combined final S2-31 substage under ISSUE-019.
 
+## Local S2-31dm: historical sticky ZE in bounded `FRNDINT` (`D9 FC`)
+
+The exact bare register-only `D9 FC` gate uses `FSW & 0x80c0 == 0`, admitting
+historical ZE while continuing to reject SF, ES and B. ZE is retained as
+incoming sticky state; this FRNDINT slice does not produce ZE. Historical
+IE/DE/OE/UE/PE remain independently sticky. Exact/identity sources do not add
+PE, fractional canonical-Normal sources add PE, and a current canonical SNaN
+is quieted and adds IE without PE. The exact four-FCW whitelist, source/tag
+domains, rounding, C1 recomputation, metadata and atomicity remain unchanged.
+No FDIV-zero producer or producer-domain change is included, and JIT/native
+admission stays closed.
+
+Interpreter coverage crosses seeded ZE and all combinations of IE/DE/OE/UE/PE
+with supported source classes, signs, all FCWs/TOPs and prior C1. SF/ES/B
+remain atomic rejects when paired with ZE and sticky flags. The literal seeded
+`D9 FC DF E0` CLI fixture observes ZE+OE in AX and FSW; its provenance
+explicitly identifies the ZE as seeded, with no producer in the guest code.
+Physical x86/Mac mini acceptance and general x87 exception delivery remain
+deferred to the combined final S2-31 acceptance substage under ISSUE-019.
+
 ## Local S2-31di: small canonical-Normal `FRNDINT` (`D9 FC`)
 
 Extend the exact bare register-only S2-31a gate to admit only Valid-tagged,

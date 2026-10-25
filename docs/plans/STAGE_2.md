@@ -229,6 +229,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dh | Admit historical sticky IE at bounded D9 FC while preserving independent current IE/PE effects; native/JIT closed | S2-31dg |
 | [x] | S2-31dj | Admit historical sticky DE at bounded D9 FC while preserving DE and current rounding/exception effects; native/JIT closed | S2-31dh |
 | [x] | S2-31dk | Admit historical sticky UE at bounded D9 FC while preserving UE and independent current PE/IE effects; native/JIT closed | S2-31dj |
+| [x] | S2-31dm | Admit historical sticky ZE at bounded D9 FC while preserving independent current PE/IE effects; native/JIT closed | S2-31dl |
 | [x] | S2-31di | Admit canonical Normal binary80 fractions with e=-16382..-1 to D9 FC via comparison-based rounding; produce signed Zero or Valid ±1 with PE/C1; native/JIT closed | S2-31dh |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
@@ -2297,6 +2298,25 @@ zero, large integral Normal, infinity and QNaN, literal seeded
 producer's OE+PE+C1 and final sticky OE/PE with C1 cleared. Open only this
 composition in the existing fixture schema. Physical x86/Mac mini checks
 remain in the combined final S2-31 acceptance substage under ISSUE-019.
+
+#### S2-31dm. Admit historical sticky ZE to bounded `FRNDINT` (`D9 FC`)
+
+Change only the existing bounded register-only FRNDINT status gate from
+`FSW & 0x80c4 == 0` to `FSW & 0x80c0 == 0`, admitting prior ZE while
+continuing to reject SF, ES and B. ZE is preserved as historical sticky state;
+FRNDINT itself does not generate ZE. Exact/identity sources add no PE,
+fractional Normal inputs add PE, and current canonical SNaN adds IE without PE.
+Sticky IE/DE/OE/UE/PE remain independently preserved. Keep the four-FCW
+whitelist, source/tag domains, rounding, C1 and metadata unchanged; do not add
+an FDIV-zero producer or widen its domain, and do not change JIT/native
+admission.
+
+Cross seeded ZE with all combinations of sticky IE/DE/OE/UE/PE over the
+existing class/sign/RC/TOP/prior-C1 matrix. Keep SF/ES/B atomic rejects with
+ZE and sticky flags present. Add an exact seeded `D9 FC DF E0` CLI fixture
+whose FNSTSW expectation includes ZE; provenance must state that ZE is
+explicitly seeded and no guest producer is present. Physical x86 and Mac mini
+acceptance remain part of the combined final S2-31 substage under ISSUE-019.
 
 #### S2-31di. Admit small canonical-Normal fractions to bounded `FRNDINT` (`D9 FC`)
 

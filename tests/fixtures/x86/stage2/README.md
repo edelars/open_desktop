@@ -1430,6 +1430,18 @@ Native/JIT admission stays closed, and
 physical x86/Mac mini acceptance remains part of the combined final S2-31
 substage under ISSUE-019. See the [S2-31dl CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dl-historical-sticky-oe-in-bounded-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dl-admit-historical-sticky-oe-to-bounded-frndint-d9-fc), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dl--historical-sticky-oe-through-bounded-frndint).
 
+### S2-31dm FRNDINT historical ZE admission
+
+The literal `s2_31dm_frndint_seeded_ze_oe_fnstsw.case.json` begins with an
+explicitly seeded canonical-Normal `1.0`, sticky ZE+OE (`FSW=0x000c`), and
+all-masked `FCW=0x037f`. The guest bytes are exactly `D9 FC DF E0`; no guest
+instruction produces ZE. FRNDINT preserves ZE+OE without creating PE, and
+FNSTSW AX is expected to return exactly `0x000c`. The interpreter cross-matrix
+combines ZE with every IE/DE/OE/UE/PE subset over source class, sign, RC, TOP,
+and prior C1; SF/ES/B remain atomic rejects. JIT/native admissions remain
+closed. Physical x86/Mac mini acceptance is deferred to the combined final
+S2-31 substage under ISSUE-019. See the [S2-31dm CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dm-historical-sticky-ze-in-bounded-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dm-admit-historical-sticky-ze-to-bounded-frndint-d9-fc), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dm--historical-sticky-ze-through-bounded-frndint).
+
 ### S2-31di FRNDINT small Normal values
 
 The literal `s2_31di_frndint_min_normal_to_negative_zero_fnstsw.case.json`
