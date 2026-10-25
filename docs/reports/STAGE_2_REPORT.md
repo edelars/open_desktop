@@ -6421,4 +6421,8 @@ linked or executed here: the macOS linker rejects Linux `--as-needed`,
 (4224 nodes, 8660 edges, 179 communities). The layout checker reports only the
 pre-existing unmapped `.serena/` directory, preserved; `git diff --check` and
 changed-document anchor checks passed. Native runtime and physical acceptance
-remain deferred under ISSUE-019. Independent review is pending.
+remain deferred under ISSUE-019. Independent gpt-6.1-sol medium review was
+clean; it verified all 468 `od-isa` tests, the CLI fixture group, sticky-UE JIT
+denial, and the Linux native-runner test typecheck. The linker failure above was
+reproduced on macOS when attempting to link the Linux test binary; native test
+execution remains unavailable here. Physical acceptance is still deferred.
