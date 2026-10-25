@@ -81,6 +81,29 @@
 - При изменении структуры запустить `python3 tools/check_layout.py`. Для Rust workspace доступны `cargo fmt --all -- --check` и `cargo check --workspace --all-targets --offline`. Успешная сборка пустого каркаса не доказывает готовность движка.
 - В отчёте различать выполненные проверки, непроверенные условия и ограничения. Правила проекта изменять при реальном изменении требований, а не для обхода проверки.
 
+## Code Search Tool Responsibilities
+
+### Graphify — Primary
+- Use Graphify for codebase discovery, symbol lookup, dependencies, callers/callees, and impact analysis.
+- Reuse Graphify results instead of repeating repository searches.
+- Do not reconstruct relationships already available in Graphify.
+
+### ast-grep — Structural Search Only
+- Use ast-grep only when syntax-aware matching or structural rewriting is required.
+- Restrict searches to files or directories identified by Graphify.
+- Prefer `ast-grep run -p 'PATTERN' -l LANG PATH` for targeted matching.
+- Use `ast-grep outline --view signatures PATH` only when a compact local file overview is needed.
+- Use ast-grep to verify recently modified code when Graphify's index may be stale.
+- Never use ast-grep for general codebase discovery or dependency analysis.
+
+### Efficiency Rules
+- Do not run Graphify and ast-grep for the same question unless verification is necessary.
+- Prefer `rg` for simple text searches.
+- Avoid repository-wide scans and large tool outputs.
+- Skip tool calls when existing context already answers the question.
+- Read full source files only when targeted context is insufficient.
+- Use Context7 exclusively for external library documentation.
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
