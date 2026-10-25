@@ -4109,6 +4109,23 @@ compile-checked but not run on this arm64 macOS host. Independent gpt-6.1-sol
 review reported no code, fixture, or contract findings. Physical x86 execution
 and Mac mini acceptance remain deferred to the combined final S2-31 substage.
 
+## S2-31df — canonical quiet NaNs through bounded FRNDINT
+
+Bare `D9 FC` admits Special-tagged canonical binary80 QNaNs only when the
+exponent is `0x7fff`, J and bit 62 are set, either sign is used, and lower 62
+payload bits are unrestricted. It preserves all ten bytes, Special/TOP, sticky
+PE, C0/C2/C3, FDP/FOP and unrelated state; clears C1; adds no flags; updates
+FIP/RIP; and retires once. The existing FCW and status gates remain intact.
+
+Interpreter coverage includes four significands, both signs, all four FCWs,
+all TOP values, incoming PE and both old C1 values (1,024 cases), plus malformed
+class/tag, control/status and execution-boundary atomic rejects. The literal
+`FLD m80fp`→`FRNDINT`→`FNSTSW AX` fixture checks the full payload and status.
+JIT compilation and native x87 admission remain denied. Physical x86 behavior
+and general exception delivery remain deferred under ISSUE-019.
+
+
+Validation passed: `cargo test -p od-isa --offline frndint` (10 tests), the literal CLI fixture test `cargo test -p od-runner --offline frndint_loaded_quiet_nan_literal_fixture_preserves_payload_and_status` (1 test), host `cargo check --workspace --all-targets --offline`, Linux x86_64 `cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu --offline`, `cargo fmt --all -- --check`, `git diff --check`, `python3 tools/check_layout.py`, and `graphify update .` (4,680 nodes, 9,449 edges, 168 communities). The macOS-filtered native admission regression had no matching tests; the native profile's explicit `Frndint` rejection remains present in `native_v2.rs`. Physical x86/native runtime acceptance remains deferred under ISSUE-019.
 ## S2-30ab — bounded FCOM ST(1) exact Normal compare
 
 Added exact bare `D8 D1` decode as `FcomSt1`; the existing D8 arithmetic ranges

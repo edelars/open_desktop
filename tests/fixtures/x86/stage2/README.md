@@ -1347,6 +1347,19 @@ CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31de-canonical-sig
 [plan](../../../../docs/plans/STAGE_2.md#s2-31de-admit-canonical-signed-infinity-to-bounded-frndint-d9-fc),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31de--canonical-signed-infinity-through-bounded-frndint).
 
+### S2-31df FRNDINT canonical quiet-NaN composition
+
+The literal `s2_31df_frndint_quiet_nan_fnstsw.case.json` executes `FLD m80fp`,
+bare `D9 FC`, and `DF E0` on a Special-tagged canonical QNaN with a nonzero
+payload. It checks the exact ten-byte payload, Special tag, TOP, status and
+FIP/FDP/FOP after `FNSTSW AX`. Interpreter coverage spans four significands,
+both signs, every FCW/TOP/PE/old-C1 combination, while rejects cover SNaN,
+pseudo-NaN, wrong tags and invalid controls/status. Direct `D9 FC` JIT
+compilation is denied and native x87 admission remains fail-closed. See the
+[S2-31df CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31df-canonical-quiet-nan-frndint-d9-fc),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31df-admit-canonical-quiet-nan-to-bounded-frndint-d9-fc),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31df--canonical-quiet-nans-through-bounded-frndint).
+
 ### S2-31b FISTP m32int schema and literal coverage
 
 The schema admits only bare `DB 18` and exact `DB 18 DF E0` (FNSTSW AX).

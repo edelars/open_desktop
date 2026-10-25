@@ -224,6 +224,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
 | [x] | S2-31dd | Admit canonical Normal binary80 exact integers with e=63..16383 to D9 FC; preserve raw bytes/status except C1; native closed | S2-31dc |
 | [x] | S2-31de | Admit canonical signed infinity with Special tag to D9 FC; preserve raw bytes/status except C1; native/JIT closed | S2-31dd, S2-31aa |
+| [x] | S2-31df | Admit Special-tagged canonical QNaN to D9 FC as a payload-preserving identity; native/JIT closed | S2-31de |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -2168,6 +2169,29 @@ general x87 exception behavior.
 Normative source: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3 (binary80
 infinity encoding) and Vol.2A “FRNDINT—Round to Integer,” p.3-372, plus
 “FLD—Load Floating-Point Value” for the existing m80 load form.
+
+#### S2-31df. Admit canonical quiet NaN to bounded `FRNDINT` (`D9 FC`)
+
+Extend only the bare register-only `D9 FC` gate to admit a Special-tagged
+canonical binary80 QNaN: exponent `0x7fff`, J=1, bit 62=1, either sign, and any
+lower 62 payload bits (including zero). Preserve all ten raw bytes, Special
+tag, TOP, incoming PE and C0/C2/C3; clear C1 and add no exception flags. Keep
+the exact four-FCW whitelist and `FSW & 0x80df == 0` gate. Preserve FDP/FOP and
+unrelated state, set FIP to old RIP, advance RIP by two, and retire once
+without memory or stack access.
+
+Quiet-bit-clear SNaNs, J=0 pseudo-NaNs, pseudo-infinity, wrong tags, subnormals,
+pseudo-denormals and other out-of-domain classes remain Unsupported; the
+existing exponent 0..62 Normal rounding slice is unchanged.
+The 1,024-case matrix covers four literal significands × both signs × four FCWs
+× all TOP values × incoming PE × both old C1 values with independent raw and
+status expectations. Add invalid source/tag/control/status and fetch,
+truncation, STOP and budget atomicity checks, plus a literal `FLD m80fp` →
+`FRNDINT` → `FNSTSW AX` fixture. JIT/native admission remains closed. Physical
+x86 acceptance and general exception behavior remain deferred under ISSUE-019.
+
+Normative sources: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3 and Vol.2A
+“FLD—Load Floating-Point Value” and “FRNDINT—Round to Integer,” p.3-372.
 
 #### S2-31b. Bare bounded `FISTP m32int [RAX]` (`DB 18`), partial slice
 

@@ -3982,6 +3982,29 @@ Normative encoding source: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3;
 instruction sources are Vol.2A “FLD—Load Floating-Point Value” and
 “FRNDINT—Round to Integer,” p.3-372.
 
+## Local S2-31df: canonical quiet-NaN `FRNDINT` (`D9 FC`)
+
+The exact bare register-only `D9 FC` gate additionally accepts the physical
+TOP only when its tag is Special and the binary80 bytes encode a canonical
+quiet NaN: exponent `0x7fff`, J=1, bit 62=1, either sign, and any lower 62
+payload bits. Success is an identity over all ten bytes and the Special tag;
+TOP, PE and C0/C2/C3 are preserved, C1 is cleared, and no exception flags are
+added. The four accepted FCWs and `FSW & 0x80df == 0` gate are unchanged.
+FDP/FOP and unrelated state are preserved, FIP receives old RIP, RIP advances
+by two, and the instruction retires once. No memory or stack access occurs.
+
+Quiet-bit-clear SNaNs, pseudo-NaNs with J=0, pseudo-infinity, other exponents,
+wrong tags, subnormals and pseudo-denormals remain rejected; the existing
+exponent 0..62 Normal rounding slice is unchanged.
+Coverage includes four significands × both signs × four FCWs × eight TOPs × PE
+× old C1 (1,024 cases), invalid source/tag/control/status, execution-boundary
+atomicity and literal `FLD m80fp` → `FRNDINT` → `FNSTSW AX` composition. JIT and
+native x87 admission remain closed. Physical x86 acceptance and general
+exception delivery remain open under ISSUE-019.
+
+Normative source: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3 and Vol.2A
+“FLD—Load Floating-Point Value” and “FRNDINT—Round to Integer,” p.3-372.
+
 ## Local S2-30al: bounded `FUCOMI ST(0), ST(1)` (`DB E9`)
 
 Accept exactly bare `DB E9`. Before mutation call
