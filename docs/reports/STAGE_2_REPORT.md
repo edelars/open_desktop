@@ -4149,6 +4149,39 @@ x86/native runtime acceptance remains deferred to combined S2-31 acceptance
 under ISSUE-019.
 
 Validation: `cargo test -p od-isa --offline` passed all 603 tests; `cargo test -p od-runner --offline` passed 95 unit tests and 145 fixture tests, including the S2-31dg literal case. Host and Linux x86_64 `cargo check --workspace --all-targets --offline` passed (the Linux-target check reports existing dead-code warnings in `od-host` and `od-runner`). `cargo fmt --all -- --check`, `git diff --check`, and `python3 tools/check_layout.py` passed. `graphify update .` completed at 4,688 nodes, 9,466 edges and 180 communities; a final update after the last test edits found no graph topology changes. Physical x86/Mac mini acceptance remains deferred under ISSUE-019.
+## S2-31dh — historical sticky IE through bounded FRNDINT
+
+Changed only the bare `D9 FC` interpreter status gate to `FSW & 0x80de == 0`.
+Historical IE is now admitted and retained independently of the current
+source's effects: exact identities remain identities, inexact Normal rounding
+adds PE, and a current SNaN is quieted and adds IE. DE/ZE/OE/UE/SF/ES/B remain
+rejected, including when combined with IE. The four-FCW whitelist, all source
+and tag domains, value paths, metadata, atomic execution, and JIT/native denial
+remain unchanged.
+
+The interpreter matrix covers signed zero, exact and inexact Normal, large
+integral Normal, infinity, QNaN and SNaN across signs, all FCWs and TOPs, IE/PE
+combinations, and both prior C1 values. It also checks IE plus each forbidden
+status atomically and verifies SNaN→FRNDINT→FRNDINT succeeds without FNCLEX;
+the second operation sees the quiet NaN, retains IE, adds no PE, and clears C1.
+Existing fetch/truncation/STOP/budget/no-memory atomicity and the literal
+FNSTSW/FNCLEX fixture sequence remain covered. Physical x86 behavior and
+native runtime acceptance remain deferred under ISSUE-019.
+
+Validation passed: `cargo test --workspace --offline` passed all 1,029 tests,
+including 604 `od-isa`, 95 runner unit, 145 fixture integration, 166 testkit,
+8 x86-runner supervisor, 4 JIT, 6 host and 1 REP trace tests. Focused
+`cargo test -p od-isa --offline frndint` passed all 14 matching tests, and the
+extended SNaN CLI fixture test passed. Host and Linux x86_64
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+`git diff --check`, and `python3 tools/check_layout.py` passed. The Linux
+cross-check reports existing dead-code warnings in `od-host` and `od-runner`;
+the Linux-only native-denial runtime test could not run on this Apple Silicon
+host, though the denial code was compile-checked. `graphify update .` rebuilt
+4,693 nodes, 9,474 edges and 185 communities; its existing parser warning for
+`include/open_desktop/host_abi.h` remains. Physical x86 and Mac mini acceptance
+remain deferred under ISSUE-019.
+
 ## S2-30ab — bounded FCOM ST(1) exact Normal compare
 
 Added exact bare `D8 D1` decode as `FcomSt1`; the existing D8 arithmetic ranges

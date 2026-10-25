@@ -4032,6 +4032,27 @@ exception delivery remain deferred under ISSUE-019.
 Normative source: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3 and Vol.2A
 “FLD—Load Floating-Point Value” and “FRNDINT—Round to Integer,” p.3-372.
 
+## Local S2-31dh: historical sticky IE in bounded `FRNDINT` (`D9 FC`)
+
+The existing exact bare register-only gate admits sticky IE by requiring
+`FSW & 0x80de == 0`; the FCW whitelist and all other gate conditions remain
+unchanged. IE and PE are independently sticky. A historical IE does not
+change the source value, quieting, or current exception result: exact and
+identity sources add no flags, inexact Normal rounding adds PE according to
+its current remainder, and a current canonical SNaN is quieted and sets IE.
+The commit still clears/recomputes C1 from the current instruction and
+preserves C0/C2/C3 and all other state.
+
+DE, ZE, OE, UE, SF, ES, and B remain rejected, including when paired with IE.
+All source and tag domains, rounding, metadata, atomic execution boundaries,
+memory/stack behavior, and unsupported JIT/native admission remain unchanged.
+Coverage spans signed zero, exact/inexact and large integral Normals, signed
+infinity, QNaN and SNaN across sign, FCW, TOP, all IE/PE sticky combinations,
+and old C1; it includes IE plus each forbidden bit, successive SNaN then QNaN
+FRNDINT without FNCLEX, and the existing FNSTSW/FNCLEX fixture sequence.
+This local contract does not add an IE producer or define general exception
+delivery.
+
 ## Local S2-30al: bounded `FUCOMI ST(0), ST(1)` (`DB E9`)
 
 Accept exactly bare `DB E9`. Before mutation call

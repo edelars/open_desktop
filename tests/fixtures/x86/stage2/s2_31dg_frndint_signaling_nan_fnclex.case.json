@@ -4,9 +4,9 @@
   "profile": "s2-long-x87-state-v1",
   "provenance": {
     "kind": "project_fixture",
-    "source": "Handwritten DB 28 D9 FC DF E0 DB E2 D9 FC bytes, canonical signaling-NaN binary80 data, and expected state from the local bounded S2-31dg contract.",
-    "specification": "Intel SDM revision 093, Vol.2A, FLD m80fp, FRNDINT, FNSTSW AX and FNCLEX entries; local bounded S2-31dg contract.",
-    "specification_version": "Intel SDM revision 093; project S2-31dg"
+    "source": "Handwritten DB 28 D9 FC D9 FC DF E0 DB E2 D9 FC bytes, canonical signaling-NaN binary80 data, and expected state from the local bounded S2-31dh contract.",
+    "specification": "Intel SDM revision 093, Vol.2A, FLD m80fp, FRNDINT, FNSTSW AX and FNCLEX entries; local bounded S2-31dh contract.",
+    "specification_version": "Intel SDM revision 093; project S2-31dh"
   },
   "seed": null,
   "converted_from_v1_sha256": null,
@@ -55,14 +55,14 @@
     {
       "region_id": "code",
       "guest_address": "0x0000000000100000",
-      "length": 10,
+      "length": 12,
       "permissions": {
         "read": true,
         "write": false,
         "execute": true
       },
-      "initial_bytes_hex": "db28d9fcdfe0dbe2d9fc",
-      "comparison_mask_hex": "ffffffffffffffffffff"
+      "initial_bytes_hex": "db28d9fcd9fcdfe0dbe2d9fc",
+      "comparison_mask_hex": "ffffffffffffffffffffffff"
     },
     {
       "region_id": "signaling_nan",
@@ -89,8 +89,8 @@
       "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
     }
   ],
-  "stop_rip": "0x000000000010000a",
-  "instruction_budget": 5,
+  "stop_rip": "0x000000000010000c",
+  "instruction_budget": 6,
   "wall_timeout_ms": 2000,
   "rflags_mask": "0x0000000000000cd7",
   "expected_exit": "stop_address"

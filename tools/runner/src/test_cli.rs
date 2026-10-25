@@ -1009,12 +1009,12 @@ mod tests {
         assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
         assert_eq!(
             result.instructions_executed,
-            Observation::Available { value: HexU64(5) }
+            Observation::Available { value: HexU64(6) }
         );
         let Observation::Available { value } = result.snapshot else {
             panic!("S2-31dg composition must expose the complete state");
         };
-        assert_eq!(value.state.rip, HexU64(0x0010_000a));
+        assert_eq!(value.state.rip, HexU64(0x0010_000c));
         assert_eq!(value.state.gpr[0].0 & 0xffff, 0x6521);
         let observed = value.state.x87.unwrap();
         let before = initial.x87.unwrap();
@@ -1023,7 +1023,7 @@ mod tests {
         assert_eq!(observed.tag_word.0 & (3 << 8), 2 << 8);
         assert_eq!(observed.status_word, HexU64(0x6500));
         assert_eq!(observed.control_word, before.control_word);
-        assert_eq!(observed.instruction_pointer, HexU64(initial.rip.0 + 8));
+        assert_eq!(observed.instruction_pointer, HexU64(initial.rip.0 + 10));
         assert_eq!(observed.data_pointer, HexU64(0x0000000000400000));
         assert_eq!(observed.last_opcode, before.last_opcode);
         for physical in 0..8 {

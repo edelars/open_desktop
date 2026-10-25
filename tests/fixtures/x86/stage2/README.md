@@ -1363,16 +1363,26 @@ and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31df--canonical-quiet
 ### S2-31dg FRNDINT signaling-NaN quieting and exception composition
 
 The literal `s2_31dg_frndint_signaling_nan_fnclex.case.json` executes
-`FLD m80fp`, `D9 FC`, `DF E0`, `DB E2`, and a second `D9 FC` on a canonical
-Special-tagged SNaN. It covers IE observation, FNCLEX clearing, and successful
-re-entry after clearing; the interpreter separately verifies re-entry is
-Unsupported while IE remains set. The independent 1,024-case matrix checks
+`FLD m80fp`, `D9 FC`, a second `D9 FC` while IE is still sticky, `DF E0`,
+`DB E2`, and a final `D9 FC` on a canonical Special-tagged SNaN. It covers
+successful quiet-NaN re-entry with historical IE, IE observation, FNCLEX
+clearing, and another successful execution. The independent 1,024-case matrix checks
 only the quiet bit changes, IE is added without PE, old PE and condition bits
 are preserved, C1 clears, and all non-result state stays unchanged. Explicit
 boundary controls cover the existing zero-payload infinity and QNaN identity;
 reject cases cover J=0, wrong tag, bad
 FCW/FSW, prefix, fetch, truncation, STOP and budget. JIT/native admission stays
 closed. See the [S2-31dg CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dg-canonical-signaling-nan-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dg-quiet-canonical-signaling-nan-in-bounded-frndint-d9-fc), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dg--canonical-signaling-nans-through-bounded-frndint).
+
+### S2-31dh FRNDINT historical IE admission
+
+The bare `D9 FC` gate admits a pre-existing sticky IE while preserving
+independent current-source behavior. Interpreter coverage crosses every
+admitted source class with sign, FCW, TOP, IE/PE and prior C1. A second
+FRNDINT on the QNaN produced by SNaN quieting succeeds without FNCLEX; the
+literal `FLD m80fp`→`FRNDINT`→`FRNDINT`→`FNSTSW AX`→`FNCLEX`→`FRNDINT` fixture
+verifies CLI status observation, quiet-NaN re-entry and clearing. JIT/native admission
+remains denied. See the [S2-31dh CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dh-historical-sticky-ie-in-bounded-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dh-admit-historical-sticky-ie-to-bounded-frndint-d9-fc), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dh--historical-sticky-ie-through-bounded-frndint).
 
 ### S2-31b FISTP m32int schema and literal coverage
 

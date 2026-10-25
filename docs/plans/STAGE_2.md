@@ -226,6 +226,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31de | Admit canonical signed infinity with Special tag to D9 FC; preserve raw bytes/status except C1; native/JIT closed | S2-31dd, S2-31aa |
 | [x] | S2-31df | Admit Special-tagged canonical QNaN to D9 FC as a payload-preserving identity; native/JIT closed | S2-31de |
 | [x] | S2-31dg | Admit canonical Special-tagged SNaN to D9 FC; set IE and quiet bit while preserving payload; native/JIT closed | S2-31df |
+| [x] | S2-31dh | Admit historical sticky IE at bounded D9 FC while preserving independent current IE/PE effects; native/JIT closed | S2-31dg |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -2217,6 +2218,26 @@ S2-31 acceptance under ISSUE-019.
 
 Normative sources: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3 and Vol.2A
 “FLD—Load Floating-Point Value” and “FRNDINT—Round to Integer,” p.3-372.
+
+#### S2-31dh. Admit historical sticky IE to bounded `FRNDINT` (`D9 FC`)
+
+Change only the existing bare register-only FRNDINT status gate from
+`FSW & 0x80df == 0` to `FSW & 0x80de == 0`. Historical IE is admitted and
+preserved independently of the current source: exact/identity sources add no
+new exception, inexact Normal rounding still sets PE from the current
+remainder, and a current SNaN still quiets and sets IE. Keep rejection of DE,
+ZE, OE, UE, SF, ES, and B; the four-FCW whitelist, every source/tag domain,
+rounding, quieting, metadata, atomic execution, and all other gates remain
+unchanged.
+
+Cover signed zero, exact and inexact Normal, large integral Normal, infinity,
+QNaN and SNaN over sign, FCW, TOP, all IE/PE sticky combinations and prior C1.
+Include IE with every forbidden status as an atomic reject, consecutive
+SNaN→FRNDINT→FRNDINT execution without FNCLEX and the extended literal
+FLD→FRNDINT→FRNDINT→FNSTSW→FNCLEX→FRNDINT CLI composition,
+and the existing fetch/truncation/STOP/budget/no-memory and JIT/native denial
+controls. This gate adjustment does not add a producer of IE and does not
+complete S2-31 or define general x87 exception delivery.
 
 #### S2-31b. Bare bounded `FISTP m32int [RAX]` (`DB 18`), partial slice
 
