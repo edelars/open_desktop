@@ -294,6 +294,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31cc | Convert canonical masked binary80 quiet NaN to integer indefinite for DB10/DB18 m32 FIST/FISTP | S2-31bz |
 | [x] | S2-31cd | Convert canonical masked binary80 quiet NaN to integer indefinite for DF10/DF18 m16 FIST/FISTP | S2-31ca |
 | [x] | S2-31ce | Convert canonical masked binary80 quiet NaN to integer indefinite for DF38 m64 FISTP | S2-31cb |
+| [x] | S2-31cf | Convert canonical masked binary80 signaling NaN to integer indefinite for DB10/DB18 m32 FIST/FISTP | S2-31cc |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4313,3 +4314,26 @@ TOP and incoming PE/C1. Rejections include J=0 quiet-like encodings, SNaN, tag,
 control and prefix; Qword canaries and write/range faults prove atomicity. A
 literal FISTP/FNSTSW fixture and direct FNSTSW/FNCLEX sequence observe and
 clear IE. JIT/native admission remains closed.
+
+
+<a id="s2-31cf-masked-binary80-snan-through-bounded-m32-fist"></a>
+
+#### S2-31cf. Convert masked binary80 signaling NaN through bounded m32 `FIST`/`FISTP`
+
+Extend only bare `DB 10` and `DB 18` for Special-tagged canonical binary80
+signaling NaNs: exponent `0x7fff`, either sign, explicit integer bit J=1,
+quiet bit=0, and nonzero lower 62-bit payload. Under the existing admitted
+masked FCWs, store Dword integer indefinite `0x80000000` for every payload,
+sign and RC. After the atomic Dword write, add sticky IE, clear C1, preserve
+incoming PE and C0/C2/C3, and add no PE/DE/OE/UE/SF or ES/B. Preserve raw
+signaling source bytes for both FIST and FISTP. Canonical infinity and QNaN
+remain admitted by earlier slices; J=0 pseudo-NaNs, mismatched tags, finite
+overflow, m16/m64 SNaNs, and unmasked delivery remain outside this slice.
+
+Coverage crosses four payload patterns, both signs, all admitted FCWs, both
+opcodes, every TOP and incoming PE/C1 (2,048 cases). Rejections include J=0
+pseudo-SNaN/pseudo-QNaN, mismatched tags, controls, prefixes, unsupported
+widths, and range/write faults with full-state atomicity. A literal
+FISTP/FNSTSW fixture plus direct FNSTSW/FNCLEX observes and clears IE; JIT and
+native admission remain closed. Native runtime and physical acceptance remain
+deferred under ISSUE-019.

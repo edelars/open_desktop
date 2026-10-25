@@ -7207,3 +7207,36 @@ denial coverage but did not execute it. `cargo fmt --all -- --check` and
 `git diff --check` passed. `graphify update .` rebuilt the graph to 4,436 nodes,
 9,032 edges and 183 communities; contract/plan/report anchors were checked.
 Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31cf--masked-binary80-snan-through-m32-fistfstp"></a>
+
+## S2-31cf — masked binary80 signaling NaN through m32 FIST/FISTP
+
+Only bare `DB 10` and `DB 18` admit Special-tagged canonical binary80 SNaNs:
+exponent `0x7fff`, either sign, J=1, quiet bit=0, and nonzero lower 62-bit
+payload. Every admitted sign, payload and RC stores Dword integer indefinite
+`0x80000000`; after successful write, sticky IE is set and C1 cleared, with
+incoming PE/C0/C2/C3 preserved and no other flags added. Raw source bytes stay
+unchanged through FIST/FISTP. Existing infinity and QNaN classes stay admitted;
+pseudo-NaNs, mismatched tags, finite overflow, other widths, and unmasked
+delivery remain outside this slice.
+
+The matrix covers four payload shapes × both signs × four FCWs × both opcodes ×
+eight TOP values × PE/C1 (2,048 cases). Tests cover raw source preservation,
+FIST/FISTP tags/TOP and pointer commit, J=0 pseudo-SNaN/pseudo-QNaN, tag/class,
+control, prefix, width, and range/write atomic rejection. A literal FISTP/FNSTSW
+fixture and a direct FNSTSW/FNCLEX sequence observe and clear IE. Focused
+evidence: SNaN matrix 1/1; SNaN observation/rejection/fault tests 2/2; previous
+m32 QNaN and infinity stale-rejection regressions 1/1 each; CLI fixture 1/1;
+JIT denial 1/1. The final `cargo test --workspace --offline` passed 915 tests:
+534 `od-isa`, 4 `od-jit`, 6 `od-host`, 68 runner CLI, 128 fixture/JIT, 166
+`od-testkit`, 8 x86-runner library and 1 x86-runner main; all doc-tests passed.
+Host and Linux x86_64 `cargo check --workspace --all-targets --offline` passed.
+The native-denial test is architecture-gated; it compiled in the Linux
+x86_64 check but did not run on the local arm64 host. `cargo fmt --all --
+--check` and `git diff --check` passed. `graphify update .` rebuilt the graph
+to 4,446 nodes, 9,050 edges and 180 communities; documentation anchors were
+checked.
+
+Native runtime and physical x86 acceptance remain deferred under ISSUE-019.

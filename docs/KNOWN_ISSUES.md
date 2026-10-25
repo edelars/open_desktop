@@ -749,3 +749,15 @@
   acceptance remain deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31ce-masked-canonical-qnan-fistp-m64int),
   [plan](plans/STAGE_2.md#s2-31ce-masked-binary80-qnan-through-bounded-m64-fistp),
   and [report](reports/STAGE_2_REPORT.md#s2-31ce--masked-binary80-qnan-through-m64-fistp).
+- **S2-31cf evidence:** bare `DB 10`/`DB 18` now admit canonical Special-tagged
+  binary80 SNaNs for m32 FIST/FISTP, storing integer indefinite, adding IE,
+  clearing C1 and preserving raw source bytes. The four-payload sign×FCW×opcode×TOP×PE/C1
+  matrix has 2,048 cases; pseudo-SNaN/QNaN, tag, control, prefix, width, and
+  write/range atomicity controls are included with CLI/FNSTSW and JIT denial.
+  Native denial compiles for Linux x86_64 but is architecture-gated and did not
+  run on the local arm64 host. Physical x86 and native runtime behavior remain
+  unverified; S2-31 and
+  ISSUE-019 remain open. See [contract](specs/CPU_CONTRACT.md#local-s2-31cf-masked-canonical-snan-fist-m32int),
+  [plan](plans/STAGE_2.md#s2-31cf-masked-binary80-snan-through-bounded-m32-fist),
+  [report](reports/STAGE_2_REPORT.md#s2-31cf--masked-binary80-snan-through-m32-fistfstp),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

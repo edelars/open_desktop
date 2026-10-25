@@ -3602,6 +3602,20 @@ fn v2_jit_denies_canonical_quiet_nan_fistp_m32_fixture_without_fallback() {
 }
 
 #[test]
+fn v2_jit_denies_canonical_signaling_nan_fistp_m32_fixture_without_fallback() {
+    let fixture = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_31cf_fistp_m32int_negative_snan_fnstsw.case.json"
+    );
+    let (_, result) = run(fixture, "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    assert!(matches!(
+        result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn v2_jit_denies_canonical_infinity_fistp_m16_fixture_without_fallback() {
     let fixture = include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_31ca_fistp_m16int_negative_infinity_fnstsw.case.json"
