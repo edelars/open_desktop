@@ -939,3 +939,18 @@
   [plan](plans/STAGE_2.md#s2-31ct-pseudo-infinity-m32-fist),
   [report](reports/STAGE_2_REPORT.md#s2-31ct--special-tagged-pseudo-infinity-through-m32-fist),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31cu evidence:** only bare DF10/DF18 m16 FIST/FISTP now admit a
+  Special-tagged binary80 pseudo-infinity with raw sign/exponent `0x7fff` or
+  `0xffff` and zero significand. They store Word integer-indefinite `0x8000`,
+  add IE, clear C1, add no PE/other new flags, preserve sticky/C0/C2/C3, and
+  commit after the atomic Word write. The 16,384-case matrix checks FCW/form/
+  TOP/sticky/C1, source bytes, stack and status; rejection, Word canary,
+  denied-write/range atomicity, FNSTSW/FNCLEX, literal CLI, JIT denial and
+  Linux x86_64 cross-target native-denial compile coverage are included.
+  Linking the Linux test binary is unavailable with the macOS host linker;
+  native runtime and physical x86 acceptance remain deferred under ISSUE-019. See
+  [contract](specs/CPU_CONTRACT.md#local-s2-31cu-pseudo-infinity-m16-fist),
+  [plan](plans/STAGE_2.md#s2-31cu-pseudo-infinity-m16-fist),
+  [report](reports/STAGE_2_REPORT.md#s2-31cu--special-tagged-pseudo-infinity-through-m16-fist),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

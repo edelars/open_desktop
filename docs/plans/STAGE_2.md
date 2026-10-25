@@ -309,6 +309,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31cr | Admit Special-tagged canonical binary80 subnormals only through DF10/DF18 m16 FIST/FISTP | S2-31cq |
 | [x] | S2-31cs | Admit Special-tagged canonical binary80 subnormals only through DF38 m64 FISTP | S2-31cr |
 | [x] | S2-31ct | Convert Special-tagged binary80 pseudo-infinity through DB10/DB18 m32 FIST/FISTP | S2-31cs |
+| [x] | S2-31cu | Convert Special-tagged binary80 pseudo-infinity through DF10/DF18 m16 FIST/FISTP | S2-31ct |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4499,6 +4500,8 @@ and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
 
 
+
+
 <a id="s2-31cm-admit-sticky-de-on-bounded-integer-stores"></a>
 
 #### S2-31cm. Admit sticky DE on bounded integer stores
@@ -4707,4 +4710,35 @@ write/range atomicity, FNSTSW/FNCLEX, the literal CLI fixture, and JIT/native
 denial. Physical x86 acceptance remains deferred to the combined final S2-31
 substage under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ct-pseudo-infinity-m32-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31ct--special-tagged-pseudo-infinity-through-m32-fist),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cu-pseudo-infinity-m16-fist"></a>
+
+#### S2-31cu. Convert Special-tagged pseudo-infinity through m16 `FIST`/`FISTP`
+
+Only bare DF 10 and DF 18 admit a Special-tagged binary80 pseudo-infinity:
+raw sign/exponent `0x7fff` or `0xffff`, zero significand, and explicit integer
+bit J=0. Store Word integer-indefinite `0x8000`, add current IE, and clear C1;
+add no PE or other current flags. Preserve historical sticky flags and C0/C2/C3.
+Keep the FCW whitelist, `FSW & 0x80c0` gate, bare Long64 RAX form, complete
+canonical48 Word preflight, atomic one-write/no-read behavior, and write-before-
+commit ordering. Preserve raw source bytes; FIST retains TOP and FISTP pops once,
+including TOP wrap.
+
+Canonical signed zero and canonical infinity (J=1) remain distinct, as do
+pseudo-NaNs. Wrong tags, m32/m64 width-specific behavior outside its existing
+profile, unmasked/status rejects, prefixes, and other gates remain unchanged.
+FLD m80 composition is not claimed because FLD rejects pseudo-infinity.
+
+Coverage crosses both raw signs × four FCWs × both forms × all TOP values ×
+64 sticky combinations × both previous C1 values (16,384 cases). Independent
+literal expectations cover Word bytes/status, IE without PE, C1 clearing, flag
+preservation, source bytes, TOP/tag behavior and wrap. Rejections include
+pseudo-NaNs, wrong tags, forbidden controls/status and DF38 m64; fault checks
+cover denied writes and canonical-range crossing. FNSTSW/FNCLEX, a direct
+literal CLI fixture, and JIT/native denial are covered. Native runtime and
+physical x86 checks remain deferred to the combined final S2-31 substage under
+ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cu-pseudo-infinity-m16-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31cu--special-tagged-pseudo-infinity-through-m16-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

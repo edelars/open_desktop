@@ -5547,6 +5547,9 @@ the instruction-form reference. See the [Vol.2A PDF](https://cdrdv2-public.intel
 [plan](../plans/STAGE_2.md#s2-31aa-extend-bounded-fld-m80fp-rax-db-28-to-canonical-infinities),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+
+
+
 Validation: focused `od-isa` DB28 tests (2), the exact schema predicate (1),
 the CLI fixture test (1), and the JIT-denial integration test (1) passed.
 `cargo test --workspace --all-targets --offline` passed (692 tests across the
@@ -7801,4 +7804,48 @@ communities. Physical x86 and Mac mini acceptance remain deferred to the
 combined final S2-31 substage under ISSUE-019; this local extension does not
 close ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ct-pseudo-infinity-m32-fist),
 [plan](../plans/STAGE_2.md#s2-31ct-pseudo-infinity-m32-fist), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cu--special-tagged-pseudo-infinity-through-m16-fist"></a>
+
+## S2-31cu — Special-tagged pseudo-infinity through m16 FIST/FISTP
+
+Only bare DF10/DF18 m16 integer stores now admit Special-tagged binary80
+pseudo-infinity with raw sign/exponent `0x7fff` or `0xffff` and zero
+significand. Success writes Word integer-indefinite `0x8000`, adds IE, clears
+C1, and adds no PE or other current exception flag. Historical sticky flags
+and C0/C2/C3 remain preserved. The FCW whitelist, `FSW & 0x80c0` gate, bare
+Long64 RAX form, canonical48 Word preflight, one atomic write/no read, raw
+source preservation, and write-before-commit/FISTP pop behavior are unchanged.
+The shared preflight explicitly retains m32 behavior while m64 pseudo-infinity
+remains unsupported. Canonical signed zero and J=1 infinity remain distinct;
+FLD pseudo-infinity composition is excluded.
+
+The literal 16,384-case ISA matrix spans both sign/exponent encodings, all four
+FCWs, DF10/DF18, all TOP values, 64 incoming sticky combinations and both
+prior C1 values. Tests verify literal Word bytes/status, IE without PE, C1
+clearing, preservation of sticky/C0/C2/C3, source bytes, canaries, FIST/FISTP
+tag behavior and TOP wrap. Additional ISA coverage rejects pseudo-NaNs, wrong
+tags, m64, and forbidden controls/status; denied-write and canonical-range
+tests prove atomicity. FNSTSW/FNCLEX and a direct literal CLI fixture cover
+observation and clearing. The CLI checks the two-byte store/canaries and JIT
+denial; native admission denial is compile-checked on Linux x86_64 but was not
+run on this macOS arm64 host.
+
+Validation: focused ISA and CLI runtime tests and
+`cargo test --workspace --offline` (including all unit, integration, and
+documentation tests) passed. Host and
+`x86_64-unknown-linux-gnu` `cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, and `git diff --check` passed. The Linux
+cross-check emitted the existing dead-code warnings in `od-host` and
+`od-runner`. `cargo test -p od-x86-runner --target
+x86_64-unknown-linux-gnu --offline --no-run` could not link on this macOS host:
+its `cc`/Darwin `ld` reject Linux linker options. The cross-target all-targets
+check compile-checked the native-denial test, but Linux execution remains
+unverified here. `graphify update .` refreshed the graph to 4,584 nodes,
+9,276 edges, and 173 communities. Physical x86 runtime and Mac mini acceptance
+remain deferred to the combined final S2-31 substage under ISSUE-019; this
+extension does not close ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cu-pseudo-infinity-m16-fist),
+[plan](../plans/STAGE_2.md#s2-31cu-pseudo-infinity-m16-fist), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md).

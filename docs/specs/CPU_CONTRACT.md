@@ -5792,3 +5792,37 @@ admission remains closed and physical x86 validation remains deferred under
 ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31ct-pseudo-infinity-m32-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31ct--special-tagged-pseudo-infinity-through-m32-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31cu-pseudo-infinity-m16-fist"></a>
+
+## Local S2-31cu: Special-tagged pseudo-infinity through m16 `FIST`/`FISTP`
+
+Only bare DF 10 and DF 18 admit a Special-tagged binary80 pseudo-infinity:
+exact sign/exponent `0x7fff` or `0xffff` with a zero 64-bit significand
+(J=0). Store Word integer-indefinite `0x8000`, add current IE, and clear C1;
+do not add PE or another current exception flag. Preserve historical sticky
+flags and C0/C2/C3. Keep the current FCW whitelist, `FSW & 0x80c0` gate,
+Long64 bare RAX addressing, full canonical48 Word preflight, and atomic single
+write/no read. Commit status, FIP/FDP/RIP, and FISTP's one physical TOP pop
+only after the write succeeds; FIST retains TOP. Preserve the raw ten-byte
+source in either form.
+
+Canonical signed zero and canonical infinity (J=1) remain separate. Pseudo-
+NaNs, wrong tags, m64, prefixes, unmasked or otherwise disallowed status, and
+all other forms remain unsupported. Existing m32 pseudo-infinity behavior is
+unchanged. FLD m80 does not accept pseudo-infinity, so no FLD composition is
+part of this contract.
+
+The 16,384-case ISA matrix crosses both raw sign/exponent values, all four
+FCWs, DF10/DF18, all TOP positions, all 64 incoming sticky-flag combinations,
+and both prior C1 values. Literal Word bytes and status expectations verify IE
+without PE, C1 clearing, C0/C2/C3 and sticky preservation, source payloads,
+canaries, and TOP/tag behavior. Rejection and fault tests cover pseudo-NaNs,
+wrong tags, DF38, forbidden controls/status, denied writes, and canonical-range
+crossing. FNSTSW/FNCLEX and a literal CLI fixture are covered; JIT/native
+admission remains closed and physical x86 validation remains deferred under
+ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31cu-pseudo-infinity-m16-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31cu--special-tagged-pseudo-infinity-through-m16-fist),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
