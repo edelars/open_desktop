@@ -1335,8 +1335,10 @@ Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer�
 The schema admits only bare `DF 18` and exact `DF 18 DF E0` (FNSTSW AX).
 Handwritten fixtures cover positive and negative half-way inputs under all four
 RC modes, exact signed-word limits, rounded values at both limits, and the
-FNSTSW composition. Rejection fixtures cover signed-i16 overflow, invalid old
-physical TOP tag, invalid FSW, unsupported FCW and an out-of-domain exponent.
+FNSTSW composition. The former signed-i16 overflow and exponent-16 fixtures
+now execute as integer-indefinite with IE under S2-31ck; rejection fixtures cover invalid old
+physical TOP tag, invalid FSW and unsupported FCW. Interpreter unit tests retain
+binary80 subnormal rejection coverage.
 The CLI verifies one Word mutation across the split fixture regions, unchanged
 raw x87 payloads, pop/status/FIP/FDP state, and zero-retirement failures with
 unchanged state and memory. Interpreter tests additionally exercise the exact
@@ -1550,8 +1552,10 @@ pp.3-347–3-349 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-0
 
 The schema admits only bare `DF 10` and exact `DF 10 DF E0` (FNSTSW AX).
 Handwritten cases cover a positive tie, FNSTSW composition, exact signed-word
-limits, signed-i16 overflow, invalid old TOP tag, invalid FSW, unsupported FCW
-and an out-of-domain exponent. The CLI verifies one Word mutation and complete
+limits; the former signed-i16 overflow and exponent-16 fixtures are now
+successful under S2-31ck. Invalid old TOP tag, invalid FSW and unsupported FCW remain rejected;
+binary80 subnormal rejection is covered by interpreter tests. The CLI verifies
+one Word mutation and complete
 no-pop state preservation, including TOP, tags and raw payloads; rejection
 cases preserve CPU and memory with zero retirement. Interpreter unit tests also
 cover every rounding control and sign, rounding at the signed limits, complete
@@ -2712,3 +2716,19 @@ state and memory. JIT/native admission remains closed. See the
 [S2-31cj CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cj-masked-finite-overflow-m32-fist),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cj-masked-finite-overflow-to-m32-fistfstp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cj--masked-finite-overflow-to-m32-fistfstp).
+
+### S2-31ck finite overflow and roundback m16 integer-store fixtures
+
+The DF 18 fixture uses `+32767.5` under nearest-even, stores Word
+integer-indefinite, and observes IE with PE clear through FNSTSW. The DF 10
+fixture uses `+32767.25` under toward-negative rounding; it rounds back to
+`INT16_MAX`, stores that finite result, and observes PE without IE. The earlier
+S2-31d/S2-31e `+32768` and exponent-16 fixtures now execute successfully with
+IE as well. ISA
+tests cover signed limits, adjacent binary80 values around both half-integer
+thresholds, large exponents, all RC/TOP/sticky IE/PE/prior-C1 states, and
+denied-write/canonical-range atomicity for both opcodes. JIT/native admission
+remains closed. See the
+[S2-31ck CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ck-masked-finite-overflow-m16-fist),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ck-masked-finite-overflow-to-m16-fistfstp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ck--masked-finite-overflow-to-m16-fistfstp).

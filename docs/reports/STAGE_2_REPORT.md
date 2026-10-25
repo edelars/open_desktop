@@ -4482,6 +4482,11 @@ S2-31.
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
 pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+S2-31ck later supersedes this initial finite-overflow rejection: rounded overflow
+now stores integer-indefinite and adds IE after a successful DF 18/DF 10 store.
+The former overflow and exponent-16 fixtures now execute as successful cases.
+
+
 ## S2-31e — bounded `FIST m16int [RAX]` partial slice
 
 Added bare `DF 10` as a fixed Word store through RAX in Long64. The decoder
@@ -4515,6 +4520,11 @@ or general x87 semantics. It does not complete S2-31.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FIST/FISTP—Store Integer,”
 pp.3-347–3-349 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+S2-31ck later extends this initial finite-overflow rejection: rounded overflow
+now stores integer-indefinite and adds IE after a successful DF 10/DF 18 store.
+The former overflow and exponent-16 fixtures now execute as successful cases.
+
 
 ## S2-31f — bounded `FISTP m64int [RAX]` partial slice
 
@@ -7220,7 +7230,8 @@ added after a successful write; invalid conversion adds no PE and clears C1.
 Finite values just outside the real range that round into range remain finite.
 Exponent `e >= 32` takes the invalid path before shifting; exponents 0 through
 31 use exact quotient/remainder rounding, while negative-exponent fractions
-retain their comparison-based path. Other widths/classes remain unchanged.
+retain their comparison-based path. Other widths/classes remain unchanged by
+this m32 slice; S2-31ck later extends only m16 finite overflow.
 
 The literal oracle crosses 42 vectors (signed limits, neighbors/tie-adjacent
 values and exponents 32/63/64/16383 × minimum/mixed/maximum significands and
@@ -7244,6 +7255,49 @@ it did not execute on the local arm64 host. Existing dead-code warnings in
 --check` and `git diff --check` passed. `graphify update .` rebuilt the graph
 to 4,491 nodes, 9,129 edges and 170 communities. The S2-31cj contract, plan,
 report and fixture README anchors were checked against their targets.
+
+Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31ck--masked-finite-overflow-to-m16-fistfstp"></a>
+
+## S2-31ck — masked finite overflow to m16 `FIST`/`FISTP`
+
+Canonical Valid-tagged binary80 Normal inputs to bare DF 10/DF 18 now round
+under the existing RC before signed-i16 range testing. Rounded values outside
+`[-2^15, 2^15-1]` store Word integer-indefinite `0x8000`, then add IE and clear
+C1 after successful write; invalid conversion adds no PE. Values just beyond
+the real bounds that round back into range retain the finite integer result.
+Exponent `e >= 16` is classified before a wide shift; exponents 0 through 15
+use exact quotient/remainder rounding; negative-exponent fractions keep their
+comparison path. m32/m64, subnormal, malformed, and unmasked behavior stays
+unchanged.
+
+The literal oracle includes 18 signed-boundary/neighbor/tie vectors and six
+exponents (16/31/32/63/64/16383) × three significands × both signs, crossed with
+four RCs, both opcodes, all TOP values, incoming IE/PE and both prior C1 states
+(27,648 combinations). It distinguishes exact -32768 from same-bit invalid
+indefinite, checks current C1 and exception flags, source and stack state, and
+one Word write/no read. Both DF10 and DF18 denied-write and canonical-range
+cases preserve full state and memory. The overflow FNSTSW/FNCLEX sequence,
+two new literal CLI fixtures, four migrated historical overflow/exponent-16
+fixtures, and JIT denial are checked; native denial remains architecture-gated.
+
+Focused `cargo test -p od-isa fist_m16int --offline` passed 14/14. The new
+overflow and roundback CLI fixtures each passed 1/1; the migrated historical
+31d/31e overflow and exponent-16 cases passed 1/1; historical 31d/31e
+boundary/rejection suites passed 1/1 each. The JIT denial test passed 1/1.
+
+`cargo test --workspace --offline --quiet` passed 945 tests: 548 `od-isa`,
+4 `od-jit`, 6 `od-host`, 77 runner CLI, 135 fixture/JIT, 166 `od-testkit`,
+8 x86-runner library, and 1 x86-runner main; all doc-tests passed. Host and
+Linux x86_64 `cargo check --workspace --all-targets --offline` passed. The
+Linux cross-check compiled architecture-gated native denial code; it did not
+execute on the local arm64 host. Existing Linux dead-code warnings in `od-host`
+and `od-runner` remain. `cargo fmt --all -- --check` and `git diff --check`
+passed. `graphify update .` rebuilt the graph to 4,503 nodes, 9,151 edges and
+184 communities. The S2-31ck contract, plan, report, known-issues and fixture
+README anchors were checked against their targets.
 
 Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
 

@@ -3755,6 +3755,22 @@ fn v2_jit_denies_m32_fist_roundback_fixture_without_fallback() {
 }
 
 #[test]
+fn v2_jit_denies_m16_fist_overflow_and_roundback_fixtures_without_fallback() {
+    for fixture in [
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ck_fistp_m16int_positive_overflow_fnstsw.case.json").as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ck_fist_m16int_positive_roundback_fnstsw.case.json").as_slice(),
+    ] {
+        let (_, result) = run(fixture, "jit", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
 fn v2_jit_denies_fractional_fistp_m16_fixture_without_interpreter_fallback() {
     let fixture = include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_31bx_fistp_m16int_negative_fraction_fnstsw.case.json"

@@ -299,6 +299,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ch | Convert canonical masked binary80 signaling NaN to integer indefinite for DF38 m64 FISTP | S2-31ce |
 | [x] | S2-31ci | Admit sticky IE on bounded DB10/DB18/DF10/DF18/DF38 integer stores | S2-31br, S2-31ch |
 | [x] | S2-31cj | Convert finite rounded i32 overflow to integer-indefinite for DB10/DB18 | S2-31ci |
+| [x] | S2-31ck | Convert finite rounded i16 overflow to integer-indefinite for DF10/DF18 | S2-31ci, S2-31cj |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3934,7 +3935,8 @@ invalid. For `0 <= e <= 31`, use the exact significand quotient, guard/sticky
 tail and RC before testing signed bounds; negative-exponent fractions retain
 their comparison-based rounding path. This preserves out-of-range real values
 that round back into range. Keep m16/m64, subnormal, malformed and unmasked
-paths unchanged.
+paths unchanged in this m32 slice; S2-31ck later extends only the m16 overflow
+path.
 
 Cover signed limits, representable neighbors around both half-integer
 thresholds and ties, all RCs/signs/opcodes/TOP and incoming IE/PE, prior C1,
@@ -3944,6 +3946,30 @@ fractional input adds IE without PE; atomic denied-write/range faults and raw
 source preservation; existing zero/fraction/special regressions; FNSTSW/FNCLEX,
 literal CLI fixtures, and JIT/native denial. Native runtime and physical
 acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31ck-masked-finite-overflow-to-m16-fistfstp"></a>
+
+#### S2-31ck. Masked finite overflow to m16 `FIST`/`FISTP`
+
+Only canonical Valid-tagged binary80 Normal inputs to bare `DF 10` and `DF 18`
+gain signed-i16 out-of-range conversion. Round under the admitted RC first;
+rounded values outside `[-2^15, 2^15-1]` store Word integer-indefinite
+`0x8000`, then add IE and clear C1 after a successful Word write. Do not add PE
+for an invalid conversion. For exponent `e >= 16`, classify directly as
+invalid; for `0 <= e <= 15`, round the exact significand quotient/remainder
+before testing signed bounds. Negative-exponent fractions retain their
+comparison-based path. Values outside the real interval that round back into
+range remain finite. Keep m32/m64 overflow, subnormal, malformed and unmasked
+paths unchanged.
+
+Cover signed limits, binary80 neighbors and values around both half-integer
+thresholds, ties under every RC/sign/opcode/TOP, incoming IE/PE and prior C1;
+large exponents 16/31/32/63/64/16383 with minimum/mixed/maximum significands;
+and exact `-32768` versus the same-bit indefinite result. Check invalid
+fractions add IE without PE, failed-write/range atomicity for both opcodes,
+raw source preservation, FNSTSW/FNCLEX, CLI fixtures, and JIT/native denial.
+Native runtime and physical acceptance remain deferred under ISSUE-019.
 
 <a id="s2-31bs-admit-sticky-oe-to-raw-binary80-fstp"></a>
 

@@ -2011,6 +2011,177 @@ mod tests {
     }
 
     #[test]
+    fn fistp_m16int_positive_overflow_fixture_stores_indefinite_and_observes_ie() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31ck_fistp_m16int_positive_overflow_fnstsw.case.json"
+        );
+        let fixture = v2::Fixture::from_json(bytes).expect("S2-31ck overflow fixture schema");
+        let before = fixture.fixture.initial_state.clone();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(2) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("S2-31ck overflow fixture snapshot unavailable");
+        };
+        let initial_x87 = before.x87.as_ref().unwrap();
+        let after = value.state.x87.as_ref().unwrap();
+        assert_eq!(value.state.gpr[0], HexU64(0x0030_4d01));
+        assert_eq!(after.status_word, HexU64(0x4d01));
+        assert_eq!(after.tag_word, HexU64(0xffff));
+        assert_eq!(after.registers, initial_x87.registers);
+        assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
+        assert_eq!(after.data_pointer, HexU64(0x0030_0001));
+        let regions = memory.snapshot();
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "data_left")
+                .unwrap()
+                .bytes_hex,
+            "00"
+        );
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "data_right")
+                .unwrap()
+                .bytes_hex,
+            "80ccddeeff11223344556677889900"
+        );
+    }
+
+    #[test]
+    fn fist_m16int_positive_roundback_fixture_preserves_in_range_result_and_observes_pe() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31ck_fist_m16int_positive_roundback_fnstsw.case.json"
+        );
+        let fixture = v2::Fixture::from_json(bytes).expect("S2-31ck roundback fixture schema");
+        let before = fixture.fixture.initial_state.clone();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(2) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("S2-31ck roundback fixture snapshot unavailable");
+        };
+        let initial_x87 = before.x87.as_ref().unwrap();
+        let after = value.state.x87.as_ref().unwrap();
+        assert_eq!(value.state.gpr[0], HexU64(0x0030_4520));
+        assert_eq!(after.status_word, HexU64(0x4520));
+        assert_eq!(after.tag_word, HexU64(0xfffc));
+        assert_eq!(after.registers, initial_x87.registers);
+        assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
+        assert_eq!(after.data_pointer, HexU64(0x0030_0001));
+        let regions = memory.snapshot();
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "data_left")
+                .unwrap()
+                .bytes_hex,
+            "ff"
+        );
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "data_right")
+                .unwrap()
+                .bytes_hex,
+            "7fccddeeff11223344556677889900"
+        );
+    }
+
+    #[test]
+    fn fist_m16int_previous_overflow_fixtures_now_store_integer_indefinite() {
+        for (name, bytes, expected_fsw, expected_tag) in [
+            (
+                "s2_31d_fistp_m16int_overflow.case.json",
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31d_fistp_m16int_overflow.case.json"
+                )
+                .as_slice(),
+                0x4d01,
+                0xffff,
+            ),
+            (
+                "s2_31e_fist_m16int_overflow.case.json",
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31e_fist_m16int_overflow.case.json"
+                )
+                .as_slice(),
+                0x4501,
+                0xfffc,
+            ),
+            (
+                "s2_31d_fistp_m16int_invalid_exponent.case.json",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31d_fistp_m16int_invalid_exponent.case.json").as_slice(),
+                0x4d01,
+                0xffff,
+            ),
+            (
+                "s2_31e_fist_m16int_invalid_exponent.case.json",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31e_fist_m16int_invalid_exponent.case.json").as_slice(),
+                0x4501,
+                0xfffc,
+            ),
+        ] {
+            let fixture = v2::Fixture::from_json(bytes)
+                .unwrap_or_else(|error| panic!("{name} schema: {error}"));
+            let initial_x87 = fixture.fixture.initial_state.x87.as_ref().unwrap();
+            let initial_registers = initial_x87.registers.clone();
+            let mut memory =
+                od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(
+                matches!(result.outcome, v2::Outcome::StopAddress {}),
+                "{name}"
+            );
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(1) },
+                "{name}"
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("{name} snapshot unavailable");
+            };
+            let after = value.state.x87.as_ref().unwrap();
+            assert_eq!(after.status_word, HexU64(expected_fsw), "{name}");
+            assert_eq!(after.tag_word, HexU64(expected_tag), "{name}");
+            assert_eq!(after.registers, initial_registers, "{name}");
+            assert_eq!(after.data_pointer, HexU64(0x0030_0001), "{name}");
+            let regions = memory.snapshot();
+            assert_eq!(
+                regions
+                    .iter()
+                    .find(|r| r.region_id == "data_left")
+                    .unwrap()
+                    .bytes_hex,
+                "00",
+                "{name}"
+            );
+            assert_eq!(
+                regions
+                    .iter()
+                    .find(|r| r.region_id == "data_right")
+                    .unwrap()
+                    .bytes_hex,
+                "80ccddeeff11223344556677889900",
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn fist_m32int_signed_zero_cli_fixtures_store_zero_and_observe_status() {
         for (name, bytes, expected_rax, expected_fsw, expected_tag_word) in [
             (
@@ -4353,13 +4524,7 @@ mod tests {
             assert_eq!(value.state, expected_state, "{name}: full CPU state");
         }
 
-        for suffix in [
-            "overflow",
-            "invalid_tag",
-            "invalid_status",
-            "invalid_control",
-            "invalid_exponent",
-        ] {
+        for suffix in ["invalid_tag", "invalid_status", "invalid_control"] {
             let name = format!("s2_31d_fistp_m16int_{suffix}.case.json");
             let bytes = std::fs::read(directory.join(&name)).unwrap();
             let fixture = v2::Fixture::from_json(&bytes)
@@ -4459,13 +4624,7 @@ mod tests {
             assert_eq!(value.state, expected_state, "{name}: complete CPU state");
         }
 
-        for suffix in [
-            "overflow",
-            "invalid_tag",
-            "invalid_status",
-            "invalid_control",
-            "invalid_exponent",
-        ] {
+        for suffix in ["invalid_tag", "invalid_status", "invalid_control"] {
             let name = format!("s2_31e_fist_m16int_{suffix}.case.json");
             let bytes = std::fs::read(directory.join(&name)).unwrap();
             let fixture = v2::Fixture::from_json(&bytes)
