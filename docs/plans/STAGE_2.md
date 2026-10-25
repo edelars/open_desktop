@@ -292,6 +292,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ca | Convert canonical masked binary80 infinity to integer indefinite for DF10/DF18 m16 FIST | S2-31bx |
 | [x] | S2-31cb | Convert canonical masked binary80 infinity to integer indefinite for DF38 m64 FISTP | S2-31by |
 | [x] | S2-31cc | Convert canonical masked binary80 quiet NaN to integer indefinite for DB10/DB18 m32 FIST/FISTP | S2-31bz |
+| [x] | S2-31cd | Convert canonical masked binary80 quiet NaN to integer indefinite for DF10/DF18 m16 FIST/FISTP | S2-31ca |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4268,3 +4269,25 @@ opcodes, all TOP values, and incoming PE/C1. Rejections include J=0 quiet-like
 encodings, SNaN, tag mismatch, range and write failures; a literal FISTP/FNSTSW
 fixture plus FNSTSW/FNCLEX unit sequence observes and clears IE. JIT/native
 admission remains closed.
+
+
+<a id="s2-31cd-masked-binary80-qnan-through-bounded-m16-fist"></a>
+
+#### S2-31cd. Convert masked binary80 quiet NaN through bounded m16 `FIST`/`FISTP`
+
+Extend only bare `DF 10` and `DF 18` for Special-tagged canonical binary80
+quiet NaNs: exponent `0x7fff`, either sign, explicit integer bit J=1, quiet
+bit=1, and arbitrary lower payload. Under the existing admitted masked FCWs,
+store Word integer indefinite `0x8000` for every payload, sign and RC. After
+the atomic Word write, add sticky IE, clear C1, preserve incoming PE and C0/C2/C3,
+and add no PE/DE/OE/UE/SF or ES/B. Preserve the raw source, addressing and
+post-write FIST/FISTP state/pop ordering. SNaN, J=0 pseudo-NaNs, malformed or
+mismatched tags, m64 QNaNs and unmasked delivery remain outside this slice;
+m32 behavior is unchanged.
+
+Coverage crosses four payload patterns, both signs, all admitted FCWs, both
+opcodes, every TOP and incoming PE/C1. Rejections include J=0 quiet-like
+encodings, SNaN, tag/class/control/prefix and m64 width; Word canaries, write and
+range faults prove atomicity. A literal FISTP/FNSTSW fixture and a direct
+FNSTSW/FNCLEX sequence observe and clear IE. JIT/native admission remains
+closed.
