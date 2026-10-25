@@ -5,7 +5,7 @@
   "provenance": {
     "kind": "project_fixture",
     "source": "Handwritten literal DF18DFE0 bytes and canonical negative binary80 quiet-NaN payload; expected masked Word integer-indefinite result and IE/FNSTSW behavior follow the local bounded S2-31cd contract.",
-    "specification": "Intel SDM revision 093, Vol.2A, FISTP m16int and FNCLEX entries; local bounded S2-31cd masked-quiet-NaN contract.",
+    "specification": "Intel SDM revision 093, Vol.2A, FISTP m16int and FNSTSW entries; local bounded S2-31cd masked-quiet-NaN contract.",
     "specification_version": "Intel SDM revision 093; project S2-31cd"
   },
   "seed": null,
