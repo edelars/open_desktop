@@ -2748,3 +2748,17 @@ and memory. JIT and native admission remain closed. See the
 [S2-31cl CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cl-masked-finite-overflow-m64-fistp),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cl-masked-finite-overflow-to-m64-fistp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cl--masked-finite-overflow-to-m64-fistp).
+
+
+### S2-31cm sticky DE integer-store fixtures
+
+The m32 `DB 18` and m64 `DF 38` fixtures start with the canonical binary80
+Normal values produced by FLD of the negative largest source-width subnormal,
+plus incoming DE. Directed-round-down stores integer `-1`, adds PE and C1,
+retains DE, and composes with FNSTSW. The fixture schema accepts this exact
+FISTP/FNSTSW pair; the complete FLD→store sequence across minimum/maximum
+subnormals and all five integer forms is covered by the 40-case ISA composition
+test. JIT and native admission remain closed. See the
+[S2-31cm CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cm-admit-sticky-de-bounded-integer-stores),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31cm-admit-sticky-de-on-bounded-integer-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cm--sticky-de-on-bounded-integer-stores).

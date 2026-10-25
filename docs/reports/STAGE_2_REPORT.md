@@ -7489,3 +7489,43 @@ to 4,456 nodes, 9,068 edges and 165 communities; the native-denial test
 compiled for Linux x86_64 and remains unexecuted on the arm64 host.
 
 Native runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31cm--sticky-de-on-bounded-integer-stores"></a>
+
+## S2-31cm — sticky DE on bounded integer stores
+
+The shared bounded-integer entry mask changes only from `0x80de` to
+`0x80dc`, admitting sticky DE across the existing five forms DB10, DB18,
+DF10, DF18 and DF38. Incoming IE/DE/PE are preserved independently; DE alone
+adds no current-operation exception. ZE/OE/UE/SF/ES/B still reject, and no
+other x87 gates, source classes or widths changed. Current flags/C1 and stack
+state remain committed after the atomic destination write. Binary80 Subnormal
+and pseudo-denormal operands remain unsupported; supported FLD m32/m64
+subnormals become canonical Normal binary80 values and can then use the
+existing integer fraction conversion.
+
+Focused checks passed: the 35,840-combination seven-class/sign/form/FCW/TOP/
+IE/DE/PE/prior-C1 matrix (1 test), 40 FLD min/max subnormal-to-five-form
+composition cases (1 test), five-form IE|DE|PE write/range atomicity and
+DE-plus-forbidden-status rejection (1 test), both stale m64 DE-gate regressions
+(1 each), two m16 legacy invalid-status CLI controls (1 each), two new CLI
+fixtures (1 test), and JIT denial (1 test). The new fixtures use the schema
+accepted FISTP/FNSTSW pair and seed the canonical binary80 Normal intermediate
+that FLD produces; the actual FLD→store sequences are exercised directly in
+the ISA composition matrix. A scan found no other bounded-integer fixture
+using DE as a negative control.
+
+`cargo test --workspace --offline` passed 951 tests: 6 `od-host`, 551 `od-isa`,
+4 `od-jit`, 78 runner CLI, 137 fixture/JIT, 166 `od-testkit`, 8 x86-runner
+library and 1 x86-runner main; all doc-tests passed. Host
+`cargo check --workspace --all-targets --offline` and Linux x86_64
+`cargo check --workspace --all-targets --offline --target
+x86_64-unknown-linux-gnu` passed. No native runtime or physical x86 execution
+is claimed. `cargo fmt --all -- --check` and `git diff --check` passed.
+`graphify update .` rebuilt the graph to 4,519 nodes, 9,175 edges and 185
+communities. The native-denial test is architecture-gated and filtered out on
+the local arm64 host (0 tests run by the specific filter); it compiled as part
+of the Linux all-target check.
+
+Native runtime and physical x86 acceptance remain deferred under ISSUE-019.

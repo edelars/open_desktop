@@ -301,6 +301,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31cj | Convert finite rounded i32 overflow to integer-indefinite for DB10/DB18 | S2-31ci |
 | [x] | S2-31ck | Convert finite rounded i16 overflow to integer-indefinite for DF10/DF18 | S2-31ci, S2-31cj |
 | [x] | S2-31cl | Convert finite rounded i64 overflow to integer-indefinite for DF38 | S2-31ci, S2-31cj, S2-31ck |
+| [x] | S2-31cm | Admit sticky DE on bounded integer stores after masked FLD subnormal composition | S2-31ci, S2-31cl |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4485,4 +4486,33 @@ and adjacent binary80 values, half-integer roundback, exponents 64, 65 and
 write/range atomicity, FNSTSW/FNCLEX, CLI, and JIT/native denial. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cl-masked-finite-overflow-m64-fistp),
 [report](../reports/STAGE_2_REPORT.md#s2-31cl--masked-finite-overflow-to-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cm-admit-sticky-de-on-bounded-integer-stores"></a>
+
+#### S2-31cm. Admit sticky DE on bounded integer stores
+
+Admit historical DE only on the existing DB 10, DB 18, DF 10, DF 18 and DF 38
+integer-store forms by changing their shared entry mask from `0x80de` to
+`0x80dc`. This adds no new conversion classes or widths. Preserve incoming
+IE/DE/PE and C0/C2/C3; DE alone adds no current-operation flags. Current
+conversion PE/IE and C1 are committed only after the existing atomic write.
+Continue rejecting ZE/OE/UE/SF/ES/B, malformed source encodings, binary80
+subnormals and pseudo-denormals. Other x87 gates remain unchanged.
+
+The 35,840-case sticky matrix spans seven admitted source classes, both signs,
+all five forms, all four FCWs, eight TOP values, incoming IE/DE/PE, and both
+prior C1 values. An additional 40-case composition test loads positive and
+negative minimum/maximum binary32 and binary64 subnormals, then stores to all
+five integer forms without FNCLEX; DE remains sticky, inexact integer rounding
+adds PE, and C1 reflects the store. Five-form denied-write and canonical-range
+tests carry IE|DE|PE; DE combined with each still-forbidden FSW bit rejects
+before memory access. Literal FISTP/FNSTSW fixtures seed the canonical
+binary80 intermediate that FLD creates, because the current fixture schema
+accepts only the exact instruction pair; the full FLD-to-store sequence is
+covered by the ISA test. JIT/native admission and physical execution remain
+closed/deferred. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cm-admit-sticky-de-bounded-integer-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31cm--sticky-de-on-bounded-integer-stores),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

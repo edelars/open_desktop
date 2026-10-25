@@ -837,3 +837,18 @@
   [plan](plans/STAGE_2.md#s2-31cl-masked-finite-overflow-to-m64-fistp),
   [report](reports/STAGE_2_REPORT.md#s2-31cl--masked-finite-overflow-to-m64-fistp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31cm evidence:** bounded integer stores DB10/DB18/DF10/DF18/DF38 now
+  admit sticky DE via the shared `0x80dc` status mask while preserving IE/DE/PE
+  and rejecting ZE/OE/UE/SF/ES/B. DE alone adds no conversion flags. All five
+  forms preserve full state and memory on denied-write/range faults with
+  IE|DE|PE set; DE combined with each forbidden status rejects before access.
+  FLD subnormal composition and FISTP/FNSTSW fixtures are documented in the
+  linked report. The older S2-31d/e invalid-status fixtures now use ZE (0x4504)
+  instead of DE (0x4502), which this slice admits. Native runtime and physical
+  x86 behavior remain unverified;
+  S2-31 and ISSUE-019 remain open. See
+  [contract](specs/CPU_CONTRACT.md#local-s2-31cm-admit-sticky-de-bounded-integer-stores),
+  [plan](plans/STAGE_2.md#s2-31cm-admit-sticky-de-on-bounded-integer-stores),
+  [report](reports/STAGE_2_REPORT.md#s2-31cm--sticky-de-on-bounded-integer-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

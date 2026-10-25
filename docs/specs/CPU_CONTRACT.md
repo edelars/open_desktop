@@ -5527,3 +5527,33 @@ and IE, while JIT/native admission remains closed. See the
 [plan](../plans/STAGE_2.md#s2-31cl-masked-finite-overflow-to-m64-fistp),
 [report](../reports/STAGE_2_REPORT.md#s2-31cl--masked-finite-overflow-to-m64-fistp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31cm-admit-sticky-de-bounded-integer-stores"></a>
+
+## Local S2-31cm: admit sticky DE on bounded integer stores
+
+Only the existing bare `DB 10`, `DB 18`, `DF 10`, `DF 18` and `DF 38` bounded
+integer-store forms now admit incoming DE. Their shared entry condition is
+`FSW & 0x80dc == 0`: incoming IE, DE and PE are preserved independently,
+while ZE/OE/UE/SF/ES/B remain rejected. DE by itself does not alter the
+conversion result or add IE/PE. Only current conversion flags and C1 are
+updated, after the atomic Dword/Word/Qword write succeeds. The FCW whitelist,
+source/tag/class/range rules, address form, payload preservation and pop
+ordering remain unchanged. Binary80 subnormal and pseudo-denormal integer
+sources remain rejected; FLD may create a canonical Normal value from a
+binary32/binary64 subnormal, after which the existing exact fraction path can
+round it to an integer and retain sticky DE.
+
+The matrix covers 35,840 combinations across seven admitted classes, both
+signs, five forms, four FCWs, eight TOP values, incoming IE/DE/PE and both prior
+C1 states. Forty composition cases cover min/max signed subnormals of both
+source widths through all five stores without FNCLEX. Five-form write/range
+fault tests preserve complete state and memory with IE|DE|PE set; each
+forbidden status is also tested combined with DE. CLI fixtures exercise the
+FISTP/FNSTSW pair with the corresponding loaded binary80 intermediate and
+sticky DE. JIT/native admission remains denied. Native runtime and physical
+x86 acceptance remain deferred under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31cm-admit-sticky-de-on-bounded-integer-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31cm--sticky-de-on-bounded-integer-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

@@ -2056,6 +2056,59 @@ mod tests {
     }
 
     #[test]
+    fn fistp_after_subnormal_load_preserves_de_and_observes_fnstsw() {
+        for (name, bytes, expected_right, expected_rip) in [
+            (
+                "S2-31cm m32 loaded negative max subnormal",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31cm_fistp_m32int_loaded_max_subnormal_fnstsw.case.json").as_slice(),
+                "ffffffeeff11223344556677889900",
+                0x0010_0004,
+            ),
+            (
+                "S2-31cm m64 loaded negative max subnormal",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31cm_fistp_m64int_loaded_max_subnormal_fnstsw.case.json").as_slice(),
+                "ffffffffffffff3344556677889900",
+                0x0010_0004,
+            ),
+        ] {
+            let fixture = v2::Fixture::from_json(bytes)
+                .unwrap_or_else(|error| panic!("{name} fixture schema: {error}"));
+            let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::StopAddress {}), "{name}");
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(2) },
+                "{name}"
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("{name} snapshot unavailable");
+            };
+            let after = value.state.x87.as_ref().unwrap();
+            let expected_fsw = 0x4f22;
+            assert_eq!(value.state.gpr[0], HexU64(0x0030_0000 | expected_fsw), "{name}");
+            assert_eq!(after.status_word, HexU64(expected_fsw), "{name}");
+            assert_eq!(after.status_word.0 & 0x3800, 0x0800, "{name}");
+            assert_eq!(after.tag_word, HexU64(0xffff), "{name}");
+            assert_eq!(after.instruction_pointer, HexU64(0x0010_0000), "{name}");
+            assert_eq!(after.data_pointer, HexU64(0x0030_0001), "{name}");
+            assert_eq!(value.state.rip, HexU64(expected_rip), "{name}");
+            let regions = memory.snapshot();
+            assert_eq!(
+                regions.iter().find(|region| region.region_id == "data_left").unwrap().bytes_hex,
+                "ff",
+                "{name}"
+            );
+            assert_eq!(
+                regions.iter().find(|region| region.region_id == "data_right").unwrap().bytes_hex,
+                expected_right,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn fist_m16int_positive_roundback_fixture_preserves_in_range_result_and_observes_pe() {
         let bytes = include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31ck_fist_m16int_positive_roundback_fnstsw.case.json"
