@@ -2703,6 +2703,9 @@ Vol.1 §§8.1.8, 8.1.9 and §8.6 for x87 state and FIP/FDP. See also the
 [Stage 2 plan](../plans/STAGE_2.md#s2-31q-bare-bounded-fstp-m80fp-rax-db-38-partial-slice)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+
+
+
 <a id="local-s2-31bt-exact-signed-zero-fist-m32int-rax-db-10-db-18"></a>
 
 ## Local S2-31bt: exact signed-zero `FIST`/`FISTP m32int [RAX]` (`DB 10`/`DB 18`)
@@ -5757,4 +5760,35 @@ admission stays denied. Native runtime and physical x86 acceptance remain
 deferred under ISSUE-019. See the
 [plan](../plans/STAGE_2.md#s2-31cs-canonical-subnormal-m64-fistp),
 [report](../reports/STAGE_2_REPORT.md#s2-31cs--canonical-subnormal-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31ct-pseudo-infinity-m32-fist"></a>
+
+## Local S2-31ct: Special-tagged pseudo-infinity through m32 `FIST`/`FISTP`
+
+Only bare DB 10 and DB 18 admit a Special-tagged binary80 pseudo-infinity:
+sign/exponent `0x7fff` or `0xffff`, zero significand, all-one exponent, and
+explicit integer bit J=0. Store Dword integer-indefinite `0x80000000`, add
+current IE, and clear C1. Do not add current PE or other exception flags.
+Preserve historical sticky flags and C0/C2/C3. Keep the current FCW
+whitelist, `FSW & 0x80c0` gate, Long64 bare RAX addressing, full canonical48
+Dword preflight, and atomic single write/no read. Commit status, FIP/FDP/RIP,
+and FISTP's one physical TOP pop only after the write succeeds. FIST retains
+TOP. Preserve the raw ten-byte source in either form.
+
+Canonical signed zero and canonical infinity (J=1) remain distinct. Pseudo-
+NaNs, wrong tags, m16/m64, prefixes, unmasked or otherwise disallowed status,
+and all other forms remain unsupported. FLD m80 does not accept
+pseudo-infinity, so no FLD composition is part of this contract.
+
+The 16,384-case matrix crosses both sign/exponent encodings, all four FCWs,
+both forms, all TOP positions, 64 sticky combinations and both incoming C1
+values. Literal expected values verify IE without new PE, C1 clearing, flag
+preservation, source bytes, canaries and TOP wrap. Rejection and fault tests
+cover pseudo-NaNs, wrong tags, m16/m64, denied writes and canonical-range
+crossing. FNSTSW/FNCLEX and literal CLI observation are covered; JIT/native
+admission remains closed and physical x86 validation remains deferred under
+ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31ct-pseudo-infinity-m32-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31ct--special-tagged-pseudo-infinity-through-m32-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

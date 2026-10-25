@@ -2837,3 +2837,17 @@ bytes. JIT and native admission remain denied. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cs-canonical-subnormal-m64-fistp),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cs-canonical-subnormal-m64-fistp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cs--canonical-subnormal-m64-fistp).
+
+
+### S2-31ct Special-tagged pseudo-infinity m32 FISTP fixture
+
+`s2_31ct_fistp_m32int_negative_pseudo_infinity_fnstsw.case.json` seeds a
+Special-tagged J=0 negative pseudo-infinity with raw sign/exponent `0xffff`,
+then executes literal `DB 18` and `DF E0`. It checks Dword integer-indefinite,
+sticky IE observed by FNSTSW, source payload preservation, and surrounding
+canaries. Unit tests cover both signs, FIST/FISTP, FCW/TOP/sticky/C1 matrices,
+FNCLEX, malformed classes/tags, excluded widths and atomic write/range faults.
+JIT/native admission remains denied; FLD composition is excluded because FLD
+does not accept pseudo-infinity. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ct-pseudo-infinity-m32-fist),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ct-pseudo-infinity-m32-fist),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ct--special-tagged-pseudo-infinity-through-m32-fist).

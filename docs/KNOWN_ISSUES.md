@@ -927,3 +927,15 @@
   [plan](plans/STAGE_2.md#s2-31cs-canonical-subnormal-m64-fistp),
   [report](reports/STAGE_2_REPORT.md#s2-31cs--canonical-subnormal-m64-fistp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31ct evidence:** only DB10/DB18 m32 FIST/FISTP admit Special-tagged
+  J=0 pseudo-infinity (zero significand, all-one exponent, either sign),
+  storing integer-indefinite and adding IE. The 16,384-case matrix checks all
+  FCWs, forms, TOP values, six sticky flags and old C1; additional coverage
+  checks pseudo-NaNs/tags/widths, raw-source preservation, status observation,
+  FNCLEX, canaries, write/range atomicity, CLI and JIT/native denial. Physical
+  x86 acceptance and native runtime remain deferred to the combined final
+  S2-31 substage under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31ct-pseudo-infinity-m32-fist),
+  [plan](plans/STAGE_2.md#s2-31ct-pseudo-infinity-m32-fist),
+  [report](reports/STAGE_2_REPORT.md#s2-31ct--special-tagged-pseudo-infinity-through-m32-fist),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).
