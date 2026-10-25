@@ -4842,3 +4842,33 @@ deferred to the combined final S2-31 substage under ISSUE-019. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cx-special-pseudo-nan-m16-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31cx--special-tagged-pseudo-nans-through-m16-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cy-special-pseudo-nan-m64-fistp"></a>
+
+#### S2-31cy. Convert Special-tagged pseudo-NaN through m64 `FISTP`
+
+Only bare `DF 38` admits a Special-tagged binary80 pseudo-NaN with exponent
+`0x7fff`, J=0, and a nonzero fraction. Both bit-62 variants and either sign
+store Qword integer-indefinite `0x8000000000000000`, add IE, and clear C1. Add
+no PE or other current flags; preserve historical sticky flags and C0/C2/C3.
+Retain FCW values `0x037f`, `0x077f`, `0x0b7f`, `0x0f7f`, `FSW & 0x80c0 == 0`,
+bare Long64 RAX addressing, canonical48 eight-byte preflight, one atomic
+Qword write/no read, raw ten-byte source preservation, and write-before-commit
+FISTP pop ordering.
+
+Zero-fraction pseudo-infinity and canonical J=1 infinity/QNaN/SNaN keep their
+existing behavior. Other exponents, pseudo-denormals, unnormals, wrong tags,
+m16/m32 behavior, FLD and unmasked delivery remain outside this extension; no
+generic special-class fallback is added. JIT/native admission remains denied.
+
+Coverage crosses four literal nonzero fractions × both signs × four FCWs × all
+eight TOP values × 64 sticky combinations × both old C1 values (32,768 cases)
+with independent Qword and status literals. Also cover bit-62/raw-byte
+preservation, TOP wrap, canaries, write/range atomicity, zero/pseudo-infinity and
+canonical J=1 NaN controls, other exponents/wrong tags, m16/m32 regression,
+FNSTSW/FNCLEX, a directly seeded fixture, and JIT/native denial. Mac mini and
+physical x86 acceptance remain part of the combined final S2-31 substage under
+ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cy-special-pseudo-nan-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31cy--special-tagged-pseudo-nan-through-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

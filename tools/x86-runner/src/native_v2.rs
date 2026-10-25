@@ -4625,6 +4625,18 @@ mod tests {
     }
 
     #[test]
+    fn s2_31cy_pseudo_nan_fistp_m64_fixture_remains_outside_native_admission() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31cy_fistp_m64int_negative_pseudo_nan_fnstsw.case.json"
+        )
+        .as_slice();
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
+    }
+
+    #[test]
     fn s2_31ck_m16_overflow_and_roundback_fixtures_remain_outside_native_admission() {
         for bytes in [
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ck_fistp_m16int_positive_overflow_fnstsw.case.json").as_slice(),

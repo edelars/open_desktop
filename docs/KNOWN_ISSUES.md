@@ -1000,3 +1000,17 @@
   [plan](plans/STAGE_2.md#s2-31cx-special-pseudo-nan-m16-fist),
   [report](reports/STAGE_2_REPORT.md#s2-31cx--special-tagged-pseudo-nans-through-m16-fist),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31cy evidence:** only bare DF38 m64 FISTP admits a Special-tagged J=0
+  pseudo-NaN with exponent `0x7fff` and nonzero fraction, including either
+  bit-62 variant and both signs. The 32,768-case independent matrix checks
+  Qword integer-indefinite, IE/no new PE, C1 and sticky/condition preservation,
+  raw ten-byte payload, Qword canaries, one write/no read and TOP wrap. Neighbor
+  classes/tags, controls, write/range atomicity, FNSTSW/FNCLEX, a seeded CLI
+  fixture, and JIT/native denial are covered. m16/m32 regression behavior is
+  unchanged; FLD/unmasked behavior is excluded. Mac mini and physical x86
+  acceptance remain deferred to the combined final S2-31 substage under this
+  issue. See [contract](specs/CPU_CONTRACT.md#local-s2-31cy-special-pseudo-nan-m64-fistp),
+  [plan](plans/STAGE_2.md#s2-31cy-special-pseudo-nan-m64-fistp),
+  [report](reports/STAGE_2_REPORT.md#s2-31cy--special-tagged-pseudo-nan-through-m64-fistp),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

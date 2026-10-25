@@ -2633,6 +2633,8 @@ physical x86 acceptance remain deferred to the combined final substage under
 ISSUE-019.
 
 
+
+
 <a id="s2-31by--round-binary80-fractions-through-m64-fistp"></a>
 
 ## S2-31by — round binary80 fractions through m64 FISTP
@@ -7971,3 +7973,44 @@ that header). `.serena/` remains a local-tooling exception and no such paths
 were changed or staged. Independent review completed with no findings. Physical Mac mini
 validation remains deferred to the combined final S2-31 substage under
 ISSUE-019.
+
+
+<a id="s2-31cy--special-tagged-pseudo-nan-through-m64-fistp"></a>
+
+## S2-31cy — Special-tagged pseudo-NaN through m64 FISTP
+
+Only bare `DF 38` now accepts a Special-tagged binary80 pseudo-NaN with
+exponent `0x7fff`, J=0, and nonzero fraction. Either bit-62 variant and sign
+stores Qword integer-indefinite `0x8000000000000000`, adds sticky IE, clears C1,
+and adds no PE or other new flags. Historical sticky flags and C0/C2/C3 remain
+preserved. The existing FCW/FSW admission gate, bare RAX addressing, full
+canonical48 eight-byte preflight, one atomic Qword write/no read, raw source
+retention, and write-before-commit FISTP pop behavior remain in force. Existing
+zero, pseudo-infinity and canonical J=1 infinity/QNaN/SNaN paths retain their
+separate behavior; m16/m32 behavior is unchanged. FLD, unmasked delivery, and
+generic unsupported-class fallback are not admitted.
+
+The independent literal matrix crosses four fractions, both signs, four FCWs,
+all eight TOP values, 64 sticky combinations and both prior C1 values (32,768
+cases). It checks literal Qword bytes and status, source payload, canaries,
+one write/no read, IE without newly set PE, C1 clearing and TOP/tag pop wrap.
+Malformed classes/tags, other exponents, controls, canonical-range and denied
+write atomicity are covered. The seeded negative pseudo-QNaN fixture observes
+IE using FNSTSW, clears it using FNCLEX, and preserves the source payload and
+memory canaries. The JIT fixture check and native admission check remain
+fail-closed.
+
+Validation: `cargo test --workspace --offline` passed (998 unit/integration
+tests plus doc-test targets). Host and
+`x86_64-unknown-linux-gnu` `cargo check --workspace --all-targets --offline`
+passed. The Linux cross-check reports existing dead-code warnings in `od-host`
+and `od-runner`; the native-denial test is Linux x86_64 gated and did not run on
+this Mac host. The focused ISA matrix, status-composition sequence, seeded CLI
+fixture, JIT denial check, `cargo fmt --all -- --check`, `git diff --check`, and
+`python3 tools/check_layout.py` passed. Graphify was refreshed to 4,622 nodes,
+9,345 edges and 180 communities. Mac mini validation, physical x86 acceptance,
+and native runtime execution remain deferred to the combined final S2-31
+substage under ISSUE-019.
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cy-special-pseudo-nan-m64-fistp),
+[plan](../plans/STAGE_2.md#s2-31cy-special-pseudo-nan-m64-fistp), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md).

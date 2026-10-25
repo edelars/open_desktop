@@ -2916,3 +2916,19 @@ native admission remains denied; FLD and unmasked delivery are outside the
 slice. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cx-special-pseudo-nan-m16-fist),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cx-special-pseudo-nan-m16-fist),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cx--special-tagged-pseudo-nans-through-m16-fist).
+
+
+### S2-31cy Special-tagged pseudo-NaN m64 FISTP fixture
+
+`s2_31cy_fistp_m64int_negative_pseudo_nan_fnstsw.case.json` seeds a
+Special-tagged negative J=0 pseudo-quiet-NaN with raw significand
+`0x4000000000000001`, then executes literal `DF 38`, `DF E0`, and `DB E2`.
+It checks Qword integer-indefinite between canaries, IE observed by FNSTSW and
+cleared by FNCLEX, raw source retention, and the popped TOP/tag. ISA coverage
+crosses 32,768 FCW/TOP/sticky/C1 combinations, both bit-62 variants and signs;
+it also covers zero/pseudo-infinity and canonical J=1 controls, neighboring
+classes/tags, denied-write/canonical-range atomicity, and unchanged m16/m32
+behavior. JIT/native admission remains denied; FLD and unmasked delivery remain
+outside the slice. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cy-special-pseudo-nan-m64-fistp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31cy-special-pseudo-nan-m64-fistp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cy--special-tagged-pseudo-nan-through-m64-fistp).

@@ -5932,3 +5932,41 @@ seeded CLI fixture observe and clear IE. See the
 [plan](../plans/STAGE_2.md#s2-31cx-special-pseudo-nan-m16-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31cx--special-tagged-pseudo-nans-through-m16-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31cy-special-pseudo-nan-m64-fistp"></a>
+
+## Local S2-31cy: Special-tagged pseudo-NaN through m64 `FISTP`
+
+Only bare `DF 38` admits a Special-tagged binary80 pseudo-NaN with exponent
+`0x7fff`, explicit integer bit J=0, and a nonzero fraction. Both values of bit
+62, arbitrary remaining nonzero fraction bits and either sign store Qword
+integer-indefinite `0x8000000000000000`, add IE, and clear C1. They add no PE or
+other new status flags and preserve historical sticky flags and C0/C2/C3.
+Retain the FCW whitelist `0x037f`, `0x077f`, `0x0b7f`, `0x0f7f`,
+`FSW & 0x80c0 == 0`, bare Long64 RAX addressing, full canonical48 eight-byte
+preflight, one atomic Qword write/no read, raw ten-byte source, and FISTP
+write-before-commit ordering. Only after the write succeeds does FISTP update
+status/FIP/FDP/RIP, empty old physical TOP, and increment TOP exactly once,
+including wrap.
+
+Zero-fraction J=0 pseudo-infinity and canonical J=1 infinity, QNaN and SNaN
+retain their previous m64 behavior. Wrong tags, pseudo-denormals, unnormals,
+other exponents, m16/m32 semantic changes, FLD and unmasked delivery remain
+outside this extension. There is no generic special-class fallback. JIT/native
+admission remains denied and physical x86/Mac mini acceptance remains deferred
+to the combined final S2-31 substage under ISSUE-019.
+
+The 32,768-case matrix crosses four literal fractions (`1`,
+`0x3fff_ffff_ffff_ffff`, `0x4000_0000_0000_0000`,
+`0x7fff_ffff_ffff_ffff`), both signs, four FCWs, all TOP values, 64 sticky
+combinations and both prior C1 values. Independent expected Qword bytes and
+status literals verify IE without newly setting PE, C1 clearing, preservation,
+raw bytes, canaries, a single write/no read and FISTP TOP/tag wrap. Additional
+coverage checks zero/pseudo-infinity and canonical J=1 controls; tag, class,
+width, FCW and status rejection; denied-write/canonical48-range atomicity;
+FNSTSW/FNCLEX; a direct seeded fixture; and JIT/native denial. Existing m16 and
+m32 behavior is covered by their unchanged regression matrices. See the
+[plan](../plans/STAGE_2.md#s2-31cy-special-pseudo-nan-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31cy--special-tagged-pseudo-nan-through-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
