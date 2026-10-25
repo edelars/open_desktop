@@ -8514,3 +8514,51 @@ part of the combined final S2-31 acceptance substage under ISSUE-019. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31do-canonical-binary80-subnormal-frndint-d9-fc),
 [plan](../plans/STAGE_2.md#s2-31do-canonical-binary80-subnormal-through-bounded-frndint),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31do-frndint-canonical-subnormal-fixture).
+
+## S2-31dp — Special-tagged binary80 pseudo-denormal through bounded FRNDINT
+
+The exact Special-tagged finite branch of bare Long64 `D9 FC` now also admits
+binary80 pseudo-denormals (biased exponent zero, J=1, any fraction including
+zero). This uses the Intel-defined effective exponent -16382 and the existing
+tiny arithmetic behavior: RN/RZ return signed zero; RD returns -1 for negative
+and +0 for positive; RU returns +1 for positive and -0 for negative. Each
+operation adds sticky DE+PE, sets C1 only for ±1, and writes a Zero/Valid result
+tag. The existing FCW/status gates, decoder/classifier, preflight/commit tuple,
+metadata and register-only boundary are unchanged. Pseudo-infinity/NaN,
+unnormal, malformed bytes, tag mismatches and wrong tags remain atomic rejects;
+JIT/native admission stays closed.
+
+The independent 6,144-pair matrix compares pseudo-denormal and E=1 canonical
+Normal encodings across fractions 0/1/interior/max, sign, all RCs, every TOP,
+prior DE/PE/C1 and legal IE/SF sticky combinations. It asserts identical full
+post-x87 state after accounting for current DE, including result bytes/tags,
+PE, C1 and all canaries. Neighbor rejects include pseudo-infinity/NaN, unnormal,
+malformed encodings and Valid/Zero tags. A local two-step `FLD m80fp` then
+`FRNDINT` test inspects the intermediate state: FLD preserves raw E=0/J=1 bytes
+and Special tag with clean DE/PE; FRNDINT then returns Zero and adds DE+PE.
+Another sequence covers repeat FRNDINT, FNSTSW, FNCLEX and zero re-entry.
+The literal `s2_31dp_frndint_fld_pseudo_denormal_fnstsw.case.json` runs the
+already schema-allowed `DB 28 D9 FC DF E0` composition from a clean seeded
+project fixture and observes AX/FSW `0x3822`; this is not native evidence.
+
+Focused verification passed: `cargo test -p od-isa --offline frndint` (27
+matching tests) and `cargo test -p od-runner --offline frndint` (8 unit and 11
+fixture integration tests). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, and `git diff --check` passed. Graphify updated
+the code graph to 4,759 nodes, 9,583 edges and 185 communities; the pre-existing
+`include/open_desktop/host_abi.h` parser warning remains. Independent
+`gpt-6.1-sol` medium review found no concrete defects and independently passed
+the 27 matching `od-isa` tests. The reviewer's repeated runner command did not
+finish within its 60-second limit; the author run above completed with 8 unit
+and 11 fixture integration tests passing. Physical x86 and Mac mini acceptance
+remain deferred to the combined final S2-31 substage under ISSUE-019.
+Physical x86 and Mac mini acceptance remain deferred to the combined final
+S2-31 substage under ISSUE-019. Normative basis: Intel SDM revision 093 Vol.1
+§8.2.2/Table 8-3 and the Vol.2A FRNDINT entry (#D for denormal source, #P for
+nonintegral result). In this revision, Vol.2A Table 3-47 is “Recreating FSAVE
+Format,” so the pseudo-denormal encoding classification is cited to Vol.1
+Table 8-3. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dp-special-tagged-binary80-pseudo-denormal-frndint-d9-fc),
+[plan](../plans/STAGE_2.md#s2-31dp-special-tagged-binary80-pseudo-denormal-through-bounded-frndint),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dp-frndint-pseudo-denormal-fixture).

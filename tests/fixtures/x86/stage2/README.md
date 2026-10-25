@@ -3146,3 +3146,14 @@ seeded status, and FNSTSW AX exposes `0x6d23`. Provenance is explicitly
 `project_fixture`: these initial flags and bytes are handwritten fixture
 state, not evidence from native x86 execution. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31do-canonical-binary80-subnormal-frndint-d9-fc),
 [plan](../../../../docs/plans/STAGE_2.md), and [report](../../../../docs/reports/STAGE_2_REPORT.md).
+
+## S2-31dp FRNDINT pseudo-denormal fixture
+
+The literal `s2_31dp_frndint_fld_pseudo_denormal_fnstsw.case.json` runs
+`DB 28 D9 FC DF E0` over positive binary80 pseudo-denormal bytes with E=0,
+J=1 and zero fraction. The project fixture starts with clean x87 exception
+status. FLD preserves the ten raw bytes and Special tag without setting DE;
+FRNDINT rounds to positive zero, changes the tag to Zero, and sets DE+PE, which
+FNSTSW exposes as `0x3822` with TOP=7. Provenance is `project_fixture`; it is
+not evidence from native x86 execution. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dp-special-tagged-binary80-pseudo-denormal-frndint-d9-fc),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31dp-special-tagged-binary80-pseudo-denormal-through-bounded-frndint), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dp--special-tagged-binary80-pseudo-denormal-through-bounded-frndint).

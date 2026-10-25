@@ -232,6 +232,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dm | Admit historical sticky ZE at bounded D9 FC while preserving independent current PE/IE effects; native/JIT closed | S2-31dl |
 | [x] | S2-31dn | Admit historical SF only together with IE at bounded D9 FC; preserve both while recomputing C1; native/JIT closed | S2-31dm |
 | [x] | S2-31di | Admit canonical Normal binary80 fractions with e=-16382..-1 to D9 FC via comparison-based rounding; produce signed Zero or Valid ±1 with PE/C1; native/JIT closed | S2-31dh |
+| [x] | S2-31dp | Admit Special-tagged binary80 pseudo-denormals through bounded D9 FC with subnormal rounding, DE+PE and canonical-Normal equivalence; native/JIT closed | S2-31do |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -5222,3 +5223,24 @@ Add one literal seeded `D9 FC DF E0` fixture with explicit project-fixture
 provenance. Keep JIT/native admission closed; physical x86 and Mac mini checks
 remain for the combined final S2-31 acceptance substage and must not be run as
 part of this implementation substage.
+
+## S2-31dp — Special-tagged binary80 pseudo-denormal through bounded FRNDINT
+
+Extend the exact Special-tagged finite input branch for bare Long64 `D9 FC` to
+accept pseudo-denormals (biased exponent zero, J=1, any fraction including
+zero). Use Intel's effective exponent -16382. Match the tiny-value arithmetic
+behavior already implemented for canonical subnormals: RN/RZ signed zero, RD
+negative→-1 otherwise +0, RU positive→+1 otherwise -0; add sticky DE and PE,
+set C1 only for ±1, and assign Zero/Valid tags. Preserve the existing FCW,
+status and atomic commit gates. Do not alter decoder/classification or admit
+pseudo-infinity/NaN, unnormal, malformed encodings or wrong tags.
+
+Compare raw pseudo-denormals against equivalent E=1 canonical Normals across
+fraction 0/1/interior/max, sign, all RC modes, TOP, sticky flags and prior C1:
+result bytes, result tags, PE and C1 must match, with DE as the only new
+difference. Include atomic neighboring rejects and repeat/FNSTSW/FNCLEX
+coverage. Add a literal project-fixture `DB 28 D9 FC DF E0` sequence if the
+already bounded x87-state fixture profile accepts it; verify FLD preserves raw
+E=0/J=1/Special and that DE first appears at FRNDINT. Keep JIT/native closed.
+Physical x86 and Mac mini acceptance stay in the combined final S2-31 substage
+under ISSUE-019.

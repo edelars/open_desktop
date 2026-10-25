@@ -1070,3 +1070,12 @@
   [plan](plans/STAGE_2.md#s2-31do-canonical-binary80-subnormal-through-bounded-frndint),
   [report](reports/STAGE_2_REPORT.md#s2-31do--canonical-binary80-subnormal-through-bounded-frndint),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md#s2-31do-frndint-canonical-subnormal-fixture).
+- **S2-31dp evidence:** bare Long64 `D9 FC` additionally admits Special-tagged
+  binary80 pseudo-denormals (E=0/J=1/any fraction) through the bounded FRNDINT
+  path. Local equivalence matrices, neighbor rejects, FLD→FRNDINT→FNSTSW
+  project fixture, re-entry and status-clearing coverage are recorded in the
+  linked report. Native/JIT and physical x86/Mac mini acceptance remain
+  deferred; ISSUE-019 remains open. See [CPU contract](specs/CPU_CONTRACT.md#local-s2-31dp-special-tagged-binary80-pseudo-denormal-frndint-d9-fc),
+  [plan](plans/STAGE_2.md#s2-31dp-special-tagged-binary80-pseudo-denormal-through-bounded-frndint),
+  [report](reports/STAGE_2_REPORT.md#s2-31dp--special-tagged-binary80-pseudo-denormal-through-bounded-frndint),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md#s2-31dp-frndint-pseudo-denormal-fixture).

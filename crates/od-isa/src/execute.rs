@@ -2680,14 +2680,19 @@ fn bounded_x87_frndint_result(state: &LongModeState) -> Option<([u8; 10], bool, 
         if canonical_infinity {
             return Some((raw, false, false, false, false));
         }
-        // The only newly admitted Special-tagged finite class is a canonical
-        // binary80 subnormal: exponent zero, J=0, and a nonzero fraction.
-        // Every such magnitude is below one-half, so nearest-even and
-        // toward-zero return signed zero; directed modes may return one.
+        // The admitted Special-tagged tiny classes are canonical subnormals
+        // (E=0, J=0, nonzero fraction) and pseudo-denormals (E=0, J=1, any
+        // fraction). Intel defines the latter with effective exponent -16382;
+        // both classes are below one-half and signal DE as arithmetic inputs.
+        // Nearest-even and toward-zero return signed zero; directed modes may
+        // return one.
         let significand = u64::from_le_bytes(raw[..8].try_into().ok()?);
-        let canonical_subnormal =
-            raw[8] == 0 && raw[9] & 0x7f == 0 && significand & (1 << 63) == 0 && significand != 0;
-        if !canonical_subnormal {
+        let exponent_zero = raw[8] == 0 && raw[9] & 0x7f == 0;
+        let integer_bit = significand & (1 << 63) != 0;
+        let fraction = significand & !(1 << 63);
+        let canonical_subnormal = exponent_zero && !integer_bit && fraction != 0;
+        let pseudo_denormal = exponent_zero && integer_bit;
+        if !canonical_subnormal && !pseudo_denormal {
             return None;
         }
         let negative = raw[9] & 0x80 != 0;
@@ -19797,6 +19802,76 @@ mod tests {
     }
 
     #[test]
+    fn frndint_pseudo_denormal_reentry_fnstsw_fnclex_and_zero_reentry() {
+        let top = 6_u8;
+        let mut state = LongModeState::default();
+        state.rip = 0x8a90;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = u16::from(top) << 11;
+        x87.tag_word = u16::MAX;
+        x87.registers[usize::from(top)] = binary80_normal(1 << 63, 0, false);
+        x87.set_tag(top, X87Tag::Special);
+        state.x87 = Some(x87);
+
+        for bytes in [
+            &[0xd9, 0xfc][..],
+            &[0xd9, 0xfc][..],
+            &[0xdf, 0xe0][..],
+            &[0xdb, 0xe2][..],
+            &[0xd9, 0xfc][..],
+        ] {
+            let mut memory = Memory::at(bytes, state.rip);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+        }
+        let x87 = state.x87.as_ref().unwrap();
+        assert_eq!(state.rip, 0x8a9a);
+        assert_eq!(state.gpr[0] & 0xffff, 0x3022);
+        assert_eq!(x87.registers[usize::from(top)], [0; 10]);
+        assert_eq!(x87.tag(top), Some(X87Tag::Zero));
+        assert_eq!(x87.status_word, u16::from(top) << 11);
+        assert_eq!(x87.instruction_pointer, 0x8a98);
+    }
+
+    #[test]
+    fn fld_pseudo_denormal_preserves_raw_special_until_frndint_sets_de() {
+        let pseudo = binary80_normal(0x8123_4567_89ab_cdef, 0, false);
+        let mut state = LongModeState::default();
+        state.rip = 0x8aa0;
+        state.gpr[Register::Rax as usize] = 0x1000;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0;
+        x87.tag_word = u16::MAX;
+        state.x87 = Some(x87);
+        let mut memory = Memory::at(&[0xdb, 0x28, 0xd9, 0xfc], state.rip);
+        memory.bytes[..10].copy_from_slice(&pseudo);
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        let after_fld = state.x87.as_ref().unwrap();
+        assert_eq!(after_fld.top(), 7);
+        assert_eq!(after_fld.registers[7], pseudo);
+        assert_eq!(after_fld.tag(7), Some(X87Tag::Special));
+        assert_eq!(after_fld.status_word & 0x0022, 0);
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        let after_frndint = state.x87.as_ref().unwrap();
+        assert_eq!(after_frndint.registers[7], [0; 10]);
+        assert_eq!(after_frndint.tag(7), Some(X87Tag::Zero));
+        assert_eq!(after_frndint.status_word & 0x0022, 0x0022);
+        assert_eq!(state.rip, 0x8aa4);
+    }
+
+    #[test]
     fn frndint_rounds_special_tagged_canonical_subnormals_and_rejects_neighbors() {
         let controls = [0x037f_u16, 0x077f, 0x0b7f, 0x0f7f];
         let fractions = [1_u64, 2, 0x0123_4567_89ab_cdef, 0x7fff_ffff_ffff_ffff];
@@ -19914,12 +19989,15 @@ mod tests {
         }
 
         for (tag, source) in [
-            (X87Tag::Special, binary80_normal(1 << 63, 0, false)), // pseudo-denormal
             (X87Tag::Special, binary80_normal(0, 0, false)),
             (X87Tag::Special, binary80_normal(1, 1, false)), // unnormal
             (X87Tag::Special, binary80_normal(1, 0x0080, false)),
             (X87Tag::Special, binary80_normal(1, 0x0080, true)),
+            (X87Tag::Special, binary80_normal(0, 0x7fff, false)), // pseudo-infinity
+            (X87Tag::Special, binary80_normal(1, 0x7fff, false)), // pseudo-NaN
+            (X87Tag::Valid, binary80_normal(1 << 63, 0, false)),
             (X87Tag::Valid, binary80_normal(1, 0, false)),
+            (X87Tag::Zero, binary80_normal(1 << 63, 0, false)),
             (X87Tag::Zero, binary80_normal(1, 0, false)),
         ] {
             let mut state = LongModeState::default();
@@ -19935,6 +20013,159 @@ mod tests {
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Unsupported { opcode: 0xd9 })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn frndint_rounds_special_tagged_pseudo_denormals_like_canonical_minimum_normals() {
+        let controls = [0x037f_u16, 0x077f, 0x0b7f, 0x0f7f];
+        let fractions = [0_u64, 1, 0x0123_4567_89ab_cdef, 0x7fff_ffff_ffff_ffff];
+        for top in 0_u8..8 {
+            for (rc, control_word) in controls.into_iter().enumerate() {
+                for negative in [false, true] {
+                    for fraction in fractions {
+                        for sticky_ie_sf in [0_u16, 0x0001, 0x0041] {
+                            for sticky_de in [false, true] {
+                                for sticky_pe in [false, true] {
+                                    for prior_c1 in [false, true] {
+                                        let mut pseudo = [0; 10];
+                                        let significand = (1_u64 << 63) | fraction;
+                                        pseudo[..8].copy_from_slice(&significand.to_le_bytes());
+                                        pseudo[9] = if negative { 0x80 } else { 0 };
+                                        let canonical = binary80_normal(significand, 1, negative);
+                                        let rounds_to_one = match rc {
+                                            0 | 3 => false,
+                                            1 => negative,
+                                            2 => !negative,
+                                            _ => unreachable!(),
+                                        };
+                                        let old_status = (u16::from(top) << 11)
+                                            | 0x4500
+                                            | sticky_ie_sf
+                                            | u16::from(sticky_de) * 0x0002
+                                            | u16::from(sticky_pe) * 0x0020
+                                            | u16::from(prior_c1) * 0x0200;
+
+                                        let execute = |raw, tag| {
+                                            let mut x87 = crate::state::X87State::fixture_seed();
+                                            x87.control_word = control_word;
+                                            x87.status_word = old_status;
+                                            x87.tag_word = u16::MAX;
+                                            for physical in 0_u8..8 {
+                                                x87.registers[usize::from(physical)] =
+                                                    std::array::from_fn(|byte| {
+                                                        physical
+                                                            .wrapping_mul(17)
+                                                            .wrapping_add(byte as u8)
+                                                    });
+                                            }
+                                            x87.registers[usize::from(top)] = raw;
+                                            x87.set_tag(top, tag);
+                                            x87.instruction_pointer = 0x1234;
+                                            x87.data_pointer = 0x5678;
+                                            x87.last_opcode = 0x05aa;
+                                            let mut state = LongModeState::default();
+                                            state.rip = 0x8b00;
+                                            state.gpr = std::array::from_fn(|i| {
+                                                0x1234_5678_9abc_def0 ^ i as u64
+                                            });
+                                            state.rflags = 0x0bad_f00d_0123_4567;
+                                            state.x87 = Some(x87);
+                                            let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+                                            assert_eq!(
+                                                step(
+                                                    &mut state,
+                                                    &mut memory,
+                                                    AccessContext::default()
+                                                ),
+                                                Ok(StepOutcome::Advanced),
+                                                "TOP={top} RC={rc} sign={negative} fraction={fraction:#x} tag={tag:?}"
+                                            );
+                                            assert!(memory.accesses.is_empty());
+                                            state
+                                        };
+
+                                        let pseudo_result = execute(pseudo, X87Tag::Special);
+                                        let canonical_result = execute(canonical, X87Tag::Valid);
+                                        let pseudo_x87 = pseudo_result.x87.unwrap();
+                                        let canonical_x87 = canonical_result.x87.unwrap();
+                                        assert_eq!(
+                                            pseudo_x87.registers[usize::from(top)],
+                                            canonical_x87.registers[usize::from(top)]
+                                        );
+                                        assert_eq!(pseudo_x87.tag(top), canonical_x87.tag(top));
+                                        assert_eq!(
+                                            pseudo_x87.status_word & !0x0002,
+                                            canonical_x87.status_word & !0x0002
+                                        );
+                                        assert_ne!(pseudo_x87.status_word & 0x0020, 0);
+                                        assert_ne!(canonical_x87.status_word & 0x0020, 0);
+                                        assert_ne!(pseudo_x87.status_word & 0x0002, 0);
+                                        assert_eq!(
+                                            canonical_x87.status_word & 0x0002 != 0,
+                                            sticky_de
+                                        );
+                                        assert_eq!(
+                                            pseudo_x87.status_word & 0x0200 != 0,
+                                            rounds_to_one
+                                        );
+                                        assert_eq!(
+                                            canonical_x87.status_word & 0x0200 != 0,
+                                            rounds_to_one
+                                        );
+                                        let mut pseudo_without_new_de = pseudo_x87.clone();
+                                        if !sticky_de {
+                                            pseudo_without_new_de.status_word &= !0x0002;
+                                        }
+                                        assert_eq!(pseudo_without_new_de, canonical_x87);
+                                        assert_eq!(pseudo_x87.control_word, control_word);
+                                        assert_eq!(canonical_x87.control_word, control_word);
+                                        assert_eq!(pseudo_x87.instruction_pointer, 0x8b00);
+                                        assert_eq!(canonical_x87.instruction_pointer, 0x8b00);
+                                        assert_eq!(pseudo_x87.data_pointer, 0x5678);
+                                        assert_eq!(canonical_x87.data_pointer, 0x5678);
+                                        assert_eq!(pseudo_x87.last_opcode, 0x05aa);
+                                        assert_eq!(canonical_x87.last_opcode, 0x05aa);
+                                        assert_eq!(pseudo_result.rip, 0x8b02);
+                                        assert_eq!(canonical_result.rip, 0x8b02);
+                                        assert_eq!(pseudo_result.gpr, canonical_result.gpr);
+                                        assert_eq!(pseudo_result.rflags, canonical_result.rflags);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn frndint_pseudo_denormal_rejects_invalid_controls_and_status_atomically() {
+        for (control_word, status_word) in [
+            (0x0000_u16, 0_u16),
+            (0x137f, 0),
+            (0x037f, 0x0080), // ES
+            (0x037f, 0x8000), // B
+            (0x037f, 0x0040), // SF without IE
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x8b80;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = control_word;
+            x87.status_word = status_word;
+            x87.registers[0] = binary80_normal(0x8000_0000_0000_0123, 0, false);
+            x87.set_tag(0, X87Tag::Special);
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xd9 }),
+                "FCW={control_word:#06x} FSW={status_word:#06x}"
             );
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());

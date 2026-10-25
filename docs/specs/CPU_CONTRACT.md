@@ -4236,6 +4236,38 @@ ISSUE-019.
 Normative source: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3 and Vol.2A
 “FRNDINT—Round to Integer,” p.3-372.
 
+## Local S2-31dp: Special-tagged binary80 pseudo-denormal `FRNDINT` (`D9 FC`)
+
+For bare Long64 `D9 FC`, the existing Special-tagged finite-input branch also
+accepts a pseudo-denormal with biased exponent zero, explicit integer bit J=1,
+and any fraction including zero. Intel SDM revision 093 Vol.1 §8.2.2 gives
+these encodings effective exponent -16382; as arithmetic operands they raise
+DE. They round identically to the corresponding E=1 canonical Normal with the
+same significand: RN/RZ produce signed zero, RD produces -1 for negative and
++0 for positive, and RU produces +1 for positive and -0 for negative. Each
+current pseudo-denormal operation adds sticky DE and PE; C1 is set only for
+either signed-one result. Results use Zero or Valid tags accordingly.
+
+The implementation only extends the exact Special finite branch. The decoder,
+classification, FCW/status gates, preflight/commit atomicity, metadata and
+register-only behavior remain unchanged. Pseudo-infinity/NaN, unnormal,
+malformed inputs, other tags and encoding/tag mismatches remain Unsupported
+atomically. JIT/native admission remains closed.
+
+Coverage compares pseudo-denormal and canonical E=1 Normal encodings over
+fraction 0/1/interior/max, sign, all four RC modes, every TOP, prior DE/PE/C1
+and legal IE/SF sticky combinations. Result bytes, result tags, PE and C1
+match; pseudo-denormals add DE while canonical Normals preserve only incoming
+DE. A literal `DB 28 D9 FC DF E0` `project_fixture` demonstrates that bounded
+FLD retains raw E=0/J=1/Special and FRNDINT then adds DE+PE. Repeat FRNDINT,
+FNSTSW, FNCLEX and re-entry are checked locally. Physical x86 and Mac mini
+acceptance, unmasked exception delivery and broader x87 semantics remain
+deferred to the combined final S2-31 substage under ISSUE-019.
+
+Normative source: Intel SDM revision 093, Vol.1 §8.2.2 and Table 8-3, and the
+Vol.2A “FRNDINT—Round to Integer” entry, which specifies #D for a denormal
+source operand and #P for a nonintegral result.
+
 ## Local S2-30al: bounded `FUCOMI ST(0), ST(1)` (`DB E9`)
 
 Accept exactly bare `DB E9`. Before mutation call

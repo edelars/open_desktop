@@ -935,6 +935,39 @@ mod tests {
     }
 
     #[test]
+    fn frndint_fld_pseudo_denormal_literal_sets_de_only_during_arithmetic() {
+        let fixture = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31dp_frndint_fld_pseudo_denormal_fnstsw.case.json"
+        ))
+        .expect("S2-31dp pseudo-denormal composition fixture schema");
+        assert!(od_jit::compile(&[0xd9, 0xfc]).is_err());
+        let initial = fixture.fixture.initial_state.clone();
+        let initial_x87 = initial.x87.as_ref().unwrap();
+        assert_eq!(initial_x87.status_word.0 & 0x0002, 0);
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(3) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("S2-31dp fixture must expose the complete state");
+        };
+        assert_eq!(value.state.rip, HexU64(0x0010_0006));
+        assert_eq!(value.state.gpr[0].0 & 0xffff, 0x3822);
+        let observed = value.state.x87.unwrap();
+        let top = 7;
+        assert_eq!(observed.registers[top], "00000000000000000000");
+        assert_eq!(observed.tag_word.0 & (3 << (top * 2)), 1 << (top * 2));
+        assert_eq!(observed.status_word, HexU64(0x3822));
+        assert_eq!(observed.instruction_pointer, HexU64(0x0010_0002));
+        assert_eq!(observed.data_pointer, HexU64(0x0040_0000));
+        assert_eq!(observed.control_word, initial_x87.control_word);
+    }
+
+    #[test]
     fn frndint_large_exact_integer_literal_fnstsw_fixture_preserves_raw_value() {
         let fixture = v2::Fixture::from_json(include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31dd_frndint_large_exact_integer_fnstsw.case.json"
