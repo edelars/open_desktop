@@ -227,6 +227,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31df | Admit Special-tagged canonical QNaN to D9 FC as a payload-preserving identity; native/JIT closed | S2-31de |
 | [x] | S2-31dg | Admit canonical Special-tagged SNaN to D9 FC; set IE and quiet bit while preserving payload; native/JIT closed | S2-31df |
 | [x] | S2-31dh | Admit historical sticky IE at bounded D9 FC while preserving independent current IE/PE effects; native/JIT closed | S2-31dg |
+| [x] | S2-31di | Admit canonical Normal binary80 fractions with e=-16382..-1 to D9 FC via comparison-based rounding; produce signed Zero or Valid ±1 with PE/C1; native/JIT closed | S2-31dh |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -2238,6 +2239,26 @@ FLD→FRNDINT→FRNDINT→FNSTSW→FNCLEX→FRNDINT CLI composition,
 and the existing fetch/truncation/STOP/budget/no-memory and JIT/native denial
 controls. This gate adjustment does not add a producer of IE and does not
 complete S2-31 or define general x87 exception delivery.
+
+#### S2-31di. Admit small canonical-Normal fractions to bounded `FRNDINT` (`D9 FC`)
+
+Extend the bare register-only gate for a Valid canonical-Normal physical TOP
+whose unbiased exponent is `-16382..=-1`, either sign. Keep FCW
+`037f/077f/0b7f/0f7f` and `FSW & 0x80de == 0`. Use comparison-based rounding:
+nearest-even selects magnitude one only for `e=-1` and significand greater
+than `0x8000000000000000`; directed modes select signed magnitude one only
+when their direction moves that sign away from zero. Otherwise return signed
+zero. Every input adds sticky PE, and C1 is set exactly for magnitude one.
+Encode zero as Zero-tagged signed binary80 zero and ±1 as canonical Valid
+binary80. Do not form a denominator or perform an oversized shift.
+
+Cover half and neighbors, near-one values, `e=-2,-63,-64,-65,-16382`, signs,
+all RCs/TOPs, IE/PE sticky combinations, prior C1, Valid→Zero and Valid→Valid
+tag transitions, repeated FRNDINT, status/payload preservation, atomic decode
+and execution boundaries, no data memory, FNSTSW/FNCLEX, and an exact literal
+CLI fixture. Keep JIT/native admission closed. Subnormal, pseudo-denormal,
+malformed, mismatched-tag and unmasked cases remain unsupported; physical
+acceptance belongs to the combined final S2-31 substage under ISSUE-019.
 
 #### S2-31b. Bare bounded `FISTP m32int [RAX]` (`DB 18`), partial slice
 

@@ -1460,6 +1460,11 @@ fn step_tracked_with_stop(
             let x87 = state.x87.as_mut().expect("FRNDINT state was prevalidated");
             let top = usize::from(x87.top());
             x87.registers[top] = result;
+            if result[..8].iter().all(|byte| *byte == 0)
+                && matches!(result[8..], [0, 0] | [0, 0x80])
+            {
+                let _ = x87.set_tag(top as u8, X87Tag::Zero);
+            }
             // This bounded profile retains C0/C2/C3 locally; FRNDINT changes
             // C1 to reflect magnitude increment and accumulates PE as sticky.
             x87.status_word = (x87.status_word & !0x0200)
@@ -2676,6 +2681,40 @@ fn bounded_x87_frndint_result(state: &LongModeState) -> Option<([u8; 10], bool, 
     let finite = X87Binary80::from_bytes(raw).normalize_finite()?;
     if finite.source_class() != X87Binary80Class::Normal {
         return None;
+    }
+    // Canonical Normal inputs with -16382 <= e < 0 are nonzero and strictly
+    // between zero and one. Avoid constructing 2^(63-e), which exceeds the
+    // integer width for most of this range. Only e=-1 can reach one under
+    // nearest-even; directed modes depend only on sign and direction.
+    if (-16382..=-1).contains(&finite.exponent()) {
+        let negative = finite.sign();
+        let rounding = match x87.control_word {
+            0x037f => RationalRoundingMode::NearestTiesEven,
+            0x077f => RationalRoundingMode::TowardNegative,
+            0x0b7f => RationalRoundingMode::TowardPositive,
+            0x0f7f => RationalRoundingMode::TowardZero,
+            _ => return None,
+        };
+        let rounds_to_one = match rounding {
+            RationalRoundingMode::NearestTiesEven => {
+                finite.exponent() == -1 && finite.significand() > (1_u64 << 63)
+            }
+            RationalRoundingMode::TowardNegative => negative,
+            RationalRoundingMode::TowardPositive => !negative,
+            RationalRoundingMode::TowardZero => false,
+        };
+        let result = if rounds_to_one {
+            let mut one = [0; 10];
+            one[7] = 0x80;
+            one[8] = 0xff;
+            one[9] = if negative { 0xbf } else { 0x3f };
+            one
+        } else {
+            let mut zero = [0; 10];
+            zero[9] = if negative { 0x80 } else { 0 };
+            zero
+        };
+        return Some((result, true, rounds_to_one, false));
     }
     // For canonical Normal inputs with e >= 63, every represented value is
     // already integral. Keep the raw encoding exactly and avoid computing a
@@ -19576,6 +19615,153 @@ mod tests {
     }
 
     #[test]
+    fn frndint_rounds_small_canonical_normals_without_wide_shifts() {
+        let controls = [0x037f_u16, 0x077f, 0x0b7f, 0x0f7f];
+        let exponents = [-1_i32, -2, -63, -64, -65, -16382];
+        let significands = [1_u64 << 63, (1_u64 << 63) + 1, u64::MAX];
+        for top in 0_u8..8 {
+            for (control_word, rc) in controls.into_iter().zip(0..4) {
+                for negative in [false, true] {
+                    for exponent in exponents {
+                        for significand in significands {
+                            for sticky in [0_u16, 0x0001, 0x0020, 0x0021] {
+                                for prior_c1 in [false, true] {
+                                    let source = binary80_normal(
+                                        significand,
+                                        (16383 + exponent) as u16,
+                                        negative,
+                                    );
+                                    let mut state = LongModeState::default();
+                                    state.rip = 0x8a00;
+                                    let mut x87 = crate::state::X87State::fixture_seed();
+                                    x87.control_word = control_word;
+                                    let other_status = 0x4500 | if prior_c1 { 0x0200 } else { 0 };
+                                    x87.status_word =
+                                        (u16::from(top) << 11) | other_status | sticky;
+                                    x87.tag_word = u16::MAX;
+                                    for physical in 0_u8..8 {
+                                        x87.registers[usize::from(physical)] =
+                                            [physical + 0x20; 10];
+                                    }
+                                    x87.registers[usize::from(top)] = source;
+                                    x87.set_tag(top, X87Tag::Valid);
+                                    x87.instruction_pointer = 0x1234;
+                                    x87.data_pointer = 0x5678;
+                                    x87.last_opcode = 0x05aa;
+                                    state.x87 = Some(x87);
+                                    let before = state.clone();
+
+                                    let rounds_to_one = match rc {
+                                        0 => exponent == -1 && significand > (1_u64 << 63),
+                                        1 => negative,
+                                        2 => !negative,
+                                        3 => false,
+                                        _ => unreachable!(),
+                                    };
+                                    let mut expected = [0_u8; 10];
+                                    if rounds_to_one {
+                                        expected[7] = 0x80;
+                                        expected[8] = 0xff;
+                                        expected[9] = if negative { 0xbf } else { 0x3f };
+                                    } else if negative {
+                                        expected[9] = 0x80;
+                                    }
+                                    let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+                                    assert_eq!(
+                                        step(&mut state, &mut memory, AccessContext::default()),
+                                        Ok(StepOutcome::Advanced),
+                                        "top={top} rc={rc} sign={negative} e={exponent} sig={significand:#x} sticky={sticky:#x} c1={prior_c1}"
+                                    );
+                                    let result = state.x87.as_ref().unwrap();
+                                    assert_eq!(result.registers[usize::from(top)], expected);
+                                    assert_eq!(
+                                        result.tag(top),
+                                        Some(if rounds_to_one {
+                                            X87Tag::Valid
+                                        } else {
+                                            X87Tag::Zero
+                                        })
+                                    );
+                                    for physical in 0_u8..8 {
+                                        if physical != top {
+                                            assert_eq!(
+                                                result.registers[usize::from(physical)],
+                                                before.x87.as_ref().unwrap().registers
+                                                    [usize::from(physical)]
+                                            );
+                                        }
+                                        assert_eq!(
+                                            result.tag(physical),
+                                            if physical == top {
+                                                Some(if rounds_to_one {
+                                                    X87Tag::Valid
+                                                } else {
+                                                    X87Tag::Zero
+                                                })
+                                            } else {
+                                                before.x87.as_ref().unwrap().tag(physical)
+                                            }
+                                        );
+                                    }
+                                    let old_status = before.x87.as_ref().unwrap().status_word;
+                                    let expected_status = (old_status & !0x0200)
+                                        | 0x0020
+                                        | if rounds_to_one { 0x0200 } else { 0 };
+                                    assert_eq!(result.status_word, expected_status);
+                                    assert_eq!(result.control_word, control_word);
+                                    assert_eq!(result.instruction_pointer, before.rip);
+                                    assert_eq!(result.data_pointer, 0x5678);
+                                    assert_eq!(result.last_opcode, 0x05aa);
+                                    assert_eq!(
+                                        result.tag_word & !(3 << (u32::from(top) * 2)),
+                                        before.x87.as_ref().unwrap().tag_word
+                                            & !(3 << (u32::from(top) * 2))
+                                    );
+                                    assert_eq!(state.gpr, before.gpr);
+                                    assert_eq!(state.rflags, before.rflags);
+                                    assert_eq!(state.rip, before.rip + 2);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn frndint_rounded_zero_reenters_with_sticky_pe_and_cleared_c1() {
+        let top = 3_u8;
+        let mut state = LongModeState::default();
+        state.rip = 0x8a80;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = (u16::from(top) << 11) | 0x0200 | 0x0001;
+        x87.tag_word = u16::MAX;
+        x87.registers[usize::from(top)] = binary80_normal(1 << 63, 0x3ffe, true);
+        x87.set_tag(top, X87Tag::Valid);
+        state.x87 = Some(x87);
+
+        for (rip, expected_c1) in [(0x8a80, false), (0x8a82, false)] {
+            assert_eq!(state.rip, rip);
+            let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            let result = state.x87.as_ref().unwrap();
+            assert_eq!(
+                result.registers[usize::from(top)],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]
+            );
+            assert_eq!(result.tag(top), Some(X87Tag::Zero));
+            assert_ne!(result.status_word & 0x0020, 0);
+            assert_eq!(result.status_word & 0x0200 != 0, expected_c1);
+            assert_ne!(result.status_word & 0x0001, 0);
+        }
+    }
+
+    #[test]
     fn frndint_preserves_canonical_signed_zero_for_every_top_control_and_status_case() {
         for top in 0_u8..8 {
             for control_word in [0x037f, 0x077f, 0x0b7f, 0x0f7f] {
@@ -20439,7 +20625,7 @@ mod tests {
 
     #[test]
     fn frndint_rejects_invalid_environment_source_and_execution_boundaries_atomically() {
-        let normal = binary80_normal(1 << 63, 0x3fff, false);
+        let normal = binary80_normal(1 << 63, 0x0001, true);
         let mut rejected = Vec::new();
         for control_word in [0x027f, 0x077e, 0x0bff, 0x1f7f] {
             let mut x87 = crate::state::X87State::fixture_seed();
@@ -20457,20 +20643,19 @@ mod tests {
             rejected.push(x87);
         }
         for raw in [
-            binary80_normal(1 << 63, 0x3ffe, false),               // e=-1
-            binary80_normal(1 << 62, 0x403e, false),               // e=63 with J=0
-            [0; 10],                                               // zero
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],                     // valid-tag negative zero
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],                        // subnormal
-            [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0],                     // pseudo-denormal
-            binary80_normal(1 << 63, 0x7fff, false),               // infinity
+            binary80_normal(1 << 62, 0x403e, false), // e=63 with J=0
+            [0; 10],                                 // zero
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],       // valid-tag negative zero
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],          // subnormal
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0],       // pseudo-denormal
+            binary80_normal(1 << 63, 0x7fff, false), // infinity
             binary80_normal(0xc000_0000_0000_0000, 0x7fff, false), // quiet NaN
             binary80_normal(0x8000_0000_0000_0001, 0x7fff, false), // signaling NaN
-            [0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x7f],                  // pseudo-infinity
-            [0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff],                  // negative pseudo-infinity
-            [1, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x7f],                  // pseudo-NaN
+            [0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x7f],    // pseudo-infinity
+            [0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff],    // negative pseudo-infinity
+            [1, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x7f],    // pseudo-NaN
             binary80_normal(0x8000_0000_0000_0001, 0xffff, false), // negative-exponent NaN
-            binary80_normal(1 << 62, 0x3fff, false),               // unnormal
+            binary80_normal(1 << 62, 0x3fff, false), // unnormal
             binary80_normal(0x8000_0000_0000_0001, 0x7fff, false), // quiet-bit-clear SNaN
         ] {
             let mut x87 = crate::state::X87State::fixture_seed();
@@ -20485,6 +20670,14 @@ mod tests {
             x87.control_word = 0x037f;
             x87.status_word = 0;
             x87.registers[0] = normal;
+            x87.set_tag(0, tag);
+            rejected.push(x87);
+        }
+        for tag in [X87Tag::Zero, X87Tag::Special, X87Tag::Empty] {
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0;
+            x87.registers[0] = binary80_normal(1 << 63, 0x3ffe, true);
             x87.set_tag(0, tag);
             rejected.push(x87);
         }

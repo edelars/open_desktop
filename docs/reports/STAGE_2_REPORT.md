@@ -8278,3 +8278,42 @@ substage under ISSUE-019. See the [CPU
 contract](../specs/CPU_CONTRACT.md#local-s2-31db-special-unnormals-m64-fistp),
 [plan](../plans/STAGE_2.md#s2-31db-special-unnormals-m64-fistp), and [fixture
 notes](../../tests/fixtures/x86/stage2/README.md).
+
+## S2-31di — small canonical-Normal values through bounded FRNDINT
+
+Bare register-only `D9 FC` now admits a Valid canonical-Normal old physical
+TOP with unbiased exponent `-16382..=-1`. The comparison-based branch avoids
+oversized shifts: nearest-even returns magnitude one only above the exact
+halfway significand at `e=-1`; directed modes return one only when sign and
+direction move away from zero. Every admitted value adds PE, C1 reports the
+magnitude-one choice, and signed zero outputs receive `X87Tag::Zero`. Existing
+control/status gates, sticky IE/PE behavior and all unrelated state remain
+unchanged.
+
+The local matrix crosses both signs, all four FCWs, all TOPs, `e=-1,-2,-63,
+-64,-65,-16382`, three significand patterns, sticky IE/PE combinations and
+prior C1. It checks nearest half and adjacent values, values below one,
+Valid→Zero/Valid tags, full state preservation, atomic invalid-tag/environment
+and execution-boundary rejects, and repeated FRNDINT after rounding to zero.
+The literal `s2_31di_frndint_min_normal_to_negative_zero_fnstsw.case.json`
+checks minimum-normal input, negative-zero bytes/tag, FNSTSW status, pointer
+preservation and retirement. JIT/native denial and no-data-memory behavior
+remain covered by existing admission/execution checks. This slice does not
+admit subnormal/pseudo-denormal/malformed/tag-mismatched sources or unmasked
+exceptions.
+
+Validation passed: focused `cargo test -p od-isa --offline frndint` ran 16
+tests, and the new literal CLI test passed. `cargo test --workspace --offline`
+passed all 1,032 tests: 6 host, 606 od-isa, 4 JIT, 96 runner unit, 145 fixture,
+166 testkit, 8 x86-runner supervisor and 1 REP trace tests. Host and
+`x86_64-unknown-linux-gnu` `cargo check --workspace --all-targets --offline`
+passed; the Linux cross-check reports existing dead-code warnings in od-host
+and od-runner. `cargo fmt --all -- --check`, `git diff --check`, and
+`python3 tools/check_layout.py` passed. The x86-only native-denial runtime test
+was not executed on this Apple Silicon host; its target compiled in the Linux
+cross-check. Graphify refreshed the code graph to 4,700 nodes, 9,486 edges and
+174 communities; existing extractor warnings remain for
+`include/open_desktop/host_abi.h` and files with no supported symbols.
+Physical x86/Mac mini acceptance remains deferred to the combined final S2-31
+substage under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31di-small-canonical-normal-frndint-d9-fc),
+[plan](../plans/STAGE_2.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

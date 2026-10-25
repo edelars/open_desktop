@@ -1384,6 +1384,17 @@ literal `FLD m80fp`→`FRNDINT`→`FRNDINT`→`FNSTSW AX`→`FNCLEX`→`FRNDINT`
 verifies CLI status observation, quiet-NaN re-entry and clearing. JIT/native admission
 remains denied. See the [S2-31dh CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dh-historical-sticky-ie-in-bounded-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dh-admit-historical-sticky-ie-to-bounded-frndint-d9-fc), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dh--historical-sticky-ie-through-bounded-frndint).
 
+### S2-31di FRNDINT small Normal values
+
+The literal `s2_31di_frndint_min_normal_to_negative_zero_fnstsw.case.json`
+starts at canonical negative binary80 minimum Normal, runs `D9 FC` and `DF E0`,
+and observes signed-zero output, the Zero tag, sticky IE/PE, cleared C1 and
+preserved condition codes in AX/FSW. Interpreter vectors cover both signs,
+nearest half and neighbors, near-one values, directed rounding, selected
+negative exponents down to -16382, all FCWs/TOPs and sticky IE/PE/C1; a second
+FRNDINT confirms PE sticks while C1 clears for the Zero identity. Native/JIT
+denial remains active. See the [S2-31di CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31di-small-canonical-normal-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31di--small-canonical-normal-values-through-bounded-frndint).
+
 ### S2-31b FISTP m32int schema and literal coverage
 
 The schema admits only bare `DB 18` and exact `DB 18 DF E0` (FNSTSW AX).

@@ -4053,6 +4053,36 @@ FRNDINT without FNCLEX, and the existing FNSTSW/FNCLEX fixture sequence.
 This local contract does not add an IE producer or define general exception
 delivery.
 
+## Local S2-31di: small canonical-Normal `FRNDINT` (`D9 FC`)
+
+Extend the exact bare register-only S2-31a gate to admit only Valid-tagged,
+canonical Normal binary80 values with unbiased exponent `-16382..=-1` (biased
+exponent `1..=0x3ffe`), either sign. Keep the four-FCW whitelist and
+`FSW & 0x80de == 0`; pre-existing IE and PE remain independently sticky.
+
+Every admitted source is nonzero and inexact. Since its magnitude is below
+one, nearest-even returns signed zero except when `e=-1` and the significand
+is strictly greater than `0x8000000000000000`; exact one-half ties to zero.
+Toward-zero returns signed zero. Toward-negative returns `-1` only for a
+negative source; toward-positive returns `+1` only for a positive source.
+Zero is encoded with the source sign, a zero significand and `X87Tag::Zero`;
+one is canonical Valid binary80 `±1` (`J=1`, exponent `0x3fff`). Every result
+adds sticky PE, C1 is set exactly for magnitude one, and C0/C2/C3 plus all
+other status bits are preserved.
+
+The small-exponent branch uses comparisons on exponent/significand and never
+forms the oversized `2^(63-e)` denominator. Commit updates only old physical
+TOP's payload/tag, PE/C1, FIP, RIP and retirement; TOP, FDP, FOP, unrelated
+registers/tags, GPR/RFLAGS and data memory remain unchanged. Canonical-range,
+source-class/tag, FCW/FSW, fetch/truncation/STOP/budget rejects are atomic.
+Coverage spans ±1/2 and adjacent representable values, values just below one,
+`e=-2,-63,-64,-65,-16382`, TOP, all FCWs, incoming IE/PE, prior C1, rounded
+zero re-entry, full payload/tag/status preservation, and a literal
+FRNDINT→FNSTSW composition. JIT/native admission remains closed; subnormals,
+pseudo-denormals, malformed encodings, mismatched tags, unmasked exceptions,
+and general x87 exception delivery remain outside this slice. Physical
+acceptance is deferred to the combined final S2-31 substage under ISSUE-019.
+
 ## Local S2-30al: bounded `FUCOMI ST(0), ST(1)` (`DB E9`)
 
 Accept exactly bare `DB E9`. Before mutation call
