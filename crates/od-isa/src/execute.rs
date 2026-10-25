@@ -23397,20 +23397,48 @@ mod tests {
     #[test]
     fn fst_m64fp_special_subnormal_rejects_other_encodings_and_commits_after_write() {
         let invalid_sources = [
-            (1, 0, X87Tag::Valid),                            // valid-tagged subnormal
-            (0, 0, X87Tag::Special),                          // special-tagged zero
-            (0x8000_0000_0000_0001, 0, X87Tag::Special),      // pseudo-denormal
-            (1, 0x3fff, X87Tag::Special),                     // unnormal
-            (0x8000_0000_0000_0000, 0, X87Tag::Special),      // pseudo-infinity
-            (0xc000_0000_0000_0000, 0x7fff, X87Tag::Special), // unsupported NaN class
-            (0x8000_0000_0000_0000, 0x7fff, X87Tag::Valid),   // mismatched valid tag
+            (
+                1,
+                0,
+                X87Tag::Valid,
+                X87Binary80Class::Subnormal, // valid-tagged subnormal
+            ),
+            (0, 0, X87Tag::Special, X87Binary80Class::Zero), // special-tagged zero
+            (
+                0x8000_0000_0000_0000,
+                0,
+                X87Tag::Special,
+                X87Binary80Class::PseudoDenormal,
+            ),
+            (1, 0x3fff, X87Tag::Special, X87Binary80Class::Unnormal),
+            (0, 0x7fff, X87Tag::Special, X87Binary80Class::PseudoInfinity),
+            (
+                0x4000_0000_0000_0000,
+                0x7fff,
+                X87Tag::Special,
+                X87Binary80Class::PseudoQuietNaN,
+            ),
+            (
+                0x8000_0000_0000_0000,
+                0x3fff,
+                X87Tag::Special,
+                X87Binary80Class::Normal, // mismatched special tag
+            ),
         ];
-        for (significand, exponent, tag) in invalid_sources {
+        for (significand, exponent, tag, expected_class) in invalid_sources {
             let mut state = LongModeState::default();
             state.rip = 0x86c0;
             state.gpr[Register::Rax as usize] = 0x1000;
             let mut x87 = crate::state::X87State::fixture_seed();
-            x87.registers[0] = binary80_normal(significand, exponent, false);
+            let raw = binary80_normal(significand, exponent, false);
+            assert_eq!(
+                X87Binary80::from_bytes(raw).classify(),
+                expected_class,
+                "unexpected class for sig={significand:016x}, exp={exponent:04x}"
+            );
+            x87.control_word = 0x037f;
+            x87.status_word = 0x4500; // admitted state, TOP=0
+            x87.registers[0] = raw;
             x87.set_tag(0, tag);
             state.x87 = Some(x87);
             let before = state.clone();
