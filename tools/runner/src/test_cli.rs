@@ -818,6 +818,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn frndint_signed_zero_literal_fnstsw_fixture_preserves_state_and_sign() {
+        let fixture = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31dc_frndint_negative_zero_fnstsw.case.json"
+        ))
+        .expect("S2-31dc signed-zero fixture schema");
+        let initial = fixture.fixture.initial_state.clone();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(2) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("S2-31dc signed-zero composition must be observable");
+        };
+        assert_eq!(value.state.rip, HexU64(0x0010_0004));
+        assert_eq!(value.state.gpr[0].0 & 0xffff, 0x6d20);
+        let observed = value.state.x87.unwrap();
+        let before = initial.x87.unwrap();
+        let top = ((before.status_word.0 >> 11) & 7) as usize;
+        assert_eq!(top, 5);
+        assert_eq!(observed.registers[top], "00000000000000000080");
+        assert_eq!(observed.tag_word, before.tag_word);
+        assert_eq!(observed.status_word, HexU64(0x6d20));
+        assert_eq!(observed.control_word, before.control_word);
+        assert_eq!(observed.instruction_pointer, initial.rip);
+        assert_eq!(observed.data_pointer, before.data_pointer);
+        assert_eq!(observed.last_opcode, before.last_opcode);
+        for physical in 0..8 {
+            if physical != top {
+                assert_eq!(observed.registers[physical], before.registers[physical]);
+            }
+        }
+    }
+
     fn old() -> LoadedFixture {
         Fixture::from_json(include_bytes!(
             "../../../tests/fixtures/x86/s0_09_mov_imm64.case.json"

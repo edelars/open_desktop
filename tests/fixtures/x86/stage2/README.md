@@ -1313,6 +1313,17 @@ denies D9 FC.
 Normative source: Intel SDM revision 093, Vol.2A, “FRNDINT—Round to Integer,”
 p.3-372 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=490)).
 
+### S2-31dc FRNDINT signed-zero composition
+
+The literal `s2_31dc_frndint_negative_zero_fnstsw.case.json` runs bare `D9 FC`
+on physical TOP=5 containing canonical negative binary80 zero with the Zero
+tag, then executes `DF E0` to expose the resulting FSW in AX. C1 clears while
+sticky PE and C0/C2/C3 remain set; the ten-byte negative-zero payload, TOP,
+tag word, FDP/FOP and every unrelated physical register remain unchanged. The
+interpreter separately covers both signs and all sign×FCW×TOP×PE×C1 cases. The
+existing S2-31a positive tie fixture remains as the Normal-rounding CLI
+regression. Native/JIT denial remains active. See the [S2-31dc CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dc-canonical-signed-zero-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dc-admit-signed-zero-to-bounded-frndint-d9-fc), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dc--canonical-signed-zero-through-bounded-frndint).
+
 ### S2-31b FISTP m32int schema and literal coverage
 
 The schema admits only bare `DB 18` and exact `DB 18 DF E0` (FNSTSW AX).

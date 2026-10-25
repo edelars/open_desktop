@@ -221,6 +221,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30am | Bare `DF E9` FUCOMIP ST(0), ST(1), bounded canonical-Normal compare to RFLAGS and one physical TOP pop; native closed | S2-30al |
 | [x] | S2-30an | Bare indexed DB/DF register FCOMI-family forms for ST(i), bounded canonical-Normal compare and optional physical TOP pop; native closed | S2-30am |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
+| [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -2109,6 +2110,21 @@ RIP and one retirement; preserve tags, TOP and unrelated state. C0/C2/C3 are
 retained by local policy. Reject unsupported values, environment, prefixes,
 and execution boundaries atomically. Native admission remains closed. This
 does not complete S2-31 or define general x87 exceptions.
+
+#### S2-31dc. Admit signed zero to bounded `FRNDINT` (`D9 FC`)
+
+Extend only the exact bare register-only S2-31a gate to accept the physical TOP
+when it has `X87Tag::Zero` and canonical raw signed zero: significand bytes are
+all zero and sign/exponent is exactly `0000` or `8000`. Preserve its exact ten
+bytes, Zero tag and TOP; clear C1, add no exception flags, and retain PE and
+C0/C2/C3. Keep the FCW whitelist and `FSW & 0x80df` unchanged. All existing
+pointer, GPR/RFLAGS, retirement, and atomic fetch/truncation/STOP/budget
+behavior remains unchanged. Mismatched tags/payloads and all other source
+classes remain Unsupported. The 256-case matrix spans sign, FCW, TOP, PE and
+C1; literal CLI coverage composes negative zero with FNSTSW AX. FNCLEX,
+prefix/decode, and native/JIT denial remain covered by their existing gates.
+Physical acceptance remains with the combined final S2-31 substage; this does
+not complete S2-31 or expand x87 exception delivery.
 
 #### S2-31b. Bare bounded `FISTP m32int [RAX]` (`DB 18`), partial slice
 

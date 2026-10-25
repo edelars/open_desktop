@@ -3908,6 +3908,32 @@ Normative source: Intel SDM revision 093, Vol.2A, “FRNDINT—Round to Integer,
 p.3-372; Vol.1 §§8.1.9 and 8.5.6
 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=490)).
 
+## Local S2-31dc: canonical signed-zero `FRNDINT` (`D9 FC`)
+
+The exact bare `D9 FC` interpreter gate additionally accepts physical TOP only
+when its tag is `Zero`, all eight significand bytes are zero, and its
+sign/exponent bytes are exactly `00 00` or `00 80`. Success preserves all ten
+source bytes, the Zero tag, TOP, FCW, FDP, FOP, all other physical registers,
+GPRs and RFLAGS. It clears C1, adds no exception flags, and preserves sticky
+PE and concrete C0/C2/C3. The existing four-FCW whitelist and
+`FSW & 0x80df == 0` mask are unchanged. FIP receives starting RIP, RIP advances
+by two, and the instruction retires once. No data memory is accessed and no
+stack change occurs.
+
+Mismatched tags and zero-like malformed payloads remain Unsupported, as do
+fractional/large Normals outside S2-31a, subnormals, pseudo-denormals,
+infinities, NaNs, unnormals and pseudo-special encodings. Invalid controls,
+status bits, prefixes and fetch/truncation/STOP/budget boundaries preserve the
+complete state. Tests include a 256-case sign×FCW×TOP×PE×C1 matrix, concrete
+C0/C2/C3 combinations, malformed tag/payload rejects, a literal negative-zero
+FNSTSW composition, and the unchanged Normal rounding regression. Native x87
+and JIT admission remain explicitly closed. FLD m80fp→FRNDINT composition is
+not currently covered by a fixture. Physical acceptance remains part of the
+combined final S2-31 substage, and S2-31 remains partial under ISSUE-019.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FRNDINT—Round to Integer,”
+p.3-372; Vol.1 §§8.1.9 and 8.5.6 (same sources as S2-31a above).
+
 ## Local S2-30al: bounded `FUCOMI ST(0), ST(1)` (`DB E9`)
 
 Accept exactly bare `DB E9`. Before mutation call

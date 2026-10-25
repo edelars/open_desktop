@@ -4016,6 +4016,32 @@ inputs were not tested.
 Normative source: Intel SDM revision 093, Vol.2A, “FRNDINT—Round to Integer,”
 p.3-372 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
 
+## S2-31dc — canonical signed zero through bounded FRNDINT
+
+The existing bare `D9 FC` gate now accepts either canonical signed binary80
+zero only when physical TOP is tagged Zero and the raw significand and
+sign/exponent exactly match +0 or -0. It preserves all source bytes, Zero/TOP,
+PE and C0/C2/C3, clears C1, updates FIP/RIP and retires once. The existing FCW
+whitelist and `FSW & 0x80df` mask are unchanged. Mismatched tags/payloads and
+all prior unsupported classes remain atomic; no memory or stack changes were
+introduced. The Normal-only independent rounding vectors remain unchanged.
+
+The local 256-case matrix and literal negative-zero/FNSTSW fixture validate
+the bounded interpreter profile. Native/JIT remain denied. Physical x86
+behavior and broader exception semantics are deferred to the combined final
+S2-31 substage; S2-31 remains partial under ISSUE-019.
+
+Validation passed: `cargo test -p od-isa --offline frndint` (6 tests), the
+literal fixture runner test
+`cargo test -p od-runner --offline frndint_signed_zero_literal_fnstsw_fixture_preserves_state_and_sign`,
+`cargo check --workspace --all-targets --offline`, and Linux x86_64 compile-only
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
+--offline`. `cargo fmt --all -- --check`, `git diff --check`, and
+`python3 tools/check_layout.py` passed. `graphify update .` completed with 4659
+nodes, 9415 edges, and 172 communities. Physical x86/native execution and Linux
+runtime denial tests were not run on the arm64 macOS host; the final combined
+S2-31 substage remains responsible for physical acceptance.
+
 ## S2-30ab — bounded FCOM ST(1) exact Normal compare
 
 Added exact bare `D8 D1` decode as `FcomSt1`; the existing D8 arithmetic ranges
