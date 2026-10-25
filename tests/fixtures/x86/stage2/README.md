@@ -2412,3 +2412,15 @@ sign, RC, TOP, sticky-flag and atomicity cases, including FNCLEX and raw-m80
 source preservation. See the [S2-31bm CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bm-binary80-subnormal-to-binary64-underflow-rounding),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bm-round-binary80-subnormals-through-binary64-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bm--binary80-subnormal-to-binary64-underflow-rounding).
+
+### S2-31bn binary80 exponent -127 to binary32 minimum-normal fixtures
+
+The positive D910/DFE0 fixture starts at the exact nearest-even boundary where
+direct binary32 rounding selects minimum normal; FNSTSW observes UE+PE and C1.
+The negative D918/DFE0 fixture rounds toward negative to minimum normal, pops
+TOP, and observes PE+C1 without a new UE because unbounded 24-bit rounding
+carries. Both fixtures use Valid-tagged canonical Normal sources, run only in
+the interpreter, and remain denied by JIT/native admission. See the [S2-31bn
+CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bn-binary80-exponent--127-to-binary32-minimum-normal),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bn-round-exponent--127-binary80-normals-directly-to-binary32-minimum-normal),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bn--binary80-normal-to-binary32-minimum-normal-rounding).

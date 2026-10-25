@@ -275,6 +275,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bj | Round extreme binary32 underflow directly to signed zero or minimum subnormal | S2-31bf, S2-31bh |
 | [x] | S2-31bk | Round extreme binary64 underflow directly to signed zero or minimum subnormal | S2-31bg, S2-31bh |
 | [x] | S2-31bl | Round Special-tagged canonical binary80 subnormals through D910/D918 to signed zero or minimum binary32 subnormal | S2-31bj, S2-31bh |
+| [x] | S2-31bm | Round Special-tagged canonical binary80 subnormals through DD10/DD18 to signed zero or minimum binary64 subnormal | S2-31bk, S2-31bh |
+| [x] | S2-31bn | Accept direct D910/D918 rounding from binary80 Normal exponent -127 to signed minimum binary32 normal with independent UE rounding | S2-31bf, S2-31bh |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3929,3 +3931,25 @@ FNCLEX → raw FSTP m80 preservation; invalid classes/tags and gates; write/rang
 atomicity; FNSTSW/FNCLEX; literal CLI fixtures and JIT/native denial. Native
 runtime and physical acceptance remain deferred under ISSUE-019. See the
 [S2-31bm report](../reports/STAGE_2_REPORT.md#s2-31bm--binary80-subnormal-to-binary64-underflow-rounding).
+
+#### S2-31bn. Round exponent -127 binary80 normals directly to binary32 minimum normal
+
+Extend only bounded `D9 10`/`D9 18` for Valid-tagged canonical binary80 Normal
+sources at unbiased exponent -127 when direct rounding of `S / 2^41` selects
+exactly `0x800000`, the binary32 minimum normal significand. Store the minimum
+normal directly from that 23-bit destination rounding; do not derive stored
+bits from the separate 24-bit rounding used to classify underflow. Set PE and
+C1 for the increment. Decide new UE independently: round `S >> 40` and its low
+40-bit remainder with the same sign-aware RC, and set UE iff the rounded
+24-bit significand remains below `1 << 24`. Preserve any prior UE when this
+calculation does not add it. Keep the existing FCW/FSW gates, source bytes and
+all other m32/m64 paths unchanged. Commit flags, FIP/FDP, RIP and FSTP pop only
+after the atomic Dword write succeeds.
+
+Cover exact maximum-subnormal and minimum-normal controls; nearest-even and
+directed-rounding thresholds and neighbors for both signs; every RC, opcode,
+TOP and all 16 sticky IE/DE/UE/PE combinations; the independent 24-bit UE
+threshold; and an exact-integer oracle for both thresholds. Also cover write
+and range fault atomicity, FNSTSW/FNCLEX, literal CLI fixtures and JIT/native
+denial. Native runtime and physical acceptance remain deferred under
+ISSUE-019.

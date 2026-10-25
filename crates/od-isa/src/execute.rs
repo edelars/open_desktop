@@ -2787,8 +2787,10 @@ fn bounded_x87_fist_integer_result(state: &LongModeState, width: u32) -> Option<
 /// rounding. Exact subnormal outputs use integer downshift; masked inexact
 /// subnormal outputs defer UE+PE until after a successful write. Extreme
 /// underflow sources are admitted as signed zero or minimum subnormal with
-/// UE+PE. Other zero results, minimum-normal promotion and out-of-range results
-/// reject before access.
+/// UE+PE. At exponent -127, direct rounding to the minimum normal is admitted;
+/// UE is decided independently from rounding the unbounded 24-bit significand.
+/// Other zero results, minimum-normal promotion and out-of-range results reject
+/// before access.
 fn bounded_x87_m32fp_result(state: &LongModeState) -> Option<(u32, bool, bool, bool, bool)> {
     let x87 = state.x87.as_ref()?;
     if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
@@ -2898,6 +2900,24 @@ fn bounded_x87_m32fp_result(state: &LongModeState) -> Option<(u32, bool, bool, b
         let rounded =
             round_quotient_magnitude(finite.sign(), quotient, remainder, 1_u64 << shift, rounding)?;
         let fraction = u32::try_from(rounded).ok()?;
+        if exponent == -127 && fraction == 0x0080_0000 {
+            let wide_quotient = significand >> 40;
+            let wide_remainder = significand & ((1_u64 << 40) - 1);
+            let wide_rounded = round_quotient_magnitude(
+                finite.sign(),
+                wide_quotient,
+                wide_remainder,
+                1_u64 << 40,
+                rounding,
+            )?;
+            return Some((
+                (u32::from(finite.sign()) << 31) | 0x0080_0000,
+                remainder != 0,
+                rounded > u128::from(quotient),
+                false,
+                wide_rounded < (1_u128 << 24),
+            ));
+        }
         if !(1..=0x007f_ffff).contains(&fraction) {
             return None;
         }
@@ -24176,7 +24196,7 @@ mod tests {
     }
 
     #[test]
-    fn fst_m32fp_rounding_rejects_zero_below_range_and_minimum_normal_promotion() {
+    fn fst_m32fp_rounding_rejects_zero_below_range_and_checks_minimum_normal_promotion() {
         let modes = [0x037f_u16, 0x077f, 0x0b7f, 0x0f7f];
         let vectors = [
             (
@@ -24185,13 +24205,23 @@ mod tests {
                 [None, None, None, None],
                 [None, None, None, None],
             ),
-            // Half-step above maximum subnormal: directed rounding may retain
-            // max-subnormal, while magnitude increment would promote to min-normal.
+            // Near the upper edge at exponent -127: nearest and directed-away
+            // cases may now round directly to minimum normal.
             (
                 -127_i32,
                 0xffff_ff80_0000_0000_u64,
-                [None, Some(0x007f_ffff), None, Some(0x007f_ffff)],
-                [None, None, Some(0x007f_ffff), Some(0x007f_ffff)],
+                [
+                    Some(0x0080_0000),
+                    Some(0x007f_ffff),
+                    Some(0x0080_0000),
+                    Some(0x007f_ffff),
+                ],
+                [
+                    Some(0x0080_0000),
+                    Some(0x0080_0000),
+                    Some(0x007f_ffff),
+                    Some(0x007f_ffff),
+                ],
             ),
         ];
         for opcode in [&[0xd9, 0x10][..], &[0xd9, 0x18][..]] {
@@ -24232,7 +24262,11 @@ mod tests {
                                 );
                                 assert_eq!(
                                     state.x87.as_ref().unwrap().status_word & 0x0030,
-                                    0x0030
+                                    if fraction == 0x0080_0000 {
+                                        0x0020
+                                    } else {
+                                        0x0030
+                                    }
                                 );
                             }
                             None => {
@@ -24487,6 +24521,223 @@ mod tests {
                 assert_eq!(state.x87.as_ref().unwrap().status_word & 0x0231, 0);
             }
         }
+    }
+
+    #[test]
+    fn fst_m32fp_rounds_exponent_minus_127_to_minimum_normal_without_double_rounding() {
+        fn oracle_round(quotient: u64, remainder: u64, shift: u32, negative: bool, rc: u16) -> u64 {
+            let increment = match rc {
+                0x037f => {
+                    let halfway = 1_u64 << (shift - 1);
+                    remainder > halfway || (remainder == halfway && quotient & 1 != 0)
+                }
+                0x077f => negative && remainder != 0,
+                0x0b7f => !negative && remainder != 0,
+                0x0f7f => false,
+                _ => unreachable!(),
+            };
+            quotient + u64::from(increment)
+        }
+
+        let direct_nearest_tie = 0xffff_ff00_0000_0000_u64;
+        let directed_positive_exact = 0xffff_fe00_0000_0000_u64;
+        let wide_nearest_tie = 0xffff_ff80_0000_0000_u64;
+        let vectors = [
+            0xffff_fe00_0000_0000, // exact maximum subnormal control
+            directed_positive_exact - 1,
+            directed_positive_exact,
+            directed_positive_exact + 1,
+            direct_nearest_tie - 1,
+            direct_nearest_tie,
+            direct_nearest_tie + 1,
+            wide_nearest_tie - 1,
+            wide_nearest_tie,
+            wide_nearest_tie + 1,
+            u64::MAX,
+        ];
+        let rounding_modes = [0x037f_u16, 0x077f, 0x0b7f, 0x0f7f];
+        let sticky_flags = [
+            0_u16, 1, 2, 3, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33,
+        ];
+
+        assert_eq!(
+            oracle_round(
+                direct_nearest_tie >> 41,
+                direct_nearest_tie & ((1_u64 << 41) - 1),
+                41,
+                false,
+                0x037f,
+            ),
+            0x0080_0000
+        );
+        assert_eq!(
+            oracle_round(
+                directed_positive_exact + 1 >> 41,
+                (directed_positive_exact + 1) & ((1_u64 << 41) - 1),
+                41,
+                false,
+                0x0b7f,
+            ),
+            0x0080_0000
+        );
+        assert_eq!(
+            oracle_round(
+                wide_nearest_tie >> 40,
+                wide_nearest_tie & ((1_u64 << 40) - 1),
+                40,
+                false,
+                0x037f,
+            ),
+            1 << 24
+        );
+
+        for (opcode, pop) in [(&[0xd9, 0x10][..], false), (&[0xd9, 0x18][..], true)] {
+            for top in 0..8_u8 {
+                for control_word in rounding_modes {
+                    for negative in [false, true] {
+                        for sticky in sticky_flags {
+                            for significand in vectors {
+                                let source = binary80_normal(significand, 0x3f80, negative);
+                                let quotient = significand >> 41;
+                                let remainder = significand & ((1_u64 << 41) - 1);
+                                let rounded =
+                                    oracle_round(quotient, remainder, 41, negative, control_word);
+                                assert!((0x0040_0000..=0x0080_0000).contains(&rounded));
+                                let inexact = remainder != 0;
+                                let incremented = rounded > quotient;
+                                let underflow = if rounded == 0x0080_0000 {
+                                    let wide_rounded = oracle_round(
+                                        significand >> 40,
+                                        significand & ((1_u64 << 40) - 1),
+                                        40,
+                                        negative,
+                                        control_word,
+                                    );
+                                    wide_rounded < (1 << 24)
+                                } else {
+                                    inexact
+                                };
+                                let expected_bits =
+                                    (u32::from(negative) << 31) | u32::try_from(rounded).unwrap();
+
+                                let mut state = LongModeState::default();
+                                state.rip = 0x86a9;
+                                state.gpr[Register::Rax as usize] = 0x1003;
+                                let mut x87 = crate::state::X87State::fixture_seed();
+                                x87.control_word = control_word;
+                                x87.status_word = (u16::from(top) << 11) | 0x4500 | sticky | 0x0200;
+                                x87.registers[usize::from(top)] = source;
+                                x87.set_tag(top, X87Tag::Valid);
+                                state.x87 = Some(x87);
+                                let before_registers = state.x87.as_ref().unwrap().registers;
+                                let mut memory = Memory::at(opcode, state.rip);
+                                memory.bytes = vec![0xa5; 12];
+
+                                assert_eq!(
+                                    step(&mut state, &mut memory, AccessContext::default()),
+                                    Ok(StepOutcome::Advanced),
+                                    "opcode={opcode:02x?}, TOP={top}, FCW={control_word:04x}, sign={negative}, sticky={sticky:04x}, S={significand:016x}"
+                                );
+                                assert_eq!(&memory.bytes[3..7], &expected_bits.to_le_bytes());
+                                assert_eq!(&memory.bytes[..3], &[0xa5; 3]);
+                                assert_eq!(&memory.bytes[7..], &[0xa5; 5]);
+                                assert_eq!(memory.accesses, [(AccessKind::Write, 0x1003, 4)]);
+                                let result = state.x87.as_ref().unwrap();
+                                let final_top = if pop { (top + 1) & 7 } else { top };
+                                let expected_status = (u16::from(final_top) << 11)
+                                    | 0x4500
+                                    | sticky
+                                    | if inexact { 0x0020 } else { 0 }
+                                    | if underflow { 0x0010 } else { 0 }
+                                    | if incremented { 0x0200 } else { 0 };
+                                assert_eq!(result.status_word, expected_status);
+                                assert_eq!(result.top(), final_top);
+                                assert_eq!(result.registers, before_registers);
+                                assert_eq!(
+                                    result.tag(top),
+                                    Some(if pop { X87Tag::Empty } else { X87Tag::Valid })
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fstp_m32fp_minimum_normal_promotion_write_and_range_failures_are_atomic() {
+        for opcode in [&[0xd9, 0x10][..], &[0xd9, 0x18][..]] {
+            for (rax, range_fault) in [(0x1000_u64, false), (0x0000_7fff_ffff_fffe, true)] {
+                let mut state = LongModeState::default();
+                state.rip = 0x86aa;
+                state.gpr[Register::Rax as usize] = rax;
+                let mut x87 = crate::state::X87State::fixture_seed();
+                x87.control_word = 0x037f;
+                x87.status_word = 0x4500 | 0x0200;
+                x87.registers[0] = binary80_normal(0xffff_ff00_0000_0000, 0x3f80, false);
+                x87.set_tag(0, X87Tag::Valid);
+                state.x87 = Some(x87);
+                let before = state.clone();
+                let mut memory = Memory::at(opcode, state.rip);
+                memory.bytes = vec![0xa5; 8];
+                if !range_fault {
+                    memory.deny_writes = true;
+                }
+
+                let outcome = step(&mut state, &mut memory, AccessContext::default());
+                if range_fault {
+                    assert!(matches!(outcome, Ok(StepOutcome::Fault(_))));
+                } else {
+                    assert!(matches!(outcome, Err(MemoryError::PermissionDenied { .. })));
+                }
+                assert_eq!(state, before);
+                assert_eq!(memory.bytes, vec![0xa5; 8]);
+                assert_eq!(memory.accesses.len(), usize::from(!range_fault));
+            }
+        }
+    }
+
+    #[test]
+    fn fst_m32fp_minimum_normal_promotion_fnstsw_fnclex_observe_underflow_policy() {
+        let mut state = LongModeState::default();
+        state.rip = 0x86ab;
+        state.gpr[Register::Rax as usize] = 0x1000;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0x4500;
+        x87.registers[0] = binary80_normal(0xffff_ff00_0000_0000, 0x3f80, false);
+        x87.set_tag(0, X87Tag::Valid);
+        state.x87 = Some(x87);
+        let original_source = state.x87.as_ref().unwrap().registers[0];
+        let mut memory = Memory::at(&[0xd9, 0x10, 0xdf, 0xe0, 0xdb, 0xe2], state.rip);
+        memory.bytes.resize(12, 0xa5);
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(&memory.bytes[..4], &0x0080_0000_u32.to_le_bytes());
+        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x4730);
+        assert_eq!(state.x87.as_ref().unwrap().registers[0], original_source);
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.gpr[Register::Rax as usize] as u16, 0x4730);
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        let final_x87 = state.x87.as_ref().unwrap();
+        assert_eq!(final_x87.status_word & 0x003f, 0);
+        assert_eq!(final_x87.status_word & 0x0200, 0x0200);
+        assert_eq!(final_x87.registers[0], original_source);
+        assert_eq!(final_x87.tag(0), Some(X87Tag::Valid));
+        assert_eq!(state.rip, 0x86b1);
+        assert_eq!(memory.accesses, [(AccessKind::Write, 0x1000, 4)]);
     }
 
     #[test]

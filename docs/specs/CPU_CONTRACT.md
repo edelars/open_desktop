@@ -4847,3 +4847,32 @@ and literal CLI/JIT/native denial. Native runtime and physical acceptance
 remain deferred under ISSUE-019. See [plan](../plans/STAGE_2.md#s2-31bm-round-binary80-subnormals-through-binary64-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31bm--binary80-subnormal-to-binary64-underflow-rounding),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31bn: binary80 exponent -127 to binary32 minimum normal
+
+Only bounded `D9 10` and `D9 18` extend the existing Valid-tagged canonical
+binary80 Normal m32 conversion for exponent -127. Compute the destination
+rounding directly from `S >> 41` and the low 41-bit remainder under the current
+sign-aware RC. Newly accept only cases where this direct result is exactly
+`0x800000`, and store binary32 minimum normal (`0x00800000`, with source sign).
+The stored result is never formed from an auxiliary rounded value.
+
+For this minimum-normal result, add PE and C1. Determine UE separately by
+rounding the unbounded 24-bit significand using `S >> 40` and its low 40-bit
+remainder under the same sign/RC; add UE iff the rounded significand is less
+than `1 << 24`. This makes UE independent of the final binary32 exponent and
+preserves an existing UE when no new UE is indicated. Existing FCW/FSW gates,
+all source bytes, and every non-target conversion remain unchanged. Write one
+Dword atomically, then commit sticky flags, FIP/FDP/RIP and FSTP pop. Any
+preflight, range or write failure leaves CPU state and destination unchanged.
+
+The exact-integer oracle and ISA matrix cover the nearest-even destination
+threshold, directed-rounding threshold and neighbors, the distinct 24-bit UE
+threshold, both signs, all four FCWs, both opcodes, every TOP and all 16 sticky
+IE/DE/UE/PE combinations. Maximum-subnormal and exact minimum-normal controls,
+write/range atomicity and FNSTSW/FNCLEX are covered. Literal CLI fixtures expose
+UE+PE+C1 with FNSTSW and a negative FSTP minimum-normal result where no new UE is
+raised; JIT and native admission deny both fixtures. Native runtime and
+physical acceptance remain deferred under ISSUE-019. See [plan](../plans/STAGE_2.md#s2-31bn-round-exponent--127-binary80-normals-directly-to-binary32-minimum-normal),
+[report](../reports/STAGE_2_REPORT.md#s2-31bn--binary80-normal-to-binary32-minimum-normal-rounding),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

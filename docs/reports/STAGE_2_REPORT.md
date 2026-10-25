@@ -6569,3 +6569,37 @@ typechecks the native-admission test; it was not executed on this Apple Silicon
 host. Native runtime and physical acceptance remain deferred under ISSUE-019.
 `graphify update .` rebuilt the graph with 4264 nodes, 8724 edges, and 188
 communities.
+
+<a id="s2-31bn--binary80-normal-to-binary32-minimum-normal-rounding"></a>
+
+## S2-31bn — binary80 Normal to binary32 minimum-normal rounding
+
+The bounded D910/D918 path now admits Valid-tagged canonical Normal binary80
+sources at exponent -127 when direct destination rounding of `S/2^41` yields
+exactly binary32 minimum normal. It stores the destination-rounded value
+directly, adds PE+C1, and determines UE independently by rounding the
+unbounded 24-bit significand from `S/2^40` with the same sign-aware RC. UE is
+added only when that rounded significand remains below `1<<24`; prior UE remains
+sticky otherwise. The other m32/m64 conversion behavior and existing FCW/FSW
+gates are unchanged. Architectural state and FSTP pop commit only after the
+Dword write succeeds.
+
+The exact-integer oracle and TOP×RC×sign×opcode×sticky matrix cover the nearest
+boundary, directed-rounding boundary, neighbors, maximum-subnormal and
+minimum-normal controls, and the distinct wide-significand UE threshold. The
+ISA tests include Dword write/range atomicity and FNSTSW/FNCLEX composition.
+Literal positive FST and negative FSTP fixtures observe status through FNSTSW;
+the latter demonstrates minimum normal with PE+C1 and no newly raised UE. JIT
+and native admission explicitly deny both fixtures.
+
+Validation passed: the focused m32 FST/FSTP ISA group (27 tests) and the full
+offline workspace suite (830 tests) passed. The two interpreter CLI fixtures
+and the JIT-denial fixture test passed. Host and Linux x86_64
+`cargo check --workspace --all-targets --offline` checks passed; the Linux
+cross-target check typechecked native-admission coverage but was not executed
+as a guest binary on this Apple Silicon host. Formatting, diff and both fixture
+JSON checks passed. Graphify updated successfully to 4,276 nodes, 8,745 edges
+and 184 communities. The cross-target check emitted existing dead-code warnings
+in `od-host`/`od-runner`; no errors. `tools/check_layout.py` reported only the
+preserved unmapped `.serena/` directory; it was left untouched. Physical x86
+acceptance remains deferred to the combined S2-31 substage under ISSUE-019.

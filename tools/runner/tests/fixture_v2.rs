@@ -215,6 +215,12 @@ const FST_M32_EXTREME_UNDERFLOW_FNSTSW: &[u8] = include_bytes!(
 const FST_M32_BINARY80_SUBNORMAL_UNDERFLOW_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bl_fst_m32fp_negative_min_subnormal_fnstsw.case.json"
 );
+const FST_M32_BINARY80_MIN_NORMAL_TIE_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31bn_fst_m32fp_positive_minimum_normal_nearest_tie_fnstsw.case.json"
+);
+const FSTP_M32_BINARY80_MIN_NORMAL_DIRECTED_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31bn_fstp_m32fp_negative_minimum_normal_directed_fnstsw.case.json"
+);
 const FSTP_M32_NEGATIVE_INEXACT_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bf_fstp_m32fp_negative_1_5_minsub_fnstsw.case.json"
 );
@@ -3377,6 +3383,22 @@ fn v2_jit_denies_masked_inexact_m32_subnormal_store_fixtures_without_fallback() 
         FST_M32_EXTREME_UNDERFLOW_FNSTSW,
         FST_M32_BINARY80_SUBNORMAL_UNDERFLOW_FNSTSW,
         FSTP_M32_NEGATIVE_INEXACT_SUBNORMAL_FNSTSW,
+    ] {
+        let (_, result) = run(fixture, "jit", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
+fn v2_jit_denies_binary80_to_minimum_normal_m32_store_fixtures_without_fallback() {
+    for fixture in [
+        FST_M32_BINARY80_MIN_NORMAL_TIE_FNSTSW,
+        FSTP_M32_BINARY80_MIN_NORMAL_DIRECTED_FNSTSW,
     ] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));

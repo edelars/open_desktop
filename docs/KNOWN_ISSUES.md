@@ -553,3 +553,14 @@
   [S2-31bm CPU contract](specs/CPU_CONTRACT.md#local-s2-31bm-binary80-subnormal-to-binary64-underflow-rounding),
   [plan](plans/STAGE_2.md#s2-31bm-round-binary80-subnormals-through-binary64-stores),
   and [report](reports/STAGE_2_REPORT.md#s2-31bm--binary80-subnormal-to-binary64-underflow-rounding).
+- **S2-31bn evidence:** bounded D910/D918 now admit only exponent -127 Normal
+  sources whose direct `S/2^41` rounding selects binary32 minimum normal. PE+C1
+  follow the destination rounding; UE is independently decided by rounded
+  `S/2^40`, with sticky UE preserved when no new underflow is indicated. The
+  threshold oracle covers signed RC neighbors, the separate 24-bit UE boundary,
+  all TOPs/sticky IE/DE/UE/PE states, both opcodes, atomic Dword failures,
+  FNSTSW/FNCLEX and interpreter CLI fixtures; JIT/native admission remain
+  closed. Native runtime and physical x86 acceptance remain unverified under
+  open ISSUE-019. See the [S2-31bn CPU contract](specs/CPU_CONTRACT.md#local-s2-31bn-binary80-exponent--127-to-binary32-minimum-normal),
+  [plan](plans/STAGE_2.md#s2-31bn-round-exponent--127-binary80-normals-directly-to-binary32-minimum-normal),
+  and [report](reports/STAGE_2_REPORT.md#s2-31bn--binary80-normal-to-binary32-minimum-normal-rounding).
