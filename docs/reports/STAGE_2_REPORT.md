@@ -6514,3 +6514,25 @@ reports only the pre-existing unmapped `.serena/` directory, preserved. A clean
 independent review confirmed the 471 ISA tests, CLI fixture, and JIT denial;
 the exact-integer rounding oracle covered 489,856 combinations. Native runtime
 and physical acceptance remain deferred under ISSUE-019.
+
+## S2-31bl — binary80 subnormal to binary32 underflow rounding
+
+The bounded D9 10/D9 18 conversion accepts Special-tagged canonical binary80
+Subnormal inputs (E=0, J=0, nonzero fraction) and selects signed zero or signed
+minimum binary32 subnormal using sign and RC. Every accepted conversion is
+inexact and commits UE+PE after atomic storage; C1 records minimum-subnormal
+selection. The raw source remains unchanged. Coverage includes four payloads,
+both signs, all four FCWs, both opcodes, every TOP, all 16 sticky IE/DE/UE/PE
+combinations, invalid encodings/tags, C1 replacement, zero/minimum-normal
+controls, raw-m80 preservation, FNSTSW/FNCLEX, and write/range atomicity. The
+interpreter CLI fixture is explicitly denied by JIT and native admission.
+
+Validation passed: the full offline workspace suite (820 passed, 0 failed),
+including 475 `od-isa` tests; the CLI unit group (50 passed); and all 110
+schema-v2 fixture/JIT tests. Host and Linux x86_64 all-target workspace checks
+passed, as did Linux x86_64 native-runner test-code typechecking. Formatting,
+fixture JSON, documentation anchors, and `git diff --check` passed. The
+`graphify update .` AST refresh completed with 4252 nodes, 8703 edges, and 171
+communities. Layout checking reports only the preserved unmapped
+`.serena/` directory. Independent review is pending. Native runtime and
+physical acceptance remain deferred under ISSUE-019.

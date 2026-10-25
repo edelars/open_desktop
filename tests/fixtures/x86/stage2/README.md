@@ -2388,3 +2388,15 @@ exponent, and m64-underflow followed by raw m80 FSTP. See the
 [S2-31bk CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bk-extreme-binary64-underflow-to-zero-or-minimum-subnormal),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bk-round-extreme-underflow-through-binary64-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bk--extreme-binary64-underflow-to-zero-or-minimum-subnormal).
+
+### S2-31bl binary80 subnormal to binary32 underflow fixture
+
+The literal D910/DFE0 fixture stores a negative Special-tagged canonical
+binary80 subnormal under round-toward-negative, producing the negative minimum
+binary32 subnormal. FNSTSW exposes UE+PE and C1. The fixture runs through the
+interpreter CLI and remains denied by JIT and native admission. Direct ISA
+coverage checks all four directed-rounding/sign outcomes, payload extremes,
+all TOPs/sticky flags, unchanged raw source and atomic failures. See the
+[S2-31bl CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bl-binary80-subnormal-to-binary32-underflow-rounding),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bl-round-binary80-subnormals-through-binary32-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bl--binary80-subnormal-to-binary32-underflow-rounding).

@@ -534,3 +534,12 @@
   [plan](plans/STAGE_2.md#s2-31bk-round-extreme-underflow-through-binary64-stores),
   and [report](reports/STAGE_2_REPORT.md#s2-31bk--extreme-binary64-underflow-to-zero-or-minimum-subnormal).
   Native runtime and physical acceptance remain deferred under ISSUE-019.
+
+- **S2-31bl evidence:** bounded D9 10/D9 18 now round Special-tagged canonical
+  binary80 subnormal sources to signed zero or signed minimum binary32 subnormal
+  using the existing RC. All admitted results commit UE+PE after atomic storage;
+  C1 tracks minimum-subnormal selection. ISA matrix, CLI fixture and JIT/native
+  denial are documented in [contract](specs/CPU_CONTRACT.md#local-s2-31bl-binary80-subnormal-to-binary32-underflow-rounding),
+  [plan](plans/STAGE_2.md#s2-31bl-round-binary80-subnormals-through-binary32-stores),
+  and [report](reports/STAGE_2_REPORT.md#s2-31bl--binary80-subnormal-to-binary32-underflow-rounding).
+  Native runtime and physical acceptance remain deferred under ISSUE-019.

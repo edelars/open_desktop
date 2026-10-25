@@ -4804,3 +4804,24 @@ CLI/JIT/native denial. Native runtime and physical acceptance remain deferred
 under ISSUE-019. See [plan](../plans/STAGE_2.md#s2-31bk-round-extreme-underflow-through-binary64-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31bk--extreme-binary64-underflow-to-zero-or-minimum-subnormal),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31bl: binary80 subnormal to binary32 underflow rounding
+
+Only bounded `D9 10` and `D9 18` accept Special-tagged canonical binary80
+Subnormal sources (`E=0`, `J=0`, nonzero fraction), for either sign. All such
+magnitudes are below half of the minimum binary32 subnormal. Nearest and
+toward-zero store signed zero; toward-positive stores positive minimum
+subnormal or negative zero; toward-negative stores negative minimum subnormal
+or positive zero. Every admitted result is inexact and underflowed: commit
+sticky UE+PE only after a successful atomic Dword write, and set C1 iff minimum
+subnormal is selected. Preserve source bytes and the existing FSW/FCW gate,
+status, pointer, TOP and FSTP-pop atomicity. Reject noncanonical encodings,
+other tags and unsupported classes before memory access.
+
+Coverage includes fractions 1, 2, 0x4000... and 0x7fff..., both signs/rounding
+modes/opcodes/TOPs and all 16 sticky IE/DE/UE/PE states, C1 replacement,
+raw-m80 source preservation, zero/minimum-normal controls, forbidden classes,
+write/range atomicity, FNSTSW/FNCLEX, and CLI/JIT/native denial. Native runtime
+and physical acceptance remain deferred under ISSUE-019. See [plan](../plans/STAGE_2.md#s2-31bl-round-binary80-subnormals-through-binary32-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31bl--binary80-subnormal-to-binary32-underflow-rounding),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

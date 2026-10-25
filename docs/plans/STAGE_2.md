@@ -274,6 +274,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bi | Allow sticky UE in the raw DB38 FSTP m80fp gate without generating flags | S2-31bh |
 | [x] | S2-31bj | Round extreme binary32 underflow directly to signed zero or minimum subnormal | S2-31bf, S2-31bh |
 | [x] | S2-31bk | Round extreme binary64 underflow directly to signed zero or minimum subnormal | S2-31bg, S2-31bh |
+| [x] | S2-31bl | Round Special-tagged canonical binary80 subnormals through D910/D918 to signed zero or minimum binary32 subnormal | S2-31bj, S2-31bh |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3891,3 +3892,21 @@ zero, exact-minimum control, both opcodes and all TOPs, all 16 sticky IE/DE/UE/P
 states, FNSTSW/FNCLEX, m64-underflow to raw-m80 preservation, Qword write/range
 atomicity, forbidden classes/tags/gates, and CLI/JIT/native denial. Native runtime
 and physical acceptance remain deferred under ISSUE-019.
+
+#### S2-31bl. Round binary80 subnormals through binary32 stores
+
+Extend only bounded D9 10/D9 18 for Special-tagged canonical binary80 Subnormal
+sources (E=0, J=0, nonzero fraction), for either sign. Their magnitudes are below
+half of the minimum binary32 subnormal: nearest and toward-zero produce signed
+zero; toward-positive produces positive minimum subnormal or negative zero;
+toward-negative produces negative minimum subnormal or positive zero. Every
+accepted result is inexact and commits UE+PE after the atomic Dword write. C1 is
+set iff minimum subnormal is selected. Preserve the raw source, existing masks,
+gates, exact behavior and atomic status/pointer/pop commit. Reject all other
+subnormal encodings/tags before access.
+
+Cover fractions 1, 2, 0x4000... and 0x7fff..., both signs/RCs/opcodes/TOPs and
+all 16 sticky IE/DE/UE/PE states, C1 replacement, raw-m80 source preservation,
+zero/minimum-normal controls, forbidden classes/tags/gates, write/range
+atomicity, FNSTSW/FNCLEX and CLI/JIT/native denial. Native runtime and physical
+acceptance remain deferred under ISSUE-019.
