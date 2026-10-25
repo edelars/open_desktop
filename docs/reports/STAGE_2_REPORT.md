@@ -6534,5 +6534,7 @@ passed, as did Linux x86_64 native-runner test-code typechecking. Formatting,
 fixture JSON, documentation anchors, and `git diff --check` passed. The
 `graphify update .` AST refresh completed with 4252 nodes, 8703 edges, and 171
 communities. Layout checking reports only the preserved unmapped
-`.serena/` directory. Independent review is pending. Native runtime and
+`.serena/` directory. Independent Sol-medium review was clean. The review
+confirmed 25 focused `fst_m32fp` ISA tests, the FLD→FST→FNCLEX→FSTP raw-m80
+composition, CLI/FNSTSW fixture coverage, and JIT denial. Native runtime and
 physical acceptance remain deferred under ISSUE-019.
