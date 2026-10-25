@@ -306,6 +306,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31co | Admit sticky OE on the five bounded integer-store forms | S2-31cn |
 | [x] | S2-31cp | Admit historical sticky ZE on the five bounded integer-store forms | S2-31co |
 | [x] | S2-31cq | Admit Special-tagged canonical binary80 subnormals only through DB10/DB18 m32 FIST/FISTP | S2-31cp |
+| [x] | S2-31cr | Admit Special-tagged canonical binary80 subnormals only through DF10/DF18 m16 FIST/FISTP | S2-31cq |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4624,3 +4625,23 @@ extension does not complete S2-31 or ISSUE-019. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cq-canonical-subnormal-m32-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31cq--canonical-subnormal-m32-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+<a id="s2-31cr-canonical-subnormal-m16-fist"></a>
+
+#### S2-31cr. Admit canonical binary80 subnormals through m16 `FIST`/`FISTP`
+
+Extend only bare DF 10 and DF 18 so a Special-tagged canonical nonzero
+binary80 subnormal (exponent zero, J=0, nonzero fraction) follows the existing
+exact integer rounding path. RN/TZ store zero; RD stores -1 only for a
+negative source; RU stores +1 only for a positive source. Each conversion
+adds PE and sets C1 exactly when the result magnitude is one. Keep the FCW
+whitelist, `FSW & 0x80c0` gate, status preservation, canonical48 Word
+preflight, one atomic write/no read, raw source payload, and post-write state
+and pop commit. The corresponding m32 path is unchanged; m64 subnormal,
+pseudo-denormal, malformed/tag-mismatched, and unmasked cases remain closed.
+
+Cover the same 65,536-case fraction/sign/RC/opcode/TOP/sticky/C1 matrix,
+FLD m80 composition, source/control rejection, Word canaries, write/range
+atomicity, FNSTSW/FNCLEX, and literal CLI/JIT/native admission checks. Physical
+x86 acceptance remains part of the combined final S2-31 substage under
+ISSUE-019.

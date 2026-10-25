@@ -905,3 +905,13 @@
   [plan](plans/STAGE_2.md#s2-31cq-canonical-subnormal-m32-fist),
   [report](reports/STAGE_2_REPORT.md#s2-31cq--canonical-subnormal-m32-fist),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31cr evidence:** only bare DF10/DF18 m16 integer stores now admit
+  Special-tagged canonical binary80 subnormals. The linked report tracks the
+  complete 65,536-case matrix, FLD m80 composition, rejection and atomicity
+  controls, Word canaries, literal FISTP/FNSTSW fixture, and JIT/native
+  denial. Native runtime and physical x86 acceptance remain deferred to the
+  combined final S2-31 substage under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31cr-canonical-subnormal-m16-fist),
+  [plan](plans/STAGE_2.md#s2-31cr-canonical-subnormal-m16-fist),
+  [report](reports/STAGE_2_REPORT.md#s2-31cr--canonical-subnormal-m16-fist),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

@@ -7680,3 +7680,40 @@ support remain deferred under ISSUE-019; S2-31 remains partial. See
 the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cq-canonical-subnormal-m32-fist),
 [plan](../plans/STAGE_2.md#s2-31cq-canonical-subnormal-m32-fist), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+<a id="s2-31cr--canonical-subnormal-m16-fist"></a>
+
+## S2-31cr — canonical binary80 subnormals through m16 FIST/FISTP
+
+The bounded DF10/DF18 m16 integer-store path now admits Special-tagged
+canonical nonzero binary80 subnormals. It reuses the m32 exact rounding rule:
+RN/TZ produce zero; RD produces -1 only for negative input; RU produces +1
+only for positive input. Every conversion adds PE and recomputes C1 from the
+stored magnitude. The implementation leaves m64 subnormal sources closed and
+retains the established FCW/FSW gates, canonical48 Word preflight, one
+atomic write/no read, raw binary80 source bytes, and write-before-commit
+ordering.
+
+Coverage includes the 65,536-case matrix over four fractions, signs, RC,
+FIST/FISTP, TOP, all six incoming sticky flags, and prior C1; FLD m80
+composition through both stores with FNSTSW/FNCLEX; malformed/tag/class and
+width controls; Word sentinels; and write/range atomicity. A literal
+FISTP/FNSTSW fixture verifies negative round-down storage and status
+observation. Interpreter success and JIT/native denial are asserted by the
+fixture harnesses.
+
+`cargo test --workspace --offline` passed all 967 unit, fixture, and doc-test
+cases on the macOS arm64 host. This includes the 65,536-case m16 matrix, the
+CLI fixture interpreter path, and the JIT denial check. The native x86
+admission test is compiled only for Linux and did not run on this host.
+`cargo check --workspace --all-targets --offline` passed on macOS arm64 and
+for `x86_64-unknown-linux-gnu`; the Linux cross-check emitted existing
+dead-code warnings in `od-host` and `od-runner`. `cargo fmt --all -- --check`
+and `git diff --check` passed. Graphify refreshed to 4,556 nodes, 9,233 edges,
+and 175 communities. Independent Sol-medium review found no defects and
+passed the three new ISA tests and fixture/JIT checks. No Mac mini or physical
+x86 acceptance was run; that remains deferred to the combined S2-31 substage
+under ISSUE-019. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cr-canonical-subnormal-m16-fist),
+[plan](../plans/STAGE_2.md#s2-31cr-canonical-subnormal-m16-fist), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md).

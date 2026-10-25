@@ -5688,3 +5688,38 @@ Physical x86 and native runtime acceptance remain deferred
 under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31cq-canonical-subnormal-m32-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31cq--canonical-subnormal-m32-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+<a id="local-s2-31cr-canonical-subnormal-m16-fist"></a>
+
+## Local S2-31cr: canonical binary80 subnormals through m16 `FIST`/`FISTP`
+
+Only exact bare `DF 10` and `DF 18` admit a Special-tagged canonical nonzero
+binary80 subnormal: exponent field zero, J=0, and nonzero fraction. Its
+magnitude is strictly less than one half. Nearest-even and toward-zero store
+zero; toward-negative stores `0xffff` only for negative input; toward-positive
+stores `1` only for positive input. Every conversion adds sticky PE. C1 is
+recomputed and is set iff the stored magnitude is one. No DE, UE, IE, OE, ZE,
+SF, ES, or B flag is newly generated. Preserve incoming IE/DE/ZE/OE/UE/PE
+under the existing `FSW & 0x80c0 == 0` gate, and retain C0/C2/C3. FCW remains
+exactly `037f/077f/0b7f/0f7f`.
+
+Retain bare Long64 RAX addressing, the full canonical48 two-byte destination
+preflight, and exactly one atomic Word write without a data read. Commit PE/C1,
+instruction/data pointers, RIP, and FISTP tag/TOP changes only after a
+successful write. FIST preserves TOP and tags; FISTP empties old physical TOP
+and advances it. Preserve the raw ten-byte ST(0) payload. The source gate is
+width-limited: m64 subnormals, pseudo-denormals, malformed encodings,
+mismatched tags, unmasked delivery, and general exception delivery remain
+unsupported. The m32 subnormal path remains unchanged.
+
+The local matrix covers 65,536 combinations: four fractions (`1`, `2`,
+`0x4000000000000000`, `0x7fffffffffffffff`), both signs, four RCs, FIST and
+FISTP, eight TOP values, all 64 incoming sticky-flag combinations, and both
+prior C1 values. Additional checks compose FLD m80 with both stores and
+FNSTSW/FNCLEX; reject wrong tags, zero/pseudo-denormal/malformed sources,
+unsupported FCWs/status, and m64 before data access; verify Word sentinels and
+write/range fault atomicity; and exercise literal CLI, JIT denial, and native
+admission denial. Physical x86 and native runtime acceptance remain deferred
+under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31cr-canonical-subnormal-m16-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31cr--canonical-subnormal-m16-fist),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
