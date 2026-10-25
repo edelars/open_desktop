@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_31dr_frndint_seeded_pseudo_infinity_fnstsw_fnclex",
+  "profile": "s2-long-x87-state-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten D9 FC DF E0 DB E2 bytes and raw Special-tagged negative binary80 pseudo-infinity seeded directly in the fixture x87 snapshot. FRNDINT replaces it with the fixed negative indefinite, FNSTSW observes IE, and FNCLEX clears exception flags; this is project fixture evidence, not native execution.",
+    "specification": "Intel SDM revision 093, Vol.1 Tables 4-3 and 8-10; Vol.2A FRNDINT, FNSTSW and FNCLEX entries; local bounded S2-31dr contract.",
+    "specification_version": "Intel SDM revision 093; project S2-31dr"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000400000",
+      "0x0000000000000001",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200ffe",
+      "0x00000000003000f8",
+      "0x0000000000300080",
+      "0x0123456789abcdef",
+      "0x0102030405060708",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000002",
+    "x87": {
+      "registers": [
+        "0000000000000000ffff",
+        "0123456789abcdef0180",
+        "0000000000000080003f",
+        "00000000000000000000",
+        "55aa55aa55aa55aa55aa",
+        "0000000000000080ffff",
+        "deadbeefcafebabe0180",
+        "00000000000000000000"
+      ],
+      "control_word": "0x000000000000037f",
+      "status_word": "0x0000000000004500",
+      "tag_word": "0x000000000000fffe",
+      "instruction_pointer": "0x0000000000001234",
+      "data_pointer": "0x0000000000005678",
+      "last_opcode": "0x00000000000005aa"
+    }
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 6,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "d9fcdfe0dbe2",
+      "comparison_mask_hex": "ffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100006",
+  "instruction_budget": 3,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

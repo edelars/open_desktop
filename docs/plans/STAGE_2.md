@@ -233,6 +233,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dn | Admit historical SF only together with IE at bounded D9 FC; preserve both while recomputing C1; native/JIT closed | S2-31dm |
 | [x] | S2-31di | Admit canonical Normal binary80 fractions with e=-16382..-1 to D9 FC via comparison-based rounding; produce signed Zero or Valid ±1 with PE/C1; native/JIT closed | S2-31dh |
 | [x] | S2-31dp | Admit Special-tagged binary80 pseudo-denormals through bounded D9 FC with subnormal rounding, DE+PE and canonical-Normal equivalence; native/JIT closed | S2-31do |
+| [x] | S2-31dq | Admit Special-tagged binary80 unnormals through bounded D9 FC as masked invalid; native/JIT closed | S2-31dp |
+| [x] | S2-31dr | Admit only Special-tagged binary80 pseudo-infinities through bounded D9 FC as masked invalid; native/JIT closed | S2-31dq |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -5267,3 +5269,24 @@ Special-tagged unnormal bytes in project x87 state and is explicitly not native
 evidence. Keep the distinct FISTP DE ambiguity documented under ISSUE-019;
 physical x86 and Mac mini checks remain for the combined final S2-31 acceptance
 substage and must not be run here.
+
+#### S2-31dr. Special-tagged binary80 pseudo-infinity through bounded `FRNDINT`
+
+Extend only exact bare Long64 `D9 FC`: admit physical TOP tagged Special when
+binary80 has E=`0x7fff`, J=0, zero fraction and either sign. Reuse S2-31dq's
+masked-invalid result: fixed negative floating-point indefinite
+`00 00 00 00 00 00 00 c0 ff ff`, Special tag, sticky IE, C1 cleared, and no
+new DE/PE/SF/ZE/OE/UE. Preserve prior IE/DE/ZE/OE/UE/PE and SF only with IE.
+Keep the existing FCW/status/prefix/fetch/stop/budget gates, preflight,
+metadata, TOP and physical-register canaries unchanged. Do not alter FLD,
+binary80 classification or JIT/native admission. Pseudo-NaNs (nonzero fraction)
+remain Unsupported; canonical J=1 infinity/QNaN/SNaN keep existing behavior;
+E=0/J=0/zero-fraction Special remains a zero/tag-mismatch reject.
+
+Add the independent two-sign × four-RC × eight-TOP × three legal IE/SF × 32
+DE/ZE/OE/UE/PE sticky × two prior-C1 matrix with complete state and memory
+canaries, plus repeat FRNDINT and exact neighboring rejects. Add a literal
+seeded `D9 FC DF E0 DB E2` `project_fixture` and observe/clear IE through
+FNSTSW/FNCLEX; it is not hardware evidence. Run only local validation: no Mac
+mini, SSH or physical x86. Keep ISSUE-019 open for remaining x87 and host
+acceptance.

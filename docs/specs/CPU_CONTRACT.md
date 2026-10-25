@@ -4306,6 +4306,34 @@ operation on an unsupported format to the QNaN floating-point indefinite;
 Vol.1 Table 4-3 and §4.8.3.7 define its binary80 encoding. The separate SNaN
 masked response in Table 8-10 is not used here. See the [plan](../plans/STAGE_2.md#s2-31dq-special-tagged-binary80-unnormal-through-bounded-frndint), [report](../reports/STAGE_2_REPORT.md#s2-31dq--special-tagged-binary80-unnormal-through-bounded-frndint), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dq-frndint-unnormal-fixture).
 
+<a id="local-s2-31dr-special-pseudo-infinity-frndint-d9-fc"></a>
+
+## Local S2-31dr: Special-tagged binary80 pseudo-infinity `FRNDINT` (`D9 FC`)
+
+Only exact bare Long64 `D9 FC` adds this input: physical TOP is Special-tagged
+and its binary80 encoding has E=`0x7fff`, J=0, zero fraction and either sign.
+Under FCW `0x037f`, `0x077f`, `0x0b7f` or `0x0f7f`, FRNDINT returns the fixed
+negative floating-point indefinite bytes `00 00 00 00 00 00 00 c0 ff ff` and
+retains Special. It sets sticky IE, clears C1, and raises no new DE/PE/SF/ZE/OE/
+UE. Existing IE/DE/ZE/OE/UE/PE are preserved, as is SF only when IE is already
+set. All existing control/status gates and preflight/commit behavior remain.
+
+Pseudo-NaNs (E=`0x7fff`, J=0, nonzero fraction) remain Unsupported. Canonical
+J=1 infinity, QNaN and SNaN retain their prior FRNDINT behavior. E=0/J=0/
+zero-fraction with Special tag is a canonical-zero/tag mismatch and remains
+Unsupported. FLD, the binary80 classifier, JIT and native admission are
+unchanged. TOP, unrelated physical registers, FCW, data pointer, opcode,
+GPR/RFLAGS, and memory behavior remain as before. The invalid indefinite is a
+canonical QNaN identity on repeated FRNDINT.
+
+The independent matrix crosses both signs, four rounding controls, all TOPs,
+three legal historical IE/SF combinations, all 32 DE/ZE/OE/UE/PE combinations
+and prior C1. Full state and no-memory-access canaries plus repeat and exact
+neighbor rejection are covered. The literal seeded `D9 FC DF E0 DB E2`
+`project_fixture` observes IE with FNSTSW and clears it with FNCLEX; it is not
+native evidence. Mac mini, SSH and physical x86 execution are excluded here;
+remaining x87/host acceptance stays open under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31dr-special-tagged-binary80-pseudo-infinity-through-bounded-frndint), [report](../reports/STAGE_2_REPORT.md#s2-31dr--special-tagged-binary80-pseudo-infinity-through-bounded-frndint), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dr-frndint-pseudo-infinity-fixture).
+
 ## Local S2-30al: bounded `FUCOMI ST(0), ST(1)` (`DB E9`)
 
 Accept exactly bare `DB E9`. Before mutation call

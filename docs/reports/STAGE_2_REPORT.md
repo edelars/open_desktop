@@ -8609,6 +8609,33 @@ edges and 181 communities; the existing parser warning for
 execution was performed; physical acceptance remains deferred to the combined
 final S2-31 substage under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dq-special-unnormal-frndint-d9-fc), [plan](../plans/STAGE_2.md#s2-31dq-special-tagged-binary80-unnormal-through-bounded-frndint), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dq-frndint-unnormal-fixture).
 
+## S2-31dr — Special-tagged binary80 pseudo-infinity through bounded FRNDINT
+
+Exact bare Long64 `D9 FC` now also accepts only a Special-tagged binary80
+pseudo-infinity: E=`0x7fff`, J=0, zero fraction, either sign. This exact
+encoding uses S2-31dq's existing masked-invalid response: fixed negative
+binary80 QNaN indefinite `00 00 00 00 00 00 00 c0 ff ff`, Special tag, sticky
+IE and cleared C1, with no new DE/PE/SF/ZE/OE/UE. Prior IE/DE/ZE/OE/UE/PE and
+SF paired with IE remain preserved. Canonical J=1 infinity/QNaN/SNaN retain
+their existing identity/quieting behavior. E=0 zero with Special tag remains a
+tag mismatch; nonzero-fraction pseudo-NaNs and other neighboring classes remain
+Unsupported. FLD, the classifier and JIT/native admission are unchanged.
+
+The independent 12,288-case matrix crosses both signs, four RC controls, all
+TOP values, three legal historical IE/SF pairings, all 32 prior DE/ZE/OE/UE/PE
+combinations and both prior C1 values. It compares complete state, including
+metadata and all non-TOP registers, and confirms no memory accesses. Repeat
+FRNDINT preserves the indefinite and sticky IE. The literal seeded
+`D9 FC DF E0 DB E2` fixture starts from a negative Special pseudo-infinity,
+observes IE using FNSTSW, then clears exception flags with FNCLEX while keeping
+the indefinite. It is `project_fixture` evidence and was not run on native x86.
+
+Validation: focused `cargo test -p od-isa --offline frndint` and
+`cargo test -p od-runner --offline local_x87_frndint_seeded_pseudo_infinity_fnstsw_fnclex_fixture`,
+formatting, workspace check and layout checks passed. No Mac mini, SSH or
+physical x86 execution was performed. ISSUE-019 remains open for combined host
+acceptance and broader x87 semantics. See [contract](../specs/CPU_CONTRACT.md#local-s2-31dr-special-pseudo-infinity-frndint-d9-fc), [plan](../plans/STAGE_2.md#s2-31dr-special-tagged-binary80-pseudo-infinity-through-bounded-frndint), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dr-frndint-pseudo-infinity-fixture).
+
 ### Open x87 denormal question for integer stores
 
 The current canonical-subnormal integer-store slices (`S2-31cq/cr/cs`) expect

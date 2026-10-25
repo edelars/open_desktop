@@ -3170,3 +3170,15 @@ is `project_fixture`, not native x86 evidence. JIT/native admission stays
 closed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dq-special-unnormal-frndint-d9-fc),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31dq-special-tagged-binary80-unnormal-through-bounded-frndint), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dq--special-tagged-binary80-unnormal-through-bounded-frndint).
+
+## S2-31dr FRNDINT pseudo-infinity fixture
+
+The literal `s2_31dr_frndint_seeded_pseudo_infinity_fnstsw_fnclex.case.json`
+starts with raw negative binary80 pseudo-infinity bytes `0000000000000000ffff`
+and Special tag seeded directly in the project x87 snapshot. `D9 FC` replaces
+it with fixed negative indefinite `00000000000000c0ffff` and sets IE; `DF E0`
+observes FSW `0x4501`, and `DB E2` clears exception status while retaining the
+indefinite. Provenance is `project_fixture`, not native x86 evidence. JIT/native
+admission remains closed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dr-special-pseudo-infinity-frndint-d9-fc),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31dr-special-tagged-binary80-pseudo-infinity-through-bounded-frndint), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dr--special-tagged-binary80-pseudo-infinity-through-bounded-frndint).
