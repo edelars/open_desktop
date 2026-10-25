@@ -5586,3 +5586,27 @@ deferred under ISSUE-019. See the
 [plan](../plans/STAGE_2.md#s2-31cn-admit-sticky-ue-on-bounded-integer-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31cn--sticky-ue-on-bounded-integer-stores),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31co-admit-sticky-oe-bounded-integer-stores"></a>
+
+## Local S2-31co: admit sticky OE on bounded integer stores
+
+Only bare `DB 10`, `DB 18`, `DF 10`, `DF 18` and `DF 38` bounded integer
+stores admit incoming sticky OE. Their shared gate is `FSW & 0x80c4 == 0`,
+which preserves IE/DE/OE/UE/PE while rejecting ZE/SF/ES/B. Historical OE does
+not influence the current result or synthesize IE/PE; C1 is recomputed for the
+current conversion. Atomic write-before-state commit, FCW and source/range
+limits remain unchanged. Raw binary80 subnormal and pseudo-denormal operands
+remain unsupported, and OE admission does not extend to any other x87 gate.
+
+The matrix covers 143,360 combinations across seven admitted source classes,
+both signs, five forms, four FCWs, eight TOP values, all 32 sticky exception
+combinations and both prior C1 values. Actual FST m32 overflow composition
+checks the overflowing sign/rounding cases and all five integer stores; the
+float store produces infinity with OE|PE, and integer conversion stores
+indefinite with IE while retaining OE|PE and clearing C1. Five-form write/range
+fault atomicity, OE plus ZE/SF/ES/B rejection, OE-only exact finite conversion,
+invalid re-entry and FNSTSW/FNCLEX are covered. CLI fixtures observe sticky OE
+through FISTP/FNSTSW; JIT/native admission remains denied. Physical x86 and native
+runtime acceptance remain deferred under ISSUE-019. See the [stage plan](../plans/STAGE_2.md#s2-31co-admit-sticky-oe-on-bounded-integer-stores), [report](../reports/STAGE_2_REPORT.md#s2-31co--sticky-oe-on-bounded-integer-stores), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

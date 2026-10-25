@@ -4564,12 +4564,14 @@ mod tests {
     }
 
     #[test]
-    fn s2_31cm_fld_subnormal_to_integer_fixtures_remain_outside_native_admission() {
+    fn s2_31cm_cn_co_bounded_integer_fixtures_remain_outside_native_admission() {
         for bytes in [
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31cm_fistp_m32int_loaded_max_subnormal_fnstsw.case.json").as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31cm_fistp_m64int_loaded_max_subnormal_fnstsw.case.json").as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31cn_fistp_m32int_sticky_ue_fnstsw.case.json").as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31cn_fistp_m64int_sticky_ue_fnstsw.case.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31co_fistp_m32int_sticky_oe_fnstsw.case.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31co_fistp_m64int_sticky_oe_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
             let actual = loaded.fixture.initial_state.to_cpu().unwrap();

@@ -7565,3 +7565,36 @@ x86_64-unknown-linux-gnu` passed. `cargo fmt --all -- --check` and
 `git diff --check` passed. `graphify update .` rebuilt the graph to 4,525 nodes, 9,184 edges and 181
 communities. Documentation anchors and fixture references were checked. Native
 runtime and physical x86 acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31co--sticky-oe-on-bounded-integer-stores"></a>
+
+## S2-31co — sticky OE on bounded integer stores
+
+The shared gate for only DB10/DB18/DF10/DF18/DF38 changed from `0x80cc` to
+`0x80c4`. It admits historical OE with IE/DE/UE/PE and still rejects ZE/SF/ES/B.
+Historical OE does not change the current result, add IE/PE, or preserve the
+previous C1. Other x87 gates and raw binary80 subnormal/pseudo-denormal
+rejection remain unchanged.
+
+The full 143,360-case matrix passed across seven admitted source classes,
+signs, all five forms, FCW/TOP combinations, 32 sticky flag combinations and
+prior C1. Twenty actual FST m32 overflow→integer-store compositions passed for
+the sign/rounding cases that produce infinity: OE|PE survives the integer
+indefinite result and current IE, and C1 clears. Five-form write/range
+atomicity and OE plus each forbidden-status control pass. OE-only exact finite
+conversion and invalid re-entry followed by FNSTSW/FNCLEX are covered. CLI
+fixtures verify sticky OE and FNSTSW; JIT/native fixture admission remains
+denied.
+
+`cargo test --workspace --offline` passed 956 tests (553 `od-isa`, 80 runner
+CLI, 138 fixture/JIT, 6 `od-host`, 4 `od-jit`, 166 `od-testkit`, 8 x86-runner
+library, and 1 x86-runner binary); all doc-tests passed. Host
+`cargo check --workspace --all-targets --offline`, Linux x86_64
+`cargo check --workspace --all-targets --offline --target
+x86_64-unknown-linux-gnu`, and `cargo fmt --all -- --check` passed. Linux check
+reported existing dead-code warnings in `od-host` and the runner. The focused
+native-denial test filter matched zero tests on the local arm64 host; its
+x86_64 Linux test target compiled in the all-target check. `graphify update .`
+refreshed the graph to 4,532 nodes, 9,195 links and 182 communities. Native
+runtime and physical x86 acceptance remain deferred under ISSUE-019.

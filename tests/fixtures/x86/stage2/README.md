@@ -2775,3 +2775,14 @@ all five bounded integer forms across signs and FCWs. See the
 [S2-31cn CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cn-admit-sticky-ue-bounded-integer-stores),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cn-admit-sticky-ue-on-bounded-integer-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cn--sticky-ue-on-bounded-integer-stores).
+
+
+### S2-31co sticky OE bounded integer-store fixtures
+
+The m32 and m64 `FISTP`/`FNSTSW` fixtures carry incoming OE with the exact
+Normal binary80 operand produced by the preceding subnormal-load fixtures.
+They verify that OE remains sticky through finite integer conversion, PE, the
+pop, and status-word observation. JIT and native admission remain denied.
+See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31co-admit-sticky-oe-bounded-integer-stores),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31co-admit-sticky-oe-on-bounded-integer-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31co--sticky-oe-on-bounded-integer-stores).

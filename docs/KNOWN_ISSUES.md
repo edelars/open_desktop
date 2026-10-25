@@ -865,3 +865,17 @@
   [plan](plans/STAGE_2.md#s2-31cn-admit-sticky-ue-on-bounded-integer-stores),
   [report](reports/STAGE_2_REPORT.md#s2-31cn--sticky-ue-on-bounded-integer-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+
+- **S2-31co evidence:** bounded DB10/DB18/DF10/DF18/DF38 now admit historical
+  OE through their shared `0x80c4` FSW gate alongside IE/DE/UE/PE; ZE/SF/ES/B
+  remain rejected. Current conversion behavior, including integer-indefinite
+  plus IE on invalid conversion, is independent of prior OE, and current C1 is
+  recomputed. The 143,360-case matrix, actual FST m32 overflow composition,
+  five-form atomicity/forbidden-status controls, OE-only conversion,
+  FNSTSW/FNCLEX, CLI fixtures, and JIT/native denial are documented in the
+  linked report. Native runtime and physical x86 acceptance remain deferred
+  under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31co-admit-sticky-oe-bounded-integer-stores),
+  [plan](plans/STAGE_2.md#s2-31co-admit-sticky-oe-on-bounded-integer-stores),
+  [report](reports/STAGE_2_REPORT.md#s2-31co--sticky-oe-on-bounded-integer-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

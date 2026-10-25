@@ -303,6 +303,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31cl | Convert finite rounded i64 overflow to integer-indefinite for DF38 | S2-31ci, S2-31cj, S2-31ck |
 | [x] | S2-31cm | Admit sticky DE on bounded integer stores after masked FLD subnormal composition | S2-31ci, S2-31cl |
 | [x] | S2-31cn | Admit sticky UE on the five bounded integer-store forms | S2-31cm |
+| [x] | S2-31co | Admit sticky OE on the five bounded integer-store forms | S2-31cn |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4518,6 +4519,28 @@ closed/deferred. See the
 [report](../reports/STAGE_2_REPORT.md#s2-31cm--sticky-de-on-bounded-integer-stores),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+
+<a id="s2-31co-admit-sticky-oe-on-bounded-integer-stores"></a>
+
+#### S2-31co. Admit sticky OE on bounded integer stores
+
+Admit incoming OE only on the existing DB10, DB18, DF10, DF18 and DF38
+integer-store forms by narrowing the shared FSW gate from `0x80cc` to
+`0x80c4`. Preserve IE/DE/OE/UE/PE independently; continue rejecting ZE/SF/ES/B.
+Historical OE must not affect the current integer result, add IE/PE, or retain
+prior C1. Other x87 gates, source forms, FCW and range behavior stay unchanged;
+raw binary80 subnormal and pseudo-denormal integer sources remain unsupported.
+
+Coverage is a 143,360-case matrix across seven admitted classes, signs, five
+forms, four FCWs, eight TOP values, all 32 IE/DE/OE/UE/PE combinations and
+prior C1. Twenty actual FST m32→integer-store cases use `(E,S)=(0x407e,
+0xffffffffffffffff)` where the selected sign/rounding mode produces infinity;
+FST m32 stores signed infinity and OE|PE, then integer overflow stores
+indefinite and adds IE while retaining OE|PE and clearing C1. Five-form
+write/range atomicity, OE plus each forbidden status, invalid re-entry,
+OE-only exact conversion, FNSTSW/FNCLEX, CLI fixtures, and JIT/native admission
+denial are required. Native execution and physical x86 acceptance remain
+closed/deferred under ISSUE-019.
 
 <a id="s2-31cn-admit-sticky-ue-on-bounded-integer-stores"></a>
 
