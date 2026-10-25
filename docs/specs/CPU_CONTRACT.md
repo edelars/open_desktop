@@ -2731,6 +2731,33 @@ ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31bt-exact-signed-zero-fist-m32
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
 
+<a id="local-s2-31bu-exact-signed-zero-fist-m16int-rax-df-10-df-18"></a>
+
+## Local S2-31bu: exact signed-zero `FIST`/`FISTP m16int [RAX]` (`DF 10`/`DF 18`)
+
+The bounded `DF 10` and `DF 18` forms admit `X87Tag::Zero` only when the raw
+binary80 payload is canonical zero: zero significand and sign/exponent word
+`0x0000` or `0x8000`. Either sign stores the exact Word integer zero under all
+four admitted RC modes. No exceptions are generated; incoming PE is preserved,
+C1 is cleared, and C0/C2/C3 keep their existing behavior.
+
+The FCW whitelist, `FSW & 0x80df == 0` gate, bare Long64 RAX form, and complete
+canonical48 Word range check remain in force. The source bytes are unchanged.
+After one atomic Word write succeeds, FIST commits status/pointers while keeping
+the physical tag and TOP; FISTP additionally empties the old TOP tag and
+advances TOP modulo eight. Write/range failures preserve full CPU state and
+memory. m32 behavior is unchanged; m64 zero stores and nonzero magnitudes below
+one remain unsupported.
+
+Coverage crosses signs, RCs, opcodes, TOP, incoming PE/C1, and exercises
+tag/payload/control/prefix rejection, no-read/single-Word-write behavior, and
+fault atomicity. A literal CLI/FNSTSW fixture is checked; JIT/native admission
+remain closed. Native runtime and physical behavior remain deferred under
+ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31bu-exact-signed-zero-fist-m16int),
+[report](../reports/STAGE_2_REPORT.md#s2-31bu--exact-signed-zero-fist-m16int),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
 <a id="local-s2-31bs-sticky-oe-on-raw-binary80-fstp-m80fp"></a>
 
 ## Local S2-31bs: sticky OE on raw `FSTP m80fp [RAX]` (`DB 38`)

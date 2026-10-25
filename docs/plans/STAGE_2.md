@@ -283,6 +283,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31br | Admit prior sticky IE/DE/OE/UE/PE on bounded m32/m64 stores while preserving conversion-specific flags | S2-31bq |
 | [x] | S2-31bs | Admit prior sticky OE on exact raw DB38 FSTP m80fp stores without changing source bytes or generating flags | S2-31bi, S2-31bp, S2-31bq |
 | [x] | S2-31bt | Admit canonical signed binary80 zero for DB10/DB18 FIST/FISTP m32int as exact integer zero | S2-31b, S2-31c |
+| [x] | S2-31bu | Admit canonical signed binary80 zero for DF10/DF18 FIST/FISTP m16int as exact integer zero | S2-31d, S2-31e |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3919,6 +3920,26 @@ Cover sign, RC, opcode, TOP, prior PE/C1, canonical/tag mismatch and unsupported
 controls/classes. Check write and range atomicity, literal CLI/FNSTSW fixtures,
 and JIT/native denial. Native runtime and physical checks remain deferred under
 ISSUE-019.
+
+<a id="s2-31bu-exact-signed-zero-fist-m16int"></a>
+
+#### S2-31bu. Exact signed-zero `FIST`/`FISTP m16int [RAX]`
+
+Extend only exact bare `DF 10` and `DF 18` for `X87Tag::Zero` paired with a
+canonical binary80 zero payload: zero significand and sign/exponent word
+`0x0000` or `0x8000`. Both signs and every RC store Word zero exactly, add no
+flags, preserve incoming PE, clear C1, and retain the current C0/C2/C3 policy.
+Keep the FCW whitelist, `FSW & 0x80df == 0`, bare Long64 RAX addressing, and
+complete canonical48 Word range check. Perform one atomic Word write with no
+read; preserve source bytes. FIST keeps the physical tag and TOP; FISTP empties
+the old TOP tag and increments TOP modulo eight only after successful write.
+Do not widen the existing m32 behavior or admit m64, nonzero magnitudes below
+one, masked invalid values, or additional forms.
+
+Cover sign, RC, opcode, TOP, prior PE/C1, tag/payload mismatches, prohibited
+controls/prefixes, and write/range atomicity. Add a literal CLI/FNSTSW fixture
+and JIT/native denial coverage. Native runtime and physical checks remain
+deferred under ISSUE-019.
 
 #### S2-31bj. Round extreme underflow through binary32 stores
 

@@ -2498,3 +2498,14 @@ JIT and native admission remain closed. See the [S2-31bt CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bt-exact-signed-zero-fist-m32int-rax-db-10-db-18),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bt-exact-signed-zero-fist-m32int),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bt--exact-signed-zero-fist-m32int).
+
+### S2-31bu exact signed-zero FIST/FISTP m16int fixture
+
+The negative-zero `DF 18` fixture stores the literal Word zero and composes
+with FNSTSW to observe preserved PE, cleared C1, and the popped TOP/tag. ISA
+coverage includes both signs, all RCs/TOPs, FIST and FISTP, payload/tag/control
+and prefix rejection, and write/range atomicity. JIT and native admission
+remain closed. See the [S2-31bu CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bu-exact-signed-zero-fist-m16int-rax-df-10-df-18),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bu-exact-signed-zero-fist-m16int),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bu--exact-signed-zero-fist-m16int).

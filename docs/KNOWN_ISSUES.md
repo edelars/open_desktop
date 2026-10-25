@@ -627,3 +627,14 @@
   ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31bt-exact-signed-zero-fist-m32int-rax-db-10-db-18),
   [plan](plans/STAGE_2.md#s2-31bt-exact-signed-zero-fist-m32int), and
   [report](reports/STAGE_2_REPORT.md#s2-31bt--exact-signed-zero-fist-m32int).
+
+- **S2-31bu evidence:** exact `DF 10`/`DF 18` m16 integer stores admit only
+  Zero-tagged canonical binary80 zeros, including both signs. They store Word
+  zero under every admitted RC, preserve PE and raw source bytes, and clear C1
+  after the atomic Word write. FIST retains tag/TOP; FISTP pops only after
+  success. Tests cover sign/RC/opcode/TOP/PE/C1, unsupported tags/payloads,
+  FCW/FSW/prefix rejection, and write/range atomicity. A CLI/FNSTSW fixture is
+  registered for JIT/native denial. Native runtime and physical acceptance
+  remain deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31bu-exact-signed-zero-fist-m16int-rax-df-10-df-18),
+  [plan](plans/STAGE_2.md#s2-31bu-exact-signed-zero-fist-m16int), and
+  [report](reports/STAGE_2_REPORT.md#s2-31bu--exact-signed-zero-fist-m16int).

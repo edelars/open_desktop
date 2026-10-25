@@ -6726,6 +6726,37 @@ runtime pass is claimed. Physical x86 acceptance remains deferred to the
 combined S2-31 acceptance substage under ISSUE-019.
 
 
+<a id="s2-31bu--exact-signed-zero-fist-m16int"></a>
+
+## S2-31bu — exact signed-zero FIST/FISTP m16int
+
+Only exact bare `DF 10`/`DF 18` now accept `X87Tag::Zero` paired with canonical
+binary80 zero payloads: zero significand and sign/exponent word `0x0000` or
+`0x8000`. Both signs and every admitted RC mode store Word zero with no new
+exceptions, preserve PE and source bytes, and clear C1. FIST retains tag/TOP;
+FISTP pops only after the atomic Word write. FCW/FSW, addressing, range, and
+other width gates remain unchanged; m32 behavior is unchanged and m64 zero is
+still unsupported.
+
+Coverage spans sign × RC × opcode × TOP × PE × C1, tag/payload/control/prefix
+rejection, Word write/no-read behavior, fault/range atomicity, and normal-value
+regressions. One literal negative-zero FISTP fixture composes with FNSTSW. JIT
+and native denial are registered.
+
+Validation passed: the focused m16 FIST/FISTP unit suite passed 6/6; the CLI
+fixture and JIT-denial tests each passed 1/1. The full `cargo test --workspace
+--offline` suite passed 856 tests, including 497 `od-isa`, 57 runner CLI, 117
+fixture/JIT, 166 testkit, 6 host, 4 jit, and 9 x86-runner tests. Host and Linux
+x86_64 `cargo check --workspace --all-targets --offline` passed. The Linux
+target compiles native-denial tests but does not execute them; existing
+dead-code warnings remain. `cargo fmt --all -- --check` and `git diff --check`
+passed. `python3 tools/check_layout.py` reports the preserved unmapped root
+`.serena/` directory, excluded from this change. `graphify update .` rebuilt
+the graph to 4,342 nodes, 8,852 edges and 180 communities. Native runtime and
+physical x86 behavior remain deferred to the combined S2-31 acceptance
+substage under ISSUE-019.
+
+
 <a id="s2-31br--sticky-status-admission-for-bounded-m32m64-stores"></a>
 
 ## S2-31br — sticky status admission for bounded m32/m64 stores
