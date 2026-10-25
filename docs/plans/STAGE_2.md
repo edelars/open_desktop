@@ -225,6 +225,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dd | Admit canonical Normal binary80 exact integers with e=63..16383 to D9 FC; preserve raw bytes/status except C1; native closed | S2-31dc |
 | [x] | S2-31de | Admit canonical signed infinity with Special tag to D9 FC; preserve raw bytes/status except C1; native/JIT closed | S2-31dd, S2-31aa |
 | [x] | S2-31df | Admit Special-tagged canonical QNaN to D9 FC as a payload-preserving identity; native/JIT closed | S2-31de |
+| [x] | S2-31dg | Admit canonical Special-tagged SNaN to D9 FC; set IE and quiet bit while preserving payload; native/JIT closed | S2-31df |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -2189,6 +2190,30 @@ status expectations. Add invalid source/tag/control/status and fetch,
 truncation, STOP and budget atomicity checks, plus a literal `FLD m80fp` →
 `FRNDINT` → `FNSTSW AX` fixture. JIT/native admission remains closed. Physical
 x86 acceptance and general exception behavior remain deferred under ISSUE-019.
+
+Normative sources: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3 and Vol.2A
+“FLD—Load Floating-Point Value” and “FRNDINT—Round to Integer,” p.3-372.
+
+#### S2-31dg. Quiet canonical signaling NaN in bounded `FRNDINT` (`D9 FC`)
+
+Extend only bare `D9 FC` to admit a Special-tagged canonical binary80 SNaN:
+exponent `0x7fff`, J=1, bit 62=0, and a nonzero lower 62-bit payload, either
+sign. Quiet ST(0) by setting only bit 62; preserve sign, exponent, J, payload,
+Special tag, TOP and all unrelated state. Add sticky IE, clear C1, add no PE
+or other flags, and preserve prior PE and C0/C2/C3. Keep the FCW whitelist and
+`FSW & 0x80df == 0` gate, including rejection of historical IE. Set FIP to old
+RIP, advance RIP by two and retire once without memory or stack access.
+
+Canonical infinity (zero lower payload) and QNaNs retain their existing
+identity behavior; pseudo-NaNs, subnormals, pseudo-denormals, unnormals,
+malformed encodings, wrong tags, invalid controls or status and
+execution-boundary failures remain Unsupported. Cover the four
+literal significands × both signs × four FCWs × eight TOPs × incoming PE × old
+C1 matrix (1,024 cases) with independent quieted payload/status expectations,
+plus boundaries, pre-FNCLEX re-entry rejection, `FLD m80fp`→`FRNDINT`→`FNSTSW`
+→`FNCLEX`→`FRNDINT` composition and a literal CLI fixture. JIT/native
+admission remains closed. Physical x86 acceptance remains with combined final
+S2-31 acceptance under ISSUE-019.
 
 Normative sources: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3 and Vol.2A
 “FLD—Load Floating-Point Value” and “FRNDINT—Round to Integer,” p.3-372.

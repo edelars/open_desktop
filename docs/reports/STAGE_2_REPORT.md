@@ -4124,8 +4124,31 @@ class/tag, control/status and execution-boundary atomic rejects. The literal
 JIT compilation and native x87 admission remain denied. Physical x86 behavior
 and general exception delivery remain deferred under ISSUE-019.
 
-
 Validation passed: `cargo test -p od-isa --offline frndint` (10 tests), the literal CLI fixture test `cargo test -p od-runner --offline frndint_loaded_quiet_nan_literal_fixture_preserves_payload_and_status` (1 test), host `cargo check --workspace --all-targets --offline`, Linux x86_64 `cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu --offline`, `cargo fmt --all -- --check`, `git diff --check`, `python3 tools/check_layout.py`, and `graphify update .` (4,680 nodes, 9,449 edges, 168 communities). The macOS-filtered native admission regression had no matching tests; the native profile's explicit `Frndint` rejection remains present in `native_v2.rs`. Physical x86/native runtime acceptance remains deferred under ISSUE-019.
+
+## S2-31dg — canonical signaling NaNs through bounded FRNDINT
+
+Bare `D9 FC` now admits Special-tagged canonical binary80 SNaNs with exponent
+`0x7fff`, J=1, bit 62 clear and a nonzero lower 62-bit payload. It sets only
+bit 62 in the significand, preserving sign, exponent, J, lower payload, tag,
+TOP and unrelated state. Commit adds sticky IE, clears C1, preserves PE and
+C0/C2/C3, updates FIP/RIP and retires once without memory or stack access.
+The existing FCW whitelist and `FSW & 0x80df` gate remain unchanged, so
+historical IE rejects re-entry until FNCLEX.
+
+Interpreter coverage includes four literal significands × both signs × all
+four FCWs × every TOP × incoming PE × prior C1 (1,024 cases), with independent
+result and status assertions. Boundary/source tests confirm the existing
+zero-payload infinity and QNaN identities; rejects include J=0 and
+wrong tags. SNaN-specific invalid controls/status,
+prefix, fetch, truncation, stop and budget cases are atomic. The local sequence
+checks IE observation by FNSTSW, re-entry rejection, FNCLEX, and a successful
+second FRNDINT. A seeded literal CLI fixture executes `FLD m80fp`→`FRNDINT`→
+`FNSTSW AX`→`FNCLEX`→`FRNDINT`. JIT/native admission remains denied. Physical
+x86/native runtime acceptance remains deferred to combined S2-31 acceptance
+under ISSUE-019.
+
+Validation: `cargo test -p od-isa --offline` passed all 603 tests; `cargo test -p od-runner --offline` passed 95 unit tests and 145 fixture tests, including the S2-31dg literal case. Host and Linux x86_64 `cargo check --workspace --all-targets --offline` passed (the Linux-target check reports existing dead-code warnings in `od-host` and `od-runner`). `cargo fmt --all -- --check`, `git diff --check`, and `python3 tools/check_layout.py` passed. `graphify update .` completed at 4,688 nodes, 9,466 edges and 180 communities; a final update after the last test edits found no graph topology changes. Physical x86/Mac mini acceptance remains deferred under ISSUE-019.
 ## S2-30ab — bounded FCOM ST(1) exact Normal compare
 
 Added exact bare `D8 D1` decode as `FcomSt1`; the existing D8 arithmetic ranges

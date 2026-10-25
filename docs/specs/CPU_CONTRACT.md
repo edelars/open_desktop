@@ -4005,6 +4005,33 @@ exception delivery remain open under ISSUE-019.
 Normative source: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3 and Vol.2A
 “FLD—Load Floating-Point Value” and “FRNDINT—Round to Integer,” p.3-372.
 
+## Local S2-31dg: canonical signaling-NaN `FRNDINT` (`D9 FC`)
+
+The exact bare register-only `D9 FC` gate additionally accepts the physical
+TOP only when its tag is Special and the bytes encode a canonical binary80
+SNaN: exponent `0x7fff`, J=1, bit 62=0, and at least one of the lower 62
+significand bits is set. Setting only bit 62 quiets the value. Preserve its
+sign, exponent, J bit, lower payload, Special tag, TOP and all unrelated state.
+Add sticky IE and clear C1; add no PE or other exception flags, and preserve
+old PE and C0/C2/C3. Keep the four-FCW whitelist and `FSW & 0x80df == 0` gate,
+so historical IE remains rejected. Preserve FDP/FOP, set FIP to old RIP,
+advance RIP by two and retire exactly once. No memory or stack access occurs.
+
+Canonical infinity (zero lower payload) and QNaNs retain their existing
+identity behavior. Pseudo-NaNs, subnormals, pseudo-denormals, unnormals,
+malformed inputs, wrong tags, invalid controls or status, and
+fetch/truncation/STOP/budget failures remain unsupported and atomic. A
+1,024-case independent matrix covers four SNaN significands, both
+signs, all four FCWs and TOPs, incoming PE and prior C1. Boundary tests cover
+zero lower payload and QNaN identity boundaries, J=0 and wrong tags. The CLI fixture composes
+`FLD m80fp`, `FRNDINT`, `FNSTSW AX`, `FNCLEX`, and a second `FRNDINT`; a local
+test confirms re-entry before `FNCLEX` is rejected after IE becomes sticky.
+JIT/native admission remains closed. Physical x86 acceptance and general
+exception delivery remain deferred under ISSUE-019.
+
+Normative source: Intel SDM revision 093, Vol.1 §8.2.2/Table 8-3 and Vol.2A
+“FLD—Load Floating-Point Value” and “FRNDINT—Round to Integer,” p.3-372.
+
 ## Local S2-30al: bounded `FUCOMI ST(0), ST(1)` (`DB E9`)
 
 Accept exactly bare `DB E9`. Before mutation call
