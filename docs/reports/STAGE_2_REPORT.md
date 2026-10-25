@@ -6390,5 +6390,6 @@ and Linux x86_64 all-target checks, formatting, and diff checks passed.
 (4216 nodes, 8649 edges, 172 communities). The Linux-native admission test was
 compile-checked but not executed on this macOS host. The layout checker reports
 the pre-existing unmapped `.serena/` directory, preserved. Independent
-Sol-medium review is pending.
-Native runtime and physical acceptance remain deferred under ISSUE-019.
+gpt-6.1-sol medium review was clean, covering the 25 focused ISA cases, two CLI
+subnormal fixtures, and one JIT-denial test. Native runtime and physical
+acceptance remain deferred under ISSUE-019.
