@@ -32218,23 +32218,31 @@ mod tests {
         assert!(memory.accesses.is_empty());
         for address in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fff7] {
             let mut state = setup(address);
+            state.x87.as_mut().unwrap().status_word = 0x0008; // Sticky OE must not block range preflight.
             let before = state.clone();
             let mut memory = Memory::at(&[0xdb, 0x38], state.rip);
+            memory.bytes = vec![0xa5; 20];
+            let before_memory = memory.bytes.clone();
             assert!(matches!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Fault(ArchitecturalFault { vector: 13, .. }))
             ));
             assert_eq!(state, before);
+            assert_eq!(memory.bytes, before_memory);
             assert!(memory.accesses.is_empty());
         }
         let mut overflow = setup(u64::MAX - 8);
+        overflow.x87.as_mut().unwrap().status_word = 0x0008; // Sticky OE must not block address-overflow preflight.
         let before = overflow.clone();
         let mut memory = Memory::at(&[0xdb, 0x38], overflow.rip);
+        memory.bytes = vec![0xa5; 20];
+        let before_memory = memory.bytes.clone();
         assert!(matches!(
             step(&mut overflow, &mut memory, AccessContext::default()),
             Err(MemoryError::AddressOverflow { address, length: 10 }) if address == u64::MAX - 8
         ));
         assert_eq!(overflow, before);
+        assert_eq!(memory.bytes, before_memory);
         assert!(memory.accesses.is_empty());
     }
 
