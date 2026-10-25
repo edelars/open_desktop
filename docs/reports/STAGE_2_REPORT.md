@@ -6453,4 +6453,6 @@ completed its AST-only pass and rebuilt the graph (4230 nodes, 8668 edges, 215
 communities). The Linux-only native denial test is typechecked but not executed
 on this macOS host; physical acceptance remains deferred under ISSUE-019. The
 layout checker reports the pre-existing unmapped `.serena/` directory,
-preserved. Independent review is pending.
+preserved. Independent Sol-medium review was clean: the 12,288-case sticky-flag
+matrix, 17 raw m80 ISA cases, CLI fixture group, JIT denial, and native test-code
+check were accepted; native runtime and physical acceptance remain deferred.
