@@ -4726,3 +4726,22 @@ remain deferred under ISSUE-019. See the
 [plan](../plans/STAGE_2.md#s2-31bg-masked-inexact-binary64-subnormal-results-through-m64-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31bg--masked-inexact-binary64-subnormal-results-through-m64-stores),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+## Local S2-31bh: sticky UE re-entry for bounded m32/m64 stores
+
+Only bounded `D9 10`, `D9 18`, `DD 10`, and `DD 18` result helpers admit the
+FSW mask `0x80cc`. Incoming masked IE/DE/UE/PE combinations are preserved;
+ZE/OE/SF/ES/B remain rejected, and FCW whitelists are unchanged. A pre-existing
+UE does not itself synthesize PE. Conversion-generated IE, PE, or UE+PE is
+committed together with status, pointers, RIP, and any FSTP pop only after the
+atomic Dword or Qword write succeeds. Exact subnormal stores retain their prior
+status behavior; inexact subnormal stores retain the S2-31bf/bg rounding rules.
+FLD and m80 gates remain unchanged.
+
+Coverage includes all 16 sticky IE/DE/UE/PE combinations across admitted
+classes, all four store opcodes and FCWs, exact/inexact paths, repeated masked
+underflow, m32 underflow followed by an exact m64 store from the unchanged
+binary80 source, FNSTSW/FNCLEX, fault atomicity, forbidden status/control
+values, and CLI/JIT/native denial. Native execution and physical acceptance
+remain deferred under ISSUE-019.

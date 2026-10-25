@@ -4296,4 +4296,16 @@ mod tests {
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
     }
+
+    #[test]
+    fn s2_31bh_sticky_ue_fixture_remains_outside_native_admission() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31bh_fst_m32fp_sticky_ue_fnstsw.case.json"
+        )
+        .as_slice();
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
+    }
 }

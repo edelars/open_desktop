@@ -2791,7 +2791,7 @@ fn bounded_x87_fist_integer_result(state: &LongModeState, width: u32) -> Option<
 fn bounded_x87_m32fp_result(state: &LongModeState) -> Option<(u32, bool, bool, bool, bool)> {
     let x87 = state.x87.as_ref()?;
     if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-        || x87.status_word & 0x80dc != 0
+        || x87.status_word & 0x80cc != 0
     {
         return None;
     }
@@ -2909,7 +2909,7 @@ fn bounded_x87_m32fp_result(state: &LongModeState) -> Option<(u32, bool, bool, b
 fn bounded_x87_m64fp_result(state: &LongModeState) -> Option<(u64, bool, bool, bool, bool)> {
     let x87 = state.x87.as_ref()?;
     if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-        || x87.status_word & 0x80dc != 0
+        || x87.status_word & 0x80cc != 0
     {
         return None;
     }
@@ -22580,7 +22580,7 @@ mod tests {
                 assert!(memory.accesses.is_empty());
             }
 
-            for forbidden in [0x0004_u16, 0x0008, 0x0010, 0x0040, 0x0080, 0x8000] {
+            for forbidden in [0x0004_u16, 0x0008, 0x0040, 0x0080, 0x8000] {
                 let mut state = LongModeState::default();
                 state.rip = 0x84e8;
                 state.gpr[Register::Rax as usize] = 0x1000;
@@ -22604,7 +22604,7 @@ mod tests {
     }
 
     #[test]
-    fn m32_m64_stores_preserve_sticky_ie_pe_for_all_admitted_classes() {
+    fn m32_m64_stores_preserve_all_sticky_ie_de_ue_pe_for_admitted_classes() {
         let classes = [
             (
                 X87Tag::Zero,
@@ -22666,83 +22666,99 @@ mod tests {
                     for incoming_ie in [false, true] {
                         for incoming_de in [false, true] {
                             for incoming_pe in [false, true] {
-                                for incoming_c1 in [false, true] {
-                                    for &(tag, raw, m32_bits, m64_bits, adds_ie, inexact) in
-                                        &classes
-                                    {
-                                        let mut state = LongModeState::default();
-                                        state.rip = 0x8600;
-                                        state.gpr[Register::Rax as usize] = 0x1003;
-                                        let mut x87 = crate::state::X87State::fixture_seed();
-                                        x87.control_word = control_word;
-                                        x87.status_word = (top << 11)
-                                            | 0x4400
-                                            | u16::from(incoming_ie)
-                                            | (u16::from(incoming_de) << 1)
-                                            | (u16::from(incoming_pe) << 5)
-                                            | (u16::from(incoming_c1) << 9);
-                                        x87.registers[(top as usize) & 7] = raw;
-                                        x87.set_tag(top as u8, tag);
-                                        state.x87 = Some(x87);
-                                        let before = state.clone();
-                                        let mut memory = Memory::at(opcode, state.rip);
-                                        memory.bytes = vec![0xa5; 24];
-
-                                        assert_eq!(
-                                            step(&mut state, &mut memory, AccessContext::default()),
-                                            Ok(StepOutcome::Advanced),
-                                            "opcode={opcode:02x?} cw={control_word:04x} top={top} ie={incoming_ie} de={incoming_de} pe={incoming_pe} tag={tag:?}"
-                                        );
-                                        let mut output =
-                                            if width == 4 { m32_bits } else { m64_bits };
-                                        if inexact && control_word == 0x0b7f {
-                                            output += 1;
-                                        }
-                                        assert_eq!(
-                                            &memory.bytes[3..3 + width],
-                                            &output.to_le_bytes()[..width]
-                                        );
-                                        assert!(memory.bytes[..3].iter().all(|&byte| byte == 0xa5));
-                                        assert!(
-                                            memory.bytes[3 + width..]
-                                                .iter()
-                                                .all(|&byte| byte == 0xa5)
-                                        );
-                                        assert_eq!(
-                                            memory.accesses,
-                                            vec![(AccessKind::Write, 0x1003, width)]
-                                        );
-
-                                        let after = state.x87.as_ref().unwrap();
-                                        let expected_top = if pop { (top + 1) & 7 } else { top };
-                                        let incremented = inexact && control_word == 0x0b7f;
-                                        let expected_status =
-                                            (before.x87.as_ref().unwrap().status_word
-                                                & !(0x3800 | 0x0200))
-                                                | (expected_top << 11)
-                                                | u16::from(incoming_ie || adds_ie)
+                                for incoming_ue in [false, true] {
+                                    for incoming_c1 in [false, true] {
+                                        for &(tag, raw, m32_bits, m64_bits, adds_ie, inexact) in
+                                            &classes
+                                        {
+                                            let mut state = LongModeState::default();
+                                            state.rip = 0x8600;
+                                            state.gpr[Register::Rax as usize] = 0x1003;
+                                            let mut x87 = crate::state::X87State::fixture_seed();
+                                            x87.control_word = control_word;
+                                            x87.status_word = (top << 11)
+                                                | 0x4400
+                                                | u16::from(incoming_ie)
                                                 | (u16::from(incoming_de) << 1)
-                                                | (u16::from(incoming_pe || inexact) << 5)
-                                                | (u16::from(incremented) << 9);
-                                        assert_eq!(after.status_word, expected_status);
-                                        for physical in 0_u8..8 {
-                                            let source_physical = top as u8;
-                                            let expected_tag = if pop && physical == source_physical
-                                            {
-                                                X87Tag::Empty
-                                            } else {
-                                                before.x87.as_ref().unwrap().tag(physical).unwrap()
-                                            };
-                                            assert_eq!(after.tag(physical), Some(expected_tag));
+                                                | (u16::from(incoming_ue) << 4)
+                                                | (u16::from(incoming_pe) << 5)
+                                                | (u16::from(incoming_c1) << 9);
+                                            x87.registers[(top as usize) & 7] = raw;
+                                            x87.set_tag(top as u8, tag);
+                                            state.x87 = Some(x87);
+                                            let before = state.clone();
+                                            let mut memory = Memory::at(opcode, state.rip);
+                                            memory.bytes = vec![0xa5; 24];
+
                                             assert_eq!(
-                                                after.registers[physical as usize],
-                                                before.x87.as_ref().unwrap().registers
-                                                    [physical as usize]
+                                                step(
+                                                    &mut state,
+                                                    &mut memory,
+                                                    AccessContext::default()
+                                                ),
+                                                Ok(StepOutcome::Advanced),
+                                                "opcode={opcode:02x?} cw={control_word:04x} top={top} ie={incoming_ie} de={incoming_de} ue={incoming_ue} pe={incoming_pe} tag={tag:?}"
                                             );
+                                            let mut output =
+                                                if width == 4 { m32_bits } else { m64_bits };
+                                            if inexact && control_word == 0x0b7f {
+                                                output += 1;
+                                            }
+                                            assert_eq!(
+                                                &memory.bytes[3..3 + width],
+                                                &output.to_le_bytes()[..width]
+                                            );
+                                            assert!(
+                                                memory.bytes[..3].iter().all(|&byte| byte == 0xa5)
+                                            );
+                                            assert!(
+                                                memory.bytes[3 + width..]
+                                                    .iter()
+                                                    .all(|&byte| byte == 0xa5)
+                                            );
+                                            assert_eq!(
+                                                memory.accesses,
+                                                vec![(AccessKind::Write, 0x1003, width)]
+                                            );
+
+                                            let after = state.x87.as_ref().unwrap();
+                                            let expected_top =
+                                                if pop { (top + 1) & 7 } else { top };
+                                            let incremented = inexact && control_word == 0x0b7f;
+                                            let expected_status =
+                                                (before.x87.as_ref().unwrap().status_word
+                                                    & !(0x3800 | 0x0200))
+                                                    | (expected_top << 11)
+                                                    | u16::from(incoming_ie || adds_ie)
+                                                    | (u16::from(incoming_de) << 1)
+                                                    | (u16::from(incoming_ue) << 4)
+                                                    | (u16::from(incoming_pe || inexact) << 5)
+                                                    | (u16::from(incremented) << 9);
+                                            assert_eq!(after.status_word, expected_status);
+                                            for physical in 0_u8..8 {
+                                                let source_physical = top as u8;
+                                                let expected_tag =
+                                                    if pop && physical == source_physical {
+                                                        X87Tag::Empty
+                                                    } else {
+                                                        before
+                                                            .x87
+                                                            .as_ref()
+                                                            .unwrap()
+                                                            .tag(physical)
+                                                            .unwrap()
+                                                    };
+                                                assert_eq!(after.tag(physical), Some(expected_tag));
+                                                assert_eq!(
+                                                    after.registers[physical as usize],
+                                                    before.x87.as_ref().unwrap().registers
+                                                        [physical as usize]
+                                                );
+                                            }
+                                            assert_eq!(after.instruction_pointer, before.rip);
+                                            assert_eq!(after.data_pointer, 0x1003);
+                                            assert_eq!(state.rip, before.rip + 2);
                                         }
-                                        assert_eq!(after.instruction_pointer, before.rip);
-                                        assert_eq!(after.data_pointer, 0x1003);
-                                        assert_eq!(state.rip, before.rip + 2);
                                     }
                                 }
                             }
@@ -22891,7 +22907,8 @@ mod tests {
     fn fst_m64fp_stores_exact_binary64_subnormals_without_new_flags() {
         let rounding_modes = [0x037f_u16, 0x077f, 0x0b7f, 0x0f7f];
         let flag_combinations = [
-            0_u16, 0x0001, 0x0002, 0x0003, 0x0020, 0x0021, 0x0022, 0x0023,
+            0_u16, 0x0001, 0x0002, 0x0003, 0x0010, 0x0011, 0x0012, 0x0013, 0x0020, 0x0021, 0x0022,
+            0x0023, 0x0030, 0x0031, 0x0032, 0x0033,
         ];
         let opcodes = [(&[0xdd, 0x10][..], false), (&[0xdd, 0x18][..], true)];
         let exact_vectors = [
@@ -22973,7 +22990,7 @@ mod tests {
     }
 
     #[test]
-    fn fst_m64fp_rejects_below_range_and_preexisting_ue_before_access() {
+    fn fst_m64fp_rejects_below_minimum_subnormal_before_access() {
         for opcode in [&[0xdd, 0x10][..], &[0xdd, 0x18][..]] {
             for negative in [false, true] {
                 let mut state = LongModeState::default();
@@ -22997,24 +23014,6 @@ mod tests {
                 assert_eq!(memory.bytes, vec![0xa5; 16]);
                 assert!(memory.accesses.is_empty());
             }
-
-            let mut state = LongModeState::default();
-            state.rip = 0x864a;
-            state.gpr[Register::Rax as usize] = 0x1003;
-            let mut x87 = crate::state::X87State::fixture_seed();
-            x87.control_word = 0x037f;
-            x87.status_word = 0x4512; // Pre-existing UE is blocked by the FSW gate.
-            x87.registers[0] = binary80_normal(0xc000_0000_0000_0000, 0x3bcd, false);
-            x87.set_tag(0, X87Tag::Valid);
-            state.x87 = Some(x87);
-            let before = state.clone();
-            let mut memory = Memory::at(opcode, state.rip);
-            assert_eq!(
-                step(&mut state, &mut memory, AccessContext::default()),
-                Ok(StepOutcome::Unsupported { opcode: 0xdd })
-            );
-            assert_eq!(state, before);
-            assert!(memory.accesses.is_empty());
 
             for tag in [X87Tag::Zero, X87Tag::Special, X87Tag::Empty] {
                 let mut state = LongModeState::default();
@@ -23042,7 +23041,9 @@ mod tests {
     #[test]
     fn fst_m64fp_rounds_masked_inexact_subnormals_with_sticky_ue_pe() {
         let modes = [0x037f_u16, 0x077f, 0x0b7f, 0x0f7f];
-        let incoming_flags = [0_u16, 1, 2, 3, 0x20, 0x21, 0x22, 0x23];
+        let incoming_flags = [
+            0_u16, 1, 2, 3, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33,
+        ];
         let opcodes = [(&[0xdd, 0x10][..], false), (&[0xdd, 0x18][..], true)];
         let vectors = [
             (
@@ -23255,7 +23256,7 @@ mod tests {
                     if fault { 0x0000_7fff_ffff_fffd } else { 0x1000 };
                 let mut x87 = crate::state::X87State::fixture_seed();
                 x87.control_word = if pop { 0x077f } else { 0x037f };
-                x87.status_word = (u16::from(top) << 11) | 0x4502;
+                x87.status_word = (u16::from(top) << 11) | 0x4512; // Pre-existing UE remains sticky.
                 x87.registers[usize::from(top)] =
                     binary80_normal(0xc000_0000_0000_0000, 0x3bcd, true);
                 x87.set_tag(top, X87Tag::Valid);
@@ -23287,7 +23288,7 @@ mod tests {
             state.gpr[Register::Rax as usize] = 0x1000;
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = if pop { 0x077f } else { 0x037f };
-            x87.status_word = (u16::from(top) << 11) | 0x4502;
+            x87.status_word = (u16::from(top) << 11) | 0x4512; // Pre-existing UE remains sticky.
             x87.registers[usize::from(top)] = binary80_normal(0xc000_0000_0000_0000, 0x3bcd, true);
             x87.set_tag(top, X87Tag::Valid);
             state.x87 = Some(x87);
@@ -23313,6 +23314,79 @@ mod tests {
                 (u16::from(final_top) << 11) | 0x4700
             );
         }
+    }
+
+    #[test]
+    fn sticky_ue_allows_repeated_underflow_and_exact_cross_width_store() {
+        let code = [
+            0xd9, 0x10, // FST m32fp underflow.
+            0xd9, 0x10, // Repeated underflow with UE+PE already sticky.
+            0x48, 0x8d, 0x40, 0x04, // LEA RAX, [RAX + 4].
+            0xdd, 0x10, // Exact-normal FST m64fp with sticky UE+PE.
+            0xdf, 0xe0, // FNSTSW AX.
+            0xdb, 0xe2, // FNCLEX.
+        ];
+        let mut state = LongModeState::default();
+        state.rip = 0x86a0;
+        state.gpr[Register::Rax as usize] = 0x1000;
+        let raw = binary80_normal(0xc000_0000_0000_0000, 0x3f6a, false); // 1.5 * 2^-149.
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0x0010; // UE only; PE must be generated by the first store.
+        x87.registers[0] = raw;
+        x87.set_tag(0, X87Tag::Valid);
+        state.x87 = Some(x87);
+        let mut memory = Memory::at(&code, state.rip);
+        memory.bytes = vec![0xa5; 20];
+
+        for _ in 0..2 {
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(
+                state.x87.as_ref().unwrap().status_word,
+                0x0230,
+                "repeated masked underflow retains UE+PE and C1"
+            );
+        }
+        assert_eq!(&memory.bytes[..4], &2_u32.to_le_bytes());
+        assert_eq!(state.x87.as_ref().unwrap().registers[0], raw);
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.gpr[Register::Rax as usize], 0x1004);
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(
+            &memory.bytes[4..12],
+            &0x36a8_0000_0000_0000_u64.to_le_bytes()
+        );
+        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x0030);
+        assert_eq!(state.x87.as_ref().unwrap().registers[0], raw);
+        assert_eq!(
+            memory.accesses,
+            [
+                (AccessKind::Write, 0x1000, 4),
+                (AccessKind::Write, 0x1000, 4),
+                (AccessKind::Write, 0x1004, 8),
+            ]
+        );
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.gpr[Register::Rax as usize] as u16, 0x0030);
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.x87.as_ref().unwrap().status_word, 0);
     }
 
     #[test]
@@ -23449,7 +23523,8 @@ mod tests {
     fn fst_m32fp_stores_exact_binary32_subnormals_without_new_flags() {
         let rounding_modes = [0x037f_u16, 0x077f, 0x0b7f, 0x0f7f];
         let flag_combinations = [
-            0_u16, 0x0001, 0x0002, 0x0003, 0x0020, 0x0021, 0x0022, 0x0023,
+            0_u16, 0x0001, 0x0002, 0x0003, 0x0010, 0x0011, 0x0012, 0x0013, 0x0020, 0x0021, 0x0022,
+            0x0023, 0x0030, 0x0031, 0x0032, 0x0033,
         ];
         let opcodes = [(&[0xd9, 0x10][..], false), (&[0xd9, 0x18][..], true)];
         let exact_vectors = [
@@ -23561,7 +23636,9 @@ mod tests {
     #[test]
     fn fst_m32fp_rounds_masked_inexact_subnormals_with_sticky_ue_pe() {
         let modes = [0x037f_u16, 0x077f, 0x0b7f, 0x0f7f];
-        let incoming_flags = [0_u16, 1, 2, 3, 0x20, 0x21, 0x22, 0x23];
+        let incoming_flags = [
+            0_u16, 1, 2, 3, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33,
+        ];
         let opcodes = [(&[0xd9, 0x10][..], false), (&[0xd9, 0x18][..], true)];
         // Each row contains the unbiased exponent, binary80 significand, and
         // literal fractions for positive/negative sources in RC order.
@@ -23785,7 +23862,7 @@ mod tests {
                     if fault { 0x0000_7fff_ffff_fffd } else { 0x1000 };
                 let mut x87 = crate::state::X87State::fixture_seed();
                 x87.control_word = if pop { 0x077f } else { 0x037f };
-                x87.status_word = (u16::from(initial_top) << 11) | 0x4502;
+                x87.status_word = (u16::from(initial_top) << 11) | 0x4512; // UE is already sticky.
                 x87.registers[usize::from(initial_top)] =
                     binary80_normal(0xc000_0000_0000_0000, 0x3f6a, true);
                 x87.set_tag(initial_top, X87Tag::Valid);
@@ -23817,7 +23894,7 @@ mod tests {
             state.gpr[Register::Rax as usize] = 0x1000;
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = if pop { 0x077f } else { 0x037f };
-            x87.status_word = (u16::from(initial_top) << 11) | 0x4502;
+            x87.status_word = (u16::from(initial_top) << 11) | 0x4512; // UE is already sticky.
             x87.registers[usize::from(initial_top)] =
                 binary80_normal(0xc000_0000_0000_0000, 0x3f6a, true);
             x87.set_tag(initial_top, X87Tag::Valid);
@@ -24364,7 +24441,8 @@ mod tests {
             (0x0f7f, "zero"),
         ];
         let flag_combinations = [
-            0_u16, 0x0001, 0x0002, 0x0003, 0x0020, 0x0021, 0x0022, 0x0023,
+            0_u16, 0x0001, 0x0002, 0x0003, 0x0010, 0x0011, 0x0012, 0x0013, 0x0020, 0x0021, 0x0022,
+            0x0023, 0x0030, 0x0031, 0x0032, 0x0033,
         ];
         let opcodes = [(&[0xd9, 0x10][..], false), (&[0xd9, 0x18][..], true)];
 
@@ -24594,16 +24672,20 @@ mod tests {
             state.x87.as_mut().unwrap().control_word = 0x027f;
             state
         }];
-        invalid_fcws.push({
-            let mut state = setup();
-            state.x87.as_mut().unwrap().status_word |= 0x0004;
-            state
-        });
-        invalid_fcws.push({
-            let mut state = setup();
-            state.x87.as_mut().unwrap().status_word |= 0x0010; // Pre-existing UE is gated.
-            state
-        });
+        for control_word in [0x077e, 0x0bff, 0x1f7f] {
+            invalid_fcws.push({
+                let mut state = setup();
+                state.x87.as_mut().unwrap().control_word = control_word;
+                state
+            });
+        }
+        for forbidden_status in [0x0004, 0x0008, 0x0040, 0x0080, 0x8000] {
+            invalid_fcws.push({
+                let mut state = setup();
+                state.x87.as_mut().unwrap().status_word = forbidden_status;
+                state
+            });
+        }
         invalid_fcws.push({
             let mut state = setup();
             state.x87.as_mut().unwrap().set_tag(0, X87Tag::Empty);
@@ -25097,7 +25179,8 @@ mod tests {
             (0x0f7f, "zero"),
         ];
         let flag_combinations = [
-            0_u16, 0x0001, 0x0002, 0x0003, 0x0020, 0x0021, 0x0022, 0x0023,
+            0_u16, 0x0001, 0x0002, 0x0003, 0x0010, 0x0011, 0x0012, 0x0013, 0x0020, 0x0021, 0x0022,
+            0x0023, 0x0030, 0x0031, 0x0032, 0x0033,
         ];
         let opcodes = [(&[0xdd, 0x10][..], false), (&[0xdd, 0x18][..], true)];
 
@@ -26073,7 +26156,7 @@ mod tests {
                 assert!(memory.accesses.is_empty(), "{label}");
             }
 
-            for forbidden in [0x0004_u16, 0x0008, 0x0010, 0x0040, 0x0080, 0x8000] {
+            for forbidden in [0x0004_u16, 0x0008, 0x0040, 0x0080, 0x8000] {
                 let mut state = LongModeState::default();
                 state.rip = 0x85c0;
                 state.gpr[Register::Rax as usize] = 0x1000;
@@ -26506,7 +26589,7 @@ mod tests {
                 assert!(memory.accesses.is_empty());
             }
 
-            for forbidden in [0x0004_u16, 0x0008, 0x0010, 0x0040, 0x0080, 0x8000] {
+            for forbidden in [0x0004_u16, 0x0008, 0x0040, 0x0080, 0x8000] {
                 let mut state = LongModeState::default();
                 state.rip = 0x85e8;
                 state.gpr[Register::Rax as usize] = 0x1000;

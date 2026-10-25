@@ -2343,3 +2343,13 @@ admission. Direct ISA coverage checks FNCLEX clearing and failed-write/range
 atomicity. See the [S2-31bg CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bg-masked-inexact-binary64-subnormal-results),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bg-masked-inexact-binary64-subnormal-results-through-m64-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bg--masked-inexact-binary64-subnormal-results-through-m64-stores).
+
+
+### S2-31bh sticky UE re-entry fixture
+
+The literal D910/DFE0 fixture starts with UE already set, performs a masked
+inexact m32 store without FNCLEX, and observes retained UE+PE through FNSTSW.
+ISA coverage exercises repeated stores without FNCLEX. FNCLEX remains available
+to clear exception flags, but consecutive bounded stores no longer require it
+when only admitted sticky flags are set. The fixture runs through the
+interpreter CLI and remains denied by JIT and native admission.

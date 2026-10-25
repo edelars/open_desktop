@@ -203,6 +203,9 @@ const FSTP_M32_NEGATIVE_MIN_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
 const FST_M32_POSITIVE_INEXACT_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bf_fst_m32fp_positive_1_5_minsub_fnstsw.case.json"
 );
+const FST_M32_STICKY_UE_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31bh_fst_m32fp_sticky_ue_fnstsw.case.json"
+);
 const FSTP_M32_NEGATIVE_INEXACT_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bf_fstp_m32fp_negative_1_5_minsub_fnstsw.case.json"
 );
@@ -3359,6 +3362,17 @@ fn v2_jit_denies_masked_inexact_m32_subnormal_store_fixtures_without_fallback() 
             Observation::Unavailable { .. }
         ));
     }
+}
+
+#[test]
+fn v2_jit_denies_m32_store_with_preexisting_sticky_ue_without_fallback() {
+    let (_, result) = run(FST_M32_STICKY_UE_FNSTSW, "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    assert!(matches!(
+        result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
 }
 
 #[test]

@@ -270,6 +270,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31be | Store exact m64 subnormal results from canonical Normal binary80 sources with integer downshift only | S2-31bc, S2-31bd |
 | [x] | S2-31bf | Round masked inexact D910/D918 m32 subnormal results; reject zero and minimum-normal promotion | S2-31bd |
 | [x] | S2-31bg | Round masked inexact DD10/DD18 m64 subnormal results; reject zero and minimum-normal promotion | S2-31be |
+| [x] | S2-31bh | Allow sticky UE in the bounded m32/m64 FST/FSTP gates without synthesizing PE from UE alone | S2-31bg |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3820,3 +3821,19 @@ atomicity; literal CLI fixtures and JIT/native denial. Validation passed:
 25 focused m64fp ISA tests, CLI fixture and JIT denial. Full workspace and
 Linux x86_64 checks are recorded in the Stage 2 report. Physical acceptance
 remains deferred under ISSUE-019.
+
+
+#### S2-31bh. Admit sticky UE in bounded binary32/binary64 stores
+
+Relax only the FSW gates in the bounded D9 10/D9 18 and DD 10/DD 18 result
+helpers from `0x80dc` to `0x80cc`. This admits incoming masked IE/DE/UE/PE in any
+combination while continuing to reject ZE/OE/SF/ES/B. UE alone does not create
+PE; conversion-generated IE, PE, or UE+PE is accumulated only after a successful
+atomic Dword/Qword write. Keep FCWs, sources, exact/inexact conversion behavior,
+and the FLD/m80 gates unchanged.
+
+Cover all 16 sticky-flag combinations across classes, exact/inexact results,
+rounding modes, opcodes, and TOP values. Exercise repeated underflow, the m32
+underflow-to-exact-m64 composition, FNSTSW/FNCLEX, write/range fault atomicity,
+forbidden status/control values, and CLI/JIT/native admission. Preserve the
+existing ISSUE-019 native-runtime and physical-acceptance deferral.

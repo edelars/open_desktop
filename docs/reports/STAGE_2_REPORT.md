@@ -6393,3 +6393,32 @@ the pre-existing unmapped `.serena/` directory, preserved. Independent
 gpt-6.1-sol medium review was clean, covering the 25 focused ISA cases, two CLI
 subnormal fixtures, and one JIT-denial test. Native runtime and physical
 acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31bh--sticky-ue-reentry-for-bounded-m32-m64-stores"></a>
+
+## S2-31bh — allow sticky UE in bounded binary32/binary64 stores
+
+The bounded m32/m64 result helpers now use `FSW & 0x80cc`, admitting masked
+sticky UE alongside IE/DE/PE for only D9 10/D9 18/DD 10/DD 18. The four FCWs,
+FLD and m80 gates, source classes, and conversion rules remain unchanged. UE
+alone does not add PE. Conversion-generated status and FSTP/TOP/pointer updates
+remain deferred until after a successful atomic data write.
+
+Coverage now spans all 16 IE/DE/UE/PE combinations for admitted classes and
+exact/inexact paths, repeated masked underflow, exact m64 storage after m32
+underflow from the unchanged source, FNSTSW/FNCLEX, write/range atomicity,
+forbidden status/control values, and CLI/JIT/native denial.
+
+Validation passed: all 468 `od-isa` unit tests; the sticky-UE CLI fixture;
+the JIT-denial fixture test; and the full offline workspace suite (813 passed,
+0 failed). `cargo fmt --all -- --check`, host workspace all-target checks, and
+Linux x86_64 workspace all-target checks passed. Linux x86_64 native-runner
+unit-test code passed `cargo check -p od-x86-runner --tests --target
+x86_64-unknown-linux-gnu --offline`. The Linux-target test binary could not be
+linked or executed here: the macOS linker rejects Linux `--as-needed`,
+`-Bstatic`, and `-z` options. `graphify update .` completed its AST-only update
+(4224 nodes, 8660 edges, 179 communities). The layout checker reports only the
+pre-existing unmapped `.serena/` directory, preserved; `git diff --check` and
+changed-document anchor checks passed. Native runtime and physical acceptance
+remain deferred under ISSUE-019. Independent review is pending.

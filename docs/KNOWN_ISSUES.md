@@ -487,9 +487,20 @@
   before access, and defer sticky UE+PE with C1 magnitude-increment state until
   after atomic Qword storage; exact behavior is unchanged and no DE is added.
   TOP/opcode/FCW/sign/sticky matrices, every shift, upper-bound checks,
-  FNSTSW/FNCLEX, UE gate, write/range atomicity, CLI and JIT/native denial are
-  covered. Native runtime and physical acceptance remain deferred under this
+  FNSTSW/FNCLEX, the then-current UE gate (superseded by S2-31bh),
+  write/range atomicity, CLI and JIT/native denial are covered. Native runtime
+  and physical acceptance remain deferred under this
   open issue. See [S2-31bg CPU contract](specs/CPU_CONTRACT.md#local-s2-31bg-masked-inexact-binary64-subnormal-results),
   [plan](plans/STAGE_2.md#s2-31bg-masked-inexact-binary64-subnormal-results-through-m64-stores),
   [report](reports/STAGE_2_REPORT.md#s2-31bg--masked-inexact-binary64-subnormal-results-through-m64-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+- **S2-31bh evidence:** the m32/m64 FST/FSTP gates now admit incoming masked UE
+  with IE/DE/PE while continuing to reject ZE/OE/SF/ES/B. UE alone does not
+  synthesize PE, and any conversion-generated flags or FSTP state changes commit
+  only after the atomic store. All 16 sticky combinations, repeated underflow,
+  cross-width exact storage from the unchanged source, FNSTSW/FNCLEX, fault
+  atomicity, CLI, and JIT/native denial are covered. Native runtime and physical
+  acceptance remain deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31bh-sticky-ue-re-entry-for-bounded-m32m64-stores),
+  [plan](plans/STAGE_2.md#s2-31bh-admit-sticky-ue-in-bounded-binary32binary64-stores),
+  [report](reports/STAGE_2_REPORT.md#s2-31bh--sticky-ue-reentry-for-bounded-m32-m64-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
