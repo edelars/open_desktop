@@ -277,6 +277,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bl | Round Special-tagged canonical binary80 subnormals through D910/D918 to signed zero or minimum binary32 subnormal | S2-31bj, S2-31bh |
 | [x] | S2-31bm | Round Special-tagged canonical binary80 subnormals through DD10/DD18 to signed zero or minimum binary64 subnormal | S2-31bk, S2-31bh |
 | [x] | S2-31bn | Accept direct D910/D918 rounding from binary80 Normal exponent -127 to signed minimum binary32 normal with independent UE rounding | S2-31bf, S2-31bh |
+| [x] | S2-31bo | Accept direct DD10/DD18 rounding from binary80 Normal exponent -1023 to signed minimum binary64 normal with independent UE rounding | S2-31bg, S2-31bh |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3953,3 +3954,22 @@ threshold; and an exact-integer oracle for both thresholds. Also cover write
 and range fault atomicity, FNSTSW/FNCLEX, literal CLI fixtures and JIT/native
 denial. Native runtime and physical acceptance remain deferred under
 ISSUE-019.
+
+#### S2-31bo. Round exponent -1023 binary80 normals directly to binary64 minimum normal
+
+Extend only bounded `DD 10`/`DD 18` for Valid-tagged canonical binary80 Normal
+sources at unbiased exponent -1023 when direct destination rounding of
+`S / 2^12` selects exactly `1 << 52`. Store signed binary64 minimum normal
+from that destination rounding and add PE+C1. Independently classify UE by
+rounding `S >> 11` with its low 11-bit remainder under the same sign-aware RC;
+add UE iff that unbounded 53-bit significand remains below `1 << 53`. Never use
+the auxiliary value to form stored bits. Preserve existing IE/DE/UE/PE and keep
+all gates, source bytes and non-target m64 paths unchanged. Commit flags,
+pointers, RIP and FSTP pop only after a successful atomic Qword write.
+
+Cover nearest and directed destination thresholds with neighbors, the
+independent wide UE threshold, both signs, all RCs/opcodes/TOPs and 16 sticky
+flag combinations; exact maximum-subnormal and minimum-normal controls; an
+exact integer oracle; write/range fault atomicity; FNSTSW/FNCLEX; and literal
+CLI fixtures with JIT/native denial. Native runtime and physical acceptance
+remain deferred under ISSUE-019.

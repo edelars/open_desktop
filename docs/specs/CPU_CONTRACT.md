@@ -4876,3 +4876,29 @@ raised; JIT and native admission deny both fixtures. Native runtime and
 physical acceptance remain deferred under ISSUE-019. See [plan](../plans/STAGE_2.md#s2-31bn-round-exponent--127-binary80-normals-directly-to-binary32-minimum-normal),
 [report](../reports/STAGE_2_REPORT.md#s2-31bn--binary80-normal-to-binary32-minimum-normal-rounding),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## Local S2-31bo: binary80 exponent -1023 to binary64 minimum normal
+
+Only bounded `DD 10` and `DD 18` extend the existing Valid-tagged canonical
+binary80 Normal m64 conversion for exponent -1023. Compute destination bits
+directly by rounding `S / 2^12` under the current sign-aware RC. Newly accept
+only when that direct result is exactly `1 << 52`, and store binary64 minimum
+normal (`0x0010000000000000`, with source sign). Do not construct the stored
+value from an auxiliary rounded significand.
+
+For this result, add PE+C1. Determine UE independently by rounding the
+unbounded 53-bit significand from `S >> 11` and the low 11-bit remainder under
+the same sign/RC; add UE iff that rounded significand remains below `1 << 53`.
+Preserve any pre-existing IE/DE/UE/PE. The existing FCW/FSW gates, source bytes
+and all other m64 paths remain unchanged. The Qword write precedes sticky flags,
+FIP/FDP/RIP updates and FSTP pop; write, range and guest faults leave CPU state
+and memory unchanged.
+
+The exact-integer oracle covers nearest-even and directed-rounding destination
+thresholds and neighbors, the separate wide UE threshold, maximum-subnormal
+and minimum-normal controls, both signs, all four RCs, both opcodes, every TOP
+and all 16 sticky IE/DE/UE/PE combinations. Local tests also cover write/range
+atomicity and FNSTSW/FNCLEX. Literal CLI fixtures expose UE+PE+C1 at the
+nearest threshold and PE+C1 without new UE for a negative FSTP directed case;
+JIT and native admission deny both. Native runtime and physical x86 behavior
+remain deferred under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31bo-round-exponent--1023-binary80-normals-directly-to-binary64-minimum-normal), [report](../reports/STAGE_2_REPORT.md#s2-31bo--binary80-normal-to-binary64-minimum-normal-rounding), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

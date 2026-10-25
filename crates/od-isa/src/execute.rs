@@ -2967,8 +2967,9 @@ fn bounded_x87_m32fp_result(state: &LongModeState) -> Option<(u32, bool, bool, b
 /// subnormals round to signed zero or minimum binary64 subnormal. Exact
 /// subnormal outputs use integer downshift; masked inexact subnormal outputs
 /// set deferred UE/PE after storage. Extreme underflow is admitted as signed
-/// zero or minimum subnormal with UE+PE. The normal exponent interval is
-/// -1022..=1023.
+/// zero or minimum subnormal with UE+PE. At exponent -1023 a direct rounded
+/// minimum-normal result is admitted, with UE classified from an independent
+/// unbounded significand rounding. The normal exponent interval is -1022..=1023.
 fn bounded_x87_m64fp_result(state: &LongModeState) -> Option<(u64, bool, bool, bool, bool)> {
     let x87 = state.x87.as_ref()?;
     if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
@@ -3077,6 +3078,27 @@ fn bounded_x87_m64fp_result(state: &LongModeState) -> Option<(u64, bool, bool, b
         let fraction =
             round_quotient_magnitude(finite.sign(), quotient, remainder, 1_u64 << shift, rounding)?;
         let incremented = fraction > u128::from(quotient);
+        if fraction == 0x0010_0000_0000_0000 && exponent == -1023 {
+            // Store the destination-rounded minimum normal directly. Underflow
+            // is classified independently by rounding the unbounded 53-bit
+            // significand; this auxiliary result never forms the stored bits.
+            let wide_quotient = significand >> 11;
+            let wide_remainder = significand & 0x7ff;
+            let wide_rounded = round_quotient_magnitude(
+                finite.sign(),
+                wide_quotient,
+                wide_remainder,
+                0x800,
+                rounding,
+            )?;
+            return Some((
+                (u64::from(finite.sign()) << 63) | 0x0010_0000_0000_0000,
+                true,
+                true,
+                false,
+                wide_rounded < (1_u128 << 53),
+            ));
+        }
         if !(1..=0x000f_ffff_ffff_ffff).contains(&fraction) {
             return None;
         }
@@ -23595,24 +23617,24 @@ mod tests {
     }
 
     #[test]
-    fn fst_m64fp_rejects_promotion_to_minimum_normal_before_access() {
+    fn fst_m64fp_rounds_subnormal_and_minimum_normal_boundary_vectors() {
         let modes = [0x037f_u16, 0x077f, 0x0b7f, 0x0f7f];
         let maximum = 0x000f_ffff_ffff_ffff_u64;
         let vectors = [
             (
                 0xffff_ffff_ffff_f7ff_u64,
-                [Some(maximum), Some(maximum), None, Some(maximum)],
-                [Some(maximum), None, Some(maximum), Some(maximum)],
+                [Some(maximum), Some(maximum), Some(1 << 52), Some(maximum)],
+                [Some(maximum), Some(1 << 52), Some(maximum), Some(maximum)],
             ),
             (
                 0xffff_ffff_ffff_f800,
-                [None, Some(maximum), None, Some(maximum)],
-                [None, None, Some(maximum), Some(maximum)],
+                [Some(1 << 52), Some(maximum), Some(1 << 52), Some(maximum)],
+                [Some(1 << 52), Some(1 << 52), Some(maximum), Some(maximum)],
             ),
             (
                 0xffff_ffff_ffff_f801,
-                [None, Some(maximum), None, Some(maximum)],
-                [None, None, Some(maximum), Some(maximum)],
+                [Some(1 << 52), Some(maximum), Some(1 << 52), Some(maximum)],
+                [Some(1 << 52), Some(1 << 52), Some(maximum), Some(maximum)],
             ),
         ];
         for opcode in [&[0xdd, 0x10][..], &[0xdd, 0x18][..]] {
@@ -23646,9 +23668,20 @@ mod tests {
                                     &memory.bytes[3..11],
                                     &((u64::from(sign) << 63) | fraction).to_le_bytes()
                                 );
+                                let quotient = significand >> 12;
+                                let remainder = significand & 0xfff;
+                                let incremented = fraction > quotient;
+                                let underflow = if fraction == 1 << 52 {
+                                    exact_rounded_quotient(significand, 11, sign, control_word).0
+                                        < 1 << 53
+                                } else {
+                                    remainder != 0
+                                };
                                 assert_eq!(
-                                    state.x87.as_ref().unwrap().status_word & 0x0030,
-                                    0x0030
+                                    state.x87.as_ref().unwrap().status_word & 0x0230,
+                                    0x0020
+                                        | if incremented { 0x0200 } else { 0 }
+                                        | if underflow { 0x0010 } else { 0 }
                                 );
                             }
                             None => {
@@ -23665,6 +23698,208 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn fst_m64fp_rounds_exponent_minus_1023_to_minimum_normal_with_independent_ue() {
+        let modes = [0x037f_u16, 0x077f, 0x0b7f, 0x0f7f];
+        let sticky_flags = [
+            0_u16, 1, 2, 3, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33,
+        ];
+        let significands = [
+            0xffff_ffff_ffff_efffu64, // below both destination boundaries
+            0xffff_ffff_ffff_f000,    // exact maximum binary64 subnormal
+            0xffff_ffff_ffff_f001,    // directed destination boundary
+            0xffff_ffff_ffff_f7ff,    // nearest-even predecessor
+            0xffff_ffff_ffff_f800,    // nearest-even tie to minimum normal
+            0xffff_ffff_ffff_f801,    // nearest-even successor
+            0xffff_ffff_ffff_fbff,    // predecessor of wide UE carry
+            0xffff_ffff_ffff_fc00,    // wide 53-bit nearest-even tie/carry
+            0xffff_ffff_ffff_fc01,    // successor of wide UE carry
+            0xffff_ffff_ffff_ffff,    // maximum source significand
+        ];
+
+        for (opcode, pop) in [(&[0xdd, 0x10][..], false), (&[0xdd, 0x18][..], true)] {
+            for top in 0..8_u8 {
+                for control_word in modes {
+                    for negative in [false, true] {
+                        for sticky in sticky_flags {
+                            for significand in significands {
+                                let (direct, direct_incremented, direct_inexact) =
+                                    exact_rounded_quotient(significand, 12, negative, control_word);
+                                let (wide, _, _) =
+                                    exact_rounded_quotient(significand, 11, negative, control_word);
+                                let accepted = (1..=(1_u64 << 52)).contains(&direct);
+
+                                let mut state = LongModeState::default();
+                                state.rip = 0x86d0;
+                                state.gpr[Register::Rax as usize] = 0x1003;
+                                let mut x87 = crate::state::X87State::fixture_seed();
+                                x87.control_word = control_word;
+                                x87.status_word = (u16::from(top) << 11) | 0x4500 | sticky;
+                                let source = binary80_normal(significand, 0x3c00, negative);
+                                x87.registers[usize::from(top)] = source;
+                                x87.set_tag(top, X87Tag::Valid);
+                                state.x87 = Some(x87);
+                                let before = state.clone();
+                                let mut memory = Memory::at(opcode, state.rip);
+                                memory.bytes = vec![0xa5; 16];
+
+                                let outcome =
+                                    step(&mut state, &mut memory, AccessContext::default());
+                                let diagnostic = format!(
+                                    "opcode={opcode:02x?}, TOP={top}, FCW={control_word:04x}, sign={negative}, sticky={sticky:04x}, S={significand:016x}"
+                                );
+                                if !accepted {
+                                    assert_eq!(
+                                        outcome,
+                                        Ok(StepOutcome::Unsupported { opcode: 0xdd }),
+                                        "{diagnostic}"
+                                    );
+                                    assert_eq!(state, before, "{diagnostic}");
+                                    assert!(memory.accesses.is_empty(), "{diagnostic}");
+                                    continue;
+                                }
+
+                                assert_eq!(outcome, Ok(StepOutcome::Advanced), "{diagnostic}");
+                                let expected_bits = (u64::from(negative) << 63) | direct;
+                                assert_eq!(
+                                    &memory.bytes[3..11],
+                                    &expected_bits.to_le_bytes(),
+                                    "{diagnostic}"
+                                );
+                                assert_eq!(
+                                    memory.accesses,
+                                    [(AccessKind::Write, 0x1003, 8)],
+                                    "{diagnostic}"
+                                );
+                                let final_top = if pop { (top + 1) & 7 } else { top };
+                                let result = state.x87.as_ref().unwrap();
+                                let (expected_pe, expected_c1, expected_ue) =
+                                    if direct == 1_u64 << 52 {
+                                        (true, true, wide < (1_u64 << 53))
+                                    } else {
+                                        (direct_inexact, direct_incremented, direct_inexact)
+                                    };
+                                let expected_flags = sticky
+                                    | if expected_pe { 0x0020 } else { 0 }
+                                    | if expected_c1 { 0x0200 } else { 0 }
+                                    | if expected_ue { 0x0010 } else { 0 };
+                                assert_eq!(
+                                    result.status_word,
+                                    (u16::from(final_top) << 11) | 0x4500 | expected_flags,
+                                    "{diagnostic}"
+                                );
+                                assert_eq!(
+                                    result.registers[usize::from(top)],
+                                    source,
+                                    "{diagnostic}"
+                                );
+                                assert_eq!(result.top(), final_top, "{diagnostic}");
+                                assert_eq!(
+                                    result.tag(top),
+                                    Some(if pop { X87Tag::Empty } else { X87Tag::Valid }),
+                                    "{diagnostic}"
+                                );
+                                if direct == 1_u64 << 52 {
+                                    assert!(direct_incremented && direct_inexact, "{diagnostic}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fst_m64fp_minimum_normal_write_and_range_failures_are_atomic() {
+        for opcode in [&[0xdd, 0x10][..], &[0xdd, 0x18][..]] {
+            for (address, deny_write) in [(0x1000_u64, true), (0x0000_7fff_ffff_fffc, false)] {
+                let mut state = LongModeState::default();
+                state.rip = 0x86e0;
+                state.gpr[Register::Rax as usize] = address;
+                let mut x87 = crate::state::X87State::fixture_seed();
+                x87.control_word = 0x037f;
+                x87.status_word = 0x4512;
+                x87.registers[0] = binary80_normal(0xffff_ffff_ffff_f800, 0x3c00, false);
+                x87.set_tag(0, X87Tag::Valid);
+                state.x87 = Some(x87);
+                let before = state.clone();
+                let mut memory = Memory::at(opcode, state.rip);
+                memory.bytes = vec![0xa5; 16];
+                if deny_write {
+                    memory.deny_writes = true;
+                    assert!(matches!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Err(MemoryError::PermissionDenied { .. })
+                    ));
+                    assert_eq!(memory.accesses, [(AccessKind::Write, address, 8)]);
+                } else {
+                    assert!(matches!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Fault(_))
+                    ));
+                    assert!(memory.accesses.is_empty());
+                }
+                assert_eq!(state, before);
+                assert_eq!(memory.bytes, vec![0xa5; 16]);
+            }
+        }
+    }
+
+    #[test]
+    fn fst_m64fp_minimum_normal_status_is_observed_and_cleared() {
+        let code = [0xdd, 0x10, 0xdf, 0xe0, 0xdb, 0xe2];
+        let mut state = LongModeState::default();
+        state.rip = 0x86f0;
+        state.gpr[Register::Rax as usize] = 0x1000;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0x4500;
+        x87.registers[0] = binary80_normal(0xffff_ffff_ffff_f800, 0x3c00, false);
+        x87.set_tag(0, X87Tag::Valid);
+        state.x87 = Some(x87);
+        let mut memory = Memory::at(&code, state.rip);
+        memory.bytes = vec![0xa5; 16];
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x4730);
+        assert_eq!(&memory.bytes[..8], &0x0010_0000_0000_0000_u64.to_le_bytes());
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.gpr[Register::Rax as usize] as u16, 0x4730);
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x4700);
+    }
+
+    fn exact_rounded_quotient(
+        significand: u64,
+        shift: u32,
+        negative: bool,
+        control_word: u16,
+    ) -> (u64, bool, bool) {
+        let quotient = significand >> shift;
+        let remainder = significand & ((1_u64 << shift) - 1);
+        let denominator = 1_u64 << shift;
+        let increment = match control_word {
+            0x037f => {
+                remainder > denominator / 2 || (remainder == denominator / 2 && quotient & 1 != 0)
+            }
+            0x077f => negative && remainder != 0,
+            0x0b7f => !negative && remainder != 0,
+            0x0f7f => false,
+            _ => unreachable!(),
+        };
+        (quotient + u64::from(increment), increment, remainder != 0)
     }
 
     #[test]

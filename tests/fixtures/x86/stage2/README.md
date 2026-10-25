@@ -2424,3 +2424,16 @@ the interpreter, and remain denied by JIT/native admission. See the [S2-31bn
 CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bn-binary80-exponent--127-to-binary32-minimum-normal),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bn-round-exponent--127-binary80-normals-directly-to-binary32-minimum-normal),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bn--binary80-normal-to-binary32-minimum-normal-rounding).
+
+### S2-31bo binary80 exponent -1023 to binary64 minimum-normal fixtures
+
+The positive DD10/DFE0 fixture begins at the nearest-even binary64
+minimum-normal threshold; FNSTSW exposes UE+PE+C1. The negative DD18/DFE0
+fixture rounds toward negative to minimum normal, pops TOP and observes PE+C1
+without new UE because unbounded 53-bit rounding carries. Both use
+Valid-tagged canonical Normal sources, run in the interpreter and remain denied
+by JIT/native admission. Direct ISA coverage checks both destination thresholds,
+the independent UE threshold, signed RC neighbors, TOP/sticky-flag matrices,
+and write/range atomicity. See the [S2-31bo CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bo-binary80-exponent--1023-to-binary64-minimum-normal),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bo-round-exponent--1023-binary80-normals-directly-to-binary64-minimum-normal),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bo--binary80-normal-to-binary64-minimum-normal-rounding).

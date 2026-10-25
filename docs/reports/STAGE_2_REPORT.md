@@ -6608,3 +6608,37 @@ Independent gpt-6.1-sol medium review of commit `eda15b9` was clean. The review
 confirmed 481 `od-isa` tests, both minimum-normal interpreter fixtures and their
 JIT denial. Native runtime and physical x86 acceptance remain deferred to the
 combined S2-31 acceptance substage.
+
+<a id="s2-31bo--binary80-normal-to-binary64-minimum-normal-rounding"></a>
+
+## S2-31bo — binary80 Normal to binary64 minimum-normal rounding
+
+The bounded DD10/DD18 path now admits Valid-tagged canonical binary80 Normal
+sources at exponent -1023 when direct rounding of `S/2^12` selects binary64
+minimum normal. Stored bits come only from that destination rounding. PE+C1 are
+added, while UE is independently decided by rounding the unbounded 53-bit
+significand from `S>>11` under the same sign-aware RC. Existing UE is preserved
+when the wide rounding carries; source state, FCW/FSW gates, and other m64 paths
+remain unchanged. The atomic Qword write precedes flags, pointer/RIP updates and
+FSTP pop.
+
+An exact-integer oracle covers nearest-even and directed destination thresholds
+and neighbors, the distinct wide UE threshold, both signs, four RCs, both
+opcodes, every TOP and all 16 sticky IE/DE/UE/PE combinations. Maximum-subnormal
+and minimum-normal controls, write/range failures, FNSTSW/FNCLEX, and status
+atomicity are covered. Positive nearest FST and negative directed FSTP fixtures
+show UE+PE+C1 and PE+C1 without new UE, respectively. Both run in the
+interpreter; the new JIT-denial fixture test passes. Native admission coverage
+was typechecked for Linux x86_64, but native execution was not performed.
+
+Validation passed: 31 focused m64 FST/FSTP ISA tests and the full offline
+workspace suite (835 tests), including the two CLI fixtures and JIT denial.
+`cargo check --workspace --all-targets --offline` passed on the Apple Silicon
+host; the same all-target check passed for `x86_64-unknown-linux-gnu`, including
+native-admission test code, but was compile-only on this host. `cargo fmt --all
+-- --check` passed. `python3 tools/check_layout.py` reported the existing
+unmapped `.serena/` directory, which was preserved. `graphify update .` rebuilt
+the graph to 4,289 nodes, 8,769 edges and 178 communities. `git diff --check`
+passed after final whitespace cleanup. Native runtime and physical x86
+acceptance remain deferred to the combined S2-31 acceptance substage under
+ISSUE-019.

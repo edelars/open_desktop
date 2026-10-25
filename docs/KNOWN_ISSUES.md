@@ -564,3 +564,13 @@
   open ISSUE-019. See the [S2-31bn CPU contract](specs/CPU_CONTRACT.md#local-s2-31bn-binary80-exponent--127-to-binary32-minimum-normal),
   [plan](plans/STAGE_2.md#s2-31bn-round-exponent--127-binary80-normals-directly-to-binary32-minimum-normal),
   and [report](reports/STAGE_2_REPORT.md#s2-31bn--binary80-normal-to-binary32-minimum-normal-rounding).
+- **S2-31bo evidence:** bounded DD10/DD18 admit exponent -1023 Normal sources
+  only when direct `S/2^12` rounding selects binary64 minimum normal. PE+C1
+  follow that destination result; UE is independently decided by rounding the
+  unbounded 53-bit significand from `S>>11`. Threshold/oracle coverage spans
+  signed RC neighbors, the separate UE boundary, all TOPs/sticky IE/DE/UE/PE
+  combinations, both opcodes, atomic Qword failures, FNSTSW/FNCLEX and CLI
+  fixtures; JIT/native admission remain closed. Native runtime and physical
+  acceptance remain deferred under ISSUE-019. See the [CPU contract](specs/CPU_CONTRACT.md#local-s2-31bo-binary80-exponent--1023-to-binary64-minimum-normal),
+  [plan](plans/STAGE_2.md#s2-31bo-round-exponent--1023-binary80-normals-directly-to-binary64-minimum-normal),
+  and [report](reports/STAGE_2_REPORT.md#s2-31bo--binary80-normal-to-binary64-minimum-normal-rounding).
