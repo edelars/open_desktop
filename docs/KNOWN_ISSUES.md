@@ -638,3 +638,14 @@
   remain deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31bu-exact-signed-zero-fist-m16int-rax-df-10-df-18),
   [plan](plans/STAGE_2.md#s2-31bu-exact-signed-zero-fist-m16int), and
   [report](reports/STAGE_2_REPORT.md#s2-31bu--exact-signed-zero-fist-m16int).
+
+- **S2-31bv evidence:** exact `DF 38` FISTP m64 integer stores admit only
+  Zero-tagged canonical binary80 zero with sign/exponent word `0x0000` or
+  `0x8000` and zero significand. Both signs store Qword zero under all admitted
+  RC modes, preserve PE and source bytes, and clear C1 after the atomic write.
+  FISTP pops only after write success. ISA tests cover sign/RC/TOP/PE/C1, source
+  and control rejection, and write/range atomicity; a CLI/FNSTSW fixture is
+  registered for JIT/native denial. Native runtime and physical acceptance
+  remain deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31bv-exact-signed-zero-fistp-m64int-rax-df-38),
+  [plan](plans/STAGE_2.md#s2-31bv-exact-signed-zero-fistp-m64int), and
+  [report](reports/STAGE_2_REPORT.md#s2-31bv--exact-signed-zero-fistp-m64int).

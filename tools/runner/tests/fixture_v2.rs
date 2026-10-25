@@ -3532,6 +3532,20 @@ fn v2_jit_denies_signed_zero_fistp_m16_fixture_without_interpreter_fallback() {
 }
 
 #[test]
+fn v2_jit_denies_signed_zero_fistp_m64_fixture_without_interpreter_fallback() {
+    let fixture = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_31bv_fistp_m64int_negative_zero_fnstsw.case.json"
+    );
+    let (_, result) = run(fixture, "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    assert!(matches!(
+        result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn v2_jit_denies_exact_m64_subnormal_store_fixtures_without_fallback() {
     for fixture in [
         FST_M64_POSITIVE_MIN_SUBNORMAL,

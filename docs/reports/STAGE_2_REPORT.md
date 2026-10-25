@@ -6852,3 +6852,38 @@ reports the preserved unmapped root `.serena/` directory, excluded from this
 change. `graphify update .` rebuilt the graph to 4,333 nodes, 8,837 edges and
 189 communities. Native runtime and physical x86 behavior remain deferred to
 the combined S2-31 acceptance substage under ISSUE-019.
+
+
+<a id="s2-31bv--exact-signed-zero-fistp-m64int"></a>
+
+## S2-31bv — exact signed-zero FISTP m64int
+
+Only bare `DF 38` now admits `X87Tag::Zero` paired with canonical binary80
+zero (zero significand; sign/exponent word `0x0000` or `0x8000`). Both signs
+and all four admitted RC modes store Qword zero without adding flags, preserve
+incoming PE and the source payload, and clear C1. FISTP empties the old TOP tag
+and increments TOP modulo eight only after one atomic Qword write succeeds.
+The existing FCW, FSW, bare Long64 RAX and full canonical48 Qword-range gates
+remain in force; other forms, nonzero values below one and FIST m64 remain
+unsupported.
+
+The ISA matrix crosses sign, RC, TOP, incoming PE and C1, with tag/payload/
+class/control/prefix rejection, single-write/no-read behavior, and write/range
+fault atomicity. A negative-zero CLI fixture composes `DF 38` with FNSTSW;
+JIT and native admission remain explicitly denied.
+
+Focused `od-isa` FISTP m64 tests passed 6/6, the CLI fixture test passed 1/1,
+and JIT denial passed 1/1. The native-denial test is compiled only for Linux
+x86_64 and was not executable on this macOS host; native runtime and physical
+acceptance remain deferred under ISSUE-019.
+
+The full `cargo test --workspace --offline` suite passed 861 tests, including
+500 `od-isa`, 58 runner CLI, 118 fixture/JIT, 166 testkit, 6 host, 4 JIT, and
+9 host x86-runner tests. Host and Linux x86_64
+`cargo check --workspace --all-targets --offline` passed; the Linux target
+compiles the Linux-only native admission tests but does not run them. Formatting
+and `git diff --check` passed. `python3 tools/check_layout.py` reports the
+preserved root `.serena/` directory as unmapped; it remains excluded from the
+change. `graphify update .` rebuilt the graph to 4,351 nodes, 8,867 edges and
+175 communities. The physical x86 acceptance batch remains deferred under
+ISSUE-019.

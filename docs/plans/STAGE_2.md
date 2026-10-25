@@ -284,6 +284,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bs | Admit prior sticky OE on exact raw DB38 FSTP m80fp stores without changing source bytes or generating flags | S2-31bi, S2-31bp, S2-31bq |
 | [x] | S2-31bt | Admit canonical signed binary80 zero for DB10/DB18 FIST/FISTP m32int as exact integer zero | S2-31b, S2-31c |
 | [x] | S2-31bu | Admit canonical signed binary80 zero for DF10/DF18 FIST/FISTP m16int as exact integer zero | S2-31d, S2-31e |
+| [x] | S2-31bv | Admit canonical signed binary80 zero for DF38 FISTP m64int as exact integer zero | S2-31d, S2-31e |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3940,6 +3941,25 @@ Cover sign, RC, opcode, TOP, prior PE/C1, tag/payload mismatches, prohibited
 controls/prefixes, and write/range atomicity. Add a literal CLI/FNSTSW fixture
 and JIT/native denial coverage. Native runtime and physical checks remain
 deferred under ISSUE-019.
+
+<a id="s2-31bv-exact-signed-zero-fistp-m64int"></a>
+
+#### S2-31bv. Exact signed-zero `FISTP m64int [RAX]`
+
+Extend only exact bare `DF 38` for `X87Tag::Zero` paired with a canonical
+binary80 zero payload: zero significand and sign/exponent word `0x0000` or
+`0x8000`. Both signs and all four admitted RC modes store Qword zero exactly,
+generate no new flags, preserve incoming PE, clear C1, and retain the current
+C0/C2/C3 policy. Keep the FCW whitelist, `FSW & 0x80df == 0`, bare Long64 RAX
+addressing, and full canonical48 Qword range check. Perform one atomic Qword
+write with no read and preserve the source bytes. FISTP empties the old TOP tag
+and advances TOP modulo eight only after write success. Do not add FIST m64,
+other forms, nonzero magnitudes below one, or masked-invalid behavior.
+
+Cover sign, RC, TOP, incoming PE/C1, canonical/tag/class rejection, controls
+and prefixes, no-read/single-write behavior, write/range atomicity, signed-i64
+regressions, CLI/FNSTSW fixture, and JIT/native denial. Native runtime and
+physical acceptance remain deferred under ISSUE-019.
 
 #### S2-31bj. Round extreme underflow through binary32 stores
 
