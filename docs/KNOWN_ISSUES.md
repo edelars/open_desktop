@@ -738,3 +738,14 @@
   acceptance remain deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31cd-masked-canonical-qnan-fist-m16int),
   [plan](plans/STAGE_2.md#s2-31cd-masked-binary80-qnan-through-bounded-m16-fist),
   and [report](reports/STAGE_2_REPORT.md#s2-31cd--masked-binary80-qnan-through-m16-fistfstp).
+
+
+- **S2-31ce evidence:** bare `DF 38` now admits Special-tagged canonical
+  binary80 quiet NaNs (J=1, quiet bit=1) to m64 integer indefinite
+  `0x8000000000000000`. Successful writes add IE and clear C1 while preserving
+  incoming PE/C0/C2/C3 and adding no other exception flags. Tests cover
+  payloads/signs, FCW/TOP/PE/C1, rejection classes, Qword write/range atomicity,
+  CLI/FNSTSW/FNCLEX and JIT/native denial. Native runtime and physical
+  acceptance remain deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31ce-masked-canonical-qnan-fistp-m64int),
+  [plan](plans/STAGE_2.md#s2-31ce-masked-binary80-qnan-through-bounded-m64-fistp),
+  and [report](reports/STAGE_2_REPORT.md#s2-31ce--masked-binary80-qnan-through-m64-fistp).

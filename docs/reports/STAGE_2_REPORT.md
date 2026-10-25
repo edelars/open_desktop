@@ -7176,3 +7176,34 @@ denial coverage but did not execute it. `cargo fmt --all -- --check` and
 9,015 edges and 178 communities; contract, plan, report and fixture README
 anchors were checked. Native runtime and physical x86 acceptance remain deferred
 under ISSUE-019.
+
+<a id="s2-31ce--masked-binary80-qnan-through-m64-fistp"></a>
+
+## S2-31ce — masked binary80 quiet NaN through m64 FISTP
+
+Only bare `DF 38` now admits Special-tagged canonical binary80 quiet NaNs:
+exponent `0x7fff`, either sign, J=1, quiet bit=1, and arbitrary lower payload.
+Under the existing FCW whitelist, every sign, payload and RC stores Qword
+integer indefinite `0x8000000000000000`. After a successful atomic write, IE is
+set, C1 clears, incoming PE and C0/C2/C3 are preserved, and no PE/DE/OE/UE/SF
+or ES/B is added. Raw source bytes and post-write FISTP state/pop ordering
+remain unchanged. SNaN, J=0 pseudo-NaNs, malformed/mismatched tags, finite
+overflow, non-pop m64 and unmasked delivery remain outside this slice.
+
+The ISA matrix crosses four payload patterns, both signs, all four admitted
+FCWs, all TOP values and incoming PE/C1 (1,024 cases). Rejections cover J=0
+quiet-like encodings, SNaN, tag mismatch, FCW/FSW, prefixes and canonical48
+range failures; Qword canaries, denied writes and full state equality verify
+atomicity. Focused tests passed: matrix 1/1; QNaN rejection/fault/FNSTSW/FNCLEX
+2/2; prior m64-infinity rejection 1/1; stale m16 and m32 width-rejection
+regressions 1/1 each after removing the now-admitted DF38 QNaN cases; CLI
+fixture 1/1; JIT denial 1/1.
+
+`cargo test --workspace --offline` passed 910 tests: 531 `od-isa`, 4 `od-jit`,
+6 host, 67 runner CLI, 127 fixture/JIT, 166 testkit, 8 x86-runner library and
+1 x86-runner main; all doc-tests passed. Host and Linux x86_64
+`cargo check --workspace --all-targets --offline` passed; Linux compiled native
+denial coverage but did not execute it. `cargo fmt --all -- --check` and
+`git diff --check` passed. `graphify update .` rebuilt the graph to 4,436 nodes,
+9,032 edges and 183 communities; contract/plan/report anchors were checked.
+Native runtime and physical x86 acceptance remain deferred under ISSUE-019.

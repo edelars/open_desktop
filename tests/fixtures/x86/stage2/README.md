@@ -2622,3 +2622,16 @@ native admission remain closed. See the [S2-31cd CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cd-masked-canonical-qnan-fist-m16int),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cd-masked-binary80-qnan-through-bounded-m16-fist),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cd--masked-binary80-qnan-through-m16-fistfstp).
+
+
+### S2-31ce masked quiet-NaN FISTP m64int fixture
+
+The negative canonical quiet-NaN `DF 38` fixture stores Qword integer
+indefinite `0x8000000000000000` under masked exceptions and composes with FNSTSW
+to observe IE and the popped TOP/tag. ISA coverage crosses payload shapes, both
+signs, all admitted FCWs, every TOP, and incoming PE/C1; it rejects J=0
+pseudo-NaNs, SNaN, mismatched tags and checks Qword write/range atomicity. JIT
+and native admission remain closed. See the [S2-31ce CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ce-masked-canonical-qnan-fistp-m64int),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ce-masked-binary80-qnan-through-bounded-m64-fistp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ce--masked-binary80-qnan-through-m64-fistp).

@@ -5299,3 +5299,29 @@ under ISSUE-019. See the
 [plan](../plans/STAGE_2.md#s2-31cd-masked-binary80-qnan-through-bounded-m16-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31cd--masked-binary80-qnan-through-m16-fistfstp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31ce-masked-canonical-qnan-fistp-m64int"></a>
+
+## Local S2-31ce: masked canonical quiet NaN through m64 `FISTP` (`DF 38`)
+
+Only bare `DF 38` admits Special-tagged canonical binary80 quiet NaNs:
+exponent `0x7fff`, either sign, J=1 and quiet bit=1, with arbitrary lower
+payload. Under the existing FCW whitelist, either sign and every RC mode store
+Qword integer indefinite `0x8000000000000000`. After the atomic Qword write,
+set sticky IE, clear C1, preserve incoming PE and C0/C2/C3, and add no
+PE/DE/OE/UE/SF; ES/B remain clear. The FSW gate continues to reject incoming
+IE.
+
+Keep bare Long64 RAX addressing, full canonical48 eight-byte preflight, raw
+source bytes, one write/no read, and post-write FISTP commit/pop. SNaN, J=0
+pseudo-NaNs, malformed or mismatched tags, finite overflow, non-pop m64 and
+unmasked delivery remain unsupported. Existing m16/m32 QNaN paths are unchanged.
+
+Coverage includes signs, representative payloads, admitted FCWs, every TOP and
+incoming PE/C1, malformed/tag/class/control/prefix rejection, Qword write/range
+atomicity and FISTP/FNSTSW/FNCLEX observation. JIT/native admission remains
+closed; native runtime and physical behavior remain deferred under ISSUE-019.
+See the [plan](../plans/STAGE_2.md#s2-31ce-masked-binary80-qnan-through-bounded-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31ce--masked-binary80-qnan-through-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
