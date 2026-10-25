@@ -1038,3 +1038,13 @@
   [plan](plans/STAGE_2.md#s2-31da-special-unnormals-m16-fist),
   [report](reports/STAGE_2_REPORT.md#s2-31da--special-tagged-unnormals-through-m16-fist),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31db evidence:** bare DF38 admits only Special-tagged finite-exponent
+  binary80 unnormals (J=0) for m64 FISTP; the 98,304-case matrix checks Qword
+  indefinite, IE without PE/DE, status/payload preservation, canaries, one
+  write/no read, and pop behavior. Boundary/tag/control rejects, status
+  visibility, CLI fixture, and JIT/native denial are covered. Mac mini and
+  physical x86 acceptance remain deferred; ISSUE-019 stays open. See [contract](specs/CPU_CONTRACT.md#local-s2-31db-special-unnormals-m64-fistp),
+  [plan](plans/STAGE_2.md#s2-31db-special-unnormals-m64-fistp),
+  [report](reports/STAGE_2_REPORT.md#s2-31db--special-tagged-unnormals-through-m64-fistp),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

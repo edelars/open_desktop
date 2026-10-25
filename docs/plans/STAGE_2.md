@@ -314,6 +314,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31cx | Convert Special-tagged binary80 pseudo-NaNs through DF10/DF18 m16 FIST/FISTP | S2-31cw |
 | [x] | S2-31cz | Convert Special-tagged binary80 unnormals through DB10/DB18 m32 FIST/FISTP | S2-31cy |
 | [x] | S2-31da | Convert Special-tagged binary80 unnormals through DF10/DF18 m16 FIST/FISTP | S2-31cz |
+| [x] | S2-31db | Convert Special-tagged binary80 unnormals through DF38 m64 FISTP | S2-31da |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4924,4 +4925,27 @@ denial. m32 behavior remains covered by S2-31cz. No FLD composition, unmasked
 delivery, physical x86 or Mac mini acceptance is claimed; those remain deferred
 to the combined S2-31 acceptance under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31da-special-unnormals-m16-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31da--special-tagged-unnormals-through-m16-fist),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+<a id="s2-31db-special-unnormals-m64-fistp"></a>
+
+#### S2-31db. Convert Special-tagged unnormals through m64 `FISTP`
+
+Only bare `DF 38` admits a Special-tagged binary80 unnormal with biased
+exponent 1 through `0x7ffe`, J=0, either sign, and any fraction. Store Qword
+integer-indefinite `0x8000000000000000`, add IE, clear C1, and add no
+PE/DE/UE/OE/ZE/SF/ES/B. Preserve incoming sticky flags and C0/C2/C3, raw source
+bytes, FCW/FSW gates, bare Long64 RAX addressing and canonical48 Qword
+preflight. A successful conversion performs one atomic write without a read,
+then empties the old physical TOP, increments TOP and commits FIP/FDP/RIP.
+
+Coverage has 98,304 independent cases across three exponents, four fractions,
+both signs, four FCWs, all TOP values, 64 sticky combinations and both prior C1
+values. Additional checks cover zero-significand unnormals, exponent/J/tag
+boundaries, other widths and forbidden controls/status, fault atomicity,
+FNSTSW/FNCLEX, a seeded CLI fixture, and JIT/native denial. Non-pop m64,
+FLD composition, unmasked delivery, physical x86 and Mac mini acceptance are
+outside this slice; final host acceptance remains under ISSUE-019. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31db-special-unnormals-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31db--special-tagged-unnormals-through-m64-fistp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

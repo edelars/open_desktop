@@ -8084,3 +8084,31 @@ clean. Physical x86 and Mac mini acceptance remain deferred to the combined
 final S2-31 substage under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31da-special-unnormals-m16-fist),
 [plan](../plans/STAGE_2.md#s2-31da-special-unnormals-m16-fist), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+<a id="s2-31db--special-tagged-unnormals-through-m64-fistp"></a>
+
+## S2-31db — Special-tagged unnormals through m64 FISTP
+
+The interpreter's bounded m64 integer-store conversion now admits only
+Special-tagged binary80 unnormals with finite nonzero exponent and J=0 for bare
+`DF 38`. It stores Qword integer-indefinite, sets IE, clears C1, and keeps the
+raw x87 payload. The existing preflight and write-before-commit path remains in
+force: a successful single Qword write precedes FIP/FDP/RIP, TOP and tag commit.
+The independent matrix covers 98,304 exponent/fraction/sign/FCW/TOP/sticky/C1
+states; a literal CLI fixture checks status, payload, memory and pop behavior.
+
+Validation passed: `cargo test --workspace --offline` ran 1,014 tests with no
+failures, including 595 `od-isa`, 90 runner, 144 fixture integration, 166
+`od-testkit`, 8 x86-runner supervisor and 1 REP trace tests. The focused
+unnormal matrix/rejection/status tests and seeded CLI fixture also passed.
+Host and `x86_64-unknown-linux-gnu` `cargo check --workspace --all-targets
+--offline`, `cargo fmt --all -- --check`, `python3 tools/check_layout.py`, and
+`git diff --check` passed. The native-admission regression compiled, but its
+x86-only test was platform-gated and ran zero tests on this Apple Silicon host.
+Graphify was refreshed to 4,653 nodes, 9,406 edges and 182 communities; its
+existing parser warning for `include/open_desktop/host_abi.h` remains.
+JIT/native execution remain denied.
+Physical x86 and Mac mini acceptance are deferred to the combined final S2-31
+substage under ISSUE-019. See the [CPU
+contract](../specs/CPU_CONTRACT.md#local-s2-31db-special-unnormals-m64-fistp),
+[plan](../plans/STAGE_2.md#s2-31db-special-unnormals-m64-fistp), and [fixture
+notes](../../tests/fixtures/x86/stage2/README.md).

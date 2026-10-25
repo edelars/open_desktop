@@ -2116,6 +2116,66 @@ mod tests {
     }
 
     #[test]
+    fn s2_31db_fistp_m64_unnormal_fixture_stores_qword_indefinite_and_pops() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31db_fistp_m64int_negative_unnormal.case.json"
+        );
+        let fixture = v2::Fixture::from_json(bytes).expect("S2-31db fixture schema");
+        let code_hex = &fixture
+            .fixture
+            .memory
+            .iter()
+            .find(|region| region.region_id == "code")
+            .expect("S2-31db code region")
+            .initial_bytes_hex;
+        let code = code_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            od_jit::compile(&code).is_err(),
+            "bounded x87 remains JIT-denied"
+        );
+        let before = fixture.fixture.initial_state.clone();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(1) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("S2-31db snapshot unavailable");
+        };
+        let initial_x87 = before.x87.as_ref().unwrap();
+        let after = value.state.x87.as_ref().unwrap();
+        assert_eq!(after.status_word, HexU64(0x4901));
+        assert_eq!(after.tag_word, HexU64(0xffff));
+        assert_eq!(after.registers, initial_x87.registers);
+        assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
+        assert_eq!(after.data_pointer, HexU64(0x0030_0001));
+        let regions = memory.snapshot();
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "data_left")
+                .unwrap()
+                .bytes_hex,
+            "aa"
+        );
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "data_right")
+                .unwrap()
+                .bytes_hex,
+            "000000000000008044556677889900aa"
+        );
+    }
+
+    #[test]
     fn fistp_after_subnormal_load_preserves_de_and_observes_fnstsw() {
         for (name, bytes, expected_right, expected_rip) in [
             (

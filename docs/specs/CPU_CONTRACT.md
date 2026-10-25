@@ -6032,3 +6032,29 @@ acceptance remain deferred to the combined S2-31 substage under ISSUE-019. See
 the [plan](../plans/STAGE_2.md#s2-31da-special-unnormals-m16-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31da--special-tagged-unnormals-through-m16-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+<a id="local-s2-31db-special-unnormals-m64-fistp"></a>
+
+## Local S2-31db: Special-tagged binary80 unnormals through m64 `FISTP`
+
+Only bare `DF 38` admits a Special-tagged binary80 unnormal whose biased
+exponent is 1..=`0x7ffe`, explicit integer bit J=0, either sign, and arbitrary
+fraction including zero. The conversion writes Qword integer-indefinite
+`0x8000000000000000`, adds IE and clears C1; it adds no PE/DE/UE/OE/ZE/SF/ES/B
+and preserves incoming sticky flags and C0/C2/C3. It retains the existing FCW
+whitelist `0x037f`, `0x077f`, `0x0b7f`, `0x0f7f`, FSW gate `FSW & 0x80c0 == 0`,
+bare Long64 RAX addressing, complete canonical48 Qword preflight, one atomic
+Qword write without a data read, ten raw source bytes and write-before-commit
+ordering. Success empties the old physical TOP and increments TOP only after the
+write. No non-pop m64 form is admitted.
+
+Exponent zero and `0x7fff`, J=1 encodings, pseudo-denormals and wrong tags
+retain their existing behavior. m16/m32 unnormal behavior remains defined by
+S2-31da/S2-31cz. FLD composition, unmasked delivery, JIT/native admission,
+physical x86 and Mac mini acceptance remain outside this slice. The independent
+98,304-case matrix covers three finite exponents, four fractions, signs, four
+FCWs, all TOP values, 64 sticky combinations and prior C1; separate checks cover
+boundaries, tags, controls/status, faults, status visibility and a seeded CLI
+fixture. See the [plan](../plans/STAGE_2.md#s2-31db-special-unnormals-m64-fistp),
+[report](../reports/STAGE_2_REPORT.md#s2-31db--special-tagged-unnormals-through-m64-fistp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
