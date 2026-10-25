@@ -2450,3 +2450,15 @@ sticky flags, exponent-128 rejection, and atomic failures. See the [S2-31bp CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bp-binary80-exponent-127-overflow-to-binary32-infinity),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bp-round-exponent-127-binary80-normals-to-binary32-infinity-on-overflow),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bp--binary80-normal-to-binary32-infinity-on-overflow).
+
+
+### S2-31bq exponent-1023 binary80 overflow to binary64 infinity fixtures
+
+Positive nearest FST and negative toward-negative FSTP fixtures store signed
+binary64 infinity and expose OE+PE+C1 through FNSTSW. The interpreter accepts
+them; JIT/native admission denies them. The ISA matrix covers exact maximum
+finite through the overflow midpoint and maximum significand, both signs, all
+RCs, stack positions, sticky flags, exponent-1024 rejection, and atomic write
+faults. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bq-binary80-exponent-1023-overflow-to-binary64-infinity),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bq-round-exponent-1023-binary80-normals-to-binary64-infinity-on-overflow),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bq--binary80-normal-to-binary64-infinity-on-overflow).

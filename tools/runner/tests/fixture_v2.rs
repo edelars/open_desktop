@@ -233,6 +233,12 @@ const FST_M32_BINARY80_INFINITY_OVERFLOW_FNSTSW: &[u8] = include_bytes!(
 const FSTP_M32_BINARY80_INFINITY_OVERFLOW_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bp_fstp_m32fp_negative_infinity_overflow_directed_fnstsw.case.json"
 );
+const FST_M64_BINARY80_INFINITY_OVERFLOW_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31bq_fst_m64fp_positive_infinity_overflow_nearest_fnstsw.case.json"
+);
+const FSTP_M64_BINARY80_INFINITY_OVERFLOW_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31bq_fstp_m64fp_negative_infinity_overflow_directed_fnstsw.case.json"
+);
 const FSTP_M32_NEGATIVE_INEXACT_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bf_fstp_m32fp_negative_1_5_minsub_fnstsw.case.json"
 );
@@ -3443,6 +3449,22 @@ fn v2_jit_denies_binary80_to_infinity_overflow_m32_fixtures_without_fallback() {
     for fixture in [
         FST_M32_BINARY80_INFINITY_OVERFLOW_FNSTSW,
         FSTP_M32_BINARY80_INFINITY_OVERFLOW_FNSTSW,
+    ] {
+        let (_, result) = run(fixture, "jit", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
+fn v2_jit_denies_binary80_to_infinity_overflow_m64_fixtures_without_fallback() {
+    for fixture in [
+        FST_M64_BINARY80_INFINITY_OVERFLOW_FNSTSW,
+        FSTP_M64_BINARY80_INFINITY_OVERFLOW_FNSTSW,
     ] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));

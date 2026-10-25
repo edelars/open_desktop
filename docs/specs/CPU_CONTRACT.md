@@ -4922,3 +4922,25 @@ IE/DE/UE/PE combinations. Maximum finite output and exponent-128 rejection,
 Dword write/range atomicity, FNSTSW/FNCLEX, sticky-OE re-entry, and literal
 interpreter fixtures with JIT/native denial are covered. Native runtime and
 physical x86 behavior remain deferred under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31bp-round-exponent-127-binary80-normals-to-binary32-infinity-on-overflow), [report](../reports/STAGE_2_REPORT.md#s2-31bp--binary80-normal-to-binary32-infinity-on-overflow), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+## Local S2-31bq: binary80 exponent 1023 overflow to binary64 infinity
+
+Only bounded `DD 10` and `DD 18` extend the existing Valid-tagged canonical
+binary80 Normal m64 conversion at exponent 1023. Sign-aware rounding of
+`S / 2^11` that carries to `1 << 53` stores signed binary64 infinity. After a
+successful atomic Qword write, commit sticky OE+PE and C1; do not generate IE,
+DE or UE. Preserve prior sticky IE/DE/UE/PE, source bytes, and FST/FSTP stack,
+pointer, and retirement behavior. The existing FCW whitelist and
+`FSW & 0x80cc == 0` gate remain, so OE prevents another bounded store until
+FNCLEX clears it. Exponent-1024 and malformed sources reject before access.
+
+An exact-integer oracle covers maximum finite, first value above maximum,
+nearest predecessor/tie/successor, and maximum significand for both signs, all
+RCs, both opcodes, every TOP, and all sticky IE/DE/UE/PE combinations. Tests
+also cover directed finite/infinity selection, exponent-1024 rejection, write
+and range atomicity, FNSTSW/FNCLEX, and literal interpreter fixtures. JIT and
+native admission remain closed; native runtime and physical acceptance remain
+deferred under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31bq-round-exponent-1023-binary80-normals-to-binary64-infinity-on-overflow),
+[report](../reports/STAGE_2_REPORT.md#s2-31bq--binary80-normal-to-binary64-infinity-on-overflow),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

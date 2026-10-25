@@ -6685,3 +6685,35 @@ independently confirmed 30 m32 interpreter tests, the CLI fixture and JIT
 denial. Native-test filtering was unavailable in the review environment, and
 the combined reviewer command timed out; these are not counted as independent
 native evidence. Native runtime and physical x86 acceptance remain deferred.
+
+
+<a id="s2-31bq--binary80-normal-to-binary64-infinity-on-overflow"></a>
+
+## S2-31bq — binary80 Normal to binary64 infinity on overflow
+
+The bounded DD10/DD18 path now admits Valid-tagged canonical binary80 Normal
+sources at exponent 1023 when sign-aware rounding of `S/2^11` carries the
+53-bit significand to `1<<53`. It stores signed binary64 infinity; after a
+successful atomic Qword write it commits sticky OE+PE and C1. No IE, DE or UE is
+added. Source bytes, FCW/FSW gates, FST/FSTP state and pointer behavior remain
+unchanged; exponent-1024 sources continue to reject before data access.
+
+An independent exact-integer oracle covers `0xfffffffffffff800`,
+`0xfffffffffffff801`, `0xfffffffffffffbff`, `0xfffffffffffffc00`,
+`0xfffffffffffffc01`, and `0xffffffffffffffff`, across both signs, all RCs,
+both opcodes, every TOP and all 16 sticky IE/DE/UE/PE combinations. It also
+covers finite versus infinity under directed rounding, exponent-1024 rejection,
+Qword write/range atomicity, and FNSTSW/FNCLEX sticky-OE re-entry. Positive
+nearest FST and negative directed FSTP CLI fixtures observe OE+PE+C1; JIT and
+native admission deny both fixtures.
+
+Validation passed: 34 focused m64 FST/FSTP ISA tests and the full offline
+workspace suite (845 tests). Both CLI fixtures, the JIT-denial test, host
+`cargo check --workspace --all-targets --offline`, and the Linux x86_64
+all-target cross-check passed. The cross-target check compiled native-admission
+test code but was not executed on this Apple Silicon host. Formatting and
+`git diff --check` passed. The layout checker reports only the preserved
+unmapped `.serena/` directory. `graphify update .` rebuilt the graph to 4,313
+nodes, 8,809 edges and 180 communities. Native runtime and physical x86
+acceptance remain deferred to the combined S2-31 acceptance substage under
+ISSUE-019.

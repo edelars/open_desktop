@@ -584,3 +584,13 @@
   under ISSUE-019. See the [contract](specs/CPU_CONTRACT.md#local-s2-31bp-binary80-exponent-127-overflow-to-binary32-infinity),
   [plan](plans/STAGE_2.md#s2-31bp-round-exponent-127-binary80-normals-to-binary32-infinity-on-overflow),
   and [report](reports/STAGE_2_REPORT.md#s2-31bp--binary80-normal-to-binary32-infinity-on-overflow).
+
+- **S2-31bq evidence:** bounded DD10/DD18 exponent-1023 Normal values that
+  round beyond maximum finite binary64 now store signed infinity and commit
+  OE+PE+C1 after a successful Qword write. Exact source vectors cover nearest
+  and directed thresholds, signs, RCs, both opcodes/TOPs and all 16 sticky
+  IE/DE/UE/PE combinations; exponent-1024 still rejects. Atomicity, FNSTSW,
+  FNCLEX, CLI fixtures and JIT/native denial are covered. Native runtime and
+  physical acceptance remain deferred under ISSUE-019. See the [contract](specs/CPU_CONTRACT.md#local-s2-31bq-binary80-exponent-1023-overflow-to-binary64-infinity),
+  [plan](plans/STAGE_2.md#s2-31bq-round-exponent-1023-binary80-normals-to-binary64-infinity-on-overflow),
+  and [report](reports/STAGE_2_REPORT.md#s2-31bq--binary80-normal-to-binary64-infinity-on-overflow).

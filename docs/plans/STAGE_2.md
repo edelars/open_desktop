@@ -279,6 +279,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bn | Accept direct D910/D918 rounding from binary80 Normal exponent -127 to signed minimum binary32 normal with independent UE rounding | S2-31bf, S2-31bh |
 | [x] | S2-31bo | Accept direct DD10/DD18 rounding from binary80 Normal exponent -1023 to signed minimum binary64 normal with independent UE rounding | S2-31bg, S2-31bh |
 | [x] | S2-31bp | Accept D910/D918 exponent-127 rounding carry to signed binary32 infinity with sticky OE+PE and C1 | S2-31bb |
+| [x] | S2-31bq | Accept DD10/DD18 exponent-1023 rounding carry to signed binary64 infinity with sticky OE+PE and C1 | S2-31bc, S2-31bh |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3991,3 +3992,25 @@ rounding thresholds, both signs, all RCs/opcodes/TOPs and all 16 sticky
 IE/DE/UE/PE combinations; exponent-128 rejection; Dword write/range atomicity;
 FNSTSW/FNCLEX and sticky-OE gate behavior; and CLI fixtures with JIT/native
 denial. Native runtime and physical acceptance remain deferred under ISSUE-019.
+
+
+#### S2-31bq. Round exponent-1023 binary80 normals to binary64 infinity on overflow
+
+Extend only bounded `DD 10` and `DD 18` for Valid-tagged canonical binary80
+Normal sources at unbiased exponent 1023. When sign-aware rounding of
+`S / 2^11` carries the 53-bit significand to `1 << 53`, store signed binary64
+infinity. A successful atomic Qword write then commits sticky OE+PE and C1; do
+not add IE, DE or UE. Keep the exact FCW whitelist and `FSW & 0x80cc == 0`
+gate, so sticky OE denies the next bounded store until FNCLEX. Preserve source
+bytes and all existing FST/FSTP pointer, stack, and retirement behavior.
+Exponent-1024 sources, malformed encodings, and unmasked/unsupported
+environments reject before data access.
+
+Use an independent exact-integer oracle for `0xfffffffffffff800`,
+`0xfffffffffffff801`, `0xfffffffffffffbff`, `0xfffffffffffffc00`,
+`0xfffffffffffffc01`, and `0xffffffffffffffff`, across both signs, all RCs,
+both opcodes, every TOP and all 16 sticky IE/DE/UE/PE combinations. Cover
+finite versus infinity choices under directed rounding, exponent-1024 rejection,
+Qword write/range fault atomicity, FNSTSW/FNCLEX, and interpreter fixtures with
+JIT/native denial. Native runtime and physical acceptance remain deferred under
+ISSUE-019.
