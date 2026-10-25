@@ -6273,6 +6273,9 @@ x86 test binaries could not be linked on this macOS host; layout checking still
 reports the pre-existing unmapped `.serena` root, left untouched. Native runtime
 and physical acceptance remain deferred under ISSUE-019.
 
+
+
+
 Independent gpt-6.1-sol medium review of commit `3d29eb1` was clean. Reviewer
 verification covered 31 m64fp ISA cases, the maximum-finite CLI fixtures and
 JIT denial. Linux x86_64 target compilation passed; native runtime and physical
@@ -6360,3 +6363,32 @@ on this macOS host. The layout checker reports the pre-existing
 unmapped `.serena/` directory, preserved. Independent gpt-6.1-sol review was
 clean, covering the focused ISA, CLI, and JIT-denial evidence. Native runtime
 and physical acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31bg--masked-inexact-binary64-subnormal-results-through-m64-stores"></a>
+
+## S2-31bg — masked inexact binary64 subnormal results through bounded m64 stores
+
+Only `DD 10` and `DD 18` now round Valid-tagged canonical Normal binary80
+sources with exponents -1074 through -1023 using integer quotient/remainder,
+shift 12 through 63, and sign-aware FCW rounding. Nonzero subnormal results are
+accepted; zero, below-minimum inputs, and promotion to minimum normal remain
+Unsupported before access. Exact subnormal behavior is unchanged.
+
+Accepted inexact stores add sticky UE+PE (`0x0030`), no DE, and C1 only when
+rounding increases magnitude. The FCW whitelist and `FSW & 0x80dc == 0` gate
+remain in force, including pre-existing UE rejection. Status/pointers/RIP and
+FSTP pop commit only after the atomic Qword write. Coverage includes tie and
+neighbor vectors, every shift, both opcodes/all TOPs/all incoming IE/DE/PE
+combinations, upper-bound rejection, below-range/UE rejection, FNSTSW/FNCLEX,
+fault atomicity, CLI fixtures, and JIT/native denial.
+
+Validation passed: 25 focused m64fp ISA tests, the CLI fixture and JIT-denial
+tests, and the full offline workspace suite (811 passed, 0 failed). Workspace
+and Linux x86_64 all-target checks, formatting, and diff checks passed.
+`graphify update .` completed its AST-only pass and rebuilt the code graph
+(4216 nodes, 8649 edges, 172 communities). The Linux-native admission test was
+compile-checked but not executed on this macOS host. The layout checker reports
+the pre-existing unmapped `.serena/` directory, preserved. Independent
+Sol-medium review is pending.
+Native runtime and physical acceptance remain deferred under ISSUE-019.

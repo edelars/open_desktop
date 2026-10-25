@@ -269,6 +269,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bd | Store exact m32 subnormal results from canonical Normal binary80 sources with integer downshift only | S2-31bb, S2-31bc |
 | [x] | S2-31be | Store exact m64 subnormal results from canonical Normal binary80 sources with integer downshift only | S2-31bc, S2-31bd |
 | [x] | S2-31bf | Round masked inexact D910/D918 m32 subnormal results; reject zero and minimum-normal promotion | S2-31bd |
+| [x] | S2-31bg | Round masked inexact DD10/DD18 m64 subnormal results; reject zero and minimum-normal promotion | S2-31be |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3791,3 +3792,31 @@ Linux x86_64 all-target checks, and formatting. Layout checking reports the
 pre-existing unmapped `.serena/` directory, left untouched. Linux-only native
 admission was compile-checked but not executed. Independent review is pending;
 native runtime and physical acceptance remain deferred under ISSUE-019.
+
+
+<a id="s2-31bg-masked-inexact-binary64-subnormal-results-through-m64-stores"></a>
+
+#### S2-31bg. Round masked inexact binary64 subnormal results through bounded m64 FST/FSTP
+
+Extend only DD10/DD18 for Valid-tagged canonical Normal binary80 sources with
+unbiased exponent `-1074..=-1023`. Compute `shift = -exponent - 1011` (12..63),
+then use integer quotient/remainder and the accepted FCW's sign-aware rounding
+mode. Preserve exact-subnormal status behavior. For inexact results, accept
+only fractions `1..=0x000fffffffffffff`; reject zero, values below -1074 and
+carry/promotion to minimum normal before data access.
+
+After a successful atomic Qword write, accepted inexact stores add sticky UE+PE
+(`0x0030`), add no DE, and set C1 only when magnitude increases. Retain the
+FCW whitelist and `FSW & 0x80dc == 0` gate, including rejection of pre-existing
+UE. Preserve the normal path and do not commit flags, FIP/DIP, RIP or FSTP pop
+before the write succeeds. Other operations and JIT/native admission stay
+closed.
+
+Cover 1.5/2.5 minimum-subnormal ties and adjacent values across signs and RC;
+every shift 12..63; maximum-subnormal directed rounding and min-normal
+promotion rejection; both opcodes, every TOP and all incoming IE/DE/PE
+combinations; below-minimum and UE-gate rejection; FNSTSW/FNCLEX; write/range
+atomicity; literal CLI fixtures and JIT/native denial. Validation passed:
+25 focused m64fp ISA tests, CLI fixture and JIT denial. Full workspace and
+Linux x86_64 checks are recorded in the Stage 2 report. Physical acceptance
+remains deferred under ISSUE-019.

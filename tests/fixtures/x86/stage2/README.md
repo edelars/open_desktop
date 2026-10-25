@@ -2331,3 +2331,15 @@ interpreter path and remain explicitly denied by JIT and native admission.
 See the [S2-31bf CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bf-masked-inexact-binary32-subnormal-results),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bf-masked-inexact-binary32-subnormal-results-through-m32-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bf--masked-inexact-binary32-subnormal-results-through-m32-stores).
+
+
+### S2-31bg masked inexact binary64 subnormal store fixtures
+
+The positive DD10 fixture stores rounded 1.5 times the minimum binary64
+subnormal. The negative DD18/DFE0 fixture rounds the same magnitude toward
+negative and exposes sticky UE+PE and updated TOP with FNSTSW. Both are
+interpreter CLI fixtures and remain explicitly denied by JIT and native
+admission. Direct ISA coverage checks FNCLEX clearing and failed-write/range
+atomicity. See the [S2-31bg CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bg-masked-inexact-binary64-subnormal-results),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bg-masked-inexact-binary64-subnormal-results-through-m64-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bg--masked-inexact-binary64-subnormal-results-through-m64-stores).

@@ -480,3 +480,16 @@
   [plan](plans/STAGE_2.md#s2-31bf-masked-inexact-binary32-subnormal-results-through-m32-stores),
   [report](reports/STAGE_2_REPORT.md#s2-31bf--masked-inexact-binary32-subnormal-results-through-m32-stores),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31bg evidence:** masked inexact DD10/DD18 stores now round canonical
+  Normal binary80 sources with exponents -1074 through -1023. They accept only
+  nonzero binary64 subnormal fractions, reject below-range and promotion cases
+  before access, and defer sticky UE+PE with C1 magnitude-increment state until
+  after atomic Qword storage; exact behavior is unchanged and no DE is added.
+  TOP/opcode/FCW/sign/sticky matrices, every shift, upper-bound checks,
+  FNSTSW/FNCLEX, UE gate, write/range atomicity, CLI and JIT/native denial are
+  covered. Native runtime and physical acceptance remain deferred under this
+  open issue. See [S2-31bg CPU contract](specs/CPU_CONTRACT.md#local-s2-31bg-masked-inexact-binary64-subnormal-results),
+  [plan](plans/STAGE_2.md#s2-31bg-masked-inexact-binary64-subnormal-results-through-m64-stores),
+  [report](reports/STAGE_2_REPORT.md#s2-31bg--masked-inexact-binary64-subnormal-results-through-m64-stores),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

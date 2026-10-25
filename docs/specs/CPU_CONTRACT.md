@@ -4693,3 +4693,36 @@ under ISSUE-019. See the
 [plan](../plans/STAGE_2.md#s2-31bf-masked-inexact-binary32-subnormal-results-through-m32-stores),
 [report](../reports/STAGE_2_REPORT.md#s2-31bf--masked-inexact-binary32-subnormal-results-through-m32-stores),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31bg-masked-inexact-binary64-subnormal-results"></a>
+
+## Local S2-31bg: masked inexact subnormal results through m64 FST/FSTP
+
+For only `DD 10` and `DD 18`, extend the bounded binary64 store path to
+Valid-tagged canonical Normal binary80 sources with unbiased exponent
+`-1074..=-1023`. Use integer quotient/remainder with
+`shift = -exponent - 1011` (12..63) and the accepted FCW's sign-aware rounding
+mode. Accept only rounded fractions `1..=0x000fffffffffffff`. A zero result,
+a source below -1074, or promotion/carry to minimum normal remains Unsupported
+before data access. Existing exact-subnormal stores retain their previous
+status behavior.
+
+An accepted inexact subnormal store adds sticky UE+PE (`0x0030`) and no DE.
+C1 is set only when rounding increases the magnitude; incoming IE/DE/PE remain
+sticky. The existing FCW whitelist and `FSW & 0x80dc == 0` gate remain in
+force, so pre-existing UE rejects the operation. Compute the result before
+access, but commit flags, FIP/DIP, RIP and an FSTP pop only after the atomic
+Qword write succeeds. Denied writes and canonical-range failures preserve full
+CPU state and destination bytes.
+
+Coverage includes 1.5 and 2.5 minimum-subnormal ties and neighbors, both signs,
+all rounding modes, every shift 12..63, maximum-subnormal directed rounding
+versus minimum-normal promotion rejection, both opcodes/all TOPs/all incoming
+IE/DE/PE combinations, below-minimum and UE-gate rejection, and FNSTSW/FNCLEX.
+Write and range failures are atomic. Literal CLI fixtures expose UE+PE; JIT
+and native admission remain closed. Native runtime and physical acceptance
+remain deferred under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-31bg-masked-inexact-binary64-subnormal-results-through-m64-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31bg--masked-inexact-binary64-subnormal-results-through-m64-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
