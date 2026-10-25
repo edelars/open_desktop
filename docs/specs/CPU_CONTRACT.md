@@ -4053,6 +4053,33 @@ FRNDINT without FNCLEX, and the existing FNSTSW/FNCLEX fixture sequence.
 This local contract does not add an IE producer or define general exception
 delivery.
 
+## Local S2-31dj: historical sticky DE in bounded `FRNDINT` (`D9 FC`)
+
+The exact bare register-only `D9 FC` gate now uses `FSW & 0x80dc == 0`,
+admitting and preserving historical DE alongside IE and PE. The exact FCW
+whitelist `037f/077f/0b7f/0f7f` is unchanged. Current source classification,
+rounding, SNaN quieting/current IE behavior, PE generation and C1 recomputation
+remain independent of historical DE. ZE, OE, UE, SF, ES and B remain rejected,
+also when combined with any admitted IE/DE/PE bits. Source/tag domains,
+execution atomicity, metadata, memory and stack behavior, and JIT/native
+denial remain unchanged.
+
+Interpreter coverage crosses supported source classes, canonical-Normal
+exponent representatives, signs, RCs, TOPs, IE/DE/PE sticky combinations and
+prior C1. The literal
+seeded `D9 FC DF E0` fixture begins with IE/DE/PE on under FCW `0x037f` and
+checks sticky status plus C1 recomputation. The literal
+`FLD m32fp/m64fp subnormal → FRNDINT → FNSTSW AX` CLI fixtures verify that
+FLD's subnormal input first becomes a canonical-Normal stack value with DE,
+then FRNDINT rounds it while retaining DE and adds PE for the inexact result.
+Other forbidden status bits paired with admitted IE/DE remain atomic rejects.
+The four all-masked FCW values remain the only accepted controls; native/JIT
+admission stays closed.
+
+Physical x86/Mac mini acceptance and general x87 exception delivery remain
+open under ISSUE-019 and are deferred to the combined final S2-31 acceptance
+substage.
+
 ## Local S2-31di: small canonical-Normal `FRNDINT` (`D9 FC`)
 
 Extend the exact bare register-only S2-31a gate to admit only Valid-tagged,

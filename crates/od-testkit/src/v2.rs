@@ -760,6 +760,8 @@ impl Fixture {
                 }
                 "ded9dfe0" => ("ded9dfe0", 4),
                 "d9fcdfe0" => ("d9fcdfe0", 4),
+                "d900d9fcdfe0" => ("d900d9fcdfe0", 6),
+                "dd00d9fcdfe0" => ("dd00d9fcdfe0", 6),
                 "db28d9fcdfe0" => ("db28d9fcdfe0", 6),
                 "db28d9fcdfe0dbe2d9fc" => ("db28d9fcdfe0dbe2d9fc", 10),
                 "db28d9fcd9fcdfe0dbe2d9fc" => ("db28d9fcd9fcdfe0dbe2d9fc", 12),
@@ -913,7 +915,7 @@ impl Fixture {
                 _ => {
                     return Err(invalid(
                         "memory.code",
-                        "x87 state profile admits one NOP or exact bare x87 instruction form",
+                        "x87 state profile admits one instruction or an exact listed composition",
                     ));
                 }
             };

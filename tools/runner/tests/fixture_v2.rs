@@ -39,6 +39,8 @@ const FRNDINT_TIE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_tie.case.json");
 const FRNDINT_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_fnstsw.case.json");
+const FRNDINT_SEEDED_DE_FNSTSW: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31dj_frndint_seeded_de_fnstsw.case.json");
 const FRNDINT_INVALID_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31a_frndint_invalid_tag.case.json");
 const FRNDINT_INFINITY: &[u8] = include_bytes!(
@@ -80,6 +82,9 @@ const FILD_M64INT_FNSTSW: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31p_fild_m64int_fnstsw.case.json");
 const FLD_M32_SUBNORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31y_fld_m32fp_min_subnormal.case.json");
+const FRNDINT_FLD_M32_SUBNORMAL: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31dj_frndint_fld_m32_subnormal_fnstsw.case.json"
+);
 const FLD_M32_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31y_fld_m32fp_negative_min_subnormal_fnstsw.case.json"
 );
@@ -110,6 +115,9 @@ const FLD_M64_INVALID_STATUS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ak_fld_m64fp_invalid_status.case.json");
 const FLD_M64_SUBNORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31z_fld_m64fp_min_subnormal.case.json");
+const FRNDINT_FLD_M64_SUBNORMAL: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31dj_frndint_fld_m64_subnormal_fnstsw.case.json"
+);
 const FLD_M64_SUBNORMAL_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31z_fld_m64fp_negative_min_subnormal_fnstsw.case.json"
 );
@@ -1579,6 +1587,38 @@ fn local_x87_frndint_tie_and_fnstsw_fixtures_observe_result_and_status() {
             input.fixture.initial_state.x87.as_ref().unwrap().tag_word
         );
     }
+}
+
+#[test]
+fn local_x87_frndint_preserves_de_from_fld_m32_and_m64_subnormals() {
+    for fixture in [FRNDINT_FLD_M32_SUBNORMAL, FRNDINT_FLD_M64_SUBNORMAL] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 3);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.rip, HexU64(0x0010_0006));
+        assert_eq!(observed.state.gpr[0], HexU64(0x0000_0000_0030_7d22));
+        let x87 = observed.state.x87.as_ref().unwrap();
+        assert_eq!(x87.registers[7], "00000000000000000000");
+        assert_eq!(x87.status_word, HexU64(0x7d22));
+        assert_eq!(x87.tag_word, HexU64(0x7ffc));
+        assert_eq!(x87.instruction_pointer, HexU64(0x0010_0002));
+        assert_eq!(x87.data_pointer, input.fixture.initial_state.gpr[0]);
+    }
+}
+
+#[test]
+fn local_x87_frndint_seeded_de_fnstsw_uses_all_masked_fcw() {
+    let (input, result) = run(FRNDINT_SEEDED_DE_FNSTSW, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 2);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0004));
+    assert_eq!(observed.state.gpr[0], HexU64(0x6d23));
+    let x87 = observed.state.x87.as_ref().unwrap();
+    assert_eq!(x87.status_word, HexU64(0x6d23));
+    assert_eq!(x87.registers[5], "00000000000000000080");
+    assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
 }
 
 #[test]

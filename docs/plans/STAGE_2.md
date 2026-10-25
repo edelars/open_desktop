@@ -227,6 +227,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31df | Admit Special-tagged canonical QNaN to D9 FC as a payload-preserving identity; native/JIT closed | S2-31de |
 | [x] | S2-31dg | Admit canonical Special-tagged SNaN to D9 FC; set IE and quiet bit while preserving payload; native/JIT closed | S2-31df |
 | [x] | S2-31dh | Admit historical sticky IE at bounded D9 FC while preserving independent current IE/PE effects; native/JIT closed | S2-31dg |
+| [x] | S2-31dj | Admit historical sticky DE at bounded D9 FC while preserving DE and current rounding/exception effects; native/JIT closed | S2-31dh |
 | [x] | S2-31di | Admit canonical Normal binary80 fractions with e=-16382..-1 to D9 FC via comparison-based rounding; produce signed Zero or Valid ±1 with PE/C1; native/JIT closed | S2-31dh |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
@@ -2239,6 +2240,23 @@ FLD→FRNDINT→FRNDINT→FNSTSW→FNCLEX→FRNDINT CLI composition,
 and the existing fetch/truncation/STOP/budget/no-memory and JIT/native denial
 controls. This gate adjustment does not add a producer of IE and does not
 complete S2-31 or define general x87 exception delivery.
+
+#### S2-31dj. Admit historical sticky DE to bounded `FRNDINT` (`D9 FC`)
+
+Change only the bare register-only FRNDINT status gate from
+`FSW & 0x80de == 0` to `FSW & 0x80dc == 0`. Historical DE is admitted and
+preserved along with IE and PE. Keep the four-FCW whitelist and current
+rounding/exception behavior unchanged. Continue rejecting ZE, OE, UE, SF, ES
+and B, including when combined with admitted IE/DE/PE; do not widen source or
+tag domains, alter atomicity, or open JIT/native admission.
+
+Cover the supported source classes and Normal exponent boundaries across
+sign, RC, TOP, sticky IE/DE/PE combinations and prior C1. Literal CLI
+compositions `FLD m32fp/m64fp subnormal → FRNDINT → FNSTSW AX` verify that
+FLD's canonical-Normal result retains DE through rounding. Keep the all-masked
+FCW gate unchanged; also cover seeded raw `D9 FC DF E0` with IE/DE/PE already
+sticky under the all-masked FCW. Physical x86 and Mac mini checks belong to the single
+combined final S2-31 acceptance substage under ISSUE-019.
 
 #### S2-31di. Admit small canonical-Normal fractions to bounded `FRNDINT` (`D9 FC`)
 

@@ -2639,7 +2639,7 @@ fn bounded_x87_normal_st0_source(state: &LongModeState) -> Option<[u8; 10]> {
 fn bounded_x87_frndint_result(state: &LongModeState) -> Option<([u8; 10], bool, bool, bool)> {
     let x87 = state.x87.as_ref()?;
     if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-        || x87.status_word & 0x80de != 0
+        || x87.status_word & 0x80dc != 0
     {
         return None;
     }
@@ -20118,7 +20118,9 @@ mod tests {
             for top in 0_u8..8 {
                 for control_word in controls {
                     for negative in [false, true] {
-                        for historical_flags in [0_u16, 0x0020, 0x0001, 0x0021] {
+                        for historical_flags in [
+                            0_u16, 0x0001, 0x0002, 0x0003, 0x0020, 0x0021, 0x0022, 0x0023,
+                        ] {
                             for prior_c1 in [false, true] {
                                 let (raw, tag, expected_raw, current_pe, current_ie, incremented) =
                                     match class_index {
@@ -20269,26 +20271,82 @@ mod tests {
             }
         }
 
-        // Historical IE is admitted on its own, but it never masks any of the
-        // other status bits that this bounded gate rejects.
-        for status_word in [0x0003, 0x0005, 0x0009, 0x0011, 0x0041, 0x0081, 0x8001] {
-            let mut state = LongModeState::default();
-            state.rip = 0x8380;
-            let mut x87 = crate::state::X87State::fixture_seed();
-            x87.control_word = 0x037f;
-            x87.status_word = status_word;
-            x87.registers[0] = binary80_normal(1 << 63, 0x3fff, false);
-            x87.set_tag(0, X87Tag::Valid);
-            state.x87 = Some(x87);
-            let before = state.clone();
-            let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
-            assert_eq!(
-                step(&mut state, &mut memory, AccessContext::default()),
-                Ok(StepOutcome::Unsupported { opcode: 0xd9 }),
-                "FSW={status_word:#06x}"
-            );
-            assert_eq!(state, before);
-            assert!(memory.accesses.is_empty());
+        // Historical IE and DE are admitted independently, but neither masks
+        // any of the other status bits rejected by this bounded gate.
+        for forbidden in [0x0004, 0x0008, 0x0010, 0x0040, 0x0080, 0x8000] {
+            for admitted in [0_u16, 0x0001, 0x0002, 0x0003] {
+                let status_word = forbidden | admitted;
+                let mut state = LongModeState::default();
+                state.rip = 0x8380;
+                let mut x87 = crate::state::X87State::fixture_seed();
+                x87.control_word = 0x037f;
+                x87.status_word = status_word;
+                x87.registers[0] = binary80_normal(1 << 63, 0x3fff, false);
+                x87.set_tag(0, X87Tag::Valid);
+                state.x87 = Some(x87);
+                let before = state.clone();
+                let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Unsupported { opcode: 0xd9 }),
+                    "FSW={status_word:#06x}"
+                );
+                assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn frndint_admits_historical_de_across_normal_exponent_classes() {
+        let cases = [
+            (1_u16, 0x8000_0000_0000_0000),  // minimum Normal, e=-16382
+            (0x3ffe, 0x8000_0000_0000_0000), // half, e=-1
+            (0x3fff, 0xc000_0000_0000_0000), // 1.5, e=0
+            (0x4000, 0xa000_0000_0000_0000), // exact 2.5-class magnitude, e=1
+            (0x403e, 0xa55a_1234_5678_9abc), // large integral, e=63
+            (0x7ffe, 0xffff_ffff_ffff_ffff), // maximum finite Normal
+        ];
+        for (exponent, significand) in cases {
+            for top in 0_u8..8 {
+                for control_word in [0x037f, 0x077f, 0x0b7f, 0x0f7f] {
+                    for negative in [false, true] {
+                        for sticky in [0_u16, 0x0001, 0x0020, 0x0021] {
+                            for old_c1 in [false, true] {
+                                let mut x87 = crate::state::X87State::fixture_seed();
+                                x87.control_word = control_word;
+                                x87.status_word = (u16::from(top) << 11)
+                                    | 0x0002
+                                    | sticky
+                                    | u16::from(old_c1) * 0x0200;
+                                let raw = binary80_normal(significand, exponent, negative);
+                                x87.registers[usize::from(top)] = raw;
+                                x87.set_tag(top, X87Tag::Valid);
+                                let mut state = LongModeState::default();
+                                state.rip = 0x8390;
+                                state.x87 = Some(x87);
+                                let mut memory = Memory::at(&[0xd9, 0xfc], state.rip);
+
+                                assert_eq!(
+                                    step(&mut state, &mut memory, AccessContext::default()),
+                                    Ok(StepOutcome::Advanced),
+                                    "e={}, sign={negative}, FCW={control_word:#06x}, TOP={top}, sticky={sticky:#06x}",
+                                    i32::from(exponent) - 0x3fff
+                                );
+                                let status = state.x87.as_ref().unwrap().status_word;
+                                assert_eq!(status & 0x0002, 0x0002);
+                                assert_eq!(status & 0x0001, sticky & 0x0001);
+                                let current_pe = matches!(exponent, 1 | 0x3ffe | 0x3fff | 0x4000);
+                                assert_eq!(
+                                    status & 0x0020,
+                                    (sticky & 0x0020) | if current_pe { 0x0020 } else { 0 }
+                                );
+                                assert!(memory.accesses.is_empty());
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

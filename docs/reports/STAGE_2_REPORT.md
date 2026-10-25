@@ -8317,3 +8317,38 @@ cross-check. Graphify refreshed the code graph to 4,700 nodes, 9,486 edges and
 Physical x86/Mac mini acceptance remains deferred to the combined final S2-31
 substage under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31di-small-canonical-normal-frndint-d9-fc),
 [plan](../plans/STAGE_2.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## S2-31dj — historical sticky DE through bounded FRNDINT
+
+Changed only the bare `D9 FC` status gate from `FSW & 0x80de == 0` to
+`FSW & 0x80dc == 0`. Historical DE now passes through and remains sticky;
+the four accepted all-masked FCW values and current rounding, PE generation,
+SNaN quieting/IE, C1 and metadata behavior are unchanged. ZE/OE/UE/SF/ES/B
+remain rejected when combined with admitted IE/DE/PE. JIT/native admission
+remains closed.
+
+The historical-status source-class matrix now crosses IE/DE/PE independently
+with sign, FCW, TOP and prior C1 over zero, exact/inexact and large Normal,
+infinity, QNaN and SNaN. A separate exponent matrix covers minimum Normal,
+the e=-1 and e=0 rounding boundaries, e=1, e=63, and maximum finite Normal
+across sign/FCW/TOP/sticky flags/C1; current inexact sources continue to add
+PE. Every forbidden status bit is tested with IE and DE combinations and
+must reject atomically. Two literal CLI fixtures run minimum-subnormal
+`FLD m32fp` or `FLD m64fp`, `FRNDINT`, and `FNSTSW AX`: FLD first creates a
+canonical-Normal binary80 stack value and DE, and FRNDINT returns positive
+zero while preserving DE and setting PE; `FNSTSW` observes `0x7d22`.
+The seeded `D9 FC DF E0` CLI fixture separately starts with IE/DE/PE set and
+the all-masked `0x037f` FCW, confirming DE survives and prior C1 is
+recomputed. The x87-state profile was extended only for the two exact FLD
+compositions.
+
+Focused validation passed: `cargo test -p od-isa --offline frndint` ran 17
+tests, and `cargo test -p od-runner --offline local_x87_frndint_` passed all
+four matching tests, including both FLD fixture variants and the seeded raw
+fixture. Formatting, workspace check, layout and diff checks passed; the graph
+was refreshed to 4,710 nodes, 9,502 edges and 183 communities (the existing
+header parser warning remains). Independent `gpt-6.1-sol` medium review
+approved with no concrete defects. Physical x86 and
+Mac mini acceptance remain deferred to the combined final S2-31 substage under
+ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dj-historical-sticky-de-in-bounded-frndint-d9-fc),
+[plan](../plans/STAGE_2.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

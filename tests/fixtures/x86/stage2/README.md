@@ -1384,6 +1384,24 @@ literal `FLD m80fp`→`FRNDINT`→`FRNDINT`→`FNSTSW AX`→`FNCLEX`→`FRNDINT`
 verifies CLI status observation, quiet-NaN re-entry and clearing. JIT/native admission
 remains denied. See the [S2-31dh CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dh-historical-sticky-ie-in-bounded-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dh-admit-historical-sticky-ie-to-bounded-frndint-d9-fc), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dh--historical-sticky-ie-through-bounded-frndint).
 
+### S2-31dj FRNDINT historical DE admission
+
+The seeded raw `s2_31dj_frndint_seeded_de_fnstsw.case.json` runs `D9 FC DF E0`
+with canonical-Normal input and IE/DE/PE already sticky under FCW `0x037f`.
+It verifies that DE survives and the prior C1 clears as the rounded signed
+zero and `FNSTSW AX` result are observed. The literal
+`s2_31dj_frndint_fld_m32_subnormal_fnstsw.case.json` and
+`s2_31dj_frndint_fld_m64_subnormal_fnstsw.case.json` execute minimum-subnormal
+`FLD m32fp`/`FLD m64fp`, bare `D9 FC`, and `DF E0`. Each load produces a
+canonical-Normal binary80 value and sticky DE; FRNDINT rounds that value to
+positive zero, adds sticky PE, preserves DE and exposes the resulting FSW
+(`0x7d22`) in AX. The interpreter matrix combines source classes and Normal
+exponent representatives with sign, all FCWs/TOPs, IE/DE/PE combinations and
+prior C1. ZE/OE/UE/SF/ES/B remain rejected with any admitted sticky bits. The
+all-masked FCW gate and JIT/native denial remain unchanged. Physical and Mac
+mini acceptance are deferred to the combined final S2-31 substage under
+ISSUE-019. See the [S2-31dj CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dj-historical-sticky-de-in-bounded-frndint-d9-fc), [plan](../../../../docs/plans/STAGE_2.md#s2-31dj-admit-historical-sticky-de-to-bounded-frndint-d9-fc), and report.
+
 ### S2-31di FRNDINT small Normal values
 
 The literal `s2_31di_frndint_min_normal_to_negative_zero_fnstsw.case.json`
