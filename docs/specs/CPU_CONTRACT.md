@@ -5860,3 +5860,39 @@ ISSUE-019. See the
 [plan](../plans/STAGE_2.md#s2-31cu-pseudo-infinity-m16-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31cu--special-tagged-pseudo-infinity-through-m16-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="local-s2-31cw-special-pseudo-nan-m32-fist"></a>
+
+## Local S2-31cw: Special-tagged pseudo-NaNs through m32 `FIST`/`FISTP`
+
+Only bare `DB 10` and `DB 18` admit a Special-tagged binary80 pseudo-NaN
+(exponent `0x7fff`, J=0, nonzero fraction). Both Q-bit variants and either sign
+store Dword integer-indefinite `0x80000000`, add current IE, and clear C1. They
+add no PE or other current flags and preserve historical sticky flags and
+C0/C2/C3. The existing FCW whitelist and `FSW & 0x80c0` gate, bare Long64 RAX
+addressing, complete canonical48 Dword preflight, atomic one-write/no-read,
+write-before-commit order and raw ten-byte payload preservation remain. FIST
+retains TOP; FISTP pops once after the write succeeds.
+
+Pseudo-infinity with zero fraction, canonical J=1 QNaNs/SNaNs and non-all-one
+exponents remain distinct. Wrong tags, pseudo-denormals, unnormals, m16/m64
+pseudo-NaNs, FLD and unmasked delivery remain unsupported; there is no
+catch-all unsupported-class branch. JIT/native admission stays closed, and
+physical x86 acceptance remains deferred to the combined final S2-31 substage
+under ISSUE-019.
+
+The 65,536-case matrix crosses four literal fractions (`1`,
+`0x3fff_ffff_ffff_ffff`, `0x4000_0000_0000_0000`,
+`0x7fff_ffff_ffff_ffff`), both signs, four FCWs, both forms, all TOP values,
+64 sticky combinations and both prior C1 values. Independent expected Dword
+and status values verify IE without PE, C1 clearing, preservation, raw source,
+canaries, exact single write/no read and FIST/FISTP stack behavior. Controls
+cover pseudo-infinity, canonical QNaN/SNaN, non-all-one exponent, wrong tags,
+excluded widths and forbidden controls/status; Dword write and canonical48
+range failures preserve state and memory. An ISA FNSTSW/FNCLEX composition
+observes and clears IE; a direct seeded CLI fixture observes IE with FNSTSW.
+FLD composition is excluded because FLD rejects J=0 pseudo-NaNs. See the
+[plan](../plans/STAGE_2.md#s2-31cw-special-pseudo-nan-m32-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31cw--special-tagged-pseudo-nans-through-m32-fist),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

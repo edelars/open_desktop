@@ -5488,6 +5488,67 @@ mod tests {
     }
 
     #[test]
+    fn fistp_m32int_pseudo_nan_fixture_observes_ie_with_fnstsw() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31cw_fistp_m32int_negative_pseudo_nan_fnstsw.case.json"
+        );
+        let fixture = v2::Fixture::from_json(bytes).expect("S2-31cw fixture schema");
+        let code_hex = &fixture
+            .fixture
+            .memory
+            .iter()
+            .find(|region| region.region_id == "code")
+            .expect("S2-31cw code region")
+            .initial_bytes_hex;
+        let code = code_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            od_jit::compile(&code).is_err(),
+            "bounded x87 remains JIT-denied"
+        );
+        let before = fixture.fixture.initial_state.clone();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(2) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("S2-31cw fixture snapshot unavailable");
+        };
+        let initial_x87 = before.x87.as_ref().unwrap();
+        let after = value.state.x87.as_ref().unwrap();
+        assert_eq!(value.state.gpr[0], HexU64(0x0030_4901));
+        assert_eq!(after.status_word, HexU64(0x4901));
+        assert_eq!(after.tag_word, HexU64(0xffff));
+        assert_eq!(after.registers, initial_x87.registers);
+        assert_eq!(after.instruction_pointer, HexU64(0x0010_0000));
+        assert_eq!(after.data_pointer, HexU64(0x0030_0001));
+        let regions = memory.snapshot();
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "data_left")
+                .unwrap()
+                .bytes_hex,
+            "00"
+        );
+        assert_eq!(
+            regions
+                .iter()
+                .find(|region| region.region_id == "data_right")
+                .unwrap()
+                .bytes_hex,
+            "000080eeff11223344556677889900"
+        );
+    }
+
+    #[test]
     fn fistp_m16int_pseudo_infinity_fixture_observes_ie_with_fnstsw() {
         let bytes = include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31cu_fistp_m16int_negative_pseudo_infinity_fnstsw.case.json"

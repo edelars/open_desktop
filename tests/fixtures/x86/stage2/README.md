@@ -2880,3 +2880,20 @@ admission remains denied; FLD composition is excluded because FLD rejects
 pseudo-infinity. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cv-pseudo-infinity-m64-fistp),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31cv-pseudo-infinity-m64-fistp),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cv--special-tagged-pseudo-infinity-through-m64-fistp).
+
+
+### S2-31cw Special-tagged pseudo-NaN m32 FISTP fixture
+
+`s2_31cw_fistp_m32int_negative_pseudo_nan_fnstsw.case.json` seeds a
+Special-tagged negative J=0 pseudo-quiet-NaN with raw significand
+`0x4000000000000001`, then executes literal `DB 18` and `DF E0`. It checks
+Dword integer-indefinite between byte canaries, IE observed by FNSTSW, the raw
+source payload, and the popped TOP/tag. An ISA composition check also verifies
+FNCLEX clears IE. ISA coverage spans 65,536 FCW/form/TOP/sticky/C1 combinations
+and confirms the existing pseudo-infinity and canonical J=1 QNaN/SNaN behavior
+remains distinct; it rejects non-all-one exponents, wrong tags and m16/m64
+pseudo-NaNs. Write/range faults preserve state and memory. JIT/native admission
+remains denied. FLD composition is excluded because FLD rejects pseudo-NaNs.
+See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31cw-special-pseudo-nan-m32-fist),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31cw-special-pseudo-nan-m32-fist),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31cw--special-tagged-pseudo-nans-through-m32-fist).

@@ -967,3 +967,20 @@
   [plan](plans/STAGE_2.md#s2-31cv-pseudo-infinity-m64-fistp),
   [report](reports/STAGE_2_REPORT.md#s2-31cv--special-tagged-pseudo-infinity-through-m64-fistp),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md).
+
+- **S2-31cw evidence:** DB10/DB18 m32 FIST/FISTP admit only Special-tagged
+  J=0 binary80 pseudo-NaNs (all-one exponent, nonzero fraction), including
+  Q-bit-clear and Q-bit-set payloads of either sign. A 65,536-case
+  independently expected matrix checks integer-indefinite, IE without PE,
+  C1 clearing, sticky/condition status preservation, source bytes, Dword
+  canaries, single-write/no-read and TOP/tag rules. Wrong tags, pseudo-infinity,
+  canonical J=1 QNaN/SNaN, non-all-one exponent, m16/m64, FCW/FSW controls and
+  write/range atomicity are covered. The direct CLI fixture observes IE with
+  FNSTSW; an ISA FNSTSW/FNCLEX sequence clears it. JIT/native denial is also
+  covered; FLD, unmasked behavior and physical x86 acceptance remain outside
+  this bounded slice. The latter stays deferred to
+  the combined final S2-31 substage under ISSUE-019. See [S2-31cw CPU
+  contract](specs/CPU_CONTRACT.md#local-s2-31cw-special-pseudo-nan-m32-fist),
+  [plan](plans/STAGE_2.md#s2-31cw-special-pseudo-nan-m32-fist),
+  [report](reports/STAGE_2_REPORT.md#s2-31cw--special-tagged-pseudo-nans-through-m32-fist),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md).

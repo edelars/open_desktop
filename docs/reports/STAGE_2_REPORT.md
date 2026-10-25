@@ -7888,3 +7888,44 @@ Mac mini validation, physical x86 acceptance and native runtime remain deferred
 to the combined final S2-31 substage under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cv-pseudo-infinity-m64-fistp),
 [plan](../plans/STAGE_2.md#s2-31cv-pseudo-infinity-m64-fistp), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cw--special-tagged-pseudo-nans-through-m32-fist"></a>
+
+## S2-31cw — Special-tagged pseudo-NaNs through m32 FIST/FISTP
+
+Only bare DB 10 and DB 18 now admit Special-tagged binary80 pseudo-NaNs with
+exponent `0x7fff`, J=0 and nonzero fraction. Both Q-bit variants and either
+sign store Dword integer-indefinite `0x80000000`, add IE without PE or other
+current flags, and clear C1. Historical sticky flags and C0/C2/C3 remain
+preserved. The existing FCW/FSW gates, bare RAX form, canonical48 Dword
+preflight, one-write/no-read ordering, raw ten-byte source and FIST/FISTP
+TOP behavior are unchanged. m16/m64, FLD and unmasked behavior remain closed.
+
+The independent expected-value matrix crosses four literal fractions, both
+signs, four FCWs, both forms, all TOP values, 64 sticky combinations and both
+prior C1 values (65,536 cases). Additional tests preserve the existing
+pseudo-infinity and canonical J=1 QNaN/SNaN behavior, reject wrong tags,
+unnormals, pseudo-denormals, unsupported FCW/FSW and m16/m64 pseudo-NaNs, and
+check Dword write/canonical-range atomicity. An ISA DB18/FNSTSW/FNCLEX
+composition observes IE then clears it; the direct CLI fixture is limited to
+DB18/FNSTSW because the fixture schema admits one x87 instruction or the exact
+two-instruction status pair. JIT compilation and native admission remain
+denied. FLD composition is not claimed because FLD rejects pseudo-NaNs.
+
+Validation: all 19 m32 non-pop FIST tests and 16 m32 FISTP tests passed, along
+with the direct CLI fixture and ISA FNSTSW/FNCLEX composition. The complete
+offline workspace suite passed (988 unit/integration tests plus doc-test
+targets). Host and `x86_64-unknown-linux-gnu` workspace all-targets checks,
+`cargo fmt --all -- --check`, and `git diff --check` passed. The Linux
+cross-check reports existing dead-code warnings in `od-host` and `od-runner`.
+`python3 tools/check_layout.py` still reports the pre-existing unmapped
+`.serena/` directory, which was left untouched. `graphify update .` refreshed
+the graph to 4,602 nodes, 9,307 edges and 181 communities. A Linux-target test
+binary could not be linked using the macOS host linker; Linux native-denial
+runtime remains unverified on this macOS arm64 host. Physical x86 and Mac mini
+acceptance remain deferred to the combined final S2-31 substage under ISSUE-019.
+See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cw-special-pseudo-nan-m32-fist),
+[plan](../plans/STAGE_2.md#s2-31cw-special-pseudo-nan-m32-fist), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md).

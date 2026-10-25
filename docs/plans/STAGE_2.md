@@ -310,6 +310,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31cs | Admit Special-tagged canonical binary80 subnormals only through DF38 m64 FISTP | S2-31cr |
 | [x] | S2-31ct | Convert Special-tagged binary80 pseudo-infinity through DB10/DB18 m32 FIST/FISTP | S2-31cs |
 | [x] | S2-31cu | Convert Special-tagged binary80 pseudo-infinity through DF10/DF18 m16 FIST/FISTP | S2-31ct |
+| [x] | S2-31cw | Convert Special-tagged binary80 pseudo-NaNs through DB10/DB18 m32 FIST/FISTP | S2-31cv |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -4773,4 +4774,38 @@ literal CLI fixture, and JIT/native denial are covered. Native runtime and
 physical x86 checks remain deferred to the combined final S2-31 substage under
 ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cu-pseudo-infinity-m16-fist),
 [report](../reports/STAGE_2_REPORT.md#s2-31cu--special-tagged-pseudo-infinity-through-m16-fist),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+<a id="s2-31cw-special-pseudo-nan-m32-fist"></a>
+
+#### S2-31cw. Convert Special-tagged pseudo-NaNs through m32 `FIST`/`FISTP`
+
+Only bare DB 10 and DB 18 admit Special-tagged binary80 pseudo-NaNs with
+exponent `0x7fff`, explicit integer bit J=0, and a nonzero fraction. Both the
+Q-bit-clear and Q-bit-set variants, of either sign, store Dword
+integer-indefinite `0x80000000`, add IE, and clear C1. Add no PE or other
+current flags; preserve historical sticky flags and C0/C2/C3. Retain the FCW
+whitelist, `FSW & 0x80c0` gate, bare Long64 RAX form, complete canonical48
+Dword preflight, one atomic write/no read, write-before-commit ordering and
+raw ten-byte source preservation. FIST retains TOP; FISTP pops exactly once.
+
+Pseudo-infinity (zero fraction), canonical J=1 QNaN/SNaN, and finite
+non-all-one exponents remain distinct. Pseudo-denormals, unnormals, wrong tags,
+m16/m64 pseudo-NaNs, FLD and unmasked delivery remain unsupported; no generic
+special-class fallback is added. JIT/native admission remains denied, and
+physical x86 acceptance remains part of the combined final S2-31 substage under
+ISSUE-019.
+
+Coverage crosses four literal fractions (`1`, `0x3fff_ffff_ffff_ffff`,
+`0x4000_0000_0000_0000`, `0x7fff_ffff_ffff_ffff`) × both signs × four FCWs ×
+both forms × all TOP values × 64 sticky combinations × both old C1 values
+(65,536 cases). Independent expectations check Dword bytes, IE without PE,
+C1 clearing, status preservation, source payload, canaries, one write/no read,
+and TOP/tag rules. Controls cover zero-fraction pseudo-infinity, J=1 canonical
+QNaN/SNaN, non-all-one exponent, wrong tags, m16/m64, FCW/status, Dword write
+and canonical-range atomicity. FNSTSW/FNCLEX and a direct seeded CLI fixture
+are included. FLD composition is excluded because FLD does not admit J=0
+pseudo-NaNs. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31cw-special-pseudo-nan-m32-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31cw--special-tagged-pseudo-nans-through-m32-fist),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
