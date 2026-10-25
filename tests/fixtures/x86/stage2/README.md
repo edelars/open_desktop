@@ -2532,3 +2532,15 @@ native admission remain closed. See the [S2-31bw CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bw-round-normal-binary80-fractions-m32-fist),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bw-round-binary80-fractions-through-bounded-m32-fist),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bw--round-binary80-fractions-through-m32-fistfstp).
+
+### S2-31bx fractional FISTP m16int fixture
+
+The negative `-0.25` `DF 18` fixture uses round-toward-negative, stores Word
+`0xffff`, and composes with FNSTSW to observe PE+C1 and the popped TOP/tag. The
+ISA matrix separately checks both signs, four RC modes, both opcodes, all TOP
+values, half neighbors, minimum Normal and extreme exponents, source/environment
+rejection, and fault/range atomicity. JIT and native admission remain closed.
+See the [S2-31bx CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bx-round-normal-binary80-fractions-m16-fist),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31bx-round-binary80-fractions-through-bounded-m16-fist),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bx--round-binary80-fractions-through-m16-fistfstp).

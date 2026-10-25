@@ -286,6 +286,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bu | Admit canonical signed binary80 zero for DF10/DF18 FIST/FISTP m16int as exact integer zero | S2-31d, S2-31e |
 | [x] | S2-31bv | Admit canonical signed binary80 zero for DF38 FISTP m64int as exact integer zero | S2-31d, S2-31e |
 | [x] | S2-31bw | Round canonical Normal binary80 fractions below one through DB10/DB18 m32 integer stores | S2-31bt |
+| [x] | S2-31bx | Round canonical Normal binary80 fractions below one through DF10/DF18 m16 integer stores | S2-31bu |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3985,6 +3986,27 @@ incoming PE/C1, half and adjacent encodings, values below one, minimum Normal,
 and exponents -2/-63/-64/-65. Preserve zero and ±1 regressions; test forbidden
 classes/environments, range and write atomicity, CLI/FNSTSW, and JIT/native
 denial. Native runtime and physical acceptance remain deferred under ISSUE-019.
+
+<a id="s2-31bx-round-binary80-fractions-through-bounded-m16-fist"></a>
+
+#### S2-31bx. Round Normal binary80 fractions through bounded m16 `FIST`/`FISTP`
+
+Extend only bare `DF 10` and `DF 18` for Valid-tagged canonical binary80
+Normal sources with unbiased exponent -16382 through -1. Use the same
+comparison-only rounding rule as the bounded m32 fraction slice: nearest
+ties-even returns zero through exact 0.5 and signed one above it; toward-zero
+returns zero; directed rounding returns one only when the sign and direction
+round away from zero. Every accepted input adds sticky PE after the atomic Word
+write; C1 is set iff the result magnitude is one, and no IE/DE/OE/UE is added.
+Preserve source bytes, incoming PE, C0/C2/C3, existing FCW/FSW/address gates,
+and FIST/FISTP state/pop ordering. Do not change m32 or admit m64 fractions.
+
+Cover both signs, four RCs, both opcodes, every TOP, incoming PE/C1, exact half
+and adjacent encodings, the largest fraction below one, minimum Normal and
+exponents -2/-63/-64/-65. Keep signed-zero, ±1, and i16-boundary behavior
+unchanged. Test tag/class/environment rejection, Word canaries and write/range
+atomicity, CLI/FNSTSW, and JIT/native denial. Native runtime and physical
+acceptance remain deferred under ISSUE-019.
 
 #### S2-31bj. Round extreme underflow through binary32 stores
 

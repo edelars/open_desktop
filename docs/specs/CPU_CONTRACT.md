@@ -2815,6 +2815,36 @@ deferred under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31bw-round-binar
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
 
+<a id="local-s2-31bx-round-normal-binary80-fractions-m16-fist"></a>
+
+## Local S2-31bx: round Normal binary80 fractions through m16 `FIST`/`FISTP` (`DF 10`/`DF 18`)
+
+Only bare `DF 10` and `DF 18` admit a Valid-tagged canonical binary80 Normal
+source with unbiased exponent -16382 through -1. These are nonzero magnitudes
+below one. The same comparison-only rule as m32 applies: nearest-ties-even
+stores zero through exact 0.5 and signed one above it; toward-zero stores zero;
+toward-positive stores +1 only for positive input; toward-negative stores -1
+only for negative input. Every newly admitted value adds sticky PE after the
+atomic Word write. C1 is set iff the rounded magnitude is one; no IE/DE/OE/UE
+is added.
+
+Keep the FCW whitelist, `FSW & 0x80df == 0`, bare Long64 RAX addressing, full
+canonical48 Word-range preflight, raw source bytes, and existing FIST/FISTP
+state/pointer/pop ordering. Incoming PE is preserved; C0/C2/C3 retain the
+existing policy. Existing signed-zero, ±1 and signed-i16 boundary behavior is
+unchanged. m32 behavior is unchanged, and m64 fractional admission remains
+unsupported.
+
+Coverage crosses both signs, all four RCs, both opcodes, every TOP, incoming
+PE/C1, exact half and adjacent values, the largest fraction below one,
+minimum Normal, and exponents -2/-63/-64/-65. Tests also cover tag/class/
+environment rejection, Word canaries, one-write/no-read, write/range
+atomicity, CLI/FNSTSW, and JIT/native denial. Native runtime and physical
+behavior remain deferred under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31bx-round-binary80-fractions-through-bounded-m16-fist),
+[report](../reports/STAGE_2_REPORT.md#s2-31bx--round-binary80-fractions-through-m16-fistfstp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
 <a id="local-s2-31bs-sticky-oe-on-raw-binary80-fstp-m80fp"></a>
 
 ## Local S2-31bs: sticky OE on raw `FSTP m80fp [RAX]` (`DB 38`)

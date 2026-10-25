@@ -660,3 +660,15 @@
   physical acceptance remain deferred under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-31bw-round-normal-binary80-fractions-m32-fist),
   [plan](plans/STAGE_2.md#s2-31bw-round-binary80-fractions-through-bounded-m32-fist),
   and [report](reports/STAGE_2_REPORT.md#s2-31bw--round-binary80-fractions-through-m32-fistfstp).
+
+- **S2-31bx evidence:** bare `DF 10`/`DF 18` now round Valid-tagged canonical
+  binary80 Normal fractions with unbiased exponent -16382 through -1 to Word
+  zero or signed one, using the four existing RC modes and the same
+  comparison-only threshold rule as m32. Each accepted fraction adds sticky
+  PE; C1 reflects whether magnitude one was selected. ISA coverage crosses
+  sign/RC/opcode/TOP/PE/C1, half neighbors and extreme exponents; class/gate
+  rejection, write/range atomicity, CLI/FNSTSW and JIT/native denial are covered.
+  Native runtime and physical acceptance remain deferred under ISSUE-019. See
+  [contract](specs/CPU_CONTRACT.md#local-s2-31bx-round-normal-binary80-fractions-m16-fist),
+  [plan](plans/STAGE_2.md#s2-31bx-round-binary80-fractions-through-bounded-m16-fist),
+  and [report](reports/STAGE_2_REPORT.md#s2-31bx--round-binary80-fractions-through-m16-fistfstp).

@@ -2595,6 +2595,44 @@ or required for this integer helper. S2-29 and the S2-28 umbrella remain open
 under ISSUE-019.
 
 
+<a id="s2-31bx--round-binary80-fractions-through-m16-fistfstp"></a>
+
+## S2-31bx — round binary80 fractions through m16 FIST/FISTP
+
+Only bare `DF 10` and `DF 18` now admit Valid-tagged canonical binary80 Normal
+sources with unbiased exponent -16382 through -1. The comparison-only rounding
+path matches the bounded m32 behavior: nearest-ties-even stores zero through
+exact 0.5 and signed one above; toward-zero stores zero; directed rounding
+stores signed one only when rounding away from zero. Every admitted nonzero
+fraction adds sticky PE after the atomic Word write, C1 is set iff magnitude
+one is selected, and no IE/DE/OE/UE is added. Existing m32 behavior and m64
+fraction rejection are unchanged.
+
+The independent ISA matrix checks literal Word results for both signs and
+every RC mode, both opcodes, all TOP values, incoming PE/C1, exact half and
+neighbors, largest fraction below one, minimum Normal, and exponents
+-2/-63/-64/-65. Rejection tests cover invalid tag/payload/class and forbidden
+environment controls; fault tests cover denied writes and canonical48 range
+crossing without CPU or memory commit. The negative `-0.25` FISTP CLI fixture
+composes with FNSTSW to observe `0xffff`, PE+C1, and the popped TOP/tag. JIT and
+native admission remain denied.
+
+Focused `od-isa` fraction, source/environment, and fault/range tests passed
+1/1 each; the CLI/FNSTSW fixture and JIT-denial tests passed 1/1 each. The full
+`cargo test --workspace --offline` suite passed 871 tests: 506 `od-isa`, 4
+`od-jit`, 6 host, 60 runner CLI, 120 fixture/JIT, 166 testkit, 8 x86-runner
+library, and 1 x86-runner main test; all doc-tests passed. Host and Linux
+x86_64 `cargo check --workspace --all-targets --offline` passed; the Linux
+target compiles native-admission denial coverage but does not execute it. The
+Linux-target build emitted existing dead-code warnings in `od-host` and
+`od-runner`. `cargo fmt --all -- --check` and `git diff --check` passed.
+`python3 tools/check_layout.py` reports the preserved root `.serena/` directory
+as unmapped; it is excluded from the change. `graphify update .` rebuilt the
+graph to 4,369 nodes, 8,901 edges, and 178 communities. Native runtime and
+physical x86 acceptance remain deferred to the combined final substage under
+ISSUE-019.
+
+
 ## S2-29j — pure unsigned rational nearest-integer ties-to-even (partial)
 
 Added `round_quotient_ties_even(q, r, d)`, a pure unsigned helper for rounding
