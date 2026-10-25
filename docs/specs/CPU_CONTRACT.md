@@ -4944,3 +4944,25 @@ native admission remain closed; native runtime and physical acceptance remain
 deferred under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31bq-round-exponent-1023-binary80-normals-to-binary64-infinity-on-overflow),
 [report](../reports/STAGE_2_REPORT.md#s2-31bq--binary80-normal-to-binary64-infinity-on-overflow),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+
+## Local S2-31br: sticky status admission for bounded m32/m64 FST/FSTP
+
+Only bounded `D9 10`, `D9 18`, `DD 10`, and `DD 18` admit prior sticky IE,
+DE, OE, UE, and PE by using `FSW & 0x80c4 == 0`; ZE, SF, ES, and B still reject.
+The FCW whitelist, source and address gates, and conversion results remain
+unchanged. Prior sticky exception flags are preserved, while current
+conversion flags and C1 are recomputed after a successful atomic write. In
+particular, OE alone does not set PE. FST/FSTP source, stack, pointer, and
+retirement behavior remains atomic. Other x87 operations keep their existing
+status gates.
+
+The ISA matrix covers 32 sticky IE/DE/OE/UE/PE combinations over both widths,
+both opcodes, signs, RCs and TOPs, with representative zero, finite and special
+values. It also checks sticky-OE overflow re-entry without FNCLEX, FNSTSW/FNCLEX,
+and write/range atomicity. An OE-only exact m64 CLI fixture verifies preserved
+OE without newly generated PE or C1. JIT and native admission remain closed;
+native runtime and physical x86 behavior remain deferred under ISSUE-019. See
+the [plan](../plans/STAGE_2.md#s2-31br-admit-sticky-status-on-bounded-m32m64-stores),
+[report](../reports/STAGE_2_REPORT.md#s2-31br--sticky-status-admission-for-bounded-m32m64-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

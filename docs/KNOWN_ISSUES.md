@@ -594,3 +594,13 @@
   physical acceptance remain deferred under ISSUE-019. See the [contract](specs/CPU_CONTRACT.md#local-s2-31bq-binary80-exponent-1023-overflow-to-binary64-infinity),
   [plan](plans/STAGE_2.md#s2-31bq-round-exponent-1023-binary80-normals-to-binary64-infinity-on-overflow),
   and [report](reports/STAGE_2_REPORT.md#s2-31bq--binary80-normal-to-binary64-infinity-on-overflow).
+
+- **S2-31br evidence:** bounded D910/D918 and DD10/DD18 stores now admit all
+  prior sticky IE/DE/OE/UE/PE combinations while ZE/SF/ES/B remain rejected.
+  Conversion-generated flags and C1 are recomputed after a successful write;
+  OE alone is preserved without adding PE. ISA matrices, overflow re-entry,
+  FNSTSW/FNCLEX, atomicity and CLI/JIT/native-denial fixture checks cover this
+  slice. Native runtime and physical acceptance remain deferred under
+  ISSUE-019. See the [contract](specs/CPU_CONTRACT.md#local-s2-31br-sticky-status-admission-for-bounded-m32m64-fstfstp),
+  [plan](plans/STAGE_2.md#s2-31br-admit-sticky-status-on-bounded-m32m64-stores),
+  and [report](reports/STAGE_2_REPORT.md#s2-31br--sticky-status-admission-for-bounded-m32m64-stores).

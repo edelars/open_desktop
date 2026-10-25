@@ -4338,10 +4338,11 @@ mod tests {
     }
 
     #[test]
-    fn s2_31bq_binary80_overflow_to_infinity_m64_fixtures_remain_outside_native_admission() {
+    fn s2_31bq_br_binary80_m64_fixtures_remain_outside_native_admission() {
         for bytes in [
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bq_fst_m64fp_positive_infinity_overflow_nearest_fnstsw.case.json").as_slice(),
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bq_fstp_m64fp_negative_infinity_overflow_directed_fnstsw.case.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_31br_m64fp_sticky_oe_exact_store_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
             let actual = loaded.fixture.initial_state.to_cpu().unwrap();

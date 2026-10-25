@@ -2462,3 +2462,15 @@ RCs, stack positions, sticky flags, exponent-1024 rejection, and atomic write
 faults. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31bq-binary80-exponent-1023-overflow-to-binary64-infinity),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31bq-round-exponent-1023-binary80-normals-to-binary64-infinity-on-overflow),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31bq--binary80-normal-to-binary64-infinity-on-overflow).
+
+### S2-31br sticky status admission fixture
+
+The OE-only fixture executes an exact binary80 1.0 m64 FST with OE already
+sticky, then FNSTSW. The store is admitted, OE remains set, and PE/C1 remain
+clear. CLI validates the resulting status and memory; JIT and native admission
+remain closed. ISA tests separately cover all 32 sticky IE/DE/OE/UE/PE
+combinations, ZE/SF/ES/B rejection, conversion-specific flags and C1, overflow
+re-entry without FNCLEX, and atomic faults. See the [S2-31br CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31br-sticky-status-admission-for-bounded-m32m64-fstfstp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31br-admit-sticky-status-on-bounded-m32m64-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31br--sticky-status-admission-for-bounded-m32m64-stores).

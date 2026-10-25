@@ -6724,3 +6724,36 @@ independently passed 46 m64fp ISA tests and three runner unit plus three
 integration overflow tests. Its native-run command timed out twice; no native
 runtime pass is claimed. Physical x86 acceptance remains deferred to the
 combined S2-31 acceptance substage under ISSUE-019.
+
+
+<a id="s2-31br--sticky-status-admission-for-bounded-m32m64-stores"></a>
+
+## S2-31br — sticky status admission for bounded m32/m64 stores
+
+The bounded D910/D918 m32 and DD10/DD18 m64 conversion gates now admit prior
+sticky IE, DE, OE, UE and PE (`FSW & 0x80c4 == 0`) while continuing to reject
+ZE, SF, ES and B. The exact FCW whitelist, sources, and addressing remain
+unchanged. Incoming sticky flags are preserved; current conversion flags and
+C1 are committed only after successful writes. OE alone remains OE without
+adding PE. A subsequent bounded store is admitted with OE already set; the CLI
+fixture stores exact binary80 1.0 and FNSTSW verifies `0x4508`, with PE/C1 clear.
+
+The independent m32/m64 status matrix covers all 32 IE/DE/OE/UE/PE combinations
+across both widths/opcodes, both signs, four RC modes, every TOP, and zero,
+normal exact/inexact, infinity, QNaN and SNaN sources. Existing focused
+conversion matrices cover exact/inexact subnormals, minimum-normal promotion,
+and rounding-carry overflow with incoming sticky combinations. Additional checks
+cover ZE/SF/ES/B and FCW rejection before access, overflow FST followed by
+FSTP without FNCLEX, FNSTSW/FNCLEX, and write/range fault atomicity. CLI, JIT
+denial, and native-denial fixture definitions are updated.
+
+Validation passed: 490/490 `od-isa` tests and 845/845 tests in
+`cargo test --workspace --offline`. The updated CLI fixture test and the JIT
+denial integration test passed. Host `cargo check --workspace --all-targets --offline` passed. The Linux
+x86_64-target all-target check compiles native-admission tests on this macOS
+host; it does not run them. `cargo fmt --all -- --check` and `git diff --check`
+passed. `graphify update .` rebuilt the graph to 4,318 nodes, 8,814 edges and
+171 communities. `python3 tools/check_layout.py` reports the existing unmapped
+root directory `.serena/`, which was preserved and is not part of the change.
+Native runtime and physical x86 acceptance remain deferred to the combined
+S2-31 acceptance substage under ISSUE-019.

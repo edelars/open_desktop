@@ -280,6 +280,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31bo | Accept direct DD10/DD18 rounding from binary80 Normal exponent -1023 to signed minimum binary64 normal with independent UE rounding | S2-31bg, S2-31bh |
 | [x] | S2-31bp | Accept D910/D918 exponent-127 rounding carry to signed binary32 infinity with sticky OE+PE and C1 | S2-31bb |
 | [x] | S2-31bq | Accept DD10/DD18 exponent-1023 rounding carry to signed binary64 infinity with sticky OE+PE and C1 | S2-31bc, S2-31bh |
+| [x] | S2-31br | Admit prior sticky IE/DE/OE/UE/PE on bounded m32/m64 stores while preserving conversion-specific flags | S2-31bq |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
@@ -3619,6 +3620,20 @@ FNSTSW/FNCLEX, repeated stores, forbidden environment controls, full-state
 fault atomicity, CLI fixtures, and JIT/native denial. Native runtime and
 physical acceptance remain deferred to the final combined S2-31 substage under
 ISSUE-019.
+
+
+#### S2-31br. Admit sticky IE/DE/OE/UE/PE on bounded m32/m64 stores
+
+Only bounded D910/D918 and DD10/DD18 widen their status gate from
+`FSW & 0x80cc == 0` to `FSW & 0x80c4 == 0`, admitting prior IE, DE, OE, UE and
+PE while continuing to reject ZE, SF, ES and B. Preserve incoming sticky
+flags; generate conversion-specific flags only after a successful write. OE
+alone must not add PE, and old C1 is recomputed from the current conversion.
+Keep FCW/source/addressing gates, FST/FSTP stack and pointer behavior, and all
+other x87 paths unchanged. Cover all 32 sticky combinations across
+representative result classes, signs, RC, TOP, both widths/opcodes, overflow
+re-entry without FNCLEX, FNSTSW/FNCLEX, write/range faults, CLI fixtures, and
+JIT/native denial.
 
 <a id="s2-31ba-admit-sticky-ie-de-to-raw-binary80-fstp"></a>
 

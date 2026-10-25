@@ -3679,6 +3679,15 @@ mod tests {
                 "00fcfffffffffffffec3",
                 "000000000000f0ff",
             ),
+            (
+                "exact FST remains admitted with OE already sticky",
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_31br_m64fp_sticky_oe_exact_store_fnstsw.case.json").as_slice(),
+                0x0030_4508,
+                0x4508,
+                0xfffc,
+                "0000000000000080ff3f",
+                "000000000000f03f",
+            ),
         ] {
             let fixture = v2::Fixture::from_json(bytes)
                 .unwrap_or_else(|error| panic!("{name}: invalid fixture schema: {error}"));
