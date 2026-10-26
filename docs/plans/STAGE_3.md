@@ -425,18 +425,30 @@ ranges против этого admission. Typed `DispatchBranch` дополни�
 `code_end`. Runtime commit-ит выбранный Jcc RIP один раз и
 возвращает `DispatchCandidate` (tag 8) с обычными guest counters. Legacy
 `compile_block`/S3-13 runner не получают admission и сохраняют прежний
-one-block `BlockComplete`/`NeedInterpreter` результат. Это handoff без loop:
-нет повторного compile/dispatch, cache, fallback или CLI integration. Целевые
-tests прошли на admitted forward/backward/code-end edges, rejection
-mid-instruction target, positive retirement/counters и unchanged one-block
-`NeedInterpreter`. Проверки прошли: `cargo fmt --all -- --check`,
-`cargo check -p od-jit --all-targets --offline`, `cargo test -p od-jit --offline`
-(60 tests), `cargo test -p od-host --offline` (23 tests), workspace all-target
-check и `git diff --check`. Native ARM64 od-host test исполняет production
-emitter output и проверяет taken target, not-taken fallthrough, backward target,
-code_end и prefix-only one-block path. Independent review и Graphify update
-остаются следующими шагами. S3-15 остаётся открытой до полного
-dispatcher/budget критериев выше.
+one-block `BlockComplete`/`NeedInterpreter` результат.
+
+Следующий локальный partial срез добавляет `od_jit::dispatch::run` и
+`od_host::PublishedBlockExecutor`. Dispatcher компилирует только текущий
+admitted RIP, передаёт generated block точный remaining budget и проверяет
+retired/remaining против входного budget и emitted instruction count. Он
+завершает на `code_end`, возвращает budget/runtime exit, продолжает только на
+admitted RIP после положительного retirement и отклоняет zero-progress loop.
+Начальный `code_end` проверяется раньше нулевого budget; при budget=0
+компиляция и execution callback не вызываются. Host executor публикует,
+исполняет и уничтожает ровно один `PublishedCode` за вызов, до следующей
+итерации; рекурсии и одновременно живых mappings нет. Целевые od-jit tests
+покрывают двухблочный переход, budget forwarding, malformed counters,
+unadmitted target, runtime unsupported exit и zero progress. Native od-host
+integration test покрывает последовательные mappings и положительный
+self-loop на macOS ARM64. CLI и фиксированный corpus здесь не подключены;
+S3-14 физически остаётся открытой, а S3-15 остаётся открытой до полного
+dispatcher/corpus критерия выше. Проверки текущего partial slice прошли:
+`cargo fmt --all -- --check`, `cargo check -p od-jit --all-targets --offline`,
+`cargo test -p od-jit --offline` (64 tests), `cargo check -p od-host
+--all-targets --offline`, `cargo test -p od-host --offline` (24 tests,
+включая native iterative dispatch на текущем macOS ARM64 host), `cargo check
+--workspace --all-targets --offline`, `git diff --check` и `graphify update .`.
+Независимый review этой подзадачи ещё не выполнен.
 
 ### S3-16. Подключить interpreter fallback
 

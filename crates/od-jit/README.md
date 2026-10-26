@@ -169,5 +169,8 @@ fixture-v1 decode по тем же bytes; dispatch compiler также вали�
 все decoded block boundaries. Runtime атомарно commit-ит
 Jcc и возвращает выбранный RIP как `DispatchCandidate` (tag 8), без повторного
 исполнения branch. Старый `compile_block` и runner сохраняют one-block
-`BlockComplete`/`NeedInterpreter` behavior. Dispatcher loop, cache, fallback
-и CLI multi-block execution в этом срезе не добавлены; S3-15 остаётся открытой.
+`BlockComplete`/`NeedInterpreter` behavior. `dispatch::run` итеративно
+компилирует и исполняет admitted blocks с точным remaining budget, проверкой
+counters и требованием положительного retirement до продолжения. Host callback
+держит lifecycle одного publish/execute/drop на блок. Cache, fallback и CLI
+multi-block execution в этом срезе не добавлены; S3-15 остаётся открытой.

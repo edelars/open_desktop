@@ -12,6 +12,7 @@ pub mod arm64;
 pub mod block;
 pub mod block_compile;
 pub mod block_emitter;
+pub mod dispatch;
 pub mod emitter;
 pub mod ir;
 pub mod lowering;

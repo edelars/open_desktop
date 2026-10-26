@@ -355,6 +355,42 @@ pub enum BlockExecutionError {
     InvalidExitTag(u32),
 }
 
+/// Production bridge used by the iterative `od-jit` dispatcher. Each call
+/// publishes and executes one block, then drops its mapping before returning.
+#[derive(Default)]
+pub struct PublishedBlockExecutor;
+
+impl od_jit::dispatch::BlockExecutor for PublishedBlockExecutor {
+    type Error = PublishedBlockExecutionError;
+
+    fn execute_one_block(
+        &mut self,
+        block: &od_jit::block_compile::CompiledBlock,
+        state: &mut od_isa::LongModeState,
+        incoming_budget: u64,
+    ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+        let published = PublishedCode::publish_block(block.emitted())
+            .map_err(PublishedBlockExecutionError::Publish)?;
+        let stop_requested = AtomicU8::new(0);
+        let result = published.execute_block(state, incoming_budget, None, &stop_requested);
+        // Make the one-live-mapping lifetime boundary explicit before the
+        // callback returns to the dispatcher, including execution errors.
+        drop(published);
+        let result = result.map_err(PublishedBlockExecutionError::Execute)?;
+        Ok(od_jit::dispatch::BlockExecutionReport {
+            exit: result.exit,
+            remaining_budget: result.remaining_budget,
+            retired_instructions: result.retired_instructions,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublishedBlockExecutionError {
+    Publish(ExecutableMemoryError),
+    Execute(BlockExecutionError),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FragmentExecutionError {
     Jit(od_jit::JitError),
@@ -2080,6 +2116,54 @@ mod tests {
         assert_eq!(state.gpr[0], 1);
         assert_eq!(result.retired_instructions, 1);
         assert_eq!(result.remaining_budget, 7);
+    }
+
+    #[test]
+    fn iterative_dispatch_publishes_and_drops_one_mapping_per_block() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x7B00;
+        let code = [0x74, 0x00, 0x48, 0xB8, 7, 0, 0, 0, 0, 0, 0, 0];
+        let view = CodeView::new(base_rip, &code).unwrap();
+        let decoded = od_isa::decode(&code).unwrap();
+        let admission = AdmittedInstructionBoundaries::from_fixture_decode(view, &decoded).unwrap();
+        let mut state = od_isa::LongModeState::default();
+        state.rip = base_rip;
+        let mut executor = PublishedBlockExecutor;
+
+        let result = od_jit::dispatch::run(view, &admission, &mut state, 5, &mut executor).unwrap();
+        assert_eq!(result.exit, od_jit::dispatch::DispatchExit::CodeEnd);
+        assert_eq!(result.retired_instructions, 2);
+        assert_eq!(result.remaining_budget, 3);
+        assert_eq!(result.blocks_executed, 2);
+        assert_eq!(state.rip, view.code_end());
+        assert_eq!(state.gpr[0], 7);
+
+        // A positive-retirement self-loop is valid and repeatedly reuses the
+        // singleton MAP_JIT slot only after each callback drops its mapping.
+        let loop_code = [0x74, 0xFE, 0x75, 0x00];
+        let loop_view = CodeView::new(base_rip, &loop_code).unwrap();
+        let loop_decode = od_isa::decode(&loop_code).unwrap();
+        let loop_admission =
+            AdmittedInstructionBoundaries::from_fixture_decode(loop_view, &loop_decode).unwrap();
+        let mut loop_state = od_isa::LongModeState::default();
+        loop_state.rip = base_rip;
+        loop_state.rflags = 2 | (1 << 6);
+        let loop_result = od_jit::dispatch::run(
+            loop_view,
+            &loop_admission,
+            &mut loop_state,
+            3,
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(
+            loop_result.exit,
+            od_jit::dispatch::DispatchExit::BudgetExhausted
+        );
+        assert_eq!(loop_result.retired_instructions, 3);
+        assert_eq!(loop_result.remaining_budget, 0);
+        assert_eq!(loop_result.blocks_executed, 3);
+        assert_eq!(loop_state.rip, base_rip);
     }
 
     #[test]

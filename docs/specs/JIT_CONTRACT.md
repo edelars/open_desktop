@@ -267,8 +267,14 @@ commit, затем возвращает выбранный RIP в canonical stat
 которые не входят в fixture boundaries. Bounded builder по-прежнему
 останавливается сразу после branch и не читает tail. Legacy `compile_block`
 не получает admission и сохраняет прежний `BlockComplete`/`NeedInterpreter`
-контракт. Этот tag не означает наличия dispatcher, interpreter fallback,
-cache или multi-block CLI.
+контракт. Итеративный `od_jit::dispatch::run` продолжает только к admitted RIP
+после положительного retirement и сверяет `retired`/`remaining` с входным
+budget и размером emitted блока. Начальный code_end предшествует budget=0;
+при нулевом budget блок не компилируется. `od_host::PublishedBlockExecutor`
+держит mapping только внутри callback publish/execute/drop, затем разрешает
+следующую итерацию. Unsupported/runtime exits возвращаются вызывающему без
+fallback. Это не добавляет cache, CLI multi-block execution или полную
+S3-15 corpus/native-oracle acceptance.
 
 Compile result остаётся Rust-side: успешная компиляция даёт непубликованный
 код/metadata; неподдержанная форма классифицируется как `Unsupported`, а
