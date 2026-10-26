@@ -2460,6 +2460,26 @@ and three retirements in the existing x87 fixture profile. Native/JIT remain
 closed; these local checks do not establish physical x87 behavior, and ISSUE-019
 remains open.
 
+The former Normal-only FST/FSTP source limit is superseded by S2-30au below.
+
+## Local S2-30au: canonical signed infinity through `FST/FSTP ST(i)`
+
+The shared bounded register-store source gate accepts three exact tag/class
+pairs: Valid-tag canonical Normal, Zero-tag exact signed zero, and
+Special-tag canonical binary80 infinity. Infinity requires E=`0x7fff`, J=1,
+and zero fraction, with either sign. FCW remains exactly `0x037f` and
+`FSW & 0x80ff` must be zero; all admitted source bytes and tags are copied
+unchanged. C1 continues to follow the existing local policy: FST preserves
+every status bit, while FSTP preserves all bits except that TOP advances.
+
+Bare `DD D0+i` copies the ten bytes and Special tag to physical
+`(old_TOP+i)&7`, preserves TOP, and records FIP. Bare `DD D8+i` copies first,
+marks old physical TOP Empty, and advances TOP modulo eight. The register array
+is not rotated: with `i=0` the copied infinity payload remains but its final
+tag is Empty; with `i=1` the copy becomes new ST(0). Pseudo-infinity, NaNs,
+subnormal, malformed encodings, and wrong tags remain atomic Unsupported.
+JIT/native admission is unchanged and remains closed.
+
 ## Local S2-30ab: bounded `FCOM ST(1)` (`D8 D1`)
 
 The interpreter accepts exactly the unprefixed two-byte encoding `D8 D1` with

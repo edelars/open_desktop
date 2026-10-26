@@ -1346,6 +1346,19 @@ rejection (historical; superseded by S2-30as) and execution boundaries. Existing
 Normal FST/FSTP cases remain. This is project-fixture evidence, not native or
 physical evidence; ISSUE-019 remains open.
 
+### S2-30au canonical signed-infinity FST/FSTP ST(i)
+
+Four handwritten `project_fixture` cases use the existing exact byte patterns
+`d900ddd1dfe0` and `d900ddd9dfe0` with positive and negative binary32 infinity.
+Each runs FLD m32fp, FST or FSTP ST(1), then FNSTSW. The fixtures check raw
+canonical binary80 payload copying, Special tags, the distinct no-pop/pop TOP
+and tag results, full state, memory, and the canary. Unit coverage also composes
+m32 and m64 infinity loads with both store forms for both signs. The fixture
+schema remains unchanged; JIT/native and physical behavior are not established,
+so ISSUE-019 remains open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30au-canonical-signed-infinity-through-fstfstp-sti),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30au-admit-canonical-signed-infinity-to-bounded-fstfstp-sti),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30au--canonical-signed-infinity-through-fstfstp-sti).
+
 ### S2-30z x87 schema and fixture coverage
 
 The schema admits only bare `D9 E1` for the FABS slice. The positive literal

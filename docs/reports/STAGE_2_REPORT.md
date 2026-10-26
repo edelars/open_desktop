@@ -8882,6 +8882,29 @@ refresh. No Mac mini, SSH, physical x86, native runtime or JIT execution was
 run. ISSUE-019 remains open; local evidence does not establish physical x87
 behavior.
 
+## S2-30au — canonical signed infinity through FST/FSTP ST(i)
+
+The shared bounded register-store source gate now also accepts only
+Special-tagged canonical binary80 infinity (E=`0x7fff`, J=1, fraction=0) in
+either sign. The exact `0x037f` FCW and `FSW & 0x80ff == 0` gates remain. FST
+copies all ten bytes and Special tag to `(old_TOP+i)&7` while preserving TOP and
+all status bits. FSTP copies before emptying old TOP and advancing it modulo
+eight; `i=0` leaves the bytes with Empty tag, and `i=1` becomes new ST(0). The
+existing C1 policy is unchanged. Pseudo-infinity, NaNs, subnormal, malformed
+encodings and wrong tag/class pairs remain atomic rejects. JIT/native admission
+is unchanged.
+
+Interpreter coverage crosses both opcodes, signs, all TOP/index pairs and 16
+condition-code combinations with full-state comparisons, destination canaries,
+alias, `i=1`, and wrap. Valid infinities are also rejected atomically under bad
+FCW/FSW; malformed neighboring classes, missing x87 state and execution
+boundaries remain covered. m32/m64 FLD → FST/FSTP ST(1) → FNSTSW compositions
+cover both signs. Four literal `project_fixture` cases reuse the existing
+`d900ddd1dfe0` and `d900ddd9dfe0` streams; the schema did not expand. Focused
+interpreter, fixture, formatting, workspace, layout and Graphify checks passed.
+No Mac mini, SSH, physical x86 or native runtime check was performed. JIT
+requests remain explicitly unsupported. ISSUE-019 stays open.
+
 ## S2-30at — canonical signed infinity through bounded FTST
 
 Bare `D9 E4` additionally admits canonical Special-tagged binary80 infinity
@@ -8889,8 +8912,8 @@ Bare `D9 E4` additionally admits canonical Special-tagged binary80 infinity
 and sets C0; positive infinity compares Greater. The existing commit clears the
 whole condition-code field before setting C0 when negative, so C1/C2/C3 clear;
 all unrelated state, TOP, source tag and bytes remain unchanged. FCW `0x037f`
-and `FSW & 0x80ff == 0` remain exact gates. FCHS/FABS/FST/FSTP source gates
-were not changed.
+and `FSW & 0x80ff == 0` remain exact gates. FCHS/FABS source gates were not
+changed; the historical FST/FSTP limit was superseded by S2-30au.
 
 The interpreter matrix covers both signs × all eight TOP values × all 16 prior
 condition-code values with full-state comparison and repeated execution. The

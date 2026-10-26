@@ -470,6 +470,16 @@ observe the FSTP status with FNSTSW. See the [S2-31ap contract](../specs/CPU_CON
 [plan](../plans/STAGE_2.md#s2-31ap-store-canonical-signed-binary80-infinity-through-bounded-m64-fstfstp),
 and [report](../reports/STAGE_2_REPORT.md#s2-31ap--signed-infinity-stores-for-bounded-m64-fstfstp).
 
+The exact existing project-fixture streams `D9 00 DD D1 DF E0` and
+`D9 00 DD D9 DF E0` also admit canonical binary32 positive/negative infinity
+through bounded FST/FSTP ST(1), followed by FNSTSW. These sequences exercise
+FLD-created Special-tagged infinity, raw ten-byte copying, and the FSTP pop;
+their fixture schema profile is unchanged. Pseudo-infinity, NaNs, malformed
+encodings, and mismatched source tags remain unsupported. See the [S2-30au
+contract](../specs/CPU_CONTRACT.md#local-s2-30au-canonical-signed-infinity-through-fstfstp-sti),
+[plan](../plans/STAGE_2.md#s2-30au-admit-canonical-signed-infinity-to-bounded-fstfstp-sti),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30au-canonical-signed-infinity-fstfstp-sti).
+
 
 ### S2-31aq signed-infinity m32 FST/FSTP fixtures
 

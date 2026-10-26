@@ -211,6 +211,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30at | Bare `D9 E4` FTST additionally admits Special-tagged canonical signed binary80 infinity; compares by sign; JIT/native closed | S2-30aq |
 | [x] | S2-30ar | Bare `DD D0+i` FST ST(i) also copies exact Zero-tagged signed zero, retaining Zero without pop; FSTP's then-Normal-only scope is historical / superseded by S2-30as; native/JIT closed | S2-30aq |
 | [x] | S2-30as | Bare `DD D8+i` FSTP ST(i) copies exact Zero-tagged signed zero before emptying old TOP and advancing TOP; native/JIT closed | S2-30ar |
+| [x] | S2-30au | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical signed infinity; native/JIT closed | S2-30as |
 | [x] | S2-30aa | Bare `D9 E4` FTST, bounded canonical-Normal ST(0) comparison with zero; native closed | S2-30z |
 | [x] | S2-30ab | Bare `D8 D1` FCOM ST(1), exact finite canonical-Normal compare with status-only commit; native closed | S2-30aa |
 | [x] | S2-30ac | Bare `D8 D0+i` FCOM ST(i), exact finite canonical-Normal compare for all register indices; native closed | S2-30ab |
@@ -2186,7 +2187,33 @@ for `i!=0`; retain Normal cases and explicitly cover `i=0`, `i=1`, and TOP=7
 wrap. Add m32/m64 FLD→FSTP ST(1)→FNSTSW compositions for both signs and the exact
 fixture `d900ddd9dfe0` (length six, three retirements, existing x87 fixture
 profile). Preserve the earlier S2-30w Normal-only evidence as historical.
-Physical x87 acceptance remains open under ISSUE-019.
+S2-30au later extends both register-store gates to Special-tagged canonical
+signed infinity. Physical x87 acceptance remains open under ISSUE-019.
+
+#### S2-30au. Admit canonical signed infinity to bounded `FST/FSTP ST(i)`
+
+Extend only `bounded_x87_fst_sti_source`: retain Valid-tag canonical Normal and
+exact Zero-tagged signed zero, and additionally admit the pair
+`(Special, Infinity)` for canonical binary80 infinity (E=`0x7fff`, J=1,
+fraction=0), either sign. Preserve FCW `0x037f`, `FSW & 0x80ff == 0`, source
+bytes/tag, and existing C1 policy. Bare `DD D0+i` copies all ten bytes and
+Special tag to physical `(old_TOP+i)&7`, without TOP change. Bare `DD D8+i`
+performs the same copy, then empties old physical TOP and advances TOP modulo
+eight. For `i=0` bytes persist with final Empty tag; for `i=1` the copied value
+becomes new ST(0). Pseudo-infinity, NaNs, subnormal, malformed encodings and
+wrong tag/class pairs remain atomic rejects. Do not alter JIT/native admission.
+
+Cover both signs × both opcodes × all TOP × all indices × all 16 prior
+condition-code states with complete-state and physical destination canaries;
+explicitly check alias, `i=1`, TOP wrap, and FSTP ordering. Rejections cover
+valid infinity under bad FCW/FSW, malformed and neighboring classes, wrong
+tags, missing state, and fetch/prefix/REX/WAIT/truncation/STOP/budget boundaries.
+Compose m32 and m64 FLD infinity with FST/FSTP ST(1) and FNSTSW for both signs.
+Reuse only existing fixture byte patterns `d900ddd1dfe0` and
+`d900ddd9dfe0`; the schema profile does not expand. Local interpreter, fixture,
+JIT-denial, workspace and layout checks do not establish native or physical
+behavior. Keep ISSUE-019 open; no Mac mini, SSH or physical x86 checks belong to
+this substage.
 
 #### S2-30z. Bare bounded `FABS` (sign-bit-clear local slice)
 
