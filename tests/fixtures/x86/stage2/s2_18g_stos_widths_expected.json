@@ -1,0 +1,554 @@
+{
+  "s2_18g_stosw_df0": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000200006",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "66ab",
+      "data": "00112233110066778899aabbccddeeff"
+    }
+  },
+  "s2_18g_stosw_df1": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000200004",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "66ab",
+      "data": "00112233445511008899aabbccddeeff"
+    }
+  },
+  "s2_18g_stosd_df0": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000200008",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100001",
+    "memory": {
+      "code": "ab",
+      "data": "001122331100ffee8899aabbccddeeff"
+    }
+  },
+  "s2_18g_stosd_df1": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000200004",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100001",
+    "memory": {
+      "code": "ab",
+      "data": "00112233445566771100ffeeccddeeff"
+    }
+  },
+  "s2_18g_stosq_df0": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x000000000020000c",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "48ab",
+      "data": "001122331100ffeeddccbbaaccddeeff"
+    }
+  },
+  "s2_18g_stosq_df1": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "48ab",
+      "data": "00112233445566771100ffeeddccbbaa"
+    }
+  },
+  "s2_18g_stos_unmapped_word": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000201000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "66ab",
+      "data": "00112233445566778899aabbccddeeff"
+    }
+  },
+  "s2_18g_stos_unmapped_dword": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000201000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "ab",
+      "data": "00112233445566778899aabbccddeeff"
+    }
+  },
+  "s2_18g_stos_unmapped_qword": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000201000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "48ab",
+      "data": "00112233445566778899aabbccddeeff"
+    }
+  },
+  "s2_18g_stos_readonly_word": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000200004",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "66ab",
+      "data": "00112233445566778899aabbccddeeff"
+    }
+  },
+  "s2_18g_stos_readonly_dword": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000200004",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "ab",
+      "data": "00112233445566778899aabbccddeeff"
+    }
+  },
+  "s2_18g_stos_readonly_qword": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000200004",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "48ab",
+      "data": "00112233445566778899aabbccddeeff"
+    }
+  },
+  "s2_18g_stos_noncanonical_word": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000800000000000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "66ab",
+      "data": "00112233445566778899aabbccddeeff"
+    },
+    "fault": {
+      "vector": 13,
+      "error_code": "0x0000000000000000"
+    }
+  },
+  "s2_18g_stos_noncanonical_dword": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000800000000000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "ab",
+      "data": "00112233445566778899aabbccddeeff"
+    },
+    "fault": {
+      "vector": 13,
+      "error_code": "0x0000000000000000"
+    }
+  },
+  "s2_18g_stos_noncanonical_qword": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000800000000000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "48ab",
+      "data": "00112233445566778899aabbccddeeff"
+    },
+    "fault": {
+      "vector": 13,
+      "error_code": "0x0000000000000000"
+    }
+  },
+  "s2_18g_stos_budget_word": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000200004",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "66ab",
+      "data": "00112233445566778899aabbccddeeff"
+    }
+  },
+  "s2_18g_stos_budget_dword": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000200004",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "ab",
+      "data": "00112233445566778899aabbccddeeff"
+    }
+  },
+  "s2_18g_stos_budget_qword": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000200004",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "48ab",
+      "data": "00112233445566778899aabbccddeeff"
+    }
+  },
+  "s2_18g_stos_prefix_4866ab": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x0000000000200006",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "4866ab",
+      "data": "00112233110066778899aabbccddeeff"
+    }
+  },
+  "s2_18g_stos_prefix_6648ab": {
+    "gpr": [
+      "0xaabbccddeeff0011",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200009",
+      "0x000000000020000c",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "6648ab",
+      "data": "001122331100ffeeddccbbaaccddeeff"
+    }
+  }
+}

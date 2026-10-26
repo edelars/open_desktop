@@ -602,6 +602,31 @@ cargo test -p od-isa -p od-testkit --offline stosb
 cargo test -p od-x86-runner --offline stosb_native_admission
 ```
 
+## Single-iteration STOSW/D/Q fixtures S2-18g
+
+Twenty literal schema v2 fixtures cover six mapped width/direction cases, three
+unmapped destination errors, three read-only destination errors, three
+noncanonical destination #GP(0) results, three zero-budget cases, and the two
+`48 66 AB` / `66 48 AB` normalization cases. Every expected answer contains all
+GPRs, RFLAGS, definedness, RIP, and complete code/data images. Mapping and
+permission failures are `harness_error`; they are never translated to guest
+`#PF`. The fixture schema and profile remain unchanged.
+
+[`generate_stage2_stos_widths.py`](../../../cpu/generate_stage2_stos_widths.py)
+only serializes its handwritten encodings and complete literal answers. The
+interpreter checks include the 6,144 success matrix, full access trace and
+canaries, all REX.W forms, 35 prefix rejects, unaligned/page-crossing and region
+end writes, RDI wrap/post-index noncanonicality, RSI values that must not be
+read, injected architecture/backend faults, and fetch/budget no-commit. JIT and
+native admission remain denied. Physical checks, if selected, remain in the
+shared final acceptance substage.
+
+```sh
+python3 tests/cpu/generate_stage2_stos_widths.py --check
+cargo test -p od-isa stos_ab --offline
+cargo test -p od-testkit stos_ --offline
+```
+
 ## Single-iteration LODS B/W/D/Q fixtures S2-18f
 
 Twenty-two literal schema v2 fixtures cover the bounded non-REP LODS slice:

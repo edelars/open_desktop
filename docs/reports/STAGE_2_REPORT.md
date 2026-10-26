@@ -10126,3 +10126,43 @@ schema and full-state literal testkit tests; the full
 `cargo test -p od-runner --test fixture_v2 --offline` suite passed 202/202. No Mac mini, SSH, native runtime
 or physical x86 checks were run; those remain in the shared final physical
 substage. ISSUE-019 remains open.
+
+## S2-18g — non-REP STOSW/D/Q interpreter slice
+
+The interpreter now accepts `66 AB` STOSW, bare `AB` STOSD, and effective
+`REX.W + AB` STOSQ. All `48..4F` REX.W forms are admitted; REX.W wins over 66,
+while a REX before later legacy prefix is normalized away (`48 66 AB` is word,
+`66 48 AB` is qword). Bare `AA` STOSB and exact `F3 AA` REP STOSB retain their
+previous behavior. REP AB, LOCK, address/segment overrides, and effective
+non-W REX remain unsupported.
+
+Each successful instruction issues one width-sized write of low RAX to the
+pre-state RDI, then updates RDI with DF-directed wrapping arithmetic, advances
+RIP, and retires once. RAX, RSI, RCX, and RFLAGS remain unchanged. Tests confirm
+no RSI read/validation for ordinary, alias, unmapped, and noncanonical RSI
+values. Noncanonical destination is #GP(0); bounded mapping and permission
+errors remain harness errors, while an explicitly injected architectural
+backend fault is preserved. Write, mapping, permission, injected-fault, and
+fetch-boundary failures leave CPU state and RAM unchanged. No LOCK/SMP
+atomicity or native/JIT behavior is claimed.
+
+Local evidence passed: 6,144 full-state successes across all widths, DF values,
+six RAX patterns, 64 arithmetic-flag combinations, and two RAM backgrounds;
+every successful path records exactly one data write and no data reads. The 35
+prefix-reject matrix, all REX/66 order variants, alignment residues, page
+crossing, writable-region end, RDI wrapping/noncanonical post-index, injected
+architectural/backend errors, and truncated fetch also pass. Exactly 20 new
+literal schema-v2 fixtures cover positives, unmapped/read-only/noncanonical
+destinations, zero budget, and both normalization orders. Their fixture-v2 CLI
+test verifies complete state and RAM answers and atomic failures.
+
+Validation passed: `cargo test -p od-isa --offline` (747/747),
+`cargo test -p od-testkit --offline` (195/195), `cargo test -p od-runner --test fixture_v2 --offline` (204/204), including the
+new literal fixture CLI test, `cargo fmt --all -- --check`, `cargo check --workspace --all-targets
+--offline`, generator freshness, and `git diff --check`. `tools/check_layout.py`
+still reports the worktree `.git` pointer as an unmapped root file and two
+pre-existing report links to ignored oracle manifests absent from this checkout.
+Graphify was updated; it reported its existing parser warning for
+`include/open_desktop/host_abi.h`. No directory layout changed. No Mac mini, SSH,
+native runtime, or physical x86 checks were run. Those checks remain in the
+shared final acceptance substage; ISSUE-016 and ISSUE-019 remain open.

@@ -990,9 +990,25 @@ fn step_tracked_with_stop(
         }
         Operation::Stos { size } => {
             instruction.opcode.map == OpcodeMap::Primary
-                && instruction.opcode.byte == 0xaa
-                && instruction.prefixes == Prefixes::default()
-                && size == OperandSize::Byte
+                && ((instruction.opcode.byte == 0xaa
+                    && instruction.prefixes == Prefixes::default()
+                    && size == OperandSize::Byte)
+                    || (instruction.opcode.byte == 0xab
+                        && instruction.prefixes == Prefixes::default()
+                        && size == OperandSize::Dword)
+                    || (instruction.opcode.byte == 0xab
+                        && instruction.prefixes
+                            == (Prefixes {
+                                operand_override: true,
+                                ..Prefixes::default()
+                            })
+                        && size == OperandSize::Word)
+                    || (instruction.opcode.byte == 0xab
+                        && instruction.prefixes.group1.is_none()
+                        && instruction.prefixes.segment.is_none()
+                        && !instruction.prefixes.address_override
+                        && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                        && size == OperandSize::Qword))
         }
         Operation::RepStos { size } => {
             instruction.opcode.map == OpcodeMap::Primary
@@ -2315,9 +2331,9 @@ fn step_tracked_with_stop(
             }
         }
         Operation::Stos { size } => {
-            // Long-mode ES is flat. STOS reads AL, writes one byte to [RDI],
-            // and commits only RDI after the store succeeds. RSI and flags are
-            // not part of this instruction's state transition.
+            // Long-mode ES is flat. STOS writes the selected low RAX width to
+            // [RDI], then commits only RDI after the store succeeds. RSI and
+            // flags are not part of this instruction's state transition.
             let destination = Operand::Memory(MemoryOperand {
                 base: AddressBase::Register(Register::Rdi),
                 index: None,
@@ -2326,7 +2342,7 @@ fn step_tracked_with_stop(
                 address_size: OperandSize::Qword,
                 size,
             });
-            let accumulator = state.gpr[Register::Rax as usize] & 0xff;
+            let accumulator = state.gpr[Register::Rax as usize] & size.mask();
             if let Err(error) =
                 write_operand(state, memory, context, next_rip, destination, accumulator)
             {

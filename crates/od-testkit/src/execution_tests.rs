@@ -3519,6 +3519,611 @@ fn stosb_rejects_prefixes_without_committing() {
 }
 
 #[test]
+fn stos_word_dword_qword_success_matrix_is_write_only_and_preserves_full_state() {
+    const FLAG_BITS: [u64; 6] = [1 << 0, 1 << 2, 1 << 4, 1 << 6, 1 << 7, 1 << 11];
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let sizes = [
+        (OperandSize::Byte, vec![0xaa]),
+        (OperandSize::Word, vec![0x66, 0xab]),
+        (OperandSize::Dword, vec![0xab]),
+        (OperandSize::Qword, vec![0x48, 0xab]),
+    ];
+    let values = [
+        0,
+        0xffff_ffff_ffff_ffff,
+        0x0123_4567_89ab_cdef,
+        0x8877_6655_4433_2211,
+        0x8000_0000_0000_0001,
+        0xdead_beef_cafe_babe,
+    ];
+    let mut cases = 0;
+    for (size, code) in sizes {
+        for direction in [false, true] {
+            for value in values {
+                for arithmetic in 0..64 {
+                    for background in [0x5a, 0xc3] {
+                        let mut fixture = template.clone();
+                        fixture.memory[0].length = code.len() as u32;
+                        fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+                        fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                        fixture.memory[1].initial_bytes_hex =
+                            format!("{:02x}", background).repeat(16);
+                        fixture.initial_state.rip = HexU64(0x0010_0000);
+                        fixture.initial_state.gpr[Register::Rax as usize] = HexU64(value);
+                        fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0020_0004);
+                        fixture.initial_state.gpr[Register::Rsi as usize] =
+                            HexU64(0x0000_0000_0030_0080);
+                        fixture.initial_state.gpr[Register::Rcx as usize] =
+                            HexU64(0x8877_6655_4433_2211);
+                        fixture.initial_state.rflags = HexU64(
+                            2 | FLAG_BITS
+                                .iter()
+                                .enumerate()
+                                .filter(|(bit, _)| arithmetic & (1 << bit) != 0)
+                                .fold(0, |flags, (_, flag)| flags | flag)
+                                | if direction { 1 << 10 } else { 0 },
+                        );
+                        fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+                        let before = fixture.initial_state.to_cpu().unwrap();
+                        let mut state = before.clone();
+                        let mut memory = MovsbAccessLog {
+                            inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                            accesses: Vec::new(),
+                            mfences: Vec::new(),
+                            mfence_error: None,
+                        };
+                        let start = before.gpr[Register::Rdi as usize];
+                        let mut expected_data = vec![background; 16];
+                        let stored = value.to_le_bytes();
+                        expected_data[4..4 + size.bytes()].copy_from_slice(&stored[..size.bytes()]);
+                        let mut expected = before.clone();
+                        expected.gpr[Register::Rdi as usize] = if direction {
+                            start.wrapping_sub(size.bytes() as u64)
+                        } else {
+                            start.wrapping_add(size.bytes() as u64)
+                        };
+                        expected.rip += code.len() as u64;
+                        let result = run(
+                            &mut state,
+                            &mut memory,
+                            config(1, fixture.stop_rip.map(HexU64::get)),
+                            || false,
+                        );
+                        let accesses = (0..code.len())
+                            .map(|offset| (AccessKind::Fetch, 0x0010_0000 + offset as u64, 1))
+                            .chain(std::iter::once((AccessKind::Write, start, size.bytes())))
+                            .collect::<Vec<_>>();
+                        assert_eq!(result.exit, RunExit::StopAddress);
+                        assert_eq!(result.instructions_executed, 1);
+                        assert_eq!(state, expected);
+                        assert_eq!(memory.accesses, accesses);
+                        assert_eq!(
+                            memory.inner.snapshot()[1].bytes_hex,
+                            encode_bytes(&expected_data)
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 6_144);
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StosWidthsExpected {
+    gpr: [HexU64; 16],
+    rflags: HexU64,
+    rflags_defined: HexU64,
+    rip: HexU64,
+    memory: std::collections::BTreeMap<String, String>,
+    fault: Option<StosWidthsFault>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StosWidthsFault {
+    vector: u8,
+    error_code: HexU64,
+}
+
+#[test]
+fn stos_width_literal_fixtures_match_full_state_memory_and_write_order() {
+    let directory = arithmetic_fixture_directory();
+    let answers: std::collections::BTreeMap<String, StosWidthsExpected> = serde_json::from_slice(
+        &std::fs::read(directory.join("s2_18g_stos_widths_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 20);
+    for (case_id, answer) in answers {
+        let input = Fixture::from_json(
+            &std::fs::read(directory.join(format!("{case_id}.case.json"))).unwrap(),
+        )
+        .unwrap()
+        .fixture;
+        let original = input.initial_state.to_cpu().unwrap();
+        let start = original.gpr[Register::Rdi as usize];
+        let width = match input.memory[0].initial_bytes_hex.as_str() {
+            "aa" => 1,
+            "66ab" | "4866ab" => 2,
+            "ab" => 4,
+            "48ab" | "6648ab" => 8,
+            other => panic!("unexpected STOS fixture encoding {other}"),
+        };
+        let mut memory = MovsbAccessLog {
+            inner: FlatMemory::from_fixture(&input).unwrap(),
+            accesses: Vec::new(),
+            mfences: Vec::new(),
+            mfence_error: None,
+        };
+        let initial_memory = memory.inner.snapshot();
+        let mut state = original.clone();
+        let actual = run(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            || false,
+        );
+        let expected_accesses = if input.instruction_budget == 0 {
+            Vec::new()
+        } else {
+            (0..input.memory[0].length as usize)
+                .map(|offset| (AccessKind::Fetch, 0x0010_0000 + offset as u64, 1))
+                .chain((start != 0x0000_8000_0000_0000).then_some((
+                    AccessKind::Write,
+                    start,
+                    width,
+                )))
+                .collect()
+        };
+        assert_eq!(memory.accesses, expected_accesses, "{case_id}");
+        match input.expected_exit {
+            crate::v2::ExpectedExit::StopAddress => {
+                assert_eq!(actual.exit, RunExit::StopAddress, "{case_id}");
+                assert_eq!(actual.instructions_executed, 1, "{case_id}");
+            }
+            crate::v2::ExpectedExit::InstructionBudgetExhausted => {
+                assert_eq!(
+                    actual.exit,
+                    RunExit::InstructionBudgetExhausted,
+                    "{case_id}"
+                );
+                assert_eq!(actual.instructions_executed, 0, "{case_id}");
+            }
+            crate::v2::ExpectedExit::HarnessError if start >= 0x0020_1000 => {
+                assert_eq!(
+                    actual.exit,
+                    RunExit::MemoryError(MemoryError::Unmapped {
+                        address: start,
+                        access: AccessKind::Write,
+                    }),
+                    "{case_id}"
+                );
+                assert_eq!(actual.instructions_executed, 0, "{case_id}");
+            }
+            crate::v2::ExpectedExit::HarnessError => {
+                assert_eq!(
+                    actual.exit,
+                    RunExit::MemoryError(MemoryError::PermissionDenied {
+                        address: start,
+                        access: AccessKind::Write,
+                    }),
+                    "{case_id}"
+                );
+                assert_eq!(actual.instructions_executed, 0, "{case_id}");
+            }
+            crate::v2::ExpectedExit::Exception => {
+                let fault = answer.fault.expect("architectural fault fixture");
+                assert_eq!(
+                    actual.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: fault.vector,
+                        error_code: Some(fault.error_code.get() as u32),
+                        linear_address: None,
+                    }),
+                    "{case_id}"
+                );
+                assert_eq!(actual.instructions_executed, 0, "{case_id}");
+            }
+            other => panic!("unexpected STOS fixture outcome {other:?}: {case_id}"),
+        }
+        assert_eq!(state.gpr, answer.gpr.map(HexU64::get), "{case_id}");
+        assert_eq!(state.rflags, answer.rflags.get(), "{case_id}");
+        assert_eq!(
+            actual.rflags_defined,
+            answer.rflags_defined.get(),
+            "{case_id}"
+        );
+        assert_eq!(state.rip, answer.rip.get(), "{case_id}");
+        for region in memory.inner.snapshot() {
+            assert_eq!(
+                region.bytes_hex,
+                answer.memory.get(&region.region_id).unwrap().as_str(),
+                "{case_id}: {}",
+                region.region_id
+            );
+        }
+        if !matches!(input.expected_exit, crate::v2::ExpectedExit::StopAddress) {
+            assert_eq!(memory.inner.snapshot(), initial_memory, "{case_id}");
+            assert_eq!(state, original, "{case_id}");
+        }
+    }
+}
+
+#[test]
+fn stos_rex_order_all_encodings_and_ignored_rsi_values_execute_without_reads() {
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    for rex in 0x48..=0x4f {
+        for (code, size) in [
+            (vec![rex, 0xab], OperandSize::Qword),
+            (vec![0x66, rex, 0xab], OperandSize::Qword),
+            (vec![rex, 0x66, 0xab], OperandSize::Word),
+        ] {
+            for rsi in [0x0030_0080, 0x0020_0008, 0x0020_1000, 0x0000_8000_0000_0000] {
+                let mut fixture = template.clone();
+                fixture.memory[0].length = code.len() as u32;
+                fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+                fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                fixture.memory[1].length = 32;
+                fixture.memory[1].initial_bytes_hex = "5a".repeat(32);
+                fixture.memory[1].comparison_mask_hex = "ff".repeat(32);
+                fixture.initial_state.rip = HexU64(0x0010_0000);
+                fixture.initial_state.gpr[Register::Rax as usize] = HexU64(0x1122_3344_5566_7788);
+                fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0020_0008);
+                fixture.initial_state.gpr[Register::Rsi as usize] = HexU64(rsi);
+                fixture.initial_state.gpr[Register::Rcx as usize] = HexU64(0x8877_6655_4433_2211);
+                fixture.initial_state.rflags = HexU64(0x0cd7);
+                fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+                let before = fixture.initial_state.to_cpu().unwrap();
+                let mut expected = before.clone();
+                expected.rip += code.len() as u64;
+                let start = before.gpr[Register::Rdi as usize];
+                expected.gpr[Register::Rdi as usize] = if before.rflags & (1 << 10) == 0 {
+                    start.wrapping_add(size.bytes() as u64)
+                } else {
+                    start.wrapping_sub(size.bytes() as u64)
+                };
+                let mut memory = MovsbAccessLog {
+                    inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                    accesses: Vec::new(),
+                    mfences: Vec::new(),
+                    mfence_error: None,
+                };
+                let mut state = before;
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    config(1, fixture.stop_rip.map(HexU64::get)),
+                    || false,
+                );
+                assert_eq!(
+                    result.exit,
+                    RunExit::StopAddress,
+                    "{code:02x?} RSI={rsi:#x}"
+                );
+                assert_eq!(state, expected, "{code:02x?} RSI={rsi:#x}");
+                let accesses = (0..code.len())
+                    .map(|offset| (AccessKind::Fetch, 0x0010_0000 + offset as u64, 1))
+                    .chain(std::iter::once((AccessKind::Write, start, size.bytes())))
+                    .collect::<Vec<_>>();
+                assert_eq!(memory.accesses, accesses, "{code:02x?} RSI={rsi:#x}");
+            }
+        }
+    }
+}
+
+#[test]
+fn stos_prefix_rejects_are_unsupported_before_any_data_access() {
+    let forms: [&[u8]; 3] = [&[0x66, 0xab], &[0xab], &[0x48, 0xab]];
+    let prefixes: [&[u8]; 10] = [
+        &[0xf0],
+        &[0xf2],
+        &[0xf3],
+        &[0x67],
+        &[0x26],
+        &[0x2e],
+        &[0x36],
+        &[0x3e],
+        &[0x64],
+        &[0x65],
+    ];
+    let mut cases = Vec::new();
+    for form in forms {
+        for prefix in prefixes {
+            cases.push([prefix, form].concat());
+        }
+    }
+    cases.extend([
+        vec![0x40, 0xab],
+        vec![0x47, 0xab],
+        vec![0x66, 0x66, 0xab],
+        vec![0xf2, 0xf3, 0xab],
+        vec![0x64, 0x65, 0xab],
+    ]);
+    assert_eq!(cases.len(), 35);
+    for code in cases {
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.gpr[Register::Rdi as usize] = 0x0000_8000_0000_0000;
+        let before = state.clone();
+        let mut memory = memory(&code, 0x1000);
+        let before_memory = memory.snapshot();
+        let result = run(&mut state, &mut memory, config(1, None), || false);
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0xab },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert_eq!(memory.snapshot(), before_memory, "{code:02x?}");
+    }
+}
+
+#[test]
+fn stos_unaligned_cross_page_write_and_resulting_rdi_boundaries() {
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    for residue in 0..8u64 {
+        let mut fixture = template.clone();
+        fixture.memory[0].initial_bytes_hex = "48ab".into();
+        fixture.memory[0].length = 2;
+        fixture.memory[0].comparison_mask_hex = "ffff".into();
+        fixture.memory[1].guest_address = HexU64(0x0030_0000);
+        fixture.memory[1].length = 0x2000;
+        fixture.memory[1].initial_bytes_hex = "00".repeat(0x2000);
+        fixture.memory[1].comparison_mask_hex = "ff".repeat(0x2000);
+        fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0030_0100 + residue);
+        fixture.initial_state.gpr[Register::Rax as usize] = HexU64(0x0123_4567_89ab_cdef);
+        fixture.initial_state.rip = HexU64(0x0010_0000);
+        fixture.stop_rip = Some(HexU64(0x0010_0002));
+        let start = fixture.initial_state.gpr[Register::Rdi as usize].get();
+        let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+        let mut state = fixture.initial_state.to_cpu().unwrap();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(1, Some(0x0010_0002)),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress, "residue={residue}");
+        assert_eq!(state.gpr[Register::Rdi as usize], start + 8);
+        let image = memory.snapshot()[1].bytes_hex.clone();
+        assert_eq!(
+            &image[start as usize % 0x2000 * 2..][..16],
+            "efcdab8967452301",
+            "residue={residue}"
+        );
+    }
+
+    // A qword write crossing the 4 KiB boundary is one bounded write.
+    let mut fixture = template.clone();
+    fixture.memory[0].initial_bytes_hex = "48ab".into();
+    fixture.memory[0].length = 2;
+    fixture.memory[0].comparison_mask_hex = "ffff".into();
+    fixture.memory[1].guest_address = HexU64(0x0030_0000);
+    fixture.memory[1].length = 0x2000;
+    fixture.memory[1].initial_bytes_hex = "00".repeat(0x2000);
+    fixture.memory[1].comparison_mask_hex = "ff".repeat(0x2000);
+    fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0030_0ffd);
+    fixture.initial_state.rip = HexU64(0x0010_0000);
+    fixture.stop_rip = Some(HexU64(0x0010_0002));
+    let mut logged = MovsbAccessLog {
+        inner: FlatMemory::from_fixture(&fixture).unwrap(),
+        accesses: Vec::new(),
+        mfences: Vec::new(),
+        mfence_error: None,
+    };
+    let mut state = fixture.initial_state.to_cpu().unwrap();
+    let result = run(
+        &mut state,
+        &mut logged,
+        config(1, Some(0x0010_0002)),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(
+        logged.accesses,
+        [
+            (AccessKind::Fetch, 0x0010_0000, 1),
+            (AccessKind::Fetch, 0x0010_0001, 1),
+            (AccessKind::Write, 0x0030_0ffd, 8),
+        ]
+    );
+
+    // The byte store at the top canonical address commits even though the
+    // post-increment RDI is noncanonical; wrapping at u64 also remains explicit.
+    for (destination, next, reverse) in [
+        (0x0000_7fff_ffff_ffff, 0x0000_8000_0000_0000, false),
+        (0, u64::MAX, true),
+    ] {
+        let mut fixture = template.clone();
+        fixture.memory[0].initial_bytes_hex = "aa".into();
+        fixture.memory[0].length = 1;
+        fixture.memory[0].comparison_mask_hex = "ff".into();
+        fixture.memory[1].guest_address = HexU64(destination);
+        fixture.memory[1].length = 1;
+        fixture.memory[1].initial_bytes_hex = "00".into();
+        fixture.memory[1].comparison_mask_hex = "ff".into();
+        fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(destination);
+        fixture.initial_state.rflags = HexU64(if reverse { 0x0cd7 } else { 0x08d7 });
+        fixture.initial_state.rip = HexU64(0x0010_0000);
+        fixture.stop_rip = Some(HexU64(0x0010_0001));
+        let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+        let mut state = fixture.initial_state.to_cpu().unwrap();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(1, Some(0x0010_0001)),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(state.gpr[Register::Rdi as usize], next);
+        assert_eq!(memory.snapshot()[1].bytes_hex, "88");
+    }
+}
+
+#[test]
+fn stos_end_of_region_fault_injection_and_truncated_fetch_are_atomic() {
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    for (offset, succeeds) in [(8, true), (9, false), (12, false)] {
+        let mut fixture = template.clone();
+        fixture.memory[0].initial_bytes_hex = "48ab".into();
+        fixture.memory[0].length = 2;
+        fixture.memory[0].comparison_mask_hex = "ffff".into();
+        fixture.memory[1].guest_address = HexU64(0x0030_0000);
+        fixture.memory[1].length = 16;
+        fixture.memory[1].initial_bytes_hex = "5a".repeat(16);
+        fixture.memory[1].comparison_mask_hex = "ff".repeat(16);
+        fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0030_0000 + offset);
+        fixture.initial_state.rip = HexU64(0x0010_0000);
+        fixture.stop_rip = Some(HexU64(0x0010_0002));
+        let before = fixture.initial_state.to_cpu().unwrap();
+        let before_memory = FlatMemory::from_fixture(&fixture).unwrap().snapshot();
+        let mut state = before.clone();
+        let mut logged = MovsbAccessLog {
+            inner: FlatMemory::from_fixture(&fixture).unwrap(),
+            accesses: Vec::new(),
+            mfences: Vec::new(),
+            mfence_error: None,
+        };
+        let result = run(
+            &mut state,
+            &mut logged,
+            config(1, Some(0x0010_0002)),
+            || false,
+        );
+        assert_eq!(logged.accesses.len(), 3, "offset={offset}");
+        assert_eq!(
+            logged.accesses[2],
+            (AccessKind::Write, 0x0030_0000 + offset, 8)
+        );
+        if succeeds {
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(state.rip, 0x0010_0002);
+            assert_eq!(
+                logged.inner.snapshot()[1].bytes_hex,
+                format!("{}8877665544332211", "5a".repeat(8))
+            );
+        } else {
+            assert_eq!(
+                result.exit,
+                RunExit::MemoryError(MemoryError::Unmapped {
+                    address: 0x0030_0010,
+                    access: AccessKind::Write,
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(logged.inner.snapshot(), before_memory);
+        }
+    }
+
+    for injected in [
+        MemoryError::Architectural(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(6),
+            linear_address: Some(0x0030_0004),
+        }),
+        MemoryError::Backend("injected STOS backend failure".into()),
+    ] {
+        let mut fixture = template.clone();
+        fixture.memory[0].initial_bytes_hex = "48ab".into();
+        fixture.memory[0].length = 2;
+        fixture.memory[0].comparison_mask_hex = "ffff".into();
+        fixture.memory[1].guest_address = HexU64(0x0030_0000);
+        fixture.memory[1].length = 16;
+        fixture.memory[1].initial_bytes_hex = "5a".repeat(16);
+        fixture.memory[1].comparison_mask_hex = "ff".repeat(16);
+        fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0030_0004);
+        fixture.initial_state.rip = HexU64(0x0010_0000);
+        fixture.stop_rip = Some(HexU64(0x0010_0002));
+        let before = fixture.initial_state.to_cpu().unwrap();
+        let mut state = before.clone();
+        let mut logged = MovsbAccessLog {
+            inner: FlatMemory::from_fixture(&fixture).unwrap(),
+            accesses: Vec::new(),
+            mfences: Vec::new(),
+            mfence_error: None,
+        };
+        let initial_memory = logged.inner.snapshot();
+        logged
+            .inner
+            .inject_once(0x0030_0004, AccessKind::Write, injected.clone());
+        let result = run(
+            &mut state,
+            &mut logged,
+            config(1, Some(0x0010_0002)),
+            || false,
+        );
+        match injected {
+            MemoryError::Architectural(fault) => assert_eq!(result.exit, RunExit::Fault(fault)),
+            other => assert_eq!(result.exit, RunExit::MemoryError(other)),
+        }
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(logged.inner.snapshot(), initial_memory);
+        assert_eq!(
+            logged.accesses.last(),
+            Some(&(AccessKind::Write, 0x0030_0004, 8))
+        );
+    }
+
+    // The fetched prefix cannot be completed, and budget zero does not fetch.
+    let mut fixture = template;
+    fixture.memory[0].initial_bytes_hex = "48".into();
+    fixture.memory[0].length = 1;
+    fixture.memory[0].comparison_mask_hex = "ff".into();
+    fixture.initial_state.rip = HexU64(0x0010_0000);
+    fixture.stop_rip = Some(HexU64(0x0010_0001));
+    let before = fixture.initial_state.to_cpu().unwrap();
+    let mut state = before.clone();
+    let mut logged = MovsbAccessLog {
+        inner: FlatMemory::from_fixture(&fixture).unwrap(),
+        accesses: Vec::new(),
+        mfences: Vec::new(),
+        mfence_error: None,
+    };
+    let result = run(
+        &mut state,
+        &mut logged,
+        config(1, Some(0x0010_0001)),
+        || false,
+    );
+    assert_eq!(
+        result.exit,
+        RunExit::MemoryError(MemoryError::Unmapped {
+            address: 0x0010_0001,
+            access: AccessKind::Fetch,
+        })
+    );
+    assert_eq!(state, before);
+    assert_eq!(
+        logged.accesses,
+        [
+            (AccessKind::Fetch, 0x0010_0000, 1),
+            (AccessKind::Fetch, 0x0010_0001, 1),
+        ]
+    );
+}
+
+#[test]
 fn rep_stosb_fixtures_match_literal_progress_and_access_order() {
     let directory = arithmetic_fixture_directory();
     let answers: std::collections::BTreeMap<String, MovsbExpected> = serde_json::from_slice(

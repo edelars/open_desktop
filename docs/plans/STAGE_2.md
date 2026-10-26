@@ -839,6 +839,39 @@ shape сохранена; валидатор допускает instruction budg
 LODS не добавлено. ISSUE-016 и ISSUE-019 остаются открытыми. Физическая
 проверка остаётся в едином финальном Mac mini substage.
 
+#### S2-18g — одна non-REP STOSW/D/Q итерация (локальный профиль)
+
+Оставить bare `AA` STOSB и точный `F3 AA` REP STOSB без изменений. Добавить
+только `66 AB` STOSW, bare `AB` STOSD и effective `REX.W + AB` STOSQ в
+Long64/address-size 64 с flat `ES:[RDI]`. Effective REX.W важнее 66; общий
+prefix parser сбрасывает misplaced REX до legacy prefix, поэтому `48 66 AB`
+остаётся STOSW, а `66 48 AB` становится STOSQ. Все REX.W bytes `48..4F`
+принимаются. REP, LOCK, 67, любой segment override и effective non-W REX перед
+AB остаются Unsupported; REP AB не добавляется.
+
+Исполнение делает ровно один all-or-error `write_operand` низких 2/4/8 байт
+RAX в pre-state RDI, затем wrapping-обновляет только RDI на ±width по DF,
+продвигает RIP на декодированную длину и retire-ит одну инструкцию. RAX, RSI,
+RCX и полный RFLAGS, включая DF, сохраняются. Не читать память через RSI и не
+проверять его canonicality. Неканонический destination даёт #GP(0); mapping,
+permission и backend failures остаются HarnessError, если backend явно не
+вернул architectural fault. Не синтезировать #PF. При любом отказе CPU и RAM
+не коммитятся. Это не задаёт LOCK/SMP atomicity.
+
+Проверки: 6,144 полных success snapshot (четыре ширины × DF × шесть значений ×
+64 комбинации арифметических flags × два RAM background), ровно одна write и
+нет data reads; 35 перечисленных prefix rejects; все REX.W/66 порядки и fetch
+граница; alignment residues, 4 KiB crossing, writable-region end, RDI wrap и
+noncanonical post-index, четыре варианта RSI без доступа, unmapped/read-only,
+injected architectural/backend errors, noncanonical destination, budget 0 и
+no-commit. Добавлены ровно 20 handwritten literal schema-v2 fixtures: шесть
+width/direction positives, по три unmapped/read-only/noncanonical destination,
+три budget-zero и два prefix-normalization случая. Генератор сериализует
+заданные byte/state/memory ответы и не вычисляет семантику. Schema/profile не
+меняются; JIT/native остаются закрыты. ISSUE-016/019 остаются открытыми.
+Физические проверки и Mac mini/SSH запускаются только в общем финальном
+substage.
+
 ### S2-19. REP и частичное выполнение
 
 1. Добавить REP/REPE/REPNE только к разрешённым формам; обработать нулевой count без лишнего access.
