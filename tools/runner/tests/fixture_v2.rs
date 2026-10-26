@@ -5068,6 +5068,23 @@ fn stos_width_cli_fixtures_match_literal_full_state_and_fail_atomically() {
                     region.region_id
                 );
             }
+        } else {
+            let (_, jit_result) = run(&raw, "jit", 4);
+            assert!(
+                matches!(jit_result.outcome, Outcome::Unsupported { .. }),
+                "{case_id}: JIT must remain closed"
+            );
+            assert!(
+                matches!(jit_result.snapshot, Observation::Unavailable { .. }),
+                "{case_id}: JIT must not fall back to the interpreter"
+            );
+            assert!(
+                matches!(
+                    jit_result.instructions_executed,
+                    Observation::Unavailable { .. }
+                ),
+                "{case_id}: JIT retirement remains unavailable"
+            );
         }
     }
 }
