@@ -6484,3 +6484,96 @@ fn local_x87_fxch_st0_i7_and_nonadjacent_cli_forms() {
     let (_, jit) = run(&self_exchange.to_json().unwrap(), "jit", 4);
     assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
 }
+
+#[test]
+fn local_x87_fxch_signed_zero_payload_tag_transfer_and_roundtrip() {
+    let make_fixture = |case_id: &str, bytes: &str, top: u8| {
+        let mut fixture = Fixture::from_json(FCHS_NORMAL).unwrap().fixture;
+        fixture.case_id = case_id.into();
+        fixture.profile = od_testkit::v2::Profile::LongX87StateV1;
+        fixture.initial_state.rip = HexU64(0x0010_1200);
+        let mut x87 = fixture
+            .initial_state
+            .x87
+            .as_ref()
+            .unwrap()
+            .to_cpu()
+            .unwrap();
+        x87.control_word = 0x037f;
+        x87.status_word = (u16::from(top) << 11) | 0x0200;
+        x87.tag_word = 0x6c93;
+        for physical in 0..8 {
+            x87.registers[physical] = [0x40 + physical as u8; 10];
+        }
+        fixture.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&x87));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.guest_address = fixture.initial_state.rip;
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        fixture.instruction_budget = (bytes.len() / 4) as u64;
+        fixture.stop_rip = Some(HexU64(
+            fixture.initial_state.rip.get() + bytes.len() as u64 / 2,
+        ));
+        fixture.expected_exit = ExpectedExit::StopAddress;
+        fixture
+    };
+
+    // TOP=1, i=7 wraps to physical 0. Exchange -0 and a canonical Normal;
+    // all six other cells retain their raw bytes and packed tags.
+    let mut mixed = make_fixture("s2_30bl_fxch_zero_normal_wrap", "d9cf", 1);
+    let x87 = mixed.initial_state.x87.as_mut().unwrap();
+    x87.registers[1] = "00000000000000000080".into();
+    x87.registers[0] = "0000000000000080ff3f".into();
+    x87.tag_word = HexU64((x87.tag_word.get() & !0xf) | 0b0100);
+    let (loaded, result) = run(&mixed.to_json().unwrap(), "interpreter", 0);
+    assert_eq!(count(&result), 1);
+    let actual = snapshot(&result).state.x87.as_ref().unwrap();
+    let initial_registers = &loaded.fixture.initial_state.x87.as_ref().unwrap().registers;
+    for physical in 0..8 {
+        let expected = match physical {
+            0 => &initial_registers[1],
+            1 => &initial_registers[0],
+            _ => &initial_registers[physical],
+        };
+        assert_eq!(
+            actual.registers[physical], *expected,
+            "physical register {physical}"
+        );
+    }
+    let mut expected_tags = loaded.fixture.initial_state.x87.unwrap().tag_word;
+    // Physical 1 carried Zero (01), physical 0 Valid (00), so swap those tags.
+    expected_tags = HexU64((expected_tags.get() & !0xf) | 0b0001);
+    assert_eq!(actual.tag_word, expected_tags);
+    assert_eq!(actual.status_word, HexU64((1 << 11) as u64));
+
+    // Opposite signed zeros transfer between the same wrapped cells and return
+    // byte-for-byte, with both Zero tags restored after two exchanges.
+    let mut zeros = make_fixture("s2_30bl_fxch_opposite_zeros_roundtrip", "d9cfd9cfdfe0", 7);
+    let x87 = zeros.initial_state.x87.as_mut().unwrap();
+    x87.registers[7] = "00000000000000000080".into();
+    x87.registers[6] = "00000000000000000000".into();
+    x87.tag_word =
+        HexU64((x87.tag_word.get() & !(0b11 << 14 | 0b11 << 12)) | (1 << 14) | (1 << 12));
+    zeros.instruction_budget = 3;
+    zeros.stop_rip = Some(HexU64(0x0010_1206));
+    let (loaded, result) = run(&zeros.to_json().unwrap(), "interpreter", 0);
+    assert_eq!(count(&result), 3);
+    let actual = snapshot(&result).state.x87.as_ref().unwrap();
+    let initial = loaded.fixture.initial_state.x87.unwrap();
+    for physical in 0..8 {
+        assert_eq!(
+            actual.registers[physical], initial.registers[physical],
+            "physical register {physical}"
+        );
+    }
+    assert_eq!(actual.tag_word, initial.tag_word);
+    assert_eq!(actual.status_word, HexU64((7 << 11) as u64));
+
+    let (_, jit) = run(&mixed.to_json().unwrap(), "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}

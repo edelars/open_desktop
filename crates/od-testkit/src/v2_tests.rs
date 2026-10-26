@@ -282,6 +282,41 @@ fn x87_fxch_st1_schema_admits_only_the_three_exact_streams() {
     wrong_tag.expected_exit = ExpectedExit::Unsupported;
     wrong_tag.initial_state.x87.as_mut().unwrap().tag_word = HexU64(3);
     wrong_tag.validate().unwrap();
+
+    let mut canonical_zero_is_not_a_reject = wrong_tag.clone();
+    canonical_zero_is_not_a_reject.case_id = "local_fxch_canonical_zero_is_valid".into();
+    let x87 = canonical_zero_is_not_a_reject
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap();
+    x87.tag_word = HexU64(1 << 14);
+    x87.registers[7] = "00000000000000000080".into();
+    x87.registers[0] = "00000000000000c00040".into();
+    canonical_zero_is_not_a_reject.stop_rip = Some(HexU64(0x1002));
+    canonical_zero_is_not_a_reject.expected_exit = ExpectedExit::StopAddress;
+    canonical_zero_is_not_a_reject.validate().unwrap();
+
+    let mut canonical_zero_reject = canonical_zero_is_not_a_reject.clone();
+    canonical_zero_reject.case_id = "local_fxch_canonical_zero_not_unsupported".into();
+    canonical_zero_reject.stop_rip = None;
+    canonical_zero_reject.instruction_budget = 1;
+    canonical_zero_reject.expected_exit = ExpectedExit::Unsupported;
+    assert!(canonical_zero_reject.validate().is_err());
+
+    for (physical, malformed) in [
+        (7usize, "01000000000000000000"), // Nonzero significand, exponent zero.
+        (7usize, "00000000000000000001"), // Zero significand, nonzero exponent.
+        (0usize, "01000000000000000000"),
+        (0usize, "00000000000000000001"),
+    ] {
+        let mut malformed_zero = wrong_tag.clone();
+        malformed_zero.case_id = format!("local_fxch_malformed_zero_{physical}_{malformed}");
+        let x87 = malformed_zero.initial_state.x87.as_mut().unwrap();
+        x87.tag_word = HexU64(1 << (physical * 2));
+        x87.registers[physical] = malformed.into();
+        malformed_zero.validate().unwrap();
+    }
 }
 
 #[test]

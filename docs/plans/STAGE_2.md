@@ -5929,3 +5929,31 @@ indexed exchange repeated twice followed by `DF E0`; no arbitrary sequences.
 Add literal self, `i=7` wrap, nonadjacent roundtrip, wrong-target-tag, and
 JIT-denial fixtures. Keep ISSUE-019 open; no Mac mini, SSH, native runtime or
 physical x86 checks.
+
+#### S2-30bl. Admit canonical signed zero to bounded FXCH
+
+Keep the exact `D9 C8+i`, FCW=`0x037f`, and `FSW & 0x80ff == 0` gates from
+S2-30bk. Each participant may be either Valid-tagged canonical Normal or
+Zero-tagged exact binary80 signed zero (sign arbitrary, significand and exponent
+zero). For `i!=0`, preflight both participants before atomically exchanging
+the complete ten-byte payloads and physical two-bit tags. For `i=0`, validate
+TOP only and preserve its payload/tag; malformed unused cells remain ignored.
+TOP, C0/C2/C3 local undefined policy, metadata, no-new-flags behavior, and C1
+clear stay fixed. Do not expand allowed instruction streams, decoder, native or
+JIT acceptance.
+
+Retain the 15,360 Normal-only S2-30bk matrix. Add 32,256 nonzero-index mixed
+states: nine ordered magnitude pairs (one Zero/Zero, four Zero/Normal, four
+Normal/Zero), four sign combinations, seven indices, eight TOP values, and
+sixteen prior CC patterns; add 256 self-Zero states. Assert the complete state,
+raw bytes, full tag word, Zero/Normal transfers in both orders, opposite signed
+zeros, wrap, double exchange, and untouched canaries. Reject malformed Zero,
+Empty/Special, Valid-tagged zero, subnormal/pseudo/unnormal participants, and
+invalid participants in either position atomically. For `i=0`, unrelated cells
+remain unvalidated. Update only the existing schema source-rejection predicate
+to admit canonical Zero and reject malformed Zero; retain the existing stream
+allowlist and explicit JIT denial.
+
+Update fixture notes, CPU contract, report, and ISSUE-019 evidence. ISSUE-019
+remains open for Empty/stack faults, special classes, physical acceptance, and
+other excluded behavior. No Mini, SSH, native runtime, or physical x86 checks.

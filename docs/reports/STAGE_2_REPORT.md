@@ -9490,3 +9490,39 @@ extractor warning for `include/open_desktop/host_abi.h` and skipped unsupported
 file types; neither affects this FXCH implementation. No Mac mini, SSH, native
 runtime, or physical x86 checks were run. ISSUE-019 remains open for excluded
 x87 classes/exceptions and physical/native acceptance.
+
+## S2-30bl — canonical signed zero through bounded FXCH
+
+Extended the local exact bare `D9 C8+i` FXCH profile to accept a participant
+only when it is either a Valid-tagged canonical-Normal binary80 value or a
+Zero-tagged exact signed zero. For nonzero indices, the interpreter preflights
+both wrapped physical entries and commits a swap of both ten-byte payloads and
+their physical tags. The self form validates and preserves only TOP. FCW,
+FSW-mask, TOP, C1, condition-code retention, metadata, and explicit JIT/native
+denial remain unchanged; no decoder or schema stream expansion was made.
+
+The Normal-only matrix remains 15,360 full-state cases. Added 32,256 mixed
+indexed states from nine ordered magnitude pairs, four sign combinations,
+seven indices, eight TOP values, and sixteen prior CC patterns, plus 256
+self-Zero states. Rejections include malformed Zero, Valid-tagged zero,
+Empty/Special tags, unsupported binary80 classes, either invalid indexed
+participant, and the existing environment/fetch/STOP/budget cases. A literal
+CLI fixture asserts raw Zero/Normal wrap transfer and full tag-word exchange;
+another performs opposite signed-zero transfer twice and checks byte/tag
+roundtrip. JIT denial remains explicit.
+
+Validation passed: `cargo test -p od-isa fxch --offline` (7/7),
+`cargo test -p od-testkit x87_fxch_st1_schema --offline` (1/1), the targeted
+signed-zero runner fixture (1/1), and full `cargo test -p od-runner --test
+fixture_v2 --offline` (186/186). `cargo fmt --all -- --check`, `cargo check
+--workspace --all-targets --offline`, `python3 tools/check_layout.py`, and
+`git diff --check` passed. No Mini, SSH, native execution, or physical x86
+check was run. The CPU contract records the verified FXCH source as Intel SDM
+rev.093 Vol.2A p.3-407 and tag classes as rev.081 Vol.1 §8.1.7. ISSUE-019
+remains open for Empty/stack faults, special classes, physical acceptance, and
+the broader x87 contract. See the [plan](../plans/STAGE_2.md#s2-30bl-admit-canonical-signed-zero-to-bounded-fxch),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30bl-canonical-signed-zero-through-bounded-fxch-sti),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bl-canonical-signed-zero-fxch).
+`graphify update .` completed at 5,049 nodes and 10,073 edges. It reported the
+existing `include/open_desktop/host_abi.h` extraction warning and skipped
+unsupported file types; neither affects this change.

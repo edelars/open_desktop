@@ -7204,3 +7204,41 @@ ISSUE-019 remains open for excluded x87 classes/exceptions and physical/native
 acceptance. See the [plan](../plans/STAGE_2.md#s2-30bk-expand-bounded-fxch-from-i1-to-all-register-indices),
 [report](../reports/STAGE_2_REPORT.md#s2-30bk--expand-bounded-fxch-to-all-indices),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bk-bounded-fxch-sti).
+
+## Local S2-30bl: canonical signed zero through bounded `FXCH ST(i)`
+
+This extension retains exact bare Long64 `D9 C8+i`, FCW `0x037f`, and
+`FSW & 0x80ff == 0`. A physical participant is accepted as either a
+Valid-tagged canonical-Normal binary80 value or a Zero-tagged exact signed
+zero: all 64 significand bits and the 15 exponent bits are zero, with either
+sign bit. A Valid-tagged zero, malformed Zero payload, Empty/Special tag,
+subnormal, pseudo-denormal, unnormal, infinity, or NaN remains unsupported.
+
+For `i!=0`, physical `(TOP+i)&7` is preflighted together with TOP before
+mutation; on success, the complete ten-byte payloads and their physical two-bit
+tags exchange atomically. This lets Zero↔Normal and Zero↔Zero exchange without
+reclassifying or normalizing bytes. For `i=0`, only TOP is inspected and its
+payload and tag are preserved; all other physical entries, including malformed
+ones, are ignored. TOP is unchanged, C1 clears, no flags are added, and C0/C2/C3
+remain under the existing deterministic local policy. FIP/RIP and all other
+state follow S2-30bk; no arithmetic, rounding, push/pop, stack-fault response,
+JIT, or native behavior is added.
+
+The v2 stream allowlist remains unchanged. Coverage retains S2-30bk's 15,360
+Normal-only states and adds 32,256 indexed mixed states (nine ordered magnitude
+pairs, four sign combinations, seven nonzero indices, eight TOP values, and
+sixteen prior condition-code patterns) plus 256 self-Zero cases. Full-state
+assertions include raw payloads, complete tag words, both Zero/Normal transfer
+orders, opposite signed-zero transfer, wrap, double exchange, and untouched
+canaries. Malformed Zero, wrong tag, Empty/Special, Valid-tagged zero, other
+unsupported encodings, environment, instruction-fetch, STOP, and budget cases
+reject atomically. Schema validation permits canonical Zero participants and
+continues to reject malformed Zero; JIT remains explicitly unsupported.
+
+The instruction form is described by Intel SDM rev.093 Vol.2A, FXCH entry,
+p.3-407; physical tag classification is Intel SDM rev.081 Vol.1 §8.1.7. This
+local extension makes no hardware-equality claim for undefined C0/C2/C3.
+ISSUE-019 remains open for Empty/stack faults, special classes, and physical
+acceptance. See the [plan](../plans/STAGE_2.md#s2-30bl-admit-canonical-signed-zero-to-bounded-fxch),
+[report](../reports/STAGE_2_REPORT.md#s2-30bl--canonical-signed-zero-through-bounded-fxch),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bl-canonical-signed-zero-fxch).

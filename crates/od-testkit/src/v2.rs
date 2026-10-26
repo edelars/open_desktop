@@ -988,7 +988,26 @@ impl Fixture {
                     let source = (code_bytes.as_bytes()[3] as char).to_digit(16).unwrap() as u8 & 7;
                     let indexed = (top + source) & 7;
                     let tag = |index: u8| (x87.tag_word.get() >> (u32::from(index) * 2)) & 3;
-                    tag(top) != 0 || tag(indexed) != 0
+                    let valid_operand = |index: u8| {
+                        let Some(encoded) = x87.registers.get(usize::from(index)) else {
+                            return false;
+                        };
+                        let Ok(bytes) = decode_bytes(encoded) else {
+                            return false;
+                        };
+                        if bytes.len() != 10 {
+                            return false;
+                        }
+                        let significand = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+                        let exponent = (u16::from(bytes[9] & 0x7f) << 8) | u16::from(bytes[8]);
+                        match tag(index) {
+                            0 => (1..0x7fff).contains(&exponent) && significand & (1 << 63) != 0,
+                            1 => significand == 0 && exponent == 0,
+                            2 | 3 => false,
+                            _ => false,
+                        }
+                    };
+                    !valid_operand(top) || (source != 0 && !valid_operand(indexed))
                 });
             let is_fchs_source_rejected = code_bytes == "d9e0" && self.stop_rip.is_none();
             let is_fabs_source_rejected = code_bytes == "d9e1" && self.stop_rip.is_none();

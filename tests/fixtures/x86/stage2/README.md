@@ -3570,3 +3570,16 @@ followed by `DF E0`. Literal runner fixtures exercise self-exchange, `i=7`
 physical wrap, nonadjacent same-index roundtrip, wrong participating tag, and
 JIT denial. These fixtures establish only local interpreter and schema
 behavior; they do not establish native or physical x86 acceptance.
+
+### S2-30bl canonical signed-zero FXCH
+
+FXCH keeps the S2-30bk exact instruction and environment gates, and accepts
+either canonical-Normal Valid entries or exact signed-zero Zero entries. A
+nonzero index exchanges both raw ten-byte payloads and the two physical tags;
+self-exchange checks TOP only. Unit coverage adds 32,256 mixed indexed states
+and 256 self-Zero states while retaining the prior 15,360 Normal-only states.
+The runner fixture checks a Zero/Normal `i=7` wrap with raw bytes and the full
+tag word, opposite signed-zero exchange followed by a same-index roundtrip,
+untouched state and JIT denial. Malformed Zero and Empty/Special rejection are
+checked atomically. These are local interpreter/schema checks, not native or
+physical x86 evidence.
