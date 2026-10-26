@@ -1865,6 +1865,41 @@ remaining issues in decoder/executor admission, commit ordering, fault behavior,
 fixture shape, or the revised prefix matrix. Review was static; no native,
 SSH, or physical execution was performed.
 
+## S2-18i — non-REP CMPS B/W/D/Q (local)
+
+The Long64 interpreter now admits bare `A6`, `66 A7`, bare `A7`, and effective
+REX.W + `A7`, including all `48..4F` variants and the shared REX/66 ordering
+normalization. CMPS reads pre-state DS:[RSI] first and ES:[RDI] second, compares
+the first value minus the second, then commits arithmetic flags, both
+DF-directed wrapping pointers, RIP, and retirement together. A first-read error
+prevents the second access. A second-read error preserves the first access in
+the local trace but commits no CPU state. Noncanonical addresses on either
+operand produce #GP(0); unmapped, permission, and backend errors retain the
+HarnessError path unless the backend explicitly returns an architectural fault.
+The RSI-first choice is a local bounded-policy decision and is not hardware
+priority evidence for two invalid addresses. It makes no MMIO rollback claim.
+JIT/native admission remains closed.
+
+Coverage adds the 6,144-case full-state/independent-flag matrix; 64 injected
+fault combinations; 48 exact prefix rejects; REX.W normalization; same-address
+double reads and overlapping regions; alignment/page/range ends; pointer wrap;
+canonical start/crossing and no-commit behavior. Exactly 33 literal schema-v2
+fixtures cover eight positives, eight unmapped errors, eight noncanonical
+faults, four zero-budget cases, two normalization forms, and three
+TEST+CMPSB success/first-fault/second-fault streams. The generator contains
+literal expected outcomes. Final local verification passed all 747 `od-isa`
+tests, all 206 `od-testkit` tests, all 206 v2 runner fixture tests, workspace
+all-target offline check, `cargo fmt --all -- --check`, CMPS generator freshness
+and its two Python checks, and `git diff --check`. `tools/check_layout.py`
+reported the managed worktree's `.git` marker as an unmapped root file and two
+existing report links to ignored Stage 1/2 manifests under `work/`; this change
+did not alter those paths. Graphify was updated.
+Independent gpt-6.1-sol high review found no findings in decoder/executor
+admission, ordered reads, commit behavior, fixtures, or the dual-fault caveat.
+Review was static. Mac mini/SSH/native and physical checks were not run and
+remain reserved for the single final acceptance substage. The unknown
+dual-invalid winner is open as ISSUE-020; ISSUE-016/019 remain open.
+
 ## S2-19a — bounded `F3 AA` REP STOSB (local)
 
 This slice admits only exact `F3 AA` in long mode. `RCX=0` completes without a

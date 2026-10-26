@@ -1,5 +1,9 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
+Последнее локальное подзадание S2-18i добавило non-REP CMPS B/W/D/Q; его
+dual-invalid fault winner открыт как ISSUE-020. Реализация этого среза не
+выполняет общий финальный Mac mini/SSH/native/physical acceptance.
+
 **Дата:** 23 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–j add local-only FS/GS-base, selector, descriptor-load, VERW/GDT and exact GS/FS.base composition cases; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 S2-22h load fixtures and two S2-22i/j composition fixtures are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b UD2 fixture are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Stage 2 remains open under broader roadmap criteria. ISSUE-011/012/013/014/015/016/017/018 remain open; acceptance criteria are unchanged.
 
 План рассчитан на модель, которой нужны небольшие последовательные задания, явные ограничения и проверяемый результат. Выполнять одну задачу `S2-NN` за раз. Большую группу внутри задачи делить на перечисленные подшаги; не реализовывать весь этап одним изменением.
@@ -902,6 +906,37 @@ literal fixtures: 8 width/DF successes, 4 unmapped, 4 noncanonical #GP, 4
 budget-zero, 2 normalization и 2 TEST composition. Generator только
 сериализует predetermined answers; profile/schema не менять. Физические и
 Mac mini/SSH проверки остаются в общем финальном acceptance.
+
+#### S2-18i — одна non-REP CMPS B/W/D/Q итерация (локальный профиль)
+
+Добавить только `A6` CMPSB, `66 A7` CMPSW, bare `A7` CMPSD и effective
+`REX.W + A7` CMPSQ в Long64/address-size 64. Все `48..4F` допустимы;
+effective REX.W важнее 66 (`48 66 A7` — word, `66 48 A7` — qword).
+CMPSB остаётся bare-only. REP, LOCK, 67, segment override и effective
+non-W REX перед A7 остаются за пределами профиля.
+
+Строгая локальная последовательность исполнения: прочитать ширину из
+pre-state flat DS:[RSI], затем прочитать ту же ширину из pre-state flat
+ES:[RDI], вычислить CMP flags для `memory[RSI] - memory[RDI]`, и только после
+двух успешных чтений зафиксировать flags, DF-directed wrapping RSI/RDI, RIP и
+одно retirement. Любой отказ первого чтения прекращает доступы; отказ второго
+оставляет trace первого чтения, но не коммитит CPU. Canonical48 DS/ES fault —
+#GP(0); unmapped/permission/backend остаются HarnessError, кроме явно
+архитектурной ошибки backend. Не synthesize #PF. RSI=RDI всё равно даёт два
+чтения. Указанный порядок — ограниченная локальная политика, а не свидетельство
+hardware priority для двух одновременно ошибочных адресов; ISSUE-020 открыт.
+Нет rollback claims для MMIO/side-effect backend. JIT/native не расширять.
+
+Покрытие: 6,144 независимых полных snapshots (4 widths × 2 DF × 12 ordered
+pairs × 64 arithmetic-flag inputs), 64 отказа чтений (4 widths × 2 DF × 2 sites
+× 4 error kinds), ordered trace/no writes, overlap/alias, alignments/page/range
+edges, both pointer wrap/post-index and canonical faults, zero budget and
+truncation. 48 exact prefix rejects; все REX.W варианты и обе нормализации.
+Ровно 33 literal fixtures: 8 successes, 8 unmapped, 8 noncanonical, 4 budget,
+2 normalization, 3 `TEST+CMPSB` success/first-fault/second-fault. Schema 2 и
+`s2-long-integer-v1` unchanged; generator serializes stated expected values.
+Mac mini, SSH, native and physical checks remain reserved for the single final
+acceptance substage.
 
 ### S2-19. REP и частичное выполнение
 

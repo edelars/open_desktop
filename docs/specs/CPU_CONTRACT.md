@@ -139,6 +139,36 @@ generator serializes predetermined input/output literals only. ISSUE-016 and
 ISSUE-019 remain open; physical execution is deferred to the shared final
 acceptance substage.
 
+### Local S2-18i CMPS B/W/D/Q contract
+
+The bounded Long64 profile accepts bare `A6` CMPSB, `66 A7` CMPSW, bare
+`A7` CMPSD, and effective `REX.W + A7` CMPSQ with address-size 64. All
+`48..4F` REX.W bytes are accepted; effective REX.W overrides 66, while a REX
+before a later 66 is normalized away (`48 66 A7` is word; `66 48 A7` is
+qword). CMPSB is bare-only. REP, LOCK, 67, segment overrides and effective
+non-W REX on A7 are outside this profile.
+
+Each successful instruction performs two width-sized reads using pre-state
+addresses in strict order: flat DS:[RSI], then flat ES:[RDI]. It computes
+`memory[RSI] - memory[RDI]` with CMP flags, then commits only arithmetic flags,
+DF-directed wrapping RSI/RDI, RIP and one retirement. RAX, RCX and RAM are
+unchanged. RSI=RDI still performs two reads. Successful retirement defines
+`ARITHMETIC_FLAGS`; failed reads define no additional flags and commit no CPU
+state. A noncanonical start or final byte in either operand produces #GP(0).
+Missing mapping, permission and backend errors remain harness errors unless the
+backend explicitly reports an architectural fault; no #PF is synthesized.
+
+If the first access fails, there is no second access. If the second fails, the
+first read remains observable in the local trace while CPU commit is withheld.
+The selected RSI-first order is bounded local policy and is not hardware
+priority evidence for dual-invalid operands. No MMIO or side-effect rollback is
+claimed. Dual-invalid winner remains open as ISSUE-020. Exactly 33 literal
+schema-v2 fixtures preserve the existing schema/profile; the generator only
+serializes stated inputs and expected full states. Local full-state coverage,
+read-order/failure matrix, prefix boundary and address tests do not establish
+native/JIT or physical x86 behavior. Mac mini/SSH/native/physical acceptance
+remains part of the single final substage.
+
 Для ещё не реализованных строк таблица задаёт группы и диапазоны кодировок,
 а точные допустимые сочетания, ошибки и порядок side effects фиксируются перед
 реализацией каждой формы. Whole-group CPUID bits до этого не выдаются.

@@ -3726,6 +3726,684 @@ fn scas_all_widths_full_state_matrix_uses_independent_cmp_flags_and_one_read() {
 }
 
 #[test]
+fn cmps_all_widths_full_state_matrix_uses_ordered_reads_and_independent_cmp_flags() {
+    const FLAGS: [u64; 6] = [1, 4, 16, 64, 128, 2048];
+    const ARITHMETIC_MASK: u64 = 0x8d5;
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let forms = [
+        (OperandSize::Byte, vec![0xa6]),
+        (OperandSize::Word, vec![0x66, 0xa7]),
+        (OperandSize::Dword, vec![0xa7]),
+        (OperandSize::Qword, vec![0x48, 0xa7]),
+    ];
+    let mut cases = 0;
+    for (size, code) in forms {
+        let mask = size.mask();
+        let sign = 1u64 << (size.bytes() * 8 - 1);
+        let pairs = [
+            (0, 0),
+            (1, 1),
+            (mask, mask),
+            (0, 1),
+            (1, 0),
+            (sign, 1),
+            (sign - 1, mask),
+            (mask, sign - 1),
+            (sign - 1, sign),
+            (sign, sign - 1),
+            (0x10, 1),
+            (1, 0x10),
+        ];
+        for direction in [false, true] {
+            for (lhs, rhs) in pairs {
+                for incoming in 0..64u64 {
+                    let value = lhs.wrapping_sub(rhs) & mask;
+                    let expected_arithmetic = (u64::from(lhs < rhs) * FLAGS[0])
+                        | (u64::from((value as u8).count_ones() % 2 == 0) * FLAGS[1])
+                        | (u64::from((lhs ^ rhs ^ value) & 0x10 != 0) * FLAGS[2])
+                        | (u64::from(value == 0) * FLAGS[3])
+                        | (u64::from(value & sign != 0) * FLAGS[4])
+                        | (u64::from((lhs ^ rhs) & (lhs ^ value) & sign != 0) * FLAGS[5]);
+                    let mut fixture = template.clone();
+                    fixture.memory[0].length = code.len() as u32;
+                    fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+                    fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                    fixture.memory[1].initial_bytes_hex = "5a".repeat(16);
+                    fixture.initial_state.rip = HexU64(0x0010_0000);
+                    fixture.initial_state.gpr[Register::Rsi as usize] = HexU64(0x0020_0000);
+                    fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0020_0008);
+                    fixture.initial_state.rflags = HexU64(
+                        2 | if direction { 1 << 10 } else { 0 }
+                            | FLAGS
+                                .iter()
+                                .enumerate()
+                                .filter(|(i, _)| incoming & (1 << i) != 0)
+                                .fold(0, |bits, (_, flag)| bits | flag),
+                    );
+                    fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+                    let before = fixture.initial_state.to_cpu().unwrap();
+                    let mut state = before.clone();
+                    let mut memory = MovsbAccessLog {
+                        inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                        accesses: Vec::new(),
+                        mfences: Vec::new(),
+                        mfence_error: None,
+                    };
+                    memory
+                        .inner
+                        .write_integer(0x0020_0000, AccessContext::default(), size, lhs)
+                        .unwrap();
+                    memory
+                        .inner
+                        .write_integer(0x0020_0008, AccessContext::default(), size, rhs)
+                        .unwrap();
+                    let before_memory = memory.inner.snapshot();
+                    let mut expected = before.clone();
+                    expected.rflags = (before.rflags & !ARITHMETIC_MASK) | expected_arithmetic;
+                    let stride = if direction {
+                        0u64.wrapping_sub(size.bytes() as u64)
+                    } else {
+                        size.bytes() as u64
+                    };
+                    expected.gpr[Register::Rsi as usize] = 0x0020_0000u64.wrapping_add(stride);
+                    expected.gpr[Register::Rdi as usize] = 0x0020_0008u64.wrapping_add(stride);
+                    expected.rip += code.len() as u64;
+                    let run_result = run(
+                        &mut state,
+                        &mut memory,
+                        config(1, fixture.stop_rip.map(HexU64::get)),
+                        || false,
+                    );
+                    assert_eq!(run_result.exit, RunExit::StopAddress);
+                    assert_eq!(run_result.instructions_executed, 1);
+                    assert_eq!(state, expected);
+                    assert_eq!(run_result.rflags_defined, 0x0cd7);
+                    assert_eq!(
+                        memory.accesses,
+                        (0..code.len())
+                            .map(|offset| (AccessKind::Fetch, 0x0010_0000 + offset as u64, 1))
+                            .chain([
+                                (AccessKind::Read, 0x0020_0000, size.bytes()),
+                                (AccessKind::Read, 0x0020_0008, size.bytes())
+                            ])
+                            .collect::<Vec<_>>()
+                    );
+                    assert_eq!(memory.inner.snapshot(), before_memory);
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 6_144);
+}
+
+#[test]
+fn cmps_read_failures_preserve_state_and_stop_at_the_failing_operand() {
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let forms = [
+        (OperandSize::Byte, vec![0xa6]),
+        (OperandSize::Word, vec![0x66, 0xa7]),
+        (OperandSize::Dword, vec![0xa7]),
+        (OperandSize::Qword, vec![0x48, 0xa7]),
+    ];
+    let errors = [
+        MemoryError::Architectural(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(4),
+            linear_address: Some(0x0020_0004),
+        }),
+        MemoryError::Unmapped {
+            access: AccessKind::Read,
+            address: 0x0020_0004,
+        },
+        MemoryError::PermissionDenied {
+            access: AccessKind::Read,
+            address: 0x0020_0004,
+        },
+        MemoryError::Backend("injected CMPS backend error".into()),
+    ];
+    for (size, code) in forms {
+        for direction in [false, true] {
+            for site in [0usize, 1] {
+                for error in &errors {
+                    let mut fixture = template.clone();
+                    fixture.memory[0].length = code.len() as u32;
+                    fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+                    fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                    fixture.memory[1].initial_bytes_hex = "22".repeat(16);
+                    fixture.initial_state.gpr[Register::Rsi as usize] = HexU64(0x0020_0000);
+                    fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0020_0008);
+                    fixture.initial_state.rflags =
+                        HexU64(2 | if direction { 1 << 10 } else { 0 } | 0x8d5);
+                    fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+                    let mut state = fixture.initial_state.to_cpu().unwrap();
+                    let before = state.clone();
+                    let mut memory = AccessTraceMemory {
+                        inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                        accesses: Vec::new(),
+                    };
+                    let failed_address = if site == 0 { 0x0020_0000 } else { 0x0020_0008 };
+                    let injected_error = match error {
+                        MemoryError::Unmapped { .. } => MemoryError::Unmapped {
+                            access: AccessKind::Read,
+                            address: failed_address,
+                        },
+                        MemoryError::PermissionDenied { .. } => MemoryError::PermissionDenied {
+                            access: AccessKind::Read,
+                            address: failed_address,
+                        },
+                        MemoryError::Architectural(fault) => {
+                            MemoryError::Architectural(ArchitecturalFault {
+                                linear_address: Some(failed_address),
+                                ..fault.clone()
+                            })
+                        }
+                        other => other.clone(),
+                    };
+                    memory.inner.inject_once(
+                        failed_address,
+                        AccessKind::Read,
+                        injected_error.clone(),
+                    );
+                    let ram_before = memory.inner.snapshot();
+                    let result = run(&mut state, &mut memory, config(1, None), || false);
+                    assert_eq!(result.instructions_executed, 0);
+                    assert_eq!(result.rflags_defined, 0x0cd7);
+                    assert_eq!(state, before);
+                    assert_eq!(memory.inner.snapshot(), ram_before);
+                    let data_reads = memory
+                        .accesses
+                        .iter()
+                        .filter(|(kind, _, _, _)| *kind == AccessKind::Read)
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        data_reads.len(),
+                        site + 1,
+                        "{size:?} {direction} {site} {error:?}"
+                    );
+                    assert_eq!(data_reads[0].1, 0x0020_0000);
+                    if site == 1 {
+                        assert_eq!(data_reads[1].1, 0x0020_0008);
+                    }
+                    if let MemoryError::Architectural(fault) = injected_error {
+                        assert_eq!(result.exit, RunExit::Fault(fault));
+                    } else {
+                        assert_eq!(result.exit, RunExit::MemoryError(injected_error));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut dual_missing = template;
+    dual_missing.memory[0].length = 1;
+    dual_missing.memory[0].initial_bytes_hex = "a6".into();
+    dual_missing.memory[0].comparison_mask_hex = "ff".into();
+    dual_missing.initial_state.gpr[Register::Rsi as usize] = HexU64(0x0020_1000);
+    dual_missing.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0020_2000);
+    let mut state = dual_missing.initial_state.to_cpu().unwrap();
+    let before = state.clone();
+    let mut memory = AccessTraceMemory {
+        inner: FlatMemory::from_fixture(&dual_missing).unwrap(),
+        accesses: Vec::new(),
+    };
+    let result = run(&mut state, &mut memory, config(1, None), || false);
+    assert_eq!(result.rflags_defined, 0x0cd7);
+    assert_eq!(
+        result.exit,
+        RunExit::MemoryError(MemoryError::Unmapped {
+            access: AccessKind::Read,
+            address: 0x0020_1000
+        })
+    );
+    assert_eq!(state, before);
+    let reads = memory
+        .accesses
+        .iter()
+        .filter(|(kind, _, _, _)| *kind == AccessKind::Read)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reads.len(),
+        1,
+        "local RSI-first policy attempts no RDI read after the first fault"
+    );
+    assert_eq!(reads[0].1, 0x0020_1000);
+}
+
+#[test]
+fn cmps_prefix_profile_aliasing_and_canonical_fault_boundaries_are_exact() {
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let forms: [&[u8]; 4] = [&[0xa6], &[0x66, 0xa7], &[0xa7], &[0x48, 0xa7]];
+    let prefixes: [&[u8]; 10] = [
+        &[0xf0],
+        &[0xf2],
+        &[0xf3],
+        &[0x67],
+        &[0x26],
+        &[0x2e],
+        &[0x36],
+        &[0x3e],
+        &[0x64],
+        &[0x65],
+    ];
+    let mut rejects = Vec::new();
+    for form in forms {
+        for prefix in prefixes {
+            rejects.push([prefix, form].concat());
+        }
+    }
+    rejects.extend([
+        vec![0x40, 0xa7],
+        vec![0x47, 0xa7],
+        vec![0x66, 0x66, 0xa7],
+        vec![0xf2, 0xf3, 0xa7],
+        vec![0x64, 0x65, 0xa7],
+        vec![0x40, 0xa6],
+        vec![0x48, 0xa6],
+        vec![0x66, 0xa6],
+    ]);
+    assert_eq!(rejects.len(), 48);
+    for code in rejects {
+        let mut fixture = template.clone();
+        fixture.memory[0].length = code.len() as u32;
+        fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+        fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+        let before = fixture.initial_state.to_cpu().unwrap();
+        let mut state = before.clone();
+        let mut memory = MovsbAccessLog {
+            inner: FlatMemory::from_fixture(&fixture).unwrap(),
+            accesses: Vec::new(),
+            mfences: Vec::new(),
+            mfence_error: None,
+        };
+        let ram_before = memory.inner.snapshot();
+        let result = run(&mut state, &mut memory, config(1, None), || false);
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported {
+                opcode: *code.last().unwrap()
+            },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.inner.snapshot(), ram_before);
+        assert!(
+            memory
+                .accesses
+                .iter()
+                .all(|(kind, _, _)| *kind == AccessKind::Fetch)
+        );
+    }
+    for rex in 0x48..=0x4f {
+        for (code, width) in [
+            (vec![rex, 0xa7], OperandSize::Qword),
+            (vec![0x66, rex, 0xa7], OperandSize::Qword),
+            (vec![rex, 0x66, 0xa7], OperandSize::Word),
+        ] {
+            let mut fixture = template.clone();
+            fixture.memory[0].length = code.len() as u32;
+            fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+            fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+            fixture.initial_state.gpr[Register::Rsi as usize] = HexU64(0x0020_0000);
+            fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0020_0008);
+            fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+            let mut state = fixture.initial_state.to_cpu().unwrap();
+            let mut memory = MovsbAccessLog {
+                inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                accesses: Vec::new(),
+                mfences: Vec::new(),
+                mfence_error: None,
+            };
+            memory
+                .inner
+                .write_integer(0x0020_0000, AccessContext::default(), width, 0)
+                .unwrap();
+            memory
+                .inner
+                .write_integer(0x0020_0008, AccessContext::default(), width, 0)
+                .unwrap();
+            let result = run(
+                &mut state,
+                &mut memory,
+                config(1, fixture.stop_rip.map(HexU64::get)),
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress, "{code:02x?}");
+            assert_eq!(state.rip, 0x0010_0000 + code.len() as u64);
+            assert_eq!(
+                memory
+                    .accesses
+                    .iter()
+                    .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                    .count(),
+                2
+            );
+        }
+    }
+
+    for (size, code) in [
+        (OperandSize::Byte, vec![0xa6]),
+        (OperandSize::Word, vec![0x66, 0xa7]),
+        (OperandSize::Dword, vec![0xa7]),
+        (OperandSize::Qword, vec![0x48, 0xa7]),
+    ] {
+        for bad_operand in [Register::Rsi, Register::Rdi] {
+            let mut fixture = template.clone();
+            fixture.memory[0].length = code.len() as u32;
+            fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+            fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+            fixture.initial_state.gpr[bad_operand as usize] = HexU64(0x0000_8000_0000_0000);
+            fixture.initial_state.gpr[if bad_operand == Register::Rsi {
+                Register::Rdi as usize
+            } else {
+                Register::Rsi as usize
+            }] = HexU64(0x0020_0008);
+            let mut state = fixture.initial_state.to_cpu().unwrap();
+            let before = state.clone();
+            let mut memory = MovsbAccessLog {
+                inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                accesses: Vec::new(),
+                mfences: Vec::new(),
+                mfence_error: None,
+            };
+            let result = run(&mut state, &mut memory, config(1, None), || false);
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None
+                }),
+                "{size:?} {bad_operand:?}"
+            );
+            assert_eq!(state, before);
+            let reads = memory
+                .accesses
+                .iter()
+                .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                .count();
+            assert_eq!(
+                reads,
+                usize::from(bad_operand == Register::Rdi),
+                "{size:?} {bad_operand:?}"
+            );
+        }
+    }
+
+    for pointer in [Register::Rsi, Register::Rdi] {
+        let mut post = template.clone();
+        post.memory[0].length = 1;
+        post.memory[0].initial_bytes_hex = "a6".into();
+        post.memory[0].comparison_mask_hex = "ff".into();
+        post.memory[1].guest_address = HexU64(0x0000_7fff_ffff_ffff);
+        post.memory[1].length = 1;
+        post.memory[1].initial_bytes_hex = "00".into();
+        post.memory[1].comparison_mask_hex = "ff".into();
+        let mut low = post.memory[1].clone();
+        low.region_id = "low".into();
+        low.guest_address = HexU64(0x0020_0000);
+        low.length = 16;
+        low.initial_bytes_hex = "00".repeat(16);
+        low.comparison_mask_hex = "ff".repeat(16);
+        post.memory.push(low);
+        post.initial_state.gpr[Register::Rsi as usize] = HexU64(if pointer == Register::Rsi {
+            0x0000_7fff_ffff_ffff
+        } else {
+            0x0020_0000
+        });
+        post.initial_state.gpr[Register::Rdi as usize] = HexU64(if pointer == Register::Rdi {
+            0x0000_7fff_ffff_ffff
+        } else {
+            0x0020_0008
+        });
+        let mut state = post.initial_state.to_cpu().unwrap();
+        let result = run(
+            &mut state,
+            &mut FlatMemory::from_fixture(&post).unwrap(),
+            config(1, None),
+            || false,
+        );
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.gpr[pointer as usize], 0x0000_8000_0000_0000);
+    }
+
+    let mut truncated = template;
+    truncated.memory[0].length = 1;
+    truncated.memory[0].initial_bytes_hex = "66".into();
+    truncated.memory[0].comparison_mask_hex = "ff".into();
+    let mut state = truncated.initial_state.to_cpu().unwrap();
+    let before = state.clone();
+    let result = run(
+        &mut state,
+        &mut FlatMemory::from_fixture(&truncated).unwrap(),
+        config(1, None),
+        || false,
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert!(matches!(
+        result.exit,
+        RunExit::MemoryError(MemoryError::Unmapped {
+            access: AccessKind::Fetch,
+            ..
+        })
+    ));
+    assert_eq!(state, before);
+}
+
+#[test]
+fn cmps_overlap_alignment_page_edges_and_wrapping_are_two_prestate_reads() {
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    for (size, code) in [
+        (OperandSize::Byte, vec![0xa6]),
+        (OperandSize::Word, vec![0x66, 0xa7]),
+        (OperandSize::Dword, vec![0xa7]),
+        (OperandSize::Qword, vec![0x48, 0xa7]),
+    ] {
+        for offset in [
+            0u64,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            0x0fff,
+            (0x2000 - size.bytes()) as u64,
+        ] {
+            let mut fixture = template.clone();
+            fixture.memory[0].length = code.len() as u32;
+            fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+            fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+            fixture.memory[1].guest_address = HexU64(0x0040_0000);
+            fixture.memory[1].length = 0x2000;
+            fixture.memory[1].initial_bytes_hex = "44".repeat(0x2000);
+            fixture.memory[1].comparison_mask_hex = "ff".repeat(0x2000);
+            let source = 0x0040_0000 + offset;
+            let destination = 0x0040_1000;
+            fixture.initial_state.gpr[Register::Rsi as usize] = HexU64(source);
+            fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(destination);
+            fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+            let mut state = fixture.initial_state.to_cpu().unwrap();
+            let mut memory = MovsbAccessLog {
+                inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                accesses: Vec::new(),
+                mfences: Vec::new(),
+                mfence_error: None,
+            };
+            let result = run(
+                &mut state,
+                &mut memory,
+                config(1, fixture.stop_rip.map(HexU64::get)),
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::StopAddress,
+                "{size:?} offset={offset:#x}"
+            );
+            assert_eq!(
+                memory
+                    .accesses
+                    .iter()
+                    .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                    .count(),
+                2
+            );
+            assert_eq!(
+                memory.accesses[memory.accesses.len() - 2],
+                (AccessKind::Read, source, size.bytes())
+            );
+            assert_eq!(
+                memory.accesses[memory.accesses.len() - 1],
+                (AccessKind::Read, destination, size.bytes())
+            );
+        }
+
+        let mut alias = template.clone();
+        alias.memory[0].length = code.len() as u32;
+        alias.memory[0].initial_bytes_hex = encode_bytes(&code);
+        alias.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+        alias.initial_state.gpr[Register::Rsi as usize] = HexU64(0x0020_0004);
+        alias.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0020_0004);
+        let mut state = alias.initial_state.to_cpu().unwrap();
+        let mut memory = MovsbAccessLog {
+            inner: FlatMemory::from_fixture(&alias).unwrap(),
+            accesses: Vec::new(),
+            mfences: Vec::new(),
+            mfence_error: None,
+        };
+        let result = run(&mut state, &mut memory, config(1, None), || false);
+        assert_eq!(result.instructions_executed, 1);
+        let reads = memory
+            .accesses
+            .iter()
+            .filter(|(kind, _, _)| *kind == AccessKind::Read)
+            .collect::<Vec<_>>();
+        assert_eq!(reads.len(), 2);
+        assert_eq!(reads[0].1, 0x0020_0004);
+        assert_eq!(reads[1].1, 0x0020_0004);
+
+        if size == OperandSize::Qword {
+            let mut overlap = alias.clone();
+            overlap.initial_state.gpr[Register::Rsi as usize] = HexU64(0x0020_0004);
+            overlap.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0020_0005);
+            let mut state = overlap.initial_state.to_cpu().unwrap();
+            let mut memory = MovsbAccessLog {
+                inner: FlatMemory::from_fixture(&overlap).unwrap(),
+                accesses: Vec::new(),
+                mfences: Vec::new(),
+                mfence_error: None,
+            };
+            let result = run(&mut state, &mut memory, config(1, None), || false);
+            assert_eq!(result.instructions_executed, 1);
+            let reads = memory
+                .accesses
+                .iter()
+                .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                .collect::<Vec<_>>();
+            assert_eq!(reads.len(), 2);
+            assert_eq!(reads[0].1, 0x0020_0004);
+            assert_eq!(reads[1].1, 0x0020_0005);
+        }
+
+        let mut wrapping = template.clone();
+        wrapping.memory[0].length = code.len() as u32;
+        wrapping.memory[0].initial_bytes_hex = encode_bytes(&code);
+        wrapping.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+        wrapping.memory[1].guest_address = HexU64(0);
+        wrapping.memory[1].length = 16;
+        wrapping.memory[1].initial_bytes_hex = "44".repeat(16);
+        wrapping.memory[1].comparison_mask_hex = "ff".repeat(16);
+        wrapping.initial_state.gpr[Register::Rsi as usize] = HexU64(0);
+        wrapping.initial_state.gpr[Register::Rdi as usize] = HexU64(0);
+        wrapping.initial_state.rflags = HexU64(0x4d7);
+        let mut state = wrapping.initial_state.to_cpu().unwrap();
+        let mut memory = MovsbAccessLog {
+            inner: FlatMemory::from_fixture(&wrapping).unwrap(),
+            accesses: Vec::new(),
+            mfences: Vec::new(),
+            mfence_error: None,
+        };
+        let result = run(&mut state, &mut memory, config(1, None), || false);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            state.gpr[Register::Rsi as usize],
+            0u64.wrapping_sub(size.bytes() as u64)
+        );
+        assert_eq!(
+            state.gpr[Register::Rdi as usize],
+            0u64.wrapping_sub(size.bytes() as u64)
+        );
+
+        if size != OperandSize::Byte {
+            let crossing_address = 0x0000_7fff_ffff_ffffu64 - size.bytes() as u64 + 2;
+            for bad_operand in [Register::Rsi, Register::Rdi] {
+                let mut crossing = template.clone();
+                crossing.memory[0].length = code.len() as u32;
+                crossing.memory[0].initial_bytes_hex = encode_bytes(&code);
+                crossing.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                crossing.initial_state.gpr[Register::Rsi as usize] =
+                    HexU64(if bad_operand == Register::Rsi {
+                        crossing_address
+                    } else {
+                        0x0020_0004
+                    });
+                crossing.initial_state.gpr[Register::Rdi as usize] =
+                    HexU64(if bad_operand == Register::Rdi {
+                        crossing_address
+                    } else {
+                        0x0020_0004
+                    });
+                let mut state = crossing.initial_state.to_cpu().unwrap();
+                let before = state.clone();
+                let mut memory = MovsbAccessLog {
+                    inner: FlatMemory::from_fixture(&crossing).unwrap(),
+                    accesses: Vec::new(),
+                    mfences: Vec::new(),
+                    mfence_error: None,
+                };
+                let result = run(&mut state, &mut memory, config(1, None), || false);
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None
+                    })
+                );
+                assert_eq!(state, before);
+                assert_eq!(
+                    memory
+                        .accesses
+                        .iter()
+                        .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                        .count(),
+                    usize::from(bad_operand == Register::Rdi)
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn scas_prefix_boundaries_and_rex_normalization_are_exact() {
     let template = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
@@ -4270,6 +4948,146 @@ fn scas_literal_fixtures_match_full_state_and_access_contract() {
         assert_eq!(memory.accesses, expected_accesses, "{case_id}");
         if !success {
             assert_eq!(memory.inner.snapshot(), initial_memory, "{case_id}");
+        }
+    }
+}
+
+#[test]
+fn cmps_literal_fixtures_match_full_state_and_ordered_access_contract() {
+    let directory = arithmetic_fixture_directory();
+    let answers: std::collections::BTreeMap<String, ScasExpected> = serde_json::from_slice(
+        &std::fs::read(directory.join("s2_18i_cmps_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 33);
+    for (case_id, answer) in answers {
+        let input = Fixture::from_json(
+            &std::fs::read(directory.join(format!("{case_id}.case.json"))).unwrap(),
+        )
+        .unwrap()
+        .fixture;
+        let original = input.initial_state.to_cpu().unwrap();
+        let mut state = original.clone();
+        let mut memory = MovsbAccessLog {
+            inner: FlatMemory::from_fixture(&input).unwrap(),
+            accesses: Vec::new(),
+            mfences: Vec::new(),
+            mfence_error: None,
+        };
+        let ram_before = memory.inner.snapshot();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            || false,
+        );
+        let code = decode_bytes(&input.memory[0].initial_bytes_hex).unwrap();
+        let success = input.expected_exit == ExpectedExit::StopAddress;
+        let budget = input.expected_exit == ExpectedExit::InstructionBudgetExhausted;
+        let backend = input.expected_exit == ExpectedExit::HarnessError;
+        let fault = input.expected_exit == ExpectedExit::Exception;
+        let prior_test = code.starts_with(&[0x48, 0x85, 0xc0]);
+        let expected_retired = if success {
+            if prior_test { 2 } else { 1 }
+        } else if prior_test {
+            1
+        } else {
+            0
+        };
+        assert_eq!(result.instructions_executed, expected_retired, "{case_id}");
+        if success {
+            assert_eq!(result.exit, RunExit::StopAddress, "{case_id}");
+        } else if budget {
+            assert_eq!(
+                result.exit,
+                RunExit::InstructionBudgetExhausted,
+                "{case_id}"
+            );
+        } else if backend {
+            assert!(
+                matches!(
+                    result.exit,
+                    RunExit::MemoryError(MemoryError::Unmapped {
+                        access: AccessKind::Read,
+                        ..
+                    })
+                ),
+                "{case_id}: {:?}",
+                result.exit
+            );
+        } else if fault {
+            let fault = answer.fault.as_ref().unwrap();
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: fault.vector,
+                    error_code: Some(fault.error_code.get() as u32),
+                    linear_address: None
+                }),
+                "{case_id}"
+            );
+        }
+        assert_eq!(state.gpr, answer.gpr.map(HexU64::get), "{case_id}");
+        assert_eq!(state.rflags, answer.rflags.get(), "{case_id}");
+        assert_eq!(state.rip, answer.rip.get(), "{case_id}");
+        assert_eq!(
+            result.rflags_defined,
+            answer.rflags_defined.get(),
+            "{case_id}"
+        );
+        for region in memory.inner.snapshot() {
+            assert_eq!(
+                region.bytes_hex, answer.memory[&region.region_id],
+                "{case_id}: {}",
+                region.region_id
+            );
+        }
+        let data_accesses = if budget {
+            0
+        } else if prior_test {
+            if success {
+                2
+            } else if case_id.ends_with("first_fault") {
+                0
+            } else {
+                1
+            }
+        } else if case_id.contains("noncanonical") {
+            if case_id.ends_with("_first") { 0 } else { 1 }
+        } else if case_id.contains("unmapped") {
+            if case_id.ends_with("_first") { 1 } else { 2 }
+        } else if success {
+            2
+        } else {
+            0
+        };
+        let expected_accesses = if budget {
+            Vec::new()
+        } else {
+            (0..code.len())
+                .map(|offset| (AccessKind::Fetch, 0x0010_0000 + offset as u64, 1))
+                .chain((0..data_accesses).map(|site| {
+                    (
+                        AccessKind::Read,
+                        if site == 0 {
+                            original.gpr[Register::Rsi as usize]
+                        } else {
+                            original.gpr[Register::Rdi as usize]
+                        },
+                        match code.last().copied().unwrap() {
+                            0xa6 => 1,
+                            _ if code.starts_with(&[0x48, 0x66]) => 2,
+                            _ if code.starts_with(&[0x48]) || code.starts_with(&[0x66, 0x48]) => 8,
+                            _ if code.starts_with(&[0x66]) => 2,
+                            _ => 4,
+                        },
+                    )
+                }))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(memory.accesses, expected_accesses, "{case_id}");
+        if !success {
+            assert_eq!(memory.inner.snapshot(), ram_before, "{case_id}");
         }
     }
 }

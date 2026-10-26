@@ -1032,6 +1032,28 @@ fn step_tracked_with_stop(
                         && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
                         && size == OperandSize::Qword))
         }
+        Operation::Cmps { size } => {
+            instruction.opcode.map == OpcodeMap::Primary
+                && ((instruction.opcode.byte == 0xa6
+                    && instruction.prefixes == Prefixes::default()
+                    && size == OperandSize::Byte)
+                    || (instruction.opcode.byte == 0xa7
+                        && instruction.prefixes == Prefixes::default()
+                        && size == OperandSize::Dword)
+                    || (instruction.opcode.byte == 0xa7
+                        && instruction.prefixes
+                            == (Prefixes {
+                                operand_override: true,
+                                ..Prefixes::default()
+                            })
+                        && size == OperandSize::Word)
+                    || (instruction.opcode.byte == 0xa7
+                        && instruction.prefixes.group1.is_none()
+                        && instruction.prefixes.segment.is_none()
+                        && !instruction.prefixes.address_override
+                        && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                        && size == OperandSize::Qword))
+        }
         Operation::RepStos { size } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0xaa
@@ -2408,6 +2430,49 @@ fn step_tracked_with_stop(
             } else {
                 0u64.wrapping_sub(size.bytes() as u64)
             };
+            state.gpr[Register::Rdi as usize] =
+                state.gpr[Register::Rdi as usize].wrapping_add(step);
+        }
+        Operation::Cmps { size } => {
+            // CMPS reads pre-state DS:[RSI] completely before touching ES:[RDI].
+            // The selected read order is a local bounded-profile policy; it does
+            // not establish hardware priority for two invalid addresses.
+            let source = Operand::Memory(MemoryOperand {
+                base: AddressBase::Register(Register::Rsi),
+                index: None,
+                scale: 1,
+                displacement: 0,
+                address_size: OperandSize::Qword,
+                size,
+            });
+            let first = match read_operand(state, memory, context, next_rip, source) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
+                Err(error) => return Err(error),
+            };
+            let destination = Operand::Memory(MemoryOperand {
+                base: AddressBase::Register(Register::Rdi),
+                index: None,
+                scale: 1,
+                displacement: 0,
+                address_size: OperandSize::Qword,
+                size,
+            });
+            let second = match read_operand(state, memory, context, next_rip, destination) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
+                Err(error) => return Err(error),
+            };
+            let (_, flags) =
+                arithmetic_result(size, ArithmeticKind::Cmp, first, second, state.rflags);
+            state.rflags = flags;
+            let step = if state.rflags & (1 << 10) == 0 {
+                size.bytes() as u64
+            } else {
+                0u64.wrapping_sub(size.bytes() as u64)
+            };
+            state.gpr[Register::Rsi as usize] =
+                state.gpr[Register::Rsi as usize].wrapping_add(step);
             state.gpr[Register::Rdi as usize] =
                 state.gpr[Register::Rdi as usize].wrapping_add(step);
         }

@@ -654,6 +654,36 @@ cargo test -p od-testkit --offline scas_
 cargo test -p od-runner --test fixture_v2 --offline scas_cli_fixtures
 ```
 
+## Single-iteration CMPS B/W/D/Q fixtures S2-18i
+
+Exactly 33 literal schema-v2 fixtures cover eight width/direction positives,
+eight unmapped outcomes split across RSI and RDI, eight canonical48 #GP(0)
+cases split across both operands, four budget-zero boundaries, both
+`48 66 A7` / `66 48 A7` normalizations, and three exact `TEST+CMPSB` streams
+(success, first-read fault, second-read fault). Full GPR/flags/definedness/RIP
+and complete code/data images are recorded. The operation always reads
+pre-state DS:[RSI] first, then pre-state ES:[RDI], and computes memory[RSI] minus
+memory[RDI]. A failure leaves CPU state uncommitted; on a second-read fault the
+first read remains in the trace. RSI=RDI does not collapse the two reads.
+
+[`generate_stage2_cmps.py`](../../../cpu/generate_stage2_cmps.py) serializes
+the handwritten streams and predetermined full snapshots. Independent tests
+cover 6,144 successful full-state cases, 64 fault injections, ordered read
+traces, no writes, exact 48-prefix reject set, normalization, pointer wrapping,
+alignment/page/canonical boundaries and both read fault sites. The selected
+RSI-first ordering is a bounded local policy and does not establish hardware
+priority when both operands are invalid. No MMIO rollback behavior is claimed.
+The dual-invalid winner is recorded as ISSUE-020. JIT/native admission is
+closed; Mac mini, SSH and physical validation remain in the shared final
+acceptance substage.
+
+```sh
+python3 tests/cpu/generate_stage2_cmps.py --check
+python3 -m unittest tests/cpu/test_stage2_cmps_generator.py
+cargo test -p od-testkit --offline cmps_
+cargo test -p od-runner --test fixture_v2 --offline cmps_cli_fixtures
+```
+
 ## Single-iteration LODS B/W/D/Q fixtures S2-18f
 
 Twenty-two literal schema v2 fixtures cover the bounded non-REP LODS slice:

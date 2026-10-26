@@ -160,6 +160,30 @@ hand-authored literal values only. Unmapped source errors remain harness
 errors, and a noncanonical source produces #GP(0) in this local profile.
 ISSUE-016 and ISSUE-019 remain open; no physical result is claimed.
 
+## CMPS B/W/D/Q — S2-18i local interpreter coverage
+
+The bounded Long64 profile admits bare `A6`, `66 A7`, bare `A7`, and
+effective REX.W + `A7`, with 64-bit addressing. It reads the complete element
+at pre-state DS:[RSI] before attempting ES:[RDI], computes CMP flags as
+`memory[RSI] - memory[RDI]`, and commits both DF-directed wrapping pointers,
+flags, RIP and retirement only after both reads succeed. All other GPRs and
+RAM are preserved. Two accesses occur even when RSI equals RDI. Canonical48
+faults from either address produce #GP(0); missing mapping, permission, and
+backend failures remain harness errors unless the backend reports an
+architectural fault. The RSI-first rule is local bounded-profile policy only;
+it is not hardware priority evidence for dual-invalid operands. MMIO rollback
+is not claimed. JIT/native are denied.
+
+The local matrix checks 6,144 full states and independent flags, 64 injected
+read-failure combinations, exact trace order and zero writes, 48 prefix
+rejects, REX.W/66 normalization, alias/overlap, alignment and page edges,
+pointer wrap, canonical start/crossing and budget/fault behavior. Exactly 33
+literal schema-v2 fixtures cover positive, unmapped, noncanonical, budget,
+normalization, and TEST composition outcomes. Their generator serializes
+literal expected values. ISSUE-020 tracks the unknown dual-invalid winner;
+ISSUE-016/019 remain open and physical/native checks are deferred to the shared
+final acceptance substage.
+
 S2-09 затем подтвердил три положительные hardware-layout MOV/memory программы
 на Mac mini: два повтора interpreter/native, full16/RSP/RIP, flags `0xcd7`,
 вся fixture memory и exact counts, ноль расхождений и стабильные повторы.
