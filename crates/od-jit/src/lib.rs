@@ -10,10 +10,12 @@ use od_isa::{DecodeError, FragmentState as CpuState, Instruction, Operation, dec
 pub mod allocator;
 pub mod arm64;
 pub mod block;
+pub mod block_emitter;
 pub mod emitter;
 pub mod ir;
 pub mod lowering;
 pub mod runtime;
+pub mod statepoints;
 
 const RIP_OFFSET: u32 = std::mem::offset_of!(CpuState, rip) as u32;
 const RFLAGS_OFFSET: u32 = std::mem::offset_of!(CpuState, rflags) as u32;

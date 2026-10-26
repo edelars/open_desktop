@@ -279,10 +279,10 @@ exit.
 
 Scalar helper ABI alias: `(operation: u32, lhs: u64, rhs: u64, old_rflags: u64,
 output_rflags: *mut u64) -> u32`. Operations: Add=1, Subtract=2, Compare=3;
-reserved status tags: Success=0, Unsupported=1, InvalidArgument=2. Это только
-calling contract; реализация helper и его arithmetic semantics появятся вместе
-с lowering, который его вызывает. По контракту helper не меняет state, RIP
-или budget, пишет только `output_rflags` при Success и не unwinds через ABI.
+reserved status tags: Success=0, Unsupported=1, InvalidArgument=2. Реализация
+`od-isa::integer_flags` и тонкий `od-jit` adapter добавлены в S3-11. Helper не
+меняет state, RIP или budget, пишет только `output_rflags` при Success и не
+unwinds через ABI.
 
 Generated ARM64 code следует AAPCS64: после helper call считать volatile
 `X0–X17`, `X30`, `NZCV` и caller-clobbered SIMD registers уничтоженными; не
@@ -446,13 +446,57 @@ JZ/JNZ теперь читают staged guest ZF и выбирают target/fall
 в отдельном staging context; generated entry возвращает
 `DATA_EFFECTS_UNCOMMITTED_V1`, не retire'ит инструкцию и не обновляет
 canonical `LongModeState`, guest budget или успешный `BlockComplete`. Helper
-call и branch selection не создают commit boundary между ними. S3-12 по-прежнему
-должен определить архитектурный commit/state recovery policy.
+call и branch selection не создают commit boundary между ними.
 
 Проверки включают literal flag vectors, comparison с interpreter, все бюджеты
 allocator 0..=4, helper-clobber/failed-status cases, CMP без GPR write, MOV
 preservation и native taken/not-taken JZ/JNZ. Это evidence для текущего W64
 slice, не полное RFLAGS/x86 equivalence и не физический x86 comparison.
+
+### S3-12: committed runtime state and host-PC metadata
+
+`block_emitter::emit_runtime_block` consumes a verifier-checked `Program` and
+the matching allocator `Allocation`. It emits the current W64 register-only
+profile into a runtime entry; unsupported operation shapes are rejected during
+emission. A private aligned frame stages four guest GPRs, flags and candidate
+RIP. Canonical `LongModeState` is updated only after the instruction's effects
+have succeeded. The commit sequence copies staged GPRs/flags/RIP and then
+updates `remaining_budget` and `retired_instructions`; its host range is marked
+`CommitInProgress` and inadmissible for snapshots. The following zero-length
+guest-boundary point records the completed commit separately.
+
+Before every included instruction, generated code checks enabled `stop_rip`,
+then acquire-loads cooperative STOP, then checks remaining budget. No fetch or
+instruction effect runs after one of these exits. Unsupported/NeedInterpreter
+terminals sample the same guards before returning at their target RIP;
+BlockComplete returns at the already committed final RIP. A Jcc selects its
+target/fallthrough into staged RIP as part of its final instruction commit;
+there is no observable exit between that selection and publication of the
+state. These are planned exits for this emitter, not proof of recovery at every
+possible host PC.
+
+`PcMap` stores checked, contiguous, aligned half-open host byte ranges, plus
+separate aligned guest commit-boundary points. Each range names either a fixed
+guest RIP or the canonical RIP at that runtime point, optional instruction
+index, phase and snapshot admissibility. The Jcc terminal transfer, its return
+stub and shared epilogue use canonical-RIP metadata because taken, fallthrough,
+and earlier planned exits can reach those ranges with different committed RIPs.
+Per-instruction guard/helper failure stubs retain their fixed faulting guest
+RIP. Helper call
+failure has an instruction-specific return stub and map range; it returns a
+host-only raw sentinel before current-instruction commit. The host wrapper uses
+the unchanged canonical RIP and map site to report the failure at the exact
+instruction, while earlier committed instructions and counts remain visible.
+The map is cloned into `PublishedCode` metadata and remains owned with the
+executable mapping. Safe `execute_block` requires production emitter
+provenance and matching entry RIP; test/custom-helper code stays unsafe.
+
+The metadata supports lookup of emitted bytes and attribution of planned
+helper failures. It does not make arbitrary host crashes, SIGSEGV/#PF, Rust
+panic/unwind, ABI violations or asynchronous/concurrent snapshots recoverable
+guest events. There are no memory effects or fault replay in this slice. Native
+ARM64 tests validate the generated register-only path and planned exits; they
+are not the S3-14 physical-x86 comparison.
 
 ## 6. Host и этапная приёмка
 

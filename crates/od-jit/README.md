@@ -126,8 +126,26 @@ S3-11 срез добавляет eager W64 CF/PF/AF/ZF/SF/OF через
 canonical guest state и retirement не меняются. Helper failures возвращают
 отдельный raw host-contract sentinel до чтения результата или branch selection.
 Native tests покрывают taken/not-taken JZ/JNZ, MOV flag preservation, CMP без
-GPR write и helper clobbers/status errors. S3-11 завершена; архитектурный
-commit и state recovery остаются в S3-12.
+GPR write и helper clobbers/status errors. S3-11 завершена.
+
+S3-12 добавляет `block_emitter::emit_runtime_block` и immutable `statepoints::PcMap`.
+Runtime entry использует отдельный staging frame и публикует GPR, flags, RIP,
+budget и retirement только после успешных effects каждой guest instruction.
+Jcc commit включает выбор target/fallthrough. На каждой внутренней границе
+guards проверяют stop RIP, cooperative STOP и budget именно в этом порядке.
+PC metadata покрывает emitted bytes aligned half-open ranges и хранит отдельные
+guest commit points. Ranges фиксируют конкретный RIP либо явно ссылаются на
+canonical RIP для общих branch-return/epilogue путей; helper failure stubs
+привязаны к точному uncommitted RIP.
+
+`od-host::PublishedCode::publish_block` хранит карту вместе с executable mapping.
+Safe block execution ограничен production helper provenance и проверенным entry
+RIP. Native tests покрывают committed prefix, failure attribution, planned
+normal exits и branches. PC maps не обещают восстановление произвольных host
+crashes, memory faults, ABI violations, panic или asynchronous snapshots; эти
+возможности остаются за пределами текущего runtime slice. Independent review
+исправлений прошёл без оставшихся замечаний; primary layout check остаётся за
+root task. См. подробности и evidence в JIT contract и плане этапа.
 
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).

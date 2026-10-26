@@ -19,6 +19,13 @@ pub enum ExecutableMemoryError {
 /// pointer is only valid while this owner remains alive.
 pub struct PublishedCode {
     region: MappedRegion,
+    block_metadata: Option<BlockMetadata>,
+}
+
+struct BlockMetadata {
+    pc_map: od_jit::statepoints::PcMap,
+    entry_rip: u64,
+    safe_entry: bool,
 }
 
 /// Compatibility name for the published executable mapping API.
@@ -109,6 +116,34 @@ impl PublishedCode {
     /// This safe API only publishes bytes. Calling arbitrary bytes remains
     /// unsafe and requires a separately verified entry contract.
     pub fn publish(code: &[u8]) -> Result<Self, ExecutableMemoryError> {
+        Self::publish_with_metadata(code, None)
+    }
+
+    /// Publishes a verifier-checked runtime block and keeps its immutable state
+    /// map attached to the executable owner for the mapping's whole lifetime.
+    pub fn publish_block(
+        block: &od_jit::block_emitter::EmittedRuntimeBlock,
+    ) -> Result<Self, ExecutableMemoryError> {
+        let code = block
+            .to_le_bytes()
+            .map_err(|_| ExecutableMemoryError::AllocationFailed)?;
+        if usize::try_from(block.pc_map().code_len()).ok() != Some(code.len()) {
+            return Err(ExecutableMemoryError::AllocationFailed);
+        }
+        Self::publish_with_metadata(
+            &code,
+            Some(BlockMetadata {
+                pc_map: block.pc_map().clone(),
+                entry_rip: block.entry_rip(),
+                safe_entry: block.safe_entry_provenance(),
+            }),
+        )
+    }
+
+    fn publish_with_metadata(
+        code: &[u8],
+        block_metadata: Option<BlockMetadata>,
+    ) -> Result<Self, ExecutableMemoryError> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             use std::ffi::c_void;
@@ -176,14 +211,103 @@ impl PublishedCode {
                 // invalidating it is required before its entry becomes visible.
                 sys_icache_invalidate(ptr.as_ptr().cast(), code.len());
             }
-            return Ok(Self { region });
+            return Ok(Self {
+                region,
+                block_metadata,
+            });
         }
 
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
             let _ = code;
+            let _ = block_metadata;
             Err(ExecutableMemoryError::UnsupportedPlatform)
         }
+    }
+
+    pub fn pc_map(&self) -> Option<&od_jit::statepoints::PcMap> {
+        self.block_metadata
+            .as_ref()
+            .map(|metadata| &metadata.pc_map)
+    }
+
+    /// Invoke only a runtime entry emitted with the production helper and
+    /// published together with its state map. The borrow of `self` keeps the
+    /// mapping and metadata alive through native execution and result lookup.
+    pub fn execute_block(
+        &self,
+        state: &mut od_isa::LongModeState,
+        initial_budget: u64,
+        stop_rip: Option<u64>,
+        stop_requested: &std::sync::atomic::AtomicU8,
+    ) -> Result<BlockExecutionResult, BlockExecutionError> {
+        let metadata = self
+            .block_metadata
+            .as_ref()
+            .ok_or(BlockExecutionError::NotRuntimeBlock)?;
+        if !metadata.safe_entry {
+            return Err(BlockExecutionError::UntrustedHelper);
+        }
+        if state.rip != metadata.entry_rip {
+            return Err(BlockExecutionError::EntryRipMismatch {
+                expected: metadata.entry_rip,
+                actual: state.rip,
+            });
+        }
+
+        let mut context = od_jit::runtime::RuntimeContextV1 {
+            state,
+            initial_budget,
+            stop_rip_enabled: u32::from(stop_rip.is_some()),
+            reserved: 0,
+            stop_rip: stop_rip.unwrap_or(0),
+            stop_requested: (stop_requested as *const std::sync::atomic::AtomicU8).cast(),
+            remaining_budget: initial_budget,
+            retired_instructions: 0,
+        };
+        // SAFETY: this mapping was created from the private emitted-block type,
+        // the production helper ABI is fixed, the state and atomic references
+        // outlive the call, and this borrow keeps the code/map owner alive.
+        let entry: od_jit::runtime::BlockEntry = unsafe { std::mem::transmute(self.as_ptr()) };
+        // SAFETY: all RuntimeContextV1 pointers are built from live references
+        // above and the entry provenance was checked before invocation.
+        let raw = unsafe { entry(&mut context) };
+        self.decode_block_result(
+            raw,
+            state.rip,
+            context.remaining_budget,
+            context.retired_instructions,
+        )
+    }
+
+    fn decode_block_result(
+        &self,
+        raw: u32,
+        state_rip: u64,
+        remaining_budget: u64,
+        retired_instructions: u64,
+    ) -> Result<BlockExecutionResult, BlockExecutionError> {
+        let metadata = self
+            .block_metadata
+            .as_ref()
+            .ok_or(BlockExecutionError::NotRuntimeBlock)?;
+        if raw == od_jit::runtime::RAW_HELPER_CONTRACT_FAILURE_V1 {
+            if metadata.pc_map.has_helper_failure_site(state_rip) {
+                return Err(BlockExecutionError::HelperContractFailure {
+                    guest_rip: state_rip,
+                    remaining_budget,
+                    retired_instructions,
+                });
+            }
+            return Err(BlockExecutionError::UnknownHelperFailureSite { state_rip });
+        }
+        let exit = od_jit::runtime::RuntimeExitTag::try_from(raw)
+            .map_err(BlockExecutionError::InvalidExitTag)?;
+        Ok(BlockExecutionResult {
+            exit,
+            remaining_budget,
+            retired_instructions,
+        })
     }
 
     /// Legacy constructor retained for existing `ExecutableMemory` callers.
@@ -203,6 +327,32 @@ impl PublishedCode {
             std::ptr::null()
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BlockExecutionResult {
+    pub exit: od_jit::runtime::RuntimeExitTag,
+    pub remaining_budget: u64,
+    pub retired_instructions: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockExecutionError {
+    NotRuntimeBlock,
+    UntrustedHelper,
+    EntryRipMismatch {
+        expected: u64,
+        actual: u64,
+    },
+    HelperContractFailure {
+        guest_rip: u64,
+        remaining_budget: u64,
+        retired_instructions: u64,
+    },
+    UnknownHelperFailureSite {
+        state_rip: u64,
+    },
+    InvalidExitTag(u32),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -537,10 +687,15 @@ mod tests {
         RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET, RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET,
         RuntimeContextV1, RuntimeExitTag,
     };
-    use std::sync::atomic::{AtomicU32, AtomicUsize};
+    use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize};
 
     static JIT_TEST_LOCK: Mutex<()> = Mutex::new(());
     static DATA_EFFECT_HELPER_STATUS: AtomicU32 = AtomicU32::new(0);
+    static RUNTIME_HELPER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static RUNTIME_HELPER_FAIL_AT: AtomicUsize = AtomicUsize::new(0);
+    static RUNTIME_HELPER_FAILURE_STATUS: AtomicU32 = AtomicU32::new(2);
+    static RUNTIME_HELPER_STOP_ON_CALL: AtomicUsize = AtomicUsize::new(0);
+    static RUNTIME_HELPER_STOP_BYTE: AtomicPtr<AtomicU8> = AtomicPtr::new(std::ptr::null_mut());
 
     fn jit_test_lock() -> std::sync::MutexGuard<'static, ()> {
         JIT_TEST_LOCK
@@ -1068,6 +1223,120 @@ mod tests {
         )
     }
 
+    fn emit_runtime_block_for_code(
+        code: &[u8],
+        base_rip: u64,
+        register_homes: u8,
+    ) -> od_jit::block_emitter::EmittedRuntimeBlock {
+        let view = CodeView::new(base_rip, code).unwrap();
+        let built = block::build_block(
+            view,
+            base_rip,
+            od_isa::memory::AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        let LoweringOutcome::Program(lowered) = lowering::lower(&built).unwrap() else {
+            panic!("runtime block test expects a nonempty admitted prefix");
+        };
+        let helper_boundaries: Vec<_> = lowered
+            .program
+            .operations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, operation)| {
+                matches!(operation, Operation::Integer { .. })
+                    .then_some(HelperBoundaryPosition::BeforeOperation(index))
+            })
+            .collect();
+        let allocation = Allocation::build(
+            &lowered.program,
+            AllocatorConfig {
+                register_homes,
+                reserved_prefix_bytes: 112,
+            },
+            &helper_boundaries,
+        )
+        .unwrap();
+        od_jit::block_emitter::emit_runtime_block(&lowered.program, &allocation).unwrap()
+    }
+
+    unsafe fn emit_runtime_block_for_code_with_helper(
+        code: &[u8],
+        base_rip: u64,
+        register_homes: u8,
+        helper: ArithmeticFlagsHelper,
+    ) -> od_jit::block_emitter::EmittedRuntimeBlock {
+        let view = CodeView::new(base_rip, code).unwrap();
+        let built = block::build_block(
+            view,
+            base_rip,
+            od_isa::memory::AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        let LoweringOutcome::Program(lowered) = lowering::lower(&built).unwrap() else {
+            panic!("runtime helper test expects an admitted prefix");
+        };
+        let helper_boundaries: Vec<_> = lowered
+            .program
+            .operations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, operation)| {
+                matches!(operation, Operation::Integer { .. })
+                    .then_some(HelperBoundaryPosition::BeforeOperation(index))
+            })
+            .collect();
+        let allocation = Allocation::build(
+            &lowered.program,
+            AllocatorConfig {
+                register_homes,
+                reserved_prefix_bytes: 112,
+            },
+            &helper_boundaries,
+        )
+        .unwrap();
+        // SAFETY: delegated to this function's caller, who invokes the result
+        // only with a helper that meets `emit_runtime_block_with_helper`'s ABI.
+        unsafe {
+            od_jit::block_emitter::emit_runtime_block_with_helper(
+                &lowered.program,
+                &allocation,
+                helper,
+            )
+        }
+        .unwrap()
+    }
+
+    unsafe extern "C" fn runtime_test_helper(
+        operation: u32,
+        lhs: u64,
+        rhs: u64,
+        old_rflags: u64,
+        output: *mut u64,
+    ) -> u32 {
+        let call = RUNTIME_HELPER_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+        if call == RUNTIME_HELPER_FAIL_AT.load(Ordering::Relaxed) {
+            return RUNTIME_HELPER_FAILURE_STATUS.load(Ordering::Relaxed);
+        }
+        // SAFETY: generated code supplies a live frame-local output slot.
+        let status = unsafe {
+            od_jit::runtime::arithmetic_flags_helper_adapter(
+                operation, lhs, rhs, old_rflags, output,
+            )
+        };
+        if status == 0 && call == RUNTIME_HELPER_STOP_ON_CALL.load(Ordering::Relaxed) {
+            let pointer = RUNTIME_HELPER_STOP_BYTE.load(Ordering::Acquire);
+            if !pointer.is_null() {
+                // SAFETY: the test stores a pointer to its live stack AtomicU8
+                // while holding JIT_TEST_LOCK and resets it before returning.
+                unsafe { (*pointer).store(1, Ordering::Release) };
+            }
+        }
+        status
+    }
+
     unsafe extern "C" fn data_effect_flags_helper(
         operation: u32,
         lhs: u64,
@@ -1399,6 +1668,366 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn runtime_entry_commits_instruction_and_published_code_owns_pc_map() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x5000;
+        let immediate = 0xFEDC_BA98_7654_3210_u64;
+        let mut bytes = vec![0x48, 0xB8]; // MOV RAX, imm64
+        bytes.extend_from_slice(&immediate.to_le_bytes());
+        let block = emit_runtime_block_for_code(&bytes, base_rip, 2);
+        let published = PublishedCode::publish_block(&block).unwrap();
+        let map = published.pc_map().unwrap();
+        assert_eq!(map.code_len() as usize, block.to_le_bytes().unwrap().len());
+        assert!(map.lookup(0).is_some());
+        assert!(map.lookup(map.code_len() - 4).is_some());
+        assert_eq!(map.lookup(map.code_len()), None);
+        assert_eq!(map.lookup(2), None);
+        assert_eq!(map.boundaries().len(), 1);
+
+        let mut state = od_isa::LongModeState::default();
+        state.gpr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        state.rip = base_rip;
+        state.rflags = 0xA5A5_F0F0_5A5A_0A0A;
+        let preserved = state.clone();
+        let stop = AtomicU8::new(0);
+
+        state.rip = base_rip + 1;
+        let wrong_entry_state = state.clone();
+        let mismatch = published.execute_block(&mut state, 1, None, &stop);
+        assert_eq!(
+            mismatch,
+            Err(BlockExecutionError::EntryRipMismatch {
+                expected: base_rip,
+                actual: base_rip + 1,
+            })
+        );
+        assert_eq!(state, wrong_entry_state);
+
+        state.rip = base_rip;
+        let result = published.execute_block(&mut state, 1, None, &stop).unwrap();
+        assert_eq!(result.exit, RuntimeExitTag::BlockComplete);
+        assert_eq!(result.remaining_budget, 0);
+        assert_eq!(result.retired_instructions, 1);
+        assert_eq!(state.gpr[0], immediate);
+        assert_eq!(&state.gpr[1..], &preserved.gpr[1..]);
+        assert_eq!(state.rip, base_rip + bytes.len() as u64);
+        assert_eq!(state.rflags, preserved.rflags);
+    }
+
+    #[test]
+    fn runtime_boundary_checks_stop_address_stop_and_budget_in_order() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x6000;
+        let mut bytes = vec![0x48, 0xB8];
+        bytes.extend_from_slice(&0x1111_u64.to_le_bytes());
+        bytes.extend_from_slice(&[0x48, 0xB9]);
+        bytes.extend_from_slice(&0x2222_u64.to_le_bytes());
+        let block = emit_runtime_block_for_code(&bytes, base_rip, 2);
+        let published = PublishedCode::publish_block(&block).unwrap();
+        let stop = AtomicU8::new(0);
+
+        let mut state = od_isa::LongModeState::default();
+        state.rip = base_rip;
+        stop.store(1, Ordering::Release);
+        let result = published.execute_block(&mut state, 0, Some(base_rip), &stop);
+        assert_eq!(result.unwrap().exit, RuntimeExitTag::StopAddress);
+        assert_eq!(state.rip, base_rip);
+
+        stop.store(1, Ordering::Release);
+        let result = published.execute_block(&mut state, 0, None, &stop);
+        assert_eq!(result.unwrap().exit, RuntimeExitTag::StopRequested);
+        assert_eq!(state.rip, base_rip);
+
+        stop.store(0, Ordering::Release);
+        let result = published.execute_block(&mut state, 0, None, &stop);
+        assert_eq!(result.unwrap().exit, RuntimeExitTag::BudgetExhausted);
+        assert_eq!(state.rip, base_rip);
+
+        // With one instruction of budget, the first MOV commits. At the next
+        // guest boundary stop_rip is checked before the exhausted budget.
+        let result = published
+            .execute_block(&mut state, 1, Some(base_rip + 10), &stop)
+            .unwrap();
+        assert_eq!(result.exit, RuntimeExitTag::StopAddress);
+        assert_eq!(result.remaining_budget, 0);
+        assert_eq!(result.retired_instructions, 1);
+        assert_eq!(state.gpr[0], 0x1111);
+        assert_eq!(state.gpr[1], 0);
+        assert_eq!(state.rip, base_rip + 10);
+
+        state.rip = base_rip;
+        state.gpr[0] = 0;
+        let result = published.execute_block(&mut state, 1, None, &stop).unwrap();
+        assert_eq!(result.exit, RuntimeExitTag::BudgetExhausted);
+        assert_eq!(result.remaining_budget, 0);
+        assert_eq!(result.retired_instructions, 1);
+        assert_eq!(state.gpr[0], 0x1111);
+        assert_eq!(state.rip, base_rip + 10);
+    }
+
+    #[test]
+    fn helper_failure_after_prefix_keeps_exact_commit_rip_and_map_site() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x7000;
+        let mut bytes = vec![0x48, 0xB8];
+        bytes.extend_from_slice(&10_u64.to_le_bytes());
+        bytes.extend_from_slice(&[0x48, 0x03, 0xC1]); // ADD RAX, RCX
+        bytes.extend_from_slice(&[0x48, 0x2B, 0xD3]); // SUB RDX, RBX
+        bytes.extend_from_slice(&[0x48, 0x3B, 0xC2]); // CMP RAX, RDX
+        let stop = AtomicU8::new(0);
+
+        for (failure_call, status, committed, expected_rax, expected_rdx, failure_rip) in [
+            (2, 1, 2, 15, 20, base_rip + 13),
+            (3, u32::MAX, 3, 15, 17, base_rip + 16),
+        ] {
+            RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+            RUNTIME_HELPER_FAIL_AT.store(failure_call, Ordering::Relaxed);
+            RUNTIME_HELPER_FAILURE_STATUS.store(status, Ordering::Relaxed);
+            RUNTIME_HELPER_STOP_ON_CALL.store(0, Ordering::Relaxed);
+            let block = unsafe {
+                emit_runtime_block_for_code_with_helper(&bytes, base_rip, 2, runtime_test_helper)
+            };
+            assert!(!block.safe_entry_provenance());
+            let published = PublishedCode::publish_block(&block).unwrap();
+            let mut state = od_isa::LongModeState::default();
+            state.rip = base_rip;
+            state.rflags = 0x202;
+            state.gpr[1] = 5;
+            state.gpr[2] = 20;
+            state.gpr[3] = 3;
+            let mut context = RuntimeContextV1 {
+                state: &mut state,
+                initial_budget: 10,
+                stop_rip_enabled: 0,
+                reserved: 0,
+                stop_rip: 0,
+                stop_requested: (&stop as *const AtomicU8).cast(),
+                remaining_budget: u64::MAX,
+                retired_instructions: u64::MAX,
+            };
+            let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+            // SAFETY: generated code has private emitter provenance and the
+            // injected test helper honors the scalar AAPCS64 contract.
+            let raw = unsafe { entry(&mut context) };
+
+            assert_eq!(raw, RAW_HELPER_CONTRACT_FAILURE_V1);
+            assert_eq!(state.rip, failure_rip);
+            assert_eq!(state.gpr[0], expected_rax);
+            assert_eq!(state.gpr[2], expected_rdx);
+            assert_eq!(state.rflags, 0x206);
+            assert_eq!(context.retired_instructions, committed);
+            assert_eq!(context.remaining_budget, 10 - committed);
+            assert!(
+                published
+                    .pc_map()
+                    .unwrap()
+                    .has_helper_failure_site(failure_rip)
+            );
+            assert_eq!(
+                published.decode_block_result(
+                    raw,
+                    state.rip,
+                    context.remaining_budget,
+                    context.retired_instructions,
+                ),
+                Err(BlockExecutionError::HelperContractFailure {
+                    guest_rip: failure_rip,
+                    remaining_budget: 10 - committed,
+                    retired_instructions: committed,
+                })
+            );
+            let mut rejected_state = od_isa::LongModeState::default();
+            rejected_state.rip = base_rip;
+            assert_eq!(
+                published.execute_block(&mut rejected_state, 10, None, &stop),
+                Err(BlockExecutionError::UntrustedHelper)
+            );
+        }
+        RUNTIME_HELPER_FAIL_AT.store(0, Ordering::Relaxed);
+        RUNTIME_HELPER_FAILURE_STATUS.store(2, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn runtime_samples_stop_set_by_successful_helper_after_commit() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x7800;
+        let mut bytes = vec![0x48, 0xB8];
+        bytes.extend_from_slice(&10_u64.to_le_bytes());
+        bytes.extend_from_slice(&[0x48, 0x03, 0xC1]); // ADD RAX, RCX
+        bytes.extend_from_slice(&[0x48, 0x2B, 0xD3]); // SUB RDX, RBX
+        RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+        RUNTIME_HELPER_FAIL_AT.store(0, Ordering::Relaxed);
+        RUNTIME_HELPER_STOP_ON_CALL.store(1, Ordering::Relaxed);
+        let stop = AtomicU8::new(0);
+        RUNTIME_HELPER_STOP_BYTE.store((&stop as *const AtomicU8).cast_mut(), Ordering::Release);
+        let block = unsafe {
+            emit_runtime_block_for_code_with_helper(&bytes, base_rip, 2, runtime_test_helper)
+        };
+        let published = PublishedCode::publish_block(&block).unwrap();
+        let mut state = od_isa::LongModeState::default();
+        state.rip = base_rip;
+        state.gpr[1] = 5;
+        state.gpr[2] = 20;
+        state.gpr[3] = 3;
+        let mut context = RuntimeContextV1 {
+            state: &mut state,
+            initial_budget: 5,
+            stop_rip_enabled: 0,
+            reserved: 0,
+            stop_rip: 0,
+            stop_requested: (&stop as *const AtomicU8).cast(),
+            remaining_budget: u64::MAX,
+            retired_instructions: u64::MAX,
+        };
+        let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+        // SAFETY: the test helper follows the block emitter's scalar ABI and
+        // sets a live AtomicU8 only after successful first arithmetic helper.
+        let raw = unsafe { entry(&mut context) };
+        RUNTIME_HELPER_STOP_BYTE.store(std::ptr::null_mut(), Ordering::Release);
+        RUNTIME_HELPER_STOP_ON_CALL.store(0, Ordering::Relaxed);
+
+        assert_eq!(raw, RuntimeExitTag::StopRequested as u32);
+        assert_eq!(stop.load(Ordering::Acquire), 1);
+        assert_eq!(state.rip, base_rip + 13);
+        assert_eq!(state.gpr[0], 15);
+        assert_eq!(state.gpr[2], 20);
+        assert_eq!(context.retired_instructions, 2);
+        assert_eq!(context.remaining_budget, 3);
+        assert_eq!(
+            published.decode_block_result(
+                raw,
+                state.rip,
+                context.remaining_budget,
+                context.retired_instructions,
+            ),
+            Ok(BlockExecutionResult {
+                exit: RuntimeExitTag::StopRequested,
+                remaining_budget: 3,
+                retired_instructions: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn runtime_jcc_commits_selected_rip_and_retirement_together() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x7900;
+        let stop = AtomicU8::new(0);
+
+        for opcode in [0x74, 0x75] {
+            for (lhs, rhs, zero) in [(u64::MAX, 1, true), (1, 1, false)] {
+                let code = [0x48, 0x03, 0xC1, opcode, 0xFB]; // ADD; JZ/JNZ to entry
+                let block = emit_runtime_block_for_code(&code, base_rip, 2);
+                let published = PublishedCode::publish_block(&block).unwrap();
+                let mut state = od_isa::LongModeState::default();
+                state.rip = base_rip;
+                state.gpr[0] = lhs;
+                state.gpr[1] = rhs;
+                state.gpr[2] = 0xCAFE;
+                let old_flags = state.rflags;
+                let expected_taken = if opcode == 0x74 { zero } else { !zero };
+                let expected_rip = if expected_taken {
+                    base_rip
+                } else {
+                    base_rip + 5
+                };
+                let result = published.execute_block(&mut state, 2, None, &stop).unwrap();
+
+                assert_eq!(result.exit, RuntimeExitTag::BlockComplete);
+                assert_eq!(result.remaining_budget, 0);
+                assert_eq!(result.retired_instructions, 2);
+                assert_eq!(state.rip, expected_rip);
+                assert_eq!(state.gpr[0], lhs.wrapping_add(rhs));
+                assert_eq!(state.gpr[2], 0xCAFE);
+                assert_eq!(
+                    state.rflags,
+                    od_isa::integer_flags::updated_arithmetic_flags(
+                        od_isa::integer_flags::ArithmeticFlagOperation::Add,
+                        lhs,
+                        rhs,
+                        old_flags,
+                    )
+                );
+                assert!(
+                    published
+                        .pc_map()
+                        .unwrap()
+                        .boundaries()
+                        .iter()
+                        .any(|boundary| matches!(
+                            boundary.rip,
+                            od_jit::statepoints::GuestRipBoundary::BranchSelection { .. }
+                        ))
+                );
+                let pc_map = published.pc_map().unwrap();
+                let committed_boundary = pc_map.boundaries().last().unwrap();
+                assert_eq!(
+                    pc_map
+                        .lookup(committed_boundary.host_offset)
+                        .unwrap()
+                        .guest_rip,
+                    od_jit::statepoints::GuestRipSource::CanonicalState
+                );
+                assert_eq!(
+                    pc_map
+                        .ranges()
+                        .iter()
+                        .filter(|range| {
+                            range.guest_rip == od_jit::statepoints::GuestRipSource::CanonicalState
+                                && range.phase == od_jit::statepoints::StatePhase::Exit
+                        })
+                        .count(),
+                    2,
+                    "branch transfer and return stub use the selected committed RIP"
+                );
+                assert_eq!(
+                    pc_map.ranges().last().unwrap().guest_rip,
+                    od_jit::statepoints::GuestRipSource::CanonicalState,
+                    "shared epilogue may receive exits at different guest RIPs"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_unsupported_and_need_interpreter_exits_keep_prefix_state() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x7A00;
+        let mut mov = vec![0x48, 0xB8];
+        mov.extend_from_slice(&0x1234_5678_u64.to_le_bytes());
+        let mut unsupported_bytes = mov.clone();
+        unsupported_bytes.push(0x90); // decoded but not admitted by S0-09
+        let mut unresolved_branch_bytes = mov;
+        unresolved_branch_bytes.extend_from_slice(&[0x74, 0x20]); // forward target outside view
+        let stop = AtomicU8::new(0);
+
+        for (bytes, expected_exit) in [
+            (&unsupported_bytes[..], RuntimeExitTag::Unsupported),
+            (
+                &unresolved_branch_bytes[..],
+                RuntimeExitTag::NeedInterpreter,
+            ),
+        ] {
+            let block = emit_runtime_block_for_code(bytes, base_rip, 2);
+            let published = PublishedCode::publish_block(&block).unwrap();
+            let mut state = od_isa::LongModeState::default();
+            state.rip = base_rip;
+            state.gpr[1] = 0xBEEF;
+            state.rflags = 0xA5A5_F0F0_5A5A_0A0A;
+            let original_flags = state.rflags;
+            let result = published.execute_block(&mut state, 2, None, &stop).unwrap();
+
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.remaining_budget, 1);
+            assert_eq!(result.retired_instructions, 1);
+            assert_eq!(state.gpr[0], 0x1234_5678);
+            assert_eq!(state.gpr[1], 0xBEEF);
+            assert_eq!(state.rflags, original_flags);
+            assert_eq!(state.rip, base_rip + 10);
         }
     }
 

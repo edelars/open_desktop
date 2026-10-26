@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10 и S3-11 завершены; S3-01 в работе.
+**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11 и S3-12 завершены; S3-01 в работе.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -138,7 +138,7 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-09 | Простой allocator baseline | S3-03, S3-08 |
 | [x] | S3-10 | Lowering первого integer subset | S3-05, S3-06, S3-09 |
 | [x] | S3-11 | Корректные eager flags | S3-10 |
-| [ ] | S3-12 | State points и PC maps | S3-11 |
+| [x] | S3-12 | State points и PC maps | S3-11 |
 | [ ] | S3-13 | Первый сквозной запуск одного блока | S3-07, S3-12 |
 | [ ] | S3-14 | Тройное сравнение register-only | S3-13 |
 | [ ] | S3-15 | Dispatcher, budget и переходы | S3-14 |
@@ -301,7 +301,24 @@ S3-11 выполнена: выделен общий `od-isa::integer_flags` help
 2. Восстановить точное состояние при helper/fallback/normal exits; не записывать next RIP до проверки faulting операции.
 3. Проверить maps после relocation и связывание metadata с lifetime executable block. Padding/prologue/epilogue не выдавать за отдельные guest instructions.
 
-**Готово:** диагностический host PC однозначно связан с нужным guest boundary либо служебным кодом; snapshots на planned exits точны. Произвольный host crash не заявляется восстанавливаемым guest fault.
+S3-12 implementation добавляет production runtime emitter для текущего W64
+register-only среза, commit markers, checked half-open PC ranges и отдельные
+committed guest-boundary points. `PublishedCode::publish_block` держит карту с
+mapping lifetime; безопасный host wrapper принимает только production-helper
+provenance. Native tests проверяют normal exits, внутренние stop/budget guards,
+JZ/JNZ selection и helper failure после committed prefix. Canonical state
+обновляется лишь после успешных effects; helper failure оставляет текущую
+инструкцию на её guest RIP. Общие branch-return/epilogue ranges указывают на
+canonical RIP, тогда как site-specific failure stubs хранят фиксированный RIP;
+reversed ranges отвергаются валидацией карты. Независимый review прошёл без
+оставшихся замечаний; workspace/package checks и primary-checkout layout check
+успешны.
+
+Ограничение: ranges описывают emitted host bytes и planned exits, а не дают
+универсальное восстановление для произвольного host PC, crash, panic, ABI
+violation или asynchronous snapshot. Memory/fault replay отсутствует. Нативный
+test evidence относится к production ARM64 block path на настроенном allow-jit
+host; физическое сравнение с x86 относится к S3-14.
 
 ### S3-13. Подключить один блок к CLI
 

@@ -50,3 +50,13 @@ mapping должен жить на всём протяжении generated call.
 runtime tags и same-build offsets, но не зависит от `od-host` и не владеет
 публикацией кода. Текущий `CompiledFragment` по-прежнему выполняет только
 legacy `FragmentState` path.
+
+S3-12 adds `PublishedCode::publish_block` and a safe `execute_block` wrapper for
+production-emitted register-only blocks. The mapping owner retains immutable
+`PcMap` metadata for its full lifetime; entry RIP and production-helper
+provenance are checked before the generated call. Runtime tests cover planned
+STOP/budget/stop-RIP exits, JZ/JNZ, committed prefixes and helper-failure
+attribution. The map does not recover arbitrary host faults, panics, ABI
+violations or asynchronous snapshots. Independent review found no remaining
+concrete defects; the primary-checkout layout check remains with the root task.
+See the JIT contract and stage plan for exact scope/evidence.
