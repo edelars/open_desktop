@@ -318,3 +318,13 @@ bounded FCMOV operand gate and raw 10-byte/tag copy when CF is clear. Both
 operands are preflighted before CF is observed. The 51,200 success matrix, the
 21,504 invalid class/tag matrix, exact decoder neighbors and execution-boundary
 checks are local interpreter evidence. Native/JIT remain closed.
+
+S2-30bx extends FCMOVNB to exact bare `DB C0..C7`, matching the indexed source
+and self-index rules already used by FCMOVB. Nonzero indices preflight TOP and
+the indexed source before CF; self-index checks TOP only. CF=0 copies raw bytes
+and tag, while CF=1 preserves them. The 363,520 success and 161,280 reject
+snapshots, indexed schema streams, literal CLI fixtures and JIT denial are
+local-only evidence. The former C1-only extent is historical; native/JIT remain
+closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30bx-bounded-indexed-fcmovnb-st0-sti-db-c0c7),
+[plan](../../docs/plans/STAGE_2.md#s2-30bx-indexed-bare-fcmovnb-st0-sti), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bx-bounded-indexed-fcmovnb-sti).

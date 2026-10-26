@@ -9748,3 +9748,42 @@ formatting, layout validation, `git diff --check`, and the Linux x86_64
 `od-x86-runner` cross-target check passed. The latter confirms the native
 admission table compiles with FCMOVB/FCMOVNB denied. No physical/native checks
 were run.
+
+## S2-30bx — bounded indexed `FCMOVNB ST(0), ST(i)`
+
+The exact bare Long64 decoder form is now `DB C0..C7`; its ModR/M low bits
+select the source. This reuses the bounded FCMOV preflight and raw-copy
+executor. Indices 1–7 validate physical old TOP and `(TOP+i)&7` before CF,
+including CF=1. Self-index validates TOP only, preserves its payload and tag
+for either CF value, and ignores unrelated physical slots. The existing
+FCW/FSW gates and Normal-or-exact-signed-Zero operand domain remain unchanged.
+FIP, RIP and retirement are the only machine state updates. Memory forms,
+exceptions, native execution and JIT remain outside the profile.
+
+Local interpreter coverage asserts 363,520 success snapshots comparing full
+x87 state, RFLAGS and RIP (51,200 for each nonzero index and 5,120 for
+self-index), and 161,280 invalid class/tag snapshots comparing complete
+machine state (21,504 per nonzero index and 10,752 for self-index). It compares each
+FCMOVNB index against matching FCMOVB with inverted CF and checks independent
+expected snapshots. Tests cover every indexed status pattern, FCW/FSW rejects,
+missing x87 state, prefixes, fetch/truncation, STOP and budget boundaries.
+The schema admits exactly 19 streams: `dbc0..dbc7` with budget 1, each followed
+by `dfe0` with budget 2, `dbc1dbc1dfe0` with budget 3, and the existing two
+producer streams with budget 6. Eight new literal fixtures cover DB C0 and
+DB C2..C7, including both self-index CF paths, TOP wrap, signed Zero and both
+Normal/Zero transfer directions. Together with the existing C1 fixture, the
+runner checks all indices, full x87 snapshots and JIT denial. The former
+DB C1-only S2-30bw scope is historical and superseded.
+
+Validation passed: `cargo test -p od-isa --lib fcmovnb --offline` (3/3),
+`cargo test -p od-testkit --lib
+x87_fcmovnb_schema_admits_only_nineteen_exact_streams_and_reject_profiles
+--offline` (1/1), `cargo test -p od-testkit --offline` (181/181), and
+`cargo test -p od-runner --test fixture_v2
+local_x87_fcmovnb_snapshots_and_denies_jit --offline` (1/1). `cargo check
+--workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+`python3 tools/check_layout.py`, and `git diff --check` also passed. No physical
+x86, native runtime or JIT execution was performed; ISSUE-019 remains open.
+Independent review identified and corrected the success-snapshot scope wording;
+no code or runtime finding remained. Documentation links and diff checks passed,
+and Graphify was refreshed after the final source and document edits.

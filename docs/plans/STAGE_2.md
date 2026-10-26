@@ -241,6 +241,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30bu | Bare `DA C1` FCMOVB ST(0), ST(1), both participants preflighted; exact raw conditional copy, local C1=0 gate, native/JIT closed | S2-30an |
 | [x] | S2-30bv | Bare `DA C0..C7` FCMOVB ST(0), ST(i), indexed source preflight, self-index checks only TOP; exact raw conditional copy, local C1=0 gate, native/JIT closed | S2-30bu |
 | [x] | S2-30bw | Bare `DB C1` FCMOVNB ST(0), ST(1), same strict preflight gate, exact raw copy when CF=0, native/JIT closed | S2-30bv |
+| [x] | S2-30bx | Bare `DB C0..C7` FCMOVNB ST(0), ST(i), indexed source preflight with self-index TOP-only, exact raw copy when CF=0, native/JIT closed | S2-30bw |
 | [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
@@ -6130,3 +6131,30 @@ success matrix. Schema allows only `dbc1`, `dbc1dfe0`, `dbc1dbc1dfe0`,
 1/2/3/6/6. Literal fixtures cover taken/untaken, distinct tags, signed zero,
 TOP wrap, repeat, both producer streams, invalid source under CF=1, invalid
 destination, C1 and bad FCW. JIT remains denied; ISSUE-019 remains open.
+
+#### S2-30bx. Indexed bare `FCMOVNB ST(0), ST(i)`
+
+Admit exactly unprefixed Long64 `DB C0..C7`, carrying the low ModR/M bits as
+`i`. Require present x87 state, FCW `0x037f`, and `FSW & 0x82ff == 0`.
+Preflight old physical TOP and `(old_TOP+i)&7` before reading CF for `i>0`;
+for `i=0`, validate only old TOP and do not inspect any other physical slot.
+Each required operand must be Valid-tagged canonical Normal or Zero-tagged
+exact signed binary80 zero, even when CF=1. CF=0 copies all ten source bytes
+and its tag to TOP; CF=1 leaves operands unchanged. Preserve all state except
+FIP, RIP and retirement. Keep C1=0 and C0/C2/C3 preservation policy. No
+memory form, exception delivery, native execution or JIT lowering is included.
+
+Acceptance is 363,520 success snapshots comparing full x87 state, RFLAGS and
+RIP (51,200 per `i=1..7`, 5,120 for self-index `i=0`), plus 161,280 invalid
+class/tag snapshots comparing complete machine state (21,504 per nonzero
+index, 10,752 for self-index). The complement property compares
+each indexed FCMOVNB form with the matching FCMOVB form under inverted CF,
+and an independent expected-state snapshot is checked. Per-index environment,
+missing-x87, fetch, prefix, STOP and budget boundaries are covered. The schema
+admits exactly 19 streams: each `dbc0..dbc7` with budget 1 and each followed
+by `dfe0` with budget 2, plus `dbc1dbc1dfe0` and the two existing producer
+streams with budgets 3/6/6. Literal CLI fixtures cover all eight indices,
+including both self-index CF outcomes, TOP wrap, Normal↔Zero copies, signed
+zero, invalid-source CF=1 and indexed environment rejection. Runner snapshots
+check interpreter results and deny JIT. The former S2-30bw DB C1-only limit
+is historical and superseded here. ISSUE-019 remains open.

@@ -2390,15 +2390,24 @@ fn x87_fcmovb_schema_admits_only_indexed_exact_streams_and_operand_rejects() {
 }
 
 #[test]
-fn x87_fcmovnb_schema_admits_only_five_exact_streams_and_reject_profiles() {
+fn x87_fcmovnb_schema_admits_only_nineteen_exact_streams_and_reject_profiles() {
     let base = x87_fixture().fixture;
-    for (program, budget) in [
-        ("dbc1", 1),
-        ("dbc1dfe0", 2),
-        ("dbc1dbc1dfe0", 3),
-        ("d9e8d9e8d9e0dbf1dbc1dfe0", 6),
-        ("d9e8d9e0d9e8dbf1dbc1dfe0", 6),
-    ] {
+    let mut programs: Vec<(String, u64)> = (0xc0u8..=0xc7)
+        .flat_map(|modrm| {
+            let instruction = format!("db{modrm:02x}");
+            [(instruction.clone(), 1), (format!("{instruction}dfe0"), 2)]
+        })
+        .collect();
+    programs.extend(
+        [
+            ("dbc1dbc1dfe0", 3),
+            ("d9e8d9e8d9e0dbf1dbc1dfe0", 6),
+            ("d9e8d9e0d9e8dbf1dbc1dfe0", 6),
+        ]
+        .map(|(program, budget)| (program.to_owned(), budget)),
+    );
+    assert_eq!(programs.len(), 19);
+    for (program, budget) in programs {
         let mut fixture = base.clone();
         fixture.case_id = format!("x87_fcmovnb_{program}");
         fixture.instruction_budget = budget;
@@ -2409,15 +2418,15 @@ fn x87_fcmovnb_schema_admits_only_five_exact_streams_and_reject_profiles() {
             .iter_mut()
             .find(|r| r.region_id == "code")
             .unwrap();
-        code.initial_bytes_hex = program.into();
+        code.initial_bytes_hex = program.clone();
         code.length = length;
         code.comparison_mask_hex = "ff".repeat(length as usize);
         assert!(
-            Fixture::from_json(&fixture.to_json().expect(program)).is_ok(),
+            Fixture::from_json(&fixture.to_json().expect(&program)).is_ok(),
             "{program}"
         );
     }
-    for program in ["66dbc1", "48dbc1", "9bdbc1", "dbc0", "dbc2", "dbc1dfe1"] {
+    for program in ["66dbc1", "48dbc1", "9bdbc1", "dbc8", "dbd0", "dbc1dfe1"] {
         let mut fixture = base.clone();
         fixture.instruction_budget = 1;
         let length = (program.len() / 2) as u32;
@@ -2454,6 +2463,64 @@ fn x87_fcmovnb_schema_admits_only_five_exact_streams_and_reject_profiles() {
         code.length = 2;
         code.comparison_mask_hex = "ffff".into();
         assert!(Fixture::from_json(&fixture.to_json().unwrap()).is_ok());
+    }
+    for modrm in 0xc0u8..=0xc7 {
+        let mut fixture = base.clone();
+        fixture.instruction_budget = 1;
+        fixture.stop_rip = None;
+        fixture.expected_exit = ExpectedExit::Unsupported;
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("db{modrm:02x}");
+        code.length = 2;
+        code.comparison_mask_hex = "ffff".into();
+        assert!(
+            Fixture::from_json(&fixture.to_json().unwrap()).is_ok(),
+            "i={}",
+            modrm & 7
+        );
+        let mut missing = fixture.clone();
+        missing.initial_state.x87 = None;
+        assert!(missing.validate().is_err(), "missing x87 i={}", modrm & 7);
+
+        let mut rejected = base.clone();
+        rejected.instruction_budget = 1;
+        rejected.stop_rip = None;
+        rejected.expected_exit = ExpectedExit::Unsupported;
+        let x87 = rejected.initial_state.x87.as_mut().unwrap();
+        x87.control_word = HexU64(0x037f);
+        x87.status_word = HexU64(0);
+        let top = ((x87.status_word.get() >> 11) & 7) as usize;
+        let source = (top + usize::from(modrm & 7)) & 7;
+        let mut tag_word = x87.tag_word.get();
+        x87.registers[top] = "0000000000000080ff3f".into();
+        tag_word &= !(3 << (top * 2));
+        let invalid_slot = if modrm == 0xc0 { (top + 1) & 7 } else { source };
+        tag_word = (tag_word & !(3 << (invalid_slot * 2))) | (3 << (invalid_slot * 2));
+        x87.tag_word = HexU64(tag_word);
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("db{modrm:02x}");
+        code.length = 2;
+        code.comparison_mask_hex = "ffff".into();
+        if modrm == 0xc0 {
+            assert!(
+                rejected.validate().is_err(),
+                "self-index inspected unrelated tag"
+            );
+        } else {
+            assert!(
+                Fixture::from_json(&rejected.to_json().unwrap()).is_ok(),
+                "i={}",
+                modrm & 7
+            );
+        }
     }
 }
 

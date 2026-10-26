@@ -7431,3 +7431,29 @@ schema accepts exactly `dbc1`, `dbc1dfe0`, `dbc1dbc1dfe0`,
 under ISSUE-019. See [plan](../plans/STAGE_2.md#s2-30bw-bare-fcmovnb-st0-st1),
 [report](../reports/STAGE_2_REPORT.md#s2-30bw--bounded-fcmovnb-st0-st1), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bw-bounded-fcmovnb-st0-st1).
+
+The former DB C1-only register extent is historical and superseded by
+[S2-30bx](#local-s2-30bx-bounded-indexed-fcmovnb-st0-sti-db-c0c7).
+
+## Local S2-30bx: bounded indexed `FCMOVNB ST(0), ST(i)` (`DB C0..C7`)
+
+Admit exact unprefixed Long64 `DB C0..C7`; the low ModR/M bits select `i`.
+Require present x87 state, FCW `0x037f`, and `FSW & 0x82ff == 0`. For `i>0`,
+preflight physical old TOP and `(old_TOP+i)&7` before reading RFLAGS.CF,
+including the untaken path. For `i=0`, validate only old TOP; unrelated tags
+and payloads remain opaque. Every required operand is Valid-tagged canonical
+Normal or Zero-tagged exact signed binary80 zero. CF=0 copies ten raw source
+bytes and the source tag into TOP; CF=1 preserves payloads and tags. Preserve
+all other state except FIP, RIP and retirement. Existing FCMOVB remains
+unchanged. Memory forms, exception delivery, native execution and JIT are
+excluded.
+
+Local interpreter coverage contains 363,520 success snapshots comparing full
+x87 state, RFLAGS and RIP, and 161,280 invalid class/tag snapshots comparing
+complete machine state across all indices. Independent expected-state checks
+and the CF-complement property are included. Schema acceptance is
+limited to 19 exact streams; eight literal fixtures cover DB C0..C7 and the
+runner checks snapshots while denying JIT. No physical x86 evidence is
+claimed; ISSUE-019 remains open. See [plan](../plans/STAGE_2.md#s2-30bx-indexed-bare-fcmovnb-st0-sti),
+[report](../reports/STAGE_2_REPORT.md#s2-30bx--bounded-indexed-fcmovnb-st0-sti), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bx-bounded-indexed-fcmovnb-sti).

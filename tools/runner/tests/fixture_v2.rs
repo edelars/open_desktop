@@ -114,7 +114,7 @@ const FCMOVB_REJECTS: [&[u8]; 7] = [
         "../../../tests/fixtures/x86/stage2/s2_30bv_fcmovb_st0_bad_fcw_reject.case.json"
     ),
 ];
-const FCMOVNB_FIXTURES: [&[u8]; 6] = [
+const FCMOVNB_FIXTURES: [&[u8]; 14] = [
     include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_taken_negative_zero.case.json"
     ),
@@ -129,6 +129,14 @@ const FCMOVNB_FIXTURES: [&[u8]; 6] = [
     include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_producer_plus1_above_minus1.case.json"
     ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bx_fcmovnb_st0_self_cf1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bx_fcmovnb_st0_self_cf0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bx_fcmovnb_st2_signed_zero.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bx_fcmovnb_st3_signed_zero.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bx_fcmovnb_st4_signed_zero.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bx_fcmovnb_st5_signed_zero.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bx_fcmovnb_st6_signed_zero.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bx_fcmovnb_st7_signed_zero.case.json"),
 ];
 const FCMOVNB_REJECTS: [&[u8]; 4] = [
     include_bytes!(
@@ -7224,6 +7232,7 @@ fn local_x87_fcmovnb_snapshots_and_denies_jit() {
         );
         let before = loaded.fixture.initial_state.x87.as_ref().unwrap();
         let after = observed.state.x87.as_ref().unwrap();
+        let code = &loaded.fixture.memory[0].initial_bytes_hex;
         if loaded.fixture.case_id == "s2_30bw_fcmovnb_taken_negative_zero" {
             assert_eq!(after.registers[0], before.registers[1]);
             assert_eq!(after.tag_word.get() & 3, (before.tag_word.get() >> 2) & 3);
@@ -7263,8 +7272,23 @@ fn local_x87_fcmovnb_snapshots_and_denies_jit() {
                 "copied source must retain Valid tag"
             );
         }
-        let code = &loaded.fixture.memory[0].initial_bytes_hex;
-        let fcmov_offset = (code.rfind("dbc1").unwrap() / 2) as u64;
+        if loaded.fixture.case_id.starts_with("s2_30bx_fcmovnb_") {
+            let index = u8::from_str_radix(&code[2..4], 16).unwrap() & 7;
+            let top = ((before.status_word.get() >> 11) & 7) as u8;
+            let source = (top + index) & 7;
+            let mut expected = before.clone();
+            if loaded.fixture.initial_state.rflags.get() & 1 == 0 {
+                expected.registers[usize::from(top)] =
+                    before.registers[usize::from(source)].clone();
+                let tag = (before.tag_word.get() >> (u32::from(source) * 2)) & 3;
+                let tag_word = expected.tag_word.get();
+                let mask = 3u64 << (u32::from(top) * 2);
+                expected.tag_word = HexU64((tag_word & !mask) | (tag << (u32::from(top) * 2)));
+            }
+            expected.instruction_pointer = loaded.fixture.initial_state.rip;
+            assert_eq!(after, &expected, "{}", loaded.fixture.case_id);
+        }
+        let fcmov_offset = (code.rfind("db").unwrap() / 2) as u64;
         assert_eq!(
             after.instruction_pointer.get(),
             loaded.fixture.initial_state.rip.get() + fcmov_offset

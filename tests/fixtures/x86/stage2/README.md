@@ -3697,3 +3697,16 @@ negative zero, TOP=7 wrap, repeat, both real producer streams, invalid source
 under CF=1, invalid destination, C1, and bad FCW. Runner snapshots check
 interpreter behavior and JIT denial. All evidence is local; ISSUE-019 remains
 open.
+
+### S2-30bx bounded indexed `FCMOVNB ST(0), ST(i)`
+
+The schema admits exactly `dbc0..dbc7` (budget 1) and each corresponding
+`dbc0dfe0..dbc7dfe0` status-observation stream (budget 2), plus the three
+existing repeat/producer streams, for 19 total. Eight new literal fixtures
+cover indexed self-moves under both CF values and source indices 2 through 7;
+the existing DB C1 fixture completes index coverage. They include TOP wrap,
+Normal-to-Zero and Zero-to-Normal copies, signed zero and malformed unrelated
+slots for self-index. Runner snapshots verify each index and deny JIT. The
+local interpreter also checks invalid class/tag pairs with CF=1, per-index
+environment and execution boundaries, and the FCMOVNB/FCMOVB CF-complement
+property. This is local evidence only; ISSUE-019 remains open.
