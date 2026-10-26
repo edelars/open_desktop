@@ -9051,3 +9051,37 @@ completed at 4,904 nodes, 9,827 edges and 195 communities; its existing
 native runtime or physical x86 checks were performed; ISSUE-019 remains open.
 Independent gpt-6.1-sol medium follow-up review found no remaining defects in
 the SNaN gate, fixtures or contract documentation.
+
+## S2-30ay — canonical binary80 subnormal through bounded FCHS/FABS
+
+Only `bounded_x87_sign_st0_source` was extended: `(Special, Subnormal)` is
+accepted when the existing binary80 classifier reports canonical subnormal
+(E=0, J=0, nonzero fraction). Existing FCW `0x037f`, `FSW & 0x80ff == 0`,
+Normal/zero/infinity/QNaN/SNaN handling and all other gates remain unchanged.
+FCHS flips only the sign bit; FABS clears only it. The full fraction, Special
+tag, TOP, C0/C2/C3 and other state remain unchanged, C1 clears, and no DE/UE/
+PE/IE is added. Pseudo-denormal, unnormal, pseudo-special and wrong tag/class
+inputs continue to reject before commit. The pre-existing vector with bytes
+`[0,0,0,0,0,0,0,0,1,0]` is correctly labeled as unnormal (E=1,J=0).
+
+The full-state 2,048-case matrix crosses both operations, both signs, all eight
+TOP values, all 16 prior condition-code combinations and fractions `{1,
+1<<62, 0x0123456789abcdef, (1<<63)-1}`. It checks complete state, exact raw
+payload, no added exception flags, repeated FABS, double-FCHS, neighboring
+malformed classes, wrong tags, invalid/missing state and execution-boundary
+atomicity. The raw m80 composition executes FLD m80fp → FCHS/FABS → FSTP m80fp
+→ FNSTSW AX, checking bytes after load, sign operation and store for both
+source signs/opcodes, no DE and memory canaries. Four hand-authored bare
+schema-v2 fixtures seed the raw subnormal in ST(0), run with budget one and
+check exact state plus JIT denial; the additional wrong-tag fixture rejects
+atomically. No schema, decoder, classifier or JIT/native admission was changed.
+
+Validation passed: `cargo fmt --all -- --check`; all six
+`cargo test -p od-isa --offline fchs_and_fabs` cases; the focused raw m80
+composition; both focused `od-runner --test fixture_v2` success/JIT-denial and
+wrong-tag tests; `cargo check --workspace --all-targets --offline`;
+`python3 tools/check_layout.py`; `git diff --check`; and `graphify update .`
+(4,913 nodes, 9,842 edges, 182 communities). Graphify reported its existing
+`include/open_desktop/host_abi.h` extraction warning and skipped unsupported
+file types. No Mac mini, SSH, native runtime or physical x86 checks were
+performed. ISSUE-019 remains open for combined host/physical acceptance.

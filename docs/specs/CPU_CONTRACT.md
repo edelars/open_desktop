@@ -6841,3 +6841,34 @@ Local interpreter/project-fixture evidence does not establish physical x86
 behavior. ISSUE-019 remains open. See the [plan](../plans/STAGE_2.md#s2-30ax-admit-canonical-binary80-signalingnan-to-bounded-fchsfabs),
 [report](../reports/STAGE_2_REPORT.md#s2-30ax--canonical-binary80-signalingnan-through-bounded-fchsfabs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30ax-canonical-binary80-signalingnan-fchsfabs).
+
+<a id="local-s2-30ay-canonical-subnormal-fchs-fabs"></a>
+
+## Local S2-30ay: canonical binary80 subnormal through bounded `FCHS/FABS`
+
+The shared `FCHS/FABS` source gate additionally admits only
+`(Special, Subnormal)` for canonical binary80 E=0, J=0 and nonzero 63-bit
+fraction, with either sign. Existing FCW `0x037f` and `FSW & 0x80ff == 0`
+gates and Normal/zero/infinity/QNaN/SNaN admissions are unchanged. FCHS toggles
+only raw sign bit 7 of byte 9; FABS clears only that bit. Both preserve all
+fraction bits, Special tag, TOP, C0/C2/C3 and all other state, clear C1, set
+FIP, advance RIP by two and retire once without adding DE/UE/PE/IE. E=0,J=1
+pseudo-denormals, unnormals, pseudo-special encodings and wrong tags remain
+unsupported atomically. No classifier, schema, decode, other gate, JIT or native
+admission changes.
+
+The 2,048-case interpreter matrix crosses both operations, both signs, all
+TOPs, all 16 prior condition-code combinations and fractions `{1, 1<<62,
+0x0123456789abcdef, (1<<63)-1}`. It checks full state and canaries,
+double-FCHS restoration, repeated-FABS idempotence, raw fraction preservation,
+no new exception flags, malformed neighbors, wrong tags/environment and
+execution-boundary atomicity. A raw `FLD m80fp` → FCHS/FABS → `FSTP m80fp` →
+`FNSTSW AX` unit composition inspects bytes after load/operation/store for both
+signs and operations and verifies DE remains clear. Four exact schema-v2
+budget-one fixtures seed canonical raw binary80 subnormals directly in ST(0);
+they check both signs/operations and JIT denial. A wrong-tag fixture rejects
+atomically. Local interpreter/project-fixture evidence does not establish
+physical x86 behavior; ISSUE-019 remains open. See the
+[plan](../plans/STAGE_2.md#s2-30ay-admit-canonical-binary80-subnormal-to-bounded-fchsfabs),
+[report](../reports/STAGE_2_REPORT.md#s2-30ay--canonical-binary80-subnormal-through-bounded-fchsfabs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30ay-canonical-binary80-subnormal-fchsfabs).

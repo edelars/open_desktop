@@ -1406,6 +1406,21 @@ contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30ax-canonical-snan-fc
 [plan](../../../../docs/plans/STAGE_2.md#s2-30ax-admit-canonical-binary80-signalingnan-to-bounded-fchsfabs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30ax--canonical-binary80-signalingnan-through-bounded-fchsfabs).
 
+### S2-30ay canonical binary80 subnormal FCHS/FABS
+
+Four handwritten schema-v2 fixtures seed raw canonical binary80 subnormals
+(E=0, J=0, nonzero fraction) directly in ST(0), then run one bare `D9 E0`
+or `D9 E1` with budget one. They cover both source signs and operations; the
+runner checks exact fraction/sign bytes, full state and JIT denial. A separate
+wrong-tag fixture confirms zero retirement and unchanged state. An od-isa raw
+`FLD m80fp` → sign operation → `FSTP m80fp` → `FNSTSW AX` unit composition
+checks bytes after load, operation and store without m32/m64 conversion and
+confirms no DE. Local fixtures are not physical x86 evidence; ISSUE-019 remains
+open. See the [CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30ay-canonical-subnormal-fchs-fabs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30ay-admit-canonical-binary80-subnormal-to-bounded-fchsfabs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30ay--canonical-binary80-subnormal-through-bounded-fchsfabs).
+
 ### S2-30z x87 schema and fixture coverage
 
 The schema admits only bare `D9 E1` for the FABS slice. The positive literal

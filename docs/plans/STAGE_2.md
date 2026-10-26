@@ -214,6 +214,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30au | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical signed infinity; native/JIT closed | S2-30as |
 | [x] | S2-30av | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit only Special-tagged canonical signed binary80 infinity; native/JIT closed | S2-30ap, S2-30at |
 | [x] | S2-30aw | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit only Special-tagged canonical binary80 QuietNaN, preserving all payload bits; native/JIT closed | S2-30av, S2-31ah |
+| [x] | S2-30ay | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit Special-tagged canonical binary80 subnormals with raw payload preservation; native/JIT closed | S2-30ax |
 | [x] | S2-30aa | Bare `D9 E4` FTST, bounded canonical-Normal ST(0) comparison with zero; native closed | S2-30z |
 | [x] | S2-30ab | Bare `D8 D1` FCOM ST(1), exact finite canonical-Normal compare with status-only commit; native closed | S2-30aa |
 | [x] | S2-30ac | Bare `D8 D0+i` FCOM ST(i), exact finite canonical-Normal compare for all register indices; native closed | S2-30ab |
@@ -2290,6 +2291,32 @@ budget one; a wrong-tag CLI fixture verifies atomic rejection. All four
 success fixtures are denied by JIT. Keep ISSUE-019 open; defer Mac mini, SSH,
 native runtime and physical
 x86 acceptance to the combined final substage.
+
+#### S2-30ay. Admit canonical binary80 subnormal to bounded `FCHS/FABS`
+
+Extend only `bounded_x87_sign_st0_source`: preserve FCW `0x037f`,
+`FSW & 0x80ff == 0`, canonical-Normal Valid, exact Zero-tagged signed zero,
+and Special-tagged canonical infinity, QNaN and SNaN. Additionally admit only
+`(Special, Subnormal)` for canonical binary80 E=0, J=0 and nonzero 63-bit
+fraction, with either sign. FCHS toggles only the sign bit; FABS clears only
+that bit. Preserve all fraction bits, Special tag, TOP, C0/C2/C3 and all other
+state, clear C1 and add no DE/UE/PE/IE. Pseudo-denormal E=0,J=1,
+unnormal, pseudo-special and wrong tags remain atomically unsupported. Do not
+change the classifier, schema, decoder, other source gates or JIT/native
+admission.
+
+Cover both operations × both signs × all eight TOP values × 16 prior condition
+codes × fractions `{1, 1<<62, 0x0123456789abcdef, (1<<63)-1}` with full-state
+expectations and canaries. Include double-FCHS/repeated-FABS, adjacent classes,
+wrong tags, invalid/missing x87 state and fetch/truncation/STOP/budget/fault
+atomicity. A raw `FLD m80fp` → FCHS/FABS → `FSTP m80fp` → `FNSTSW AX`
+composition inspects bytes after load, operation and store for both signs and
+opcodes and confirms no DE. Four budget-one bare schema-v2 fixtures seed raw
+subnormals in ST(0), check both operations/signs and JIT denial; a wrong-tag
+fixture checks atomic rejection. Correct the prior malformed-vector comment:
+`[0,0,0,0,0,0,0,0,1,0]` is E=1,J=0 unnormal, not subnormal. Keep ISSUE-019
+open and defer Mac mini/SSH/native/physical acceptance to the combined final
+substage.
 
 #### S2-30z. Bare bounded `FABS` (sign-bit-clear local slice)
 

@@ -103,6 +103,38 @@ const FCHS_FABS_SNAN_FIXTURES: [(&[u8], bool, bool); 4] = [
 ];
 const FCHS_SNAN_WRONG_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ax_fchs_snan_wrong_tag.case.json");
+const FCHS_FABS_SUBNORMAL_FIXTURES: [(&[u8], bool, bool); 4] = [
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30ay_fchs_positive_subnormal.case.json"
+        ),
+        true,
+        false,
+    ),
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30ay_fchs_negative_subnormal.case.json"
+        ),
+        true,
+        true,
+    ),
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30ay_fabs_positive_subnormal.case.json"
+        ),
+        false,
+        false,
+    ),
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30ay_fabs_negative_subnormal.case.json"
+        ),
+        false,
+        true,
+    ),
+];
+const FCHS_SUBNORMAL_WRONG_TAG: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ay_fchs_subnormal_wrong_tag.case.json");
 const FTST_ZERO_COMPOSITION: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30aq_fld_ftst_fnstsw.case.json");
 const FST_STI_ZERO_COMPOSITION: &[u8] =
@@ -1867,6 +1899,46 @@ fn local_x87_bare_snan_sign_operations_preserve_payloads_and_deny_jit() {
         let (_, jit_result) = run(fixture, "jit", 4);
         assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
     }
+}
+
+#[test]
+fn local_x87_bare_subnormal_sign_operations_preserve_fraction_and_deny_jit() {
+    for (fixture, fchs, negative) in FCHS_FABS_SUBNORMAL_FIXTURES {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 1);
+        let observed = snapshot(&result);
+        let transformed = if fchs && negative {
+            "efcdab89674523010000"
+        } else if fchs {
+            "efcdab89674523010080"
+        } else {
+            "efcdab89674523010000"
+        };
+        let mut expected = input.fixture.initial_state.clone();
+        expected.rip = HexU64(0x0010_0002);
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.registers[0] = transformed.into();
+        expected_x87.status_word = HexU64(0);
+        expected_x87.instruction_pointer = HexU64(0x0010_0000);
+        assert_eq!(observed.state, expected, "FCHS={fchs}, negative={negative}");
+        assert_eq!(observed.memory.len(), 1);
+        assert_eq!(
+            observed.memory[0].bytes_hex,
+            if fchs { "d9e0" } else { "d9e1" }
+        );
+
+        let (_, jit_result) = run(fixture, "jit", 4);
+        assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
+fn local_x87_fchs_subnormal_wrong_tag_fixture_is_atomic_in_the_cli_runner() {
+    let (input, result) = run(FCHS_SUBNORMAL_WRONG_TAG, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    assert_eq!(snapshot(&result).state, input.fixture.initial_state);
 }
 
 #[test]
