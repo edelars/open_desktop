@@ -9654,3 +9654,24 @@ ISSUE-019: two canonical-Normal FABS/FCHS cases with historical SF|IE, and one
 Special-tagged canonical subnormal FST/FSTP ST(i) case. They are unrelated to
 FNOP. No Mac mini, SSH, native runtime, or physical x86 check was run. ISSUE-019
 remains open. See the [plan](../plans/STAGE_2.md#s2-30bs-bare-fnop-with-a-bounded-environment-gate), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30bs-bounded-bare-fnop-d9-d0), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bs-bounded-fnop).
+## S2-30bt — bounded bare FXAM
+
+The local interpreter now admits exact bare Long64 `D9 E5` for Valid-tagged
+canonical Normal or Zero-tagged exact signed zero at physical old TOP, under
+FCW `0x037f` and clean `FSW & 0x80ff`. It replaces C0/C1/C2/C3 with Normal
+`0x0400` or Zero `0x4000`, plus C1 for a negative source; TOP and all other
+state are retained and FIP records old RIP. FTST admission was not widened.
+The 5,120-state success matrix (four Normal representatives: minimum normal,
+1, 1+ULP and maximum finite, plus exact Zero) and 10,752 distinct class/tag
+rejection product, seven
+exact schema streams, seven producer/repeat/signed-result fixtures, five
+literal rejects, and explicit JIT denial provide local evidence only.
+
+Validation passed: `cargo test -p od-isa fxam_ --offline` (three focused
+tests, including the 10,752-case rejection matrix), `cargo test -p od-testkit
+x87_fxam_schema --offline`, and `cargo test -p od-runner --test fixture_v2
+local_x87_fxam --offline`. Formatting, workspace check, layout validation and
+`git diff --check` passed. No Mac mini, SSH, native runtime, or physical x86 checks were
+performed; ISSUE-019 remains open. See [plan](../plans/STAGE_2.md#s2-30bt-bounded-bare-fxam-normal-and-signed-zero-classification),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30bt-bounded-bare-fxam-d9-e5),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bt-bounded-fxam).

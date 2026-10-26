@@ -105,6 +105,28 @@ const FNOP_REJECT_FIXTURES: [&[u8]; 2] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bs_fnop_forbidden_es_b.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bs_fnop_invalid_fcw.case.json"),
 ];
+const FXAM_FIXTURES: [&[u8]; 7] = [
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bt_fxam_negative_normal_wrap.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bt_fxam_negative_normal_fnstsw.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bt_fxam_repeat_negative_normal.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bt_fxam_fld1_producer.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bt_fxam_fldz_producer.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bt_fxam_fld1_fchs_producer.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bt_fxam_fldz_fchs_producer.case.json"),
+];
+const FXAM_REJECT_FIXTURES: [&[u8]; 5] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bt_fxam_wrong_tag_reject.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bt_fxam_empty_reject.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bt_fxam_special_reject.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bt_fxam_es_b_reject.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bt_fxam_bad_fcw_reject.case.json"),
+];
 const FFREE_STI_ENV_REJECT: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_30br_ffree_st7_environment_reject.case.json"
 );
@@ -6961,6 +6983,64 @@ fn local_x87_fnop_preserves_full_snapshot_and_denies_jit() {
         assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
     }
     for bytes in FNOP_REJECT_FIXTURES {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let (_, result) = run(bytes, "interpreter", 4);
+        assert_eq!(count(&result), 0);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert_eq!(snapshot(&result).state, loaded.fixture.initial_state);
+    }
+}
+
+#[test]
+fn local_x87_fxam_classifies_bounded_normal_and_zero_and_denies_jit() {
+    for (bytes, (expected_status, expected_ip)) in FXAM_FIXTURES.into_iter().zip([
+        (0x3e00, 0x0010_0000),
+        (0x3e00, 0x0010_0000),
+        (0x3e00, 0x0010_0002),
+        (0x3c00, 0x0010_0002),
+        (0x7800, 0x0010_0002),
+        (0x3e00, 0x0010_0004),
+        (0x7a00, 0x0010_0004),
+    ]) {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let initial = &loaded.fixture.initial_state;
+        let (_, result) = run(bytes, "interpreter", 0);
+        let observed = snapshot(&result);
+        assert_eq!(count(&result), loaded.fixture.instruction_budget);
+        assert_eq!(
+            observed.state.rip.get(),
+            initial.rip.get() + u64::from(loaded.fixture.memory[0].length)
+        );
+        let after = observed.state.x87.as_ref().unwrap();
+        assert_eq!(after.status_word.get(), expected_status);
+        assert_eq!(after.instruction_pointer.get(), expected_ip);
+        assert_eq!(
+            after.control_word,
+            initial.x87.as_ref().unwrap().control_word
+        );
+        assert_eq!(
+            after.data_pointer,
+            initial.x87.as_ref().unwrap().data_pointer
+        );
+        assert_eq!(after.last_opcode, initial.x87.as_ref().unwrap().last_opcode);
+        if loaded.fixture.case_id.contains("fnstsw") || loaded.fixture.case_id.contains("producer")
+        {
+            assert_eq!(
+                observed.state.gpr[0].get() & 0xffff,
+                u64::from(expected_status)
+            );
+        }
+        if loaded.fixture.case_id.contains("wrap")
+            || loaded.fixture.case_id.contains("fnstsw")
+            || loaded.fixture.case_id.contains("repeat")
+        {
+            assert_eq!(after.registers[7], "0000000000000080ffbf");
+            assert_eq!(after.tag_word.get() >> 14 & 3, 0);
+        }
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    }
+    for bytes in FXAM_REJECT_FIXTURES {
         let loaded = Fixture::from_json(bytes).unwrap();
         let (_, result) = run(bytes, "interpreter", 4);
         assert_eq!(count(&result), 0);

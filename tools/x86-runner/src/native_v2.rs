@@ -569,6 +569,7 @@ fn admission_with_tracee_memory(
             | Operation::FfreeSti { .. }
             | Operation::Fabs
             | Operation::Ftst
+            | Operation::Fxam
             | Operation::Frndint
             | Operation::FstM32FpRax
             | Operation::FstpM32FpRax

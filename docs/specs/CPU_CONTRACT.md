@@ -7340,3 +7340,8 @@ unchanged. Exact schema streams are `d9d0`, `d9d0dfe0`,
 state, all-Empty state, repeated FNOP, FFREE→FNOP→FLD1 composition, forbidden
 ES|B, invalid FCW, and JIT denial. This is local interpreter evidence only;
 native and physical x86 behavior remain unverified under ISSUE-019.
+# Local S2-30bt: bounded bare FXAM (`D9 E5`)
+
+The local Long64 interpreter admits only unprefixed `D9 E5` when x87 state is present, FCW is `0x037f`, `FSW & 0x80ff == 0`, and physical old TOP contains either a Valid-tagged canonical Normal binary80 value or a Zero-tagged exact signed zero. Normal yields CC `0x0400`; zero yields `0x4000`; C1 is additionally set to the operand sign. All four condition-code bits are replaced with `(old_FSW & !0x4700) | cc`. The remaining status/control words, TOP, tags, eight raw cells, FDP/FOP and all non-x87 machine state are preserved. FIP receives old RIP; RIP advances by two and retirement increments once.
+
+All other tags/classes, malformed payloads and environment failures reject without mutation. Empty and Special FXAM encodings, exception delivery, pending state, JIT and native execution are outside this contract. This local slice does not change the separate FTST source gate and does not establish physical x86 behavior. See [S2-30bt plan](../plans/STAGE_2.md#s2-30bt-bounded-bare-fxam-normal-and-signed-zero-classification), [report](../reports/STAGE_2_REPORT.md#s2-30bt--bounded-bare-fxam), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bt-bounded-fxam).

@@ -3644,3 +3644,14 @@ include TOP=7/C1=1 with opaque mixed cells, all-Empty raw canaries, repeated
 FNOP, and `FFREE ST(7)→FNOP→FLD1→FNSTSW`. They are local interpreter inputs;
 the runner checks snapshots and JIT denial. No native or physical x86 evidence
 is claimed, and ISSUE-019 remains open.
+
+### S2-30bt bounded FXAM
+
+Seven exact schema-v2 success streams cover bare FXAM, FNSTSW, repeated FXAM,
+FLD1/FLDZ producers, and signed results after FCHS. The direct fixture uses
+negative Normal at TOP=7; producer fixtures assert FSW `0x3c00` (FLD1),
+`0x7800` (FLDZ), `0x3e00` (negative Normal after FCHS), and `0x7a00`
+(negative zero after FCHS). Five literal rejects cover wrong tag, Empty,
+Special, ES|B, and invalid FCW. Local runner assertions check full snapshots,
+FIP and JIT denial. These are local results only; native/physical x86 behavior
+remains open under ISSUE-019.

@@ -632,6 +632,49 @@ fn x87_fnop_schema_admits_only_the_four_bounded_streams() {
 }
 
 #[test]
+fn x87_fxam_schema_admits_only_the_seven_requested_streams() {
+    let base = x87_fixture().fixture;
+    for (stream, budget) in [
+        ("d9e5", 1),
+        ("d9e5dfe0", 2),
+        ("d9e5d9e5dfe0", 3),
+        ("d9e8d9e5dfe0", 3),
+        ("d9eed9e5dfe0", 3),
+        ("d9e8d9e0d9e5dfe0", 4),
+        ("d9eed9e0d9e5dfe0", 4),
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("local_fxam_{stream}");
+        fixture.instruction_budget = budget;
+        let length = (stream.len() / 2) as u32;
+        fixture.stop_rip = Some(HexU64(0x1000 + u64::from(length)));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = length;
+        code.initial_bytes_hex = stream.into();
+        code.comparison_mask_hex = "ff".repeat(length as usize);
+        fixture.validate().unwrap();
+    }
+    for stream in [
+        "9bd9e5", "66d9e5", "f2d9e5", "f3d9e5", "2ed9e5", "d9e4", "d9e6", "d9e5d9e5",
+    ] {
+        let mut fixture = base.clone();
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (stream.len() / 2) as u32;
+        code.initial_bytes_hex = stream.into();
+        code.comparison_mask_hex = "ff".repeat(stream.len() / 2);
+        assert!(fixture.validate().is_err(), "{stream}");
+    }
+}
+
+#[test]
 fn fld_m32_m64_budget_one_normal_unsupported_rejects_oe_only_status() {
     for (width, opcode, normal_bytes) in [(4, "d900", "0000803f"), (8, "dd00", "000000000000f03f")]
     {

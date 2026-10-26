@@ -725,6 +725,13 @@ impl Fixture {
                 "d9e0" => ("d9e0", 2),
                 "d9e1" => ("d9e1", 2),
                 "d9e4" => ("d9e4", 2),
+                "d9e5" => ("d9e5", 2),
+                "d9e5dfe0" => ("d9e5dfe0", 4),
+                "d9e5d9e5dfe0" => ("d9e5d9e5dfe0", 6),
+                "d9e8d9e5dfe0" => ("d9e8d9e5dfe0", 6),
+                "d9eed9e5dfe0" => ("d9eed9e5dfe0", 6),
+                "d9e8d9e0d9e5dfe0" => ("d9e8d9e0d9e5dfe0", 8),
+                "d9eed9e0d9e5dfe0" => ("d9eed9e0d9e5dfe0", 8),
                 "ded9" => ("ded9", 2),
                 "dae9" => ("dae9", 2),
                 "dae9dfe0" => ("dae9dfe0", 4),
@@ -1369,6 +1376,17 @@ impl Fixture {
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     x87.control_word.get() != 0x037f || x87.status_word.get() & 0x80ff != 0
                 });
+            let is_fxam_environment_rejected = code_bytes == "d9e5"
+                && self.stop_rip.is_none()
+                && self.expected_exit == ExpectedExit::Unsupported
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    x87.control_word.get() != 0x037f
+                        || x87.status_word.get() & 0x80ff != 0
+                        || x87.tag_word.get() >> (2 * (((x87.status_word.get() >> 11) & 7) as u32))
+                            & 3
+                            != 0
+                });
             let is_ffree_fld_st0_rejected = code_bytes == "ddc0d9c0dfe0"
                 && self.stop_rip.is_none()
                 && self.expected_exit == ExpectedExit::Unsupported
@@ -1379,10 +1397,14 @@ impl Fixture {
                 "d9fcdfe0dbe2" => 3,
                 "ddc0d9c0dfe0" => 3,
                 "ddc0d9f7d9e8dfe0" => 4,
-                "d9d0" => 1,
+                "d9d0" | "d9e5" => 1,
                 "d9d0dfe0" => 2,
                 "d9d0d9d0dfe0" => 3,
                 "ddc7d9d0d9e8dfe0" => 4,
+                "d9e5dfe0" => 2,
+                "d9e5d9e5dfe0" => 3,
+                "d9e8d9e5dfe0" | "d9eed9e5dfe0" => 3,
+                "d9e8d9e0d9e5dfe0" | "d9eed9e0d9e5dfe0" => 4,
                 "d910d900dfe0dbe2" | "dd10dd00dfe0dbe2" => 4,
                 "d900d9e0d910dfe0" | "d900d9e1d910dfe0" => 4,
                 "d900d9e4dfe0" | "d900ddd1dfe0" | "d900ddd9dfe0" | "d910d9e0dfe0"
@@ -1445,6 +1467,7 @@ impl Fixture {
                     || is_fcomi_source_rejected
                     || is_ffree_environment_rejected
                     || is_fnop_environment_rejected
+                    || is_fxam_environment_rejected
                     || is_ffree_fld_st0_rejected
                 {
                     self.stop_rip.is_some()

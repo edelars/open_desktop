@@ -487,6 +487,8 @@ pub enum Operation {
     Fabs,
     /// Bare `D9 E4` FTST, comparing canonical-Normal ST(0) with zero.
     Ftst,
+    /// Bare `D9 E5` FXAM, classifying a canonical Normal or signed zero ST(0).
+    Fxam,
     /// Bare `D9 FC` FRNDINT in the bounded PC64/finite Normal profile.
     Frndint,
     /// Bare `D9 18` FSTP m32fp at [RAX], bounded finite profile.
@@ -1296,6 +1298,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xe0 => Operation::Fchs,
                     0xe1 => Operation::Fabs,
                     0xe4 => Operation::Ftst,
+                    0xe5 => Operation::Fxam,
                     0xfc => Operation::Frndint,
                     _ => return Err(self.unsupported(opcode)),
                 }
@@ -2985,6 +2988,8 @@ mod tests {
                     Ok(Operation::Fincstp)
                 } else if second == 0xe4 {
                     Ok(Operation::Ftst)
+                } else if second == 0xe5 {
+                    Ok(Operation::Fxam)
                 } else if second == 0xfc {
                     Ok(Operation::Frndint)
                 } else {
@@ -3231,6 +3236,7 @@ mod tests {
             (&[0xd9, 0xe0][..], Operation::Fchs),
             (&[0xd9, 0xe1][..], Operation::Fabs),
             (&[0xd9, 0xe4][..], Operation::Ftst),
+            (&[0xd9, 0xe5][..], Operation::Fxam),
             (&[0xd9, 0xe8][..], Operation::Fld1),
             (&[0xd9, 0xee][..], Operation::Fldz),
             (&[0xd9, 0xf6][..], Operation::Fdecstp),
