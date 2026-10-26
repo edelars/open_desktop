@@ -9886,3 +9886,35 @@ worktree pointer `.git` as an unmapped root file and two broken links to ignored
 oracle manifests absent from this isolated worktree; those artifacts and links
 exist in the shared checkout. No native or physical execution is claimed;
 ISSUE-019 remains open.
+
+## S2-30cc — bounded bare `FCMOVBE ST(0), ST(1)`
+
+Added exact unprefixed Long64 `DA D1`. The interpreter reuses the existing
+bounded FCMOV participant preflight for physical TOP and TOP+1 and performs the
+raw ten-byte/tag copy exactly when integer CF or ZF is set. It preflights both
+cells even when both flags are clear, requires FCW `0x037f` and
+`FSW & 0x82ff == 0`, and otherwise preserves x87 and integer state except FIP,
+RIP and retirement. All other DA encodings and prefixes remain outside this
+admission; JIT is denied.
+
+Local ISA tests cover 51,200 success snapshots over ten operand values, all
+four CF/ZF rows, both PF values, all eight TOP values and eight status C0/C2/C3
+combinations. The 86,016 invalid class/tag snapshots cover both participant
+positions, signs, every condition/PF row, TOP and condition-code combination.
+Missing x87 state, FCW/FSW gates and fetch/budget/stop boundaries are also
+checked. The schema admits only the six requested byte streams. Ten literal
+fixtures cover the truth table, negative-zero raw/tag transfer, TOP wrap,
+FNSTSW, both repeats, three FCOMI producers (greater, equal then FCHS, less),
+invalid participant and bad environment. The runner compares complete machine
+state and memory and confirms JIT denial for successes and rejects.
+
+Verification: `cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, all 184 `od-testkit` tests, and all 198
+`od-runner` fixture tests pass. The full `od-isa` run has 718 passed and the
+two pre-existing FABS/FCHS status expectation failures recorded under
+ISSUE-019 (`rejection=3` and `rejection=18`); the new FCMOVBE matrices pass.
+`tools/check_layout.py` reports the known worktree pointer `.git` as an
+unmapped root file and two broken links to ignored oracle manifests absent
+from this isolated worktree; those files exist in the shared checkout, so the
+links were not changed. No native or physical x86 execution is claimed, and
+ISSUE-019 remains open.

@@ -7531,3 +7531,28 @@ vectors also check each index's environment/status/boundary rejection and the
 complement relation with indexed FCMOVE. Evidence is local interpreter/schema
 coverage only; ISSUE-019 remains open and no physical or native execution is
 claimed.
+
+## Local S2-30cc: bounded exact bare `FCMOVBE ST(0), ST(1)` (`DA D1`)
+
+Admit only the exact unprefixed Long64 `DA D1` form. Require present x87 state,
+FCW `0x037f`, and `FSW & 0x82ff == 0`. Before reading integer RFLAGS, preflight
+both old physical TOP and TOP+1, including the untaken CF=ZF=0 case. Each cell
+must be Valid-tagged canonical Normal binary80 or Zero-tagged exact signed
+binary80 zero. Copy the source's exact ten bytes and tag into old TOP exactly
+when integer `RFLAGS.CF || RFLAGS.ZF`; otherwise preserve both cells. FSW
+condition bits do not select the move. Preserve TOP, full FSW/FCW, all integer
+flags, GPRs, FDP, FOP and other state; update FIP to old RIP, advance RIP by two
+and retire once. Rejections commit no state. Memory forms, x87 exception
+delivery, JIT, native execution and physical acceptance are excluded.
+
+Local interpreter evidence comprises 51,200 complete success states and
+86,016 atomic invalid class/tag rejects. Coverage spans 10×10 operand values,
+all four CF/ZF rows, both PF values, all TOP positions and all eight C0/C2/C3
+combinations; invalid participants are checked at both positions under all
+condition rows. Additional checks cover missing x87 state, FCW/FSW gates,
+prefixes, neighboring encodings and execution boundaries. The fixture schema
+admits exactly six streams: bare, FNSTSW observation, repeat, and three FCOMI
+producers. Handwritten runner fixtures check the truth table, raw signed-zero/
+tag copy, TOP wrap, both repeat steps, greater/equal/less producers, invalid
+source and bad environment with complete state/memory assertions; all fixtures
+deny JIT. This evidence remains local only and does not resolve ISSUE-019.

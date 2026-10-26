@@ -2699,6 +2699,94 @@ fn x87_fcmovne_schema_admits_exact_bare_c9_streams_only() {
 }
 
 #[test]
+fn x87_fcmovbe_schema_admits_only_six_exact_bare_streams_and_reject_profiles() {
+    let base = x87_fixture().fixture;
+    let programs = [
+        ("dad1", 1),
+        ("dad1dfe0", 2),
+        ("dad1dad1dfe0", 3),
+        ("d9e8d9e0d9e8dbf1dad1dfe0", 6),
+        ("d9e8d9e8dbf1d9e0dad1dfe0", 6),
+        ("d9e8d9e8d9e0dbf1dad1dfe0", 6),
+    ];
+    for (program, budget) in programs {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("x87_fcmovbe_{program}");
+        fixture.instruction_budget = budget;
+        let length = (program.len() / 2) as u32;
+        fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + u64::from(length)));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = program.to_owned();
+        code.length = length;
+        code.comparison_mask_hex = "ff".repeat(length as usize);
+        assert!(
+            Fixture::from_json(&fixture.to_json().unwrap()).is_ok(),
+            "{program}"
+        );
+    }
+    for program in ["dad0", "dad2", "dad1dfe1", "66dad1", "48dad1", "9bdad1"] {
+        let mut fixture = base.clone();
+        fixture.instruction_budget = 1;
+        let length = (program.len() / 2) as u32;
+        fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + u64::from(length)));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = program.to_owned();
+        code.length = length;
+        code.comparison_mask_hex = "ff".repeat(length as usize);
+        assert!(fixture.validate().is_err(), "{program}");
+    }
+
+    let mut invalid = base.clone();
+    invalid.case_id = "x87_fcmovbe_invalid_participant".into();
+    invalid.expected_exit = ExpectedExit::Unsupported;
+    invalid.stop_rip = None;
+    invalid.instruction_budget = 1;
+    let invalid_code = invalid
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    invalid_code.initial_bytes_hex = "dad1".into();
+    invalid_code.length = 2;
+    invalid_code.comparison_mask_hex = "ffff".into();
+    invalid.initial_state.x87.as_mut().unwrap().tag_word = HexU64(0xffff);
+    assert!(Fixture::from_json(&invalid.to_json().unwrap()).is_ok());
+
+    for (fcw, fsw) in [
+        (0x077f, 0),
+        (0x037f, 0x0200),
+        (0x037f, 0x8000),
+        (0x037f, 0x0080),
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("x87_fcmovbe_bad_env_{fcw:04x}_{fsw:04x}");
+        fixture.expected_exit = ExpectedExit::Unsupported;
+        fixture.stop_rip = None;
+        fixture.instruction_budget = 1;
+        let x87 = fixture.initial_state.x87.as_mut().unwrap();
+        x87.control_word = HexU64(fcw);
+        x87.status_word = HexU64(fsw);
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = "dad1".into();
+        code.length = 2;
+        code.comparison_mask_hex = "ffff".into();
+        assert!(Fixture::from_json(&fixture.to_json().unwrap()).is_ok());
+    }
+}
+
+#[test]
 fn result_rejects_observed_fs_base_different_from_initial() {
     let input = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_22a_fs_base_qword_load_alias.case.json"

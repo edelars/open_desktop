@@ -549,6 +549,8 @@ pub enum Operation {
     Fcmove {
         source: u8,
     },
+    /// Bare `DA D1` FCMOVBE ST(0), ST(1), bounded raw copy when CF or ZF is set.
+    Fcmovbe,
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
     FcompSt {
         source: u8,
@@ -805,6 +807,10 @@ fn x87_fcmovne(opcode: u8, modrm: u8) -> Option<Operation> {
 fn x87_fcmove(opcode: u8, modrm: u8) -> Option<Operation> {
     (opcode == 0xda && (0xc8..=0xcf).contains(&modrm))
         .then_some(Operation::Fcmove { source: modrm & 7 })
+}
+
+fn x87_fcmovbe(opcode: u8, modrm: u8) -> Option<Operation> {
+    (opcode == 0xda && modrm == 0xd1).then_some(Operation::Fcmovbe)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1287,6 +1293,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 if modrm == 0xe9 {
                     Operation::Fucompp
                 } else if let Some(operation) = x87_fcmove(opcode.byte, modrm) {
+                    operation
+                } else if let Some(operation) = x87_fcmovbe(opcode.byte, modrm) {
                     operation
                 } else {
                     x87_fcmovb(opcode.byte, modrm).ok_or_else(|| self.unsupported(opcode))?
@@ -4186,6 +4194,7 @@ mod tests {
                     0xe9 => Ok(Operation::Fucompp),
                     0xc0..=0xc7 => Ok(Operation::Fcmovb { source: modrm & 7 }),
                     0xc8..=0xcf => Ok(Operation::Fcmove { source: modrm & 7 }),
+                    0xd1 => Ok(Operation::Fcmovbe),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
@@ -4211,6 +4220,10 @@ mod tests {
                 Memory::new(&[prefix, 0xda, 0xc7]).decode(),
                 Err(DecodeError::Unsupported { .. })
             ));
+            assert!(matches!(
+                Memory::new(&[prefix, 0xda, 0xd1]).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
         }
         assert!(matches!(
             Memory::new(&[0xda]).decode(),
@@ -4225,6 +4238,7 @@ mod tests {
         ));
         for prefix in [0x66, 0x48, 0x9b] {
             assert!(Memory::new(&[prefix, 0xda, 0xc9]).decode().is_err());
+            assert!(Memory::new(&[prefix, 0xda, 0xd1]).decode().is_err());
         }
     }
 

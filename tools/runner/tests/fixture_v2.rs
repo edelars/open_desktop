@@ -182,6 +182,24 @@ const FCMOVNE_REJECTS: [&[u8]; 3] = [
         "../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_st7_bad_environment_reject.case.json"
     ),
 ];
+const FCMOVBE_FIXTURES: [&[u8]; 8] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cc_fcmovbe_untaken.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cc_fcmovbe_cf_negative_zero.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cc_fcmovbe_zf_wrap_fnstsw.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cc_fcmovbe_cf_zf_fnstsw.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cc_fcmovbe_repeat.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cc_fcmovbe_producer_greater.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cc_fcmovbe_producer_equal_then_fchs.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cc_fcmovbe_producer_less.case.json"),
+];
+const FCMOVBE_REJECTS: [&[u8]; 2] = [
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cc_fcmovbe_invalid_source_both_flags.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cc_fcmovbe_bad_environment.case.json"),
+];
 const FCMOVE_INDEXED_FIXTURES: [&[u8]; 8] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf1.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf0.case.json"),
@@ -7557,6 +7575,109 @@ fn local_x87_fcmovne_fixtures_check_raw_copy_and_untaken_state_and_deny_jit() {
         assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
     }
     for bytes in FCMOVNE_REJECTS {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let (_, result) = run(bytes, "interpreter", 4);
+        assert_eq!(count(&result), 0, "{}", loaded.fixture.case_id);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert_eq!(snapshot(&result).state, loaded.fixture.initial_state);
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
+fn local_x87_fcmovbe_fixtures_check_full_state_producers_and_deny_jit() {
+    let one = "0000000000000080ff3f";
+    let minus_one = "0000000000000080ffbf";
+    for bytes in FCMOVBE_FIXTURES {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let (_, result) = run(bytes, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{}",
+            loaded.fixture.case_id
+        );
+        assert_eq!(
+            count(&result),
+            loaded.fixture.instruction_budget,
+            "{}",
+            loaded.fixture.case_id
+        );
+        let observed = snapshot(&result);
+        let mut expected = loaded.fixture.initial_state.clone();
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        let code = &loaded.fixture.memory[0].initial_bytes_hex;
+        let producer = loaded
+            .fixture
+            .case_id
+            .starts_with("s2_30cc_fcmovbe_producer_");
+        let move_offset = (code.rfind("dad1").unwrap() / 2) as u64;
+
+        if producer {
+            expected_x87.registers[6] = one.into();
+            expected_x87.registers[7] = if loaded.fixture.case_id.ends_with("greater") {
+                minus_one.into()
+            } else {
+                one.into()
+            };
+            expected_x87.status_word = HexU64(0x3000);
+            expected_x87.tag_word = HexU64(0x0ff4);
+            expected.rflags = HexU64(match loaded.fixture.case_id.as_str() {
+                "s2_30cc_fcmovbe_producer_greater" => 0x02,
+                "s2_30cc_fcmovbe_producer_equal_then_fchs" => 0x42,
+                "s2_30cc_fcmovbe_producer_less" => 0x03,
+                _ => unreachable!(),
+            });
+            expected.gpr[0] = HexU64((expected.gpr[0].get() & !0xffff) | 0x3000);
+            if loaded.fixture.case_id.ends_with("equal_then_fchs")
+                || loaded.fixture.case_id.ends_with("less")
+            {
+                expected_x87.registers[6] = one.into();
+            }
+        } else {
+            let top = ((expected_x87.status_word.get() >> 11) & 7) as usize;
+            let source = (top + 1) & 7;
+            if expected.rflags.get() & 0x41 != 0 {
+                let raw = expected_x87.registers[source].clone();
+                expected_x87.registers[top] = raw;
+                let source_tag = (expected_x87.tag_word.get() >> (source * 2)) & 3;
+                let tag_mask = 3u64 << (top * 2);
+                expected_x87.tag_word =
+                    HexU64((expected_x87.tag_word.get() & !tag_mask) | (source_tag << (top * 2)));
+            }
+            if code.ends_with("dfe0") {
+                expected.gpr[0] = HexU64(
+                    (expected.gpr[0].get() & !0xffff) | (expected_x87.status_word.get() & 0xffff),
+                );
+            }
+        }
+        expected_x87.instruction_pointer =
+            HexU64(loaded.fixture.initial_state.rip.get() + move_offset);
+        expected.rip = HexU64(loaded.fixture.initial_state.rip.get() + (code.len() / 2) as u64);
+        assert_eq!(observed.state, expected, "{}", loaded.fixture.case_id);
+        let expected_memory = loaded
+            .fixture
+            .memory
+            .iter()
+            .map(|region| MemoryRegionSnapshot {
+                region_id: region.region_id.clone(),
+                guest_address: region.guest_address,
+                bytes_hex: region.initial_bytes_hex.to_ascii_lowercase(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed.memory, expected_memory,
+            "{}",
+            loaded.fixture.case_id
+        );
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(
+            matches!(jit.outcome, Outcome::Unsupported { .. }),
+            "{}",
+            loaded.fixture.case_id
+        );
+    }
+    for bytes in FCMOVBE_REJECTS {
         let loaded = Fixture::from_json(bytes).unwrap();
         let (_, result) = run(bytes, "interpreter", 4);
         assert_eq!(count(&result), 0, "{}", loaded.fixture.case_id);

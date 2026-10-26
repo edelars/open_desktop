@@ -124,3 +124,9 @@ self-index ZF outcomes, indices 2..7, raw payload/tag copies, repeat and FCOMI
 producer streams, invalid source with ZF=1, forbidden environment, unchanged
 memory and full x87 snapshots. Every fixture explicitly denies JIT. This is
 local interpreter evidence; no native or physical x86 execution is claimed.
+
+S2-30cc's exact bare `DA D1` FCMOVBE fixture runner compares full machine
+state and memory for the truth table, TOP wrap, both repeated transfers and
+three FCOMI producers; invalid participant and environment fixtures remain
+atomic. Every success and rejection fixture denies JIT. No native or physical
+x86 execution is claimed.

@@ -244,6 +244,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30bx | Bare `DB C0..C7` FCMOVNB ST(0), ST(i), indexed source preflight with self-index TOP-only, exact raw copy when CF=0, native/JIT closed | S2-30bw |
 | [x] | S2-30ca | Historical bare `DB C9` FCMOVNE ST(0), ST(1) slice, superseded by indexed S2-30cb; native/JIT closed | S2-30bx |
 | [x] | S2-30cb | Bare `DB C8..CF` FCMOVNE ST(0), ST(i), indexed preflight before ZF and self-index TOP-only, exact raw copy when ZF=0, native/JIT closed | S2-30ca |
+| [x] | S2-30cc | Exact bare Long64 `DA D1` FCMOVBE ST(0), ST(1); preflight both participants before integer `CF || ZF`; full local matrices, six-stream schema and fixture runner; native/JIT closed | S2-30cb |
 | [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
@@ -6214,3 +6215,26 @@ Validate 363,520 successes and 161,280 invalid class/tag rejects, the exact
 FCOMI producer streams, literal state snapshots, environment/status/boundary
 rejections, complement behavior against indexed FCMOVE, and per-index JIT
 denial. Local results do not close ISSUE-019 or establish physical behavior.
+
+#### S2-30cc. Exact bare `FCMOVBE ST(0), ST(1)` (`DA D1`)
+
+Admit only the unprefixed Long64 two-byte `DA D1` encoding. Reuse the bounded
+FCMOV physical TOP/TOP+1 preflight and require both participants to be
+Valid-tagged canonical Normal or Zero-tagged exact signed binary80 zero before
+reading integer RFLAGS, even when `CF=ZF=0`. Take the raw ten-byte/tag copy
+exactly when integer `CF || ZF`; otherwise preserve both participants. Require
+FCW `0x037f` and `FSW & 0x82ff == 0`; preserve all other state except FIP/RIP
+and retirement. No FSW condition bits, memory form, exception delivery, JIT,
+native execution or physical acceptance are included.
+
+Validate 51,200 complete success snapshots (10×10 values, four CF/ZF rows,
+both PF values, eight TOP values and eight C0/C2/C3 combinations) and 86,016
+invalid class/tag snapshots across all four conditions. Also check missing
+state, all FCW/FSW gates, execution boundaries and exact prefix/neighbor
+rejection. The fixture schema admits exactly six streams: bare, FNSTSW
+observation, repeat, and three FCOMI producers for greater, equal-then-FCHS,
+and less. Literal full-state fixtures cover all truth-table rows, signed-zero
+raw/tag transfer, TOP wrap, both repeated steps, all three integer-flag
+producers, invalid participants and environment rejection. The fixture runner
+checks complete state/memory and denies JIT. Local evidence does not resolve
+ISSUE-019 or establish physical behavior.

@@ -64,3 +64,9 @@ alone and followed by FNSTSW, the repeated C9 stream, and two FCOMI producer
 programs. Operand/environment rejects cover indexed source selection and
 prefixes remain rejected. This schema allowlist is local fixture-format
 coverage only; JIT/native and physical x86 behavior are not implied.
+
+S2-30cc admits exactly six bare `DA D1` FCMOVBE streams: the instruction,
+FNSTSW observation, repeat, and three FCOMI producer sequences for greater,
+equal followed by FCHS, and less. The schema rejects prefixes, neighboring
+encodings, invalid operands and forbidden FCW/FSW. It describes local fixture
+format only and does not establish JIT, native or physical behavior.

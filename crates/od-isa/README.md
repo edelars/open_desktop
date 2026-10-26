@@ -353,3 +353,10 @@ indices preflight TOP and `(TOP+i)&7` before ZF; self-index checks TOP only.
 ZF=0 copies the source's exact raw bytes and tag. The 363,520 success and
 161,280 invalid-pair matrices, self-index canaries, environment/status/boundary
 checks, and FCMOVE complement property pass locally. JIT/native remain closed.
+
+S2-30cc admits only exact bare Long64 `DA D1` FCMOVBE. It preflights physical
+TOP and TOP+1 before integer flags and copies raw bytes/tag when `CF || ZF`.
+The local full-state matrices cover 51,200 successes and 86,016 invalid
+class/tag rejects across all condition rows, PF values, TOP and status CC bits.
+Missing-state, FCW/FSW, boundary and exact-decode denial checks pass. JIT,
+native and physical x86 execution remain unverified.
