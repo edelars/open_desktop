@@ -541,8 +541,10 @@ pub enum Operation {
     Fcmovnb {
         source: u8,
     },
-    /// Bare `DA C9` FCMOVE ST(0), ST(1), bounded raw copy when ZF is set.
-    Fcmove,
+    /// Bare `DA C8+i` FCMOVE ST(0), ST(i), bounded raw copy when ZF is set.
+    Fcmove {
+        source: u8,
+    },
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
     FcompSt {
         source: u8,
@@ -792,7 +794,8 @@ fn x87_fcmovnb(opcode: u8, modrm: u8) -> Option<Operation> {
 }
 
 fn x87_fcmove(opcode: u8, modrm: u8) -> Option<Operation> {
-    (opcode == 0xda && modrm == 0xc9).then_some(Operation::Fcmove)
+    (opcode == 0xda && (0xc8..=0xcf).contains(&modrm))
+        .then_some(Operation::Fcmove { source: modrm & 7 })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2417,6 +2420,7 @@ mod tests {
                     0xe3 => Ok(Operation::Fninit),
                     0x10 => Ok(Operation::FistM32IntRax),
                     0x18 => Ok(Operation::FistpM32IntRax),
+                    0xc0..=0xc7 => Ok(Operation::Fcmovnb { source: second & 7 }),
                     _ if indexed_x87_compare(0xdb, second).is_some() => {
                         Ok(indexed_x87_compare(0xdb, second).unwrap())
                     }
@@ -2530,6 +2534,7 @@ mod tests {
                     0x18 => Ok(Operation::FistpM32IntRax),
                     0xe2 => Ok(Operation::Fnclex),
                     0xe3 => Ok(Operation::Fninit),
+                    0xc0..=0xc7 => Ok(Operation::Fcmovnb { source: modrm & 7 }),
                     _ if indexed_x87_compare(0xdb, modrm).is_some() => {
                         Ok(indexed_x87_compare(0xdb, modrm).unwrap())
                     }
@@ -2761,6 +2766,8 @@ mod tests {
                     Ok(Operation::FstpM80FpRax)
                 } else if opcode == 0xdb && modrm == 0x28 {
                     Ok(Operation::FldM80FpRax)
+                } else if opcode == 0xdb && (0xc0..=0xc7).contains(&modrm) {
+                    Ok(Operation::Fcmovnb { source: modrm & 7 })
                 } else if opcode == 0xdf && modrm == 0x00 {
                     Ok(Operation::FildM16IntRax)
                 } else if opcode == 0xdf && modrm == 0x28 {
@@ -4162,7 +4169,7 @@ mod tests {
                 match modrm {
                     0xe9 => Ok(Operation::Fucompp),
                     0xc0..=0xc7 => Ok(Operation::Fcmovb { source: modrm & 7 }),
-                    0xc9 => Ok(Operation::Fcmove),
+                    0xc8..=0xcf => Ok(Operation::Fcmove { source: modrm & 7 }),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,

@@ -7458,32 +7458,34 @@ claimed; ISSUE-019 remains open. See [plan](../plans/STAGE_2.md#s2-30bx-indexed-
 [report](../reports/STAGE_2_REPORT.md#s2-30bx--bounded-indexed-fcmovnb-st0-sti), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bx-bounded-indexed-fcmovnb-sti).
 
-## Local S2-30by: bounded bare `FCMOVE ST(0), ST(1)` (`DA C9`)
+## Local S2-30bz: bounded indexed bare `FCMOVE ST(0), ST(i)` (`DA C8..CF`)
 
-Admit only exact unprefixed Long64 `DA C9`. Require present x87 state, FCW
-`0x037f`, and `FSW & 0x82ff == 0`. Before consulting integer
-`RFLAGS.ZF`, preflight physical old TOP and `(old_TOP+1)&7`, including when
-ZF=0. Each participant must have a Valid tag and canonical Normal binary80
-value, or a Zero tag and exact signed binary80 zero. When ZF=1, copy the
-source's exact ten raw bytes and tag into old physical TOP; when ZF=0, preserve
-both operand cells. Preserve TOP, the complete FSW and FCW, RFLAGS, GPRs,
-memory and all other state. Set FIP to old RIP, advance RIP by two and retire
-once. No x87 C3 substitution for integer ZF is made. C1=1 remains closed under
-the local environment gate; other C0/C2/C3 values are preserved. Existing
-`DA C0..C7` FCMOVB and `DA E9` FUCOMPP behavior is unchanged. Memory forms,
-exception delivery, JIT, native execution and physical x86 acceptance are
-outside this bounded contract.
+Admit exact unprefixed Long64 `DA C8..CF`; the low ModR/M bits select `i`.
+Require present x87 state, FCW `0x037f`, and `FSW & 0x82ff == 0`. For `i>0`,
+preflight physical old TOP and `(old_TOP+i)&7` before consulting integer
+`RFLAGS.ZF`, including when ZF=0. For `i=0`, validate only old TOP and do not
+inspect unrelated physical slots. Every required participant must have a
+Valid tag and canonical Normal binary80 value, or a Zero tag and exact signed
+binary80 zero. When ZF=1, copy the source's exact ten raw bytes and tag into
+old physical TOP; when ZF=0, preserve operands. Preserve TOP, complete FSW and
+FCW, RFLAGS, GPRs, memory and all other state. Set FIP to old RIP, advance RIP
+by two and retire once. FSW.C3 is not the condition; C1=1 remains closed under
+the environment gate while other C0/C2/C3 values are preserved. Existing
+FCMOVB and FUCOMPP behavior is unchanged. Memory forms, exception delivery,
+JIT, native execution and physical acceptance are outside this bounded
+contract.
 
-The interpreter checks 51,200 full-state successes: ten admitted destination
-values and ten source values (four canonical Normals in both signs plus exact
-±0), ZF, all TOP values, eight C0/C2/C3 patterns, and four CF/PF patterns.
-It checks 21,504 atomically rejected class/tag cases across 42 invalid pairs,
-both signs, both ZF values, both participant positions, all TOPs and all
-C0/C2/C3 combinations. Additional checks cover every forbidden status bit,
-invalid FCW, missing x87, prefix/decode neighbors, fetch/truncation, STOP and
-budget boundaries. Exact schema streams are `dac9`, `dac9dfe0`,
-`dac9dac9dfe0`, `d9e8d9e8dbf1d9e0dac9dfe0`, and
-`d9e8d9e8d9e0dbf1dac9dfe0` with budgets 1/2/3/6/6. Literal fixtures cover
-raw/tag transfer and preservation, both actual FCOMI/FCHS producers, rejects
-and JIT denial. Evidence is local interpreter/schema/runner evidence only;
-ISSUE-019 remains open. See [plan](../plans/STAGE_2.md#s2-30by-bare-fcmove-st0-st1-da-c9), [report](../reports/STAGE_2_REPORT.md#s2-30by--bounded-fcmove-st0-st1), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30by-bounded-fcmove-st0-st1).
+The interpreter checks 363,520 full-state successes (51,200 for each nonzero
+index and 5,120 for self-index) and 161,280 atomically rejected class/tag
+cases (21,504 per nonzero index and 10,752 for self-index). The self-index
+cases do not inspect a second physical slot. Additional checks cover forbidden
+status bits, invalid FCW, missing x87, per-index prefix/decode, fetch,
+truncation, STOP and budget boundaries. The exact schema admits 19 streams:
+all eight bare encodings, their eight `DF E0` observation forms, repeat, and
+two producer streams. Literal fixtures cover indices 0 and 2..7 (the existing
+ST(1) fixtures cover index 1), both self-index ZF outcomes, TOP wrap, raw/tag
+copying, signed zero, invalid source with ZF=0 and indexed environment
+rejection. Runner assertions compare complete x87 snapshots for all success
+fixtures, including the second repeat transfer, and deny JIT. Evidence is
+local interpreter/schema/runner evidence only; ISSUE-019 remains open. See
+[plan](../plans/STAGE_2.md#s2-30bz-bare-fcmove-st0-sti-da-c8cf), [report](../reports/STAGE_2_REPORT.md#s2-30bz--bounded-indexed-fcmove-st0-sti), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bz-bounded-indexed-fcmove-st0-sti).

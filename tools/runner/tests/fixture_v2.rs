@@ -148,7 +148,17 @@ const FCMOVNB_REJECTS: [&[u8]; 4] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_c1_reject.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_bad_fcw_reject.case.json"),
 ];
-const FCMOVE_FIXTURES: [&[u8]; 6] = [
+const FCMOVE_INDEXED_FIXTURES: [&[u8]; 8] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st2_top6.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st3_top7.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st4_top0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st5_top1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st6_top2.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st7_top3.case.json"),
+];
+const FCMOVE_FIXTURES: [&[u8]; 14] = [
     include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_30by_fcmove_taken_negative_zero.case.json"
     ),
@@ -163,8 +173,16 @@ const FCMOVE_FIXTURES: [&[u8]; 6] = [
     include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_30by_fcmove_producer_unequal_after_fchs.case.json"
     ),
+    FCMOVE_INDEXED_FIXTURES[0],
+    FCMOVE_INDEXED_FIXTURES[1],
+    FCMOVE_INDEXED_FIXTURES[2],
+    FCMOVE_INDEXED_FIXTURES[3],
+    FCMOVE_INDEXED_FIXTURES[4],
+    FCMOVE_INDEXED_FIXTURES[5],
+    FCMOVE_INDEXED_FIXTURES[6],
+    FCMOVE_INDEXED_FIXTURES[7],
 ];
-const FCMOVE_REJECTS: [&[u8]; 5] = [
+const FCMOVE_REJECTS: [&[u8]; 7] = [
     include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_30by_fcmove_invalid_source_zf0_reject.case.json"
     ),
@@ -174,6 +192,12 @@ const FCMOVE_REJECTS: [&[u8]; 5] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30by_fcmove_c1_reject.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30by_fcmove_bad_fcw_reject.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30by_fcmove_es_b_reject.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st7_invalid_source_zf0_reject.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st7_bad_environment_reject.case.json"
+    ),
 ];
 const FFREE_ST0_ALREADY_EMPTY: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bq_ffree_already_empty.case.json");
@@ -7350,45 +7374,60 @@ fn local_x87_fcmove_snapshots_and_denies_jit() {
         );
         let before = loaded.fixture.initial_state.x87.as_ref().unwrap();
         let after = observed.state.x87.as_ref().unwrap();
-        match loaded.fixture.case_id.as_str() {
-            "s2_30by_fcmove_taken_negative_zero" => {
-                assert_eq!(after.registers[0], before.registers[1]);
-                assert_eq!(after.tag_word.get() & 3, (before.tag_word.get() >> 2) & 3);
+        let code_hex = &loaded.fixture.memory[0].initial_bytes_hex;
+        let fcmove_offset = code_hex.rfind("da").unwrap() as u64 / 2;
+        let mut expected = before.clone();
+        let mut expected_flags = loaded.fixture.initial_state.rflags;
+        let producer_equal = loaded.fixture.case_id == "s2_30by_fcmove_producer_equal_then_fchs";
+        let producer_unequal =
+            loaded.fixture.case_id == "s2_30by_fcmove_producer_unequal_after_fchs";
+        if producer_equal || producer_unequal {
+            // These producer streams have a hand-computed final state: FLD1
+            // twice leaves TOP=6, and only the unequal stream applies FCHS
+            // before FCOMI. FCMOVE then copies on equality only.
+            expected.registers[6] = if producer_equal {
+                "0000000000000080ff3f".into()
+            } else {
+                "0000000000000080ffbf".into()
+            };
+            expected.registers[7] = "0000000000000080ff3f".into();
+            expected.status_word = HexU64(0x3000);
+            expected.tag_word = HexU64(0x0ff4);
+            expected.instruction_pointer = HexU64(loaded.fixture.initial_state.rip.get() + 8);
+            expected_flags = HexU64(if producer_equal { 0x42 } else { 0x03 });
+        } else {
+            let top = ((expected.status_word.get() >> 11) & 7) as usize;
+            let move_index = u8::from_str_radix(
+                &code_hex[(fcmove_offset * 2 + 2) as usize..(fcmove_offset * 2 + 4) as usize],
+                16,
+            )
+            .unwrap()
+                & 7;
+            let source = (top + usize::from(move_index)) & 7;
+            let moves = if loaded.fixture.case_id == "s2_30by_fcmove_repeat" {
+                2
+            } else {
+                1
+            };
+            for _ in 0..moves {
+                if expected_flags.get() & 0x40 != 0 {
+                    expected.registers[top] = expected.registers[source].clone();
+                    let source_tag = (expected.tag_word.get() >> (source * 2)) & 3;
+                    let mask = 3u64 << (top * 2);
+                    expected.tag_word =
+                        HexU64((expected.tag_word.get() & !mask) | (source_tag << (top * 2)));
+                }
             }
-            "s2_30by_fcmove_untaken_distinct_tags" => {
-                assert_eq!(after.registers, before.registers);
-                assert_eq!(after.tag_word, before.tag_word);
-            }
-            "s2_30by_fcmove_top7_wrap" => {
-                assert_eq!(after.registers[7], before.registers[0]);
-                assert_eq!(after.tag_word.get() >> 14 & 3, before.tag_word.get() & 3);
-            }
-            "s2_30by_fcmove_producer_equal_then_fchs" => {
-                assert_ne!(
-                    observed.state.rflags.get() & 0x40,
-                    0,
-                    "FCOMI equality sets ZF"
-                );
-                assert_eq!(after.registers[6], "0000000000000080ff3f");
-                assert_eq!(after.tag_word.get() >> 12 & 3, 0);
-            }
-            "s2_30by_fcmove_producer_unequal_after_fchs" => {
-                assert_eq!(
-                    observed.state.rflags.get() & 0x40,
-                    0,
-                    "FCOMI inequality clears ZF"
-                );
-                assert_eq!(after.registers[6], "0000000000000080ffbf");
-                assert_eq!(after.tag_word.get() >> 12 & 3, 0);
-            }
-            _ => {}
+            expected.instruction_pointer =
+                HexU64(loaded.fixture.initial_state.rip.get() + fcmove_offset);
         }
+        assert_eq!(
+            observed.state.rflags, expected_flags,
+            "{}",
+            loaded.fixture.case_id
+        );
+        assert_eq!(after, &expected, "{}", loaded.fixture.case_id);
         assert_eq!(after.status_word.get() & 0x82ff, 0);
-        let fcmove_offset = loaded.fixture.memory[0]
-            .initial_bytes_hex
-            .rfind("dac9")
-            .unwrap() as u64
-            / 2;
         assert_eq!(
             after.instruction_pointer.get(),
             loaded.fixture.initial_state.rip.get() + fcmove_offset

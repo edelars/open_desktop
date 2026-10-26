@@ -714,11 +714,10 @@ impl Fixture {
                 "dbe9dfe0" => ("dbe9dfe0", 4),
                 "dbf1" => ("dbf1", 2),
                 "dbf1dfe0" => ("dbf1dfe0", 4),
-                "dac9"
-                | "dac9dfe0"
-                | "dac9dac9dfe0"
-                | "d9e8d9e8dbf1d9e0dac9dfe0"
-                | "d9e8d9e8d9e0dbf1dac9dfe0" => {
+                "dac9dac9dfe0" | "d9e8d9e8dbf1d9e0dac9dfe0" | "d9e8d9e8d9e0dbf1dac9dfe0" => {
+                    (code_bytes.as_str(), (code_bytes.len() / 2) as u32)
+                }
+                _ if fcmove_family_source(&code_bytes).is_some() => {
                     (code_bytes.as_str(), (code_bytes.len() / 2) as u32)
                 }
                 _ if fcmovb_family_source(&code_bytes).is_some() => {
@@ -1443,12 +1442,16 @@ impl Fixture {
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     x87.control_word.get() != 0x037f || x87.status_word.get() & 0x82ff != 0
                 });
-            let is_fcmove_operand_rejected = code_bytes == "dac9"
+            let fcmove_index = (code_bytes.len() == 4
+                && code_bytes.starts_with("dac")
+                && matches!(code_bytes.as_bytes()[3], b'8'..=b'9' | b'a'..=b'f'))
+            .then(|| u8::from_str_radix(&code_bytes[3..4], 16).unwrap() & 7);
+            let is_fcmove_operand_rejected = fcmove_index.is_some()
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     let top = ((x87.status_word.get() >> 11) & 7) as usize;
-                    let source = (top + 1) & 7;
+                    let source = (top + usize::from(fcmove_index.unwrap())) & 7;
                     let valid_operand = |index: usize| {
                         let tag = (x87.tag_word.get() >> (index * 2)) & 3;
                         let Ok(bytes) = decode_bytes(&x87.registers[index]) else {
@@ -1465,9 +1468,9 @@ impl Fixture {
                             _ => false,
                         }
                     };
-                    !valid_operand(top) || !valid_operand(source)
+                    !valid_operand(top) || (fcmove_index != Some(0) && !valid_operand(source))
                 });
-            let is_fcmove_environment_rejected = code_bytes == "dac9"
+            let is_fcmove_environment_rejected = fcmove_index.is_some()
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
@@ -1522,8 +1525,13 @@ impl Fixture {
                 }
                 "dac1dac1dfe0" => 3,
                 "dac9dac9dfe0" => 3,
-                "dac9dfe0" => 2,
-                "dac9" => 1,
+                _ if fcmove_family_source(&code_bytes).is_some() => {
+                    if code_bytes.len() == 4 {
+                        1
+                    } else {
+                        2
+                    }
+                }
                 "dac1dfe0" | "dbc1dfe0" => 2,
                 "dbc1dbc1dfe0" => 3,
                 "dbc1" => 1,
@@ -2242,6 +2250,16 @@ fn fcmovnb_family_source(code_bytes: &str) -> Option<u8> {
     let opcode = u8::from_str_radix(&code_bytes[0..2], 16).ok()?;
     let modrm = u8::from_str_radix(&code_bytes[2..4], 16).ok()?;
     (opcode == 0xdb && (0xc0..=0xc7).contains(&modrm)).then_some(modrm & 7)
+}
+
+/// Exact indexed DA C8+i bytes, optionally followed by FNSTSW AX.
+fn fcmove_family_source(code_bytes: &str) -> Option<u8> {
+    if !(code_bytes.len() == 4 || (code_bytes.len() == 8 && code_bytes.ends_with("dfe0"))) {
+        return None;
+    }
+    let opcode = u8::from_str_radix(&code_bytes[0..2], 16).ok()?;
+    let modrm = u8::from_str_radix(&code_bytes[2..4], 16).ok()?;
+    (opcode == 0xda && (0xc8..=0xcf).contains(&modrm)).then_some(modrm & 7)
 }
 
 #[cfg(test)]

@@ -3711,19 +3711,16 @@ local interpreter also checks invalid class/tag pairs with CF=1, per-index
 environment and execution boundaries, and the FCMOVNB/FCMOVB CF-complement
 property. This is local evidence only; ISSUE-019 remains open.
 
-### S2-30by bounded `FCMOVE ST(0), ST(1)`
+### S2-30bz bounded indexed `FCMOVE ST(0), ST(i)`
 
-The local schema admits exactly `dac9`, `dac9dfe0`, `dac9dac9dfe0`,
-`d9e8d9e8dbf1d9e0dac9dfe0`, and `d9e8d9e8d9e0dbf1dac9dfe0` at budgets
-1/2/3/6/6. Six success fixtures cover ZF-taken transfer of negative zero,
-ZF-untaken distinct tags, TOP=7 wrap, repeat, and both real FCOMI producers.
-The producer fixtures sequence the actual compare and FCHS in both orders; the
-runner checks the final compare ZF and selected payload/tag outcomes. For the
-other success fixtures, it checks completion, instruction count, stop outcome, FIP
-and JIT denial; the repeat stream has no separate runner assertion for its
-second transfer. Five reject fixtures cover invalid source with ZF=0, invalid
-destination, C1, bad FCW and ES|B; unit tests separately cover missing x87
-state. Full-state transfer and preservation coverage comes from the 51,200
-ISA success snapshots; the 21,504 invalid class/tag snapshots check atomic
-rejection. Unit tests also cover each forbidden status bit and execution
-boundaries. This is local evidence only; ISSUE-019 remains open.
+The local schema admits exactly `dac8..dacf`, each followed by `dfe0`, plus the
+existing repeat and two producer streams (19 total, budgets 1/2/3/6/6). Eight
+new success fixtures cover self-index with both ZF outcomes and indices 2..7;
+existing `DA C9` fixtures cover index 1. Together they exercise TOP wrap,
+distinct tags, Valid/Zero transfer and signed zero. New rejects cover an
+invalid index-7 source with ZF=0 and an index-7 environment gate. The runner
+checks complete x87 snapshots for every success fixture and checks the repeat
+after both steps. It also verifies all prior ST(1) success payload/tag/state
+results and denies JIT. ISA matrices cover 363,520 successes and 161,280
+atomic class/tag rejects across all indices, per-index environment and
+execution boundaries. This is local evidence only; ISSUE-019 remains open.

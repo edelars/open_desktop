@@ -105,6 +105,15 @@ or general GS/SS, LDT, other-CPL or prefixed form is claimed. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md), [fixtures](../../tests/fixtures/x86/stage2/README.md)
 and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
 
+S2-30bz extends bounded bare FCMOVE from `DA C9` to indexed `DA C8..CF`.
+It validates physical TOP and `(TOP+i)&7` before consulting integer ZF, except
+self-index validates TOP only; taken moves copy the source's raw binary80 bytes
+and tag. Full local state matrices and CLI assertions cover all indices. The
+FCW/FSW gates are unchanged, and JIT/native/physical x86 support is not claimed.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30bz-bounded-indexed-bare-fcmove-st0-sti-da-c8cf),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bz-bounded-indexed-fcmove-st0-sti),
+and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30bz--bounded-indexed-fcmove-st0-sti).
+
 S2-30bp extends the local raw-copy push slice from bare `D9 C0` to `D9 C0..C6`:
 the selected source is physical `(old_TOP+i)&7`, and the Empty push destination
 is `(old_TOP+7)&7`. Only canonical-Normal Valid or exact signed-Zero Zero sources
@@ -329,7 +338,8 @@ closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30bx-bo
 [plan](../../docs/plans/STAGE_2.md#s2-30bx-indexed-bare-fcmovnb-st0-sti), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bx-bounded-indexed-fcmovnb-sti).
 
-S2-30by adds exact bare `DA C9` FCMOVE ST(0), ST(1). It reuses the strict
+Historical S2-30by adds exact bare `DA C9` FCMOVE ST(0), ST(1), now included
+in the indexed `DA C8..CF` slice above. It reuses the strict
 bounded operand preflight and copies raw binary80 bytes plus tag only when
 integer RFLAGS.ZF is set. Both operands are checked before consulting ZF;
 FCW/status gates and C1 policy match the neighboring bounded FCMOV slices.
