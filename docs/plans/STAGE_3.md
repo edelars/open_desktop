@@ -33,7 +33,7 @@ guest RIP + CPU context + memory/code versions
 Состояние зависимостей перепроверено 26 октября 2026 года:
 
 - [Этап 1 принят](../reports/STAGE_1_REPORT.md) для ограниченного S0-09 register-only профиля. Есть физический oracle, fixtures, генератор, comparator, reducer и повторяемый harness.
-- [Этап 2 выполняется](../reports/STAGE_2_REPORT.md): отчёт принимает S2-00–S2-14 только в указанных там ограниченных границах, включая положительный physical slice S2-14. Этап 2 в целом не принят; в рабочем дереве продолжаются изменения interpreter/testkit. Эти изменения не расширяют JIT-профиль автоматически.
+- [Этап 2 выполняется](../reports/STAGE_2_REPORT.md): отчёт фиксирует принятые срезы на момент последней записи, но этап 2 в целом не принят и развивается параллельно. Проверки S3 привязывать к точному fingerprint; изменения этапа 2 не расширяют JIT-профиль автоматически.
 - `crates/od-jit/src/lib.rs` содержит ограниченный прямой fragment translator и ARM64 emitter. Он не доказывает наличие общего IR, dispatcher, block cache или self-modifying-code support.
 - `crates/od-host/src/lib.rs` содержит `ExecutableMemory`, `CompiledFragment`, macOS MAP_JIT path, переключение write protection и синхронизацию instruction cache. Эти механизмы нужно расширять с сохранением проверенных ограничений, а не писать второй независимый host allocator.
 - Старый fragment state/C ABI и новый архитектурный state этапа 2 различаются. JIT layout использует `offset_of!`; перед новой реализацией проверить фактические типы, adapters, generated accesses и helper signatures.
@@ -634,6 +634,6 @@ git diff --check
 
 S3-00 выполнена как документационная задача. Зафиксированы точные формы S0-09; текущий прямой JIT отделён от будущего block pipeline; пути interpreter fallback помечены как будущие; этап 2 и его текущие незакоммиченные изменения не объявлены завершёнными. Записаны начальные block bounds и ARM64/ABI/macOS источники.
 
-S3-01 начата: в [BENCHMARKS](../testing/BENCHMARKS.md) описаны workload matrix и раздельные уровни cold process, cold code cache и warm execution. Обязательный локальный/physical Stage 1 прогон с fingerprint ещё не выполнен. В общем checkout сейчас параллельно идут изменения и проверки этапа 2; запуск CPU harness отложен до завершения активной сборки, чтобы не пересекать чтение меняющихся исходников и Cargo build.
+S3-01 начата: в [BENCHMARKS](../testing/BENCHMARKS.md) описаны workload matrix и раздельные уровни cold process, cold code cache и warm execution. Preflight точной ревизии `9a1376b` описан в [отчёте baseline](../reports/STAGE_3_BASELINE_2026-10-26.md): локальные Cargo tests показали пять x87 failures; удалённый `od-isa --lib` preflight завершился ошибкой без сохранённого списка test names. Физические fixtures и timing не запускались. Из-за параллельной работы этапа 2 этот результат не переносится на последующие revisions. Повторить Stage 1 local/oracle после стабилизации соответствующих изменений; performance baseline остаётся открытым.
 
 S3-00 прошла `python3 tools/check_layout.py`, проверку относительных Markdown links и `git diff --check`. Эти проверки подтверждают документацию/структуру, не реализацию JIT. В S3-00 код JIT, CPU/SSH-прогоны и benchmarks не изменялись и не запускались.
