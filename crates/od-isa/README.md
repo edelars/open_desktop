@@ -307,3 +307,8 @@ signaling bit and payload, and adds no status flags. See the [CPU contract](../.
 Exact `DB 38` also accepts Special-tagged canonical binary80 subnormals in the
 bounded S2-31at raw-store path. It preserves sign and fraction bytes and adds
 no flags. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31at-canonical-subnormal-fstp-m80fp-rax-db-38).
+
+S2-30bs adds exact unprefixed Long64 `D9 D0` FNOP to the local x87 interpreter
+profile. With present x87 state, FCW `0x037f`, and clean `FSW & 0x80ff`, it
+updates only FIP and retires; stack tags and payloads are opaque. JIT/native
+and physical x86 execution remain unsupported. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30bs-bounded-bare-fnop-d9-d0), [plan](../../docs/plans/STAGE_2.md#s2-30bs-bare-fnop-with-a-bounded-environment-gate), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bs-bounded-fnop).

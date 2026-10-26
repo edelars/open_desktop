@@ -3634,3 +3634,13 @@ CC patterns, prior tags and opaque payloads. The operation changes only the
 selected physical tag and preserves payloads, all condition-code bits and TOP.
 CLI snapshots and explicit JIT denial are local interpreter/schema results,
 not native or physical x86 evidence. ISSUE-019 remains open.
+
+### S2-30bs bounded FNOP
+
+Six handwritten schema-v2 fixtures cover the four exact success streams
+`d9d0`, `d9d0dfe0`, `d9d0d9d0dfe0`, and `ddc7d9d0d9e8dfe0`, plus bare
+`d9d0` at budget one with forbidden ES|B and invalid FCW. Success fixtures
+include TOP=7/C1=1 with opaque mixed cells, all-Empty raw canaries, repeated
+FNOP, and `FFREE ST(7)→FNOP→FLD1→FNSTSW`. They are local interpreter inputs;
+the runner checks snapshots and JIT denial. No native or physical x86 evidence
+is claimed, and ISSUE-019 remains open.

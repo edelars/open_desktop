@@ -9622,3 +9622,35 @@ native runtime or physical x86 checks were run. ISSUE-019 remains open. See
 [plan](../plans/STAGE_2.md#s2-30br-generalize-bounded-ffree-to-all-sti-indices),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30br-bounded-bare-ffree-sti-dd-c0c7),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30br-bounded-ffree-sti).
+
+## S2-30bs — bounded bare FNOP
+
+Implemented exact unprefixed Long64 `D9 D0`. Execution requires present x87
+state, FCW `0x037f`, and `FSW & 0x80ff == 0`. It does not inspect TOP, FTW,
+register payloads or memory. Success updates only FIP to old RIP, advances RIP
+by two and retires once; all x87 fields other than FIP, GPR, RFLAGS, MXCSR and
+pending state are preserved. C0..C3 including C1 are retained under the
+existing local undefined-field policy. No exception or pending behavior,
+native admission or JIT lowering was added.
+
+The interpreter matrix covers 4,608 snapshots across TOP, all sixteen
+condition-code combinations, six tag patterns and six payload layouts. Reject
+coverage includes each forbidden FSW bit individually and together, invalid
+FCW variants, missing x87 state, all prefixes, `9B D9 D0`, D9 D1..D7,
+fetch/truncation, STOP and budget boundaries. Two consecutive FNOPs update FIP
+at each instruction while retaining all other state; memory tracing confirms no
+data access. Six literal fixtures cover opaque TOP=7/C1 state, all Empty tags,
+repeated FNOP, `FFREE ST(7)→FNOP→FLD1`, ES|B and invalid FCW. The schema allows
+only the four requested success streams and budget-one bare environment
+rejections; the runner checks interpreter snapshots and JIT denial.
+
+Local checks passed: `cargo test -p od-isa fnop_ --offline` (3/3),
+`cargo test -p od-testkit x87_fnop_schema --offline` (1/1), focused runner CLI
+fixture (`cargo test -p od-runner --test fixture_v2 local_x87_fnop_preserves_full_snapshot --offline`, 1/1), `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `python3 tools/check_layout.py`,
+and `git diff --check`. The full `cargo test -p od-isa --offline` run has 691
+passes and three x87 reject-vector expectation mismatches recorded under
+ISSUE-019: two canonical-Normal FABS/FCHS cases with historical SF|IE, and one
+Special-tagged canonical subnormal FST/FSTP ST(i) case. They are unrelated to
+FNOP. No Mac mini, SSH, native runtime, or physical x86 check was run. ISSUE-019
+remains open. See the [plan](../plans/STAGE_2.md#s2-30bs-bare-fnop-with-a-bounded-environment-gate), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30bs-bounded-bare-fnop-d9-d0), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bs-bounded-fnop).

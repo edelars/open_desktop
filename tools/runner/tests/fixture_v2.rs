@@ -95,6 +95,16 @@ const FFREE_STI_FIXTURES: [&[u8]; 7] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30br_ffree_st6_opaque.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30br_ffree_st7_fld1_reuse.case.json"),
 ];
+const FNOP_FIXTURES: [&[u8]; 4] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bs_fnop_top7_c1_opaque.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bs_fnop_all_empty_fnstsw.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bs_repeated_fnop.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bs_ffree_fnop_fld1.case.json"),
+];
+const FNOP_REJECT_FIXTURES: [&[u8]; 2] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bs_fnop_forbidden_es_b.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bs_fnop_invalid_fcw.case.json"),
+];
 const FFREE_STI_ENV_REJECT: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_30br_ffree_st7_environment_reject.case.json"
 );
@@ -6899,4 +6909,62 @@ fn local_x87_ffree_sti_marks_only_indexed_physical_cell_and_denies_jit() {
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
     assert_eq!(count(&result), 0);
     assert_eq!(snapshot(&result).state, loaded.fixture.initial_state);
+}
+
+#[test]
+fn local_x87_fnop_preserves_full_snapshot_and_denies_jit() {
+    for bytes in FNOP_FIXTURES {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let initial = &loaded.fixture.initial_state;
+        let (_, result) = run(bytes, "interpreter", 0);
+        let observed = snapshot(&result);
+        assert_eq!(count(&result), loaded.fixture.instruction_budget);
+        assert_eq!(
+            observed.state.rip.get(),
+            initial.rip.get() + u64::from(loaded.fixture.memory[0].length)
+        );
+        let mut expected_gpr = initial.gpr.clone();
+        if loaded.fixture.case_id != "s2_30bs_fnop_top7_c1_opaque" {
+            expected_gpr[0] = HexU64(
+                (expected_gpr[0].get() & !0xffff)
+                    | (observed.state.x87.as_ref().unwrap().status_word.get() & 0xffff),
+            );
+        }
+        assert_eq!(observed.state.gpr, expected_gpr);
+        assert_eq!(observed.state.rflags, initial.rflags);
+        let before = initial.x87.as_ref().unwrap();
+        let after = observed.state.x87.as_ref().unwrap();
+        assert_eq!(after.control_word, before.control_word);
+        assert_eq!(after.data_pointer, before.data_pointer);
+        assert_eq!(after.last_opcode, before.last_opcode);
+        if loaded.fixture.case_id != "s2_30bs_ffree_fnop_fld1" {
+            assert_eq!(after.status_word, before.status_word);
+        }
+        if loaded.fixture.case_id == "s2_30bs_fnop_all_empty_fnstsw" {
+            assert_eq!(after.registers, before.registers);
+            assert_eq!(after.tag_word, before.tag_word);
+            assert_eq!(after.status_word, before.status_word);
+        }
+        if loaded.fixture.case_id == "s2_30bs_repeated_fnop" {
+            assert_eq!(after.instruction_pointer, HexU64(initial.rip.get() + 2));
+            assert_eq!(after.registers, before.registers);
+            assert_eq!(after.tag_word, before.tag_word);
+        } else if loaded.fixture.case_id == "s2_30bs_ffree_fnop_fld1" {
+            assert_eq!(after.instruction_pointer, HexU64(initial.rip.get() + 4));
+            assert_eq!(after.status_word.get() >> 11 & 7, 6);
+            assert_eq!(after.registers[6], "0000000000000080ff3f");
+            assert_eq!(after.tag_word.get() >> 12 & 3, 0);
+        } else {
+            assert_eq!(after.instruction_pointer, initial.rip);
+        }
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    }
+    for bytes in FNOP_REJECT_FIXTURES {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let (_, result) = run(bytes, "interpreter", 4);
+        assert_eq!(count(&result), 0);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert_eq!(snapshot(&result).state, loaded.fixture.initial_state);
+    }
 }

@@ -796,6 +796,10 @@ impl Fixture {
                 "d9f7dfe0" => ("d9f7dfe0", 4),
                 "d9f6dfe0" => ("d9f6dfe0", 4),
                 "d9f7d9f6dfe0" => ("d9f7d9f6dfe0", 6),
+                "d9d0" => ("d9d0", 2),
+                "d9d0dfe0" => ("d9d0dfe0", 4),
+                "d9d0d9d0dfe0" => ("d9d0d9d0dfe0", 6),
+                "ddc7d9d0d9e8dfe0" => ("ddc7d9d0d9e8dfe0", 8),
                 "ddc0" => ("ddc0", 2),
                 "ddc0dfe0" => ("ddc0dfe0", 4),
                 "ddc0d9c0dfe0" => ("ddc0d9c0dfe0", 6),
@@ -1358,6 +1362,13 @@ impl Fixture {
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     x87.control_word.get() != 0x037f || x87.status_word.get() & 0x80ff != 0
                 });
+            let is_fnop_environment_rejected = code_bytes == "d9d0"
+                && self.stop_rip.is_none()
+                && self.expected_exit == ExpectedExit::Unsupported
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    x87.control_word.get() != 0x037f || x87.status_word.get() & 0x80ff != 0
+                });
             let is_ffree_fld_st0_rejected = code_bytes == "ddc0d9c0dfe0"
                 && self.stop_rip.is_none()
                 && self.expected_exit == ExpectedExit::Unsupported
@@ -1368,6 +1379,10 @@ impl Fixture {
                 "d9fcdfe0dbe2" => 3,
                 "ddc0d9c0dfe0" => 3,
                 "ddc0d9f7d9e8dfe0" => 4,
+                "d9d0" => 1,
+                "d9d0dfe0" => 2,
+                "d9d0d9d0dfe0" => 3,
+                "ddc7d9d0d9e8dfe0" => 4,
                 "d910d900dfe0dbe2" | "dd10dd00dfe0dbe2" => 4,
                 "d900d9e0d910dfe0" | "d900d9e1d910dfe0" => 4,
                 "d900d9e4dfe0" | "d900ddd1dfe0" | "d900ddd9dfe0" | "d910d9e0dfe0"
@@ -1429,6 +1444,7 @@ impl Fixture {
                     || is_fucomp_source_rejected
                     || is_fcomi_source_rejected
                     || is_ffree_environment_rejected
+                    || is_fnop_environment_rejected
                     || is_ffree_fld_st0_rejected
                 {
                     self.stop_rip.is_some()

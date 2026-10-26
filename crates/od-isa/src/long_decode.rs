@@ -443,6 +443,8 @@ pub enum Operation {
     Fnclex,
     /// Bare `DF E0` FNSTSW AX in the local profile with an existing x87 state.
     FnstswAx,
+    /// Bare `D9 D0` FNOP with strict x87 environment and no x87 data access.
+    Fnop,
     /// Bare `D9 38` FNSTCW m2byte at [RAX], preserving the x87 snapshot.
     FnstcwM16Rax,
     /// Bare `D9 28` FLDCW m2byte at [RAX], bounded all-masked control words.
@@ -1279,6 +1281,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 match self.byte()? {
+                    0xd0 => Operation::Fnop,
                     modrm @ 0xc0..=0xc6 => Operation::FldSti { source: modrm & 7 },
                     modrm @ 0xc8..=0xcf => Operation::FxchSti { source: modrm & 7 },
                     0xe8 => Operation::Fld1,
@@ -2853,6 +2856,8 @@ mod tests {
                     Ok(Operation::FstM64FpRax)
                 } else if modrm == 0x18 {
                     Ok(Operation::FstpM64FpRax)
+                } else if (0xc0..=0xc7).contains(&modrm) {
+                    Ok(Operation::FfreeSti { index: modrm & 7 })
                 } else if modrm == 0xe1 {
                     Ok(Operation::Fucom)
                 } else if modrm == 0xe9 {
@@ -2958,10 +2963,14 @@ mod tests {
                     Ok(Operation::FstM32FpRax)
                 } else if second == 0x18 {
                     Ok(Operation::FstpM32FpRax)
+                } else if (0xc0..=0xc6).contains(&second) {
+                    Ok(Operation::FldSti { source: second & 7 })
                 } else if (0xc8..=0xcf).contains(&second) {
                     Ok(Operation::FxchSti { source: second & 7 })
                 } else if second == 0x38 {
                     Ok(Operation::FnstcwM16Rax)
+                } else if second == 0xd0 {
+                    Ok(Operation::Fnop)
                 } else if second == 0xe0 {
                     Ok(Operation::Fchs)
                 } else if second == 0xe1 {
@@ -3092,12 +3101,7 @@ mod tests {
             assert_eq!(instruction.length, 2);
             assert_eq!(instruction.prefixes, Prefixes::default());
         }
-        for bytes in [
-            &[0xd9, 0xc7][..],
-            &[0xd9, 0xd0],
-            &[0x66, 0xd9, 0xc9],
-            &[0x48, 0xd9, 0xc9],
-        ] {
+        for bytes in [&[0xd9, 0xc7][..], &[0x66, 0xd9, 0xc9], &[0x48, 0xd9, 0xc9]] {
             assert!(matches!(
                 Memory::new(bytes).decode(),
                 Err(DecodeError::Unsupported { .. })
@@ -3186,6 +3190,54 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    #[test]
+    fn d9_d0_fnop_decodes_only_exact_bare_form() {
+        let instruction = Memory::new(&[0xd9, 0xd0]).decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Fnop);
+        assert_eq!(instruction.length, 2);
+        assert_eq!(instruction.prefixes, Prefixes::default());
+        for bytes in [
+            &[0x66, 0xd9, 0xd0][..],
+            &[0xf2, 0xd9, 0xd0],
+            &[0xf3, 0xd9, 0xd0],
+            &[0x2e, 0xd9, 0xd0],
+            &[0x36, 0xd9, 0xd0],
+            &[0x3e, 0xd9, 0xd0],
+            &[0x26, 0xd9, 0xd0],
+            &[0x64, 0xd9, 0xd0],
+            &[0x65, 0xd9, 0xd0],
+            &[0x67, 0xd9, 0xd0],
+            &[0x40, 0xd9, 0xd0],
+            &[0x48, 0xd9, 0xd0],
+            &[0x9b, 0xd9, 0xd0],
+            &[0xd9, 0xd1],
+            &[0xd9, 0xd2],
+            &[0xd9, 0xd3],
+            &[0xd9, 0xd4],
+            &[0xd9, 0xd5],
+            &[0xd9, 0xd6],
+            &[0xd9, 0xd7],
+            &[0xd9],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+        assert!(Memory::new(&[0x9b, 0xd9, 0xd0]).decode().is_err());
+        // Neighboring, already-supported D9 forms keep their existing decode.
+        for (bytes, operation) in [
+            (&[0xd9, 0xc0][..], Operation::FldSti { source: 0 }),
+            (&[0xd9, 0xc8][..], Operation::FxchSti { source: 0 }),
+            (&[0xd9, 0xe0][..], Operation::Fchs),
+            (&[0xd9, 0xe1][..], Operation::Fabs),
+            (&[0xd9, 0xe4][..], Operation::Ftst),
+            (&[0xd9, 0xe8][..], Operation::Fld1),
+            (&[0xd9, 0xee][..], Operation::Fldz),
+            (&[0xd9, 0xf6][..], Operation::Fdecstp),
+            (&[0xd9, 0xf7][..], Operation::Fincstp),
+        ] {
+            assert_eq!(Memory::new(bytes).decode().unwrap().operation, operation);
+        }
     }
 
     #[test]

@@ -6033,3 +6033,22 @@ fixtures covering TOP wrap, C1=1, mixed tags, opaque SNaN/malformed payloads,
 and `ST(7)→FLD1` physical reuse, plus indexed environment rejection. The CLI
 checks snapshots and JIT denial. Keep ISSUE-019 open; no Mini, SSH, native or
 physical x86 tests are included.
+
+#### S2-30bs. Bare FNOP with a bounded environment gate
+
+Admit only unprefixed Long64 `D9 D0`, requiring present x87 state, FCW exactly
+`0x037f`, and `FSW & 0x80ff == 0`. FNOP is a local state-preserving no-op except
+FIP=old RIP, RIP+=2, and one retirement. Do not inspect TOP, tags, or any raw
+payload; retain TOP, FTW, raw values, FCW/FSW including C0..C3 and C1, FDP/FOP,
+GPR, RFLAGS, MXCSR and pending state. Do not introduce exception, pending, data
+memory, JIT or native behavior.
+
+Cover 4,608 full snapshots (eight TOPs × sixteen CC patterns × six tag patterns
+× six raw layouts), all nine forbidden FSW bits individually and together,
+invalid FCW variants, missing x87 state, decode/prefix/WAIT neighbors, fetch,
+truncation, STOP and budget atomicity, repeated FNOP and FFREE→FNOP→FLD1
+composition. Schema allows only `d9d0`, `d9d0dfe0`, `d9d0d9d0dfe0`, and
+`ddc7d9d0d9e8dfe0`; bad-environment fixtures use only bare `d9d0` at budget
+one. Add local CLI fixtures for TOP=7/C1=1 opaque values, all Empty, repeat,
+composition, ES|B and invalid FCW; explicitly deny JIT. Physical x86 acceptance
+remains deferred under ISSUE-019.

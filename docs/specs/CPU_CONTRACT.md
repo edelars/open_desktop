@@ -7318,3 +7318,25 @@ ISSUE-019 remains open, and native/JIT/physical x86 behavior is not established.
 See [plan](../plans/STAGE_2.md#s2-30br-generalize-bounded-ffree-to-all-sti-indices),
 [report](../reports/STAGE_2_REPORT.md#s2-30br--bounded-ffree-sti), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30br-bounded-ffree-sti).
+
+### Local S2-30bs: bounded bare `FNOP` (`D9 D0`)
+
+Only exact unprefixed Long64 `D9 D0` is admitted, and only when x87 state is
+present, FCW is exactly `0x037f`, and `FSW & 0x80ff == 0`. No stack tag,
+TOP-dependent cell, or raw binary80 payload is inspected. Success preserves
+the complete x87 snapshot except for FIP, which becomes old RIP; this includes
+TOP, FTW, all eight raw 80-bit values, FCW, complete FSW and C0..C3 (including
+the local C1 undefined-field policy), FDP and FOP. GPR, RFLAGS, MXCSR, pending
+state, and data memory are unchanged. RIP advances by two and one instruction
+retires. No exception or pending-state behavior is added.
+
+The local matrix covers 4,608 combinations of TOP, condition-code pattern, FTW
+pattern and raw payload layout. The decoder rejects every prefix, `9B D9 D0`,
+`D9 D1..D7`, and truncation while retaining existing neighboring D9 forms.
+Strict-gate rejects, fetch/truncation, STOP and budget boundaries leave state
+unchanged. Exact schema streams are `d9d0`, `d9d0dfe0`,
+`d9d0d9d0dfe0`, and `ddc7d9d0d9e8dfe0`; environment rejection is only bare
+`d9d0` with budget one. Literal fixtures and the runner verify opaque TOP=7 / C1
+state, all-Empty state, repeated FNOP, FFREE→FNOP→FLD1 composition, forbidden
+ES|B, invalid FCW, and JIT denial. This is local interpreter evidence only;
+native and physical x86 behavior remain unverified under ISSUE-019.

@@ -570,6 +570,68 @@ fn x87_ffree_sti_schema_admits_only_the_nineteen_exact_streams() {
 }
 
 #[test]
+fn x87_fnop_schema_admits_only_the_four_bounded_streams() {
+    let base = x87_fixture().fixture;
+    for (stream, budget) in [
+        ("d9d0", 1),
+        ("d9d0dfe0", 2),
+        ("d9d0d9d0dfe0", 3),
+        ("ddc7d9d0d9e8dfe0", 4),
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("local_fnop_{stream}");
+        fixture.instruction_budget = budget;
+        let length = (stream.len() / 2) as u32;
+        fixture.stop_rip = Some(HexU64(0x1000 + u64::from(length)));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = length;
+        code.initial_bytes_hex = stream.into();
+        code.comparison_mask_hex = "ff".repeat(length as usize);
+        fixture.validate().unwrap();
+    }
+    for stream in [
+        "9bd9d0",
+        "66d9d0",
+        "f2d9d0",
+        "f3d9d0",
+        "2ed9d0",
+        "36d9d0",
+        "3ed9d0",
+        "26d9d0",
+        "64d9d0",
+        "65d9d0",
+        "67d9d0",
+        "40d9d0",
+        "48d9d0",
+        "d9d1",
+        "d9d2",
+        "d9d3",
+        "d9d4",
+        "d9d5",
+        "d9d6",
+        "d9d7",
+        "d9d0d9d0",
+        "ddc0d9d0d9e8dfe0",
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("local_fnop_forbidden_{stream}");
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (stream.len() / 2) as u32;
+        code.initial_bytes_hex = stream.into();
+        code.comparison_mask_hex = "ff".repeat(stream.len() / 2);
+        assert!(fixture.validate().is_err(), "{stream}");
+    }
+}
+
+#[test]
 fn fld_m32_m64_budget_one_normal_unsupported_rejects_oe_only_status() {
     for (width, opcode, normal_bytes) in [(4, "d900", "0000803f"), (8, "dd00", "000000000000f03f")]
     {
