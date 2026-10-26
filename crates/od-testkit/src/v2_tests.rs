@@ -235,24 +235,36 @@ fn x87_fxch_st1_schema_admits_only_the_three_exact_streams() {
     x87.registers[0] = "00000000000000c00040".into();
     fixture.validate().unwrap();
 
-    for (code_bytes, length, budget) in [("d9c9dfe0", 4, 2), ("d9c9d9c9dfe0", 6, 3)] {
-        let mut composition = fixture.clone();
-        composition.case_id = format!("local_fxch_{code_bytes}");
-        composition.instruction_budget = budget;
-        composition.stop_rip = Some(HexU64(0x1000 + length));
-        let code = composition
-            .memory
-            .iter_mut()
-            .find(|r| r.region_id == "code")
-            .unwrap();
-        code.length = length as u32;
-        code.initial_bytes_hex = code_bytes.into();
-        code.comparison_mask_hex = "ff".repeat(length as usize);
-        composition.validate().unwrap();
+    for source in 0u8..=7 {
+        let exchange = format!("d9{:02x}", 0xc8 + source);
+        for (code_bytes, length, budget) in [
+            (exchange.clone(), 2, 1),
+            (format!("{exchange}dfe0"), 4, 2),
+            (format!("{exchange}{exchange}dfe0"), 6, 3),
+        ] {
+            let mut composition = fixture.clone();
+            composition.case_id = format!("local_fxch_{code_bytes}");
+            composition.instruction_budget = budget;
+            composition.stop_rip = Some(HexU64(0x1000 + length));
+            let code = composition
+                .memory
+                .iter_mut()
+                .find(|r| r.region_id == "code")
+                .unwrap();
+            code.length = length as u32;
+            code.initial_bytes_hex = code_bytes.into();
+            code.comparison_mask_hex = "ff".repeat(length as usize);
+            composition.validate().unwrap();
+        }
     }
 
     for alias in [
-        "d9c8", "d9ca", "d9cb", "d9cc", "d9cd", "d9ce", "d9cf", "d909",
+        "d9c7",
+        "d9d0",
+        "d909",
+        "66d9c9",
+        "d9c8d9c9dfe0",
+        "d9c8dfe0d9c9",
     ] {
         let mut rejected = fixture.clone();
         rejected
@@ -268,7 +280,7 @@ fn x87_fxch_st1_schema_admits_only_the_three_exact_streams() {
     wrong_tag.case_id = "local_fxch_st1_wrong_tag".into();
     wrong_tag.stop_rip = None;
     wrong_tag.expected_exit = ExpectedExit::Unsupported;
-    wrong_tag.initial_state.x87.as_mut().unwrap().tag_word = HexU64(3 << 14);
+    wrong_tag.initial_state.x87.as_mut().unwrap().tag_word = HexU64(3);
     wrong_tag.validate().unwrap();
 }
 

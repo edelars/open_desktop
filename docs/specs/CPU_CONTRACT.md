@@ -7178,9 +7178,29 @@ and GPR, RFLAGS, and memory are unchanged.
 
 Empty/Zero/Special or otherwise mismatched tags, any non-Normal or malformed
 raw encoding, any FCW other than `0x037f`, any set bit in FSW mask `0x80ff`, or
-missing x87 state reject without partial swap or metadata/RIP changes. There is
-no memory form, D9 C8+i alias family, stack-fault/IE/SF/#MF/#NM/WAIT semantics,
-or JIT/native admission. Schema-v2 permits only bare `d9c9`,
-`d9c9dfe0` (observe status), and `d9c9d9c9dfe0` (roundtrip then observe).
-ISSUE-019 remains open for broader x87 state/class handling, undefined CC
-physical comparisons, and final native/physical acceptance.
+missing x87 state reject without partial swap or metadata/RIP changes. This was
+the original S2-30bj `i=1` slice; the indexed extension is specified below.
+
+## Local S2-30bk: bounded bare `FXCH ST(i)` (`D9 C8+i`)
+
+The local indexed extension admits exact no-prefix Long64 bytes `D9 C8+i` for
+`i=0..7`. It uses the same FCW/status gate, canonical-Normal Valid-tag checks,
+and atomic raw ten-byte exchange policy as S2-30bj. Physical source is
+`(TOP+i)&7`; `i=0` has only one participant, so it validates that entry once,
+exchanges it with itself, clears C1, records FIP, advances RIP by two, and
+retires normally. Empty, malformed, or non-Normal unused cells do not affect
+the self form. TOP, tags, C0/C2/C3, FDP/FOP, GPR, RFLAGS and memory retain the
+prior local policy. No hardware-equality claim is made for undefined CC values.
+
+Preflight checks every participating operand before mutation. All ten raw bytes
+are swapped for nonzero indices; no push, pop, rounding, arithmetic, stack
+exception, IE/SF, #MF/#NM/WAIT, JIT, or native behavior is added. Schema-v2
+permits only the eight individual encodings, each optionally followed by
+`DF E0`, or two repetitions of the same encoding followed by `DF E0`.
+Validation covers 14,336 multi-index plus 1,024 self-exchange success states,
+malformed unused-cell canaries, participating-operand/environment rejection,
+decoder and instruction-boundary behavior, and literal project fixtures.
+ISSUE-019 remains open for excluded x87 classes/exceptions and physical/native
+acceptance. See the [plan](../plans/STAGE_2.md#s2-30bk-expand-bounded-fxch-from-i1-to-all-register-indices),
+[report](../reports/STAGE_2_REPORT.md#s2-30bk--expand-bounded-fxch-to-all-indices),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bk-bounded-fxch-sti).

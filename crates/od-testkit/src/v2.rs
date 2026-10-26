@@ -772,9 +772,27 @@ impl Fixture {
                 "db28d9fcdfe0dbe2d9fc" => ("db28d9fcdfe0dbe2d9fc", 10),
                 "db28d9fcd9fcdfe0dbe2d9fc" => ("db28d9fcd9fcdfe0dbe2d9fc", 12),
                 "d9fc" => ("d9fc", 2),
-                "d9c9" => ("d9c9", 2),
-                "d9c9dfe0" => ("d9c9dfe0", 4),
-                "d9c9d9c9dfe0" => ("d9c9d9c9dfe0", 6),
+                _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("d9c")
+                    && matches!(code_bytes.as_bytes()[3], b'8'..=b'f') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
+                _ if code_bytes.len() == 8
+                    && code_bytes.starts_with("d9c")
+                    && matches!(code_bytes.as_bytes()[3], b'8'..=b'f')
+                    && code_bytes.ends_with("dfe0") =>
+                {
+                    (code_bytes.as_str(), 4)
+                }
+                _ if code_bytes.len() == 12
+                    && code_bytes.starts_with("d9c")
+                    && matches!(code_bytes.as_bytes()[3], b'8'..=b'f')
+                    && code_bytes[0..4] == code_bytes[4..8]
+                    && code_bytes.ends_with("dfe0") =>
+                {
+                    (code_bytes.as_str(), 6)
+                }
                 "d928" => ("d928", 2),
                 "d928d9fcdfe0" => ("d928d9fcdfe0", 6),
                 "d938" => ("d938", 2),
@@ -960,14 +978,17 @@ impl Fixture {
             let is_fdivrp_inexact_unsupported = code_bytes == "def1" && self.stop_rip.is_none();
             let is_fstp_source_rejected = code_bytes == "ddd9" && self.stop_rip.is_none();
             let is_fst_source_rejected = code_bytes == "ddd1" && self.stop_rip.is_none();
-            let is_fxch_st1_source_rejected = code_bytes == "d9c9"
+            let is_fxch_source_rejected = code_bytes.len() == 4
+                && code_bytes.starts_with("d9c")
+                && matches!(code_bytes.as_bytes()[3], b'8'..=b'f')
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     let top = ((x87.status_word.get() >> 11) & 7) as u8;
-                    let next = (top + 1) & 7;
+                    let source = (code_bytes.as_bytes()[3] as char).to_digit(16).unwrap() as u8 & 7;
+                    let indexed = (top + source) & 7;
                     let tag = |index: u8| (x87.tag_word.get() >> (u32::from(index) * 2)) & 3;
-                    tag(top) != 0 || tag(next) != 0
+                    tag(top) != 0 || tag(indexed) != 0
                 });
             let is_fchs_source_rejected = code_bytes == "d9e0" && self.stop_rip.is_none();
             let is_fabs_source_rejected = code_bytes == "d9e1" && self.stop_rip.is_none();
@@ -1245,7 +1266,7 @@ impl Fixture {
                     || is_fdivrp_inexact_unsupported
                     || is_fstp_source_rejected
                     || is_fst_source_rejected
-                    || is_fxch_st1_source_rejected
+                    || is_fxch_source_rejected
                     || is_fchs_source_rejected
                     || is_fabs_source_rejected
                     || is_ftst_source_rejected

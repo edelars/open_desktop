@@ -3561,3 +3561,12 @@ word and exchanges the two wrapped entries' full binary80 bytes; the roundtrip
 restores their bytes while C1 remains clear. Empty/wrong-tag unsupported cases
 retire zero instructions and preserve the complete initial snapshot. This is
 local project-fixture evidence only, not native or physical x86 evidence.
+
+### S2-30bk bounded FXCH ST(i)
+
+The `s2-long-x87-state-v1` schema now admits one exact bare `D9 C8+i` for each
+`i=0..7`, optionally followed by `DF E0`, or the same indexed exchange twice
+followed by `DF E0`. Literal runner fixtures exercise self-exchange, `i=7`
+physical wrap, nonadjacent same-index roundtrip, wrong participating tag, and
+JIT denial. These fixtures establish only local interpreter and schema
+behavior; they do not establish native or physical x86 acceptance.

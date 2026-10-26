@@ -461,8 +461,10 @@ pub enum Operation {
     FldM64FpRax,
     /// Bare `D9 E0` FCHS, flipping the sign of canonical-Normal ST(0) only.
     Fchs,
-    /// Bare `D9 C9` FXCH ST(1), exchanging two canonical-Normal stack entries.
-    FxchSt1,
+    /// Bare `D9 C8+i` FXCH ST(i), exchanging canonical-Normal stack entries.
+    FxchSti {
+        source: u8,
+    },
     /// Bare `D9 E1` FABS, clearing the sign of canonical-Normal ST(0) only.
     Fabs,
     /// Bare `D9 E4` FTST, comparing canonical-Normal ST(0) with zero.
@@ -1259,7 +1261,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 match self.byte()? {
-                    0xc9 => Operation::FxchSt1,
+                    modrm @ 0xc8..=0xcf => Operation::FxchSti { source: modrm & 7 },
                     0x00 => Operation::FldM32FpRax,
                     0x28 => Operation::FldcwM16Rax,
                     0x38 => Operation::FnstcwM16Rax,
@@ -2933,8 +2935,8 @@ mod tests {
                     Ok(Operation::FstM32FpRax)
                 } else if second == 0x18 {
                     Ok(Operation::FstpM32FpRax)
-                } else if second == 0xc9 {
-                    Ok(Operation::FxchSt1)
+                } else if (0xc8..=0xcf).contains(&second) {
+                    Ok(Operation::FxchSti { source: second & 7 })
                 } else if second == 0x38 {
                     Ok(Operation::FnstcwM16Rax)
                 } else if second == 0xe0 {
@@ -3041,6 +3043,41 @@ mod tests {
             }))
         ));
         let mut memory = Memory::new(&[0xd9, 0xe1]);
+        memory.fault_at = Some(1);
+        assert!(matches!(
+            memory.decode(),
+            Err(DecodeError::Memory(MemoryError::Architectural(_)))
+        ));
+    }
+
+    #[test]
+    fn d9_fxch_sti_decodes_all_indices_and_rejects_prefixes_neighbors_and_truncation() {
+        for source in 0u8..=7 {
+            let mut memory = Memory::new(&[0xd9, 0xc8 + source]);
+            let instruction = memory.decode().unwrap();
+            assert_eq!(instruction.operation, Operation::FxchSti { source });
+            assert_eq!(instruction.length, 2);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+        }
+        for bytes in [
+            &[0xd9, 0xc7][..],
+            &[0xd9, 0xd0],
+            &[0x66, 0xd9, 0xc9],
+            &[0x48, 0xd9, 0xc9],
+        ] {
+            assert!(matches!(
+                Memory::new(bytes).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+        }
+        assert!(matches!(
+            Memory::new(&[0xd9]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            }))
+        ));
+        let mut memory = Memory::new(&[0xd9, 0xc9]);
         memory.fault_at = Some(1);
         assert!(matches!(
             memory.decode(),

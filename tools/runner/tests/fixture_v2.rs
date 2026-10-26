@@ -6397,12 +6397,90 @@ fn local_x87_fxch_st1_cli_wraparound_roundtrip_wrong_tag_and_jit_denial() {
     wrong_tag.case_id = "s2_30bj_fxch_wrong_tag".into();
     wrong_tag.stop_rip = None;
     wrong_tag.expected_exit = ExpectedExit::Unsupported;
-    wrong_tag.initial_state.x87.as_mut().unwrap().tag_word = HexU64(3 << 14);
+    wrong_tag.initial_state.x87.as_mut().unwrap().tag_word = HexU64(3);
     let (_, rejected) = run(&wrong_tag.to_json().unwrap(), "interpreter", 4);
     assert_eq!(count(&rejected), 0);
     assert!(matches!(rejected.outcome, Outcome::Unsupported { .. }));
     assert_eq!(snapshot(&rejected).state.x87, wrong_tag.initial_state.x87);
 
     let (_, jit) = run(&input, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn local_x87_fxch_st0_i7_and_nonadjacent_cli_forms() {
+    let make_fixture = |case_id: &str, bytes: &str, top: u8, budget: u64| {
+        let mut fixture = Fixture::from_json(FCHS_NORMAL).unwrap().fixture;
+        fixture.case_id = case_id.into();
+        fixture.profile = od_testkit::v2::Profile::LongX87StateV1;
+        fixture.initial_state.rip = HexU64(0x0010_1000);
+        let mut x87 = fixture
+            .initial_state
+            .x87
+            .as_ref()
+            .unwrap()
+            .to_cpu()
+            .unwrap();
+        x87.control_word = 0x037f;
+        x87.status_word = (u16::from(top) << 11) | 0x0200;
+        x87.tag_word = 0;
+        x87.registers[usize::from(top)] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f];
+        for physical in 0..8 {
+            x87.set_tag(physical, od_isa::state::X87Tag::Valid);
+        }
+        fixture.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&x87));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.guest_address = fixture.initial_state.rip;
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        fixture.instruction_budget = budget;
+        fixture.stop_rip = Some(HexU64(
+            fixture.initial_state.rip.get() + bytes.len() as u64 / 2,
+        ));
+        fixture.expected_exit = ExpectedExit::StopAddress;
+        fixture
+    };
+
+    let self_exchange = make_fixture("s2_30bk_fxch_st0", "d9c8", 5, 1);
+    let (_, self_result) = run(&self_exchange.to_json().unwrap(), "interpreter", 0);
+    assert_eq!(count(&self_result), 1);
+    let self_x87 = snapshot(&self_result).state.x87.clone().unwrap();
+    assert_eq!(self_x87.registers[5], "0000000000000080ff3f");
+    assert_eq!(self_x87.status_word, HexU64((5 << 11) as u64));
+    assert_eq!(
+        self_x87.instruction_pointer,
+        self_exchange.initial_state.rip
+    );
+
+    let mut i7_wrap = make_fixture("s2_30bk_fxch_st7_wrap", "d9cf", 1, 1);
+    let x87 = i7_wrap.initial_state.x87.as_mut().unwrap();
+    let mut cpu = x87.to_cpu().unwrap();
+    cpu.registers[0] = [0, 0, 0, 0, 0, 0, 0, 0xc0, 0x00, 0x40];
+    i7_wrap.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&cpu));
+    let (_, i7_result) = run(&i7_wrap.to_json().unwrap(), "interpreter", 0);
+    assert_eq!(count(&i7_result), 1);
+    let i7_x87 = snapshot(&i7_result).state.x87.clone().unwrap();
+    assert_eq!(i7_x87.registers[1], "00000000000000c00040");
+    assert_eq!(i7_x87.registers[0], "0000000000000080ff3f");
+
+    let mut nonadjacent = make_fixture("s2_30bk_fxch_st3_roundtrip", "d9cbd9cbdfe0", 7, 3);
+    let x87 = nonadjacent.initial_state.x87.as_mut().unwrap();
+    let mut cpu = x87.to_cpu().unwrap();
+    cpu.registers[2] = [0, 0, 0, 0, 0, 0, 0, 0xc0, 0x00, 0x40];
+    nonadjacent.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&cpu));
+    let (nonadjacent, roundtrip) = run(&nonadjacent.to_json().unwrap(), "interpreter", 0);
+    assert_eq!(count(&roundtrip), 3);
+    let final_x87 = snapshot(&roundtrip).state.x87.clone().unwrap();
+    let initial_x87 = nonadjacent.fixture.initial_state.x87.unwrap();
+    assert_eq!(final_x87.registers[7], initial_x87.registers[7]);
+    assert_eq!(final_x87.registers[2], initial_x87.registers[2]);
+    assert_eq!(final_x87.tag_word, initial_x87.tag_word);
+
+    let (_, jit) = run(&self_exchange.to_json().unwrap(), "jit", 4);
     assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
 }

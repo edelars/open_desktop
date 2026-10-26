@@ -5906,3 +5906,26 @@ JIT/native remain denied. Keep ISSUE-019 open for non-Normal/Empty/stack
 exceptions, wider FXCH, undefined condition codes, and final host/physical
 acceptance. No Mac mini, SSH, native runtime, or physical x86 checks in this
 slice.
+
+#### S2-30bk. Expand bounded FXCH from `i=1` to all register indices
+
+Generalize the existing helper and operation to exact no-prefix Long64
+`D9 C8+i`, `i=0..7`. Use physical `(TOP+i)&7`; preflight the unique
+participating physical operands before mutation and swap all ten raw bytes.
+For `i=0`, inspect only TOP, retain its payload and tag, clear C1, update FIP,
+advance RIP and retire once. Unused cells must not affect self-exchange
+admission. Keep FCW=`0x037f`, `FSW & 0x80ff == 0`, Valid-tagged canonical-Normal
+participants, the prior deterministic C0/C2/C3 and FDP/FOP policy, and the
+existing absence of exception/stack/native/JIT semantics.
+
+Cover the existing cross-product for `i=1..7` (14,336 full states), plus
+1,024 self states (four magnitude choices × two signs × eight TOP × sixteen
+prior CC patterns). Include malformed/Empty unused-cell canaries, source and
+indexed target tags/raw rejects, all nine forbidden FSW bits, FCW and missing
+state rejection, TOP/index wrap, exact decoder bytes/prefixes/neighbors/fetch,
+STOP/budget/fault boundaries, self-exchange and same-index roundtrip. Schema
+allowlists are limited to one indexed exchange, optional `DF E0`, or the same
+indexed exchange repeated twice followed by `DF E0`; no arbitrary sequences.
+Add literal self, `i=7` wrap, nonadjacent roundtrip, wrong-target-tag, and
+JIT-denial fixtures. Keep ISSUE-019 open; no Mac mini, SSH, native runtime or
+physical x86 checks.

@@ -238,6 +238,14 @@ x87 admission stays closed, and the SDM m80fp form specifies no `#D`. See the
 [fixtures](../../tests/fixtures/x86/stage2/README.md), and
 [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-31x--bounded-fld-m80fp-canonical-subnormal-extension).
 
+S2-30bk generalizes the earlier bounded bare `D9 C9` exchange to exact
+`D9 C8+i` for `i=0..7`. It preflights physical TOP and `(TOP+i)&7`, except
+self-exchange checks TOP once, then swaps the complete ten-byte values while
+preserving tags/TOP and the local condition-code policy. The unit matrix covers
+14,336 indexed and 1,024 self-exchange states plus atomic rejects and execution
+boundaries. Empty/non-Normal participants, stack exceptions, and JIT/native
+acceptance remain outside this slice; see the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30bk-bounded-bare-fxch-sti-d9-c8i).
+
 S2-31t added exact bare `DD 00` (`FLD m64fp [RAX]`) for Normal binary64 and
 expanded it to binary80 using integer fields. S2-31u extends that same bounded
 load to signed zero: +0 becomes ten zero bytes, -0 keeps its sign in the last

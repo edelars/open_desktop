@@ -9462,3 +9462,31 @@ Graphify reported an existing C-header extraction warning for
 do not affect the FXCH implementation. No Mac mini, SSH, native runtime, or
 physical x86 checks were run. ISSUE-019 remains open for the explicitly
 excluded classes and final host/physical acceptance.
+
+## S2-30bk — expand bounded FXCH to all indices
+
+Generalized exact no-prefix `D9 C8+i` (`i=0..7`) decode and interpreter behavior
+through one indexed operation and the existing parameterized preflight helper.
+The physical target is `(TOP+i)&7`. The self form inspects TOP only, preserves
+its raw payload and tag, clears C1, updates FIP/RIP and retires. Nonzero forms
+preflight both participants and swap all ten bytes. FCW/status gates and local
+C0/C2/C3/FDP/FOP policies remain fixed; no hardware-equivalence claim was
+added. No stack exception, new status behavior, JIT or native x87 admission was
+introduced.
+
+Coverage includes 14,336 success states for `i=1..7`, 1,024 self-exchange
+states with deliberately malformed/Empty nonparticipant canaries, participating
+tag/raw/environment rejection, all forbidden FSW bits, all eight D9 encodings,
+prefix/neighbor/truncation/fetch checks, and literal schema/runner fixtures for
+self-exchange, `i=7` wrap, nonadjacent repeated-index roundtrip, wrong target
+tag, and JIT denial. `cargo test -p od-isa fxch --offline` passed 6/6;
+`cargo test -p od-testkit x87_fxch_st1_schema --offline` passed 1/1; focused
+runner FXCH tests passed 2/2; and `cargo test -p od-runner --test fixture_v2
+--offline` passed 185/185. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `python3
+tools/check_layout.py`, and `git diff --check` passed. `graphify update .`
+completed with 5,043 nodes and 10,061 edges. It reported the existing C-header
+extractor warning for `include/open_desktop/host_abi.h` and skipped unsupported
+file types; neither affects this FXCH implementation. No Mac mini, SSH, native
+runtime, or physical x86 checks were run. ISSUE-019 remains open for excluded
+x87 classes/exceptions and physical/native acceptance.
