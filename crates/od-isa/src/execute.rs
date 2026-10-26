@@ -233,6 +233,7 @@ fn step_tracked_with_stop(
             | Operation::FstM64FpRax
             | Operation::FstpM64FpRax
             | Operation::FstpM80FpRax
+            | Operation::FfreeSt0
     ) && state.x87.is_none()
     {
         return Ok(StepOutcome::Unsupported {
@@ -375,6 +376,7 @@ fn step_tracked_with_stop(
         || matches!(instruction.operation, Operation::Fld1 | Operation::Fldz)
             && bounded_x87_empty_push_destination(state).is_none()
         || matches!(instruction.operation, Operation::FldSti { source } if bounded_x87_fld_sti(state, source).is_none())
+        || instruction.operation == Operation::FfreeSt0 && bounded_x87_ffree_st0(state).is_none()
         || matches!(instruction.operation, Operation::FstpSti { .. })
             && bounded_x87_fst_sti_source(state).is_none()
         || matches!(instruction.operation, Operation::FstSti { .. })
@@ -560,6 +562,7 @@ fn step_tracked_with_stop(
         | Operation::Fincstp
         | Operation::Fdecstp
         | Operation::FldSti { .. }
+        | Operation::FfreeSt0
         | Operation::Fld1
         | Operation::Fldz
         | Operation::Fabs
@@ -1488,6 +1491,12 @@ fn step_tracked_with_stop(
             x87.set_tag(destination as u8, tag);
             x87.status_word =
                 (x87.status_word & !((7 << 11) | (1 << 9))) | ((destination as u16) << 11);
+            x87.instruction_pointer = state.rip;
+        }
+        Operation::FfreeSt0 => {
+            let top = bounded_x87_ffree_st0(state).expect("FFREE ST(0) was prevalidated");
+            let x87 = state.x87.as_mut().expect("x87 state was prevalidated");
+            x87.set_tag(top as u8, X87Tag::Empty);
             x87.instruction_pointer = state.rip;
         }
         Operation::FstM32FpRax
@@ -3079,6 +3088,16 @@ fn bounded_x87_fld_sti(state: &LongModeState, source: u8) -> Option<(usize, [u8;
         return None;
     }
     Some((destination, raw, tag))
+}
+
+/// Preflight exact bare FFREE ST(0). The payload and prior tag are opaque;
+/// only the physical cell selected by the current TOP will be marked Empty.
+fn bounded_x87_ffree_st0(state: &LongModeState) -> Option<usize> {
+    let x87 = state.x87.as_ref()?;
+    if x87.control_word != 0x037f || x87.status_word & 0x80ff != 0 {
+        return None;
+    }
+    Some(usize::from(x87.top()))
 }
 
 /// FLD m32fp preserves sticky IE/DE/OE/UE/PE across masked loads while still
@@ -50353,5 +50372,224 @@ mod tests {
                 assert!(memory.accesses.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn bounded_ffree_st0_preserves_everything_except_top_tag_and_ip() {
+        let payloads = [
+            [0; 10],
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
+            [1, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x7f],
+            [1, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
+            [0x5a, 0xa5, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x01, 0x40],
+        ];
+        let tags = [X87Tag::Valid, X87Tag::Zero, X87Tag::Special, X87Tag::Empty];
+        let cc_bits = [1 << 8, 1 << 9, 1 << 10, 1 << 14];
+        let mut cases = 0;
+
+        for top in 0u8..8 {
+            for cc in 0u8..16 {
+                for tag in tags {
+                    for raw in payloads {
+                        let mut state = LongModeState::default();
+                        state.rip = 0x8120;
+                        state.rflags = 0x8d7;
+                        state.gpr = std::array::from_fn(|i| 0xfeed_0000_0000_0000 | i as u64);
+                        let mut x87 = crate::state::X87State::fixture_seed();
+                        x87.control_word = 0x037f;
+                        x87.status_word = u16::from(top) << 11;
+                        for (bit, flag) in cc_bits.into_iter().enumerate() {
+                            if cc & (1 << bit) != 0 {
+                                x87.status_word |= flag;
+                            }
+                        }
+                        x87.instruction_pointer = 0x1234;
+                        x87.data_pointer = 0x5678;
+                        x87.last_opcode = 0x9abc;
+                        for physical in 0u8..8 {
+                            x87.registers[usize::from(physical)] = [physical; 10];
+                            x87.set_tag(physical, tags[usize::from(physical) % tags.len()]);
+                        }
+                        x87.registers[usize::from(top)] = raw;
+                        x87.set_tag(top, tag);
+                        state.x87 = Some(x87);
+                        let mut expected = state.clone();
+                        let expected_x87 = expected.x87.as_mut().unwrap();
+                        expected_x87.set_tag(top, X87Tag::Empty);
+                        expected_x87.instruction_pointer = state.rip;
+                        expected.rip += 2;
+
+                        let mut memory = Memory::at(&[0xdd, 0xc0], state.rip);
+                        let untouched = memory.bytes.clone();
+                        let result = run(
+                            &mut state,
+                            &mut memory,
+                            RunConfig {
+                                instruction_budget: 1,
+                                stop_rip: Some(0x8122),
+                                context: AccessContext::default(),
+                            },
+                            || false,
+                        );
+                        assert_eq!(
+                            result.exit,
+                            RunExit::StopAddress,
+                            "TOP={top} CC={cc} {tag:?} {raw:02x?}"
+                        );
+                        assert_eq!(result.instructions_executed, 1);
+                        assert_eq!(state, expected, "TOP={top} CC={cc} {tag:?} {raw:02x?}");
+                        assert_eq!(memory.bytes, untouched);
+                        assert!(memory.accesses.is_empty());
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 3_072);
+    }
+
+    #[test]
+    fn bounded_ffree_st0_rejections_are_atomic() {
+        let forbidden_fsw = [1u16, 2, 4, 8, 0x10, 0x20, 0x40, 0x80, 0x8000];
+        let mut states = Vec::new();
+        for bits in forbidden_fsw.into_iter().chain([0x80ff]) {
+            let mut state = LongModeState::default();
+            state.rip = 0x9100;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = bits;
+            state.x87 = Some(x87);
+            states.push(state);
+        }
+        let mut bad_control = LongModeState::default();
+        bad_control.rip = 0x9100;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037e;
+        x87.status_word = 0x3800;
+        bad_control.x87 = Some(x87);
+        states.push(bad_control);
+        let mut missing = LongModeState::default();
+        missing.rip = 0x9100;
+        states.push(missing);
+
+        for mut state in states {
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xdd, 0xc0], state.rip);
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert!(
+                matches!(result.exit, RunExit::Unsupported { .. }),
+                "FSW={:04x} FCW={:04x} exit={:?}",
+                before.x87.as_ref().map_or(0, |x87| x87.status_word),
+                before.x87.as_ref().map_or(0, |x87| x87.control_word),
+                result.exit
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+        }
+
+        for code in [&[0x66, 0xdd, 0xc0][..], &[0xdd, 0xc1], &[0xdd, 0xc7]] {
+            let mut state = LongModeState::default();
+            state.rip = 0x9100;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0x3800;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(code, state.rip);
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x9100;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0x3800;
+        state.x87 = Some(x87);
+        let mut memory = Memory::at(&[0xdd, 0xc0, 0x90], state.rip);
+        let result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 2,
+                stop_rip: Some(0x9103),
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 2);
+        assert_eq!(state.rip, 0x9103);
+        let x87 = state.x87.as_ref().unwrap();
+        assert_eq!(x87.instruction_pointer, 0x9100);
+        assert_eq!(x87.tag(7), Some(X87Tag::Empty));
+
+        let mut state = LongModeState::default();
+        state.rip = 0x9100;
+        state.x87 = Some(crate::state::X87State::fixture_seed());
+        for (config, expected_exit) in [
+            (
+                RunConfig {
+                    instruction_budget: 0,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                RunExit::InstructionBudgetExhausted,
+            ),
+            (
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x9100),
+                    context: AccessContext::default(),
+                },
+                RunExit::StopAddress,
+            ),
+        ] {
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xdd, 0xc0], state.rip);
+            let result = run(&mut state, &mut memory, config, || false);
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+        }
+        let before = state.clone();
+        let mut truncated = Memory::at(&[0xdd], state.rip);
+        let result = run(
+            &mut state,
+            &mut truncated,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert!(matches!(
+            result.exit,
+            RunExit::MemoryError(_) | RunExit::Fault(_)
+        ));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
     }
 }

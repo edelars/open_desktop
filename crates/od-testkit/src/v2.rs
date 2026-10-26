@@ -796,6 +796,10 @@ impl Fixture {
                 "d9f7dfe0" => ("d9f7dfe0", 4),
                 "d9f6dfe0" => ("d9f6dfe0", 4),
                 "d9f7d9f6dfe0" => ("d9f7d9f6dfe0", 6),
+                "ddc0" => ("ddc0", 2),
+                "ddc0dfe0" => ("ddc0dfe0", 4),
+                "ddc0d9c0dfe0" => ("ddc0d9c0dfe0", 6),
+                "ddc0d9f7d9e8dfe0" => ("ddc0d9f7d9e8dfe0", 8),
                 "d9f6d9f7dfe0" => ("d9f6d9f7dfe0", 6),
                 _ if code_bytes.len() == 4
                     && code_bytes.starts_with("d9c")
@@ -1331,10 +1335,23 @@ impl Fixture {
                             }
                     })
             });
+            let is_ffree_environment_rejected = code_bytes == "ddc0"
+                && self.stop_rip.is_none()
+                && self.expected_exit == ExpectedExit::Unsupported
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    x87.control_word.get() != 0x037f || x87.status_word.get() & 0x80ff != 0
+                });
+            let is_ffree_fld_st0_rejected = code_bytes == "ddc0d9c0dfe0"
+                && self.stop_rip.is_none()
+                && self.expected_exit == ExpectedExit::Unsupported
+                && self.instruction_budget == 3;
             let expected_budget = match code_bytes.as_str() {
                 "db2848b80140000000000000df38dfe0dbe2" | "db28d9fcdfe0dbe2d9fc" => 5,
                 "db28d9fcd9fcdfe0dbe2d9fc" => 6,
                 "d9fcdfe0dbe2" => 3,
+                "ddc0d9c0dfe0" => 3,
+                "ddc0d9f7d9e8dfe0" => 4,
                 "d910d900dfe0dbe2" | "dd10dd00dfe0dbe2" => 4,
                 "d900d9e0d910dfe0" | "d900d9e1d910dfe0" => 4,
                 "d900d9e4dfe0" | "d900ddd1dfe0" | "d900ddd9dfe0" | "d910d9e0dfe0"
@@ -1395,6 +1412,8 @@ impl Fixture {
                     || is_fucom_source_rejected
                     || is_fucomp_source_rejected
                     || is_fcomi_source_rejected
+                    || is_ffree_environment_rejected
+                    || is_ffree_fld_st0_rejected
                 {
                     self.stop_rip.is_some()
                         || self.expected_exit

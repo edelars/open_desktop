@@ -451,6 +451,8 @@ pub enum Operation {
     FnstswM16Rax,
     /// Bare `DD 18` FSTP m64fp at [RAX], bounded finite profile.
     FstpM64FpRax,
+    /// Bare `DD C0` FFREE ST(0), marking the physical TOP cell Empty.
+    FfreeSt0,
     /// Bare `DB 38` FSTP m80fp at [RAX], bounded raw binary80 profile.
     FstpM80FpRax,
     /// Bare `DB 28` FLD m80fp at [RAX], bounded Normal binary80 stack push.
@@ -1252,6 +1254,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     Operation::FstM64FpRax
                 } else if modrm == 0x18 {
                     Operation::FstpM64FpRax
+                } else if modrm == 0xc0 {
+                    Operation::FfreeSt0
                 } else if modrm == 0xe1 {
                     Operation::Fucom
                 } else if modrm == 0xe9 {
@@ -7164,5 +7168,34 @@ mod tests {
         let above_width = shld.flag_effects_for_count(17);
         assert_eq!(above_width.defined, 0);
         assert_eq!(above_width.undefined, crate::ARITHMETIC_FLAGS);
+    }
+
+    #[test]
+    fn exact_bare_dd_c0_is_ffree_st0_and_dd_neighbors_stay_unsupported() {
+        assert_eq!(
+            Memory::new(&[0xdd, 0xc0]).decode().unwrap().operation,
+            Operation::FfreeSt0
+        );
+        for modrm in 0xc0u8..=0xc7 {
+            let decoded = Memory::new(&[0xdd, modrm]).decode();
+            assert_eq!(
+                decoded.map(|instruction| instruction.operation),
+                if modrm == 0xc0 {
+                    Ok(Operation::FfreeSt0)
+                } else {
+                    Err(DecodeError::Unsupported {
+                        opcode: Opcode {
+                            map: OpcodeMap::Primary,
+                            byte: 0xdd,
+                        },
+                        length: 2,
+                    })
+                },
+                "DD {modrm:02x}"
+            );
+        }
+        for bytes in [&[0x66, 0xdd, 0xc0][..], &[0xdd, 0xc1], &[0xdd, 0xc7]] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
     }
 }

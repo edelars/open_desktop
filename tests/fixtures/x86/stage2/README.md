@@ -3612,3 +3612,8 @@ Four exact schema-v2 streams are admitted: `d9c0`, `d9c0dfe0`, `d9e8d9c0dfe0`, a
 ### S2-30bp bounded `FLD ST(i)`
 
 Six handwritten schema-v2 success fixtures cover each newly admitted encoding `d9c1` through `d9c6`. The C1 fixture selects physical source `(TOP+1)&7` with TOP=7; the C6 fixture selects a nonadjacent source while logical ST(0) is Empty. An additional C1 fixture copies negative zero from ST(1) through TOP=0 to wrapped physical slot 7 while ST(0) is Empty. Two budget-one fixtures reject a wrong source tag and an occupied push destination. Runner assertions compare copied raw value/tag, retained source, new TOP, C1 clearing, retirement and JIT denial. These are local interpreter/schema results only; native and physical x86 acceptance remains deferred under ISSUE-019.
+
+
+### S2-30bq bounded `FFREE ST(0)`
+
+The schema allowlist admits exactly `ddc0`, `ddc0dfe0`, `ddc0d9c0dfe0`, and `ddc0d9f7d9e8dfe0`. Literal fixtures cover TOP=7/C1=1 with distinct raw canaries and mixed tags when TOP is already Empty, opaque Special SNaN and malformed payloads, the `FFREE→FINCSTP→FLD1→FNSTSW` reuse composition, an Empty source rejection after `FFREE→FLD ST(0)`, and a forbidden FSW environment. Unit tests also exercise malformed payload bytes and all prior tags. The tag-only operation preserves payloads, all condition-code bits and the TOP; these are local interpreter/schema results, not native or physical x86 evidence. ISSUE-019 remains open.
