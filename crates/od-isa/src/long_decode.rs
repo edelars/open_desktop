@@ -549,8 +549,10 @@ pub enum Operation {
     Fcmove {
         source: u8,
     },
-    /// Bare `DA D1` FCMOVBE ST(0), ST(1), bounded raw copy when CF or ZF is set.
-    Fcmovbe,
+    /// Bare `DA D0+i` FCMOVBE ST(0), ST(i), bounded raw copy when CF or ZF is set.
+    Fcmovbe {
+        source: u8,
+    },
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
     FcompSt {
         source: u8,
@@ -810,7 +812,8 @@ fn x87_fcmove(opcode: u8, modrm: u8) -> Option<Operation> {
 }
 
 fn x87_fcmovbe(opcode: u8, modrm: u8) -> Option<Operation> {
-    (opcode == 0xda && modrm == 0xd1).then_some(Operation::Fcmovbe)
+    (opcode == 0xda && (0xd0..=0xd7).contains(&modrm))
+        .then_some(Operation::Fcmovbe { source: modrm & 7 })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4184,6 +4187,10 @@ mod tests {
             assert_eq!(fcmovb.operation, Operation::Fcmovb { source });
             assert_eq!(fcmovb.length, 2);
             assert_eq!(fcmovb.prefixes, Prefixes::default());
+            let fcmovbe = Memory::new(&[0xda, 0xd0 | source]).decode().unwrap();
+            assert_eq!(fcmovbe.operation, Operation::Fcmovbe { source });
+            assert_eq!(fcmovbe.length, 2);
+            assert_eq!(fcmovbe.prefixes, Prefixes::default());
         }
 
         for modrm in 0u8..=u8::MAX {
@@ -4194,7 +4201,7 @@ mod tests {
                     0xe9 => Ok(Operation::Fucompp),
                     0xc0..=0xc7 => Ok(Operation::Fcmovb { source: modrm & 7 }),
                     0xc8..=0xcf => Ok(Operation::Fcmove { source: modrm & 7 }),
-                    0xd1 => Ok(Operation::Fcmovbe),
+                    0xd0..=0xd7 => Ok(Operation::Fcmovbe { source: modrm & 7 }),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,

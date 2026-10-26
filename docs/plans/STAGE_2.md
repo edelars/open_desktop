@@ -245,6 +245,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30ca | Historical bare `DB C9` FCMOVNE ST(0), ST(1) slice, superseded by indexed S2-30cb; native/JIT closed | S2-30bx |
 | [x] | S2-30cb | Bare `DB C8..CF` FCMOVNE ST(0), ST(i), indexed preflight before ZF and self-index TOP-only, exact raw copy when ZF=0, native/JIT closed | S2-30ca |
 | [x] | S2-30cc | Exact bare Long64 `DA D1` FCMOVBE ST(0), ST(1); preflight both participants before integer `CF || ZF`; full local matrices, six-stream schema and fixture runner; native/JIT closed | S2-30cb |
+| [x] | S2-30cd | Bare Long64 `DA D0..D7` indexed FCMOVBE ST(0), ST(i); preflight before integer `CF || ZF`, TOP-only self-case, exact raw copy; indexed matrices, 20-stream schema and full-state runner; native/JIT closed | S2-30cc |
 | [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
@@ -6216,7 +6217,7 @@ FCOMI producer streams, literal state snapshots, environment/status/boundary
 rejections, complement behavior against indexed FCMOVE, and per-index JIT
 denial. Local results do not close ISSUE-019 or establish physical behavior.
 
-#### S2-30cc. Exact bare `FCMOVBE ST(0), ST(1)` (`DA D1`)
+#### S2-30cc. Historical exact bare `FCMOVBE ST(0), ST(1)` (`DA D1`)
 
 Admit only the unprefixed Long64 two-byte `DA D1` encoding. Reuse the bounded
 FCMOV physical TOP/TOP+1 preflight and require both participants to be
@@ -6238,3 +6239,26 @@ raw/tag transfer, TOP wrap, both repeated steps, all three integer-flag
 producers, invalid participants and environment rejection. The fixture runner
 checks complete state/memory and denies JIT. Local evidence does not resolve
 ISSUE-019 or establish physical behavior.
+
+#### S2-30cd. Indexed bare `FCMOVBE ST(0), ST(i)` (`DA D0..D7`)
+
+Extend the prior S2-30cc form to exact unprefixed Long64 `DA D0..D7` and carry
+`ModR/M & 7` in `Operation`. Keep the same present-x87, FCW `0x037f`, and
+`FSW & 0x82ff == 0` gates. Before reading integer flags, preflight old TOP and
+`(TOP+i)&7` for i>0; for i=0 preflight only TOP and treat every other stack
+slot as opaque. Each used value is Valid-tagged canonical Normal or
+Zero-tagged exact signed binary80 zero, even when untaken. Copy raw ten bytes
+and tag to TOP exactly when `CF || ZF`; otherwise preserve the participants.
+All state except FIP/RIP/retirement remains unchanged. C1=1, memory forms,
+exception delivery, JIT, native and physical acceptance remain excluded.
+
+The local matrices contain 363,520 complete success snapshots (7×51,200
+indexed cases plus 5,120 self-index cases) and 645,120 invalid class/tag
+snapshots (7×86,016 indexed cases plus 43,008 self-index cases). The exact
+schema admits twenty streams: each bare DA D0..D7 and its FNSTSW AX form,
+the existing DAD1 repeat, and the three existing FCOMI producers. Literal
+fixtures cover each index, all four self-condition rows, wraparound, signed
+zero/tag transfer, untaken invalid operands, bad environment, repeat, and
+the retained producers. Runner assertions compare full machine state and
+memory and deny JIT. Local evidence does not resolve ISSUE-019 or establish
+physical x86 behavior.

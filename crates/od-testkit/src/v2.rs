@@ -722,12 +722,7 @@ impl Fixture {
                 | "d9e8d9e8d9e0dbf1dbc9dfe0" => {
                     (code_bytes.as_str(), (code_bytes.len() / 2) as u32)
                 }
-                "dad1"
-                | "dad1dfe0"
-                | "dad1dad1dfe0"
-                | "d9e8d9e0d9e8dbf1dad1dfe0"
-                | "d9e8d9e8dbf1d9e0dad1dfe0"
-                | "d9e8d9e8d9e0dbf1dad1dfe0" => {
+                _ if fcmovbe_stream(&code_bytes) => {
                     (code_bytes.as_str(), (code_bytes.len() / 2) as u32)
                 }
                 _ if fcmove_family_source(&code_bytes).is_some() => {
@@ -1527,13 +1522,14 @@ impl Fixture {
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     x87.control_word.get() != 0x037f || x87.status_word.get() & 0x82ff != 0
                 });
-            let is_fcmovbe_operand_rejected = code_bytes == "dad1"
+            let fcmovbe_source = fcmovbe_bare_source(&code_bytes);
+            let is_fcmovbe_operand_rejected = fcmovbe_source.is_some()
                 && self.stop_rip.is_none()
                 && self.expected_exit == ExpectedExit::Unsupported
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     let top = ((x87.status_word.get() >> 11) & 7) as usize;
-                    let source = (top + 1) & 7;
+                    let source = (top + usize::from(fcmovbe_source.unwrap())) & 7;
                     let valid_operand = |index: usize| {
                         let tag = (x87.tag_word.get() >> (index * 2)) & 3;
                         let Ok(bytes) = decode_bytes(&x87.registers[index]) else {
@@ -1550,9 +1546,9 @@ impl Fixture {
                             _ => false,
                         }
                     };
-                    !valid_operand(top) || !valid_operand(source)
+                    !valid_operand(top) || (fcmovbe_source != Some(0) && !valid_operand(source))
                 });
-            let is_fcmovbe_environment_rejected = code_bytes == "dad1"
+            let is_fcmovbe_environment_rejected = fcmovbe_source.is_some()
                 && self.stop_rip.is_none()
                 && self.expected_exit == ExpectedExit::Unsupported
                 && self.instruction_budget == 1
@@ -1629,12 +1625,17 @@ impl Fixture {
                         2
                     }
                 }
-                _ if fcmovbe_stream(&code_bytes) => match code_bytes.as_str() {
-                    "dad1" => 1,
-                    "dad1dfe0" => 2,
-                    "dad1dad1dfe0" => 3,
-                    _ => 6,
-                },
+                _ if fcmovbe_stream(&code_bytes) => {
+                    if code_bytes.len() == 4 {
+                        1
+                    } else if code_bytes.len() == 8 && code_bytes.starts_with("da") {
+                        2
+                    } else if code_bytes == "dad1dad1dfe0" {
+                        3
+                    } else {
+                        6
+                    }
+                }
                 "dac1dfe0" | "dbc1dfe0" => 2,
                 "dbc1dbc1dfe0" => 3,
                 "dbc1" => 1,
@@ -2379,17 +2380,27 @@ fn fcmovne_family_source(code_bytes: &str) -> Option<u8> {
     (opcode == 0xdb && (0xc8..=0xcf).contains(&modrm)).then_some(modrm & 7)
 }
 
-/// Exact six-stream S2-30cc FCMOVBE schema.
+/// Exact twenty-stream S2-30cd FCMOVBE schema, including the S2-30cc producers.
 fn fcmovbe_stream(code_bytes: &str) -> bool {
+    if code_bytes.len() == 4 || (code_bytes.len() == 8 && code_bytes.ends_with("dfe0")) {
+        return fcmovbe_bare_source(&code_bytes[..4]).is_some();
+    }
     matches!(
         code_bytes,
-        "dad1"
-            | "dad1dfe0"
-            | "dad1dad1dfe0"
+        "dad1dad1dfe0"
             | "d9e8d9e0d9e8dbf1dad1dfe0"
             | "d9e8d9e8dbf1d9e0dad1dfe0"
             | "d9e8d9e8d9e0dbf1dad1dfe0"
     )
+}
+
+fn fcmovbe_bare_source(code_bytes: &str) -> Option<u8> {
+    if code_bytes.len() != 4 {
+        return None;
+    }
+    let opcode = u8::from_str_radix(&code_bytes[0..2], 16).ok()?;
+    let modrm = u8::from_str_radix(&code_bytes[2..4], 16).ok()?;
+    (opcode == 0xda && (0xd0..=0xd7).contains(&modrm)).then_some(modrm & 7)
 }
 
 #[cfg(test)]

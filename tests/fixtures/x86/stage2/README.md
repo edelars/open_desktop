@@ -3749,7 +3749,7 @@ matrices cover 363,520 successes, 161,280 invalid class/tag rejects, and
 per-index environment/status/boundary atomicity. This is local evidence only;
 ISSUE-019 remains open and no native or physical x86 execution is claimed.
 
-### S2-30cc exact bare `FCMOVBE ST(0), ST(1)` (`DA D1`)
+### S2-30cc historical bare `FCMOVBE ST(0), ST(1)` (`DA D1`)
 
 Ten handwritten fixtures cover the four integer `CF || ZF` truth-table rows,
 including raw signed-zero/tag transfer and untaken preservation, TOP=7 wrap,
@@ -3759,3 +3759,16 @@ invalid source with both condition flags set and a forbidden status
 environment. The schema admits exactly six streams; these fixtures provide
 complete local interpreter snapshots and deny JIT. They are not native or
 physical x86 evidence.
+
+### S2-30cd indexed bare `FCMOVBE ST(0), ST(i)` (`DA D0..D7`)
+
+The exact schema contains twenty streams: each `DA D0..D7` bare form and the
+same form followed by `DF E0` FNSTSW AX, the retained `DA D1` repeat, and the
+three retained FCOMI producer streams. New literals cover indices 0 and 2..7,
+all four CF/ZF self-index rows, indexed negative-zero/tag copy, TOP wrap,
+invalid operands with both untaken and taken conditions, and an indexed bad
+environment. The ST(1) fixtures and producers remain as compatibility coverage.
+The runner compares complete state and memory, including RFLAGS, RIP, FIP and
+retirement, on each accepted index and on both repeated transfers; it also
+checks JIT denial. These are local interpreter fixtures only and establish no
+native or physical x86 behavior.

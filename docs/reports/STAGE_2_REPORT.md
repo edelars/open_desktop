@@ -9887,7 +9887,7 @@ oracle manifests absent from this isolated worktree; those artifacts and links
 exist in the shared checkout. No native or physical execution is claimed;
 ISSUE-019 remains open.
 
-## S2-30cc — bounded bare `FCMOVBE ST(0), ST(1)`
+## S2-30cc — historical bounded bare `FCMOVBE ST(0), ST(1)`
 
 Added exact unprefixed Long64 `DA D1`. The interpreter reuses the existing
 bounded FCMOV participant preflight for physical TOP and TOP+1 and performs the
@@ -9918,3 +9918,34 @@ unmapped root file and two broken links to ignored oracle manifests absent
 from this isolated worktree; those files exist in the shared checkout, so the
 links were not changed. No native or physical x86 execution is claimed, and
 ISSUE-019 remains open.
+
+## S2-30cd — indexed bare `FCMOVBE ST(0), ST(i)`
+
+Extended the local bounded form to exact bare Long64 `DA D0..D7`. The decoder
+retains `ModR/M & 7` in `Operation::Fcmovbe { source }`. The interpreter
+preflights physical TOP and `(TOP+i)&7` before integer CF/ZF for i>0; i=0
+preflights only TOP. Present x87 state, FCW `0x037f`, `FSW & 0x82ff == 0`, and
+Valid canonical Normal or Zero exact signed-zero tags remain required for
+every used operand, even when the condition is false. When CF or ZF is set,
+the source raw bytes and tag are copied to TOP; otherwise it is preserved.
+Only FIP, RIP and retirement change. C1=1, exception delivery, memory forms,
+JIT, native execution and physical x86 acceptance remain outside the slice.
+
+The interpreter matrices cover 363,520 complete success states and 645,120
+atomic invalid class/tag rejects across indices, all CF/ZF rows, PF, TOP and
+C0/C2/C3. The exact fixture schema admits twenty streams: eight bare indexed
+forms, each optionally followed by FNSTSW AX, the prior repeat, and three
+prior FCOMI producers. Literal fixtures cover each index, all four self-index
+rows, wrap, signed-zero/tag transfer, untaken and taken invalid participants,
+and an indexed bad environment. Runner checks include complete machine state
+and memory, RFLAGS, RIP/FIP, retirement, repeat execution, and JIT denial.
+
+Verification: formatting, `cargo check --workspace --all-targets --offline`,
+all 184 `od-testkit` tests, and all 198 `od-runner` fixture tests pass. The
+full `od-isa` suite has 718 passed and the two previously recorded unrelated
+FABS/FCHS expectation failures (`rejection=3` and `rejection=18` under SF|IE);
+all S2-30cd focused tests pass. `tools/check_layout.py` reports the known
+worktree `.git` pointer as an unmapped root file and two missing ignored oracle
+manifest links in this isolated worktree; those artifacts exist in the
+shared checkout. No native or physical execution is claimed; ISSUE-019
+remains open.

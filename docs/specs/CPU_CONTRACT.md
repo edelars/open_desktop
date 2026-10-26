@@ -7532,7 +7532,7 @@ complement relation with indexed FCMOVE. Evidence is local interpreter/schema
 coverage only; ISSUE-019 remains open and no physical or native execution is
 claimed.
 
-## Local S2-30cc: bounded exact bare `FCMOVBE ST(0), ST(1)` (`DA D1`)
+## Local S2-30cc historical: bounded exact bare `FCMOVBE ST(0), ST(1)` (`DA D1`)
 
 Admit only the exact unprefixed Long64 `DA D1` form. Require present x87 state,
 FCW `0x037f`, and `FSW & 0x82ff == 0`. Before reading integer RFLAGS, preflight
@@ -7556,3 +7556,28 @@ producers. Handwritten runner fixtures check the truth table, raw signed-zero/
 tag copy, TOP wrap, both repeat steps, greater/equal/less producers, invalid
 source and bad environment with complete state/memory assertions; all fixtures
 deny JIT. This evidence remains local only and does not resolve ISSUE-019.
+
+## Local S2-30cd: bounded indexed `FCMOVBE ST(0), ST(i)` (`DA D0..D7`)
+
+Extend the historical S2-30cc `DA D1` slice to exact unprefixed Long64
+`DA D0..D7`, represented as `Operation::Fcmovbe { source }`. Require present
+x87 state, FCW `0x037f`, and `FSW & 0x82ff == 0`. Before examining integer
+RFLAGS, validate old physical TOP and `(TOP+i)&7` for i>0; self-index i=0
+validates TOP once and leaves every unrelated physical register/tag opaque.
+Each participating cell must be Valid-tagged canonical Normal binary80 or
+Zero-tagged exact signed binary80 zero, including when `CF=ZF=0`. Copy the
+source's raw ten bytes and tag to old TOP exactly when integer `CF || ZF`;
+otherwise preserve it. Preserve all other state except FIP=old RIP, RIP+=2,
+and one retirement. Rejections are atomic. C1=1, memory forms, exception
+delivery, JIT, native execution and physical acceptance remain excluded.
+
+Local interpreter matrices contain 363,520 complete success snapshots:
+51,200 for each i=1..7 and 5,120 self-index snapshots. The invalid class/tag
+matrix contains 645,120 snapshots: 86,016 for each i=1..7 and 43,008 for i=0.
+Coverage includes all four CF/ZF rows, both PF values, all TOP values, all
+C0/C2/C3 combinations, tag/raw transfer, and TOP wrap. Schema v2 admits exactly
+twenty streams: DA D0..D7, each optionally followed by FNSTSW AX, the retained
+DAD1 repeat, and three retained FCOMI producers. Literal fixtures and the
+runner compare complete state/memory, RFLAGS, RIP/FIP and retirement, and deny
+JIT for every index. This is local evidence only; ISSUE-019 and physical x86
+behavior remain open.

@@ -2561,7 +2561,7 @@ fn x87_fcmove_schema_admits_only_nineteen_exact_streams_and_reject_profiles() {
             "{program}"
         );
     }
-    for program in ["66dac9", "48dac9", "9bdac9", "dad0", "da", "dac9dfe1"] {
+    for program in ["66dac9", "48dac9", "9bdac9", "dad8", "da", "dac9dfe1"] {
         let mut fixture = base.clone();
         fixture.instruction_budget = 1;
         let length = (program.len() / 2) as u32;
@@ -2699,16 +2699,20 @@ fn x87_fcmovne_schema_admits_exact_bare_c9_streams_only() {
 }
 
 #[test]
-fn x87_fcmovbe_schema_admits_only_six_exact_bare_streams_and_reject_profiles() {
+fn x87_fcmovbe_schema_admits_exact_indexed_streams_and_reject_profiles() {
     let base = x87_fixture().fixture;
-    let programs = [
-        ("dad1", 1),
-        ("dad1dfe0", 2),
-        ("dad1dad1dfe0", 3),
-        ("d9e8d9e0d9e8dbf1dad1dfe0", 6),
-        ("d9e8d9e8dbf1d9e0dad1dfe0", 6),
-        ("d9e8d9e8d9e0dbf1dad1dfe0", 6),
-    ];
+    let programs = (0..8u8)
+        .flat_map(|index| {
+            let move_bytes = format!("da{:02x}", 0xd0 | index);
+            [(move_bytes.clone(), 1), (format!("{move_bytes}dfe0"), 2)]
+        })
+        .chain([
+            ("dad1dad1dfe0".into(), 3),
+            ("d9e8d9e0d9e8dbf1dad1dfe0".into(), 6),
+            ("d9e8d9e8dbf1d9e0dad1dfe0".into(), 6),
+            ("d9e8d9e8d9e0dbf1dad1dfe0".into(), 6),
+        ])
+        .collect::<Vec<_>>();
     for (program, budget) in programs {
         let mut fixture = base.clone();
         fixture.case_id = format!("x87_fcmovbe_{program}");
@@ -2728,7 +2732,7 @@ fn x87_fcmovbe_schema_admits_only_six_exact_bare_streams_and_reject_profiles() {
             "{program}"
         );
     }
-    for program in ["dad0", "dad2", "dad1dfe1", "66dad1", "48dad1", "9bdad1"] {
+    for program in ["dad8", "dad9", "dad1dfe1", "66dad1", "48dad1", "9bdad1"] {
         let mut fixture = base.clone();
         fixture.instruction_budget = 1;
         let length = (program.len() / 2) as u32;
