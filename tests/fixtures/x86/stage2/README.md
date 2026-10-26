@@ -627,6 +627,33 @@ cargo test -p od-isa stos_ab --offline
 cargo test -p od-testkit stos_ --offline
 ```
 
+## Single-iteration SCAS B/W/D/Q fixtures S2-18h
+
+Exactly 24 literal schema-v2 fixtures cover eight width/direction successes,
+four unmapped source harness errors, four noncanonical source #GP(0) results,
+four zero-budget cases, both `48 66 AF` / `66 48 AF` normalization forms, and
+TEST→SCAS success/fault composition. Answers include all GPRs, RFLAGS,
+definedness, RIP, and complete code/data images. SCAS reads the pre-state
+`ES:[RDI]` once, compares the width-selected accumulator with CMP flags, and
+commits flags and the DF-directed pointer change only after the read succeeds.
+It preserves all RAX bits even for SCASD, and never inspects RSI. Unmapped
+sources remain `harness_error`; noncanonical sources are local #GP(0). JIT and
+native admission remain closed, and the fixture schema/profile is unchanged.
+
+[`generate_stage2_scas.py`](../../../cpu/generate_stage2_scas.py) serializes
+handwritten bytes and predetermined full-state answers only. Independent
+interpreter coverage includes 6,144 states and flag comparisons, exact one-read
+traces, 48 enumerated prefix rejects, REX.W/66 order variants, and faulting
+current-instruction atomicity. Physical execution remains deferred to the
+shared final acceptance substage; ISSUE-016/019 remain open.
+
+```sh
+python3 tests/cpu/generate_stage2_scas.py --check
+python3 -m unittest tests/cpu/test_stage2_scas_generator.py
+cargo test -p od-testkit --offline scas_
+cargo test -p od-runner --test fixture_v2 --offline scas_cli_fixtures
+```
+
 ## Single-iteration LODS B/W/D/Q fixtures S2-18f
 
 Twenty-two literal schema v2 fixtures cover the bounded non-REP LODS slice:

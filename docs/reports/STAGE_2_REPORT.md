@@ -10166,3 +10166,45 @@ Graphify was updated; it reported its existing parser warning for
 `include/open_desktop/host_abi.h`. No directory layout changed. No Mac mini, SSH,
 native runtime, or physical x86 checks were run. Those checks remain in the
 shared final acceptance substage; ISSUE-016 and ISSUE-019 remain open.
+
+## S2-18h — non-REP SCAS B/W/D/Q interpreter slice
+
+The local Long64 interpreter accepts bare `AE` SCASB, `66 AF` SCASW, bare
+`AF` SCASD, and effective `REX.W + AF` SCASQ with address-size 64 and flat
+`ES:[RDI]`. All `48..4F` REX.W variants are supported; REX.W overrides 66,
+while misplaced REX before a later legacy prefix is normalized away. REP,
+LOCK, 67, segment overrides, prefixed AE, and effective non-W REX on AF remain
+unsupported. Existing `F3 AA` REP STOSB behavior is unchanged. No JIT/native
+admission was added.
+
+SCAS performs one width-sized source read from pre-state RDI, compares
+AL/AX/EAX/RAX with memory using CMP semantics, and only then commits the six
+arithmetic flags and DF-directed wrapping RDI update. It preserves all of RAX,
+RSI, RCX, RAM, DF and other state. Successful retirement advances RIP once and
+defines `ARITHMETIC_FLAGS`. A noncanonical source produces #GP(0); missing
+mapping and permissions remain harness errors. A faulting SCAS commits neither
+state nor memory, while a preceding retired TEST remains visible.
+
+Evidence includes an independent 6,144-case state/flags matrix, exact single
+read/no-write traces, 48 unsupported-prefix cases, every REX.W byte and 66/REX
+ordering, fault/budget boundaries, and TEST→SCAS AF-definedness on success and
+fault. Exactly 24 literal schema-v2 fixture cases were added; the generator
+serializes predetermined values only. Schema/profile are unchanged. The 24
+fixtures have local interpreter CLI coverage; they are not native/JIT evidence.
+
+Validation passed: `cargo test -p od-isa --offline` (747/747),
+`cargo test -p od-testkit --offline` (201/201), `cargo test -p od-runner
+--offline` (101 unit + 205 fixture-v2 tests), and
+`cargo check --workspace --all-targets --offline`. Focused SCAS testkit
+coverage passed (6/6), and the SCAS CLI fixture test passed (1/1). All 61
+stage2 fixture generators passed `--check`; the 73 generator unittest checks
+passed. `cargo fmt --all -- --check` and `git diff --check` passed. Graphify
+was updated. Independent gpt-6.1-sol high review found and verified one
+SCAS test-fixture mistake (an STOSB opcode in the noncanonical post-index
+case); the case was changed to `AE` and its exact read trace now passes. The
+review found no remaining issues and independently checked all 24 fixture
+snapshots. `tools/check_layout.py` reports the existing worktree `.git`
+pointer as unmapped and two pre-existing report links to ignored oracle
+manifests absent from this checkout. No layout change was made. No Mac mini,
+SSH, native runtime, or physical x86 checks were run. ISSUE-016 and ISSUE-019
+remain open.

@@ -141,6 +141,25 @@ cargo run --offline -p od-runner -- --fixture tests/fixtures/x86/stage2/mov_load
 S2-08 принят как локальный working slice. Локальные результаты не являются физической
 проверкой новых memory форм; такой oracle относится к S2-09.
 
+## SCAS B/W/D/Q — S2-18h local interpreter coverage
+
+The local Long64 interpreter admits only bare `AE`, bare `AF`, `66 AF`, and
+effective REX.W + `AF` (66 may precede the effective REX). It performs one
+read from flat `ES:[RDI]`, compares the matching accumulator width with CMP
+semantics, and updates arithmetic flags plus DF-directed wrapping RDI after a
+successful read. RAX, RSI, RCX, RAM, DF, and other non-arithmetic state remain
+unchanged. Unsupported prefix combinations stay admission failures; this does
+not claim #UD priority. Current-instruction read faults are locally atomic,
+while earlier retired instructions remain committed. JIT/native are denied.
+
+Coverage includes an independent 6,144-case full-state/flags matrix, exact
+read-only access traces, the 48-case prefix reject set, all REX.W values and
+66/REX ordering, literal schema-v2 fixtures, fault/budget boundaries, and
+TEST→SCAS definedness on success and fault. The fixture generator serializes
+hand-authored literal values only. Unmapped source errors remain harness
+errors, and a noncanonical source produces #GP(0) in this local profile.
+ISSUE-016 and ISSUE-019 remain open; no physical result is claimed.
+
 S2-09 затем подтвердил три положительные hardware-layout MOV/memory программы
 на Mac mini: два повтора interpreter/native, full16/RSP/RIP, flags `0xcd7`,
 вся fixture memory и exact counts, ноль расхождений и стабильные повторы.

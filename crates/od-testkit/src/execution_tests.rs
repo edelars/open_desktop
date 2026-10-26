@@ -3614,6 +3614,666 @@ fn stos_word_dword_qword_success_matrix_is_write_only_and_preserves_full_state()
     assert_eq!(cases, 6_144);
 }
 
+#[test]
+fn scas_all_widths_full_state_matrix_uses_independent_cmp_flags_and_one_read() {
+    const FLAGS: [u64; 6] = [1, 4, 16, 64, 128, 2048];
+    const ARITHMETIC_MASK: u64 = 0x8d5;
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let forms = [
+        (OperandSize::Byte, vec![0xae]),
+        (OperandSize::Word, vec![0x66, 0xaf]),
+        (OperandSize::Dword, vec![0xaf]),
+        (OperandSize::Qword, vec![0x48, 0xaf]),
+    ];
+    let mut cases = 0;
+    for (size, code) in forms {
+        let mask = size.mask();
+        let sign = 1u64 << (size.bytes() * 8 - 1);
+        let pairs = [
+            (0, 0),
+            (1, 1),
+            (mask, mask),
+            (0, 1),
+            (1, 0),
+            (sign, 1),
+            (sign - 1, mask),
+            (mask, sign - 1),
+            (sign - 1, sign),
+            (sign, sign - 1),
+            (0x10, 1),
+            (1, 0x10),
+        ];
+        for direction in [false, true] {
+            for (lhs, rhs) in pairs {
+                for incoming in 0..64u64 {
+                    let result = lhs.wrapping_sub(rhs) & mask;
+                    let expected_arithmetic = (u64::from(lhs < rhs) * FLAGS[0])
+                        | (u64::from((result as u8).count_ones() % 2 == 0) * FLAGS[1])
+                        | (u64::from((lhs ^ rhs ^ result) & 0x10 != 0) * FLAGS[2])
+                        | (u64::from(result == 0) * FLAGS[3])
+                        | (u64::from(result & sign != 0) * FLAGS[4])
+                        | (u64::from((lhs ^ rhs) & (lhs ^ result) & sign != 0) * FLAGS[5]);
+                    let mut fixture = template.clone();
+                    fixture.memory[0].length = code.len() as u32;
+                    fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+                    fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                    fixture.memory[1].initial_bytes_hex = "5a".repeat(16);
+                    fixture.initial_state.rip = HexU64(0x0010_0000);
+                    fixture.initial_state.gpr[Register::Rax as usize] =
+                        HexU64(0xa5a5_5a5a_1234_5678 & !mask | lhs);
+                    fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0020_0004);
+                    fixture.initial_state.rflags = HexU64(
+                        2 | if direction { 1 << 10 } else { 0 }
+                            | FLAGS
+                                .iter()
+                                .enumerate()
+                                .filter(|(i, _)| incoming & (1 << i) != 0)
+                                .fold(0, |bits, (_, flag)| bits | flag),
+                    );
+                    fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+                    let before = fixture.initial_state.to_cpu().unwrap();
+                    let mut state = before.clone();
+                    let mut memory = MovsbAccessLog {
+                        inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                        accesses: Vec::new(),
+                        mfences: Vec::new(),
+                        mfence_error: None,
+                    };
+                    // Place the independent RHS at the pre-state RDI.
+                    memory
+                        .inner
+                        .write_integer(0x0020_0004, AccessContext::default(), size, rhs)
+                        .unwrap();
+                    let before_memory = memory.inner.snapshot();
+                    let mut expected = before.clone();
+                    expected.rflags = (before.rflags & !ARITHMETIC_MASK) | expected_arithmetic;
+                    expected.gpr[Register::Rdi as usize] = if direction {
+                        0x0020_0004u64.wrapping_sub(size.bytes() as u64)
+                    } else {
+                        0x0020_0004u64.wrapping_add(size.bytes() as u64)
+                    };
+                    expected.rip += code.len() as u64;
+                    let result_run = run(
+                        &mut state,
+                        &mut memory,
+                        config(1, fixture.stop_rip.map(HexU64::get)),
+                        || false,
+                    );
+                    assert_eq!(result_run.exit, RunExit::StopAddress);
+                    assert_eq!(result_run.instructions_executed, 1);
+                    assert_eq!(state, expected);
+                    assert_eq!(result_run.rflags_defined, 0x0cd7);
+                    let expected_accesses = (0..code.len())
+                        .map(|offset| (AccessKind::Fetch, 0x0010_0000 + offset as u64, 1))
+                        .chain(std::iter::once((
+                            AccessKind::Read,
+                            0x0020_0004,
+                            size.bytes(),
+                        )))
+                        .collect::<Vec<_>>();
+                    assert_eq!(memory.accesses, expected_accesses);
+                    assert_eq!(memory.inner.snapshot(), before_memory);
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 6_144);
+}
+
+#[test]
+fn scas_prefix_boundaries_and_rex_normalization_are_exact() {
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let forms: [&[u8]; 4] = [&[0xae], &[0x66, 0xaf], &[0xaf], &[0x48, 0xaf]];
+    let prefixes: [&[u8]; 10] = [
+        &[0xf0],
+        &[0xf2],
+        &[0xf3],
+        &[0x67],
+        &[0x26],
+        &[0x2e],
+        &[0x36],
+        &[0x3e],
+        &[0x64],
+        &[0x65],
+    ];
+    let mut rejects = Vec::new();
+    for form in forms {
+        for prefix in prefixes {
+            rejects.push([prefix, form].concat());
+        }
+    }
+    rejects.extend([
+        vec![0x40, 0xaf],
+        vec![0x47, 0xaf],
+        vec![0x66, 0x66, 0xaf],
+        vec![0xf2, 0xf3, 0xaf],
+        vec![0x64, 0x65, 0xaf],
+        vec![0x40, 0xae],
+        vec![0x48, 0xae],
+        vec![0x66, 0xae],
+    ]);
+    assert_eq!(rejects.len(), 48);
+    for code in rejects {
+        let mut fixture = template.clone();
+        fixture.memory[0].length = code.len() as u32;
+        fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+        fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+        fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+        let before = fixture.initial_state.to_cpu().unwrap();
+        let mut state = before.clone();
+        let mut memory = MovsbAccessLog {
+            inner: FlatMemory::from_fixture(&fixture).unwrap(),
+            accesses: Vec::new(),
+            mfences: Vec::new(),
+            mfence_error: None,
+        };
+        let before_ram = memory.inner.snapshot();
+        let outcome = run(&mut state, &mut memory, config(1, None), || false);
+        assert_eq!(
+            outcome.exit,
+            RunExit::Unsupported {
+                opcode: *code.last().unwrap()
+            },
+            "{code:02x?}"
+        );
+        assert_eq!(outcome.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.accesses.len(), code.len());
+        assert!(
+            memory
+                .accesses
+                .iter()
+                .all(|(kind, _, _)| *kind == AccessKind::Fetch)
+        );
+        assert_eq!(memory.inner.snapshot(), before_ram);
+    }
+
+    for rex in 0x48..=0x4f {
+        for (code, width) in [
+            (vec![rex, 0xaf], OperandSize::Qword),
+            (vec![0x66, rex, 0xaf], OperandSize::Qword),
+            (vec![rex, 0x66, 0xaf], OperandSize::Word),
+        ] {
+            let mut fixture = template.clone();
+            fixture.memory[0].length = code.len() as u32;
+            fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+            fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+            fixture.memory[1].initial_bytes_hex = "00".repeat(16);
+            fixture.initial_state.gpr[Register::Rax as usize] = HexU64(0x8877_6655_4433_2211);
+            fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0020_0004);
+            fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+            let mut memory = MovsbAccessLog {
+                inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                accesses: Vec::new(),
+                mfences: Vec::new(),
+                mfence_error: None,
+            };
+            memory
+                .inner
+                .write_integer(0x0020_0004, AccessContext::default(), width, 0)
+                .unwrap();
+            let mut state = fixture.initial_state.to_cpu().unwrap();
+            let original_rax = state.gpr[Register::Rax as usize];
+            let result = run(
+                &mut state,
+                &mut memory,
+                config(1, fixture.stop_rip.map(HexU64::get)),
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress, "{code:02x?}");
+            assert_eq!(
+                state.gpr[Register::Rax as usize],
+                original_rax,
+                "{code:02x?}"
+            );
+            assert_eq!(state.rip, 0x0010_0000 + code.len() as u64);
+            assert_eq!(
+                memory.accesses.last(),
+                Some(&(AccessKind::Read, 0x0020_0004, width.bytes()))
+            );
+        }
+    }
+}
+
+#[test]
+fn scas_reads_each_alignment_page_crossing_and_exact_region_end() {
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    for (size, code) in [
+        (OperandSize::Byte, vec![0xae]),
+        (OperandSize::Word, vec![0x66, 0xaf]),
+        (OperandSize::Dword, vec![0xaf]),
+        (OperandSize::Qword, vec![0x48, 0xaf]),
+    ] {
+        let base = 0x0020_0000u64;
+        let region_len = 0x2000usize;
+        let mut offsets = (0..8u64).collect::<Vec<_>>();
+        offsets.extend([0x0fff, (region_len - size.bytes()) as u64]);
+        for offset in offsets {
+            let mut fixture = template.clone();
+            fixture.memory[0].length = code.len() as u32;
+            fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+            fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+            fixture.memory[1].guest_address = HexU64(base);
+            fixture.memory[1].length = region_len as u32;
+            fixture.memory[1].initial_bytes_hex = "00".repeat(region_len);
+            fixture.memory[1].comparison_mask_hex = "ff".repeat(region_len);
+            let address = base + offset;
+            fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(address);
+            fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+            let mut state = fixture.initial_state.to_cpu().unwrap();
+            let mut memory = MovsbAccessLog {
+                inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                accesses: Vec::new(),
+                mfences: Vec::new(),
+                mfence_error: None,
+            };
+            let result = run(
+                &mut state,
+                &mut memory,
+                config(1, fixture.stop_rip.map(HexU64::get)),
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::StopAddress,
+                "{size:?} offset={offset:#x}"
+            );
+            let expected_read = (AccessKind::Read, address, size.bytes());
+            assert_eq!(
+                memory.accesses.last(),
+                Some(&expected_read),
+                "{size:?} offset={offset:#x}"
+            );
+            assert_eq!(
+                memory
+                    .accesses
+                    .iter()
+                    .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                state.gpr[Register::Rdi as usize],
+                address.wrapping_add(size.bytes() as u64)
+            );
+        }
+    }
+}
+
+#[test]
+fn scas_wraps_rdi_at_zero_and_does_not_touch_any_rsi_sentinel() {
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    for (size, code) in [
+        (OperandSize::Byte, vec![0xae]),
+        (OperandSize::Word, vec![0x66, 0xaf]),
+        (OperandSize::Dword, vec![0xaf]),
+        (OperandSize::Qword, vec![0x48, 0xaf]),
+    ] {
+        for rsi in [0, 0x0020_0000, 0x0020_1000, 0x0000_8000_0000_0000] {
+            let mut fixture = template.clone();
+            fixture.memory[0].length = code.len() as u32;
+            fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+            fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+            fixture.memory[1].guest_address = HexU64(0);
+            fixture.memory[1].initial_bytes_hex = "00".repeat(16);
+            fixture.memory[1].length = 16;
+            fixture.memory[1].comparison_mask_hex = "ff".repeat(16);
+            fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0);
+            fixture.initial_state.gpr[Register::Rsi as usize] = HexU64(rsi);
+            fixture.initial_state.rflags = HexU64(0x0cd7);
+            fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+            let mut state = fixture.initial_state.to_cpu().unwrap();
+            let mut memory = MovsbAccessLog {
+                inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                accesses: Vec::new(),
+                mfences: Vec::new(),
+                mfence_error: None,
+            };
+            let result = run(
+                &mut state,
+                &mut memory,
+                config(1, fixture.stop_rip.map(HexU64::get)),
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress, "{size:?} RSI={rsi:#x}");
+            assert_eq!(
+                state.gpr[Register::Rdi as usize],
+                0u64.wrapping_sub(size.bytes() as u64)
+            );
+            assert_eq!(state.gpr[Register::Rsi as usize], rsi);
+            assert_eq!(
+                memory
+                    .accesses
+                    .iter()
+                    .filter(|(kind, _, _)| *kind != AccessKind::Fetch)
+                    .collect::<Vec<_>>(),
+                vec![&(AccessKind::Read, 0, size.bytes())]
+            );
+        }
+    }
+
+    let mut fixture = template;
+    fixture.memory[0].length = 1;
+    fixture.memory[0].initial_bytes_hex = "ae".into();
+    fixture.memory[0].comparison_mask_hex = "ff".into();
+    fixture.memory[1].guest_address = HexU64(0x0000_7fff_ffff_ffff);
+    fixture.memory[1].length = 1;
+    fixture.memory[1].initial_bytes_hex = "00".into();
+    fixture.memory[1].comparison_mask_hex = "ff".into();
+    fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0000_7fff_ffff_ffff);
+    fixture.stop_rip = Some(HexU64(0x0010_0001));
+    let mut state = fixture.initial_state.to_cpu().unwrap();
+    let mut memory = MovsbAccessLog {
+        inner: FlatMemory::from_fixture(&fixture).unwrap(),
+        accesses: Vec::new(),
+        mfences: Vec::new(),
+        mfence_error: None,
+    };
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(1, fixture.stop_rip.map(HexU64::get)),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(state.gpr[Register::Rdi as usize], 0x0000_8000_0000_0000);
+    assert_eq!(
+        memory.accesses,
+        vec![
+            (AccessKind::Fetch, 0x0010_0000, 1),
+            (AccessKind::Read, 0x0000_7fff_ffff_ffff, 1),
+        ]
+    );
+}
+
+#[test]
+fn scas_faults_are_atomic_and_test_composition_tracks_definedness() {
+    let mut fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    fixture.memory[0].length = 4;
+    fixture.memory[0].initial_bytes_hex = "4885c0ae".into();
+    fixture.memory[0].comparison_mask_hex = "ffffffff".into();
+    fixture.stop_rip = Some(HexU64(0x0010_0004));
+    fixture.instruction_budget = 2;
+    fixture.initial_state.gpr[Register::Rax as usize] = HexU64(1);
+    fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0020_0004);
+    fixture.memory[1].initial_bytes_hex = "00000000010000000000000000000000".into();
+    let mut state = fixture.initial_state.to_cpu().unwrap();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(2, fixture.stop_rip.map(HexU64::get)),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.gpr[Register::Rax as usize], 1);
+    assert_eq!(
+        state.rflags & 0x8d5,
+        0x44,
+        "SCASB sets only PF and ZF for 1 == 1"
+    );
+    assert_eq!(
+        result.rflags_defined & 0x8d5,
+        0x8d5,
+        "SCAS defines AF left undefined by TEST"
+    );
+
+    let mut fault_fixture = fixture.clone();
+    fault_fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0000_8000_0000_0000);
+    let mut fault_state = fault_fixture.initial_state.to_cpu().unwrap();
+    let mut fault_memory = FlatMemory::from_fixture(&fault_fixture).unwrap();
+    let fault_result = run(&mut fault_state, &mut fault_memory, config(2, None), || {
+        false
+    });
+    assert_eq!(
+        fault_result.exit,
+        RunExit::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None
+        })
+    );
+    assert_eq!(
+        fault_result.instructions_executed, 1,
+        "the preceding TEST remains retired"
+    );
+    assert_eq!(fault_state.rip, 0x0010_0003, "RIP remains at SCAS");
+    assert_eq!(fault_state.gpr[Register::Rax as usize], 1);
+    assert_eq!(
+        fault_result.rflags_defined & (1 << 4),
+        0,
+        "faulting SCAS does not define AF"
+    );
+
+    for error in [
+        MemoryError::Backend("injected SCAS read backend error".into()),
+        MemoryError::Architectural(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(4),
+            linear_address: Some(0x0020_0004),
+        }),
+    ] {
+        let mut current = fixture.initial_state.to_cpu().unwrap();
+        let mut bounded = FlatMemory::from_fixture(&fixture).unwrap();
+        bounded.inject_once(0x0020_0004, AccessKind::Read, error.clone());
+        let before_ram = bounded.snapshot();
+        let current_result = run(&mut current, &mut bounded, config(2, None), || false);
+        if let MemoryError::Architectural(fault) = &error {
+            assert_eq!(current_result.exit, RunExit::Fault(fault.clone()));
+        } else {
+            assert_eq!(current_result.exit, RunExit::MemoryError(error.clone()));
+        }
+        assert_eq!(current_result.instructions_executed, 1);
+        assert_eq!(current.rip, 0x0010_0003);
+        assert_eq!(current.gpr[Register::Rax as usize], 1);
+        assert_eq!(current_result.rflags_defined & (1 << 4), 0);
+        assert_eq!(bounded.snapshot(), before_ram);
+    }
+
+    let mut denied = fixture.clone();
+    denied.memory[1].permissions.read = false;
+    let mut denied_state = denied.initial_state.to_cpu().unwrap();
+    let mut denied_memory = FlatMemory::from_fixture(&denied).unwrap();
+    let denied_ram = denied_memory.snapshot();
+    let denied_result = run(
+        &mut denied_state,
+        &mut denied_memory,
+        config(2, None),
+        || false,
+    );
+    assert!(matches!(
+        denied_result.exit,
+        RunExit::MemoryError(MemoryError::PermissionDenied {
+            access: AccessKind::Read,
+            ..
+        })
+    ));
+    assert_eq!(denied_result.instructions_executed, 1);
+    assert_eq!(denied_state.rip, 0x0010_0003);
+    assert_eq!(denied_result.rflags_defined & (1 << 4), 0);
+    assert_eq!(denied_memory.snapshot(), denied_ram);
+
+    let mut truncated = fixture;
+    truncated.memory[0].length = 1;
+    truncated.memory[0].initial_bytes_hex = "48".into();
+    truncated.memory[0].comparison_mask_hex = "ff".into();
+    let mut truncated_state = truncated.initial_state.to_cpu().unwrap();
+    let before = truncated_state.clone();
+    let mut truncated_memory = FlatMemory::from_fixture(&truncated).unwrap();
+    let truncated_ram = truncated_memory.snapshot();
+    let truncated_result = run(
+        &mut truncated_state,
+        &mut truncated_memory,
+        config(2, None),
+        || false,
+    );
+    assert!(matches!(
+        truncated_result.exit,
+        RunExit::MemoryError(MemoryError::Unmapped {
+            access: AccessKind::Fetch,
+            ..
+        })
+    ));
+    assert_eq!(truncated_result.instructions_executed, 0);
+    assert_eq!(truncated_state, before);
+    assert_eq!(truncated_memory.snapshot(), truncated_ram);
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScasExpected {
+    gpr: [HexU64; 16],
+    rflags: HexU64,
+    rflags_defined: HexU64,
+    rip: HexU64,
+    memory: std::collections::BTreeMap<String, String>,
+    fault: Option<ScasFault>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScasFault {
+    vector: u8,
+    error_code: HexU64,
+}
+
+#[test]
+fn scas_literal_fixtures_match_full_state_and_access_contract() {
+    let directory = arithmetic_fixture_directory();
+    let answers: std::collections::BTreeMap<String, ScasExpected> = serde_json::from_slice(
+        &std::fs::read(directory.join("s2_18h_scas_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 24);
+    for (case_id, answer) in answers {
+        let input = Fixture::from_json(
+            &std::fs::read(directory.join(format!("{case_id}.case.json"))).unwrap(),
+        )
+        .unwrap()
+        .fixture;
+        let original = input.initial_state.to_cpu().unwrap();
+        let mut memory = MovsbAccessLog {
+            inner: FlatMemory::from_fixture(&input).unwrap(),
+            accesses: Vec::new(),
+            mfences: Vec::new(),
+            mfence_error: None,
+        };
+        let initial_memory = memory.inner.snapshot();
+        let mut state = original.clone();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            || false,
+        );
+        let code = decode_bytes(&input.memory[0].initial_bytes_hex).unwrap();
+        let has_test = code.starts_with(&[0x48, 0x85, 0xc0]);
+        let success = input.expected_exit == ExpectedExit::StopAddress;
+        let budget = input.instruction_budget == 0;
+        let unmapped = input.expected_exit == ExpectedExit::HarnessError;
+        let exception = input.expected_exit == ExpectedExit::Exception;
+        let expected_retired = if success {
+            if has_test { 2 } else { 1 }
+        } else if has_test {
+            1
+        } else {
+            0
+        };
+        assert_eq!(result.instructions_executed, expected_retired, "{case_id}");
+        if success {
+            assert_eq!(result.exit, RunExit::StopAddress, "{case_id}");
+        } else if budget {
+            assert_eq!(
+                result.exit,
+                RunExit::InstructionBudgetExhausted,
+                "{case_id}"
+            );
+        } else if unmapped {
+            assert!(
+                matches!(
+                    result.exit,
+                    RunExit::MemoryError(MemoryError::Unmapped {
+                        access: AccessKind::Read,
+                        ..
+                    })
+                ),
+                "{case_id}: {:?}",
+                result.exit
+            );
+        } else if exception {
+            let fault = answer.fault.as_ref().expect("literal architectural fault");
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: fault.vector,
+                    error_code: Some(fault.error_code.get() as u32),
+                    linear_address: None
+                }),
+                "{case_id}"
+            );
+        }
+        assert_eq!(state.gpr, answer.gpr.map(HexU64::get), "{case_id}");
+        assert_eq!(state.rflags, answer.rflags.get(), "{case_id}");
+        assert_eq!(state.rip, answer.rip.get(), "{case_id}");
+        assert_eq!(
+            result.rflags_defined,
+            answer.rflags_defined.get(),
+            "{case_id}"
+        );
+        for region in memory.inner.snapshot() {
+            assert_eq!(
+                region.bytes_hex, answer.memory[&region.region_id],
+                "{case_id}: {}",
+                region.region_id
+            );
+        }
+        let expected_accesses = if budget {
+            Vec::new()
+        } else {
+            (0..code.len())
+                .map(|offset| (AccessKind::Fetch, 0x0010_0000 + offset as u64, 1))
+                .chain((success || unmapped).then_some((
+                    AccessKind::Read,
+                    original.gpr[Register::Rdi as usize],
+                    match code[code.len() - 1] {
+                        0xae => 1,
+                        _ if code.starts_with(&[0x66, 0x48]) => 8,
+                        _ if code.starts_with(&[0x66]) || code.starts_with(&[0x48, 0x66]) => 2,
+                        _ if code.starts_with(&[0x48]) => 8,
+                        _ => 4,
+                    },
+                )))
+                .collect()
+        };
+        assert_eq!(memory.accesses, expected_accesses, "{case_id}");
+        if !success {
+            assert_eq!(memory.inner.snapshot(), initial_memory, "{case_id}");
+        }
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StosWidthsExpected {

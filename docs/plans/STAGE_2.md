@@ -872,6 +872,37 @@ width/direction positives, по три unmapped/read-only/noncanonical destinati
 Физические проверки и Mac mini/SSH запускаются только в общем финальном
 substage.
 
+#### S2-18h — одна non-REP SCAS B/W/D/Q итерация (локальный профиль)
+
+Добавить `AE` SCASB, `66 AF` SCASW, bare `AF` SCASD и effective `REX.W + AF`
+SCASQ в Long64/address-size 64 с implicit flat `ES:[RDI]`. Принимать все
+`48..4F`; effective REX.W переопределяет 66 (`66 48 AF` — qword), а misplaced
+REX перед legacy 66 нормализуется (`48 66 AF` — word). AE остаётся bare-only.
+REP/REPE/REPNE, LOCK, 67, все segment overrides, effective non-W REX на AF и
+остальные prefixed AE forms Unsupported. JIT/native admission не расширять.
+
+Исполнение делает ровно одно чтение 1/2/4/8 байт по pre-state RDI и сравнивает
+AL/AX/EAX/RAX с memory через `arithmetic_result(size, Cmp, accumulator,
+memory, old_flags)`. После успешного чтения коммитит только arithmetic flags,
+DF-directed wrapping RDI и обычные RIP/retirement. Полный RAX сохраняется даже
+для SCASD; RSI, RCX, RAM и DF не меняются и RSI не проверяется. Чтение
+неканонического ES source даёт #GP(0); missing/permission/backend errors
+остаются HarnessError, если backend не сообщил architectural fault. Fault
+текущего SCAS не коммитит состояние; ранее retired TEST в literal composite
+остаётся committed. ISSUE-016/019 не закрывать.
+
+Проверки: ровно 6,144 полных состояния (4 widths × 2 DF × 12 пар × 64
+арифметических флаговых входа) с независимым expected-flag calculator; одна
+data read и ноль writes; все alignment residues, crossing/range end, RDI wrap,
+noncanonical post-index, RSI sentinel/alias/unmapped/noncanonical без доступа,
+все REX.W/66 порядки, fetch/budget boundary и 48 enumerated prefix rejects.
+Fault matrix покрывает unmapped/permission/backend/injected architectural
+fault, source #GP и TEST+SCAS success/fault definedness. Добавить ровно 24
+literal fixtures: 8 width/DF successes, 4 unmapped, 4 noncanonical #GP, 4
+budget-zero, 2 normalization и 2 TEST composition. Generator только
+сериализует predetermined answers; profile/schema не менять. Физические и
+Mac mini/SSH проверки остаются в общем финальном acceptance.
+
 ### S2-19. REP и частичное выполнение
 
 1. Добавить REP/REPE/REPNE только к разрешённым формам; обработать нулевой count без лишнего access.

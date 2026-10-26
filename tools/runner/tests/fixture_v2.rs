@@ -5090,6 +5090,122 @@ fn stos_width_cli_fixtures_match_literal_full_state_and_fail_atomically() {
 }
 
 #[test]
+fn scas_cli_fixtures_match_literal_full_state_and_status() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(&fs::read(directory.join("s2_18h_scas_expected.json")).unwrap())
+            .unwrap();
+    assert_eq!(answers.len(), 24);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let harness_error = case_id.contains("unmapped");
+        let (input, result) = run(&raw, "interpreter", if harness_error { 5 } else { 0 });
+        if case_id.contains("budget") {
+            assert!(
+                matches!(result.outcome, Outcome::InstructionBudgetExhausted {}),
+                "{case_id}"
+            );
+            assert_eq!(count(&result), 0, "{case_id}");
+        } else if harness_error {
+            assert_eq!(
+                input.fixture.expected_exit,
+                ExpectedExit::HarnessError,
+                "{case_id}"
+            );
+            assert!(
+                matches!(result.outcome, Outcome::HarnessError { .. }),
+                "{case_id}"
+            );
+            assert_eq!(count(&result), 0, "{case_id}");
+        } else if case_id.contains("noncanonical") || case_id.ends_with("test_fault") {
+            assert!(matches!(result.outcome, Outcome::Exception {}), "{case_id}");
+            let Observation::Available { value: Some(fault) } = &snapshot(&result).exception else {
+                panic!("{case_id}: expected architectural fault");
+            };
+            assert_eq!(fault.vector, 13, "{case_id}");
+            assert_eq!(
+                fault.error_code,
+                Observation::Available { value: HexU64(0) },
+                "{case_id}"
+            );
+            assert_eq!(
+                count(&result),
+                u64::from(case_id.ends_with("test_fault")),
+                "{case_id}"
+            );
+        } else {
+            assert!(
+                matches!(result.outcome, Outcome::StopAddress {}),
+                "{case_id}"
+            );
+            assert_eq!(
+                count(&result),
+                if case_id.ends_with("test_composition") {
+                    2
+                } else {
+                    1
+                },
+                "{case_id}"
+            );
+        }
+        let observed = snapshot(&result);
+        let expected_gprs: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gprs, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.state.rip, expected_rip, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}: {}",
+                region.region_id
+            );
+        }
+        if matches!(input.fixture.expected_exit, ExpectedExit::StopAddress) {
+            let (_, jit_result) = run(&raw, "jit", 4);
+            assert!(
+                matches!(jit_result.outcome, Outcome::Unsupported { .. }),
+                "{case_id}: JIT remains closed"
+            );
+            assert!(
+                matches!(jit_result.snapshot, Observation::Unavailable { .. }),
+                "{case_id}: no interpreter fallback"
+            );
+            assert!(
+                matches!(
+                    jit_result.instructions_executed,
+                    Observation::Unavailable { .. }
+                ),
+                "{case_id}: no JIT retirement count"
+            );
+        }
+        if !matches!(input.fixture.expected_exit, ExpectedExit::StopAddress) {
+            for region in &observed.memory {
+                assert_eq!(
+                    region.bytes_hex,
+                    input
+                        .fixture
+                        .memory
+                        .iter()
+                        .find(|spec| spec.region_id == region.region_id)
+                        .unwrap()
+                        .initial_bytes_hex,
+                    "{case_id}: {}",
+                    region.region_id
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn rep_iteration_work_limit_has_a_distinct_cli_outcome_and_restart_snapshot() {
     let mut fixture: serde_json::Value = serde_json::from_slice(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_19a_rep_stosb_df0.case.json"
