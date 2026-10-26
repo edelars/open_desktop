@@ -7489,3 +7489,20 @@ rejection. Runner assertions compare complete x87 snapshots for all success
 fixtures, including the second repeat transfer, and deny JIT. Evidence is
 local interpreter/schema/runner evidence only; ISSUE-019 remains open. See
 [plan](../plans/STAGE_2.md#s2-30bz-bare-fcmove-st0-sti-da-c8cf), [report](../reports/STAGE_2_REPORT.md#s2-30bz--bounded-indexed-fcmove-st0-sti), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bz-bounded-indexed-fcmove-st0-sti).
+
+## Local S2-30ca: bounded bare `FCMOVNE ST(0), ST(1)` (`DB C9`)
+
+The exact unprefixed Long64 `DB C9` form validates x87 state, FCW `0x037f`,
+`FSW & 0x82ff == 0`, and both old physical TOP and TOP+1 as Valid canonical
+Normal or Zero exact signed binary80 before consulting integer ZF. ZF=0 copies
+the source's ten raw bytes and tag to TOP; ZF=1 preserves both cells. C1=1
+remains unsupported. All other state is preserved except FIP=old RIP, RIP+2 and
+one retirement. Memory, exception, JIT and native paths remain unsupported.
+
+Local validation covers an exact bare decoder case, 51,200 complete success
+snapshots, 21,504 invalid class/tag rejection snapshots, missing-state and
+environment gates, and two FCOMI producer sequences that verify ZF and the
+resulting source copy/preservation. The five-stream schema, two literal success
+fixtures, a ZF=1 invalid-source fixture and JIT denial are covered. Broader boundary tests are not added for
+this exact single form.
+ISSUE-019 remains open; see the [S2-30ca plan](../plans/STAGE_2.md#s2-30ca-bare-fcmovne-st0-st1-db-c9).

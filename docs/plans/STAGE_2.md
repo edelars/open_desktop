@@ -242,6 +242,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30bv | Bare `DA C0..C7` FCMOVB ST(0), ST(i), indexed source preflight, self-index checks only TOP; exact raw conditional copy, local C1=0 gate, native/JIT closed | S2-30bu |
 | [x] | S2-30bw | Bare `DB C1` FCMOVNB ST(0), ST(1), same strict preflight gate, exact raw copy when CF=0, native/JIT closed | S2-30bv |
 | [x] | S2-30bx | Bare `DB C0..C7` FCMOVNB ST(0), ST(i), indexed source preflight with self-index TOP-only, exact raw copy when CF=0, native/JIT closed | S2-30bw |
+| [x] | S2-30ca | Bare `DB C9` FCMOVNE ST(0), ST(1), both participants preflighted before ZF, exact raw copy when ZF=0, native/JIT closed | S2-30bx |
 | [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
@@ -6182,3 +6183,14 @@ tag/raw payload copying, negative zero, invalid source with ZF=0 and indexed
 environment rejection. Runner checks complete x87 snapshots and explicitly
 checks the repeat's second transfer; JIT remains denied. The former ST(1)-only
 limit is historical. ISSUE-019 remains open.
+
+#### S2-30ca. Bare `FCMOVNE ST(0), ST(1)` (`DB C9`)
+
+Admit only exact unprefixed Long64 `DB C9`. Reuse the bounded FCMOV operand
+preflight for physical TOP and TOP+1, before reading ZF even when the move is
+untaken. When ZF=0, copy the source's exact binary80 bytes and tag to TOP; when
+ZF=1, preserve both operands. Keep FCW `0x037f`, `FSW & 0x82ff == 0`, C1=1
+rejection, full-state preservation, FIP/RIP/retirement, no memory, no exceptions,
+and no JIT/native execution. Validate the 51,200-success and 21,504-rejection
+matrices, exact schema streams, literal fixtures, runner snapshots and JIT
+denial before marking complete. ISSUE-019 remains open.

@@ -3724,3 +3724,11 @@ after both steps. It also verifies all prior ST(1) success payload/tag/state
 results and denies JIT. ISA matrices cover 363,520 successes and 161,280
 atomic class/tag rejects across all indices, per-index environment and
 execution boundaries. This is local evidence only; ISSUE-019 remains open.
+
+### S2-30ca bounded bare `FCMOVNE ST(0), ST(1)`
+
+Two handwritten literal fixtures cover ZF=0 raw payload/tag copying and ZF=1
+operand preservation for exact `DB C9`, including signed zero and distinct
+tags. A third fixture has an invalid source with ZF=1 and checks atomic
+rejection. They are local interpreter evidence and do not claim native
+execution.

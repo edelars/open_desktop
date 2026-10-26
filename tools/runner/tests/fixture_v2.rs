@@ -148,6 +148,17 @@ const FCMOVNB_REJECTS: [&[u8]; 4] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_c1_reject.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_bad_fcw_reject.case.json"),
 ];
+const FCMOVNE_FIXTURES: [&[u8]; 2] = [
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30ca_fcmovne_taken_negative_zero.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30ca_fcmovne_untaken_distinct_tags.case.json"
+    ),
+];
+const FCMOVNE_REJECTS: [&[u8]; 1] = [include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30ca_fcmovne_invalid_source_zf1_reject.case.json"
+)];
 const FCMOVE_INDEXED_FIXTURES: [&[u8]; 8] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf1.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf0.case.json"),
@@ -7441,5 +7452,45 @@ fn local_x87_fcmove_snapshots_and_denies_jit() {
         assert_eq!(count(&result), 0, "{}", loaded.fixture.case_id);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert_eq!(snapshot(&result).state, loaded.fixture.initial_state);
+    }
+}
+
+#[test]
+fn local_x87_fcmovne_fixtures_check_raw_copy_and_untaken_state_and_deny_jit() {
+    for bytes in FCMOVNE_FIXTURES {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let (_, result) = run(bytes, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{}",
+            loaded.fixture.case_id
+        );
+        assert_eq!(count(&result), 2, "{}", loaded.fixture.case_id);
+        let observed = snapshot(&result);
+        let before = loaded.fixture.initial_state.x87.as_ref().unwrap();
+        let after = observed.state.x87.as_ref().unwrap();
+        let mut expected = before.clone();
+        if loaded.fixture.initial_state.rflags.get() & 0x40 == 0 {
+            let top = ((expected.status_word.get() >> 11) & 7) as usize;
+            let source = (top + 1) & 7;
+            expected.registers[top] = expected.registers[source].clone();
+            let tag = (expected.tag_word.get() >> (source * 2)) & 3;
+            let mask = 3u64 << (top * 2);
+            expected.tag_word = HexU64((expected.tag_word.get() & !mask) | (tag << (top * 2)));
+        }
+        expected.instruction_pointer = loaded.fixture.initial_state.rip;
+        assert_eq!(after, &expected, "{}", loaded.fixture.case_id);
+        assert_eq!(observed.state.rflags, loaded.fixture.initial_state.rflags);
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    }
+    for bytes in FCMOVNE_REJECTS {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let (_, result) = run(bytes, "interpreter", 4);
+        assert_eq!(count(&result), 0, "{}", loaded.fixture.case_id);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert_eq!(snapshot(&result).state, loaded.fixture.initial_state);
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
     }
 }

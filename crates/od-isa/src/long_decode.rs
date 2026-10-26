@@ -541,6 +541,8 @@ pub enum Operation {
     Fcmovnb {
         source: u8,
     },
+    /// Bare `DB C9` FCMOVNE ST(0), ST(1), bounded raw copy when ZF is clear.
+    Fcmovne,
     /// Bare `DA C8+i` FCMOVE ST(0), ST(i), bounded raw copy when ZF is set.
     Fcmove {
         source: u8,
@@ -791,6 +793,10 @@ fn x87_fcmovb(opcode: u8, modrm: u8) -> Option<Operation> {
 fn x87_fcmovnb(opcode: u8, modrm: u8) -> Option<Operation> {
     (opcode == 0xdb && (0xc0..=0xc7).contains(&modrm))
         .then_some(Operation::Fcmovnb { source: modrm & 7 })
+}
+
+fn x87_fcmovne(opcode: u8, modrm: u8) -> Option<Operation> {
+    (opcode == 0xdb && modrm == 0xc9).then_some(Operation::Fcmovne)
 }
 
 fn x87_fcmove(opcode: u8, modrm: u8) -> Option<Operation> {
@@ -1174,6 +1180,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0x18 => Operation::FistpM32IntRax,
                     0xc0..=0xc7 => {
                         x87_fcmovnb(opcode.byte, modrm).ok_or_else(|| self.unsupported(opcode))?
+                    }
+                    0xc9 => {
+                        x87_fcmovne(opcode.byte, modrm).ok_or_else(|| self.unsupported(opcode))?
                     }
                     _ => indexed_x87_compare(opcode.byte, modrm)
                         .ok_or_else(|| self.unsupported(opcode))?,
@@ -4234,6 +4243,27 @@ mod tests {
             for prefix in [0x66, 0x48, 0x9b] {
                 assert!(Memory::new(&[prefix, 0xdb, modrm]).decode().is_err());
             }
+        }
+    }
+
+    #[test]
+    fn exact_bare_db_c9_fcmovne_preserves_neighbors_and_rejects_prefixes() {
+        assert_eq!(
+            Memory::new(&[0xdb, 0xc9]).decode().unwrap().operation,
+            Operation::Fcmovne
+        );
+        for modrm in 0u8..=u8::MAX {
+            if modrm != 0xc9
+                && !matches!(modrm, 0xc0..=0xc7 | 0xe2 | 0xe3 | 0xe8..=0xef | 0xf0..=0xf7 | 0x00 | 0x10 | 0x18 | 0x28 | 0x38)
+            {
+                assert!(
+                    Memory::new(&[0xdb, modrm]).decode().is_err(),
+                    "DB {modrm:02x}"
+                );
+            }
+        }
+        for prefix in [0x66, 0x48, 0x9b] {
+            assert!(Memory::new(&[prefix, 0xdb, 0xc9]).decode().is_err());
         }
     }
 

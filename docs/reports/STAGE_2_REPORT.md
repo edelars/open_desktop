@@ -9833,3 +9833,25 @@ a pseudo-denormal rather than a canonical subnormal admitted by the bounded
 profile. The focused tests and testkit schema pass. A full
 `cargo test -p od-isa --offline` run reports 706 passed and only the two
 previously documented FABS/FCHS status-vector mismatches; see ISSUE-019.
+
+## S2-30ca — bounded bare `FCMOVNE ST(0), ST(1)`
+
+Added the exact bare Long64 `DB C9` decoder and interpreter path. It reuses the
+existing FCMOV preflight, so TOP and TOP+1 are checked before ZF is read,
+including ZF=1. ZF=0 copies the source's raw ten-byte payload and tag to TOP;
+ZF=1 leaves it unchanged. FCW/FSW gates, C1=1 rejection, full-state
+preservation and FIP/RIP/retirement use existing bounded execution contracts.
+
+Local unit checks cover exact bare/prefix/neighbor decoding, 51,200 full-state
+successes and 21,504 atomic class/tag rejections. Testkit admits exactly five
+streams: `dbc9`, `dbc9dfe0`, `dbc9dbc9dfe0`, and the two required producer
+sequences. Two literal success fixtures check complete x87 payload/tag outcomes
+for ZF=0 and ZF=1; a third rejects an invalid source with ZF=1. All deny JIT.
+Two producer sequences also verify the
+ZF values after FCOMI and the resulting negative-one preservation or positive-
+one copy. Targeted tests and workspace offline check pass. `tools/check_layout.py`
+reports that `.git` is unmapped because it is a worktree pointer file, and
+reports the two historical oracle manifest links above as broken because their
+ignored `work/` artifacts are not copied into this isolated worktree; both
+manifests exist in the shared checkout. The report links were left intact. No
+native or physical x86 acceptance is claimed. ISSUE-019 remains open.

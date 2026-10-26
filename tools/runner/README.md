@@ -115,3 +115,6 @@ Save raw output under `work/stage-0/<run-id>/` with the exact command, source re
 S2-30bz's indexed FCMOVE fixtures verify complete x87 register payloads, tags,
 environment and instruction-pointer state in the interpreter runner, including
 the second move in the repeat stream. Schema v2 JIT remains unsupported.
+S2-30ca's `DB C9` FCMOVNE fixtures assert the full x87 result for taken and
+untaken ZF outcomes, reject an invalid source with ZF=1, and explicitly deny
+JIT.
