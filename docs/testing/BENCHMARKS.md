@@ -28,6 +28,56 @@
 
 Скорость признаётся улучшенной только при повторяемой разнице, превышающей наблюдаемый разброс, и при сохранении корректности. При недостаточных данных вывод обозначается предварительной гипотезой. Не принимать архитектурное решение по скорости без подходящих замеров.
 
+## JIT этапа 3: workload и уровни прогрева
+
+Старые значения S0-13 характеризуют direct fragment path и host wrapper на
+конкретной машине. Они остаются историческим baseline и не переносятся на
+будущий block JIT. Перед выбором lowering/allocator сохранить текущие fixture
+и corpus fingerprints. Текущий runner сравнивает interpreter и legacy fragment
+JIT; новый block JIT включается после S3-13.
+
+| Workload | Состав | Доступность сравнения |
+|---|---|---|
+| Linear integer | Повторяемые `MOV`/`ADD`/`SUB`/`CMP` из S0-09 без memory | Interpreter и legacy fragment path; новый block JIT после S3-13 |
+| Conditional branch | Короткая программа с `JZ`/`JNZ`, одинаковыми taken/not-taken inputs | Одноблочные cases после S3-13; полный Stage 1 corpus после dispatcher S3-15 |
+| Short/long loop | Одни и те же guest instructions с разным числом loop iterations | Legacy path — только для его собственного сравнения; block JIT требует S3-15 и точной interpreter semantics |
+| Multi-block | Несколько связанных basic blocks и повторные переходы между ними | После dispatcher и cache lookup; не включать в ранний one-block result |
+| Helper-heavy | Частые `ADD`/`SUB`/`CMP` и eager materialization flags через helper | Только при одинаковой x86 flag semantics и измерении фактических helper calls |
+| Memory/fallback/invalidation | Checked accesses, interpreter exits, изменённый guest code | Добавлять вместе с соответствующей реализацией и correctness evidence; сейчас не измерять |
+
+Для каждого workload сохранить exact guest bytes, initial CPU state, число
+исполняемых guest instructions, instruction budget, exit/branch behavior и
+ожидаемое состояние. До timing подтвердить корректность каждого сравниваемого
+варианта на том же input. Физический x86 oracle — обязательная correctness
+проверка там, где её требует план, но его время на отдельной Ubuntu-машине не
+является прямым A/B performance comparison с ARM64 host.
+
+Различать три измеряемых уровня:
+
+1. **Cold process:** отдельный запуск и startup целевого runner; измерять
+   внешним supervisor, поскольку `od-runner --benchmark` не включает старт
+   процесса.
+2. **Cold compilation/code cache:** программа при пустом in-process cache,
+   включая decode/build/lowering, ARM64 emission, publication и первое
+   исполнение. Текущий `od-runner --benchmark` отдельно измеряет translation и
+   compile/publish/drop, но не исполняет код в этой cold-серии; полная
+   cold-compilation-plus-first-execution метрика пока недоступна. Не получать
+   её сложением медиан отдельных серий. Для legacy fragment path явно указывать
+   отсутствие постоянного block cache.
+3. **Warm execution:** уже опубликованный код и одинаковые повторные inputs.
+   Время нового block JIT включает предусмотренные dispatcher/cache lookup и
+   state materialization; время interpreter включает decode при каждом вызове,
+   если так устроен сравниваемый API.
+
+Runner калибрует серии до batch не короче 200 ms, сохраняет 20 повторных
+samples по умолчанию и чередует порядок двух сравниваемых вариантов. Для
+нескольких вариантов сохранять сбалансированный переменный порядок, счётчики
+guest work и raw duration каждого sample. Раздельно фиксировать median,
+разброс, code size и существенные изменения RSS. M3 Max и M1 Pro сравнивать
+только внутри одной машины и одной конфигурации. Если вариант, workload или
+уровень прогрева недоступен, отметить его `not available` и указать
+задачу-prerequisite; не подменять его старым числом S0-13.
+
 ## Шаблон результата
 
 ```text
