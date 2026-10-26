@@ -9299,9 +9299,12 @@ performed. ISSUE-019 remains open.
 
 ## S2-30bf — historical sticky UE through bounded FCHS/FABS
 
-The earlier S2-30be PE|UE rejection fixture is now renamed to
-`s2_30be_fchs_normal_pe_oe` and seeds PE|OE (`0x0028`), since UE is admitted
-in this substage. Its runner rejection test confirms the renamed negative case.
+At S2-30bf, the earlier S2-30be PE|UE rejection fixture was renamed to
+`s2_30be_fchs_normal_pe_oe` and seeded PE|OE (`0x0028`), since UE was admitted
+while OE remained forbidden. S2-30bg later admits OE and renames this fixture
+to `s2_30be_fchs_normal_pe_ze`, which seeds ZE|PE (`0x0024`). The former
+S2-30bf UE|OE negative fixture is now `s2_30bf_fchs_normal_ue_ze`, seeded
+with ZE|UE (`0x0014`).
 
 
 Only `bounded_x87_sign_st0_source` changed its FSW mask from `0x80dc` to
@@ -9320,8 +9323,9 @@ minimum-subnormal outcomes for both signs and both sign operations. It checks
 written bytes, the unchanged Normal+Valid binary80 source and tag, then checks
 that the sign operation changes only sign and preserves the UE|PE already
 observed after FST (with C1 clear/set at producer time). CLI fixtures use the
-exact streams `d910d9e0dfe0` and `dd10d9e1dfe0`, plus forbidden UE|OE and
-IE|DE|UE|PE|SF cases; JIT remains denied.
+exact streams `d910d9e0dfe0` and `dd10d9e1dfe0`, plus forbidden UE|OE at that
+stage (renamed to ZE|UE in S2-30bg) and IE|DE|UE|PE|SF cases; JIT remains
+denied.
 
 No Mac mini, SSH, native runtime or physical x86 checks were performed.
 ISSUE-019 remains open for the combined final substage.
@@ -9337,3 +9341,38 @@ Graphify rebuilt 4,999 nodes, 9,985 edges and 180 communities; it reported the
 existing `host_abi.h` syntax warning, unsupported-file skips and stale saved
 community labels. No Mac mini, SSH, native runtime or physical x86 checks were
 performed. ISSUE-019 remains open.
+
+## S2-30bg — historical sticky OE through bounded FCHS/FABS
+
+Only `bounded_x87_sign_st0_source` changed its FSW mask from `0x80cc` to
+`0x80c4`. FCW `0x037f`, the six accepted tag/class pairs and all existing
+sign/C1/TOP/tag/raw/payload/FIP/RIP/retirement invariants remain unchanged.
+Exactly all 32 IE/DE/OE/UE/PE combinations are admitted. ZE/SF/ES/B reject
+atomically in every history combination. Sign operations generate no flags;
+decoder, schema, classifier, arithmetic and JIT/native gates remain unchanged.
+
+The full-state interpreter matrix covers 98,304 states (two operations × six
+class/tag pairs × two signs × eight TOP × 16 CC patterns × 32 historical
+combinations). The four forbidden-status products cover 3,072 atomic rejects.
+Bad FCW/tag/raw, missing x87 state and fetch/truncation/STOP/budget/fault
+boundaries are checked with OE history. Under FCW `0x037f`, non-popping FST
+m32/m64 producer cases test round-to-nearest overflow midpoint−1, midpoint,
+midpoint+1 and maximum significand for both signs. Midpoint values are
+`0xffffff8000000000` at exponent 127 and `0xfffffffffffffc00` at exponent
+1023. Midpoint−1 produces no OE; midpoint and higher produce signed infinity,
+OE|PE and C1=1. Seeded IE/DE/UE/PE remain set. Full state and canary snapshots
+check store bytes, unchanged Normal+Valid source, sign-only source
+transformation, C1 clear, retained OE|PE, unchanged memory, and FNSTSW/FNCLEX
+visibility. Failed and out-of-range writes preserve full state and memory.
+CLI fixtures execute `d910d9e0dfe0` and `dd10d9e1dfe0`, include seeded
+OE-only success and ZE|PE/ZE|UE rejects, and retain JIT denial.
+
+Focused checks passed: the 98,304-case matrix, 3,072 forbidden-status cases,
+OE boundary rejection, the m32/m64 producer and atomic-write unit test, and
+schema-v2 CLI tests for OE-only success, both producers, renamed rejects and
+JIT denial. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py` (48 required directories, six crate scaffolds,
+14 instruction scopes), and `git diff --check` passed. `graphify update .` was
+run after these changes. No Mac mini, SSH, native runtime or physical x86
+checks were performed; ISSUE-019 remains open.

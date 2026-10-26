@@ -219,6 +219,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30bd | Bare D9 E0/E1 FCHS/FABS additionally preserve historical DE independently or with IE; reject all other exception/summary bits; native/JIT closed | S2-30bc, S2-31ah |
 | [x] | S2-30be | Bare D9 E0/E1 FCHS/FABS additionally preserve historical PE with IE/DE; only IE/DE/PE combinations admitted; native/JIT closed | S2-30bd, S2-31ah |
 | [x] | S2-30bf | Bare D9 E0/E1 FCHS/FABS additionally preserve historical UE with IE/DE/PE; admit all IE/DE/UE/PE combinations, reject ZE/OE/SF/ES/B; local only, native/physical deferred | S2-30be |
+| [x] | S2-30bg | Bare D9 E0/E1 FCHS/FABS additionally preserve historical OE with IE/DE/UE/PE; admit all 32 sticky exception combinations, reject ZE/SF/ES/B; local only, native/physical deferred | S2-30bf, S2-31bp, S2-31bq |
 | [x] | S2-30ba | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 SignalingNaN, preserving Q=0 and raw payload; native/JIT closed | S2-30az, S2-31ab |
 | [x] | S2-30bb | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy only Special-tagged canonical binary80 subnormals with unchanged bytes/tag; native/JIT closed | S2-30ba, S2-31x |
 | [x] | S2-30az | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 QuietNaN without changing raw bytes; native/JIT closed | S2-30au, S2-30aw |
@@ -2392,6 +2393,31 @@ overview/clearing/repeat behavior. Exact schema-v2 CLI streams include
 IE|DE|UE|PE success, UE|OE and IE|DE|UE|PE|SF rejection, with JIT denial.
 Keep ISSUE-019 open and defer Mac mini/SSH/native/physical checks to the combined
 final substage.
+
+#### S2-30bg. Admit historical sticky OE to bounded `FCHS/FABS`
+
+Change only `bounded_x87_sign_st0_source` from FSW mask `0x80cc` to
+`0x80c4`. Keep FCW `0x037f`, the same six accepted tag/class pairs, all
+sign/C1/TOP/tag/raw/payload/FIP/RIP/retirement invariants, and no generated
+flags. Admit every combination of IE/DE/OE/UE/PE (32 histories); reject ZE,
+SF, ES and B combined with each history. Decoder, schema, classifier,
+arithmetic, JIT and native gates remain unchanged.
+
+Cover 98,304 full-state cases (two operations × six pairs × two signs × eight
+TOP × 16 CC × 32 histories) and 3,072 atomic forbidden-status cases (four
+forbidden bits × all histories across both operations, pairs and signs).
+Extend malformed-state, exact-FCW, missing-state and execution-boundary
+rejections with OE. Under FCW `0x037f`, produce real OE using non-popping FST
+m32/m64 at the round-to-nearest overflow midpoint: significands
+`0xffffff8000000000` at exponent 127 and `0xfffffffffffffc00` at exponent
+1023. Test midpoint−1, midpoint, midpoint+1 and maximum significand, both
+signs. Only midpoint and above produce signed infinity with OE|PE and C1=1;
+midpoint−1 does not set OE. Preserve the Normal+Valid source, assert that the
+following sign operation changes only source sign, clears C1 and preserves
+produced flags and memory, then observe FNSTSW/FNCLEX. Include write/range
+atomicity and seeded IE/DE/UE/PE. CLI coverage uses exact m32/m64 streams,
+seeded OE-only success and ZE-based rejects; JIT remains denied. Keep ISSUE-019
+open and defer Mac mini/SSH/native/physical checks to combined final acceptance.
 
 #### S2-30be. Admit historical sticky PE to bounded `FCHS/FABS`
 

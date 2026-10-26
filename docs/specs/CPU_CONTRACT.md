@@ -6952,6 +6952,36 @@ unverified; ISSUE-019 stays open. See the [plan](../plans/STAGE_2.md#s2-30be-adm
 [report](../reports/STAGE_2_REPORT.md#s2-30be--historical-sticky-pe-through-bounded-fchsfabs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30be-historical-pe-fchs-fabs).
 
+<a id="local-s2-30bg-historical-oe-through-bounded-fchsfabs"></a>
+
+## Local S2-30bg: historical sticky OE through bounded `FCHS/FABS`
+
+Only `bounded_x87_sign_st0_source` changes its FSW mask from `0x80cc` to
+`0x80c4`. Exact FCW `0x037f` and the same six accepted source tag/class pairs
+remain. The gate preserves every combination of IE/DE/OE/UE/PE; ZE, SF, ES and
+B remain forbidden, including with all 32 histories. FCHS toggles only the
+binary80 sign bit and FABS clears only it. Both clear C1, preserve all other
+status bits, tag/TOP/raw payload, FIP/RIP and retirement semantics, and generate
+no flags. Decode/schema/classifier/arithmetic/JIT/native admission is unchanged.
+
+Coverage has 98,304 full-state matrix cases and 3,072 atomic forbidden-status
+cases, plus bad FCW/tag/raw/missing-state and fetch/truncation/STOP/budget/fault
+rejection with OE. Non-popping FST m32/m64 producer checks use round-to-nearest
+midpoint significands `0xffffff8000000000` at exponent 127 and
+`0xfffffffffffffc00` at exponent 1023, with midpoint−1, midpoint, midpoint+1
+and maximum-significand neighbors, both signs. Midpoint and higher values
+produce signed infinity with OE|PE and C1 set; midpoint−1 produces no OE. Full
+state and canary memory snapshots verify the Normal+Valid source and memory
+remain unchanged by FST/sign processing except the store bytes and sign-bit
+transform. Seeded IE/DE/UE/PE are preserved, FNSTSW observes OE|PE with C1
+cleared after the sign operation, and FNCLEX clears status. Failed writes and
+out-of-range writes are atomic. CLI fixtures cover exact m32/m64 streams, an
+OE-only seeded success, and ZE rejects; JIT remains denied. Local checks do not
+establish native/runtime or physical x86 behavior. ISSUE-019 remains open. See
+the [plan](../plans/STAGE_2.md#s2-30bg-admit-historical-sticky-oe-to-bounded-fchsfabs),
+[report](../reports/STAGE_2_REPORT.md#s2-30bg--historical-sticky-oe-through-bounded-fchsfabs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bg-historical-oe-through-bounded-fchsfabs).
+
 <a id="local-s2-30az-canonical-qnan-fst-fstp-sti"></a>
 
 ## Local S2-30az: canonical binary80 QuietNaN through bounded `FST/FSTP ST(i)`

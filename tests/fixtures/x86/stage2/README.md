@@ -3466,8 +3466,9 @@ Two exact seeded schema-v2 cases run `D9 FC D9 E0 DF E0` and
 `D9 FC D9 E1 DF E0` from positive and negative 1.5 under FCW `0x037f`.
 FRNDINT produces PE; FCHS/FABS clear C1 and preserve PE before FNSTSW observes
 it. Bare Normal-source fixtures admit PE-only and IE|DE|PE, while PE|OE and
-IE|DE|PE|SF reject atomically. The former PE|UE reject fixture was renamed
-and changed to PE|OE in S2-30bf because UE is now an admitted historical flag. All six fixtures exercise interpreter CLI
+IE|DE|PE|SF rejected atomically at that stage. S2-30bg later admits OE; the
+former PE|OE case is now named `s2_30be_fchs_normal_pe_ze` and rejects ZE|PE
+(`0x0024`). All six S2-30be fixtures exercise interpreter CLI
 behavior; JIT remains denied. These are project fixtures, not native or
 physical evidence. A local interpreter composition additionally checks
 canonical subnormal→FRNDINT→FCHS→FABS, preserving signed zero and DE|PE through
@@ -3478,8 +3479,10 @@ remains open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#loca
 
 ### S2-30bf historical UE through bounded FCHS/FABS
 
-The bounded source filter admits all IE/DE/UE/PE history combinations while
-rejecting ZE/OE/SF/ES/B. Unit producer compositions use non-popping FST m32/m64
+At this stage the bounded source filter admitted all IE/DE/UE/PE history
+combinations while rejecting ZE/OE/SF/ES/B; S2-30bg later admits OE. The former
+UE|OE case is now named `s2_30bf_fchs_normal_ue_ze` and rejects ZE|UE
+(`0x0014`). Unit producer compositions use non-popping FST m32/m64
 under FCW `0x037f` for ±2^-150 / ±3×2^-151 and ±2^-1075 / ±3×2^-1076; they
 assert signed-zero or minimum-subnormal bytes, UE|PE, C1 clear/set, and the exact
 unchanged Normal+Valid binary80 source before applying both FCHS and FABS. The
@@ -3490,3 +3493,22 @@ status combinations, and JIT denial. These are local project checks only;
 ISSUE-019 remains open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30bf-historical-ue-fchs-fabs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-30bf-admit-historical-sticky-ue-to-bounded-fchsfabs), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30bf--historical-sticky-ue-through-bounded-fchs-fabs).
+
+
+### S2-30bg historical OE through bounded FCHS/FABS
+
+The bounded source filter admits all IE/DE/OE/UE/PE histories while rejecting
+ZE/SF/ES/B. Its full-state matrix covers 98,304 cases; forbidden-status checks
+cover all four disallowed bits crossed with every history. Under FCW `0x037f`,
+non-popping FST m32/m64 overflow producers test midpoint−1, midpoint,
+midpoint+1 and maximum significand for both signs. The boundary and above
+produce signed infinity with OE|PE and C1=1; midpoint−1 adds no OE. Full-state
+and canary memory checks confirm the source survives FST unchanged, FCHS/FABS
+change only its sign, clear C1, and preserve the already-produced flags. The
+unit harness covers all producer/opcode/sign combinations and failure atomicity;
+CLI fixtures use exact streams `d910d9e0dfe0` and `dd10d9e1dfe0`, seeded
+OE-only success and ZE rejects, with JIT denial. ISSUE-019 remains open; no
+Mac mini, SSH, native runtime or physical x86 checks were performed. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30bg-historical-oe-through-bounded-fchsfabs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30bg-admit-historical-sticky-oe-to-bounded-fchsfabs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30bg--historical-sticky-oe-through-bounded-fchsfabs).
