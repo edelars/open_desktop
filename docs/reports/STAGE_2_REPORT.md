@@ -9296,3 +9296,44 @@ Graphify rebuilt 4,989 nodes, 9,970 edges and 183 communities; it reported the
 existing `host_abi.h` syntax warning, unsupported-file skips, and stale saved
 community labels. No Mac mini, SSH, native runtime or physical x86 checks were
 performed. ISSUE-019 remains open.
+
+## S2-30bf — historical sticky UE through bounded FCHS/FABS
+
+The earlier S2-30be PE|UE rejection fixture is now renamed to
+`s2_30be_fchs_normal_pe_oe` and seeds PE|OE (`0x0028`), since UE is admitted
+in this substage. Its runner rejection test confirms the renamed negative case.
+
+
+Only `bounded_x87_sign_st0_source` changed its FSW mask from `0x80dc` to
+`0x80cc`. FCW `0x037f`, the six source tag/class pairs, sign/payload behavior,
+C1 clearing, CC/TOP/tags, metadata and retirement behavior remain unchanged.
+Exactly the 16 IE/DE/UE/PE combinations are admitted; ZE/OE/SF/ES/B are
+rejected with each history combination. Decode/classifier/arithmetic/JIT/native
+gates are unchanged.
+
+The interpreter matrix covers 49,152 states: two operations × six classes ×
+two signs × eight TOP × 16 CC patterns × 16 IE/DE/UE/PE combinations. The
+forbidden-status matrix covers 1,920 atomic rejects: two operations × six
+source classes × two signs × 16 histories × five forbidden bits. Under FCW
+`0x037f`, an independent FST producer test covers m32 and m64 signed zero and
+minimum-subnormal outcomes for both signs and both sign operations. It checks
+written bytes, the unchanged Normal+Valid binary80 source and tag, then checks
+that the sign operation changes only sign and preserves the UE|PE already
+observed after FST (with C1 clear/set at producer time). CLI fixtures use the
+exact streams `d910d9e0dfe0` and `dd10d9e1dfe0`, plus forbidden UE|OE and
+IE|DE|UE|PE|SF cases; JIT remains denied.
+
+No Mac mini, SSH, native runtime or physical x86 checks were performed.
+ISSUE-019 remains open for the combined final substage.
+
+
+Focused checks passed: eight filtered FCHS/FABS ISA tests (including the
+49,152-case matrix and 1,920 forbidden-status rejects), the m32/m64 FST UE|PE
+producer test with FNSTSW/FNCLEX, and the schema-v2 producer CLI test.
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py` (48 required directories, six crate scaffolds,
+14 instruction scopes), `git diff --check`, and `graphify update .` passed.
+Graphify rebuilt 4,999 nodes, 9,985 edges and 180 communities; it reported the
+existing `host_abi.h` syntax warning, unsupported-file skips and stale saved
+community labels. No Mac mini, SSH, native runtime or physical x86 checks were
+performed. ISSUE-019 remains open.

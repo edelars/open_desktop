@@ -7052,3 +7052,27 @@ These local checks do not establish physical x86 behavior. ISSUE-019 remains
 open. See [plan](../plans/STAGE_2.md#s2-30bb-admit-canonical-binary80-subnormal-to-bounded-fstfstp-sti),
 [report](../reports/STAGE_2_REPORT.md#s2-30bb-canonical-binary80-subnormal-through-bounded-fstfstp-sti),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bb-canonical-binary80-subnormal-fst-fstp-sti).
+
+
+<a id="local-s2-30bf-historical-ue-fchs-fabs"></a>
+
+## Local S2-30bf: historical sticky UE through bounded `FCHS/FABS`
+
+Only `bounded_x87_sign_st0_source` changes its FSW filter from `0x80dc` to
+`0x80cc`. Exact FCW `0x037f` and the six accepted tag/class pairs remain. The
+gate admits all 16 IE/DE/UE/PE combinations and rejects ZE/OE/SF/ES/B combined
+with every such history state. FCHS/FABS preserve historical flags and all
+existing raw/tag/CC/TOP/pointer/retirement invariants, clear C1, and add no
+exceptions. Raw binary80 subnormal sources still do not set DE. Decode,
+classifier, arithmetic, JIT and native gates are unchanged.
+
+Local coverage includes 49,152 full-state cases and forbidden-bit products,
+plus m32/m64 non-popping FST underflow producers for signed zero and minimum
+subnormal. Producer assertions inspect UE|PE and C1 immediately after FST,
+verify exact destination bytes and unchanged Normal+Valid binary80 source, then
+verify FCHS/FABS changes only the sign and preserves the already-produced
+status. CLI fixture streams cover seeded status preservation and atomic
+rejection; JIT remains denied. Native/runtime and physical x86 behavior remain
+unverified; ISSUE-019 stays open. See the [plan](../plans/STAGE_2.md#s2-30bf-admit-historical-sticky-ue-to-bounded-fchsfabs),
+[report](../reports/STAGE_2_REPORT.md#s2-30bf--historical-sticky-ue-through-bounded-fchs-fabs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bf-historical-ue-fchs-fabs).

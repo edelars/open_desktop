@@ -209,10 +209,19 @@ const FCHS_PE_ONLY: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30be_fchs_normal_pe_only.case.json");
 const FCHS_IE_DE_PE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30be_fchs_normal_ie_de_pe.case.json");
-const FCHS_PE_UE: &[u8] =
-    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30be_fchs_normal_pe_ue.case.json");
+const FCHS_PE_OE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30be_fchs_normal_pe_oe.case.json");
 const FCHS_IE_DE_PE_SF: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30be_fchs_normal_ie_de_pe_sf.case.json");
+const UE_FST_M32_FCHS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bf_fst_m32_fchs_ue_only.case.json");
+const UE_FST_M64_FABS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bf_fst_m64_fabs_ie_de_ue_pe.case.json");
+const UE_OE_FCHS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bf_fchs_normal_ue_oe.case.json");
+const UE_SF_FCHS: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30bf_fchs_normal_ie_de_ue_pe_sf.case.json"
+);
 const FRNDINT_FCHS_PE: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_30be_frndint_fchs_positive_tie_fnstsw.case.json"
 );
@@ -2121,7 +2130,7 @@ fn local_x87_historical_pe_bare_fixtures_and_frndint_producers() {
         let (_, jit_result) = run(fixture, "jit", 4);
         assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
     }
-    for fixture in [FCHS_PE_UE, FCHS_IE_DE_PE_SF] {
+    for fixture in [FCHS_PE_OE, FCHS_IE_DE_PE_SF] {
         let (input, result) = run(fixture, "interpreter", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert_eq!(count(&result), 0);
@@ -2146,6 +2155,66 @@ fn local_x87_historical_pe_bare_fixtures_and_frndint_producers() {
         let (_, jit_result) = run(fixture, "jit", 4);
         assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
         assert_eq!(input.fixture.instruction_budget, 3);
+    }
+}
+
+#[test]
+fn local_x87_historical_ue_fst_producers_preserve_flags_and_deny_jit() {
+    for (fixture, expected_status, width, stored) in [
+        (UE_FST_M32_FCHS, 0x30_u64, 4_usize, "00000000"),
+        (UE_FST_M64_FABS, 0x33, 8, "0100000000000080"),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 3);
+        let observed = snapshot(&result);
+        assert_eq!(
+            observed.memory[0].bytes_hex,
+            if width == 4 {
+                "d910d9e0dfe0"
+            } else {
+                "dd10d9e1dfe0"
+            }
+        );
+        assert_eq!(
+            observed.memory[1].bytes_hex,
+            format!("{stored}{}", "00".repeat(256 - width))
+        );
+        let mut expected = input.fixture.initial_state.clone();
+        expected.rip = HexU64(0x0010_0006);
+        expected.gpr[0] = HexU64(0x0030_0000 | expected_status);
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.status_word = HexU64(expected_status);
+        expected_x87.instruction_pointer = HexU64(0x0010_0002);
+        expected_x87.data_pointer = HexU64(0x0030_0000);
+        let mut raw = (0..20)
+            .step_by(2)
+            .map(|index| {
+                u8::from_str_radix(&expected_x87.registers[0][index..index + 2], 16).unwrap()
+            })
+            .collect::<Vec<_>>();
+        if width == 4 {
+            raw[9] ^= 0x80;
+        } else {
+            raw[9] &= 0x7f;
+        }
+        expected_x87.registers[0] = raw
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join("");
+        assert_eq!(observed.state, expected);
+        let (_, jit_result) = run(fixture, "jit", 4);
+        assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+        assert_eq!(input.fixture.instruction_budget, 3);
+    }
+    for fixture in [UE_OE_FCHS, UE_SF_FCHS] {
+        let (input, result) = run(fixture, "interpreter", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(count(&result) <= 1);
+        assert_eq!(snapshot(&result).state.rip, input.fixture.initial_state.rip);
+        let (_, jit_result) = run(fixture, "jit", 4);
+        assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
     }
 }
 
@@ -2698,7 +2767,7 @@ fn local_x87_frndint_seeded_pseudo_nan_fnstsw_fnclex_fixtures() {
     for (fixture_bytes, seeded_source) in [
         (
             FRNDINT_SEEDED_PSEUDO_NAN_Q0_FNSTSW_FNCLEX,
-            "0100000000000000ffff",
+            "0100000000000080ffff",
         ),
         (
             FRNDINT_SEEDED_PSEUDO_NAN_Q1_FNSTSW_FNCLEX,

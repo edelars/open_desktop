@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "case_id": "s2_30be_fchs_normal_pe_ue",
+  "case_id": "s2_30be_fchs_normal_pe_oe",
   "profile": "s2-long-x87-state-v1",
   "provenance": {
     "kind": "project_fixture",
-    "source": "Handwritten bare D9 E0 with canonical-Normal ST(0) and forbidden S2-30be status 0x0030; project fixture, not native evidence.",
-    "specification": "Intel SDM revision 093, Vol.2A, FCHS entry; local bounded S2-30bd contract.",
+    "source": "Handwritten bare D9 E0 with canonical-Normal ST(0) and forbidden S2-30be status 0x0028 (PE|OE); project fixture, not native evidence.",
+    "specification": "Intel SDM revision 093, Vol.2A, FCHS entry; local bounded S2-30be contract.",
     "specification_version": "Intel SDM revision 093; project S2-30be"
   },
   "seed": null,
@@ -44,7 +44,7 @@
         "00000000000000000000"
       ],
       "control_word": "0x000000000000037f",
-      "status_word": "0x0000000000000030",
+      "status_word": "0x0000000000000028",
       "tag_word": "0x000000000000fffc",
       "instruction_pointer": "0x0000000000001234",
       "data_pointer": "0x0000000000005678",

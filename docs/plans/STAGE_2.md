@@ -218,6 +218,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30bc | Bare D9 E0/E1 FCHS/FABS preserve historical sticky IE for six existing source classes; reject IE with other exception/summary bits; native/JIT closed | S2-30ay, S2-31ah |
 | [x] | S2-30bd | Bare D9 E0/E1 FCHS/FABS additionally preserve historical DE independently or with IE; reject all other exception/summary bits; native/JIT closed | S2-30bc, S2-31ah |
 | [x] | S2-30be | Bare D9 E0/E1 FCHS/FABS additionally preserve historical PE with IE/DE; only IE/DE/PE combinations admitted; native/JIT closed | S2-30bd, S2-31ah |
+| [x] | S2-30bf | Bare D9 E0/E1 FCHS/FABS additionally preserve historical UE with IE/DE/PE; admit all IE/DE/UE/PE combinations, reject ZE/OE/SF/ES/B; local only, native/physical deferred | S2-30be |
 | [x] | S2-30ba | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 SignalingNaN, preserving Q=0 and raw payload; native/JIT closed | S2-30az, S2-31ab |
 | [x] | S2-30bb | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy only Special-tagged canonical binary80 subnormals with unchanged bytes/tag; native/JIT closed | S2-30ba, S2-31x |
 | [x] | S2-30az | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 QuietNaN without changing raw bytes; native/JIT closed | S2-30au, S2-30aw |
@@ -2368,6 +2369,29 @@ UE/PE. Four schema-v2 m32 producer fixtures cover operation/sign pairs; seeded
 DE-only success and DE+ZE / IE+DE+SF rejection fixtures exercise the CLI and
 JIT denial. Keep ISSUE-019 open; defer Mac mini/SSH/native/physical checks to
 the combined final substage.
+
+#### S2-30bf. Admit historical sticky UE to bounded `FCHS/FABS`
+
+Change only `bounded_x87_sign_st0_source`: change the FSW mask from `0x80dc`
+to `0x80cc`. Keep FCW `0x037f`, the same six tag/class pairs and all raw
+sign, C1, CC/TOP, metadata and retirement behavior. Admit all 16 IE/DE/UE/PE
+combinations; reject ZE/OE/SF/ES/B atomically with every admitted history
+combination. Decoder/classifier/arithmetic/JIT/native gates stay unchanged; raw
+binary80 subnormal sources do not set DE, and sign operations add no exception.
+
+Cover 49,152 full-state cases and every forbidden bit crossed with all 16
+history combinations. Extend malformed-state, FCW and execution-boundary checks
+with UE. Under FCW `0x037f`, non-popping FST m32/m64 producers for ±2^-150 and
+±3×2^-151, and ±2^-1075 and ±3×2^-1076, must establish UE|PE for signed zero
+or minimum-subnormal outputs with C1 clear/set. Check the Normal+Valid raw
+binary80 source is unchanged by the store and then only sign-transformed by
+FCHS/FABS; assert that UE|PE is present after FST before the sign operation.
+Cover both signs, both sign opcodes, both widths and outcomes, and status
+overview/clearing/repeat behavior. Exact schema-v2 CLI streams include
+`D9 10 D9 E0 DF E0` and `DD 10 D9 E1 DF E0`, plus UE-only and seeded
+IE|DE|UE|PE success, UE|OE and IE|DE|UE|PE|SF rejection, with JIT denial.
+Keep ISSUE-019 open and defer Mac mini/SSH/native/physical checks to the combined
+final substage.
 
 #### S2-30be. Admit historical sticky PE to bounded `FCHS/FABS`
 
