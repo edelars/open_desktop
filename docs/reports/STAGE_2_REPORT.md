@@ -9557,3 +9557,7 @@ SSH, native runtime, or physical x86 checks were performed. ISSUE-019 remains
 open for broader exception/native/physical behavior. See the [plan](../plans/STAGE_2.md#s2-30bm-bounded-register-only-fincstp--fdecstp),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30bm-bounded-register-only-fincstp--fdecstp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bm-bounded-fincstpfdecstp).
+
+## S2-30bn — bounded FLD1 and FLDZ
+
+The exact bare Long64 forms `D9 E8` and `D9 EE` now push their specified constants only when x87 state is present, FCW is `0x037f`, the masked exception/status environment is clean (`FSW & 0x80ff == 0`), and `(old_TOP+7)&7` is Empty. FLD1 stores exact binary80 one with Valid tag; FLDZ stores exact zero with Zero tag. The implementation preflights before mutation, never reads old Empty payload bytes, updates TOP and clears C1, and records FIP. Other cells/tags and local deterministic undefined fields are preserved. The dedicated 1,536-case full-state matrix, atomic rejections, eight-push/ninth-reject, composition, four exact schema-success streams and occupied-destination zero-retirement fixture provide local evidence. JIT/native/physical behavior and broader stack/Special semantics remain outside scope; ISSUE-019 stays open. See [plan](../plans/STAGE_2.md#s2-30bn-bare-fld1-and-fldz-bounded-local-constant-push-slice), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30bn-bounded-fld1-and-fldz-constant-pushes), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bn-fld1-and-fldz-constant-pushes).

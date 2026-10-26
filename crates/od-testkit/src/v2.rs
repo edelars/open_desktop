@@ -774,6 +774,10 @@ impl Fixture {
                 "d9fc" => ("d9fc", 2),
                 "d9f7" => ("d9f7", 2),
                 "d9f6" => ("d9f6", 2),
+                "d9e8" => ("d9e8", 2),
+                "d9ee" => ("d9ee", 2),
+                "d9e8dfe0" => ("d9e8dfe0", 4),
+                "d9eedfe0" => ("d9eedfe0", 4),
                 "d9f7dfe0" => ("d9f7dfe0", 4),
                 "d9f6dfe0" => ("d9f6dfe0", 4),
                 "d9f7d9f6dfe0" => ("d9f7d9f6dfe0", 6),
@@ -1021,6 +1025,17 @@ impl Fixture {
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     x87.control_word.get() != 0x037f || x87.status_word.get() & 0x80ff != 0
                 });
+            let is_fld_constant_destination_rejected =
+                matches!(code_bytes.as_str(), "d9e8" | "d9ee")
+                    && self.stop_rip.is_none()
+                    && self.instruction_budget == 1
+                    && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                        let top = ((x87.status_word.get() >> 11) & 7) as u8;
+                        let destination = top.wrapping_add(7) & 7;
+                        x87.control_word.get() != 0x037f
+                            || x87.status_word.get() & 0x80ff != 0
+                            || (x87.tag_word.get() >> (u32::from(destination) * 2)) & 3 != 3
+                    });
             let is_fchs_source_rejected = code_bytes == "d9e0" && self.stop_rip.is_none();
             let is_fabs_source_rejected = code_bytes == "d9e1" && self.stop_rip.is_none();
             let is_ftst_source_rejected = code_bytes == "d9e4" && self.stop_rip.is_none();
@@ -1299,6 +1314,7 @@ impl Fixture {
                     || is_fst_source_rejected
                     || is_fxch_source_rejected
                     || is_top_adjustment_source_rejected
+                    || is_fld_constant_destination_rejected
                     || is_fchs_source_rejected
                     || is_fabs_source_rejected
                     || is_ftst_source_rejected

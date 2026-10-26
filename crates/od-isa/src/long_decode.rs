@@ -469,6 +469,10 @@ pub enum Operation {
     Fincstp,
     /// Bare `D9 F6` FDECSTP, rotating the x87 TOP field backward.
     Fdecstp,
+    /// Bare `D9 E8` FLD1, bounded constant push into an Empty destination.
+    Fld1,
+    /// Bare `D9 EE` FLDZ, bounded constant push into an Empty destination.
+    Fldz,
     /// Bare `D9 E1` FABS, clearing the sign of canonical-Normal ST(0) only.
     Fabs,
     /// Bare `D9 E4` FTST, comparing canonical-Normal ST(0) with zero.
@@ -1266,6 +1270,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 match self.byte()? {
                     modrm @ 0xc8..=0xcf => Operation::FxchSti { source: modrm & 7 },
+                    0xe8 => Operation::Fld1,
+                    0xee => Operation::Fldz,
                     0xf7 => Operation::Fincstp,
                     0xf6 => Operation::Fdecstp,
                     0x00 => Operation::FldM32FpRax,
@@ -2921,7 +2927,7 @@ mod tests {
     }
 
     #[test]
-    fn d9_accepts_only_bare_fldcw_fst_fstp_fxch_fchs_fabs_ftst_frndint_and_fnstcw_m16_rax() {
+    fn d9_accepts_only_bare_fldcw_fst_fstp_fxch_constants_and_other_bounded_forms() {
         let mut memory = Memory::new(&[0xd9, 0xe0]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::Fchs);
@@ -2949,6 +2955,14 @@ mod tests {
                     Ok(Operation::Fchs)
                 } else if second == 0xe1 {
                     Ok(Operation::Fabs)
+                } else if second == 0xe8 {
+                    Ok(Operation::Fld1)
+                } else if second == 0xee {
+                    Ok(Operation::Fldz)
+                } else if second == 0xf6 {
+                    Ok(Operation::Fdecstp)
+                } else if second == 0xf7 {
+                    Ok(Operation::Fincstp)
                 } else if second == 0xe4 {
                     Ok(Operation::Ftst)
                 } else if second == 0xfc {
@@ -2972,7 +2986,9 @@ mod tests {
         .into_iter()
         .chain(0x40..=0x4f)
         {
-            for second in [0x00, 0x10, 0x18, 0x28, 0x38, 0xc9, 0xe0, 0xe1, 0xe4, 0xfc] {
+            for second in [
+                0x00, 0x10, 0x18, 0x28, 0x38, 0xc9, 0xe0, 0xe1, 0xe4, 0xe8, 0xee, 0xfc,
+            ] {
                 assert!(matches!(
                     Memory::new(&[prefix, 0xd9, second]).decode(),
                     Err(DecodeError::Unsupported { .. })

@@ -3598,3 +3598,7 @@ preserves all raw cells and the full tag word. These are local interpreter and
 schema results only; JIT/native and physical x86 acceptance remain deferred
 under ISSUE-019. Undefined C0/C2/C3 preservation is a deterministic local
 policy, not a hardware-equality claim.
+
+### S2-30bn: FLD1 and FLDZ constant pushes
+
+Four handwritten schema-v2 success fixtures cover the exact allowed byte strings `d9e8`, `d9ee`, `d9e8dfe0`, and `d9eedfe0`. The first pair executes one constant push; the latter pair observes execution through FNSTSW AX. A fifth fixture reuses bare `d9e8` with an occupied destination and checks Unsupported with zero retirement. Local full-state unit coverage additionally checks all TOP/condition-code/snapshot combinations, opaque malformed bytes under Empty, all occupied tag rejects, eight successful pushes followed by atomic ninth-push rejection, and FLD1→FLDZ→FXCH→FSTP m80fp byte/tag order. Fixtures and interpreter tests are not native or physical evidence; ISSUE-019 remains open.

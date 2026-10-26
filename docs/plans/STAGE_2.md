@@ -5982,3 +5982,7 @@ C1/status-observation fixtures with mixed and Empty-tagged canaries and
 round-trip coverage. JIT/native remain denied. Keep ISSUE-019 open for broader
 x87 exceptions and physical/native acceptance; do not run Mac mini, SSH or
 physical x86 checks.
+
+#### S2-30bn. Bare FLD1 and FLDZ (bounded local constant-push slice)
+
+Admit only bare Long64 `D9 E8` (FLD1) and `D9 EE` (FLDZ), with present x87 state, FCW exactly `0x037f`, `FSW & 0x80ff == 0`, and physical destination `(old_TOP+7)&7` tagged Empty. Preflight all conditions before mutation and treat the old Empty payload as opaque. FLD1 stores exact binary80 `0000000000000080ff3f` with Valid tag; FLDZ stores ten zero bytes with Zero tag. Set TOP to the destination, clear C1, set FIP to old RIP, advance RIP by two and retire once. Preserve all other payloads, tags, FCW, FSW bits and pointer/opcode fields under the local policy; C0/C2/C3 retention is deterministic and makes no hardware-equality claim. Reject an occupied destination atomically for every tag, with no stack-overflow flags or indefinite value. Do not model rounding, memory, flags, exceptions, WAIT, #NM, JIT or native admission. Tests cover the 1,536 success-state matrix, opaque Empty raw payloads, occupied tags, environment rejects, fill-eight/ninth-reject, compositions, decode/fetch/budget/STOP boundaries, and exact schema-v2 allowlist fixtures. ISSUE-019 remains open for Empty sources, arithmetic/Special behavior, stack exceptions and host/physical acceptance.

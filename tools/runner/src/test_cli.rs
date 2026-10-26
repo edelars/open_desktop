@@ -857,6 +857,107 @@ mod tests {
     }
 
     #[test]
+    fn fld1_fldz_schema_fixtures_execute_and_jit_stays_denied() {
+        for bytes in [
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bn_fld1.case.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bn_fldz.case.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bn_fld1_fnstsw.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bn_fldz_fnstsw.case.json")
+                .as_slice(),
+        ] {
+            let fixture = v2::Fixture::from_json(bytes).expect("S2-30bn fixture schema");
+            let code = &fixture.fixture.memory[0].initial_bytes_hex;
+            let code: Vec<u8> = code
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect();
+            assert!(od_jit::compile(&code).is_err());
+            let mut memory =
+                od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(
+                matches!(result.outcome, v2::Outcome::StopAddress {}),
+                "case={} outcome={:?}",
+                fixture.fixture.case_id,
+                result.outcome
+            );
+            let instruction_count = (code.len() / 2) as u64;
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available {
+                    value: HexU64(instruction_count)
+                },
+                "case={}",
+                fixture.fixture.case_id
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("FLD1/FLDZ fixture must provide a complete snapshot");
+            };
+            let initial = &fixture.fixture.initial_state;
+            let before_x87 = initial.x87.as_ref().unwrap();
+            let after_x87 = value.state.x87.as_ref().unwrap();
+            let is_fld1 = code[1] == 0xe8;
+            let result_bytes = if is_fld1 {
+                "0000000000000080ff3f"
+            } else {
+                "00000000000000000000"
+            };
+            let result_tag = if is_fld1 { 0 } else { 1 };
+            assert_eq!(
+                value.state.rip,
+                HexU64(initial.rip.get() + code.len() as u64)
+            );
+            assert_eq!(after_x87.status_word, HexU64(0x3800));
+            assert_eq!(after_x87.registers[7], result_bytes);
+            assert_eq!((after_x87.tag_word.get() >> 14) & 3, result_tag);
+            assert_eq!(after_x87.instruction_pointer, initial.rip);
+            assert_eq!(after_x87.control_word, before_x87.control_word);
+            assert_eq!(after_x87.data_pointer, before_x87.data_pointer);
+            assert_eq!(after_x87.last_opcode, before_x87.last_opcode);
+            for physical in 0..7 {
+                assert_eq!(
+                    after_x87.registers[physical],
+                    before_x87.registers[physical]
+                );
+                let shift = physical * 2;
+                assert_eq!(
+                    (after_x87.tag_word.get() >> shift) & 3,
+                    (before_x87.tag_word.get() >> shift) & 3
+                );
+            }
+            assert_eq!(
+                value.state.gpr[0].get() & 0xffff,
+                if code.len() == 4 { 0x3800 } else { 0 }
+            );
+        }
+    }
+
+    #[test]
+    fn fld1_occupied_destination_fixture_rejects_without_retirement_or_mutation() {
+        let fixture = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30bn_fld1_occupied_destination_rejects.case.json"
+        ))
+        .expect("S2-30bn occupied-destination rejection fixture schema");
+        assert!(od_jit::compile(&[0xd9, 0xe8]).is_err());
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::Unsupported { .. }));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(0) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("rejected FLD1 must preserve a complete state snapshot");
+        };
+        assert_eq!(value.state.rip, fixture.fixture.initial_state.rip);
+        assert_eq!(value.state.x87, fixture.fixture.initial_state.x87);
+    }
+
+    #[test]
     fn frndint_small_normal_literal_fnstsw_fixture_rounds_to_negative_zero() {
         let fixture = v2::Fixture::from_json(include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31di_frndint_min_normal_to_negative_zero_fnstsw.case.json"

@@ -7270,3 +7270,7 @@ fixtures. JIT/native execution and physical x86 behavior are not established;
 ISSUE-019 remains open. See the [plan](../plans/STAGE_2.md#s2-30bm-bounded-register-only-fincstp--fdecstp),
 [report](../reports/STAGE_2_REPORT.md#s2-30bm--bounded-register-only-fincstp-and-fdecstp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bm-bounded-fincstpfdecstp).
+
+### Local S2-30bn: bounded FLD1 and FLDZ constant pushes
+
+The interpreter admits exactly bare Long64 `D9 E8` and `D9 EE`. It requires present `X87State`, `FCW=0x037f`, `FSW & 0x80ff == 0`, and an Empty physical push destination `(old_TOP+7)&7`. Successful FLD1 writes exact binary80 `0000000000000080ff3f` and marks Valid; FLDZ writes ten zero bytes and marks Zero. Both set TOP to the destination, clear C1, record FIP as old RIP, advance RIP by two and retire once. The old payload at the Empty destination is never inspected; other seven payloads/tags are unchanged. FSW C0/C2/C3 retention and FDP/FOP preservation are local deterministic policies, not hardware-equality claims. An occupied destination of any tag rejects atomically; masked stack overflow, IE/SF, indefinite, partial pushes, rounding, memory, flags, #NM, WAIT, JIT and native admission are not modeled. Four exact schema allowlist byte streams are covered; an additional project fixture reuses bare `D9 E8` to verify occupied-destination rejection with zero retirement. This local interpreter evidence does not close ISSUE-019 or establish physical x86 behavior.
