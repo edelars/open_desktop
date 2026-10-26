@@ -216,6 +216,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30aw | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit only Special-tagged canonical binary80 QuietNaN, preserving all payload bits; native/JIT closed | S2-30av, S2-31ah |
 | [x] | S2-30ay | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit Special-tagged canonical binary80 subnormals with raw payload preservation; native/JIT closed | S2-30ax |
 | [x] | S2-30bc | Bare D9 E0/E1 FCHS/FABS preserve historical sticky IE for six existing source classes; reject IE with other exception/summary bits; native/JIT closed | S2-30ay, S2-31ah |
+| [x] | S2-30bd | Bare D9 E0/E1 FCHS/FABS additionally preserve historical DE independently or with IE; reject all other exception/summary bits; native/JIT closed | S2-30bc, S2-31ah |
 | [x] | S2-30ba | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 SignalingNaN, preserving Q=0 and raw payload; native/JIT closed | S2-30az, S2-31ab |
 | [x] | S2-30bb | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy only Special-tagged canonical binary80 subnormals with unchanged bytes/tag; native/JIT closed | S2-30ba, S2-31x |
 | [x] | S2-30az | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 QuietNaN without changing raw bytes; native/JIT closed | S2-30au, S2-30aw |
@@ -2343,6 +2344,29 @@ m32 producer fixtures load SNaNs, verify FLD produces QNaN+IE before FCHS/FABS,
 then store at the same width and observe preserved IE. Add seeded IE-only Normal
 success and IE+SF atomic-reject fixtures. Keep ISSUE-019 open; no Mac mini, SSH,
 native runtime or physical x86 checks belong to this substage.
+
+#### S2-30bd. Admit historical sticky DE to bounded `FCHS/FABS`
+
+Change only `bounded_x87_sign_st0_source`: retain FCW `0x037f`, exact six
+accepted tag/class pairs, and sign-only operation policy; change the FSW mask
+from `0x80fe` to `0x80fc`. Historical IE and DE are admitted independently and
+together; ZE/OE/UE/PE/SF/ES/B remain rejected with any IE/DE combination. Keep
+C1 clearing and all other status, tag, TOP, raw payload, decoder, operation
+and native/JIT gates unchanged. Raw binary80 subnormal sources do not create
+DE, and the sign operation does not create IE for SNaN.
+
+Cover the 12,288 full-state matrix (two operations × six classes × two signs ×
+eight TOPs × 16 prior CC patterns × four IE/DE states). Reject each forbidden
+status bit combined with all four IE/DE states, plus bad FCW, wrong tag,
+missing state and fetch/truncation/STOP/budget/fault boundaries with DE set.
+Check repeated operations and FNSTSW/FNCLEX. Add m32/m64 FLD subnormal
+compositions for both signs and operations, minimum/interior/largest subnormal,
+and seeded IE clear/set. Assert Normal+Valid+DE after FLD, unchanged binary80
+except sign after FCHS/FABS, exact same-width subnormal FST output and no new
+UE/PE. Four schema-v2 m32 producer fixtures cover operation/sign pairs; seeded
+DE-only success and DE+ZE / IE+DE+SF rejection fixtures exercise the CLI and
+JIT denial. Keep ISSUE-019 open; defer Mac mini/SSH/native/physical checks to
+the combined final substage.
 
 #### S2-30az. Admit canonical binary80 QuietNaN to bounded `FST/FSTP ST(i)`
 

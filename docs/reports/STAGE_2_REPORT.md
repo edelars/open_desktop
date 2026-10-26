@@ -9232,3 +9232,32 @@ and 177 communities. It reported the existing `host_abi.h` syntax warning,
 unsupported-file skips, and that community labels need refresh. No Mac mini,
 SSH, native runtime or physical x86 checks were performed. ISSUE-019 remains
 open for combined host/physical acceptance.
+
+
+## S2-30bd — historical sticky DE through bounded FCHS/FABS
+
+Only `bounded_x87_sign_st0_source` changed its FSW mask from `0x80fe` to
+`0x80fc`; FCW `0x037f`, the six exact source class/tag pairs and all other gates
+remain unchanged. Historical IE and DE are accepted independently or together.
+All ZE/OE/UE/PE/SF/ES/B combinations remain unsupported. The sign-only raw
+operation, C1 clearing and existing CC/TOP/tag behavior remain intact. Raw
+binary80 subnormals still add no DE; current SNaNs still add no IE.
+
+The 12,288-case full-state matrix spans both instructions, six classes, signs,
+TOP, all 16 CC states and four IE/DE combinations. Atomic rejects combine each
+forbidden status bit with every IE/DE combination, and separately cover invalid
+FCW/tag, missing state and execution boundaries with DE set. Unit compositions
+run m32/m64 minimum, interior and largest subnormals for both signs/operations
+with initial IE clear/set. They check Normal+Valid+DE immediately after FLD,
+exact binary80 sign-only changes, same-width subnormal FST output and no new
+UE/PE. Four m32 project fixtures cover opcode/sign CLI compositions; seeded
+DE-only success and DE+ZE/IE+DE+SF rejection fixtures check atomicity and JIT
+deny-by-default behavior.
+
+Validation passed: focused `od-isa` FCHS/FABS matrix, forbidden-status and
+binary-subnormal composition tests; runner CLI tests for the four producer and
+three seeded-status fixtures; `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `python3 tools/check_layout.py`,
+`git diff --check`, and `graphify update .`. No Mac mini, SSH, native runtime
+or physical x86 checks were performed. ISSUE-019 remains open for combined
+acceptance.

@@ -6896,6 +6896,32 @@ ISSUE-019 remains open. See the [plan](../plans/STAGE_2.md#s2-30bc-admit-histori
 [report](../reports/STAGE_2_REPORT.md#s2-30bc--historical-sticky-ie-through-bounded-fchs-fabs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bc-historical-ie-fchs-fabs).
 
+<a id="local-s2-30bd-historical-de-fchs-fabs"></a>
+
+## Local S2-30bd: historical sticky DE through bounded `FCHS/FABS`
+
+Only `bounded_x87_sign_st0_source` changes its FSW filter from `0x80fe` to
+`0x80fc`. Exact FCW `0x037f` and the six admitted tag/class pairs remain fixed:
+Valid+Normal, Zero+exact signed zero, and Special+Infinity/QNaN/SNaN/Subnormal.
+IE and DE are independently admitted and preserved, including together; ZE/OE/
+UE/PE/SF/ES/B remain rejected when combined with either or both. FCHS toggles
+only raw sign, FABS clears only raw sign, C1 is cleared, and all other retained
+state and tag/TOP/CC policy is unchanged. No DE is synthesized by a raw
+binary80 subnormal source and no IE is synthesized by a current SNaN.
+
+Coverage includes 12,288 full-state cases, each forbidden status bit combined
+with all four IE/DE combinations, bad environment/tag/missing-state and
+execution-boundary atomic rejection with DE present, repeated operations, and
+FNSTSW/FNCLEX. Binary32 and binary64 FLD subnormal compositions cover both
+signs, both operations, minimum/interior/largest values and initial IE clear/set;
+they verify Normal+Valid+DE after load, sign-only raw updates, exact same-width
+FST output and no new UE/PE. Four schema-v2 m32 producer fixtures plus seeded
+DE-only success and combined-status rejection fixtures are local CLI evidence;
+JIT denies these forms. Native/JIT and physical behavior remain outside this
+slice; ISSUE-019 remains open. See the [plan](../plans/STAGE_2.md#s2-30bd-admit-historical-sticky-de-to-bounded-fchsfabs),
+[report](../reports/STAGE_2_REPORT.md#s2-30bd--historical-sticky-de-through-bounded-fchsfabs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bd-historical-de-fchs-fabs).
+
 <a id="local-s2-30az-canonical-qnan-fst-fstp-sti"></a>
 
 ## Local S2-30az: canonical binary80 QuietNaN through bounded `FST/FSTP ST(i)`

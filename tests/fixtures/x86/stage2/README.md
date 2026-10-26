@@ -3445,3 +3445,16 @@ remain rejected. Native/JIT and physical behavior remain outside this slice;
 ISSUE-019 is open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30bc-historical-ie-fchs-fabs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-30bc-admit-historical-sticky-ie-to-bounded-fchsfabs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30bc--historical-sticky-ie-through-bounded-fchs-fabs).
+
+### S2-30bd historical DE through bounded FCHS/FABS
+
+Four handwritten schema-v2 m32 producers load positive/negative subnormals,
+apply FCHS or FABS, store at the same width and observe FSW with FNSTSW. CLI
+checks verify that FLD's DE remains set through the sign instruction and store,
+and that the output has the expected sign. Seeded DE-only Normal succeeds;
+DE+ZE and IE+DE+SF reject atomically, and JIT denies the profile. Unit
+compositions cover m32/m64 minimum, interior and largest subnormals, both signs,
+both operations and initial IE clear/set. Local evidence does not establish
+native or physical behavior; ISSUE-019 remains open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30bd-historical-de-fchs-fabs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30bd-admit-historical-sticky-de-to-bounded-fchsfabs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30bd--historical-sticky-de-through-bounded-fchsfabs).

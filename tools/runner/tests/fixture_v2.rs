@@ -165,6 +165,42 @@ const FCHS_FABS_SNAN_PRODUCER_FIXTURES: [(&[u8], bool, bool); 4] = [
         true,
     ),
 ];
+const FCHS_FABS_SUBNORMAL_PRODUCER_FIXTURES: [(&[u8], bool, bool); 4] = [
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30bd_fld_m32_fchs_fst_fnstsw_positive_subnormal.case.json"
+        ),
+        true,
+        false,
+    ),
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30bd_fld_m32_fchs_fst_fnstsw_negative_subnormal.case.json"
+        ),
+        true,
+        true,
+    ),
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30bd_fld_m32_fabs_fst_fnstsw_positive_subnormal.case.json"
+        ),
+        false,
+        false,
+    ),
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30bd_fld_m32_fabs_fst_fnstsw_negative_subnormal.case.json"
+        ),
+        false,
+        true,
+    ),
+];
+const FCHS_DE_ONLY: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bd_fchs_normal_de_only.case.json");
+const FCHS_DE_ZE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bd_fchs_normal_de_ze.case.json");
+const FCHS_IE_DE_SF: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bd_fchs_normal_ie_de_sf.case.json");
 const FCHS_IE_ONLY: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bc_fchs_normal_ie_only.case.json");
 const FCHS_IE_SF: &[u8] =
@@ -1968,6 +2004,64 @@ fn local_x87_m32_snan_producers_preserve_historical_ie_through_sign_operations()
         assert_eq!(observed.state, expected, "FCHS={fchs}, negative={negative}");
         assert_eq!(observed.memory[1].bytes_hex, expected_memory);
         assert_eq!(observed.memory[2].bytes_hex, "a5");
+        let (_, jit_result) = run(fixture, "jit", 4);
+        assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
+fn local_x87_m32_subnormal_producers_preserve_de_through_sign_operations() {
+    for (fixture, fchs, negative) in FCHS_FABS_SUBNORMAL_PRODUCER_FIXTURES {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 4);
+        let observed = snapshot(&result);
+        let mut expected = input.fixture.initial_state.clone();
+        expected.rip = HexU64(0x0010_0008);
+        expected.gpr[0] = HexU64(0x0000_0000_0030_3802);
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.registers[7] = if fchs && !negative {
+            "000000000000008080bf".into()
+        } else {
+            "0000000000000080803f".into()
+        };
+        expected_x87.status_word = HexU64(0x3802);
+        expected_x87.tag_word = HexU64(0x3ffc);
+        expected_x87.instruction_pointer = HexU64(0x0010_0004);
+        expected_x87.data_pointer = HexU64(0x0030_0004);
+        assert_eq!(observed.state, expected);
+        let stored = if fchs && !negative {
+            "00004080"
+        } else {
+            "00004000"
+        };
+        assert_eq!(observed.memory[1].bytes_hex, stored);
+        assert_eq!(observed.memory[2].bytes_hex, "a5");
+        let (_, jit_result) = run(fixture, "jit", 4);
+        assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
+fn local_x87_historical_de_fixture_and_combined_status_rejections() {
+    let (input, result) = run(FCHS_DE_ONLY, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0002);
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.registers[0] = "0000000000000080ffbf".into();
+    expected_x87.status_word = HexU64(2);
+    expected_x87.instruction_pointer = HexU64(0x0010_0000);
+    assert_eq!(snapshot(&result).state, expected);
+    let (_, jit_result) = run(FCHS_DE_ONLY, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+
+    for fixture in [FCHS_DE_ZE, FCHS_IE_DE_SF] {
+        let (input, result) = run(fixture, "interpreter", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert_eq!(count(&result), 0);
+        assert_eq!(snapshot(&result).state, input.fixture.initial_state);
         let (_, jit_result) = run(fixture, "jit", 4);
         assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
     }
