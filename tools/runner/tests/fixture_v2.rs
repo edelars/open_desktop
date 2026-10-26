@@ -199,34 +199,36 @@ const FCHS_DE_ONLY: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bd_fchs_normal_de_only.case.json");
 const FCHS_DE_SF: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bd_fchs_normal_de_sf.case.json");
-const FCHS_IE_DE_SF: &[u8] =
-    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bd_fchs_normal_ie_de_sf.case.json");
+const FCHS_IE_DE_ES: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bd_fchs_normal_ie_de_es.case.json");
 const FCHS_IE_ONLY: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bc_fchs_normal_ie_only.case.json");
 const FCHS_IE_SF: &[u8] =
-    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bc_fchs_normal_ie_sf.case.json");
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bi_fchs_normal_ie_sf_basic.case.json");
+const FABS_IE_SF: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bi_fabs_normal_ie_sf_basic.case.json");
 const FCHS_PE_ONLY: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30be_fchs_normal_pe_only.case.json");
 const FCHS_IE_DE_PE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30be_fchs_normal_ie_de_pe.case.json");
 const FCHS_PE_SF: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30be_fchs_normal_pe_sf.case.json");
-const FCHS_IE_DE_PE_SF: &[u8] =
-    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30be_fchs_normal_ie_de_pe_sf.case.json");
+const FCHS_IE_DE_PE_ES: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30be_fchs_normal_ie_de_pe_es.case.json");
 const UE_FST_M32_FCHS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bf_fst_m32_fchs_ue_only.case.json");
 const UE_FST_M64_FABS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bf_fst_m64_fabs_ie_de_ue_pe.case.json");
 const UE_ES_FCHS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bf_fchs_normal_ue_es.case.json");
-const UE_SF_FCHS: &[u8] = include_bytes!(
-    "../../../tests/fixtures/x86/stage2/s2_30bf_fchs_normal_ie_de_ue_pe_sf.case.json"
+const UE_HISTORY_ES_FCHS: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30bf_fchs_normal_ie_de_ue_pe_es.case.json"
 );
 const FRNDINT_FCHS_PE: &[u8] = include_bytes!(
-    "../../../tests/fixtures/x86/stage2/s2_30be_frndint_fchs_positive_tie_fnstsw.case.json"
+    "../../../tests/fixtures/x86/stage2/s2_30bi_frndint_fchs_positive_tie_fnstsw.case.json"
 );
 const FRNDINT_FABS_PE: &[u8] = include_bytes!(
-    "../../../tests/fixtures/x86/stage2/s2_30be_frndint_fabs_negative_tie_fnstsw.case.json"
+    "../../../tests/fixtures/x86/stage2/s2_30bi_frndint_fabs_negative_tie_fnstsw.case.json"
 );
 const FCHS_OE_ONLY: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bg_fchs_normal_oe_only.case.json");
@@ -2096,7 +2098,7 @@ fn local_x87_historical_de_fixture_and_combined_status_rejections() {
     let (_, jit_result) = run(FCHS_DE_ONLY, "jit", 4);
     assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
 
-    for fixture in [FCHS_DE_SF, FCHS_IE_DE_SF] {
+    for fixture in [FCHS_DE_SF, FCHS_IE_DE_ES] {
         let (input, result) = run(fixture, "interpreter", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert_eq!(count(&result), 0);
@@ -2136,7 +2138,7 @@ fn local_x87_historical_ze_and_all_flags_fixtures_preserve_status_and_deny_jit()
 }
 
 #[test]
-fn local_x87_historical_ie_bare_success_and_ie_sf_rejection_fixtures() {
+fn local_x87_historical_ie_and_sf_ie_bare_success_fixtures() {
     let (input, result) = run(FCHS_IE_ONLY, "interpreter", 0);
     assert!(matches!(result.outcome, Outcome::StopAddress {}));
     assert_eq!(count(&result), 1);
@@ -2149,10 +2151,31 @@ fn local_x87_historical_ie_bare_success_and_ie_sf_rejection_fixtures() {
     assert_eq!(snapshot(&result).state, expected);
     let (_, jit_result) = run(FCHS_IE_ONLY, "jit", 4);
     assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
-    let (input, result) = run(FCHS_IE_SF, "interpreter", 4);
-    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
-    assert_eq!(count(&result), 0);
-    assert_eq!(snapshot(&result).state, input.fixture.initial_state);
+    let (input, result) = run(FCHS_IE_SF, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0002);
+    let x87 = expected.x87.as_mut().unwrap();
+    x87.registers[0] = "0000000000000080ffbf".into();
+    x87.status_word = HexU64(0x41);
+    x87.instruction_pointer = HexU64(0x0010_0000);
+    assert_eq!(snapshot(&result).state, expected);
+    let (_, jit_result) = run(FCHS_IE_SF, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+
+    let (input, result) = run(FABS_IE_SF, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0002);
+    let x87 = expected.x87.as_mut().unwrap();
+    x87.registers[0] = "0000000000000080ff3f".into();
+    x87.status_word = HexU64(0x41);
+    x87.instruction_pointer = HexU64(0x0010_0000);
+    assert_eq!(snapshot(&result).state, expected);
+    let (_, jit_result) = run(FABS_IE_SF, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
 }
 
 #[test]
@@ -2175,7 +2198,7 @@ fn local_x87_historical_pe_bare_fixtures_and_frndint_producers() {
         let (_, jit_result) = run(fixture, "jit", 4);
         assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
     }
-    for fixture in [FCHS_PE_SF, FCHS_IE_DE_PE_SF] {
+    for fixture in [FCHS_PE_SF, FCHS_IE_DE_PE_ES] {
         let (input, result) = run(fixture, "interpreter", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert_eq!(count(&result), 0);
@@ -2192,10 +2215,10 @@ fn local_x87_historical_pe_bare_fixtures_and_frndint_producers() {
         assert_eq!(count(&result), 3);
         let observed = snapshot(&result);
         assert_eq!(observed.state.rip, HexU64(0x0010_0006));
-        assert_eq!(observed.state.gpr[0], HexU64(0x20));
+        assert_eq!(observed.state.gpr[0], HexU64(0x61));
         let x87 = observed.state.x87.as_ref().unwrap();
         assert_eq!(x87.registers[0], expected_register);
-        assert_eq!(x87.status_word, HexU64(0x20));
+        assert_eq!(x87.status_word, HexU64(0x61));
         assert_eq!(x87.instruction_pointer, HexU64(expected_ip));
         let (_, jit_result) = run(fixture, "jit", 4);
         assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
@@ -2307,7 +2330,7 @@ fn local_x87_historical_ue_fst_producers_preserve_flags_and_deny_jit() {
         assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
         assert_eq!(input.fixture.instruction_budget, 3);
     }
-    for fixture in [UE_ES_FCHS, UE_SF_FCHS] {
+    for fixture in [UE_ES_FCHS, UE_HISTORY_ES_FCHS] {
         let (input, result) = run(fixture, "interpreter", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert!(count(&result) <= 1);

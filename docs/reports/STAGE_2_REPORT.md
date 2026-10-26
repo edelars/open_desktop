@@ -9404,3 +9404,37 @@ Local validation is limited to focused ISA/CLI coverage, formatting, offline
 workspace check, layout validation, diff checks and Graphify update. Mac mini,
 SSH, native runtime and physical x86 checks were not run; ISSUE-019 remains open
 for the combined final acceptance substage.
+
+## S2-30bi — historical SF only with IE through bounded FCHS/FABS
+
+The shared FCHS/FABS source gate now admits all 64 IE/DE/ZE/OE/UE/PE histories
+with SF clear and the corresponding 32 histories with SF|IE. FCW `0x037f`, the
+six accepted tag/class pairs, sign/payload transform, C1 clear, TOP/tag,
+metadata, FIP/RIP and retirement behavior remain unchanged. The operations do
+not generate flags or quiet SNaN. SF without IE, ES and B reject atomically;
+decoder/schema/JIT/native admission is unchanged, and JIT remains denied.
+
+The full-state matrix passes 294,912 cases (196,608 SF-clear plus 98,304 SF|IE).
+Atomic rejection passes for 768 SF-without-IE states and 6,144 ES/B states over
+all 128 low-seven-bit histories. The boundary checks seed IE|SF for fetch,
+truncation, STOP, budget and fetch-fault paths; invalid FCW, malformed/Empty
+source, missing state, repeated operations and FNSTSW/FNCLEX are also covered.
+Basic schema-v2 CLI fixtures check bare FCHS +1 and FABS -1 with initial FSW
+`0x0241`; the operation preserves IE|SF and clears C1 to `0x0041`. Two exact
+FRNDINT compositions use `d9fcd9e0dfe0` and `d9fcd9e1dfe0`, seed ±1.5 with
+IE|SF, then check FRNDINT's PE/C1 and FCHS/FABS C1 clearing before FNSTSW reads
+`0x0061` at TOP=0. IE|SF is seeded in the initial project snapshot; no guest
+stack-fault producer exists in scope, and FRNDINT is composition, not an SF
+producer. Fixtures are local evidence and do not establish native or physical
+x86 behavior. A stepwise ISA composition compares complete state after seeded
+IE|SF FRNDINT, FCHS/FABS, FNSTSW and FNCLEX operations; it covers both finite
+ties and SNaN→QNaN where FRNDINT performs quieting, and confirms FNCLEX clears
+SF and all exception/summary bits before a final FNSTSW observes zero. Intel
+SDM Vol.1 revision 081 §8.1.3.4 p.8-6 and §8.5.1.1 p.8-26 is the normative
+reference. Further ES/B relaxation is deferred until a separate
+pending-exception contract and final physical x86 acceptance.
+
+Local checks passed: focused ISA full-state and rejection matrices; schema-v2
+runner fixtures; formatting; offline workspace check; layout validation;
+fixture validation and diff checks; Graphify update. No Mac mini, SSH, native
+runtime or physical x86 checks were performed. ISSUE-019 remains open.

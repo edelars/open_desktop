@@ -3527,3 +3527,27 @@ preserve those histories and clear C1. These project fixtures are not native
 evidence. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30bh-historical-ze-through-bounded-fchsfabs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-30bh-admit-historical-sticky-ze-to-bounded-fchsfabs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30bh--historical-sticky-ze-through-bounded-fchsfabs).
+
+### S2-30bi historical SF|IE through bounded FCHS/FABS
+
+Four schema-v2 fixtures exercise seeded status histories. The bare FCHS case
+starts with canonical +1 and FSW `0x0241` (IE|SF|C1), then accepts the operation
+and clears C1 to `0x0041`. The bare FABS case starts with -1 and the same status.
+Two exact streams, `d9fcd9e0dfe0` and `d9fcd9e1dfe0`, seed ±1.5 with IE|SF;
+FRNDINT adds PE/C1, FCHS/FABS clears C1, and FNSTSW observes `0x0061` at TOP=0.
+Fixtures seed IE|SF directly in the initial project snapshot; no guest
+stack-fault producer exists in this scope, and FRNDINT is only composition.
+Former IE|SF rejection fixtures now test ES in addition to IE|SF and use
+`s2_30bd_fchs_normal_ie_de_es`, `s2_30be_fchs_normal_ie_de_pe_es`, and
+`s2_30bf_fchs_normal_ie_de_ue_pe_es` IDs. SF-only and SF|DE without IE remain
+atomic rejects in the interpreter matrix. These are
+local project fixtures, not native evidence. Separate ISA unit coverage checks
+full state after each seeded IE|SF FRNDINT, FCHS/FABS, FNSTSW and FNCLEX step,
+including FRNDINT quieting an SNaN to QNaN and FNCLEX clearing SF and exception
+bits. ISSUE-019 remains open. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30bi-historical-sf-ie-fchs-fabs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30bi-admit-historical-sf-only-with-ie-to-bounded-fchsfabs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30bi--historical-sf-only-with-ie-through-bounded-fchsfabs).
+
+Normative source: [Intel SDM Vol.1 revision 081 §8.1.3.4 p.8-6 and §8.5.1.1
+p.8-26](https://cdrdv2-public.intel.com/789574/253665-sdm-vol-1.pdf#page=208).

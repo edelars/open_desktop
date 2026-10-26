@@ -7005,6 +7005,38 @@ QNaN and IE is produced by FRNDINT before the sign operation preserves ZE|IE.
 These are local interpreter/fixture results, not physical x86 or native evidence;
 ISSUE-019 remains open for combined final acceptance.
 
+<a id="local-s2-30bi-historical-sf-ie-fchs-fabs"></a>
+
+## Local S2-30bi: historical stack-fault status through bounded `FCHS/FABS`
+
+The shared sign-operation gate preserves the exact FCW `0x037f` and six
+existing source tag/class pairs. It accepts all 64 prior IE/DE/ZE/OE/UE/PE
+combinations with SF clear, and those same histories with SF set only when IE
+is also set. Equivalent predicate: `FSW & 0x8080 == 0 && (FSW & 0x0040 == 0 ||
+FSW & 0x0001 != 0)`. Standalone SF and SF without IE reject; ES/B remain
+rejected. Sign/payload, C1/TOP/tag, metadata, FIP/RIP and retirement behavior
+remain unchanged. The operations generate no flags and do not quiet SNaN.
+
+The full-state matrix retains 196,608 SF-clear cases and adds 98,304 SF|IE
+cases (294,912 total). Reject matrices cover 768 SF-without-IE combinations and
+6,144 ES/B cases across all 128 low-seven-bit states. Bare project fixtures seed
+IE|SF explicitly: `D9 E0` changes +1 to -1 and `D9 E1` changes -1 to +1;
+`0x0241` becomes `0x0041` after clearing C1. FRNDINT compositions seed ±1.5 and
+`0x0241`; FRNDINT adds PE/C1, FCHS/FABS clears C1, and FNSTSW observes `0x0061`
+at TOP=0. No guest stack-fault producer exists in this scope; FRNDINT is only a
+composition step. Fixtures are local-only and not native or physical evidence.
+Empty sources, SF-only, SF|DE without IE, ES, B, invalid/missing state, bad FCW
+and execution boundaries reject atomically. JIT remains denied.
+Stepwise ISA coverage asserts the full state after each FRNDINT, FCHS/FABS,
+FNSTSW and FNCLEX operation with IE|SF seeded. It covers inexact finite ties
+and SNaN→QNaN, where FRNDINT performs quieting and IE handling. FNCLEX clears
+SF and all exception/summary bits, and a final FNSTSW reads zero.
+
+Normative reference: [Intel SDM Vol.1, revision 081, §8.1.3.4 p.8-6 and
+§8.5.1.1 p.8-26](https://cdrdv2-public.intel.com/789574/253665-sdm-vol-1.pdf#page=208).
+ISSUE-019 remains open. Further ES/B relaxation requires a separate
+pending-exception contract and final physical x86 acceptance.
+
 <a id="local-s2-30az-canonical-qnan-fst-fstp-sti"></a>
 
 ## Local S2-30az: canonical binary80 QuietNaN through bounded `FST/FSTP ST(i)`

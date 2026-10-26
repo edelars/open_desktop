@@ -2443,6 +2443,35 @@ Check complete state at each stage, observe with FNSTSW and clear with FNCLEX.
 Do not run Mini/SSH/native/physical checks; those remain in combined final
 acceptance under ISSUE-019.
 
+#### S2-30bi. Admit historical SF only with IE to bounded `FCHS/FABS`
+
+Change only `bounded_x87_sign_st0_source` to accept the existing 64 IE/DE/ZE/OE/UE/PE
+histories with SF clear and the 32 corresponding SF|IE histories. The exact
+gate is equivalent to `FSW & 0x8080 == 0 && (FSW & 0x0040 == 0 || FSW & 0x0001 != 0)`.
+Keep FCW `0x037f`, all six source tag/class pairs, raw sign/payload transform,
+C1 clear, TOP/tag/metadata/FIP/RIP/retirement and atomicity unchanged. Reject
+SF without IE (including SF-only and DE|SF), ES and B atomically. No status
+flags are generated and no current SNaN is quieted to synthesize IE.
+
+Retain the 196,608 SF=0 full-state cases and add 98,304 SF|IE states for
+294,912 total (96 valid histories). Reject 768 no-IE SF combinations and 6,144
+ES/B combinations crossed with all 128 low-seven-bit states. Include malformed
+tags/raw values, Empty, missing x87 state, bad FCW and fetch/truncation/STOP/
+budget/fault boundaries with IE|SF, repeated operations, FNSTSW/FNCLEX,
+full-state and memory canaries, and JIT denial. Seeded bare D9 E0 uses +1 and
+`0x0241`→`0x0041`; bare D9 E1 uses -1 and the same status transition. Exact
+`D9 FC D9 E0 DF E0` and `D9 FC D9 E1 DF E0` compositions seed ±1.5 with IE|SF;
+FRNDINT adds PE/C1 and the sign operation clears C1, with FNSTSW observing
+`0x0061` at TOP=0. IE|SF is explicitly seeded in the initial project snapshot;
+there is no guest stack-fault producer in scope. FRNDINT is composition only,
+not an SF producer. No native/physical evidence is claimed.
+
+Use Intel SDM Vol.1 revision 081 §8.1.3.4 p.8-6 and §8.5.1.1 p.8-26
+([official PDF](https://cdrdv2-public.intel.com/789574/253665-sdm-vol-1.pdf#page=208)).
+Keep ISSUE-019 open; do not relax ES/B acceptance further before a separate
+pending-exception contract and final physical x86 acceptance. Do not run
+Mac mini/SSH/native/physical checks in this substage.
+
 #### S2-30be. Admit historical sticky PE to bounded `FCHS/FABS`
 
 Change only `bounded_x87_sign_st0_source`: change its FSW mask from `0x80fc`

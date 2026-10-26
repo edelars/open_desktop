@@ -1,12 +1,12 @@
 {
   "schema_version": 2,
-  "case_id": "s2_30bd_fchs_normal_ie_de_sf",
+  "case_id": "s2_30bi_frndint_fabs_negative_tie_fnstsw",
   "profile": "s2-long-x87-state-v1",
   "provenance": {
     "kind": "project_fixture",
-    "source": "Handwritten bare D9 E0 with canonical-Normal ST(0) and literal status bits for the bounded S2-30bd admission/rejection check; this project fixture is not native evidence.",
-    "specification": "Intel SDM revision 093, Vol.2A, FCHS entry; local bounded S2-30bd contract.",
-    "specification_version": "Intel SDM revision 093; project S2-30bd"
+    "source": "Handwritten d9 fc d9 e1 df e0 with seeded -1.5 under FCW 0x037f and initial IE|SF; FRNDINT adds PE/C1, then FCHS/FABS clears C1 while preserving IE|SF|PE. Local fixture, not native evidence. IE|SF are seeded in the initial x87 state; no guest SF producer is involved, and no guest instruction in this fixture produces SF.",
+    "specification": "Intel SDM Vol.1 revision 081 \u00a78.1.3.4 and \u00a78.5.1.1; FRNDINT/FCHS/FABS/FNSTSW entries; local bounded S2-30bi contract.",
+    "specification_version": "Intel SDM Vol.1 revision 081; project S2-30bi"
   },
   "seed": null,
   "converted_from_v1_sha256": null,
@@ -34,18 +34,18 @@
     "rflags": "0x0000000000000002",
     "x87": {
       "registers": [
-        "0000000000000080ff3f",
+        "00000000000000c0ffbf",
         "0123456789abcdef0180",
         "0000000000000080003f",
         "00000000000000000000",
         "55aa55aa55aa55aa55aa",
-        "112233445566778899aa",
+        "00000000000000800180",
         "deadbeefcafebabe0180",
         "00000000000000000000"
       ],
       "control_word": "0x000000000000037f",
-      "status_word": "0x0000000000000043",
-      "tag_word": "0x000000000000fffc",
+      "status_word": "0x0000000000000241",
+      "tag_word": "0x000000000000f3fc",
       "instruction_pointer": "0x0000000000001234",
       "data_pointer": "0x0000000000005678",
       "last_opcode": "0x00000000000005aa"
@@ -55,14 +55,14 @@
     {
       "region_id": "code",
       "guest_address": "0x0000000000100000",
-      "length": 2,
+      "length": 6,
       "permissions": {
         "read": true,
         "write": false,
         "execute": true
       },
-      "initial_bytes_hex": "d9e0",
-      "comparison_mask_hex": "ffff"
+      "initial_bytes_hex": "d9fcd9e1dfe0",
+      "comparison_mask_hex": "ffffffffffff"
     },
     {
       "region_id": "stack",
@@ -77,9 +77,9 @@
       "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
     }
   ],
-  "stop_rip": null,
-  "instruction_budget": 1,
+  "stop_rip": "0x0000000000100006",
+  "instruction_budget": 3,
   "wall_timeout_ms": 2000,
   "rflags_mask": "0x0000000000000cd7",
-  "expected_exit": "unsupported"
+  "expected_exit": "stop_address"
 }

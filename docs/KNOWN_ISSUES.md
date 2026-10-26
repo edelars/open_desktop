@@ -1124,3 +1124,16 @@
   [plan](plans/STAGE_2.md#s2-30bh-admit-historical-sticky-ze-to-bounded-fchsfabs),
   [report](reports/STAGE_2_REPORT.md#s2-30bh--historical-sticky-ze-through-bounded-fchsfabs),
   and [fixture notes](../tests/fixtures/x86/stage2/README.md#s2-30bh-historical-ze-through-bounded-fchsfabs).
+- **S2-30bi historical SF|IE evidence:** the bounded FCHS/FABS gate accepts
+  SF only when IE is also set; standalone SF and SF|DE without IE still reject.
+  The 294,912-state full-state matrix, 768 no-IE SF rejects, 6,144 ES/B cross
+  product, seeded basic and FRNDINT-composition CLI fixtures, and execution
+  boundaries are local evidence only. IE|SF is seeded in the initial project
+  snapshot; there is no guest SF producer in scope, and FRNDINT only composes
+  with the seeded history. Empty, ES, B, #MF/WAIT delivery and native/physical
+  behavior remain outside this slice. Further ES/B relaxation requires a
+  separate pending-exception contract plus final physical x86 acceptance.
+  ISSUE-019 remains open. See [CPU contract](specs/CPU_CONTRACT.md#local-s2-30bi-historical-sf-ie-fchs-fabs),
+  [plan](plans/STAGE_2.md#s2-30bi-admit-historical-sf-only-with-ie-to-bounded-fchsfabs),
+  [report](reports/STAGE_2_REPORT.md#s2-30bi--historical-sf-only-with-ie-through-bounded-fchsfabs),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md#s2-30bi-historical-sfie-through-bounded-fchsfabs).
