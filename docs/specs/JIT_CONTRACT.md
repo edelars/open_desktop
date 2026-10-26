@@ -112,12 +112,16 @@ Unsupported decoded form не включается в block; builder остан�
 instruction start или `code_end`; если он попадает внутрь instruction, builder
 останавливается перед Jcc и сохраняет ранее собранный prefix. Target вычисляется
 64-битным wrapping сложением `next_rip` и sign-extended displacement, как в
-interpreter; полученный target за пределами `CodeView` сохраняется как
-`Unresolved`. Forward/unparsed и внешние targets также имеют явный статус
-`Unresolved`. Такой target пока нельзя передать в `ir::verify`: его текущий
-boundary proof требует target среди IR guest records либо на последнем
-`next_rip`. Согласование unresolved targets с IR оставлено S3-05/S3-15; S3-04 не
-объявляет их проверенными.
+interpreter. Если target совпадает с `code_end`, он классифицируется как
+`CodeEnd`; если совпадает с `next_rip` текущей branch, он классифицируется как
+`NextRipBoundary`, даже когда за ним есть неразобранные bytes. Это доказывает
+только sequential boundary по длине декодированной branch; будущие bytes после
+него не декодируются и не объявляются валидной инструкцией. Targets на уже
+декодированные starts сохраняют `KnownInstructionStart`. Другие forward/unparsed
+и внешние targets имеют статус `Unresolved`. Такой target пока нельзя передать
+в `ir::verify`: его текущий boundary proof принимает только guest-record starts
+или последний `next_rip`. Согласование прочих unresolved targets с IR оставлено
+S3-05/S3-15; S3-04 не объявляет их проверенными.
 
 `BasicBlock.guest_ranges` хранит точные ranges декодированного блока. Они не
 содержат идентичность или версию executable code и сами не являются cache

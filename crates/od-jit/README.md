@@ -47,8 +47,11 @@ deferred decode boundary и branch представлены разными stop 
 unresolved target нельзя передать ему до согласования в S3-05/S3-15. Target
 внутрь decoded instruction останавливает сборку перед branch, сохраняя уже
 собранный prefix. Branch target считается 64-битным wrapping сложением, как в
-interpreter. `BasicBlock.guest_ranges` фиксирует bytes, но не code identity или
-version: tracking принадлежит S3-17, cache invalidation — S3-23.
+interpreter. `code_end` и точный `next_rip` текущей Jcc классифицируются как
+известные sequential boundaries; это не декодирует следующие bytes. Другие
+forward targets остаются unresolved. `BasicBlock.guest_ranges` фиксирует bytes,
+но не code identity или version: tracking принадлежит S3-17, cache invalidation
+— S3-23.
 
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).

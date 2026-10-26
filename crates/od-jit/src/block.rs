@@ -117,8 +117,11 @@ pub struct DecodedInstruction {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BranchTargetResolution {
-    KnownInstructionStart,
     CodeEnd,
+    KnownInstructionStart,
+    /// The branch target equals the sequential RIP after this decoded Jcc.
+    /// This boundary is known even though the following bytes are not decoded.
+    NextRipBoundary,
     /// The target is not part of the decoded prefix; later block/dispatcher
     /// work must resolve it without pretending `ir::verify` proved it.
     Unresolved,
@@ -598,6 +601,38 @@ mod tests {
     }
 
     #[test]
+    fn zero_displacement_is_a_known_next_rip_boundary_without_decoding_tail() {
+        let block =
+            block(build(&[0x74, 0x00, 0xff], 0x6200, 0x6200, BlockLimits::default()).unwrap());
+        assert_eq!(block.instructions.len(), 1);
+        assert_eq!(block.instructions[0].next_rip, 0x6202);
+        assert_eq!(
+            block.stop_reason,
+            BlockStopReason::Branch {
+                target: BranchTarget {
+                    rip: 0x6202,
+                    resolution: BranchTargetResolution::NextRipBoundary,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn zero_displacement_at_code_end_is_classified_as_code_end() {
+        let block = block(build(&[0x74, 0x00], 0x6300, 0x6300, BlockLimits::default()).unwrap());
+        assert_eq!(block.instructions.len(), 1);
+        assert_eq!(
+            block.stop_reason,
+            BlockStopReason::Branch {
+                target: BranchTarget {
+                    rip: 0x6302,
+                    resolution: BranchTargetResolution::CodeEnd,
+                }
+            }
+        );
+    }
+
+    #[test]
     fn stops_before_mid_instruction_target_and_marks_forward_target_unresolved() {
         let mut mid_instruction = mov_rax_imm(3).to_vec();
         mid_instruction.extend([0x74, 0xf5]); // Target is byte 1 of MOV.
@@ -792,6 +827,9 @@ fn classify_target(
     instructions: &[DecodedInstruction],
     candidate: DecodedInstruction,
 ) -> TargetClassification {
+    if target_rip == code_end {
+        return TargetClassification::Resolved(BranchTargetResolution::CodeEnd);
+    }
     if target_rip == candidate.guest_rip
         || instructions
             .iter()
@@ -799,8 +837,8 @@ fn classify_target(
     {
         return TargetClassification::Resolved(BranchTargetResolution::KnownInstructionStart);
     }
-    if target_rip == code_end {
-        return TargetClassification::Resolved(BranchTargetResolution::CodeEnd);
+    if target_rip == candidate.next_rip {
+        return TargetClassification::Resolved(BranchTargetResolution::NextRipBoundary);
     }
     if (target_rip > candidate.guest_rip && target_rip < candidate.next_rip)
         || instructions.iter().any(|instruction| {
