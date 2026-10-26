@@ -6535,8 +6535,10 @@ IE/DE/PE; a current nonzero subnormal adds DE; a current SNaN adds IE and keeps
 the existing binary80 quieting/payload mapping. Current flags combine with
 prior IE/DE/UE/PE independently.
 
-The four FCWs remain `0x037f`, `0x077f`, `0x0b7f`, and `0x0f7f`. ZE/OE/SF/ES/B
-still reject before the single data read. Empty physical destination, bare RAX
+The four FCWs remain `0x037f`, `0x077f`, `0x0b7f`, and `0x0f7f`. In the
+S2-31dt slice OE still rejected before the single data read; S2-31du admits
+historical OE for these two exact forms. ZE/SF/ES/B continue to reject.
+Empty physical destination, bare RAX
 mapping, full canonical48 range preflight, one raw Dword/Qword read, C1 policy,
 TOP/tag push, FIP/FDP, RIP, retirement and write-free load behavior are
 unchanged. Failed preflight/read/fetch/boundary conditions remain atomic.
@@ -6550,3 +6552,36 @@ fixtures observe FSW with FNSTSW. Same- and cross-width underflow-store/load
 compositions and FNSTSW/FNCLEX re-entry are included. The independent project
 fixtures are not native x86 evidence; general exception delivery and physical
 acceptance remain deferred under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31dt-admit-historical-sticky-ue-through-exact-binary32binary64-fld), [report](../reports/STAGE_2_REPORT.md#s2-31dt--historical-sticky-ue-for-bounded-m32m64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+<a id="local-s2-31du-historical-sticky-oe-for-bounded-m32m64-fld"></a>
+
+## Local S2-31du: historical sticky OE for exact bounded m32/m64 `FLD`
+
+Only exact bare Long64 `D9 00` (`FLD m32fp [RAX]`) and `DD 00`
+(`FLD m64fp [RAX]`) lower their operation-local status mask from `0x80cc` to
+`0x80c4`. This admits and preserves historical OE alongside IE/DE/UE/PE.
+Current ordinary zero/Normal/infinity/QNaN sources add no IE/DE/PE; current
+nonzero subnormals add DE; current SNaNs add IE and retain the existing binary80
+quieting and payload mapping. ZE/SF/ES/B remain pre-read rejects.
+
+The four FCWs, Empty physical destination, bare RAX mapping, full canonical48
+range preflight, one raw Dword/Qword read, C1 policy, TOP/tag push, FIP/FDP, RIP,
+retirement and write-free load behavior remain unchanged. Failed
+preflight/read/fetch/boundary conditions remain atomic. FILD, FLD m80fp, stores,
+FRNDINT, every other x87 gate, JIT and native admission retain their existing
+contracts.
+
+Independent full-state interpreter coverage checks 131,072 cases across both
+widths, eight signed-zero/Normal-edge/interior/infinity/QNaN/SNaN/subnormal
+sources, all four FCWs, all TOPs, both prior-C1 values and all 32
+IE/DE/OE/UE/PE histories. It checks complete state, memory/read history and
+canaries; ordinary sources add no new flags, current subnormal adds DE, SNaN
+adds IE, and C1 clears. Seeded OE-only Normal-source FNSTSW fixtures and
+same-width FST overflow → FLD infinity → FNSTSW/FNCLEX project fixtures cover
+both widths. The producer compositions use nearest and directed-away RC only;
+no OE producer claim is made for toward-zero-directed modes. ZE/SF/ES/B rejects
+remain pre-read checks; a schema regression keeps bare budget-one/no-stop
+Normal Unsupported fixtures from treating OE-only as a rejection reason.
+These are local interpreter/project-fixture results, not native x86 evidence.
+General exception delivery, native runtime and physical acceptance remain open
+under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31du-admit-historical-sticky-oe-through-exact-binary32binary64-fld), [report](../reports/STAGE_2_REPORT.md#s2-31du--historical-sticky-oe-for-bounded-m32m64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

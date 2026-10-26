@@ -6605,4 +6605,95 @@ mod tests {
             assert_eq!(value.state, expected_state, "{name}: full CPU state");
         }
     }
+
+    #[test]
+    fn fld_oe_project_fixtures_load_and_observe_sticky_status() {
+        let fixtures: [(&[u8], u16, bool); 6] = [
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31du_fld_m32fp_seeded_oe_fnstsw.case.json"
+                ),
+                0x0008,
+                false,
+            ),
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31du_fld_m64fp_seeded_oe_fnstsw.case.json"
+                ),
+                0x0008,
+                false,
+            ),
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31du_fst_fld_m32fp_overflow_infinity_nearest_fnstsw_fnclex.case.json"
+                ),
+                0x0028,
+                true,
+            ),
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31du_fst_fld_m32fp_overflow_infinity_upward_fnstsw_fnclex.case.json"
+                ),
+                0x0028,
+                true,
+            ),
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31du_fst_fld_m64fp_overflow_infinity_nearest_fnstsw_fnclex.case.json"
+                ),
+                0x0028,
+                true,
+            ),
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31du_fst_fld_m64fp_overflow_infinity_upward_fnstsw_fnclex.case.json"
+                ),
+                0x0028,
+                true,
+            ),
+        ];
+        for (bytes, observed_flags, cleared) in fixtures {
+            let fixture = v2::Fixture::from_json(bytes).expect("S2-31du fixture schema");
+            let mut memory =
+                od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+            let Observation::Available { value } = result.snapshot else {
+                panic!("S2-31du fixture snapshot unavailable");
+            };
+            let x87 = value.state.x87.as_ref().unwrap();
+            if cleared {
+                assert_eq!(x87.status_word.get() & 0x3f, 0);
+                assert_eq!(
+                    value.state.gpr[0].get() as u16 & observed_flags,
+                    observed_flags
+                );
+                assert_eq!(value.state.gpr[0].get() as u16 & 0x0200, 0);
+                let stack = value
+                    .memory
+                    .iter()
+                    .find(|region| region.region_id == "stack")
+                    .unwrap();
+                assert!(
+                    stack.bytes_hex.contains(
+                        if fixture.fixture.memory[0]
+                            .initial_bytes_hex
+                            .starts_with("d9")
+                        {
+                            "0000807f"
+                        } else {
+                            "000000000000f07f"
+                        }
+                    )
+                );
+            } else {
+                assert_eq!(x87.status_word.get() as u16 & 0x3f, observed_flags);
+                assert_eq!(
+                    value.state.gpr[0].get() as u16 & observed_flags,
+                    observed_flags
+                );
+            }
+        }
+    }
 }

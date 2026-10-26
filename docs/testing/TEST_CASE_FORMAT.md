@@ -384,11 +384,10 @@ contract](../specs/CPU_CONTRACT.md#local-s2-31aj-bounded-fld-m32fp-rax-d9-00-can
 
 ## S2-31ak m32/m64 FLD status predicates
 
-Exact D900/DD00 loads now admit sticky IE, DE and PE because their local
-preflight is `FSW & 0x80cc == 0`; sticky UE is also admitted and preserved,
-while those flags alone must not be used to make an
-Unsupported fixture valid. Rejected-environment fixtures should set ZE, OE,
-SF, ES or B (or use an invalid FCW/boundary), independent of operand class.
+Exact D900/DD00 loads now admit sticky IE, DE, OE, UE and PE because their
+local preflight is `FSW & 0x80c4 == 0`; those flags alone must not be used to
+make an Unsupported fixture valid. Rejected-environment fixtures should set
+ZE, SF, ES or B (or use an invalid FCW/boundary), independent of operand class.
 This predicate is local to D900/DD00; FILD and m80 retain their own x87 gates.
 
 The `s2_31dt_fld_m32fp_seeded_ue_fnstsw.case.json` and

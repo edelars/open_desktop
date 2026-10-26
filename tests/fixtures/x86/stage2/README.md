@@ -3208,5 +3208,21 @@ exact binary32/binary64 `1.0` with `D9 00`/`DD 00`, and observe FSW using
 provenance identifies the initial status as directly seeded project state, not
 as a guest-produced underflow. Separate interpreter matrices cover current
 subnormal DE, SNaN IE/quieting, source classes, all FCWs/TOP and prior
-IE/DE/UE/PE combinations. The environment-reject fixtures retain their
-pre-read check by seeding OE, since UE is now admitted. See [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dt-historical-sticky-ue-for-bounded-m32m64-fld), [plan](../../../../docs/plans/STAGE_2.md#s2-31dt-admit-historical-sticky-ue-through-exact-binary32binary64-fld), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dt--historical-sticky-ue-for-bounded-m32m64-fld).
+IE/DE/UE/PE combinations. The environment-reject fixtures now seed ZE, since
+UE and OE are admitted. See [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dt-historical-sticky-ue-for-bounded-m32m64-fld), [plan](../../../../docs/plans/STAGE_2.md#s2-31dt-admit-historical-sticky-ue-through-exact-binary32binary64-fld), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dt--historical-sticky-ue-for-bounded-m32m64-fld).
+
+## S2-31du historical OE in bounded m32/m64 FLD
+
+The `s2_31du_fld_m32fp_seeded_oe_fnstsw.case.json` and
+`s2_31du_fld_m64fp_seeded_oe_fnstsw.case.json` fixtures seed only historical
+OE, load exact `1.0` with `D9 00`/`DD 00`, then observe FSW with `DF E0`. The
+normal loads preserve OE and create no IE/DE/PE. The four
+`s2_31du_fst_fld_m{32,64}fp_overflow_infinity_{nearest,upward}_fnstsw_fnclex`
+fixtures use actual same-width stores that overflow to positive infinity,
+reload it at the same width, observe sticky OE/PE, then clear flags with
+FNCLEX. Producers use nearest and toward-positive-infinity RC; no overflow-to-
+infinity producer is claimed for toward-zero-directed RC. These are
+`project_fixture` results, not native x86 evidence. Exact bare, budget-one/no-
+stop Normal Unsupported inputs are schema-tested with OE-only mutation and
+remain rejected; ZE replaces OE in the environment-reject fixtures. See [CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31du-historical-sticky-oe-for-bounded-m32m64-fld), [plan](../../../../docs/plans/STAGE_2.md#s2-31du-admit-historical-sticky-oe-through-exact-binary32binary64-fld), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31du--historical-sticky-oe-for-bounded-m32m64-fld).

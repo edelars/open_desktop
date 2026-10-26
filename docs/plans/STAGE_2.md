@@ -237,6 +237,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dr | Admit only Special-tagged binary80 pseudo-infinities through bounded D9 FC as masked invalid; native/JIT closed | S2-31dq |
 | [x] | S2-31ds | Admit Special-tagged binary80 pseudo-NaNs (both Q-bit classes) through bounded D9 FC as masked invalid; native/JIT closed | S2-31dr |
 | [x] | S2-31dt | Admit historical sticky UE only in exact bare D9 00/DD 00 FLD m32/m64 gates; keep other x87 gates and native/JIT closed | S2-31ak |
+| [x] | S2-31du | Admit historical sticky OE only in exact bare D9 00/DD 00 FLD m32/m64 gates; keep other x87 gates and native/JIT closed | S2-31dt |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -5337,3 +5338,22 @@ reads, bad controls, occupied destinations, forbidden statuses, canonical
 range and instruction-boundary atomicity. Existing v2 unsupported predicates
 must use the `0x80cc` forbidden-status mask, and their rejection fixtures now
 use OE rather than UE. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dt-historical-sticky-ue-for-bounded-m32m64-fld), [report](../reports/STAGE_2_REPORT.md#s2-31dt--historical-sticky-ue-for-bounded-m32m64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+#### S2-31du. Admit historical sticky OE through exact binary32/binary64 FLD
+
+Only exact bare `D9 00` and `DD 00` lower their local FSW mask from `0x80cc`
+to `0x80c4`, admitting and preserving pre-existing OE together with IE/DE/UE/PE.
+Keep ZE/SF/ES/B rejected before read. Preserve source mapping, current DE for
+subnormals, current IE and quieting for SNaNs, FCWs, destination, one-read
+behavior, canonical range preflight, C1, metadata, retirement and atomicity.
+Leave every other x87 gate and JIT/native admission unchanged.
+
+Expand the independent matrix to all 32 IE/DE/OE/UE/PE combinations for both
+widths and source classes; ordinary sources add no flags, current subnormals
+add DE, SNaNs add IE, and C1 clears. Check complete state, memory, read history
+and canaries. Add OE-only FNSTSW fixtures and same-width FST-overflow → FLD
+infinity → FNSTSW/FNCLEX compositions under nearest and directed-away rounding.
+Do not claim an OE producer under toward-zero-directed modes. Add a schema
+regression for the bare budget-one/no-stop Normal Unsupported case mutated to
+OE-only, and change old reject fixtures to ZE. Keep ISSUE-019 open; no Mac mini,
+SSH or physical x86 checks are part of this substage.

@@ -764,6 +764,8 @@ impl Fixture {
                 "d910d9fcdfe0" => ("d910d9fcdfe0", 6),
                 "d900d9fcdfe0" => ("d900d9fcdfe0", 6),
                 "dd00d9fcdfe0" => ("dd00d9fcdfe0", 6),
+                "d910d900dfe0dbe2" => ("d910d900dfe0dbe2", 8),
+                "dd10dd00dfe0dbe2" => ("dd10dd00dfe0dbe2", 8),
                 "db28d9fcdfe0" => ("db28d9fcdfe0", 6),
                 "db28d9fcdfe0dbe2d9fc" => ("db28d9fcdfe0dbe2d9fc", 10),
                 "db28d9fcd9fcdfe0dbe2d9fc" => ("db28d9fcd9fcdfe0dbe2d9fc", 12),
@@ -1118,14 +1120,14 @@ impl Fixture {
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-                        || x87.status_word.get() & 0x80cc != 0
+                        || x87.status_word.get() & 0x80c4 != 0
                 });
             let is_fld_m64_environment_rejected = code_bytes == "dd00"
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-                        || x87.status_word.get() & 0x80cc != 0
+                        || x87.status_word.get() & 0x80c4 != 0
                 });
             let is_fcom_source_rejected = code_bytes.len() == 4
                 && code_bytes.starts_with("d8d")
@@ -1189,6 +1191,7 @@ impl Fixture {
                 "db2848b80140000000000000df38dfe0dbe2" | "db28d9fcdfe0dbe2d9fc" => 5,
                 "db28d9fcd9fcdfe0dbe2d9fc" => 6,
                 "d9fcdfe0dbe2" => 3,
+                "d910d900dfe0dbe2" | "dd10dd00dfe0dbe2" => 4,
                 _ => match code_bytes.len() {
                     8 => 2,
                     12 => 3,

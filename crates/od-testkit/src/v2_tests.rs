@@ -211,6 +211,55 @@ fn x87_schema_admits_d9_fst_ftst_fnstcw_and_a_budget_one_source_rejection() {
 }
 
 #[test]
+fn fld_m32_m64_budget_one_normal_unsupported_rejects_oe_only_status() {
+    for (width, opcode, normal_bytes) in [(4, "d900", "0000803f"), (8, "dd00", "000000000000f03f")]
+    {
+        let mut fixture = x87_fixture().fixture;
+        fixture.case_id = format!("local_fld_m{width}_normal_ze_rejection");
+        fixture.instruction_budget = 1;
+        fixture.stop_rip = None;
+        fixture.expected_exit = ExpectedExit::Unsupported;
+        fixture.initial_state.gpr[0] = HexU64(0x2000);
+        {
+            let code = fixture
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "code")
+                .unwrap();
+            code.length = 2;
+            code.initial_bytes_hex = opcode.into();
+            code.comparison_mask_hex = "ffff".into();
+        }
+        fixture.memory.push(MemoryRegionSpec {
+            region_id: "normal_operand".into(),
+            guest_address: HexU64(0x2000),
+            length: width,
+            permissions: MemoryPermissions {
+                read: true,
+                write: false,
+                execute: false,
+            },
+            initial_bytes_hex: normal_bytes.into(),
+            comparison_mask_hex: "ff".repeat(width as usize),
+        });
+
+        fixture.initial_state.x87.as_mut().unwrap().status_word = HexU64(0x0004);
+        fixture.initial_state.x87.as_mut().unwrap().control_word = HexU64(0x037f);
+        fixture.initial_state.x87.as_mut().unwrap().tag_word = HexU64(u16::MAX.into());
+        assert!(
+            fixture.validate().is_ok(),
+            "{opcode} ZE Unsupported fixture"
+        );
+
+        fixture.initial_state.x87.as_mut().unwrap().status_word = HexU64(0x0008);
+        assert!(
+            fixture.validate().is_err(),
+            "{opcode} OE-only must not reject"
+        );
+    }
+}
+
+#[test]
 fn x87_schema_admits_only_fcom_sti_register_forms_and_two_operand_rejection() {
     let mut fixture = x87_fixture().fixture;
     fixture.case_id = "local_fcom_sti".into();

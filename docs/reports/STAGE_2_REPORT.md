@@ -8698,8 +8698,8 @@ producers feed both same-width and cross-width FLD consumers for all FCWs;
 repeated loads retain UE/DE/PE, FNSTSW observes them, and FNCLEX clears the
 exception flags. Invalid FCW, occupied destination, ZE/OE/SF/ES/B with UE,
 canonical range, denied read/backend and instruction-boundary atomicity are
-covered. The two prior S2-31ak Unsupported fixtures now seed OE instead of UE
-and retain their source-independent pre-read rejection. Separate m32/m64 schema
+covered. The two prior S2-31ak Unsupported fixtures now seed ZE, since OE is
+admitted, and retain their source-independent pre-read rejection. Separate m32/m64 schema
 regressions mutate those exact bare, budget-one/no-stop, legal-FCW,
 Normal-source Unsupported inputs to UE-only and require `Fixture::from_json`
 to reject them.
@@ -8716,3 +8716,35 @@ acceptance and broader x87 exception behavior remain open under ISSUE-019. See
 the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dt-historical-sticky-ue-for-bounded-m32m64-fld),
 [plan](../plans/STAGE_2.md#s2-31dt-admit-historical-sticky-ue-through-exact-binary32binary64-fld),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## S2-31du — historical sticky OE for bounded m32/m64 FLD
+
+Only exact bare `D9 00`/`DD 00` changed their runtime and duplicated v2 schema
+status masks from `0x80cc` to `0x80c4`. Historical OE now passes through and is
+preserved alongside IE/DE/UE/PE. ZE/SF/ES/B remain pre-read rejects, and
+unrelated x87, JIT and native gates are unchanged. The independent full-state
+interpreter matrix covers 131,072 cases: both widths, eight signed-zero,
+Normal-edge/interior, infinity, QNaN, SNaN and subnormal source vectors, all
+four FCWs, all eight TOPs, all 32 IE/DE/OE/UE/PE histories and both prior-C1
+values. Ordinary sources add no flags, subnormals add DE, SNaNs add IE and C1
+clears. Complete `LongModeState`, one-read history, bytes and canaries are
+checked.
+
+Two seeded OE-only Normal→FNSTSW project fixtures were added. Four actual
+same-width `FST overflow → FLD infinity → FNSTSW → FNCLEX` project fixtures
+cover m32/m64 under nearest and positive-directed RC. The local composition
+test checks state after each instruction and verifies OE+PE survive the
+infinity load, are visible in AX, then clear through FNCLEX. It makes no OE
+producer claim under toward-zero-directed modes. The S2-31ak pre-read reject
+fixtures now use ZE. A schema regression verifies that a bare budget-one,
+no-stop Normal Unsupported input is rejected with OE-only status. These are
+local tests and `project_fixture` inputs; no Mac mini, SSH, physical x86 or
+native-runtime checks were run. Broader x87 semantics remain open under
+ISSUE-019. Focused checks passed: the interpreter matrix, same-width
+composition, m32/m64 pre-read rejection/atomicity tests, the two-width OE-only
+schema regression, the six OE project fixtures, and the updated S2-31ak fixture
+checks. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and
+`python3 tools/check_layout.py` passed. Independent gpt-6.1-sol medium review
+found two coverage gaps in the first draft; both were fixed and final review
+was clean. No full test corpus was run. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31du-historical-sticky-oe-for-bounded-m32m64-fld), [plan](../plans/STAGE_2.md#s2-31du-admit-historical-sticky-oe-through-exact-binary32binary64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
