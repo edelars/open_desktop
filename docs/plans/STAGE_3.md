@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07 и S3-08 завершены; S3-01 в работе.
+**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08 и S3-09 завершены; S3-01 в работе.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -135,7 +135,7 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-06 | Проверяемый ARM64 encoder | S3-02 |
 | [x] | S3-07 | Executable publication и ownership | S3-02, S3-06 |
 | [x] | S3-08 | Generated entry и helper ABI | S3-07 |
-| [ ] | S3-09 | Простой allocator baseline | S3-03, S3-08 |
+| [x] | S3-09 | Простой allocator baseline | S3-03, S3-08 |
 | [ ] | S3-10 | Lowering первого integer subset | S3-05, S3-06, S3-09 |
 | [ ] | S3-11 | Корректные eager flags | S3-10 |
 | [ ] | S3-12 | State points и PC maps | S3-11 |
@@ -277,7 +277,7 @@ S3-08 выполнена: `runtime` объявляет все `RuntimeContextV1`
 2. Реализовать stack slots и загрузку/сохранение values вокруг helper calls; запрещённые host registers исключить явно.
 3. Добавить проверки конфликтов live values и spill slot bounds. Считать spill/reload/code size для будущего сравнения.
 
-**Готово:** искусственно тесный register budget не меняет результат. Это корректный исходный вариант; окончательный выбор горячего allocator делается по S3-30.
+S3-09 выполнена: реализован первый baseline в `od-jit::allocator`: fixed homes x9..x12 в порядке определения, budget 0..=4, отдельные W64 spill slots, explicit helper boundaries/liveness/capture, transfer emission и checked frame. Unit tests и native helper-clobber probe добавлены; результат остаётся baseline cost estimate, не benchmark и не оптимизация. Независимое review clean; workspace check, форматирование, `od-jit` 46/46 tests, `od-host` 12/12 tests, diff-check и Graphify update прошли. Ограниченное покрытие комбинаций liveness зарегистрировано в [ISSUE-022](../KNOWN_ISSUES.md#issue-022--ограниченное-покрытие-liveness-allocator-tests) и расширяется при S3-10. Production consumption относится к S3-10; allocator не добавляет guest semantics.
 
 ### S3-10. Выполнить первый integer lowering
 

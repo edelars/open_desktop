@@ -21,6 +21,15 @@
 - **Основание и проверка:** boundary handling в [`ir.rs`](../crates/od-jit/src/ir.rs), target classification в [`block.rs`](../crates/od-jit/src/block.rs), fallback lowering в [`lowering.rs`](../crates/od-jit/src/lowering.rs), а также [S3-05 contract](specs/JIT_CONTRACT.md#s3-05-decoded-effects-to-typed-ir). Targeted tests покрывают unresolved-first, unresolved-after-prefix и другие branch classes.
 - **Следующий шаг:** S3-15 определяет resolution к будущему block entry без декодирования недостижимого хвоста; до этого unresolved Jcc остаётся interpreter-only.
 
+### ISSUE-022 — Ограниченное покрытие liveness allocator tests
+
+- **Дата обнаружения:** 2026-10-26.
+- **Компонент:** `od-jit::allocator` (S3-09).
+- **Статус:** открыта; текущие unit и native tests покрывают fixed homes, spills и живые значения вокруг helper, но не исчерпывают сочетания `Integer`/`ReadGpr` и нескольких helper boundaries.
+- **Суть и последствия:** allocator опирается на first/last-use в linear IR; непокрытое сочетание может ошибочно посчитать временное значение мёртвым или сохранить неверный набор register homes. Подтверждённого runtime-дефекта нет.
+- **Основание:** независимое ревью S3-09 выявило отсутствие отдельных unit vectors для перечисленных liveness сочетаний; native ARM64 probe подтверждает transport для четырёх register homes и двух spills через один helper.
+- **Следующий шаг:** расширить table-driven liveness tests по мере подключения S3-10 lowering; сохранить native helper-clobber probe и добавить multiple-boundary cases до объявления allocator baseline широко проверенным.
+
 ### ISSUE-021 — Ограничение одной MAP_JIT region в publisher contract
 
 - **Дата обнаружения:** 2026-10-26.

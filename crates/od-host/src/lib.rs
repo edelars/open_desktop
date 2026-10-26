@@ -521,9 +521,11 @@ pub unsafe extern "C" fn od_fragment_destroy(handle: *mut std::ffi::c_void) -> u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use od_jit::allocator::{Allocation, AllocatorConfig, HelperBoundaryPosition, ValueLocation};
     use od_jit::arm64::{
         AddressBase, Condition, Encoder, PairIndexMode, WReg, XReg, XRegOrSp, XRegOrZero,
     };
+    use od_jit::ir::{ExitKind, GuestGpr, GuestInstruction, IntWidth, Operation, Program, TempId};
     use od_jit::runtime::{
         ArithmeticFlagsHelper, BlockEntry, HelperOperationTag, RAW_HELPER_CONTRACT_FAILURE_V1,
         RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET, RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET,
@@ -543,6 +545,91 @@ mod tests {
     const PROBE_REGISTER_MISMATCH: u64 = 0xA100;
     static PROBE_HELPER_STATUS: AtomicU32 = AtomicU32::new(0);
     static PROBE_NESTED_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static mut ALLOCATOR_PROBE_OUTPUT: u64 = 0;
+
+    // Keep x29 as a valid frame pointer: it points at this wrapper's saved
+    // x29/x30 record while the generated entry runs.
+    core::arch::global_asm!(
+        ".text",
+        ".globl _od_jit_allocator_call_with_gpr_canaries",
+        "_od_jit_allocator_call_with_gpr_canaries:",
+        "stp x19, x20, [sp, #-16]!",
+        "stp x21, x22, [sp, #-16]!",
+        "stp x23, x24, [sp, #-16]!",
+        "stp x25, x26, [sp, #-16]!",
+        "stp x27, x28, [sp, #-16]!",
+        "stp x29, x30, [sp, #-16]!",
+        "sub sp, sp, #16",
+        "mov x12, sp",
+        "str x12, [sp]",
+        "mov x16, x0",
+        "mov x0, x1",
+        "mov x19, #0xc019",
+        "mov x20, #0xc020",
+        "mov x21, #0xc021",
+        "mov x22, #0xc022",
+        "mov x23, #0xc023",
+        "mov x24, #0xc024",
+        "mov x25, #0xc025",
+        "mov x26, #0xc026",
+        "mov x27, #0xc027",
+        "mov x28, #0xc028",
+        "add x29, sp, #16",
+        "blr x16",
+        "ldr x12, [sp]",
+        "mov x13, sp",
+        "cmp x12, x13",
+        "b.ne 1f",
+        "add x12, sp, #16",
+        "cmp x29, x12",
+        "b.ne 1f",
+        "mov x12, #0xc019",
+        "cmp x19, x12",
+        "b.ne 1f",
+        "mov x12, #0xc020",
+        "cmp x20, x12",
+        "b.ne 1f",
+        "mov x12, #0xc021",
+        "cmp x21, x12",
+        "b.ne 1f",
+        "mov x12, #0xc022",
+        "cmp x22, x12",
+        "b.ne 1f",
+        "mov x12, #0xc023",
+        "cmp x23, x12",
+        "b.ne 1f",
+        "mov x12, #0xc024",
+        "cmp x24, x12",
+        "b.ne 1f",
+        "mov x12, #0xc025",
+        "cmp x25, x12",
+        "b.ne 1f",
+        "mov x12, #0xc026",
+        "cmp x26, x12",
+        "b.ne 1f",
+        "mov x12, #0xc027",
+        "cmp x27, x12",
+        "b.ne 1f",
+        "mov x12, #0xc028",
+        "cmp x28, x12",
+        "b.ne 1f",
+        "b 2f",
+        "1:",
+        "mov x0, #0",
+        "2:",
+        "add sp, sp, #16",
+        "ldp x29, x30, [sp], #16",
+        "ldp x27, x28, [sp], #16",
+        "ldp x25, x26, [sp], #16",
+        "ldp x23, x24, [sp], #16",
+        "ldp x21, x22, [sp], #16",
+        "ldp x19, x20, [sp], #16",
+        "ret",
+    );
+
+    unsafe extern "C" {
+        fn od_jit_allocator_call_with_gpr_canaries(entry: usize, context: usize) -> u32;
+    }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct ProbeObservation {
@@ -812,6 +899,121 @@ mod tests {
         encoder.finish().unwrap().to_le_bytes().unwrap()
     }
 
+    fn allocator_probe_program() -> Program {
+        let mut operations = vec![Operation::BeginInstruction { index: 0 }];
+        for temp in 0u32..6 {
+            operations.push(Operation::Constant {
+                dst: TempId(temp),
+                width: IntWidth::W64,
+                value: temp as u64 + 1,
+            });
+        }
+        let helper_boundary = operations.len();
+        for temp in 0u32..6 {
+            operations.push(Operation::WriteGpr {
+                register: GuestGpr((temp % 4) as u8),
+                src: TempId(temp),
+                width: IntWidth::W64,
+            });
+        }
+        operations.push(Operation::CommitInstruction { index: 0 });
+        operations.push(Operation::Exit {
+            kind: ExitKind::BlockComplete,
+            target_rip: 0x2001,
+        });
+        assert_eq!(helper_boundary, 7);
+        Program {
+            guest_instructions: vec![GuestInstruction {
+                guest_rip: 0x2000,
+                next_rip: 0x2001,
+            }],
+            operations,
+            code_end: 0x2001,
+        }
+    }
+
+    fn emit_allocator_helper_probe(helper: ArithmeticFlagsHelper) -> Vec<u8> {
+        let program = allocator_probe_program();
+        let allocation = Allocation::build(
+            &program,
+            AllocatorConfig {
+                register_homes: 4,
+                reserved_prefix_bytes: 0,
+            },
+            &[HelperBoundaryPosition::BeforeOperation(7)],
+        )
+        .unwrap();
+        assert!(matches!(
+            allocation.location(TempId(4)),
+            Ok(ValueLocation::Spill(_))
+        ));
+        assert!(matches!(
+            allocation.location(TempId(5)),
+            Ok(ValueLocation::Spill(_))
+        ));
+        assert_eq!(allocation.frame().frame_bytes, 48);
+
+        let mut encoder = Encoder::new();
+        for first in [19, 21, 23, 25, 27] {
+            emit_pair_push(&mut encoder, first, first + 1);
+        }
+        emit_pair_push(&mut encoder, 29, 30);
+        // Three pairs reserve the allocator's exact 48-byte frame. Their old
+        // values are caller-saved and do not need to survive the probe.
+        emit_pair_push(&mut encoder, 13, 14);
+        emit_pair_push(&mut encoder, 15, 16);
+        emit_pair_push(&mut encoder, 17, 20);
+
+        for temp in 0..4 {
+            encoder.movz_x(xr(9 + temp), (temp + 1) as u16, 0).unwrap();
+        }
+        for (temp, value) in [(4, 5), (5, 6)] {
+            encoder.movz_x(xr(13), value, 0).unwrap();
+            allocation
+                .emit_store_scratch(&mut encoder, TempId(temp), xr(13))
+                .unwrap();
+        }
+
+        allocation
+            .emit_save_before_helper(&mut encoder, HelperBoundaryPosition::BeforeOperation(7))
+            .unwrap();
+        encoder.movz_x(xr(0), 1, 0).unwrap(); // helper operation
+        encoder.movz_x(xr(1), 0x1234, 0).unwrap();
+        encoder.movz_x(xr(2), 0x5678, 0).unwrap();
+        encoder.movz_x(xr(3), 0x9ABC, 0).unwrap();
+        emit_u64(
+            &mut encoder,
+            4,
+            std::ptr::addr_of_mut!(ALLOCATOR_PROBE_OUTPUT) as usize as u64,
+        );
+        emit_u64(&mut encoder, 16, helper as usize as u64);
+        encoder.blr(xr(16));
+        allocation
+            .emit_restore_after_helper(&mut encoder, HelperBoundaryPosition::BeforeOperation(7))
+            .unwrap();
+
+        allocation
+            .emit_load_scratch(&mut encoder, TempId(4), xr(13))
+            .unwrap();
+        allocation
+            .emit_load_scratch(&mut encoder, TempId(5), xr(14))
+            .unwrap();
+        encoder.mov_x(xr(0), XRegOrZero::Reg(xr(9)));
+        for register in [10, 11, 12, 13, 14] {
+            encoder.add_x(xr(0), xr(0), XRegOrZero::Reg(xr(register)));
+        }
+
+        emit_pair_pop(&mut encoder, 17, 20);
+        emit_pair_pop(&mut encoder, 15, 16);
+        emit_pair_pop(&mut encoder, 13, 14);
+        emit_pair_pop(&mut encoder, 29, 30);
+        for first in [27, 25, 23, 21, 19] {
+            emit_pair_pop(&mut encoder, first, first + 1);
+        }
+        encoder.ret(xr(30));
+        encoder.finish().unwrap().to_le_bytes().unwrap()
+    }
+
     fn call_probe_with_simd_canaries(
         entry: BlockEntry,
         context: &mut RuntimeContextV1,
@@ -924,6 +1126,54 @@ mod tests {
         assert_eq!(observation.flags, 0x0123_4567_89AB_CDEF);
         assert_eq!(observation.output_address % 16, 0);
         assert_ne!(observation.output_address, context_output_address);
+    }
+
+    #[test]
+    fn allocated_register_and_spill_values_survive_helper_clobbers() {
+        let _guard = jit_test_lock();
+        PROBE_HELPER_STATUS.store(0, Ordering::Relaxed);
+        PROBE_NESTED_CALLS.store(0, Ordering::Relaxed);
+        *PROBE_OBSERVATION.lock().unwrap() = None;
+        // SAFETY: this test owns the global probe output under JIT_TEST_LOCK;
+        // the generated helper receives its exact address and writes one u64.
+        unsafe { std::ptr::addr_of_mut!(ALLOCATOR_PROBE_OUTPUT).write(0) };
+
+        let code = emit_allocator_helper_probe(abi_probe_helper);
+        let published = PublishedCode::publish(&code).unwrap();
+        // SAFETY: code is emitted from the typed Encoder, saves the AAPCS64
+        // callee-saved frame, and returns the sum in w0 under BlockEntry ABI.
+        let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+        let mut state = probe_state();
+        let stop = AtomicU8::new(0);
+        let mut context = make_probe_context(&mut state, &stop);
+        let (raw, simd_values) = call_probe_with_simd_canaries(entry, &mut context);
+        // SAFETY: the entry points into `published`; the assembly wrapper
+        // seeds/checks x19-x29 and SP, then restores the wrapper's own frame.
+        let gpr_raw = unsafe {
+            od_jit_allocator_call_with_gpr_canaries(
+                entry as usize,
+                (&mut context as *mut RuntimeContextV1) as usize,
+            )
+        };
+
+        assert_eq!(raw, 21);
+        assert_eq!(gpr_raw, 21);
+        assert_eq!(
+            simd_values,
+            [
+                0xD008, 0xD009, 0xD00A, 0xD00B, 0xD00C, 0xD00D, 0xD00E, 0xD00F
+            ]
+        );
+        assert_eq!(PROBE_NESTED_CALLS.load(Ordering::Relaxed), 2);
+        let observation = PROBE_OBSERVATION.lock().unwrap().unwrap();
+        assert_eq!(observation.lhs, 0x1234);
+        assert_eq!(observation.rhs, 0x5678);
+        assert_eq!(observation.flags, 0x9ABC);
+        // SAFETY: the test lock excludes concurrent access to this probe cell.
+        assert_eq!(
+            unsafe { std::ptr::addr_of!(ALLOCATOR_PROBE_OUTPUT).read() },
+            abi_probe_nested(0x1234 ^ 0x5678 ^ 0x9ABC)
+        );
     }
 
     #[test]

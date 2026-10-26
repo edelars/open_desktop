@@ -360,6 +360,37 @@ VMHost smoke с allow-jit entitlement исполнил fragment через launc
 машине. Developer ID/notarization, packaged application и другой Mac остаются
 непроверенными под ISSUE-004.
 
+S3-09 добавляет узкий fixed-home allocator baseline для verified linear `ir::Program`.
+В порядке определения temps выбираются permanent homes x9..x12 (настраиваемый
+бюджет 0..=4); остальные W64 temps получают уникальные SP-relative 8-byte
+slots. Входной `TempId` остаётся sparse identity и не используется как индекс
+контейнера. W8/W16/W32 отклоняются. Eviction, slot reuse, coalescing,
+rematerialization и register reuse не выполняются.
+
+Helper calls пока отсутствуют в IR. Компилятор явно передаёт allocator boundary
+как `BeforeOperation` или `AfterOperation`; boundary у terminal или после него
+отклоняется, чтобы не вставлять вызов после последнего commit перед branch/exit.
+Liveness берётся из `Constant`/`ReadGpr` definitions,
+`Integer` input/result и `WriteGpr` uses. Каждое live-through значение в x9..x12
+сохраняется в собственный capture slot до helper и восстанавливается после;
+spill homes переживают вызов непосредственно в frame. Этот контракт не
+вставляет observable operation или call между guest commit и terminal branch.
+Frame layout резервирует caller-provided prefix, выравнивает полный размер до
+16 bytes и проверяет overflow, instruction offset bounds, slot containment и
+одновременные live-home conflicts. x13..x15 доступны только как transfer
+scratch; x18 запрещён и allocator-owned code не меняет x19..x29/LR/SP.
+Counters дают статическое число spill slots, spill loads/stores, helper
+saves/reloads и соответствующих transfer words/bytes; это baseline cost
+estimate, не benchmark.
+
+`od-host` native ARM64 test исполняет transfer sequence на текущем allow-jit
+host: четыре register homes и два stack spills переживают helper, который
+пишет в volatile x1..x17, после чего generated entry возвращает сумму 21.
+Test wrapper дополнительно проверяет callee-saved GPR и D8-D15 canaries.
+Проверка не является S3-10 guest instruction lowering или производительным
+сравнением. S3-09 остаётся открытой до отдельного review и запуска полного набора
+профильных проверок.
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 /// Identity of a temporary value. Temporaries are separate from guest GPRs.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TempId(pub u32);
 
 /// Integer width carried by every value-producing or value-consuming effect.

@@ -91,6 +91,20 @@ helper, проверяя callee-saved registers, SIMD canaries, output staging �
 error statuses. Это не добавляет arithmetic semantics, x86 lowering, block
 compiler, generic raw-entry invocation или dispatcher.
 
+S3-09 добавляет `allocator::Allocation`: детерминированные постоянные homes
+назначаются в порядке определения temp, с бюджетом 0..=4 для x9..x12; остальные
+W64 temps получают отдельные 8-byte SP-relative slots. Caller явно задаёт
+helper boundary before/after operation; boundary у terminal или после него
+отклоняется, сохраняя commit/branch atomicity. Liveness рассчитывается по IR def/use, а
+caller-saved register homes, живые через boundary, получают отдельные
+capture/save/restore slots. Transfer API ограничивает scratch x13..x15 и
+использует checked ARM64 SP-relative LDR/STR. Frame layout учитывает reserved
+prefix, 16-byte alignment, диапазон адресуемых slots и transfer counters.
+Allocator не встраивает call в IR и не выводит clobber из Integer. Это baseline,
+не guest lowering; S3-10 отвечает за его потребление. Native od-host probe
+проверяет четыре register homes и два spills через helper, который портит
+x1..x17, одновременно сохраняя AAPCS64 callee-saved/SIMD canaries.
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в
