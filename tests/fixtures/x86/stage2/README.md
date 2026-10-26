@@ -1305,7 +1305,7 @@ Local vectors cover both zero signs × all TOP × all prior condition-code
 states, repeated-FABS idempotence, malformed Zero/wrong-tag/environment inputs,
 and execution boundaries; Normal and FCHS behavior remain covered by their
 existing cases. At the time, FST/FSTP ST(i) remained Normal-only; S2-30aq later
-extends FTST and S2-30ar later extends bare FST. This is project-fixture
+extends FTST, and S2-30ar/as later extend bare FST/FSTP respectively. This is project-fixture
 evidence, not native or physical evidence; ISSUE-019 remains open.
 
 ### S2-30aq signed-zero FTST
@@ -1328,10 +1328,10 @@ original ten bytes and Zero tag, and FNSTSW observes TOP. It retires three
 instructions and checks full state and memory through the interpreter CLI.
 Local vectors cover both zero signs × all TOP × all eight indices × all 16
 condition-code combinations, old destination payload/tag sentinels, alias and
-idempotence, malformed Zero/wrong-tag/environment inputs, FSTP-only zero
-rejection and execution boundaries. Existing Normal FST/FSTP cases remain.
-This is project-fixture evidence, not native or physical evidence; ISSUE-019
-remains open.
+idempotence, malformed Zero/wrong-tag/environment inputs, the then-current FSTP zero
+rejection (historical; superseded by S2-30as) and execution boundaries. Existing
+Normal FST/FSTP cases remain. This is project-fixture evidence, not native or
+physical evidence; ISSUE-019 remains open.
 
 ### S2-30z x87 schema and fixture coverage
 
@@ -3278,3 +3278,17 @@ infinity producer is claimed for toward-zero-directed RC. These are
 stop Normal Unsupported inputs are schema-tested with OE-only mutation and
 remain rejected; ZE replaces OE in the environment-reject fixtures. See [CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31du-historical-sticky-oe-for-bounded-m32m64-fld), [plan](../../../../docs/plans/STAGE_2.md#s2-31du-admit-historical-sticky-oe-through-exact-binary32binary64-fld), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31du--historical-sticky-oe-for-bounded-m32m64-fld).
+
+
+### S2-30as signed-zero FSTP ST(i)
+
+The handwritten fixture `s2_30as_fld_fstp_sti_fnstsw.case.json` uses exactly
+`d900ddd9dfe0`: FLD m32fp loads negative zero, FSTP ST(1) copies the bytes and
+Zero tag, empties the old physical TOP, and advances TOP; FNSTSW observes the
+new TOP. The six-byte stream retires three instructions and checks full state
+and memory through the interpreter CLI. Unit coverage checks both zero signs ×
+all TOP positions × all destinations × all 16 condition-code states, destination
+sentinels, `i=0`, `i=1`, TOP wrap, Normal regressions, malformed/wrong-tag and
+bad-environment rejection, and atomic execution boundaries. Local m32/m64
+compositions cover both signs. Native/JIT and physical acceptance remain
+unverified; ISSUE-019 remains open.

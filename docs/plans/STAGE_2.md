@@ -202,13 +202,14 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30t | Bare `D8 F8+i` FDIVR ST(0), ST(i), exact `ST(i)/ST(0)` into old TOP without pop; native closed | S2-30s |
 | [x] | S2-30u | Bare `DC F0+i` FDIVR ST(i), ST(0), exact `ST(0)/ST(i)` into physical ST(i) without pop; native closed | S2-30t |
 | [x] | S2-30v | Bare `DC F8+i` FDIV ST(i), ST(0), exact `ST(i)/ST(0)` into physical ST(i) without pop; native closed | S2-30u |
-| [x] | S2-30w | Bare `DD D8+i` FSTP ST(i), canonical Normal source copy then physical TOP pop; native closed | S2-30v |
+| [x] | S2-30w | Bare `DD D8+i` FSTP ST(i), historical canonical-Normal source copy/pop; signed-zero limit superseded by S2-30as; native closed | S2-30v |
 | [x] | S2-30x | Bare `DD D0+i` FST ST(i), canonical Normal raw copy without TOP change; native closed | S2-30w |
 | [x] | S2-30y | Bare `D9 E0` FCHS, bounded canonical-Normal ST(0) sign-bit flip; native closed | S2-30x |
 | [x] | S2-30z | Bare `D9 E1` FABS, bounded canonical-Normal ST(0) sign-bit clear; native closed | S2-30y |
 | [x] | S2-30ap | Bare `D9 E1` FABS additionally admits canonical Zero-tagged signed zero; at that time FTST/FST gates remained Normal-only (superseded by S2-30aq/ar) | S2-30ao |
-| [x] | S2-30aq | Bare `D9 E4` FTST additionally admits canonical Zero-tagged signed zero as equal; at that point FST/FSTP ST(i) remained Normal-only; native/JIT closed | S2-30ap |
-| [x] | S2-30ar | Bare `DD D0+i` FST ST(i) also copies exact Zero-tagged signed zero, retaining Zero without pop; FSTP remains Normal-only; native/JIT closed | S2-30aq |
+| [x] | S2-30aq | Bare `D9 E4` FTST additionally admits canonical Zero-tagged signed zero as equal; at that point FST/FSTP ST(i) were Normal-only (historical; superseded by S2-30ar/as); native/JIT closed | S2-30ap |
+| [x] | S2-30ar | Bare `DD D0+i` FST ST(i) also copies exact Zero-tagged signed zero, retaining Zero without pop; FSTP's then-Normal-only scope is historical / superseded by S2-30as; native/JIT closed | S2-30aq |
+| [x] | S2-30as | Bare `DD D8+i` FSTP ST(i) copies exact Zero-tagged signed zero before emptying old TOP and advancing TOP; native/JIT closed | S2-30ar |
 | [x] | S2-30aa | Bare `D9 E4` FTST, bounded canonical-Normal ST(0) comparison with zero; native closed | S2-30z |
 | [x] | S2-30ab | Bare `D8 D1` FCOM ST(1), exact finite canonical-Normal compare with status-only commit; native closed | S2-30aa |
 | [x] | S2-30ac | Bare `D8 D0+i` FCOM ST(i), exact finite canonical-Normal compare for all register indices; native closed | S2-30ab |
@@ -223,7 +224,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30al | Bare `DB E9` FUCOMI ST(0), ST(1), bounded canonical-Normal compare to RFLAGS; native closed | S2-30ak |
 | [x] | S2-30am | Bare `DF E9` FUCOMIP ST(0), ST(1), bounded canonical-Normal compare to RFLAGS and one physical TOP pop; native closed | S2-30al |
 | [x] | S2-30an | Bare indexed DB/DF register FCOMI-family forms for ST(i), bounded canonical-Normal compare and optional physical TOP pop; native closed | S2-30am |
-| [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; keep shared Normal-only gate and native/JIT closed | S2-30y, S2-31u, S2-31v |
+| [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
 | [x] | S2-31dd | Admit canonical Normal binary80 exact integers with e=63..16383 to D9 FC; preserve raw bytes/status except C1; native closed | S2-31dc |
@@ -2070,9 +2071,9 @@ accept a Zero-tagged ST(0) only when all eight significand bytes are zero and
 the sign/exponent word is exactly `0x0000` or `0x8000`. Flip only raw bit
 `source[9] ^= 0x80`, retain Zero tag/TOP/other payloads, clear C1, retain
 C0/C2/C3 by the existing snapshot policy, set FIP and advance RIP by two, then
-retire once. At this historical point FTST and FST ST(i) used the Normal-only
-source gate; later S2-30aq and S2-30ar extend them respectively. FCHS and FABS
-may share their narrow sign-operation gate.
+retire once. At this historical point FTST and FST/FSTP ST(i) used the
+Normal-only source gate; later S2-30aq/ar/as extend those forms respectively.
+FCHS and FABS may share their narrow sign-operation gate.
 
 Cover both signed zeros × all TOP × all 16 prior condition-code combinations,
 full-state and double-operation restoration, malformed payload/tag/environment
@@ -2108,7 +2109,7 @@ Normal results remain less/greater by sign; either signed zero compares equal
 and sets C3 only using `(old_fsw & !0x4700) | 0x4000`. Preserve sign/raw bytes,
 tag, TOP, FCW/FDP/FOP, other state, record FIP, advance RIP by two, and retire
 once. At this historical point FST/FSTP ST(i) retained their Normal-only
-source gate; S2-30ar later extends bare FST while FSTP remains Normal-only.
+source gate; S2-30ar later extends bare FST; the FSTP limit here is historical and S2-30as supersedes it.
 Native/JIT remain closed.
 
 Cover both signed zeros × all TOP × all 16 prior condition-code states,
@@ -2133,10 +2134,36 @@ condition bits, including C1, remain the deterministic local policy.
 Cover both signed zeros × all eight TOP values × all eight indices × all 16
 prior condition-code states, destination tag/payload sentinels, i=0
 idempotence, existing Normal vectors, and wrong-tag/malformed-zero/environment
-and execution-boundary atomic rejection. FSTP remains Normal-only. The local
+and execution-boundary atomic rejection. FSTP's Normal-only scope here is
+historical and is superseded by S2-30as. The local
 m32/m64 composition and exact project fixture `d900ddd1dfe0` perform
 FLD→FST ST(1)→FNSTSW in three retirements. Native/JIT remain closed and
 physical acceptance remains deferred under ISSUE-019.
+
+#### S2-30as. Admit canonical signed zero to bare `FSTP ST(i)` (`DD D8+i`)
+
+Use the shared FST/FSTP register-store source gate: retain the existing
+`0x037f` FCW, `FSW & 0x80ff == 0`, Valid-tag canonical-Normal behavior and add
+only Zero-tagged exact signed zero (bytes 0..8 all zero and byte 9 `0x00` or
+`0x80`). Do not widen unrelated Normal-only consumers. Before mutation capture
+the source bytes/tag, physical old TOP, and index. Write bytes/tag to physical
+`(old_TOP+i)&7`; then mark old physical TOP Empty; then set TOP to
+`(old_TOP+1)&7`. Do not rotate registers. For `i=0`, payload stays while its
+final tag is Empty; for `i=1`, the copy becomes new ST(0).
+
+Preserve every FSW bit other than TOP, including C1, plus FCW/FDP/FOP, GPRs,
+RFLAGS and unrelated payloads/tags. Set FIP to instruction RIP, advance RIP by
+two, and retire once. Reject malformed/wrong-tag/special sources, bad controls,
+missing state, prefixes/REX/WAIT, truncation/fetch fault, STOP and exhausted
+budget atomically. Native/JIT remain closed.
+
+Cover both zero signs × all TOP values × all indices × all 16 condition-code
+states with full-state comparisons and prior destination tag/payload sentinels
+for `i!=0`; retain Normal cases and explicitly cover `i=0`, `i=1`, and TOP=7
+wrap. Add m32/m64 FLD→FSTP ST(1)→FNSTSW compositions for both signs and the exact
+fixture `d900ddd9dfe0` (length six, three retirements, existing x87 fixture
+profile). Preserve the earlier S2-30w Normal-only evidence as historical.
+Physical x87 acceptance remains open under ISSUE-019.
 
 #### S2-30z. Bare bounded `FABS` (sign-bit-clear local slice)
 

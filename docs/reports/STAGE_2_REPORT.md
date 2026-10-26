@@ -8755,8 +8755,9 @@ Bare `D9 E0` now admits Zero-tagged ST(0) only for the exact binary80 signed
 zero encodings (zero significand and exponent word `0x0000` or `0x8000`). It
 toggles only the raw sign bit, preserves the Zero tag, TOP and other state,
 clears C1, and records FIP/RIP with one retirement. The existing Normal FCHS
-path is unchanged; FABS, FTST and FST ST(i) continue to use the shared
-Normal-only gate. Native/JIT remain closed.
+path is unchanged; at that historical point FABS, FTST and FST/FSTP ST(i)
+used the Normal-only gate. S2-30ap extends FABS, S2-30aq extends FTST, and
+S2-30ar/as supersede the FST/FSTP limits. Native/JIT remain closed.
 
 The local matrix covers both signs × all eight TOP positions × all 16 prior
 condition-code values and compares full state after each step and after a
@@ -8795,14 +8796,14 @@ malformed Zero significands and exponent/special encodings, canonical zero
 bytes under the wrong tag, bad FCW/FSW while the source remains canonical ±0,
 missing state, and fetch/prefix/truncation/STOP/budget boundaries. The
 unchanged-state guard then checked FTST and all eight FST plus all eight FSTP
-ST(i) forms as Normal-only; S2-30aq/ar supersede that scope for FTST/FST, while
-FSTP remains Normal-only. FLD m32/m64 → FABS →
+ST(i) forms as Normal-only. S2-30aq/ar supersede that scope for FTST/FST; the
+FSTP Normal-only result is historical and superseded by S2-30as. FLD m32/m64 → FABS →
 FST → FNSTSW is checked locally. The new handwritten project fixture uses the
 exact allowed stream `d900d9e1d910dfe0`, with four retirements; the schema admits
 that exact composition only.
 
 Focused checks passed: FABS Zero matrix, FABS bad-source/boundary atomicity,
-FTST/FST/FSTP ST(i) Normal-only guard, FCHS Zero matrix regression, both-width local
+FTST/FST/FSTP ST(i) Normal-only guard as of S2-30ap (FST/FSTP zero scope later superseded by S2-30ar/as), FCHS Zero matrix regression, both-width local
 composition, the exact-composition schema positive/near-miss test, and the
 four-retirement runner fixture CLI check. Final formatting, workspace check,
 `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
@@ -8834,7 +8835,8 @@ gpt-6.1-sol medium review was clean after the rejection-boundary coverage was
 extended. Formatting, workspace checks, layout validation and Graphify refresh
 passed. Native/JIT and physical x86 behavior were not tested; ISSUE-019 remains open. S2-30ap's
 and S2-30aq's earlier statements that FST ST(i) is Normal-only are historical;
-S2-30ar supersedes them while FSTP remains Normal-only.
+S2-30ar supersedes them. S2-30ar's FSTP Normal-only scope is historical and
+S2-30as supersedes it.
 
 ## S2-30aq — canonical signed zero through bounded FTST
 
@@ -8842,8 +8844,8 @@ Bare `D9 E4` additionally admits only exact Zero-tagged signed zero alongside
 the previous canonical-Normal Valid source. Both zero signs compare equal and
 set C3 alone with `(old_fsw & !0x4700) | 0x4000`; raw bytes/sign, Zero tag, TOP,
 FCW/FDP/FOP, GPRs and RFLAGS are preserved, FIP records instruction RIP, and
-RIP advances by two. FST/FSTP ST(i) remain Normal-only. Native and JIT remain
-closed.
+RIP advances by two. At that historical point FST/FSTP ST(i) remained
+Normal-only; S2-30ar/as later extend them. Native and JIT remain closed.
 
 Local unit coverage spans both signed zeros × all TOP × all 16 old condition
 fields with repeated execution and complete-state comparisons. Malformed zero
@@ -8853,3 +8855,29 @@ FLD m32/m64→FTST→FNSTSW vectors cover both zero signs. The handwritten fixtu
 admits only `d900d9e4dfe0` (FLD m32 → FTST → FNSTSW, three
 retirements) and checks full state/memory through the interpreter CLI. This is
 local evidence only; physical x87 behavior remains open under ISSUE-019.
+
+
+## S2-30as — canonical signed zero through FSTP ST(i)
+
+The shared bounded FST/FSTP register-store source gate now admits either a
+Valid-tag canonical Normal or exact Zero-tagged signed zero under FCW `0x037f`
+and `FSW & 0x80ff == 0`. For bare `DD D8+i`, the interpreter captures source
+bytes/tag and old TOP/index, writes the physical destination, marks old TOP
+Empty, then advances TOP modulo eight. It does not rotate the register array.
+The `i=0` payload remains with final Empty tag; `i=1` becomes new ST(0).
+All FSW bits except TOP (including C1), FCW/FDP/FOP, GPRs, RFLAGS and unrelated
+payloads/tags are preserved. FIP/RIP and retirement update once. Other
+Normal-only consumers remain unchanged; native/JIT admission stays closed.
+
+Coverage checks both signs × all eight TOP positions × all indices × all 16
+condition-code combinations with full-state comparisons and destination
+payload/tag sentinels. It retains Normal cases and covers alias, `i=1`, TOP wrap,
+malformed Zero, Zero-tagged Normal, wrong tags, special classes, bad controls,
+missing state and atomic prefix/REX/WAIT/truncation/fetch/STOP/budget boundaries.
+Both m32 and m64 FLD→FSTP ST(1)→FNSTSW compositions run for both signs. The exact
+handwritten fixture `d900ddd9dfe0` has six bytes and three retirements in the
+existing x87 fixture profile. Focused interpreter, schema, and fixture checks
+passed, along with formatting, workspace check, layout validation and Graphify
+refresh. No Mac mini, SSH, physical x86, native runtime or JIT execution was
+run. ISSUE-019 remains open; local evidence does not establish physical x87
+behavior.

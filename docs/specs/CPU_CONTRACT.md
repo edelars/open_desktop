@@ -2264,8 +2264,9 @@ when its tag is Zero and its raw ten-byte value is exact signed zero: bytes
 0..7 are zero, and bytes 8..9 are either `00 00` or `00 80`. FCHS toggles only
 byte 9 bit 7. It preserves the Zero tag, TOP and all other state/payload bytes,
 clears C1, retains C0/C2/C3 as a local snapshot policy, records instruction
-start RIP in FIP, advances RIP by two and retires once. It does not change the
-Normal-only gate used by FTST and FST ST(i); S2-30ap separately extends FABS.
+start RIP in FIP, advances RIP by two and retires once. At that historical
+point FTST and FST/FSTP ST(i) still used the Normal-only gate; S2-30ap separately
+extends FABS, and S2-30aq/ar/as later extend FTST/FST/FSTP respectively.
 Other tags/classes/payloads, invalid controls/status and execution-boundary
 failures reject atomically. Native/JIT admission stays closed. Evidence is
 local interpreter/unit and project-fixture coverage, not physical x86 evidence;
@@ -2309,7 +2310,7 @@ as the local snapshot policy, records FIP, advances RIP by two and retires
 once. FCHS and FABS share only this narrow sign-operation source gate;
 FTST's separate signed-zero extension is specified in S2-30aq. At this
 historical point FST/FSTP ST(i) remained on the canonical-Normal-only gate;
-S2-30ar later extends bare FST while FSTP remains Normal-only.
+S2-30ar later extends bare FST, and S2-30as supersedes the FSTP limit.
 
 Malformed Zero payloads, wrong tags, invalid FCW/FSW, missing state, and
 fetch/prefix/truncation/STOP/budget boundaries reject atomically. Coverage
@@ -2391,19 +2392,48 @@ physical register rotation or TOP change occurs.
 TOP, every FSW bit, FCW, FDP, FOP, unrelated physical payloads/tags, GPRs and
 RFLAGS are preserved; retaining condition bits including C1 is an explicit
 deterministic local policy. FIP receives instruction-start RIP, RIP advances
-by two, and the instruction retires once. `FSTP ST(i)` remains on the prior
-Normal-only source gate. Wrong tags, malformed Zero payloads, bad FCW/FSW,
+by two, and the instruction retires once. `FSTP ST(i)` remained on the prior Normal-only source gate at this historical
+point; S2-30as later extends it. Wrong tags, malformed Zero payloads, bad FCW/FSW,
 missing state, unsupported encodings, fetch fault/truncation, STOP and
 exhausted budget reject without state commit. Native/JIT admission remains
 closed.
 
 Coverage includes both signed zeros × all TOP × all indices × all 16 prior
 condition-code states, sentinel old destination payloads/tags, alias and
-idempotence, retained Normal behavior, FSTP zero rejection for all indices,
+idempotence, retained Normal behavior, historical FSTP zero rejection for all indices (superseded by S2-30as),
 and atomic bad-source/environment/execution-boundary checks. Local m32/m64
 FLD→FST ST(1)→FNSTSW compositions and exact fixture `d900ddd1dfe0` are checked;
 the fixture retires three instructions. These local results do not establish
 physical x87 behavior; ISSUE-019 remains open.
+
+
+
+## Local S2-30as: signed-zero through `FSTP ST(i)` (`DD D8+i`)
+
+The shared bounded FST/FSTP register-store source gate admits either a Valid-tag
+canonical Normal or a Zero-tag exact signed zero. Exact zero has bytes 0..8 all
+zero and byte 9 equal to `0x00` or `0x80`. Both operations retain the existing
+FCW `0x037f` and `FSW & 0x80ff == 0` requirements; other Normal-only x87
+consumers are unchanged.
+
+For bare `DD D8+i`, capture the source's ten bytes and tag, old physical TOP,
+and `i` before mutation. Copy bytes and tag to physical `(old_TOP+i)&7`, then
+mark old physical TOP Empty, then set TOP to `(old_TOP+1)&7`. The array is not
+rotated. Thus the `i=0` payload remains but its final tag is Empty; for `i=1`
+the copied value becomes new ST(0). Preserve FSW bits other than TOP, including
+C1, FCW, FDP, FOP, GPRs, RFLAGS and unrelated payloads/tags. Set FIP to the
+instruction RIP, advance RIP by two, and retire once.
+
+Coverage includes both signed zeros × all eight TOP positions × all indices ×
+all 16 condition-code combinations, full-state comparisons, previous destination
+payload/tag sentinels for `i!=0`, alias `i=0`, `i=1`, TOP=7 wrap, existing
+Normal cases, malformed Zero, Zero-tagged Normal, wrong tags, special classes,
+bad controls, missing state, prefixes/REX/WAIT, truncation, fetch fault, STOP,
+and budget rejection. Local m32/m64 FLD→FSTP ST(1)→FNSTSW compositions cover
+both signs. The only added fixture stream is exactly `d900ddd9dfe0`, six bytes
+and three retirements in the existing x87 fixture profile. Native/JIT remain
+closed; these local checks do not establish physical x87 behavior, and ISSUE-019
+remains open.
 
 ## Local S2-30ab: bounded `FCOM ST(1)` (`D8 D1`)
 

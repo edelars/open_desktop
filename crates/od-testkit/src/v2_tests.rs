@@ -1417,6 +1417,30 @@ fn x87_state_profile_admits_exact_fst_sti_zero_composition_only() {
 }
 
 #[test]
+fn x87_state_profile_admits_exact_fstp_sti_zero_composition_only() {
+    let mut fixture = x87_fixture().fixture;
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.length = 6;
+    code.initial_bytes_hex = "d900ddd9dfe0".into();
+    code.comparison_mask_hex = "ffffffffffff".into();
+    fixture.instruction_budget = 3;
+    fixture.stop_rip = Some(HexU64(0x1006));
+    assert!(Fixture::from_json(&fixture.to_json().unwrap()).is_ok());
+
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "d900ddd8dfe0".into();
+    assert!(fixture.validate().is_err());
+}
+
+#[test]
 fn x87_fcompp_schema_admits_exact_codes_and_actual_bad_rhs_rejection() {
     let mut success = x87_fixture().fixture;
     let code = success
