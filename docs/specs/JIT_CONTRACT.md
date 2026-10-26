@@ -547,10 +547,27 @@ next block/dispatcher is required. `NeedInterpreter` and `Unsupported` are
 reported as unsupported without running the interpreter. Invalid fixture/input
 uses exit 3, unsupported profile/form/host uses exit 4, and compile, publication,
 runtime-contract or output failures use exit 5. Schema v2 remains unsupported
-for both JIT backends. Completed results expose the v1 comparison snapshot and
+for JIT execution. Completed results expose the v1 comparison snapshot and
 retired count and round-trip through the existing `RunResult` schema. This is
 one-block ARM64 smoke evidence, not multi-block execution, physical-x86
 comparison or a performance claim.
+
+### S3-15: opt-in fixture dispatcher CLI partial
+
+Fixture schema v1 accepts `--engine jit-dispatch`, producing backend tag
+`jit_ir_dispatch`. It validates the complete fixture-v1 decode against the
+same immutable bytes and requires initial RIP to be an admitted instruction
+boundary or `code_end`; the runner then uses `od_jit::dispatch::run` with
+`od_host::PublishedBlockExecutor`. Each iteration publishes, executes, and
+drops one block before dispatching the next. The CLI reports `ReachedCodeEnd`
+before `InstructionBudgetExhausted` when a committed branch reaches `code_end`
+on the final budget unit. Zero budget is exercised through the dispatcher API
+because fixture-v1 validation requires a positive budget. Unsupported decode,
+target, or lowering produces the unsupported result; compile, publication,
+helper, counter, and runtime contract failures remain harness failures. No
+interpreter fallback is attempted. Legacy `jit` and one-block `jit-block`
+retain their existing backend tags and behavior. This local CLI does not
+complete the S3-15 hand-case/corpus acceptance or S3-14 physical x86 comparison.
 
 ## 6. Host и этапная приёмка
 

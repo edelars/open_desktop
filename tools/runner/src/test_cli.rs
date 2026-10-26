@@ -206,15 +206,20 @@ pub fn run_fixture(args: &[String]) -> ExitCode {
     }
     let Some(fixture_path) = fixture_path else {
         return invalid_input(
-            "usage: od-runner --fixture CASE.json --engine interpreter|jit|jit-block --json",
+            "usage: od-runner --fixture CASE.json --engine interpreter|jit|jit-block|jit-dispatch --json",
         );
     };
     let backend = match engine {
         Some("interpreter") => Backend::Interpreter,
         Some("jit") => Backend::Jit,
         Some("jit-block") => Backend::JitIrBlock,
+        Some("jit-dispatch") => Backend::JitIrDispatch,
         Some(other) => return invalid_input(&format!("unknown fixture engine '{other}'")),
-        None => return invalid_input("--fixture requires --engine interpreter|jit|jit-block"),
+        None => {
+            return invalid_input(
+                "--fixture requires --engine interpreter|jit|jit-block|jit-dispatch",
+            );
+        }
     };
 
     let input = match fs::read(fixture_path) {
@@ -570,6 +575,9 @@ fn execute_fixture(
             execute_jit(&code, &mut state, fixture.instruction_budget)?
         }
         Backend::JitIrBlock => execute_jit_ir_block(&code, &mut state, fixture.instruction_budget)?,
+        Backend::JitIrDispatch => {
+            execute_jit_ir_dispatch(&code, &mut state, fixture.instruction_budget)?
+        }
         Backend::NativeX86 => {
             return Err(ExecutionFailure::Unsupported(
                 "native x86 execution is implemented in a later stage".to_string(),
@@ -732,6 +740,107 @@ fn execute_jit_ir_block(
 ) -> Result<ExecutionResult, ExecutionFailure> {
     Err(ExecutionFailure::Unsupported(
         "ARM64 JIT block execution requires an aarch64 macOS host".to_string(),
+    ))
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn execute_jit_ir_dispatch(
+    bytes: &[u8],
+    state: &mut CpuState,
+    budget: u64,
+) -> Result<ExecutionResult, ExecutionFailure> {
+    use od_jit::block::{AdmittedInstructionBoundaries, CodeView};
+    use od_jit::dispatch::{DispatchError, DispatchExit};
+
+    let code = CodeView::new(0, bytes)
+        .map_err(|error| ExecutionFailure::Harness(format!("invalid code view: {error:?}")))?;
+    let decoded = od_isa::decode(bytes).map_err(|error| {
+        ExecutionFailure::Unsupported(format!("JIT dispatch cannot decode fixture: {error:?}"))
+    })?;
+    let admission =
+        AdmittedInstructionBoundaries::from_fixture_decode(code, &decoded).map_err(|error| {
+            ExecutionFailure::Unsupported(format!(
+                "invalid fixture-v1 decoder admission: {error:?}"
+            ))
+        })?;
+    let entry_rip = u64::try_from(state.rip)
+        .map_err(|_| ExecutionFailure::InvalidInput("fixture RIP exceeds u64".into()))?;
+    if entry_rip != code.code_end()
+        && !decoded
+            .iter()
+            .any(|instruction| u64::try_from(instruction.offset).ok() == Some(entry_rip))
+    {
+        return Err(ExecutionFailure::Unsupported(format!(
+            "initial RIP 0x{entry_rip:016x} is not a fixture-v1 instruction boundary"
+        )));
+    }
+
+    let mut architectural = od_isa::LongModeState::default();
+    architectural.gpr[..4].copy_from_slice(&state.gpr);
+    architectural.rip = entry_rip;
+    architectural.rflags = state.rflags;
+    let mut executor = od_host::PublishedBlockExecutor;
+    let result = od_jit::dispatch::run(code, &admission, &mut architectural, budget, &mut executor)
+        .map_err(|error| match error {
+            DispatchError::NoNativePrefix { rip } => {
+                ExecutionFailure::Unsupported(format!("no native block prefix at RIP 0x{rip:016x}"))
+            }
+            DispatchError::EntryNotAdmitted { rip } => ExecutionFailure::Unsupported(format!(
+                "dispatch RIP 0x{rip:016x} is not an admitted fixture boundary"
+            )),
+            DispatchError::UnadmittedDispatchRip { rip } => ExecutionFailure::Harness(format!(
+                "runtime selected unadmitted dispatch RIP 0x{rip:016x}"
+            )),
+            DispatchError::Compile(error) => {
+                ExecutionFailure::Harness(format!("dispatch block compilation failed: {error:?}"))
+            }
+            DispatchError::Executor(error) => ExecutionFailure::Harness(format!(
+                "dispatch block publication/execution failed: {error:?}"
+            )),
+            other => ExecutionFailure::Harness(format!("dispatch contract failure: {other:?}")),
+        })?;
+
+    let reason = match result.exit {
+        DispatchExit::CodeEnd => od_isa::ExitReason::ReachedCodeEnd,
+        DispatchExit::BudgetExhausted => od_isa::ExitReason::InstructionBudgetExhausted,
+        DispatchExit::Runtime(od_jit::runtime::RuntimeExitTag::Unsupported)
+        | DispatchExit::Runtime(od_jit::runtime::RuntimeExitTag::NeedInterpreter) => {
+            return Err(ExecutionFailure::Unsupported(format!(
+                "dispatch stopped at unsupported RIP 0x{:016x}",
+                architectural.rip
+            )));
+        }
+        DispatchExit::Runtime(exit) => {
+            return Err(ExecutionFailure::Harness(format!(
+                "unexpected dispatch runtime exit {exit:?} at RIP 0x{:016x}",
+                architectural.rip
+            )));
+        }
+    };
+    let rip = usize::try_from(architectural.rip).map_err(|_| {
+        ExecutionFailure::Harness("committed guest RIP does not fit host usize".into())
+    })?;
+    Ok(ExecutionResult {
+        state: CpuState {
+            gpr: architectural.gpr[..4]
+                .try_into()
+                .expect("fixed four-register S0-09 projection"),
+            rip,
+            rflags: architectural.rflags,
+        },
+        reason,
+        instructions_executed: result.retired_instructions,
+    })
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+fn execute_jit_ir_dispatch(
+    _bytes: &[u8],
+    _state: &mut CpuState,
+    _budget: u64,
+) -> Result<ExecutionResult, ExecutionFailure> {
+    Err(ExecutionFailure::Unsupported(
+        "ARM64 JIT dispatcher requires an aarch64 macOS host".to_string(),
     ))
 }
 

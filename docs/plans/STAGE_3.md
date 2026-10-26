@@ -440,15 +440,27 @@ admitted RIP после положительного retirement и отклон�
 покрывают двухблочный переход, budget forwarding, malformed counters,
 unadmitted target, runtime unsupported exit и zero progress. Native od-host
 integration test покрывает последовательные mappings и положительный
-self-loop на macOS ARM64. CLI и фиксированный corpus здесь не подключены;
-S3-14 физически остаётся открытой, а S3-15 остаётся открытой до полного
-dispatcher/corpus критерия выше. Проверки текущего partial slice прошли:
+self-loop на macOS ARM64.
+
+Следующий локальный CLI partial добавляет opt-in fixture-v1 engine
+`jit-dispatch` и отдельный сериализуемый backend `jit_ir_dispatch`. Runner
+повторно связывает полный decode с immutable fixture bytes, проверяет entry
+boundary и вызывает итеративный dispatcher без fallback. Child tests на
+macOS ARM64 покрывают taken/not-taken RIP, переходы между блоками,
+backward/self-loop, budget внутри блока, budget-exact code_end, unsupported
+decode/target и сохранность `jit`/`jit-block`. Fixture schema v1 запрещает
+нулевой budget, поэтому его приоритет остаётся проверен API unit test. Это
+не запускает 10-case плюс 1000-case corpus или физический x86 oracle;
+S3-14 физически остаётся открытой, а S3-15 открыта до полного acceptance
+критерия выше. Проверки текущего partial slice прошли:
 `cargo fmt --all -- --check`, `cargo check -p od-jit --all-targets --offline`,
 `cargo test -p od-jit --offline` (64 tests), `cargo check -p od-host
 --all-targets --offline`, `cargo test -p od-host --offline` (24 tests,
-включая native iterative dispatch на текущем macOS ARM64 host), `cargo check
---workspace --all-targets --offline`, `git diff --check` и `graphify update .`.
-Независимый review этой подзадачи ещё не выполнен.
+включая native iterative dispatch на текущем macOS ARM64 host),
+`cargo test -p od-testkit --offline` (184 tests), `cargo test -p od-runner
+--offline` (196 tests, including 3 dispatcher CLI children),
+`cargo check --workspace --all-targets --offline`, `git diff --check` и
+`graphify update .`. Независимый review этого CLI-среза ещё не выполнен.
 
 ### S3-16. Подключить interpreter fallback
 

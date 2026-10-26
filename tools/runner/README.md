@@ -27,6 +27,9 @@ cargo run --offline -p od-runner -- \
 cargo run --offline -p od-runner -- \
   --fixture tests/fixtures/x86/s0_09_add_overflow.case.json \
   --engine jit --json
+cargo run --offline -p od-runner -- \
+  --fixture tests/fixtures/x86/s0_09_add_overflow.case.json \
+  --engine jit-dispatch --json
 ```
 
 Compare two saved results against the exact fixture used to produce them:
@@ -38,7 +41,7 @@ target/debug/od-runner --compare-results interpreter.json jit.json \
 
 Schema v1 comparison JSON contains `field`, optional `mask`, `expected`, `actual`, and fixture/backend `context` for every difference. Schema v2 comparison reports contain `schema_version`, `case_id`, `input_sha256`, `matches`, and differing field names. Exit codes are `0` for a completed run or comparison match, `2` for a comparison mismatch, `3` for invalid input, `4` for an unsupported operation or host, and `5` for a harness failure or deadline. Unsupported engine results remain valid JSON and never appear as completed runs. Unknown CPU model, kernel, page size, compiler version, and source revision are represented as unavailable metadata; the CLI does not guess them.
 
-The fixture command accepts `interpreter` or `jit` per invocation and dispatches strictly by schema version. The S0-09 v1 fixture contract and digests remain unchanged; it does not capture RAM or exceptions, and its in-process path has no wall-time watchdog. The native x86 runner enforces its wall-time limit in an isolated process.
+The fixture command accepts `interpreter`, `jit`, `jit-block`, or `jit-dispatch` per invocation and dispatches strictly by schema version. `jit-block` runs one bounded block; `jit-dispatch` iteratively runs admitted blocks with an exact remaining budget. Both have distinct result backend tags and are opt-in on fixture schema v1 only. Unsupported forms and host errors do not trigger interpreter fallback. Schema v2 continues to deny JIT execution. The S0-09 v1 fixture contract and digests remain unchanged; it does not capture RAM or exceptions, and its in-process path has no wall-time watchdog. The native x86 runner enforces its wall-time limit in an isolated process.
 
 ### Schema v2 memory execution
 
