@@ -41,6 +41,21 @@ const FINCSTP_FDECSTP_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bm_fincstp_fdecstp_fnstsw.case.json");
 const FDECSTP_FINCSTP_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bm_fdecstp_fincstp_fnstsw.case.json");
+const FLD_ST0_NEGATIVE_ZERO_WRAP: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30bo_fld_st0_negative_zero_wrap.case.json"
+);
+const FLD_ST0_FNSTSW_WRAP: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bo_fld_st0_fnstsw_wrap.case.json");
+const FLD1_FLD_ST0_FNSTSW: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bo_fld1_fld_st0_fnstsw.case.json");
+const FLDZ_FLD_ST0_FNSTSW: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bo_fldz_fld_st0_fnstsw.case.json");
+const FLD_ST0_EMPTY_SOURCE_REJECTS: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30bo_fld_st0_empty_source_rejects.case.json"
+);
+const FLD_ST0_OCCUPIED_DESTINATION_REJECTS: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30bo_fld_st0_occupied_destination_rejects.case.json"
+);
 const FCHS_SIGNED_ZERO: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ao_fchs_signed_zero.case.json");
 const FCHS_ZERO_WRONG_TAG: &[u8] =
@@ -6618,5 +6633,68 @@ fn local_x87_fincstp_fdecstp_fnstsw_preserve_opaque_cells_and_deny_jit() {
         assert_eq!(observed.state.gpr[0].get() & 0xffff, 7 << 11);
     }
     let (_, jit) = run(FINCSTP_FIXTURE, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn local_x87_fld_st0_wrap_producers_atomic_rejects_and_jit_denial() {
+    for (bytes, expected_top, expected_tag, expected_raw) in [
+        (
+            FLD_ST0_NEGATIVE_ZERO_WRAP,
+            7u64,
+            1u64,
+            "00000000000000000080",
+        ),
+        (FLD_ST0_FNSTSW_WRAP, 6u64, 0u64, "0000000000000080ff3f"),
+    ] {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let before = loaded.fixture.initial_state.x87.as_ref().unwrap().clone();
+        let (_, result) = run(bytes, "interpreter", 0);
+        assert_eq!(count(&result), loaded.fixture.instruction_budget);
+        let after = snapshot(&result).state.x87.as_ref().unwrap();
+        assert_eq!(after.status_word.get() >> 11 & 7, expected_top);
+        assert_eq!(after.registers[expected_top as usize], expected_raw);
+        assert_eq!(
+            (after.tag_word.get() >> (expected_top * 2)) & 3,
+            expected_tag
+        );
+        let source = ((before.status_word.get() >> 11) & 7) as usize;
+        assert_eq!(after.registers[source], before.registers[source]);
+        assert_eq!(
+            (after.tag_word.get() >> (source * 2)) & 3,
+            (before.tag_word.get() >> (source * 2)) & 3
+        );
+        assert_eq!(after.instruction_pointer, loaded.fixture.initial_state.rip);
+    }
+    for bytes in [FLD1_FLD_ST0_FNSTSW, FLDZ_FLD_ST0_FNSTSW] {
+        let (_, result) = run(bytes, "interpreter", 0);
+        assert_eq!(count(&result), 3);
+        let after = snapshot(&result);
+        let x87 = after.state.x87.as_ref().unwrap();
+        assert_eq!(x87.status_word.get() >> 11 & 7, 6);
+        assert_eq!(
+            (x87.tag_word.get() >> (6 * 2)) & 3,
+            if bytes == FLD1_FLD_ST0_FNSTSW { 0 } else { 1 }
+        );
+        let expected = if bytes == FLD1_FLD_ST0_FNSTSW {
+            "0000000000000080ff3f"
+        } else {
+            "00000000000000000000"
+        };
+        assert_eq!(x87.registers[6], expected);
+        assert_eq!(x87.registers[7], expected);
+        assert_eq!(after.state.gpr[0].get() & 0xffff, 6 << 11);
+    }
+    for bytes in [
+        FLD_ST0_EMPTY_SOURCE_REJECTS,
+        FLD_ST0_OCCUPIED_DESTINATION_REJECTS,
+    ] {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let (_, result) = run(bytes, "interpreter", 4);
+        assert_eq!(count(&result), 0);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert_eq!(snapshot(&result).state, loaded.fixture.initial_state);
+    }
+    let (_, jit) = run(FLD_ST0_NEGATIVE_ZERO_WRAP, "jit", 4);
     assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
 }

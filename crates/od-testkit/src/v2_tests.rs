@@ -398,6 +398,103 @@ fn x87_top_adjustment_schema_admits_only_the_six_exact_streams() {
 }
 
 #[test]
+fn x87_fld_st0_schema_admits_only_four_exact_streams_and_bad_source_rejects() {
+    let mut fixture = x87_fixture().fixture;
+    fixture.case_id = "local_fld_st0_seeded_normal_top_wrap".into();
+    let x87 = fixture.initial_state.x87.as_mut().unwrap();
+    x87.control_word = HexU64(0x037f);
+    x87.status_word = HexU64(0x3a00); // TOP=7, prior C1 set.
+    x87.tag_word = HexU64(0xffff);
+    x87.registers[7] = "0000000000000080ff3f".into();
+    x87.tag_word = HexU64(x87.tag_word.get() & !(3 << 14)); // physical 7 Valid
+    x87.tag_word = HexU64((x87.tag_word.get() & !(3 << 12)) | (3 << 12)); // push slot 6 Empty
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|r| r.region_id == "code")
+        .unwrap();
+    code.length = 2;
+    code.initial_bytes_hex = "d9c0".into();
+    code.comparison_mask_hex = "ffff".into();
+    fixture.instruction_budget = 1;
+    fixture.stop_rip = Some(HexU64(0x1002));
+
+    for (stream, budget) in [
+        ("d9c0", 1),
+        ("d9c0dfe0", 2),
+        ("d9e8d9c0dfe0", 3),
+        ("d9eed9c0dfe0", 3),
+    ] {
+        let mut exact = fixture.clone();
+        exact.case_id = format!("local_fld_st0_{stream}");
+        exact.instruction_budget = budget;
+        let length = (stream.len() / 2) as u32;
+        exact.stop_rip = Some(HexU64(0x1000 + u64::from(length)));
+        let code = exact
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = length;
+        code.initial_bytes_hex = stream.into();
+        code.comparison_mask_hex = "ff".repeat(length as usize);
+        exact.validate().unwrap();
+    }
+
+    for stream in ["d9c1", "d9c7", "66d9c0", "d9c0d9c0dfe0", "d9e8d9c0"] {
+        let mut rejected = fixture.clone();
+        rejected.case_id = format!("local_fld_st0_alias_{stream}");
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (stream.len() / 2) as u32;
+        code.initial_bytes_hex = stream.into();
+        code.comparison_mask_hex = "ff".repeat(stream.len() / 2);
+        assert!(rejected.validate().is_err(), "{stream}");
+    }
+    for source in 1u8..=7 {
+        let stream = format!("d9c{source:x}");
+        let mut rejected = fixture.clone();
+        rejected.case_id = format!("local_fld_st0_register_neighbor_{source}");
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = stream.clone();
+        assert!(rejected.validate().is_err(), "{stream}");
+    }
+
+    let mut bad_source = fixture.clone();
+    bad_source.case_id = "local_fld_st0_bad_source_reject".into();
+    bad_source.stop_rip = None;
+    bad_source.expected_exit = ExpectedExit::Unsupported;
+    bad_source.instruction_budget = 1;
+    bad_source.initial_state.x87.as_mut().unwrap().tag_word = HexU64(
+        bad_source
+            .initial_state
+            .x87
+            .as_ref()
+            .unwrap()
+            .tag_word
+            .get()
+            | (3 << 14),
+    );
+    bad_source.validate().unwrap();
+
+    let mut occupied = fixture.clone();
+    occupied.case_id = "local_fld_st0_occupied_destination_reject".into();
+    occupied.stop_rip = None;
+    occupied.expected_exit = ExpectedExit::Unsupported;
+    occupied.instruction_budget = 1;
+    occupied.initial_state.x87.as_mut().unwrap().tag_word =
+        HexU64(occupied.initial_state.x87.as_ref().unwrap().tag_word.get() & !(3 << 12));
+    occupied.validate().unwrap();
+}
+
+#[test]
 fn fld_m32_m64_budget_one_normal_unsupported_rejects_oe_only_status() {
     for (width, opcode, normal_bytes) in [(4, "d900", "0000803f"), (8, "dd00", "000000000000f03f")]
     {

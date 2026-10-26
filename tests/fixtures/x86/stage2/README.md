@@ -3602,3 +3602,8 @@ policy, not a hardware-equality claim.
 ### S2-30bn: FLD1 and FLDZ constant pushes
 
 Four handwritten schema-v2 success fixtures cover the exact allowed byte strings `d9e8`, `d9ee`, `d9e8dfe0`, and `d9eedfe0`. The first pair executes one constant push; the latter pair observes execution through FNSTSW AX. A fifth fixture reuses bare `d9e8` with an occupied destination and checks Unsupported with zero retirement. Local full-state unit coverage additionally checks all TOP/condition-code/snapshot combinations, opaque malformed bytes under Empty, all occupied tag rejects, eight successful pushes followed by atomic ninth-push rejection, and FLD1→FLDZ→FXCH→FSTP m80fp byte/tag order. Fixtures and interpreter tests are not native or physical evidence; ISSUE-019 remains open.
+
+
+### S2-30bo bounded `FLD ST(0)`
+
+Four exact schema-v2 streams are admitted: `d9c0`, `d9c0dfe0`, `d9e8d9c0dfe0`, and `d9eed9c0dfe0`. The bare fixture seeds negative zero with TOP=0 to check physical wrap to slot 7 and raw/tag transfer; the status-observation fixture seeds Normal at TOP=7 to copy into physical slot 6. Two composition fixtures verify FLD1/FLDZ producer values can be duplicated and observed with FNSTSW. Separate budget-one fixtures reject an Empty source and an occupied destination. All are local interpreter/schema evidence. JIT/native and physical x86 behavior remain unverified under ISSUE-019.

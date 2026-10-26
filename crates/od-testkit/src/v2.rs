@@ -776,8 +776,12 @@ impl Fixture {
                 "d9f6" => ("d9f6", 2),
                 "d9e8" => ("d9e8", 2),
                 "d9ee" => ("d9ee", 2),
+                "d9c0" => ("d9c0", 2),
                 "d9e8dfe0" => ("d9e8dfe0", 4),
                 "d9eedfe0" => ("d9eedfe0", 4),
+                "d9c0dfe0" => ("d9c0dfe0", 4),
+                "d9e8d9c0dfe0" => ("d9e8d9c0dfe0", 6),
+                "d9eed9c0dfe0" => ("d9eed9c0dfe0", 6),
                 "d9f7dfe0" => ("d9f7dfe0", 4),
                 "d9f6dfe0" => ("d9f6dfe0", 4),
                 "d9f7d9f6dfe0" => ("d9f7d9f6dfe0", 6),
@@ -1036,6 +1040,36 @@ impl Fixture {
                             || x87.status_word.get() & 0x80ff != 0
                             || (x87.tag_word.get() >> (u32::from(destination) * 2)) & 3 != 3
                     });
+            let is_fld_st0_rejected = code_bytes == "d9c0"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as usize;
+                    let destination = (top + 7) & 7;
+                    let tag = |index: usize| (x87.tag_word.get() >> (index * 2)) & 3;
+                    let raw_is_canonical = |index: usize| {
+                        let Some(encoded) = x87.registers.get(index) else {
+                            return false;
+                        };
+                        let Ok(bytes) = decode_bytes(encoded) else {
+                            return false;
+                        };
+                        if bytes.len() != 10 {
+                            return false;
+                        }
+                        let significand = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+                        let exponent = (u16::from(bytes[9] & 0x7f) << 8) | u16::from(bytes[8]);
+                        match tag(index) {
+                            0 => (1..0x7fff).contains(&exponent) && significand & (1 << 63) != 0,
+                            1 => significand == 0 && exponent == 0,
+                            _ => false,
+                        }
+                    };
+                    x87.control_word.get() != 0x037f
+                        || x87.status_word.get() & 0x80ff != 0
+                        || !raw_is_canonical(top)
+                        || tag(destination) != 3
+                });
             let is_fchs_source_rejected = code_bytes == "d9e0" && self.stop_rip.is_none();
             let is_fabs_source_rejected = code_bytes == "d9e1" && self.stop_rip.is_none();
             let is_ftst_source_rejected = code_bytes == "d9e4" && self.stop_rip.is_none();
@@ -1315,6 +1349,7 @@ impl Fixture {
                     || is_fxch_source_rejected
                     || is_top_adjustment_source_rejected
                     || is_fld_constant_destination_rejected
+                    || is_fld_st0_rejected
                     || is_fchs_source_rejected
                     || is_fabs_source_rejected
                     || is_ftst_source_rejected

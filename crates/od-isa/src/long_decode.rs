@@ -465,6 +465,8 @@ pub enum Operation {
     FxchSti {
         source: u8,
     },
+    /// Bare `D9 C0` FLD ST(0), copying the top value into the physical push slot.
+    FldSt0,
     /// Bare `D9 F7` FINCSTP, rotating the x87 TOP field forward.
     Fincstp,
     /// Bare `D9 F6` FDECSTP, rotating the x87 TOP field backward.
@@ -1269,6 +1271,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 match self.byte()? {
+                    0xc0 => Operation::FldSt0,
                     modrm @ 0xc8..=0xcf => Operation::FxchSti { source: modrm & 7 },
                     0xe8 => Operation::Fld1,
                     0xee => Operation::Fldz,
@@ -3100,6 +3103,43 @@ mod tests {
             }))
         ));
         let mut memory = Memory::new(&[0xd9, 0xc9]);
+        memory.fault_at = Some(1);
+        assert!(matches!(
+            memory.decode(),
+            Err(DecodeError::Memory(MemoryError::Architectural(_)))
+        ));
+    }
+
+    #[test]
+    fn d9_c0_fld_st0_decodes_only_the_exact_bare_form() {
+        let instruction = Memory::new(&[0xd9, 0xc0]).decode().unwrap();
+        assert_eq!(instruction.operation, Operation::FldSt0);
+        assert_eq!(instruction.length, 2);
+        assert_eq!(instruction.prefixes, Prefixes::default());
+        for bytes in [
+            &[0x66, 0xd9, 0xc0],
+            &[0x48, 0xd9, 0xc0],
+            &[0xf3, 0xd9, 0xc0],
+        ] {
+            assert!(matches!(
+                Memory::new(bytes).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+        }
+        for modrm in 0xc1..=0xc7 {
+            assert!(matches!(
+                Memory::new(&[0xd9, modrm]).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+        }
+        assert!(matches!(
+            Memory::new(&[0xd9]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            }))
+        ));
+        let mut memory = Memory::new(&[0xd9, 0xc0]);
         memory.fault_at = Some(1);
         assert!(matches!(
             memory.decode(),
