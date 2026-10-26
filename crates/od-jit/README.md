@@ -71,6 +71,18 @@ unsupported cases дают явный `Unsupported` до неподдержан�
 без ARM64 emission, publication или dispatcher; для unresolved targets остаётся
 dispatch integration в S3-15. См. [JIT contract](../../docs/specs/JIT_CONTRACT.md#s3-05-decoded-effects-to-typed-ir).
 
+S3-06 выделил `arm64::Encoder` из legacy fragment translator. Encoder хранит
+words, имеет typed GPR/SP/ZR operands, проверяет размеры immediates и signed /
+scaled offsets, принимает только принадлежащие encoder labels для branch/call и выдаёт
+буфер только после успешного `finish`. `EncodedCode` сериализует words в
+little-endian bytes. Текущий translator переведён на эти методы; код публикации,
+helper ABI и allocator не добавлялись. Machine words сверяются с
+[локальным Apple assembler fixture](tests/fixtures/arm64_encoder.s); это
+проверяет только отмеченные instruction/operand cases, не расширение ISA.
+Pair writeback отвергает base-register overlap, а LDP — повторный destination.
+Полный legacy MOV fragment сохраняет прежний word vector, включая MOVZ X0,#0
+на successful completion.
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в

@@ -155,6 +155,44 @@ problem RIP. Buffer/limit completion использует последний `ne
 его guest fault или успешным code end. Публикация и runtime dispatch ещё не
 подключены.
 
+### S3-06: checked ARM64 encoder
+
+`arm64::Encoder` — project-owned word buffer для текущих используемых A64
+форм: MOVZ/MOVK, register ADD/SUB/AND, immediate ADDS/SUBS, LDR/STR X,
+LDARB W, STP/LDP X, B/BL/B.cond, CBZ/CBNZ W/X, BLR и RET. Это encoder, а не
+native-code publisher; он не управляет executable memory.
+
+GPR operands — typed registers 0–30. Encoded register 31 доступен через явные
+`Zero` operands либо `Sp` base/immediate source operands, чтобы не смешивать
+XZR/WZR и SP. Для ADDS immediate destination 31 означает ZR, а source 31 — SP;
+типизированный API отражает это разделение. MOVZ/MOVK принимают halfword index
+0–3 и u16 value; unshifted arithmetic immediate — 0–4095. LDR/STR X принимают unsigned byte offset 0–32760, кратный
+8 (imm12 scaled by 8). STP/LDP X принимают signed byte offset −512…504,
+кратный 8 (signed imm7 scaled by 8). LDP отвергает одинаковые destination
+registers; writeback STP/LDP отвергает base, совпадающий с pair register.
+LDARB имеет только register/SP base.
+
+Текущий typed B.cond subset — EQ и LO, использованные fragment translator.
+Local labels связаны с owner ID encoder; label другого encoder отвергается при
+bind и добавлении branch/call fixup. Labels создают fixups для B/BL (signed imm26 words:
+−2^25…2^25−1) и B.cond/CBZ/CBNZ (signed imm19 words:
+−2^18…2^18−1). Word displacement считается от адреса самой branch
+instruction; кодовый буфер состоит из выровненных 32-bit words. `finish`
+возвращает код только после успешного разрешения всех использованных labels и
+проверки диапазонов; unresolved/out-of-range fixup не выдаёт partial buffer.
+`EncodedCode::to_le_bytes` сериализует каждое слово little-endian. Direct BL
+сохраняет link opcode `0x94…`, отдельно от B `0x14…`.
+
+Точные слова для обеих сторон сверены с локальным assembler fixture
+[`arm64_encoder.s`](../../crates/od-jit/tests/fixtures/arm64_encoder.s),
+собранным Apple clang 21.0.0 (`-target arm64-apple-macosx15.0`) и прочитанным
+через `otool -s __TEXT __text`; encoder unit test фиксирует соответствующие
+слова, включая BL/B relocation, register-31 roles и LE byte order. Fixture не
+является runtime dependency. Эта проверка подтверждает только перечисленные
+формы и operand vectors; out-of-range cases проверяются отдельно unit tests.
+S3-06 не добавляет relocations к внешним symbol addresses, veneers, relaxation,
+register allocation, helper ABI или executable memory.
+
 ## 5. Runtime boundary (S3-02)
 
 Legacy fragment entry продолжает использовать `FragmentState` и собственную

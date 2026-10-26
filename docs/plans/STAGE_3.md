@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03 и S3-04 завершены, S3-01 в работе.
+**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05 и S3-06 завершены; S3-01 в работе.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -132,7 +132,7 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-03 | Типизированный IR и verifier | S3-02 |
 | [x] | S3-04 | Построение bounded basic block | S3-03 |
 | [x] | S3-05 | Перевод decoder output в IR | S3-04 |
-| [ ] | S3-06 | Проверяемый ARM64 encoder | S3-02 |
+| [x] | S3-06 | Проверяемый ARM64 encoder | S3-02 |
 | [ ] | S3-07 | Executable publication и ownership | S3-02, S3-06 |
 | [ ] | S3-08 | Generated entry и helper ABI | S3-07 |
 | [ ] | S3-09 | Простой allocator baseline | S3-03, S3-08 |
@@ -238,13 +238,13 @@ Host PC map нужен для диагностики и восстановлен
 
 ### S3-06. Выделить и проверить ARM64 encoder
 
-**Предлагаемые файлы:** `od-jit/src/arm64/` по мере необходимости.
+**Файлы:** `od-jit/src/arm64/encoder.rs`, узкий публичный модуль `arm64`, существующий caller `od-jit/src/lib.rs` и небольшой local assembler fixture.
 
-1. Перенести реально нужные encoding helpers без изменения поведения. Добавить проверенные ranges immediate/register/offset и endianness.
-2. Поддержать branches, calls, relocations и способ обработки out-of-range target. Не обрезать displacement молча.
-3. Проверить bytes по нормативной encoding reference и небольшим собственным assembler inputs, собранным штатным toolchain. Зафиксировать происхождение fixtures.
+1. Перенести существующие используемые encodings в typed fallible API без изменения legacy fragment output. Отдельно типизировать GPR, SP и zero registers; проверять immediate, scaled/signed offsets, alignment и little-endian serialization.
+2. Поддержать текущие branch/call encodings и local-label relocations. `finish` не должен возвращать output при unresolved labels или displacement вне диапазона; displacement не обрезать молча.
+3. Сверить небольшой набор слов с локальным Apple ARM64 assembler fixture и нормативной A64 reference; зафиксировать toolchain/target. Не добавлять executable-memory publication (S3-07), entry/helper ABI (S3-08), allocator (S3-09), lowering (S3-10), veneers/relaxation или общую ISA framework.
 
-**Готово:** known encodings и range failures проверены независимо от собственного decoder; невозможная encoding останавливает compilation до публикации.
+**Готово:** known encodings и range failures проверены независимо от собственного x86 decoder; в `od-jit` fragment translator сохраняется прежний word output. Несовместимая или неразрешённая encoding возвращает ошибку до выдачи буфера.
 
 ### S3-07. Сделать публикацию кода управляемой
 
@@ -643,6 +643,8 @@ S3-03 выполнена: добавлен [линейный typed IR](../../cra
 S3-04 выполнена: добавила [bounded block builder](../../crates/od-jit/src/block.rs). Он использует `long_decode::decode` по одной инструкции и read-only borrowed `CodeView`, проверяет адресные вычисления и допускает entry на любой позиции buffer/ровно code_end. Стандартные limits ограничены 32 инструкциями и 256 байтами; S0-09 forms принимаются по decoder metadata и exact encoded length. `BasicBlock` содержит decoded records и точные byte ranges, включая диапазон через границу страницы. Terminator завершает построение до декодирования хвоста. Unsupported form, limits, buffer exhaustion и deferred `DecodeBoundary` различаются; первый fetch/decode failure возвращает `NoBlock` с отложенной записью, не guest `#PF`. Mid-instruction branch target останавливает построение перед branch и сохраняет предыдущий prefix; branch target вычисляется 64-битным wrapping сложением, как в interpreter. `next_rip` текущей Jcc считается известной sequential boundary без декодирования следующих bytes; другие unparsed targets хранятся как `Unresolved`. S3-05 не передаёт unresolved target verifier как доказанную ветвь: он исключает Jcc и завершает prefix `NeedInterpreter`; dispatcher resolution остаётся S3-15. Guest ranges не содержат code identity/version: tracking относится к S3-17, cache invalidation — к S3-23. Целевые проверки прошли, независимый review не нашёл замечаний.
 
 S3-05 выполнена: `lowering::lower` переиспользует decoded metadata для точных MOV/ADD/SUB/CMP/JZ/JNZ effects и проверяет каждый полученный Program. Arithmetic inputs фиксируются до write; CMP не пишет GPR, MOV не пишет flags. Resolved branches завершают линейные effects terminal `Branch`; unresolved Jcc исключается, а prefix передаётся с `NeedInterpreter`, без-prefix представлен `NoNativePrefix`. `DecodeBoundary` сохраняется отдельно. `CodeEnd` прокинут из `BasicBlock` и принят verifier только как точный code_end; commit+branch selection определены как одна retirement boundary. Проверки прошли: `cargo fmt --all -- --check`, `cargo check -p od-jit --all-targets --offline`, `cargo test -p od-jit --offline` (35/35), `git diff --check`; независимое review чистое.
+
+S3-06 выполнена: существующий fragment translator использует выделенный [`arm64::Encoder`](../../crates/od-jit/src/arm64/encoder.rs) с typed GPR/SP/ZR operands, checked immediate/offset ranges, encoder-owned local labels/fixups и transactional `finish`. Encoder покрывает текущие использованные MOVZ/MOVK, arithmetic, memory, pair, conditional/unconditional branch, call и return forms; LE serialization проверяется отдельно. Writeback pair base overlap и duplicate LDP destinations отвергаются; full legacy MOV fragment имеет exact word-vector regression. [Local assembly fixture](../../crates/od-jit/tests/fixtures/arm64_encoder.s) собран Apple clang 21.0.0 для `arm64-apple-macosx15.0` и сверяется в unit test. Проверки: `cargo fmt --all -- --check`, `cargo check -p od-jit --all-targets --offline`, `cargo test -p od-jit --offline` (42/42), `git diff --check`; независимое ревью закрытых исправлений — clean, assembler fixture совпадает с 27 словами. Lowering/emission pipeline, publication, ABI и allocator не входят в этот срез.
 
 S3-01 начата: в [BENCHMARKS](../testing/BENCHMARKS.md) описаны workload matrix и раздельные уровни cold process, cold code cache и warm execution. Preflight точной ревизии `9a1376b` описан в [отчёте baseline](../reports/STAGE_3_BASELINE_2026-10-26.md): локальные Cargo tests показали пять x87 failures; удалённый `od-isa --lib` preflight завершился ошибкой без сохранённого списка test names. Физические fixtures и timing не запускались. Из-за параллельной работы этапа 2 этот результат не переносится на последующие revisions. Повторить Stage 1 local/oracle после стабилизации соответствующих изменений; performance baseline остаётся открытым.
 
