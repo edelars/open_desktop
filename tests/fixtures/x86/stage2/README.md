@@ -1320,6 +1320,19 @@ guard as of S2-30aq, and decode/fetch/STOP/budget boundaries.
 Schema admission is limited to this exact composition; one-op FTST native
 admission and JIT execution remain closed. No physical x87 behavior is claimed.
 
+### S2-30at canonical signed-infinity FTST
+
+The handwritten `s2_30at_fld_ftst_positive_infinity_fnstsw.case.json` and
+`s2_30at_fld_ftst_negative_infinity_fnstsw.case.json` both use the exact
+existing `d900d9e4dfe0` sequence. FLD m32fp loads binary32 positive or negative
+infinity, FTST compares against zero, and FNSTSW AX observes status `0x3800`
+for positive infinity or `0x3900` for negative infinity. Each retires three
+instructions and preserves the Special-tagged binary80 payload. Fixtures are
+project evidence, not native evidence; the schema is unchanged and JIT/native
+admission remain closed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30at-canonical-signed-infinity-ftst-d9-e4),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30at-admit-canonical-signed-infinity-to-bounded-ftst-d9-e4),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30at-canonical-signed-infinity-through-bounded-ftst).
+
 ### S2-30ar signed-zero FST ST(i)
 
 The handwritten project fixture `s2_30ar_fld_fst_sti_fnstsw.case.json` uses

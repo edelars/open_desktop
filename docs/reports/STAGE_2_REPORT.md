@@ -8881,3 +8881,38 @@ passed, along with formatting, workspace check, layout validation and Graphify
 refresh. No Mac mini, SSH, physical x86, native runtime or JIT execution was
 run. ISSUE-019 remains open; local evidence does not establish physical x87
 behavior.
+
+## S2-30at — canonical signed infinity through bounded FTST
+
+Bare `D9 E4` additionally admits canonical Special-tagged binary80 infinity
+(E=`0x7fff`, J=1, fraction=0) for either sign. Negative infinity compares Less
+and sets C0; positive infinity compares Greater. The existing commit clears the
+whole condition-code field before setting C0 when negative, so C1/C2/C3 clear;
+all unrelated state, TOP, source tag and bytes remain unchanged. FCW `0x037f`
+and `FSW & 0x80ff == 0` remain exact gates. FCHS/FABS/FST/FSTP source gates
+were not changed.
+
+The interpreter matrix covers both signs × all eight TOP values × all 16 prior
+condition-code values with full-state comparison and repeated execution. The
+reject matrix covers absent x87 state, wrong tags, malformed Special values,
+pseudo-infinity, subnormal, pseudo-denormal, unnormal, NaNs, bad FCW/FSW, and
+prefix/REX/WAIT/truncation/fetch/STOP/budget atomicity using the newly admitted
+infinity source for the environment and execution-boundary cases. Existing
+Normal and signed-zero FTST regressions remain covered.
+
+Two handwritten `project_fixture` cases reuse only the existing exact
+`d900d9e4dfe0` sequence and load binary32 positive/negative infinity. Both
+interpreter fixture runs retired three instructions, preserved all memory, and
+matched complete literal CPU/x87 snapshots; FNSTSW observed `0x3800` and
+`0x3900` respectively. The schema did not widen. A JIT request returned
+`Unsupported` because schema-v2 execution is interpreter-only; no JIT ran.
+Native x87 admission remains closed; its Linux-only admission test was not
+executed on this macOS host. No Mac mini, SSH or physical x86 run was performed.
+
+Focused `od-isa ftst_`, project-fixture execution, and schema fixture tests
+passed, along with `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and
+`python3 tools/check_layout.py`. Independent gpt-6.1-sol medium review was
+clean after adding the malformed-class/environment and literal-fixture checks.
+Local interpreter/project-fixture evidence does not establish physical x87
+behavior; ISSUE-019 remains open.

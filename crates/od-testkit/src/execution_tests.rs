@@ -680,6 +680,75 @@ fn config(budget: u64, stop: Option<u64>) -> RunConfig {
 }
 
 #[test]
+fn ftst_infinity_project_fixtures_match_literal_full_state_and_memory() {
+    let directory = arithmetic_fixture_directory();
+    for (case_id, negative, input_bytes, expected_status) in [
+        (
+            "s2_30at_fld_ftst_positive_infinity_fnstsw",
+            false,
+            "0000807f",
+            0x3800,
+        ),
+        (
+            "s2_30at_fld_ftst_negative_infinity_fnstsw",
+            true,
+            "000080ff",
+            0x3900,
+        ),
+    ] {
+        let raw = std::fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let input = Fixture::from_json(&raw).unwrap().fixture;
+        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+        let memory_before = memory.snapshot();
+        let mut state = input
+            .initial_state
+            .to_cpu_for(crate::v2::Profile::LongX87StateV1)
+            .unwrap();
+        let before = state.clone();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            || false,
+        );
+
+        assert_eq!(result.exit, RunExit::StopAddress, "{case_id}");
+        assert_eq!(result.instructions_executed, 3, "{case_id}");
+        assert_eq!(input.instruction_budget, 3, "{case_id}");
+        assert_eq!(input.stop_rip, Some(HexU64(0x0010_0006)), "{case_id}");
+        let stack = input
+            .memory
+            .iter()
+            .find(|region| region.region_id == "stack")
+            .unwrap();
+        assert_eq!(stack.initial_bytes_hex, input_bytes, "{case_id}");
+
+        let mut expected = before;
+        expected.rip = 0x0010_0006;
+        expected.gpr[0] = (expected.gpr[0] & !0xffff) | u64::from(expected_status);
+        let x87 = expected.x87.as_mut().unwrap();
+        x87.status_word = expected_status;
+        x87.registers[7] = [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0x80,
+            0xff,
+            if negative { 0xff } else { 0x7f },
+        ];
+        x87.set_tag(7, od_isa::state::X87Tag::Special);
+        x87.instruction_pointer = 0x0010_0002;
+        x87.data_pointer = 0x0030_0004;
+        assert_eq!(state, expected, "{case_id}");
+        assert_eq!(memory.snapshot(), memory_before, "{case_id}");
+    }
+}
+
+#[test]
 fn fnstcw_literal_fixtures_check_raw_store_snapshot_and_fault_boundaries() {
     let directory = arithmetic_fixture_directory();
     for case_id in [

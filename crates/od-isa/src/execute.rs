@@ -2650,8 +2650,8 @@ enum X87FtstComparison {
 }
 
 /// Return an admitted raw ST(0) and its bounded FTST comparison with zero.
-/// Only canonical Normal values and exactly encoded Zero-tagged signed zero
-/// participate; malformed zeros and all other classes reject atomically.
+/// Canonical Normal values, exact Zero-tagged signed zero, and canonical
+/// Special-tagged infinity participate; malformed values reject atomically.
 fn bounded_x87_ftst_source(state: &LongModeState) -> Option<X87FtstComparison> {
     let x87 = state.x87.as_ref()?;
     if x87.control_word != 0x037f || x87.status_word & 0x80ff != 0 {
@@ -2661,6 +2661,11 @@ fn bounded_x87_ftst_source(state: &LongModeState) -> Option<X87FtstComparison> {
     let source = x87.registers[usize::from(top)];
     match (x87.tag(top)?, X87Binary80::from_bytes(source).classify()) {
         (X87Tag::Valid, X87Binary80Class::Normal) => Some(if source[9] & 0x80 != 0 {
+            X87FtstComparison::Less
+        } else {
+            X87FtstComparison::Greater
+        }),
+        (X87Tag::Special, X87Binary80Class::Infinity) => Some(if source[9] & 0x80 != 0 {
             X87FtstComparison::Less
         } else {
             X87FtstComparison::Greater
@@ -16689,6 +16694,95 @@ mod tests {
                 0x037f,
                 0,
             )),
+            Some((
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
+                X87Tag::Valid,
+                0x037f,
+                0,
+            )),
+            Some((
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xff],
+                X87Tag::Valid,
+                0x037f,
+                0,
+            )),
+            Some((
+                [1, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
+                X87Tag::Special,
+                0x037f,
+                0,
+            )),
+            Some((
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
+                X87Tag::Zero,
+                0x037f,
+                0,
+            )),
+            Some((
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xff],
+                X87Tag::Zero,
+                0x037f,
+                0,
+            )),
+            Some((
+                [0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x7f],
+                X87Tag::Special,
+                0x037f,
+                0,
+            )),
+            // Special-tagged non-infinity classes are unsupported, including
+            // pseudo-infinity, subnormal, pseudo-denormal, unnormal and NaNs.
+            Some((
+                [0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x7f],
+                X87Tag::Special,
+                0x037f,
+                0,
+            )),
+            Some(([1, 0, 0, 0, 0, 0, 0, 0, 0, 0], X87Tag::Special, 0x037f, 0)),
+            Some((
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0],
+                X87Tag::Special,
+                0x037f,
+                0,
+            )),
+            Some(([0, 0, 0, 0, 0, 0, 0, 0, 1, 0], X87Tag::Special, 0x037f, 0)),
+            Some((
+                [1, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x7f],
+                X87Tag::Special,
+                0x037f,
+                0,
+            )),
+            Some((
+                [0, 0, 0, 0, 0, 0, 0, 0x40, 0xff, 0x7f],
+                X87Tag::Special,
+                0x037f,
+                0,
+            )),
+            // The newly admitted infinity class still obeys the old gates.
+            Some((
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
+                X87Tag::Special,
+                0x027f,
+                0,
+            )),
+            Some((
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xff],
+                X87Tag::Special,
+                0x037f,
+                1,
+            )),
+            Some((
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
+                X87Tag::Special,
+                0x037f,
+                0x80,
+            )),
+            Some((
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xff],
+                X87Tag::Special,
+                0x037f,
+                0x8000,
+            )),
             Some(([0, 0, 0, 0, 0, 0, 0, 0, 0, 0x40], X87Tag::Valid, 0x037f, 0)),
             Some(([0, 0, 0, 0, 0, 0, 0, 0, 1, 0], X87Tag::Zero, 0x037f, 0)),
             Some(([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0], X87Tag::Zero, 0x037f, 0)),
@@ -16723,8 +16817,8 @@ mod tests {
         let mut x87 = crate::state::X87State::fixture_seed();
         x87.control_word = 0x037f;
         x87.status_word = 0x4700;
-        x87.registers[0] = normal;
-        x87.set_tag(0, X87Tag::Valid);
+        x87.registers[0] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xff];
+        x87.set_tag(0, X87Tag::Special);
         state.x87 = Some(x87);
         for (bytes, stop_rip, budget, request_stop, fetch_fault) in [
             (&[0xd9][..], None, 1, false, false),
@@ -16760,6 +16854,83 @@ mod tests {
             );
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
+        }
+    }
+
+    #[test]
+    fn ftst_canonical_signed_infinity_compares_by_sign_for_every_top_and_condition_code() {
+        for top in 0u8..=7 {
+            for condition_codes in 0u8..16 {
+                for negative in [false, true] {
+                    let mut state = LongModeState::default();
+                    state.rip = 0x8f70;
+                    state.gpr = [0x1234_5678_9abc_def0; 16];
+                    state.rflags = 0xa55a_1234_5678_9abc;
+                    let old_cc = (u16::from(condition_codes & 1) << 8)
+                        | (u16::from((condition_codes >> 1) & 1) << 9)
+                        | (u16::from((condition_codes >> 2) & 1) << 10)
+                        | (u16::from((condition_codes >> 3) & 1) << 14);
+                    let mut x87 = crate::state::X87State::fixture_seed();
+                    x87.control_word = 0x037f;
+                    x87.status_word = (u16::from(top) << 11) | old_cc;
+                    x87.tag_word = 0xa55a;
+                    for physical in 0..8 {
+                        x87.registers[physical] = [0x70 + physical as u8; 10];
+                    }
+                    let infinity = [
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0x80,
+                        0xff,
+                        if negative { 0xff } else { 0x7f },
+                    ];
+                    x87.registers[usize::from(top)] = infinity;
+                    x87.set_tag(top, X87Tag::Special);
+                    x87.instruction_pointer = 0x1234;
+                    x87.data_pointer = 0x5678;
+                    x87.last_opcode = 0x05aa;
+                    state.x87 = Some(x87);
+                    let before = state.clone();
+                    let mut expected = before.clone();
+                    let expected_x87 = expected.x87.as_mut().unwrap();
+                    expected_x87.status_word =
+                        (expected_x87.status_word & !0x4700) | if negative { 0x0100 } else { 0 };
+                    expected_x87.instruction_pointer = before.rip;
+                    expected.rip += 2;
+
+                    let mut memory = Memory::at(&[0xd9, 0xe4], state.rip);
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced)
+                    );
+                    assert_eq!(
+                        state, expected,
+                        "TOP={top}, cc={condition_codes:04b}, negative={negative}"
+                    );
+                    assert!(memory.accesses.is_empty());
+                    assert_eq!(state.x87.as_ref().unwrap().tag(top), Some(X87Tag::Special));
+                    assert_eq!(
+                        state.x87.as_ref().unwrap().registers[usize::from(top)],
+                        infinity
+                    );
+
+                    let before_second_rip = state.rip;
+                    let mut memory = Memory::at(&[0xd9, 0xe4], state.rip);
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced)
+                    );
+                    let mut expected_second = expected;
+                    expected_second.x87.as_mut().unwrap().instruction_pointer = before_second_rip;
+                    expected_second.rip = before_second_rip + 2;
+                    assert_eq!(state, expected_second);
+                }
+            }
         }
     }
 

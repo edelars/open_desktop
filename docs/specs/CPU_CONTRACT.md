@@ -2377,6 +2377,31 @@ three retirements. One-op admission remains outside the native profile, and
 native/JIT execution remain closed. Local interpreter and fixture evidence do
 not establish physical x87 behavior; ISSUE-019 remains open.
 
+## Local S2-30at: canonical signed-infinity `FTST` (`D9 E4`)
+
+Bare `D9 E4` retains the existing `Some(X87State)`, FCW `0x037f`, and
+`FSW & 0x80ff == 0` gates and additionally admits only Special-tagged canonical
+binary80 infinity at ST(0): exponent `0x7fff`, explicit integer bit `J=1`, and
+zero fraction. Negative infinity compares Less and sets C0; positive infinity
+compares Greater and clears C0. The existing whole-condition-field commit
+`(old_fsw & !0x4700) | (negative ? 0x0100 : 0)` clears C1/C2/C3 and retains
+other FSW bits. TOP, all raw register bytes, tags and unrelated state remain
+unchanged; FIP receives instruction-start RIP, RIP advances by two, and one
+instruction retires. Existing canonical-Normal and Zero-tagged signed-zero
+behavior is unchanged. FCHS/FABS/FST/FSTP gates are not widened.
+
+Pseudo-infinity (J=0), NaNs, subnormal/unsupported/malformed encodings, wrong
+tags, invalid environment, missing x87 state, and decode/fetch/prefix/REX/WAIT/
+truncation/STOP/budget failures remain atomic rejects. Interpreter coverage
+crosses both infinity signs × all TOP values × all 16 old condition-code fields
+and repeated execution, with the existing Normal/Zero regressions. Two
+handwritten `project_fixture` cases reuse exactly `d900d9e4dfe0`, loading
+binary32 positive or negative infinity before FTST and FNSTSW. No schema
+sequence was added. JIT and native execution remain denied; these local checks
+do not establish physical x87 behavior. Normative instruction source: Intel
+SDM revision 093, Vol.2A, “FTST—Test,” pp.3-400–3-401
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
 ## Local S2-30ar: canonical signed-zero `FST ST(i)` (`DD D0+i`)
 
 The exact bare `DD D0+i`, `i=0..7`, interpreter form retains the existing

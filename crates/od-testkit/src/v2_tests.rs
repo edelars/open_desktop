@@ -1393,6 +1393,35 @@ fn x87_state_profile_admits_exact_ftst_zero_composition_only() {
 }
 
 #[test]
+fn x87_state_profile_admits_both_ftst_canonical_infinity_fixtures_without_schema_changes() {
+    for raw in [
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30at_fld_ftst_positive_infinity_fnstsw.case.json"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30at_fld_ftst_negative_infinity_fnstsw.case.json"
+        )
+        .as_slice(),
+    ] {
+        let fixture = Fixture::from_json(raw).unwrap();
+        assert_eq!(fixture.fixture.profile, Profile::LongX87StateV1);
+        assert_eq!(fixture.fixture.instruction_budget, 3);
+        assert_eq!(fixture.fixture.stop_rip, Some(HexU64(0x0010_0006)));
+        assert_eq!(
+            fixture
+                .fixture
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .unwrap()
+                .initial_bytes_hex,
+            "d900d9e4dfe0"
+        );
+    }
+}
+
+#[test]
 fn x87_state_profile_admits_exact_fst_sti_zero_composition_only() {
     let mut fixture = x87_fixture().fixture;
     let code = fixture

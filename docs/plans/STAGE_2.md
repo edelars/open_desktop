@@ -208,6 +208,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30z | Bare `D9 E1` FABS, bounded canonical-Normal ST(0) sign-bit clear; native closed | S2-30y |
 | [x] | S2-30ap | Bare `D9 E1` FABS additionally admits canonical Zero-tagged signed zero; at that time FTST/FST gates remained Normal-only (superseded by S2-30aq/ar) | S2-30ao |
 | [x] | S2-30aq | Bare `D9 E4` FTST additionally admits canonical Zero-tagged signed zero as equal; at that point FST/FSTP ST(i) were Normal-only (historical; superseded by S2-30ar/as); native/JIT closed | S2-30ap |
+| [x] | S2-30at | Bare `D9 E4` FTST additionally admits Special-tagged canonical signed binary80 infinity; compares by sign; JIT/native closed | S2-30aq |
 | [x] | S2-30ar | Bare `DD D0+i` FST ST(i) also copies exact Zero-tagged signed zero, retaining Zero without pop; FSTP's then-Normal-only scope is historical / superseded by S2-30as; native/JIT closed | S2-30aq |
 | [x] | S2-30as | Bare `DD D8+i` FSTP ST(i) copies exact Zero-tagged signed zero before emptying old TOP and advancing TOP; native/JIT closed | S2-30ar |
 | [x] | S2-30aa | Bare `D9 E4` FTST, bounded canonical-Normal ST(0) comparison with zero; native closed | S2-30z |
@@ -2118,6 +2119,28 @@ m32/m64 FLD→FTST→FNSTSW for both signs, Normal regressions, and
 fetch/prefix/REX/WAIT/truncation/STOP/budget atomicity.
 The exact handwritten fixture `d900d9e4dfe0` composes FLD m32fp, FTST, and
 FNSTSW in three retirements. Physical behavior remains open under ISSUE-019.
+
+#### S2-30at. Admit canonical signed infinity to bounded `FTST` (`D9 E4`)
+
+Keep the existing exact bare encoding, explicit x87 state, FCW `0x037f`, and
+`FSW & 0x80ff == 0` gate. In addition to canonical-Normal Valid values and
+exact Zero-tagged signed zero, admit only Special-tagged canonical binary80
+infinity: exponent `0x7fff`, integer bit `J=1`, and zero fraction. Either sign
+is less/greater than zero respectively. Commit the status with the existing
+`(old_fsw & !0x4700) | C0(if negative)` rule, clearing C1 and C2/C3 while
+preserving the other FSW bits. Preserve TOP, tag, raw bytes and all other state;
+record FIP, advance RIP by two, and retire once. Do not widen FCHS/FABS/FST/
+FSTP or any other x87 source gate. Pseudo-infinity, NaNs, subnormal and other
+unsupported/malformed values, wrong tags, and invalid environments reject
+atomically. JIT/native admission stays closed.
+
+Cover both signs × all TOP positions × all 16 old condition-code states,
+repeated execution, Normal and signed-Zero regressions, wrong tags/classes,
+invalid/missing x87 state, and fetch/prefix/REX/WAIT/truncation/STOP/budget
+atomicity. Add only the exact existing `d900d9e4dfe0` project-fixture
+composition for binary32 positive and negative infinity inputs; do not widen
+the schema. Local fixture/interpreter checks do not establish physical x87
+behavior; keep ISSUE-019 open.
 
 #### S2-30ar. Admit canonical signed zero to bare `FST ST(i)` (`DD D0+i`)
 
