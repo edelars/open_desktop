@@ -772,6 +772,12 @@ impl Fixture {
                 "db28d9fcdfe0dbe2d9fc" => ("db28d9fcdfe0dbe2d9fc", 10),
                 "db28d9fcd9fcdfe0dbe2d9fc" => ("db28d9fcd9fcdfe0dbe2d9fc", 12),
                 "d9fc" => ("d9fc", 2),
+                "d9f7" => ("d9f7", 2),
+                "d9f6" => ("d9f6", 2),
+                "d9f7dfe0" => ("d9f7dfe0", 4),
+                "d9f6dfe0" => ("d9f6dfe0", 4),
+                "d9f7d9f6dfe0" => ("d9f7d9f6dfe0", 6),
+                "d9f6d9f7dfe0" => ("d9f6d9f7dfe0", 6),
                 _ if code_bytes.len() == 4
                     && code_bytes.starts_with("d9c")
                     && matches!(code_bytes.as_bytes()[3], b'8'..=b'f') =>
@@ -1008,6 +1014,12 @@ impl Fixture {
                         }
                     };
                     !valid_operand(top) || (source != 0 && !valid_operand(indexed))
+                });
+            let is_top_adjustment_source_rejected = matches!(code_bytes.as_str(), "d9f7" | "d9f6")
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    x87.control_word.get() != 0x037f || x87.status_word.get() & 0x80ff != 0
                 });
             let is_fchs_source_rejected = code_bytes == "d9e0" && self.stop_rip.is_none();
             let is_fabs_source_rejected = code_bytes == "d9e1" && self.stop_rip.is_none();
@@ -1286,6 +1298,7 @@ impl Fixture {
                     || is_fstp_source_rejected
                     || is_fst_source_rejected
                     || is_fxch_source_rejected
+                    || is_top_adjustment_source_rejected
                     || is_fchs_source_rejected
                     || is_fabs_source_rejected
                     || is_ftst_source_rejected

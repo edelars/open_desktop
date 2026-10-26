@@ -320,6 +320,83 @@ fn x87_fxch_st1_schema_admits_only_the_three_exact_streams() {
 }
 
 #[test]
+fn x87_top_adjustment_schema_admits_only_the_six_exact_streams() {
+    let mut fixture = x87_fixture().fixture;
+    fixture.case_id = "local_top_adjustment_seeded_c1_mixed_tags".into();
+    let x87 = fixture.initial_state.x87.as_mut().unwrap();
+    x87.control_word = HexU64(0x037f);
+    x87.status_word = HexU64(0x3a00); // TOP=7 and C1 set.
+    x87.tag_word = HexU64(0xe4e4); // Mixed tags, including Empty.
+    for physical in 0..8 {
+        x87.registers[physical] = format!("{:020x}", 0x1020_3040_5060_7080u128 + physical as u128);
+    }
+
+    for (stream, budget) in [
+        ("d9f7", 1),
+        ("d9f6", 1),
+        ("d9f7dfe0", 2),
+        ("d9f6dfe0", 2),
+        ("d9f7d9f6dfe0", 3),
+        ("d9f6d9f7dfe0", 3),
+    ] {
+        let mut exact = fixture.clone();
+        exact.case_id = format!("local_top_adjustment_{stream}");
+        exact.instruction_budget = budget;
+        exact.stop_rip = Some(HexU64(0x1000 + (stream.len() / 2) as u64));
+        let code = exact
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (stream.len() / 2) as u32;
+        code.initial_bytes_hex = stream.into();
+        code.comparison_mask_hex = "ff".repeat(stream.len() / 2);
+        exact.validate().unwrap();
+    }
+
+    for stream in [
+        "d9f5",
+        "d9f8",
+        "66d9f7",
+        "d9f7d9f7dfe0",
+        "d9f7d9f6",
+        "d9f6dfe0d9f7",
+    ] {
+        let mut rejected = fixture.clone();
+        rejected.case_id = format!("local_top_adjustment_alias_{stream}");
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (stream.len() / 2) as u32;
+        code.initial_bytes_hex = stream.into();
+        code.comparison_mask_hex = "ff".repeat(stream.len() / 2);
+        assert!(rejected.validate().is_err(), "{stream}");
+    }
+
+    for invalid_environment in [(0x0000, 0x3800), (0x027f, 0x3800), (0x037f, 0x3801)] {
+        let mut rejected = fixture.clone();
+        rejected.case_id = "local_top_adjustment_bad_environment".into();
+        rejected.instruction_budget = 1;
+        rejected.stop_rip = None;
+        rejected.expected_exit = ExpectedExit::Unsupported;
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = 2;
+        code.initial_bytes_hex = "d9f7".into();
+        code.comparison_mask_hex = "ffff".into();
+        let x87 = rejected.initial_state.x87.as_mut().unwrap();
+        x87.control_word = HexU64(invalid_environment.0);
+        x87.status_word = HexU64(invalid_environment.1);
+        rejected.validate().unwrap();
+    }
+}
+
+#[test]
 fn fld_m32_m64_budget_one_normal_unsupported_rejects_oe_only_status() {
     for (width, opcode, normal_bytes) in [(4, "d900", "0000803f"), (8, "dd00", "000000000000f03f")]
     {

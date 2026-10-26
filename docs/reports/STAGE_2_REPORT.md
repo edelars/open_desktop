@@ -9526,3 +9526,34 @@ and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bl-canonical-
 `graphify update .` completed at 5,049 nodes and 10,073 edges. It reported the
 existing `include/open_desktop/host_abi.h` extraction warning and skipped
 unsupported file types; neither affects this change.
+
+## S2-30bm — bounded register-only FINCSTP and FDECSTP
+
+Added exact bare Long64 `D9 F7`/`D9 F6` operations. They update TOP by +1/-1
+modulo eight, clear C1, preserve C0/C2/C3 under a deterministic local policy,
+and leave every raw x87 register byte and the complete tag word unchanged.
+All register contents and tags are opaque: no tag/class reads, reclassification,
+exchange, or Empty marking occurs. FIP captures old RIP; FDP/FOP, GPR, RFLAGS,
+and memory retain their register-only behavior. The execution gate is present
+state, FCW `0x037f`, and `FSW & 0x80ff == 0`.
+
+Coverage includes 1,536 full-state successes (2 directions × 8 TOP values × 16
+prior CC states × 6 opaque snapshots), separate TOP wrap, eight repeated
+operations, both inverse pairs, all nine forbidden FSW bits, invalid FCW,
+missing state, truncated fetch, STOP, zero budget, and adjusted-TOP FXCH
+composition. Decoder and schema accept only the exact six requested streams;
+four literal runner fixtures seed TOP=7/C1 with distinct raw canaries and mixed
+including Empty tags, observe status after each direction, and observe both
+inverse orders. JIT denial is asserted. These fixtures and matrices are local
+interpreter/schema evidence, not native or physical x86 evidence.
+
+Validation passed: focused `od-isa` FINCSTP/FDECSTP tests (4/4), adjusted-TOP
+FXCH composition (1/1), focused schema allowlist test (1/1), and full
+`cargo test -p od-runner --test fixture_v2 --offline` (187/187). The targeted
+runner fixture also passed with explicit JIT denial. `cargo fmt --all
+-- --check`, `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, and `git diff --check` passed. No Mac mini,
+SSH, native runtime, or physical x86 checks were performed. ISSUE-019 remains
+open for broader exception/native/physical behavior. See the [plan](../plans/STAGE_2.md#s2-30bm-bounded-register-only-fincstp--fdecstp),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30bm-bounded-register-only-fincstp--fdecstp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bm-bounded-fincstpfdecstp).

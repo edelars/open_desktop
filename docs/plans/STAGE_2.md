@@ -5957,3 +5957,28 @@ allowlist and explicit JIT denial.
 Update fixture notes, CPU contract, report, and ISSUE-019 evidence. ISSUE-019
 remains open for Empty/stack faults, special classes, physical acceptance, and
 other excluded behavior. No Mini, SSH, native runtime, or physical x86 checks.
+
+#### S2-30bm. Bounded register-only `FINCSTP` / `FDECSTP`
+
+Implement exact bare Long64 `D9 F7` FINCSTP and `D9 F6` FDECSTP only. Require
+present x87 state, FCW `0x037f`, and `FSW & 0x80ff == 0`. FINCSTP changes
+TOP to `(TOP+1)&7`; FDECSTP changes it to `(TOP+7)&7`. Both clear C1 and
+preserve C0/C2/C3 by deterministic local policy, with no hardware-equality
+claim for architecturally undefined condition codes. Preserve all eight raw
+ten-byte registers and the complete packed tag word exactly; do not inspect,
+reclassify, reorder or empty any entry. Add no floating exception or status
+flags. FIP records old RIP, RIP advances by two and one instruction retires;
+FDP/FOP retain register-only policy and GPR/RFLAGS/memory remain unchanged.
+
+Reject unsupported prefixes/neighbors, absent state, bad FCW, all nine FSW
+bits in `0x80ff`, and fetch/truncation/STOP/budget/fault boundaries atomically.
+Do not add ES/B acceptance, #MF/#NM/WAIT/pending-exception or IE/SF handling.
+Add 1,536 full-state success cases (two directions × eight TOPs × sixteen
+prior CC patterns × six opaque tag/raw snapshots), TOP wrap, eight repeats,
+inverse pairs, per-step raw/tag assertions, and composition with FXCH after a
+TOP change. The schema stream allowlist adds only `d9f7`, `d9f6`,
+`d9f7dfe0`, `d9f6dfe0`, `d9f7d9f6dfe0`, and `d9f6d9f7dfe0`; use literal seeded
+C1/status-observation fixtures with mixed and Empty-tagged canaries and
+round-trip coverage. JIT/native remain denied. Keep ISSUE-019 open for broader
+x87 exceptions and physical/native acceptance; do not run Mac mini, SSH or
+physical x86 checks.

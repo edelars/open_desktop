@@ -3583,3 +3583,18 @@ tag word, opposite signed-zero exchange followed by a same-index roundtrip,
 untouched state and JIT denial. Malformed Zero and Empty/Special rejection are
 checked atomically. These are local interpreter/schema checks, not native or
 physical x86 evidence.
+
+### S2-30bm bounded `FINCSTP` / `FDECSTP`
+
+The local schema admits only `d9f7`, `d9f6`, `d9f7dfe0`, `d9f6dfe0`,
+`d9f7d9f6dfe0`, and `d9f6d9f7dfe0`. The literal FINCSTP/FNSTSW and
+FDECSTP/FNSTSW fixtures seed TOP=7 and C1, then observe the post-adjustment
+status. Two inverse-pair fixtures observe TOP=7 after FINCSTP/FDECSTP and
+FDECSTP/FINCSTP. All eight physical payloads use distinct opaque canaries, and the tag
+word includes mixed tags and Empty entries. Unit coverage additionally checks
+eight repeats, both inverse orders, TOP wrap, all nine rejected FSW bits,
+atomic instruction boundaries, and FXCH using the adjusted TOP. Every step
+preserves all raw cells and the full tag word. These are local interpreter and
+schema results only; JIT/native and physical x86 acceptance remain deferred
+under ISSUE-019. Undefined C0/C2/C3 preservation is a deterministic local
+policy, not a hardware-equality claim.

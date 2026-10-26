@@ -33,6 +33,14 @@ const FST_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30x_fst_invalid_source.case.json");
 const FCHS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30y_fchs_normal.case.json");
+const FINCSTP_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bm_fincstp_fnstsw.case.json");
+const FDECSTP_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bm_fdecstp_fnstsw.case.json");
+const FINCSTP_FDECSTP_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bm_fincstp_fdecstp_fnstsw.case.json");
+const FDECSTP_FINCSTP_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bm_fdecstp_fincstp_fnstsw.case.json");
 const FCHS_SIGNED_ZERO: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ao_fchs_signed_zero.case.json");
 const FCHS_ZERO_WRONG_TAG: &[u8] =
@@ -6575,5 +6583,40 @@ fn local_x87_fxch_signed_zero_payload_tag_transfer_and_roundtrip() {
     assert_eq!(actual.status_word, HexU64((7 << 11) as u64));
 
     let (_, jit) = run(&mixed.to_json().unwrap(), "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn local_x87_fincstp_fdecstp_fnstsw_preserve_opaque_cells_and_deny_jit() {
+    for (fixture_bytes, expected_top) in [(FINCSTP_FIXTURE, 0u64), (FDECSTP_FIXTURE, 6u64)] {
+        let loaded = Fixture::from_json(fixture_bytes).unwrap();
+        let before = loaded.fixture.initial_state.x87.as_ref().unwrap().clone();
+        let (_, result) = run(fixture_bytes, "interpreter", 0);
+        assert_eq!(count(&result), 2);
+        let observed = snapshot(&result);
+        let after = observed.state.x87.as_ref().unwrap();
+        assert_eq!(after.status_word, HexU64(expected_top << 11));
+        assert_eq!(after.tag_word, before.tag_word);
+        assert_eq!(after.registers, before.registers);
+        assert_eq!(after.instruction_pointer, loaded.fixture.initial_state.rip);
+        assert_eq!(after.data_pointer, before.data_pointer);
+        assert_eq!(after.last_opcode, before.last_opcode);
+        assert_eq!(observed.state.rip, HexU64(0x0010_0004));
+        assert_eq!(observed.state.gpr[0].get() & 0xffff, expected_top << 11);
+    }
+    for fixture_bytes in [FINCSTP_FDECSTP_FIXTURE, FDECSTP_FINCSTP_FIXTURE] {
+        let loaded = Fixture::from_json(fixture_bytes).unwrap();
+        let before = loaded.fixture.initial_state.x87.as_ref().unwrap().clone();
+        let (_, result) = run(fixture_bytes, "interpreter", 0);
+        assert_eq!(count(&result), 3);
+        let observed = snapshot(&result);
+        let after = observed.state.x87.as_ref().unwrap();
+        assert_eq!(after.status_word, HexU64(7 << 11));
+        assert_eq!(after.tag_word, before.tag_word);
+        assert_eq!(after.registers, before.registers);
+        assert_eq!(observed.state.rip, HexU64(0x0010_0006));
+        assert_eq!(observed.state.gpr[0].get() & 0xffff, 7 << 11);
+    }
+    let (_, jit) = run(FINCSTP_FIXTURE, "jit", 4);
     assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
 }

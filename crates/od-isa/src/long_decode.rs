@@ -465,6 +465,10 @@ pub enum Operation {
     FxchSti {
         source: u8,
     },
+    /// Bare `D9 F7` FINCSTP, rotating the x87 TOP field forward.
+    Fincstp,
+    /// Bare `D9 F6` FDECSTP, rotating the x87 TOP field backward.
+    Fdecstp,
     /// Bare `D9 E1` FABS, clearing the sign of canonical-Normal ST(0) only.
     Fabs,
     /// Bare `D9 E4` FTST, comparing canonical-Normal ST(0) with zero.
@@ -1262,6 +1266,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 match self.byte()? {
                     modrm @ 0xc8..=0xcf => Operation::FxchSti { source: modrm & 7 },
+                    0xf7 => Operation::Fincstp,
+                    0xf6 => Operation::Fdecstp,
                     0x00 => Operation::FldM32FpRax,
                     0x28 => Operation::FldcwM16Rax,
                     0x38 => Operation::FnstcwM16Rax,
@@ -3082,6 +3088,37 @@ mod tests {
         assert!(matches!(
             memory.decode(),
             Err(DecodeError::Memory(MemoryError::Architectural(_)))
+        ));
+    }
+
+    #[test]
+    fn d9_fincstp_fdecstp_decode_only_exact_bare_forms() {
+        for (bytes, operation) in [
+            (&[0xd9, 0xf7][..], Operation::Fincstp),
+            (&[0xd9, 0xf6][..], Operation::Fdecstp),
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(instruction.operation, operation);
+            assert_eq!(instruction.length, 2);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+        }
+        for bytes in [
+            &[0xd9, 0xf5][..],
+            &[0xd9, 0xf8],
+            &[0x66, 0xd9, 0xf7],
+            &[0x48, 0xd9, 0xf6],
+        ] {
+            assert!(matches!(
+                Memory::new(bytes).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+        }
+        assert!(matches!(
+            Memory::new(&[0xd9]).decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            }))
         ));
     }
 

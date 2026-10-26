@@ -7242,3 +7242,31 @@ ISSUE-019 remains open for Empty/stack faults, special classes, and physical
 acceptance. See the [plan](../plans/STAGE_2.md#s2-30bl-admit-canonical-signed-zero-to-bounded-fxch),
 [report](../reports/STAGE_2_REPORT.md#s2-30bl--canonical-signed-zero-through-bounded-fxch),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bl-canonical-signed-zero-fxch).
+
+## Local S2-30bm: bounded register-only `FINCSTP` / `FDECSTP`
+
+Only exact bare Long64 `D9 F7` FINCSTP and `D9 F6` FDECSTP are admitted. The
+profile requires present x87 state, FCW `0x037f`, and `FSW & 0x80ff == 0`.
+FINCSTP updates TOP to `(old TOP+1)&7`; FDECSTP updates it to
+`(old TOP+7)&7`. Both clear C1. C0/C2/C3 are architecturally undefined for
+these operations; this implementation preserves them as a deterministic local
+policy and makes no hardware-equality claim.
+
+All eight raw register cells and the complete tag word remain byte-for-byte
+unchanged. Payloads and tags are opaque, including Empty, Special, mixed, and
+mismatched states; execution does not classify or inspect them. The operations
+raise no new floating exception/status flags. FIP records old RIP, RIP advances
+by two and one instruction retires. FDP/FOP follow the register-only policy;
+GPR, RFLAGS and memory remain unchanged. Missing state, bad FCW, any status bit
+in `0x80ff`, prefixes, neighbors, and instruction-boundary failures reject
+without partial state changes. ES/B and #MF/#NM/WAIT/pending-exception/IE/SF
+semantics remain unsupported.
+
+The v2 schema admits exactly `d9f7`, `d9f6`, `d9f7dfe0`, `d9f6dfe0`,
+`d9f7d9f6dfe0`, and `d9f6d9f7dfe0`. Local coverage comprises 1,536 full-state
+matrix cases plus repeats, inverse pairs, status-gate and boundary rejection,
+FXCH composition under adjusted TOP, and four literal status-observation
+fixtures. JIT/native execution and physical x86 behavior are not established;
+ISSUE-019 remains open. See the [plan](../plans/STAGE_2.md#s2-30bm-bounded-register-only-fincstp--fdecstp),
+[report](../reports/STAGE_2_REPORT.md#s2-30bm--bounded-register-only-fincstp-and-fdecstp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bm-bounded-fincstpfdecstp).
