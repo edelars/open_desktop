@@ -11,6 +11,7 @@ pub const RESULT_SCHEMA_VERSION: u32 = 1;
 pub enum Backend {
     Interpreter,
     Jit,
+    JitIrBlock,
     NativeX86,
 }
 
@@ -364,6 +365,15 @@ mod tests {
             actual.snapshot.rip,
             Observation::Available { value: HexU64(0) }
         );
+    }
+
+    #[test]
+    fn ir_block_backend_uses_a_distinct_stable_result_tag() {
+        let mut value = result();
+        value.backend = Backend::JitIrBlock;
+        let bytes = value.to_json().unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("\"backend\": \"jit_ir_block\""));
+        assert_eq!(RunResult::from_json(&bytes).unwrap(), value);
     }
 
     #[test]

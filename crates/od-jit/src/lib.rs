@@ -10,6 +10,7 @@ use od_isa::{DecodeError, FragmentState as CpuState, Instruction, Operation, dec
 pub mod allocator;
 pub mod arm64;
 pub mod block;
+pub mod block_compile;
 pub mod block_emitter;
 pub mod emitter;
 pub mod ir;

@@ -11,14 +11,12 @@
 подтверждает новый block pipeline этапа 3. Полный corpus этапа 1 подключается
 к новому pipeline после dispatcher и переходов между блоками (S3-15).
 
-Текущая реализация `od-jit` исполняет S0-09 в прямом fragment translator:
-целочисленные операции и ветвления генерируются как ARM64, а host helper
-вычисляет определённые x86 flags. Это исходная реализация, не доказательство
-наличия общего typed IR, нового block builder, dispatcher или code cache.
-`od-jit` сохраняет legacy `FragmentState` interface и не предоставляет v2
-architectural-state entry; test runner отклоняет выбор JIT backend для v2
-fixtures. Для новых форм нельзя считать JIT lowering завершённым только потому,
-что декодер или интерпретатор этапа 2 уже принимает их.
+Legacy `od-jit` fragment translator по-прежнему существует отдельно от нового
+typed block path и сохраняет свой `FragmentState` interface. S3-13 добавляет
+первый opt-in fixture-v1 путь через builder, typed IR, allocator, runtime
+emitter и `PublishedCode`; это один block без dispatcher/cache. Schema v2 JIT
+по-прежнему отклоняется. Для новых форм нельзя считать lowering завершённым
+только потому, что декодер или интерпретатор этапа 2 уже принимает их.
 
 Для кодирования A64 используется [Arm A-profile A64 Instruction Set
 Architecture, DDI 0602, версия 2026-06](https://developer.arm.com/documentation/ddi0602/2026-06/Base-Instructions).
@@ -497,6 +495,40 @@ panic/unwind, ABI violations or asynchronous/concurrent snapshots recoverable
 guest events. There are no memory effects or fault replay in this slice. Native
 ARM64 tests validate the generated register-only path and planned exits; they
 are not the S3-14 physical-x86 comparison.
+
+### S3-13: opt-in one-block fixture CLI
+
+Fixture schema v1 accepts `--engine jit-block`, producing the distinct result
+backend tag `jit_ir_block`. Example:
+
+```sh
+target/debug/od-runner --fixture CASE_V1.json --engine jit-block --json
+```
+
+The legacy `--engine jit`, direct `--hex` path and C fragment ABI retain their
+existing behavior. The compatibility layer applies the existing whole-fixture
+v1 static decoder admission and checks that the initial RIP is one of its
+instruction boundaries before invoking
+`od-jit::block_compile::compile_block`; the bounded compiler itself decodes
+from the fixture's initial RIP and stops at its branch/limit without consuming
+unreachable tail bytes. It reuses the
+S3-04 builder, S3-05 lowering, S3-09 allocator and S3-12 production emitter,
+with runtime reserved frame prefix 112 bytes and a 4096-byte emitted-code cap
+checked before publication. `NoNativePrefix` remains an unsupported outcome;
+compile errors do not become fallback success.
+
+The runner publishes and executes one block exactly once with
+`stop_rip = code_end`. `BlockComplete` is normalized in this order: actual RIP
+at code end becomes `ReachedCodeEnd`; otherwise zero remaining budget becomes
+`InstructionBudgetExhausted`; otherwise the result is unsupported because a
+next block/dispatcher is required. `NeedInterpreter` and `Unsupported` are
+reported as unsupported without running the interpreter. Invalid fixture/input
+uses exit 3, unsupported profile/form/host uses exit 4, and compile, publication,
+runtime-contract or output failures use exit 5. Schema v2 remains unsupported
+for both JIT backends. Completed results expose the v1 comparison snapshot and
+retired count and round-trip through the existing `RunResult` schema. This is
+one-block ARM64 smoke evidence, not multi-block execution, physical-x86
+comparison or a performance claim.
 
 ## 6. Host и этапная приёмка
 

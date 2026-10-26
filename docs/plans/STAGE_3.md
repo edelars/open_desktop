@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11 и S3-12 завершены; S3-01 в работе.
+**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -139,7 +139,7 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-10 | Lowering первого integer subset | S3-05, S3-06, S3-09 |
 | [x] | S3-11 | Корректные eager flags | S3-10 |
 | [x] | S3-12 | State points и PC maps | S3-11 |
-| [ ] | S3-13 | Первый сквозной запуск одного блока | S3-07, S3-12 |
+| [x] | S3-13 | Первый сквозной запуск одного блока | S3-07, S3-12 |
 | [ ] | S3-14 | Тройное сравнение register-only | S3-13 |
 | [ ] | S3-15 | Dispatcher, budget и переходы | S3-14 |
 | [ ] | S3-16 | Interpreter fallback с прогрессом | S3-15; нужный S2 step |
@@ -327,6 +327,25 @@ host; физическое сравнение с x86 относится к S3-14
 1. Выполнить compile → publish → execute → snapshot для первого профиля с теми же входами и compare scope, что у interpreter.
 2. Сохранить старый fragment entry/ABI и fixtures. Новый путь должен быть различим в metadata результата, без подмены исторических evidence.
 3. Проверить completed, unsupported, allocation/compile error и malformed result paths.
+
+Текущая реализация добавляет opt-in `--fixture CASE_V1.json --engine
+jit-block --json` с отдельным `jit_ir_block` backend tag. `od-jit` adapter
+сохраняет `NoNativePrefix`, строит allocation/runtime emitter для одного
+bounded block и отклоняет generated code свыше 4096 bytes до публикации. Runner
+сохраняет старый `jit`/`--hex` path, делает fixture-v1 static decoder и
+initial-RIP instruction-boundary compatibility checks, публикует и исполняет
+один block ровно один раз, передаёт
+`stop_rip=code_end` и не выполняет interpreter fallback/branch dispatch. V2
+JIT остаётся unsupported. Child tests покрывают completed, budget, terminal
+branch, недопустимую форму, internal branch без dispatcher, v2 denial и коды
+выхода invalid/unsupported/harness. Независимый review нашёл и подтвердил
+исправление compatibility-проверки initial RIP; повторные package checks прошли.
+
+`BlockComplete` нормализуется сначала по фактическому RIP к `ReachedCodeEnd`,
+затем по нулевому remaining budget к `InstructionBudgetExhausted`; другой
+internal RIP означает `Unsupported`, так как для него нужен следующий block.
+Это только одно-блочный execution path, не dispatcher и не сравнение с
+физическим x86.
 
 **Готово:** одна документированная команда реально исполняет IR-based block и выдаёт machine-readable result. Нулевой код возврата не появляется при fallback failure или отсутствии lowering.
 

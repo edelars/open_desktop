@@ -206,14 +206,15 @@ pub fn run_fixture(args: &[String]) -> ExitCode {
     }
     let Some(fixture_path) = fixture_path else {
         return invalid_input(
-            "usage: od-runner --fixture CASE.json --engine interpreter|jit --json",
+            "usage: od-runner --fixture CASE.json --engine interpreter|jit|jit-block --json",
         );
     };
     let backend = match engine {
         Some("interpreter") => Backend::Interpreter,
         Some("jit") => Backend::Jit,
+        Some("jit-block") => Backend::JitIrBlock,
         Some(other) => return invalid_input(&format!("unknown fixture engine '{other}'")),
-        None => return invalid_input("--fixture requires --engine interpreter|jit"),
+        None => return invalid_input("--fixture requires --engine interpreter|jit|jit-block"),
     };
 
     let input = match fs::read(fixture_path) {
@@ -568,6 +569,7 @@ fn execute_fixture(
             })?;
             execute_jit(&code, &mut state, fixture.instruction_budget)?
         }
+        Backend::JitIrBlock => execute_jit_ir_block(&code, &mut state, fixture.instruction_budget)?,
         Backend::NativeX86 => {
             return Err(ExecutionFailure::Unsupported(
                 "native x86 execution is implemented in a later stage".to_string(),
@@ -600,6 +602,137 @@ fn execute_jit(
     budget: u64,
 ) -> Result<ExecutionResult, ExecutionFailure> {
     super::execute_legacy_jit(code, state, budget).map_err(ExecutionFailure::Harness)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn execute_jit_ir_block(
+    code: &[u8],
+    state: &mut CpuState,
+    budget: u64,
+) -> Result<ExecutionResult, ExecutionFailure> {
+    use od_jit::block_compile::{BlockCompileOutcome, compile_block};
+
+    // Keep fixture-v1's static decoder admission compatible with the existing
+    // interpreter/JIT path. The bounded builder below still decodes only from
+    // the selected entry and stops at its first branch/limit.
+    let decoded = od_isa::decode(code).map_err(|error| {
+        ExecutionFailure::Unsupported(format!("JIT block cannot decode fixture: {error:?}"))
+    })?;
+    if state.rip != code.len()
+        && !decoded
+            .iter()
+            .any(|instruction| instruction.offset == state.rip)
+    {
+        return Err(ExecutionFailure::Unsupported(format!(
+            "initial RIP 0x{:x} is not a fixture-v1 instruction boundary",
+            state.rip
+        )));
+    }
+    let entry_rip = u64::try_from(state.rip)
+        .map_err(|_| ExecutionFailure::InvalidInput("fixture RIP exceeds u64".into()))?;
+    let code = od_jit::block::CodeView::new(0, code)
+        .map_err(|error| ExecutionFailure::Harness(format!("invalid code view: {error:?}")))?;
+    let compiled = compile_block(code, entry_rip).map_err(|error| {
+        ExecutionFailure::Harness(format!("block compilation failed: {error:?}"))
+    })?;
+    let compiled = match compiled {
+        BlockCompileOutcome::Compiled(compiled) => compiled,
+        BlockCompileOutcome::NoNativePrefix { rip, reason, .. } => {
+            return Err(ExecutionFailure::Unsupported(format!(
+                "no native block prefix at RIP 0x{rip:016x}: {reason:?}"
+            )));
+        }
+    };
+
+    let published = od_host::PublishedCode::publish_block(compiled.emitted()).map_err(|error| {
+        ExecutionFailure::Harness(format!("block publication failed: {error:?}"))
+    })?;
+    let mut architectural = od_isa::LongModeState::default();
+    architectural.gpr[..4].copy_from_slice(&state.gpr);
+    architectural.rip = entry_rip;
+    architectural.rflags = state.rflags;
+    let stop_requested = std::sync::atomic::AtomicU8::new(0);
+    let result = published
+        .execute_block(
+            &mut architectural,
+            budget,
+            Some(compiled.code_end()),
+            &stop_requested,
+        )
+        .map_err(|error| ExecutionFailure::Harness(format!("block execution failed: {error:?}")))?;
+
+    let retired = result.retired_instructions;
+    if retired > budget
+        || retired > u64::from(compiled.emitted().pc_map().instruction_count())
+        || result.remaining_budget != budget - retired
+    {
+        return Err(ExecutionFailure::Harness(format!(
+            "malformed block counters: budget={budget} remaining={} retired={retired}",
+            result.remaining_budget
+        )));
+    }
+    let reason = match result.exit {
+        od_jit::runtime::RuntimeExitTag::BlockComplete
+            if architectural.rip == compiled.code_end() =>
+        {
+            od_isa::ExitReason::ReachedCodeEnd
+        }
+        od_jit::runtime::RuntimeExitTag::BlockComplete if result.remaining_budget == 0 => {
+            od_isa::ExitReason::InstructionBudgetExhausted
+        }
+        od_jit::runtime::RuntimeExitTag::BlockComplete => {
+            return Err(ExecutionFailure::Unsupported(format!(
+                "block ended at RIP 0x{:016x}; another block is required",
+                architectural.rip
+            )));
+        }
+        od_jit::runtime::RuntimeExitTag::BudgetExhausted if result.remaining_budget == 0 => {
+            od_isa::ExitReason::InstructionBudgetExhausted
+        }
+        od_jit::runtime::RuntimeExitTag::StopAddress
+            if architectural.rip == compiled.code_end() =>
+        {
+            od_isa::ExitReason::ReachedCodeEnd
+        }
+        od_jit::runtime::RuntimeExitTag::Unsupported
+        | od_jit::runtime::RuntimeExitTag::NeedInterpreter => {
+            return Err(ExecutionFailure::Unsupported(format!(
+                "block requires unsupported lowering or another execution step at RIP 0x{:016x}",
+                architectural.rip
+            )));
+        }
+        exit => {
+            return Err(ExecutionFailure::Harness(format!(
+                "unexpected block exit {exit:?} with remaining budget {}",
+                result.remaining_budget
+            )));
+        }
+    };
+    let rip = usize::try_from(architectural.rip).map_err(|_| {
+        ExecutionFailure::Harness("committed guest RIP does not fit host usize".into())
+    })?;
+    Ok(ExecutionResult {
+        state: CpuState {
+            gpr: architectural.gpr[..4]
+                .try_into()
+                .expect("fixed four-register S0-09 projection"),
+            rip,
+            rflags: architectural.rflags,
+        },
+        reason,
+        instructions_executed: retired,
+    })
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+fn execute_jit_ir_block(
+    _code: &[u8],
+    _state: &mut CpuState,
+    _budget: u64,
+) -> Result<ExecutionResult, ExecutionFailure> {
+    Err(ExecutionFailure::Unsupported(
+        "ARM64 JIT block execution requires an aarch64 macOS host".to_string(),
+    ))
 }
 
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]

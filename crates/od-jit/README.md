@@ -152,3 +152,11 @@ root task. См. подробности и evidence в JIT contract и план�
 Проверки корректности и измерений по задачам этапа — в
 [методике JIT](../../docs/testing/JIT.md). Добавлять формы инструкций можно
 после подтверждения их interpreter semantics и требуемых внешних проверок.
+
+S3-13 добавляет `block_compile::compile_block`: bounded block → typed lowering
+→ allocation → runtime block emission. `NoNativePrefix` остаётся отдельным
+результатом, а emitted block свыше 4096 bytes отклоняется до публикации.
+Runner v1 opt-in подключён отдельно от legacy fragment translator; модуль
+компилятора сам не публикует и не исполняет код. Реальные CLI limits и exit
+mapping описаны в [JIT contract](../../docs/specs/JIT_CONTRACT.md) и отчёте
+S3-13.
