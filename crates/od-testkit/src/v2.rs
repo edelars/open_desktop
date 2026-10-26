@@ -1118,14 +1118,14 @@ impl Fixture {
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-                        || x87.status_word.get() & 0x80dc != 0
+                        || x87.status_word.get() & 0x80cc != 0
                 });
             let is_fld_m64_environment_rejected = code_bytes == "dd00"
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-                        || x87.status_word.get() & 0x80dc != 0
+                        || x87.status_word.get() & 0x80cc != 0
                 });
             let is_fcom_source_rejected = code_bytes.len() == 4
                 && code_bytes.starts_with("d8d")

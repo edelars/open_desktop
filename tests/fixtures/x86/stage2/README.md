@@ -3198,3 +3198,15 @@ Intel SDM revision 093 Vol.2A FRNDINT p.3-372 and Vol.1 §8.2.2 Tables 8-3/
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ds-special-pseudo-nan-frndint-d9-fc),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31ds-special-tagged-binary80-pseudo-nan-through-bounded-frndint),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ds--special-tagged-binary80-pseudo-nans-through-bounded-frndint).
+
+## S2-31dt historical UE in bounded m32/m64 FLD
+
+`s2_31dt_fld_m32fp_seeded_ue_fnstsw.case.json` and
+`s2_31dt_fld_m64fp_seeded_ue_fnstsw.case.json` seed only historical UE, load
+exact binary32/binary64 `1.0` with `D9 00`/`DD 00`, and observe FSW using
+`DF E0`. The resulting status remains UE-only before observation; the fixture
+provenance identifies the initial status as directly seeded project state, not
+as a guest-produced underflow. Separate interpreter matrices cover current
+subnormal DE, SNaN IE/quieting, source classes, all FCWs/TOP and prior
+IE/DE/UE/PE combinations. The environment-reject fixtures retain their
+pre-read check by seeding OE, since UE is now admitted. See [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dt-historical-sticky-ue-for-bounded-m32m64-fld), [plan](../../../../docs/plans/STAGE_2.md#s2-31dt-admit-historical-sticky-ue-through-exact-binary32binary64-fld), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dt--historical-sticky-ue-for-bounded-m32m64-fld).

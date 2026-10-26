@@ -8673,3 +8673,46 @@ pseudo-denormal sources with initial DE=0 through m16/m32 FIST/FISTP and m64
 FISTP across RC; compare DE, PE, result, TOP and destination. Defer any FISTP
 pseudo-denormal implementation until that question has evidence and a reviewed
 contract.
+
+## S2-31dt — historical sticky UE for bounded m32/m64 FLD
+
+Only exact bare `D9 00` (`FLD m32fp [RAX]`) and `DD 00`
+(`FLD m64fp [RAX]`) now admit pre-existing UE, by changing the local source
+and v2 rejection-predicate masks from `0x80dc` to `0x80cc`. Historical UE is
+preserved unchanged. Ordinary zero/Normal/infinity/QNaN loads add no IE/DE/PE;
+current nonzero subnormal loads add DE, and SNaN loads add IE while retaining
+the existing quieted payload mapping. ZE/OE/SF/ES/B remain rejected before
+memory access. Four FCWs, Empty destination, one raw read, canonical48 range
+preflight, C1, source mapping, push/TOP/tag, pointers, RIP, retirement and
+atomicity remain in force. FILD, m80 loads, stores, FRNDINT, JIT and native
+admission are unchanged.
+
+The independent interpreter matrix has 16,384 cases: both widths, signed zero,
+minimum/interior Normal, infinity, QNaN, SNaN and nonzero subnormal sources,
+all four FCWs, all TOP values, all 16 IE/DE/UE/PE histories and both prior C1
+values. It checks independently expected binary80 payloads and compares complete
+`LongModeState`, one-read access history, canary bytes and memory contents.
+The literal UE-only D900/DD00 project fixtures execute normal loads followed by
+FNSTSW AX and observe UE without a current IE/DE/PE. Real FST m32/m64 underflow
+producers feed both same-width and cross-width FLD consumers for all FCWs;
+repeated loads retain UE/DE/PE, FNSTSW observes them, and FNCLEX clears the
+exception flags. Invalid FCW, occupied destination, ZE/OE/SF/ES/B with UE,
+canonical range, denied read/backend and instruction-boundary atomicity are
+covered. The two prior S2-31ak Unsupported fixtures now seed OE instead of UE
+and retain their source-independent pre-read rejection. Separate m32/m64 schema
+regressions mutate those exact bare, budget-one/no-stop, legal-FCW,
+Normal-source Unsupported inputs to UE-only and require `Fixture::from_json`
+to reject them.
+
+Focused checks passed: the two new `od-isa` matrix/composition tests,
+`fld_m32fp_rejects_invalid_values_gates_ranges_and_execution_boundaries_atomically`,
+`fld_m64fp_rejects_invalid_gates_before_commit`, both seeded-UE and both
+invalid-status runner fixture tests, and the m32/m64 `test_cli` literal fixture
+schema tests. Formatting, workspace check, layout and diff checks passed;
+`graphify update .` completed. The full `od-testkit` unit suite was interrupted
+before completion; its focused runner schema/fixture paths passed. No Mac mini,
+SSH or physical x86 execution was performed. Native runtime, physical
+acceptance and broader x87 exception behavior remain open under ISSUE-019. See
+the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dt-historical-sticky-ue-for-bounded-m32m64-fld),
+[plan](../plans/STAGE_2.md#s2-31dt-admit-historical-sticky-ue-through-exact-binary32binary64-fld),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

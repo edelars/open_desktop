@@ -141,6 +141,12 @@ const FLD_M32_INVALID_STATUS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ak_fld_m32fp_invalid_status.case.json");
 const FLD_M64_INVALID_STATUS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ak_fld_m64fp_invalid_status.case.json");
+const FLD_M32_SEEDED_UE_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31dt_fld_m32fp_seeded_ue_fnstsw.case.json"
+);
+const FLD_M64_SEEDED_UE_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31dt_fld_m64fp_seeded_ue_fnstsw.case.json"
+);
 const FLD_M64_SUBNORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31z_fld_m64fp_min_subnormal.case.json");
 const FRNDINT_FLD_M64_SUBNORMAL: &[u8] = include_bytes!(
@@ -2004,6 +2010,47 @@ fn local_x87_fld_m32_and_m64_invalid_status_fixtures_reject_before_read_without_
         assert_eq!(count(&result), 0);
         let observed = snapshot(&result);
         assert_eq!(observed.state, input.fixture.initial_state);
+    }
+}
+
+#[test]
+fn local_x87_fld_m32_and_m64_seeded_ue_fnstsw_fixtures_preserve_history() {
+    for (fixture, opcode, expected_rax, expected_payload, expected_tag) in [
+        (
+            FLD_M32_SEEDED_UE_FNSTSW,
+            "d900dfe0",
+            0x0000_0000_0030_3810,
+            "0000000000000080ff3f",
+            0,
+        ),
+        (
+            FLD_M64_SEEDED_UE_FNSTSW,
+            "dd00dfe0",
+            0x0000_0000_0030_3810,
+            "0000000000000080ff3f",
+            0,
+        ),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        let code = input
+            .fixture
+            .memory
+            .iter()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        assert_eq!(code.initial_bytes_hex, opcode);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 2);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.rip, HexU64(0x0010_0004));
+        assert_eq!(observed.state.gpr[0], HexU64(expected_rax));
+        let x87 = observed.state.x87.as_ref().unwrap();
+        assert_eq!(x87.registers[7], expected_payload);
+        assert_eq!(x87.status_word, HexU64(0x3810));
+        assert_eq!(x87.tag_word, HexU64(0x3ffc));
+        assert_eq!((x87.tag_word.get() >> 14) & 3, expected_tag);
+        assert_eq!(x87.instruction_pointer, HexU64(0x0010_0000));
+        assert_eq!(x87.data_pointer, HexU64(0x0030_0004));
     }
 }
 

@@ -236,6 +236,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dq | Admit Special-tagged binary80 unnormals through bounded D9 FC as masked invalid; native/JIT closed | S2-31dp |
 | [x] | S2-31dr | Admit only Special-tagged binary80 pseudo-infinities through bounded D9 FC as masked invalid; native/JIT closed | S2-31dq |
 | [x] | S2-31ds | Admit Special-tagged binary80 pseudo-NaNs (both Q-bit classes) through bounded D9 FC as masked invalid; native/JIT closed | S2-31dr |
+| [x] | S2-31dt | Admit historical sticky UE only in exact bare D9 00/DD 00 FLD m32/m64 gates; keep other x87 gates and native/JIT closed | S2-31ak |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -5315,3 +5316,24 @@ they are project fixture evidence, not native evidence. Keep ISSUE-019 open and
 do not run Mac mini, SSH or physical x86 checks for this task. Normative basis:
 Intel SDM revision 093 Vol.2A FRNDINT p.3-372 and Vol.1 §8.2.2 Tables 8-3/
 8-10 and Table 4-3, as detailed in the CPU contract.
+
+#### S2-31dt. Admit historical sticky UE through exact binary32/binary64 FLD
+
+Only exact bare `D9 00` (`FLD m32fp [RAX]`) and `DD 00` (`FLD m64fp [RAX]`)
+change their source gates from `0x80dc` to `0x80cc`. This admits a pre-existing
+UE and preserves it; source-only ordinary loads add no IE/DE/PE, current
+nonzero subnormals add DE, and current SNaNs add IE while retaining the existing
+quieting and source mapping. ZE/OE/SF/ES/B remain pre-read rejects. Preserve the
+four FCWs, Empty push destination, one raw read, canonical48 preflight, C1,
+TOP/tag, pointers, RIP, retirement and atomicity. FILD, m80 loads, stores,
+FRNDINT, JIT and native admission are unchanged.
+
+Validation evidence crosses zero, normal boundaries/interior, infinity, QNaN,
+SNaN and nonzero subnormal sources with both widths, all four FCWs, all TOPs,
+prior C1 and all 16 IE/DE/UE/PE combinations. It also covers exact UE-only
+`D9 00`/`DD 00` plus FNSTSW project fixtures, current IE/DE independence,
+underflow-store-to-load compositions, repeated observation/clearing, denied
+reads, bad controls, occupied destinations, forbidden statuses, canonical
+range and instruction-boundary atomicity. Existing v2 unsupported predicates
+must use the `0x80cc` forbidden-status mask, and their rejection fixtures now
+use OE rather than UE. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dt-historical-sticky-ue-for-bounded-m32m64-fld), [report](../reports/STAGE_2_REPORT.md#s2-31dt--historical-sticky-ue-for-bounded-m32m64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

@@ -3453,6 +3453,13 @@ mod tests {
             v2::Fixture::from_json(&serde_json::to_vec(&source_class_irrelevant).unwrap())
                 .unwrap_or_else(|error| panic!("environment gate should admit {source}: {error}"));
         }
+        let mut ue_only_unsupported = invalid_json.clone();
+        ue_only_unsupported["initial_state"]["x87"]["status_word"] =
+            serde_json::Value::String("0x0000000000000010".into());
+        assert!(
+            v2::Fixture::from_json(&serde_json::to_vec(&ue_only_unsupported).unwrap()).is_err(),
+            "the D900 schema must not admit a UE-only environment-rejected fixture"
+        );
         let mut clean_snan = invalid_json;
         clean_snan["initial_state"]["x87"]["status_word"] =
             serde_json::Value::String("0x0000000000004500".into());
@@ -3602,6 +3609,16 @@ mod tests {
             .unwrap()
             .status_word = HexU64(0x4500);
         assert!(v2::Fixture::from_json(&serde_json::to_vec(&clean_environment).unwrap()).is_err());
+        let mut ue_only_unsupported: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_31ak_fld_m64fp_invalid_status.case.json"
+        ))
+        .unwrap();
+        ue_only_unsupported["initial_state"]["x87"]["status_word"] =
+            serde_json::Value::String("0x0000000000000010".into());
+        assert!(
+            v2::Fixture::from_json(&serde_json::to_vec(&ue_only_unsupported).unwrap()).is_err(),
+            "the DD00 schema must not admit a UE-only environment-rejected fixture"
+        );
         let template: serde_json::Value = serde_json::from_slice(include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_31t_fld_m64fp.case.json"
         ))

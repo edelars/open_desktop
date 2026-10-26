@@ -6522,3 +6522,31 @@ boundaries, tags, controls/status, faults, status visibility and a seeded CLI
 fixture. See the [plan](../plans/STAGE_2.md#s2-31db-special-unnormals-m64-fistp),
 [report](../reports/STAGE_2_REPORT.md#s2-31db--special-tagged-unnormals-through-m64-fistp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+<a id="local-s2-31dt-historical-sticky-ue-for-bounded-m32m64-fld"></a>
+
+## Local S2-31dt: historical sticky UE for exact bounded m32/m64 `FLD`
+
+Only exact bare Long64 `D9 00` (`FLD m32fp [RAX]`) and `DD 00`
+(`FLD m64fp [RAX]`) admit historical sticky underflow by changing their
+operation-local status mask from `0x80dc` to `0x80cc`. Historical UE is
+preserved unchanged. A current ordinary zero/Normal/infinity/QNaN load adds no
+IE/DE/PE; a current nonzero subnormal adds DE; a current SNaN adds IE and keeps
+the existing binary80 quieting/payload mapping. Current flags combine with
+prior IE/DE/UE/PE independently.
+
+The four FCWs remain `0x037f`, `0x077f`, `0x0b7f`, and `0x0f7f`. ZE/OE/SF/ES/B
+still reject before the single data read. Empty physical destination, bare RAX
+mapping, full canonical48 range preflight, one raw Dword/Qword read, C1 policy,
+TOP/tag push, FIP/FDP, RIP, retirement and write-free load behavior are
+unchanged. Failed preflight/read/fetch/boundary conditions remain atomic.
+FILD, FLD m80fp, stores, FRNDINT, other operations, JIT and native admission
+retain their existing contracts.
+
+Local evidence includes all 16 IE/DE/UE/PE histories, all four FCWs, all
+TOPs and prior C1 across both widths and signed zero, Normal boundary/interior,
+infinity, QNaN, SNaN and subnormal source classes. Literal UE-only D900/DD00
+fixtures observe FSW with FNSTSW. Same- and cross-width underflow-store/load
+compositions and FNSTSW/FNCLEX re-entry are included. The independent project
+fixtures are not native x86 evidence; general exception delivery and physical
+acceptance remain deferred under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31dt-admit-historical-sticky-ue-through-exact-binary32binary64-fld), [report](../reports/STAGE_2_REPORT.md#s2-31dt--historical-sticky-ue-for-bounded-m32m64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
