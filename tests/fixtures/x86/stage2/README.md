@@ -3786,3 +3786,15 @@ streams: `dbd1`, `dbd1dfe0`, `dbd1dbd1dfe0`,
 compare full machine state and memory and explicitly deny JIT. These fixtures
 are local interpreter evidence only; ISSUE-019 and physical x86 behavior
 remain open.
+
+### S2-30cf indexed bare `FCMOVNBE ST(0), ST(i)` (`DB D0..D7`)
+
+The exact 20-stream schema admits each DB D0..D7 form alone and followed by
+FNSTSW AX, the retained DB D1 repeat, and the three retained FCOMI producers.
+New literals cover all four self-index CF/ZF rows and representative indices
+2..7 with and without FNSTSW, including wrap, canonical Normal/Zero and raw
+negative-zero/tag copy. Invalid source fixtures exercise taken and untaken
+conditions; existing environment, boundary, status observation, repeat, and
+producer fixtures remain covered. Runner assertions compare complete machine
+state and memory, including RFLAGS, RIP, FIP and retirement, and deny JIT for
+every indexed form. This is local interpreter evidence only.

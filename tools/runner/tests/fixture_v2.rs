@@ -230,7 +230,53 @@ const FCMOVBE_REJECTS: [&[u8]; 6] = [
         "../../../tests/fixtures/x86/stage2/s2_30cd_fcmovbe_st6_bad_environment.case.json"
     ),
 ];
-const FCMOVNBE_FIXTURES: [&[u8]; 8] = [
+const FCMOVNBE_FIXTURES: [&[u8]; 30] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st0_cf0_zf0.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st0_cf0_zf0_fnstsw.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st0_cf1_zf0.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st0_cf1_zf0_fnstsw.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st0_cf0_zf1.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st0_cf0_zf1_fnstsw.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st0_cf1_zf1.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st0_cf1_zf1_fnstsw.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st2_cf1_zf1.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st2_cf1_zf1_fnstsw.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st3_cf0_zf0.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st3_cf0_zf0_fnstsw.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st4_cf1_zf0.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st4_cf1_zf0_fnstsw.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st5_cf0_zf1.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st5_cf0_zf1_fnstsw.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st6_cf1_zf1.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st6_cf1_zf1_fnstsw.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st7_cf0_zf0.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st7_cf0_zf0_fnstsw.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st2_taken_normal_to_zero.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st5_taken_zero_to_normal.case.json"
+    ),
     include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_30ce_fcmovnbe_taken_negative_zero.case.json"
     ),
@@ -246,11 +292,20 @@ const FCMOVNBE_FIXTURES: [&[u8]; 8] = [
     ),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ce_fcmovnbe_producer_less.case.json"),
 ];
-const FCMOVNBE_REJECTS: [&[u8]; 2] = [
+const FCMOVNBE_REJECTS: [&[u8]; 5] = [
     include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_30ce_fcmovnbe_invalid_source_untaken.case.json"
     ),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ce_fcmovnbe_bad_environment.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st3_invalid_taken.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st3_invalid_untaken.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st6_bad_environment.case.json"
+    ),
 ];
 const FCMOVE_INDEXED_FIXTURES: [&[u8]; 8] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf1.case.json"),
@@ -7773,7 +7828,10 @@ fn local_x87_fcmovnbe_fixtures_check_full_state_producers_and_deny_jit() {
             .fixture
             .case_id
             .starts_with("s2_30ce_fcmovnbe_producer_");
-        let move_offset = (code.rfind("dbd1").unwrap() / 2) as u64;
+        let move_byte_offset = code.rfind("dbd").unwrap();
+        let source_index =
+            u8::from_str_radix(&code[move_byte_offset + 3..move_byte_offset + 4], 16).unwrap();
+        let move_offset = (move_byte_offset / 2) as u64;
 
         if producer {
             expected_x87.registers[6] = minus_one.into();
@@ -7798,7 +7856,7 @@ fn local_x87_fcmovnbe_fixtures_check_full_state_producers_and_deny_jit() {
             }
         } else {
             let top = ((expected_x87.status_word.get() >> 11) & 7) as usize;
-            let source = (top + 1) & 7;
+            let source = (top + usize::from(source_index)) & 7;
             if expected.rflags.get() & 0x41 == 0 {
                 let raw = expected_x87.registers[source].clone();
                 expected_x87.registers[top] = raw;

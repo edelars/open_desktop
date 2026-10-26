@@ -2426,7 +2426,7 @@ fn x87_fcmovnb_schema_admits_only_nineteen_exact_streams_and_reject_profiles() {
             "{program}"
         );
     }
-    for program in ["66dbc1", "48dbc1", "9bdbc1", "dbd0", "dbc1dfe1"] {
+    for program in ["66dbc1", "48dbc1", "9bdbc1", "dbd8", "dbc1dfe1"] {
         let mut fixture = base.clone();
         fixture.instruction_budget = 1;
         let length = (program.len() / 2) as u32;
@@ -2660,7 +2660,7 @@ fn x87_fcmovne_schema_admits_exact_bare_c9_streams_only() {
             "{program}"
         );
     }
-    for program in ["dbd0", "db", "dbc9dfe1"] {
+    for program in ["dbd8", "db", "dbc9dfe1"] {
         let mut fixture = base.clone();
         fixture.instruction_budget = 1;
         let length = (program.len() / 2) as u32;
@@ -2791,16 +2791,25 @@ fn x87_fcmovbe_schema_admits_exact_indexed_streams_and_reject_profiles() {
 }
 
 #[test]
-fn x87_fcmovnbe_schema_admits_exact_six_st1_streams_and_reject_profiles() {
+fn x87_fcmovnbe_schema_admits_exact_indexed_streams_and_reject_profiles() {
     let base = x87_fixture().fixture;
-    for (program, budget) in [
-        ("dbd1", 1),
-        ("dbd1dfe0", 2),
-        ("dbd1dbd1dfe0", 3),
-        ("d9e8d9e0d9e8dbf1dbd1dfe0", 6),
-        ("d9e8d9e8dbf1d9e0dbd1dfe0", 6),
-        ("d9e8d9e8d9e0dbf1dbd1dfe0", 6),
-    ] {
+    let mut programs = Vec::new();
+    for index in 0..8u8 {
+        let instruction = format!("db{:02x}", 0xd0 | index);
+        programs.push((instruction.clone(), 1));
+        programs.push((format!("{instruction}dfe0"), 2));
+    }
+    programs.extend(
+        [
+            ("dbd1dbd1dfe0", 3),
+            ("d9e8d9e0d9e8dbf1dbd1dfe0", 6),
+            ("d9e8d9e8dbf1d9e0dbd1dfe0", 6),
+            ("d9e8d9e8d9e0dbf1dbd1dfe0", 6),
+        ]
+        .map(|(program, budget)| (program.to_owned(), budget)),
+    );
+    assert_eq!(programs.len(), 20);
+    for (program, budget) in programs {
         let mut fixture = base.clone();
         fixture.case_id = format!("x87_fcmovnbe_{program}");
         fixture.instruction_budget = budget;
@@ -2811,18 +2820,16 @@ fn x87_fcmovnbe_schema_admits_exact_six_st1_streams_and_reject_profiles() {
             .iter_mut()
             .find(|region| region.region_id == "code")
             .unwrap();
-        code.initial_bytes_hex = program.into();
+        code.initial_bytes_hex = program.clone();
         code.length = length;
         code.comparison_mask_hex = "ff".repeat(length as usize);
         assert!(
-            Fixture::from_json(&fixture.to_json().expect(program)).is_ok(),
+            Fixture::from_json(&fixture.to_json().expect(&program)).is_ok(),
             "{program}"
         );
     }
 
     for program in [
-        "dbd0",
-        "dbd2",
         "dbd1dfe1",
         "66dbd1",
         "40dbd1",
@@ -2845,6 +2852,36 @@ fn x87_fcmovnbe_schema_admits_exact_six_st1_streams_and_reject_profiles() {
         code.length = (program.len() / 2) as u32;
         code.comparison_mask_hex = "ff".repeat(code.length as usize);
         assert!(fixture.validate().is_err(), "{program}");
+    }
+    for modrm in [0xd8, 0xd9, 0xe0, 0xe7] {
+        let mut fixture = base.clone();
+        fixture.instruction_budget = 1;
+        fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + 2));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("db{modrm:02x}");
+        code.length = 2;
+        code.comparison_mask_hex = "ffff".into();
+        assert!(fixture.validate().is_err(), "DB {modrm:02x}");
+    }
+    for source in 0..8u8 {
+        for prefix in ["66", "40", "9b"] {
+            let mut fixture = base.clone();
+            fixture.instruction_budget = 1;
+            fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + 3));
+            let code = fixture
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "code")
+                .unwrap();
+            code.initial_bytes_hex = format!("{prefix}db{:02x}", 0xd0 | source);
+            code.length = 3;
+            code.comparison_mask_hex = "ffffff".into();
+            assert!(fixture.validate().is_err(), "{prefix} DB D{source:x}");
+        }
     }
 
     let mut invalid = base.clone();
@@ -2869,6 +2906,45 @@ fn x87_fcmovnbe_schema_admits_exact_six_st1_streams_and_reject_profiles() {
     code.comparison_mask_hex = "ffff".into();
     assert!(Fixture::from_json(&invalid.to_json().unwrap()).is_ok());
 
+    for source in 0..8u8 {
+        for taken in [false, true] {
+            let mut invalid = base.clone();
+            invalid.case_id = format!("x87_fcmovnbe_invalid_source_{source}_{taken}");
+            invalid.stop_rip = None;
+            invalid.instruction_budget = 1;
+            invalid.expected_exit = ExpectedExit::Unsupported;
+            invalid.initial_state.rflags = HexU64(if taken { 2 } else { 2 | 0x41 });
+            let x87 = invalid.initial_state.x87.as_mut().unwrap();
+            x87.control_word = HexU64(0x037f);
+            x87.status_word = HexU64(0);
+            x87.tag_word = HexU64(u16::MAX.into());
+            x87.registers[0] = "0000000000000080ff3f".into();
+            if source == 0 {
+                x87.registers[0] = "00000000000000000000".into();
+            } else {
+                x87.registers[usize::from(source)] = "00000000000000000000".into();
+            }
+            let top = 0usize;
+            let invalid_slot = usize::from(source);
+            let mut tags = u16::MAX & !3;
+            if invalid_slot == top {
+                tags = (tags & !3) | 3;
+            } else {
+                tags = (tags & !(3 << (invalid_slot * 2))) | (3 << (invalid_slot * 2));
+            }
+            x87.tag_word = HexU64(u64::from(tags));
+            let code = invalid
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "code")
+                .unwrap();
+            code.initial_bytes_hex = format!("db{:02x}", 0xd0 | source);
+            code.length = 2;
+            code.comparison_mask_hex = "ffff".into();
+            assert!(Fixture::from_json(&invalid.to_json().unwrap()).is_ok());
+        }
+    }
+
     let mut bad_environment = invalid;
     bad_environment.case_id = "x87_fcmovnbe_bad_environment".into();
     bad_environment
@@ -2884,6 +2960,25 @@ fn x87_fcmovnbe_schema_admits_exact_six_st1_streams_and_reject_profiles() {
         .unwrap()
         .registers[1] = "0000000000000080ff3f".into();
     assert!(Fixture::from_json(&bad_environment.to_json().unwrap()).is_ok());
+
+    for source in 0..8u8 {
+        let mut bad_environment = base.clone();
+        bad_environment.case_id = format!("x87_fcmovnbe_bad_environment_{source}");
+        bad_environment.stop_rip = None;
+        bad_environment.expected_exit = ExpectedExit::Unsupported;
+        bad_environment.instruction_budget = 1;
+        let x87 = bad_environment.initial_state.x87.as_mut().unwrap();
+        x87.control_word = HexU64(0x077f);
+        let code = bad_environment
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("db{:02x}", 0xd0 | source);
+        code.length = 2;
+        code.comparison_mask_hex = "ffff".into();
+        assert!(Fixture::from_json(&bad_environment.to_json().unwrap()).is_ok());
+    }
 }
 
 #[test]

@@ -246,7 +246,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cb | Bare `DB C8..CF` FCMOVNE ST(0), ST(i), indexed preflight before ZF and self-index TOP-only, exact raw copy when ZF=0, native/JIT closed | S2-30ca |
 | [x] | S2-30cc | Exact bare Long64 `DA D1` FCMOVBE ST(0), ST(1); preflight both participants before integer `CF || ZF`; full local matrices, six-stream schema and fixture runner; native/JIT closed | S2-30cb |
 | [x] | S2-30cd | Bare Long64 `DA D0..D7` indexed FCMOVBE ST(0), ST(i); preflight before integer `CF || ZF`, TOP-only self-case, exact raw copy; indexed matrices, 20-stream schema and full-state runner; native/JIT closed | S2-30cc |
-| [x] | S2-30ce | Exact bare Long64 `DB D1` FCMOVNBE ST(0), ST(1); preflight before integer CF/ZF, raw copy only when both clear; success/invalid matrices, six-stream schema and full-state runner; native/JIT closed | S2-30cd |
+| [x] | S2-30ce | Historical exact bare Long64 `DB D1` FCMOVNBE ST(0), ST(1); preflight before integer CF/ZF, raw copy only when both clear; success/invalid matrices, six-stream schema and full-state runner; native/JIT closed | S2-30cd |
+| [x] | S2-30cf | Bare Long64 `DB D0..D7` indexed FCMOVNBE ST(0), ST(i); validate TOP/source before CF/ZF, self-index TOP-only, raw copy when both clear; full matrices, 20-stream schema and full-state runner; native/JIT closed | S2-30ce |
 | [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
@@ -6273,9 +6274,9 @@ not. Each participant must be Valid-tagged canonical Normal binary80 or
 Zero-tagged exact signed zero. Copy the source's raw ten bytes and tag to TOP
 only when both integer CF and ZF are clear (`!(CF || ZF)`); otherwise preserve
 the destination. Preserve all other state except FIP=old RIP, RIP+=2, and one
-retirement. Rejections are atomic. C1=1, all other DB D0..D7 forms, prefixes,
-memory forms, x87 exception delivery, JIT, native execution and physical
-acceptance remain excluded.
+retirement. Rejections are atomic. C1=1, all other DB D0..D7 forms, prefixes, memory forms, x87 exception
+delivery, JIT, native execution and physical acceptance were excluded from
+this historical ST(1)-only slice; S2-30cf extends it to D0..D7.
 
 The interpreter matrix contains 51,200 complete success states (10×10 values,
 four CF/ZF rows, both PF values, eight TOP values and eight C0/C2/C3 patterns),
@@ -6289,3 +6290,28 @@ the CF/ZF rows, signed-zero/tag transfer with TOP wrap, both repeat steps,
 producer truth cases, invalid untaken source, and bad environment. The runner
 compares full machine and memory snapshots and denies JIT. Local evidence does
 not resolve ISSUE-019 or establish physical x86 behavior.
+
+
+#### S2-30cf. Indexed bare `FCMOVNBE ST(0), ST(i)` (`DB D0..D7`)
+
+Extend the bounded S2-30ce behavior to exact unprefixed Long64 `DB D0..D7`.
+Keep the existing x87 gates: x87 state present, FCW `0x037f`, and
+`FSW & 0x82ff == 0`. Preflight old physical TOP and `(TOP+i)&7` before reading
+integer CF/ZF when i>0; self-index i=0 validates only TOP and leaves all other
+slots opaque. Participants are Valid canonical Normal or Zero exact signed
+zero. Copy raw ten-byte payload and tag to TOP only when CF=ZF=0. Each valid
+instruction preserves all state except FIP=old RIP, RIP+=2, and one retirement;
+invalid operands, environment, decode, and execution boundaries remain atomic.
+C1=1, exception delivery, JIT/native execution and physical acceptance remain
+outside this slice.
+
+Retain the S2-30ce ST(1) matrices, repeat, and three FCOMI producer streams.
+Add 363,520 complete success snapshots (7×51,200 indexed plus 5,120 self)
+and 645,120 invalid class/tag snapshots (7×86,016 indexed plus 43,008 self).
+Require the 20 exact schema streams: DB D0..D7 alone (budget 1), each followed
+by FNSTSW AX (budget 2), the DB D1 repeat (budget 3), and the three existing
+producer streams (budget 6). Literal fixtures cover indices 0 and 2..7, all
+self CF/ZF rows, wraparound, Normal/Zero and signed-zero transfer, invalid
+source under taken and untaken conditions, and environment/status/decode and
+boundary rejection. Compare full machine/memory snapshots and deny JIT for
+each index. This remains local interpreter evidence under ISSUE-019.

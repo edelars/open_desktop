@@ -7604,3 +7604,30 @@ x86 acceptance remain outside this local contract. ISSUE-019 remains open.
 See the [S2-30ce plan](../plans/STAGE_2.md#s2-30ce-exact-bare-fcmovnbe-st0-st1-db-d1),
 [report](../reports/STAGE_2_REPORT.md#s2-30ce--bare-fcmovnbe-st0-st1), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30ce-bare-fcmovnbe-st0-st1-db-d1).
+
+## Local S2-30cf: bounded indexed `FCMOVNBE ST(0), ST(i)` (`DB D0..D7`)
+
+Extend the historical S2-30ce `DB D1` behavior to exact unprefixed Long64
+`DB D0..D7`, carrying the index in `Operation::Fcmovnbe { source }`. Keep the
+present-x87, FCW `0x037f`, and `FSW & 0x82ff == 0` gates. Before reading integer
+CF/ZF, validate physical TOP and `(TOP+i)&7` when i>0; self-index validates
+TOP only, and other stack cells remain opaque. Every participant is
+Valid-tagged canonical Normal or Zero-tagged exact signed zero. Copy raw ten
+bytes and tag to TOP exactly when both CF and ZF are clear. Valid execution
+preserves all state except FIP=old RIP, RIP+=2 and one retirement; every reject
+is atomic. C1=1, memory forms, exception delivery, JIT/native execution and
+physical acceptance remain outside this contract.
+
+Interpreter matrices contain 363,520 successes (7×51,200 indexed and 5,120
+self-index) and 645,120 invalid class/tag rejects (7×86,016 indexed and 43,008
+self-index). Same-CF/ZF FCMOVBE comparison covers every index; for i=0, both preserve
+the same cell. The
+exact schema contains 20 streams: each DB D0..D7 alone and followed by FNSTSW
+AX, the retained DB D1 repeat, and the three FCOMI producer streams. Literal
+fixtures cover indices 0 and 2..7, all four self CF/ZF rows, wrap, both Normal/Zero transfer directions and signed-zero transfer, invalid
+taken and untaken sources, indexed environment rejection, and boundary
+atomicity. Runner snapshots compare full state and memory and
+deny JIT at every index. Evidence is local only; ISSUE-019 remains open.
+See [plan](../plans/STAGE_2.md#s2-30cf-indexed-bare-fcmovnbe-st0-sti-db-d0d7),
+[report](../reports/STAGE_2_REPORT.md#s2-30cf--indexed-bare-fcmovnbe-st0-sti), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30cf-indexed-bare-fcmovnbe-st0-sti-db-d0d7).

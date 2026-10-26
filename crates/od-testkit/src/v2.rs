@@ -1663,8 +1663,8 @@ impl Fixture {
                     }
                 }
                 _ if fcmovnbe_stream(&code_bytes) => match code_bytes.as_str() {
-                    "dbd1" => 1,
-                    "dbd1dfe0" => 2,
+                    _ if code_bytes.len() == 4 => 1,
+                    _ if code_bytes.len() == 8 && code_bytes.ends_with("dfe0") => 2,
                     "dbd1dbd1dfe0" => 3,
                     _ => 6,
                 },
@@ -2448,13 +2448,14 @@ fn fcmovbe_bare_source(code_bytes: &str) -> Option<u8> {
     (opcode == 0xda && (0xd0..=0xd7).contains(&modrm)).then_some(modrm & 7)
 }
 
-/// Exact six-stream S2-30ce FCMOVNBE ST(1) schema.
+/// Exact twenty-stream S2-30cf FCMOVNBE ST(i) schema, retaining the producers.
 fn fcmovnbe_stream(code_bytes: &str) -> bool {
+    if code_bytes.len() == 4 || (code_bytes.len() == 8 && code_bytes.ends_with("dfe0")) {
+        return fcmovnbe_bare_source(&code_bytes[..4]).is_some();
+    }
     matches!(
         code_bytes,
-        "dbd1"
-            | "dbd1dfe0"
-            | "dbd1dbd1dfe0"
+        "dbd1dbd1dfe0"
             | "d9e8d9e0d9e8dbf1dbd1dfe0"
             | "d9e8d9e8dbf1d9e0dbd1dfe0"
             | "d9e8d9e8d9e0dbf1dbd1dfe0"
@@ -2467,7 +2468,7 @@ fn fcmovnbe_bare_source(code_bytes: &str) -> Option<u8> {
     }
     let opcode = u8::from_str_radix(&code_bytes[0..2], 16).ok()?;
     let modrm = u8::from_str_radix(&code_bytes[2..4], 16).ok()?;
-    (opcode == 0xdb && modrm == 0xd1).then_some(1)
+    (opcode == 0xdb && (0xd0..=0xd7).contains(&modrm)).then_some(modrm & 7)
 }
 
 #[cfg(test)]

@@ -9980,3 +9980,27 @@ FCMOVNBE tests pass. `git diff --check` passes. `tools/check_layout.py` still
 reports the known isolated-worktree `.git` pointer and two broken links to
 ignored oracle manifests absent from this worktree. No directory structure
 changed. No native or physical x86 execution was performed.
+
+## S2-30cf — indexed bare `FCMOVNBE ST(0), ST(i)`
+
+Extended exact unprefixed Long64 `DB D1` to `DB D0..D7`. The indexed
+`Operation::Fcmovnbe { source }` flows through the existing shared preflight:
+FCW `0x037f`, `FSW & 0x82ff == 0`, validate TOP/source before CF/ZF for i>0,
+and validate only TOP for self-index. Valid/Zero signed-zero participants are
+copied byte-for-byte with their tag only when CF=ZF=0; invalid state rejects
+atomically. Existing S2-30ce ST(1) repeat and producer streams remain admitted.
+
+The local matrices cover 363,520 successes (358,400 i>0 and 5,120 self) and
+645,120 invalid class/tag snapshots (602,112 i>0 and 43,008 self). The
+indexed FCMOVBE complement check covers every index; for i=0 both preserve
+the same cell. The schema has
+exactly 20 streams: eight bare DB D0..D7 forms at budget 1, their eight FNSTSW
+AX forms at budget 2, D1 repeat at budget 3, and three producer streams at
+budget 6. Handwritten fixtures cover self-condition rows, indices 2..7,
+wrap, both Normal/Zero transfer directions and signed-zero copy, taken and
+untaken invalid source, status observation, repeat, producers and indexed
+environment rejection. Runner
+snapshots compare full state and memory and deny JIT for every index.
+
+Verification passed: 10 focused `od-isa` tests, all 185 `od-testkit` tests, all 101 `od-runner`
+unit tests and 199 fixture integration tests, `cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`, and `git diff --check`. `tools/check_layout.py` still reports the known isolated-worktree `.git` pointer and two links to ignored oracle manifests absent from this worktree. No directory structure changed. No Mini, SSH, native runtime or physical x86 verification was performed; ISSUE-019 remains open.

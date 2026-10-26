@@ -553,7 +553,7 @@ pub enum Operation {
     Fcmovbe {
         source: u8,
     },
-    /// Bare `DB D1` FCMOVNBE ST(0), ST(1), bounded raw copy when CF and ZF are clear.
+    /// Bare `DB D0+i` FCMOVNBE ST(0), ST(i), bounded raw copy when CF and ZF are clear.
     Fcmovnbe {
         source: u8,
     },
@@ -1200,7 +1200,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xc8..=0xcf => {
                         x87_fcmovne(opcode.byte, modrm).ok_or_else(|| self.unsupported(opcode))?
                     }
-                    0xd1 => Operation::Fcmovnbe { source: 1 },
+                    0xd0..=0xd7 => Operation::Fcmovnbe { source: modrm & 7 },
                     _ => indexed_x87_compare(opcode.byte, modrm)
                         .ok_or_else(|| self.unsupported(opcode))?,
                 }
@@ -2449,7 +2449,7 @@ mod tests {
                     0x10 => Ok(Operation::FistM32IntRax),
                     0x18 => Ok(Operation::FistpM32IntRax),
                     0xc0..=0xc7 => Ok(Operation::Fcmovnb { source: second & 7 }),
-                    0xd1 => Ok(Operation::Fcmovnbe { source: 1 }),
+                    0xd0..=0xd7 => Ok(Operation::Fcmovnbe { source: second & 7 }),
                     0xc8..=0xcf => Ok(Operation::Fcmovne { source: second & 7 }),
                     _ if indexed_x87_compare(0xdb, second).is_some() => {
                         Ok(indexed_x87_compare(0xdb, second).unwrap())
@@ -2565,7 +2565,7 @@ mod tests {
                     0xe2 => Ok(Operation::Fnclex),
                     0xe3 => Ok(Operation::Fninit),
                     0xc0..=0xc7 => Ok(Operation::Fcmovnb { source: modrm & 7 }),
-                    0xd1 => Ok(Operation::Fcmovnbe { source: 1 }),
+                    0xd0..=0xd7 => Ok(Operation::Fcmovnbe { source: modrm & 7 }),
                     0xc8..=0xcf => Ok(Operation::Fcmovne { source: modrm & 7 }),
                     _ if indexed_x87_compare(0xdb, modrm).is_some() => {
                         Ok(indexed_x87_compare(0xdb, modrm).unwrap())
@@ -2802,8 +2802,8 @@ mod tests {
                     Ok(Operation::Fcmovnb { source: modrm & 7 })
                 } else if opcode == 0xdb && (0xc8..=0xcf).contains(&modrm) {
                     Ok(Operation::Fcmovne { source: modrm & 7 })
-                } else if opcode == 0xdb && modrm == 0xd1 {
-                    Ok(Operation::Fcmovnbe { source: 1 })
+                } else if opcode == 0xdb && (0xd0..=0xd7).contains(&modrm) {
+                    Ok(Operation::Fcmovnbe { source: modrm & 7 })
                 } else if opcode == 0xdf && modrm == 0x00 {
                     Ok(Operation::FildM16IntRax)
                 } else if opcode == 0xdf && modrm == 0x28 {
@@ -4312,36 +4312,36 @@ mod tests {
     }
 
     #[test]
-    fn exact_bare_db_d1_fcmovnbe_rejects_neighbors_prefixes_and_truncation() {
-        assert_eq!(
-            Memory::new(&[0xdb, 0xd1]).decode().unwrap().operation,
-            Operation::Fcmovnbe { source: 1 }
-        );
+    fn exact_bare_db_d0_d7_fcmovnbe_rejects_neighbors_prefixes_and_truncation() {
         for modrm in 0u8..=u8::MAX {
             let decoded = Memory::new(&[0xdb, modrm]).decode();
-            if modrm == 0xd1 {
+            if (0xd0..=0xd7).contains(&modrm) {
                 assert_eq!(
                     decoded.unwrap().operation,
-                    Operation::Fcmovnbe { source: 1 }
+                    Operation::Fcmovnbe { source: modrm & 7 }
                 );
             } else {
-                assert_ne!(
-                    decoded.map(|instruction| instruction.operation),
-                    Ok(Operation::Fcmovnbe { source: 1 }),
+                assert!(
+                    !matches!(
+                        decoded.map(|instruction| instruction.operation),
+                        Ok(Operation::Fcmovnbe { .. })
+                    ),
                     "DB {modrm:02x}"
                 );
             }
         }
-        for prefix in [
-            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
-        ]
-        .into_iter()
-        .chain(0x40..=0x4f)
-        {
-            assert!(matches!(
-                Memory::new(&[prefix, 0xdb, 0xd1]).decode(),
-                Err(DecodeError::Unsupported { .. })
-            ));
+        for modrm in 0xd0..=0xd7 {
+            for prefix in [
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            ]
+            .into_iter()
+            .chain(0x40..=0x4f)
+            {
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xdb, modrm]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
         }
         assert!(matches!(
             Memory::new(&[0xdb]).decode(),
