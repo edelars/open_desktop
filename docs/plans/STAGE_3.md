@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00 и S3-02 завершены, S3-01 в работе.
+**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02 и S3-03 завершены, S3-01 в работе.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -129,7 +129,7 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-00 | Зафиксировать поддержанное подмножество и источники | Принятый профиль этапа 1; фактический статус S2 |
 | [ ] | S3-01 | Baseline и протокол сравнения вариантов | S3-00 |
 | [x] | S3-02 | Runtime/state/helper contract | S3-00 |
-| [ ] | S3-03 | Типизированный IR и verifier | S3-02 |
+| [x] | S3-03 | Типизированный IR и verifier | S3-02 |
 | [ ] | S3-04 | Построение bounded basic block | S3-03 |
 | [ ] | S3-05 | Перевод decoder output в IR | S3-04 |
 | [ ] | S3-06 | Проверяемый ARM64 encoder | S3-02 |
@@ -635,6 +635,8 @@ git diff --check
 S3-00 выполнена как документационная задача. Зафиксированы точные формы S0-09; текущий прямой JIT отделён от будущего block pipeline; пути interpreter fallback помечены как будущие; этап 2 и его текущие незакоммиченные изменения не объявлены завершёнными. Записаны начальные block bounds и ARM64/ABI/macOS источники.
 
 S3-02 выполнена: [JIT_CONTRACT](../specs/JIT_CONTRACT.md#5-runtime-boundary-s3-02) задаёт canonical state pointer/offset boundary, progress/budget outputs, stop-address и STOP/budget/fetch порядок, block exit tags, разделение compile/runtime/host ошибок, scalar helper ABI, AAPCS64 clobbers и executable mapping ownership. `od-jit::runtime` содержит `repr(C)` context, raw tags и same-build offsets; arithmetic helper semantics и legacy fragment path не менялись. GuestFault/EventPending tags зарезервированы для будущей версии. Block compiler, dispatcher и новый host invocation ещё не реализованы.
+
+S3-03 выполнена: добавлен [линейный typed IR](../../crates/od-jit/src/ir.rs) и verifier до будущей публикации кода. IR различает temporaries и guest GPR, сохраняет guest RIP/next RIP и commit markers, описывает integer/flags effects и требует явный terminal с enum condition/kind. Verifier проверяет temp definitions/widths, GPR/flag references, последовательность commits и targets: branch target разрешается только на boundary из полного непрерывного списка guest records, branch fallthrough и exit target должны совпадать с последним `next_rip`. Эта проверка не подтверждает источник guest records; декодерная валидация принадлежит S3-04/S3-05. Целевые unit tests и cargo checks прошли; независимый diff review не выявил actionable замечаний. IR не подключён к legacy fragment compiler и не реализует lowering/runtime dispatch.
 
 S3-01 начата: в [BENCHMARKS](../testing/BENCHMARKS.md) описаны workload matrix и раздельные уровни cold process, cold code cache и warm execution. Preflight точной ревизии `9a1376b` описан в [отчёте baseline](../reports/STAGE_3_BASELINE_2026-10-26.md): локальные Cargo tests показали пять x87 failures; удалённый `od-isa --lib` preflight завершился ошибкой без сохранённого списка test names. Физические fixtures и timing не запускались. Из-за параллельной работы этапа 2 этот результат не переносится на последующие revisions. Повторить Stage 1 local/oracle после стабилизации соответствующих изменений; performance baseline остаётся открытым.
 

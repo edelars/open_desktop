@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use od_isa::{DecodeError, FragmentState as CpuState, Instruction, Operation, decode};
 
+pub mod ir;
 pub mod runtime;
 
 const RIP_OFFSET: u32 = std::mem::offset_of!(CpuState, rip) as u32;

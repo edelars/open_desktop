@@ -23,6 +23,19 @@ field offsets и alias скалярного arithmetic helper ABI в `runtime`. 
 будущую границу block entry, но не реализует block compiler/dispatcher/helper
 и не меняет legacy fragment entry. См. [runtime contract](../../docs/specs/JIT_CONTRACT.md#5-runtime-boundary-s3-02).
 
+S3-03 добавил публичный линейный typed IR в `ir`: временные значения отделены
+от четырёх GPR начального профиля, записи guest-инструкций содержат RIP и
+next RIP, эффекты ограничены integer/register/flags действиями, а каждая
+инструкция имеет commit marker и программа заканчивается явным branch или
+exit. `ir::verify` проверяет определения и widths temporaries, номера GPR и
+маски флагов, commit markers, terminal и branch boundaries, выведенные из
+полного списка непрерывных IR guest records. Verifier подтверждает внутреннюю
+структуру IR, причём branch fallthrough и exit target должны совпадать с
+`next_rip` последней guest-записи. Verifier не подтверждает происхождение
+records: S3-04/S3-05 должны строить их из успешно декодированных инструкций.
+IR пока не подключён к fragment compiler;
+lowering, memory/helper effects и runtime dispatch остаются следующими задачами.
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в
