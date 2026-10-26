@@ -600,3 +600,12 @@ cover self-index PF=0/1 and indices 1..7; rejects use a bare indexed instruction
 with one-step budget and no stop RIP. This is a local bounded fixture contract;
 JIT/native execution, unordered/NaN operands and physical acceptance are not
 implied. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ch-bounded-indexed-fcmovu-st0-sti-da-d8df).
+
+## S2-30ci literal exact bare FCMOVNU profile
+
+The schema admits exactly the unprefixed Long64 streams `dbd9`, `dbd9dfe0`,
+`dbd9dbd9dfe0`, and `d9e8d9ee4885c0dbd9dfe0`, with budgets 1, 2, 3 and 5.
+Rejection fixtures use only the bare `dbd9` instruction with one-step budget
+and no stop RIP. Two TEST producer fixtures use RAX=1 and RAX=3 and preserve
+full input state and memory for runner comparison. JIT remains denied. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ci-exact-bare-fcmovnu-st0-st1-db-d9).

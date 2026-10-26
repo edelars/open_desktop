@@ -3823,3 +3823,13 @@ for accepted and rejected programs. Unit interpreter coverage is 363,520
 successes and 161,280 invalid class/tag snapshots; all evidence is local only.
 No unordered/NaN semantics, native behavior or physical x86 execution is
 claimed.
+
+### S2-30ci exact bare `FCMOVNU ST(0), ST(1)` (`DB D9`)
+
+Five handwritten literal fixtures cover taken PF=0 raw transfer, invalid
+source while PF=1, repeat plus FNSTSW, and both TEST producers. The producer
+program is exactly `D9 E8 D9 EE 48 85 C0 DB D9 DF E0` (11 bytes): RAX=1 gives
+PF=0/ZF=0 and takes the move; RAX=3 gives PF=1/ZF=0 and preserves ST(0).
+The schema allows those four stream shapes only. Local unit tests compare each
+producer intermediate state and full-state success/rejection matrices; these
+fixtures do not establish native or physical behavior.

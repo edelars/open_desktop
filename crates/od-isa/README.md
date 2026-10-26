@@ -369,3 +369,9 @@ bytes plus tag only when both flags are clear. The 51,200-success and
 86,016-invalid matrices, complement property, producer checkpoints and repeat
 intermediate states are local interpreter evidence; JIT/native and physical
 x86 remain outside the slice.
+
+S2-30ci adds only exact bare `DB D9` FCMOVNU ST(0), ST(1) in the local
+Long64 interpreter. Its strict environment and both-operand preflight copy raw
+binary80 bytes/tag only when integer PF is clear. Other FCMOVNU indices and
+unordered/NaN behavior remain unsupported; native and physical behavior are
+not claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30ci-exact-bare-fcmovnu-st0-st1-db-d9) and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30ci--exact-bare-fcmovnu-st0-st1).

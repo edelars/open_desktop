@@ -841,3 +841,12 @@ PF=1 raw-copies the ten source bytes and tag; PF=0 keeps the destination. The
 full-state success and rejection matrices, execution-boundary atomicity, exact
 fixture streams and JIT denial are local evidence; C1 and Special/NaN behavior
 remain closed. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ch-bounded-indexed-fcmovu-st0-sti-da-d8df).
+
+## Local S2-30ci exact bare FCMOVNU
+
+The interpreter admits only unprefixed Long64 `DB D9` (`FCMOVNU ST(0), ST(1)`).
+It preflights both physical participants and the strict FCW/FSW gates before
+PF, including the untaken path. PF=0 copies raw binary80 bytes and the source
+tag; PF=1 retains the destination. Local full-state matrices cover 51,200
+successes and 21,504 invalid class/tag rejects. The complete contract and
+limits are recorded in the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ci-exact-bare-fcmovnu-st0-st1-db-d9).

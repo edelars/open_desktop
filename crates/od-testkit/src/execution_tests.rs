@@ -5037,3 +5037,168 @@ fn old_forms_use_the_same_arithmetic_and_preserve_extra_registers() {
         assert_eq!(state.gpr[15], u64::MAX);
     }
 }
+
+#[test]
+fn s2_30ci_test_producers_check_each_full_intermediate_snapshot() {
+    for (raw, rax, should_move) in [
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_30ci_fcmovnu_test_pf0_taken.case.json"
+            )
+            .as_slice(),
+            1u64,
+            true,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_30ci_fcmovnu_test_pf1_untaken.case.json"
+            )
+            .as_slice(),
+            3u64,
+            false,
+        ),
+    ] {
+        let fixture = Fixture::from_json(raw).unwrap().fixture;
+        let base_rip = fixture.initial_state.rip.get();
+        let mut state = fixture
+            .initial_state
+            .to_cpu_for(crate::v2::Profile::LongX87StateV1)
+            .unwrap();
+        let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+        assert_eq!(
+            fixture.memory[0].initial_bytes_hex,
+            "d9e8d9ee4885c0dbd9dfe0"
+        );
+        assert_eq!(fixture.memory[0].length, 11);
+        assert_eq!(fixture.instruction_budget, 5);
+
+        let mut expected = state.clone();
+        let x87 = expected.x87.as_mut().unwrap();
+        x87.registers[7] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f];
+        x87.set_tag(7, od_isa::state::X87Tag::Valid);
+        x87.status_word = 7 << 11;
+        x87.instruction_pointer = base_rip;
+        expected.rip += 2;
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state, expected, "after FLD1");
+
+        let mut expected = state.clone();
+        let x87 = expected.x87.as_mut().unwrap();
+        x87.registers[6] = [0; 10];
+        x87.set_tag(6, od_isa::state::X87Tag::Zero);
+        x87.status_word = 6 << 11;
+        x87.instruction_pointer = base_rip + 2;
+        expected.rip += 2;
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state, expected, "after FLDZ");
+
+        let mut expected = state.clone();
+        expected.rflags = 2 | if rax == 3 { 1 << 2 } else { 0 };
+        expected.rip += 3;
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state, expected, "after TEST at RIP+4");
+        assert_eq!(state.rip, base_rip + 7);
+
+        let mut expected = state.clone();
+        let x87 = expected.x87.as_mut().unwrap();
+        if should_move {
+            x87.registers[6] = x87.registers[7];
+            x87.set_tag(6, od_isa::state::X87Tag::Valid);
+        }
+        x87.instruction_pointer = base_rip + 7;
+        expected.rip += 2;
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state, expected, "after FCMOVNU at RIP+7");
+
+        let mut expected = state.clone();
+        let status_word = expected.x87.as_ref().unwrap().status_word;
+        expected.gpr[0] = (expected.gpr[0] & !0xffff) | u64::from(status_word);
+        expected.rip += 2;
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state, expected, "after FNSTSW AX");
+        assert_eq!(state.rip, base_rip + 11);
+        assert_eq!(
+            state.x87.as_ref().unwrap().instruction_pointer,
+            base_rip + 7
+        );
+    }
+}
+
+#[test]
+fn s2_30ci_literal_transfer_rejection_and_repeat_fixtures_run_as_written() {
+    for raw in [
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ci_fcmovnu_taken_zero.case.json")
+            .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30ci_fcmovnu_invalid_source_pf1.case.json"
+        )
+        .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ci_fcmovnu_repeat.case.json")
+            .as_slice(),
+    ] {
+        let fixture = Fixture::from_json(raw).unwrap().fixture;
+        let mut state = fixture
+            .initial_state
+            .to_cpu_for(crate::v2::Profile::LongX87StateV1)
+            .unwrap();
+        let before = state.clone();
+        let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(
+                fixture.instruction_budget,
+                fixture.stop_rip.map(HexU64::get),
+            ),
+            || false,
+        );
+        if fixture.expected_exit == ExpectedExit::Unsupported {
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0xdb },
+                "{}",
+                fixture.case_id
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+        } else {
+            assert_eq!(result.exit, RunExit::StopAddress, "{}", fixture.case_id);
+            assert_eq!(
+                result.instructions_executed, fixture.instruction_budget,
+                "{}",
+                fixture.case_id
+            );
+            assert_eq!(
+                state.rip,
+                fixture.stop_rip.unwrap().get(),
+                "{}",
+                fixture.case_id
+            );
+            if fixture.case_id == "s2_30ci_fcmovnu_taken_zero" {
+                assert_eq!(
+                    state
+                        .x87
+                        .as_ref()
+                        .unwrap()
+                        .tag(state.x87.as_ref().unwrap().top()),
+                    Some(od_isa::state::X87Tag::Zero)
+                );
+            }
+        }
+    }
+}

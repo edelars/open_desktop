@@ -250,6 +250,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cf | Bare Long64 `DB D0..D7` indexed FCMOVNBE ST(0), ST(i); validate TOP/source before CF/ZF, self-index TOP-only, raw copy when both clear; full matrices, 20-stream schema and full-state runner; native/JIT closed | S2-30ce |
 | [x] | S2-30cg | Historical exact bare `DA D9` FCMOVU ST(0), ST(1) slice; 512 success and 768 invalid class/tag snapshots, superseded by indexed S2-30ch | S2-30cf |
 | [x] | S2-30ch | Bare Long64 `DA D8..DF` indexed FCMOVU; preflight TOP/source before PF, self-index TOP-only, exact raw copy only when PF=1; full indexed matrices, 18-stream schema and literal full-state fixtures; unordered/NaN and native/JIT closed | S2-30cg |
+| [x] | S2-30ci | Exact bare Long64 `DB D9` FCMOVNU; TOP/TOP+1 preflight before PF, raw copy only when PF=0; 51,200 success and 21,504 reject snapshots, four-stream schema and literal producer fixtures; JIT/native/physical acceptance deferred | S2-30ch |
 | [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
@@ -6359,3 +6360,31 @@ bare success fixtures, a repeat, two retained producer fixtures, invalid
 sources under PF=0/1, invalid destination and C1/ES/B/FCW rejects. Compare
 full state and memory and deny JIT. This substage excludes Mac mini, SSH,
 native and physical checks and leaves ISSUE-019 open.
+
+#### S2-30ci. Exact bare `FCMOVNU ST(0), ST(1)` (`DB D9`)
+
+Admit only exact unprefixed Long64 `DB D9`. Reuse the bounded FCMOV preflight:
+require x87 state, FCW `0x037f`, `FSW & 0x82ff == 0`, and both old physical
+TOP and TOP+1 participants tagged Valid canonical Normal or Zero exact signed
+zero. Preflight both operands before PF even when untaken. PF=0 raw-copies the
+source's ten bytes and tag into TOP; PF=1 preserves the destination. Reject C1=1 through the existing gate; preserve C1=0 and all other machine/x87
+state except FIP, RIP and retirement. Reject atomically; add no other FCMOVNU encoding or
+unordered/NaN semantics.
+
+Cover exactly 51,200 success snapshots (10 destination values × 10 source
+values × 2 PF × 4 CF/ZF patterns × 8 TOP × 8 x87 CC patterns), split evenly
+between taken and untaken, and 21,504 invalid participant class/tag snapshots
+(42 pairs × 2 signs × 2 PF × 2 participant positions × 8 TOP × 8 CC patterns).
+Also cover each forbidden status bit and combinations, invalid source under
+PF=1, both invalid participants, missing state, bad FCW, wrapping TOP, raw
+signed-zero/tag transfer, repeat, prefixes/neighbors/truncation, STOP/budget
+and no-commit boundaries, and no data-memory access. Compare FCMOVNU PF=x with
+FCMOVU PF=!x using independently built complete expected snapshots.
+
+The schema admits exactly `dbd9` (budget 1), `dbd9dfe0` (2),
+`dbd9dbd9dfe0` (3), and `d9e8d9ee4885c0dbd9dfe0` (5). Add literal success,
+invalid-source, repeat, and both TEST producer fixtures. The producer cases use
+RAX=1 (PF=0, ZF=0, taken) and RAX=3 (PF=1, ZF=0, untaken); check each
+intermediate state, FCMOV at RIP+7 and final RIP+11. Deny JIT. Update ISSUE-019
+with local results; the shared Mac mini/SSH/native/physical validation substage
+remains deferred and ISSUE-019 stays open.

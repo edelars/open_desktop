@@ -10035,3 +10035,25 @@ all pass. `cargo fmt --all -- --check`,
 warning and files without extractable symbols. No layout changed. This
 substage does not run Mac mini, SSH, native runtime or physical x86 checks;
 ISSUE-019 remains open.
+
+## S2-30ci — exact bare `FCMOVNU ST(0), ST(1)`
+
+Implemented exact unprefixed Long64 `DB D9` with the existing strict FCMOV
+environment and participant gates. TOP and TOP+1 are checked before PF on
+taken and untaken paths. PF=0 copies the raw ten-byte value and source tag;
+PF=1 retains the destination. The implementation records old RIP in x87 FIP,
+advances RIP by two and retires once. Other FCMOVNU indices and unordered/NaN
+behavior remain unsupported; C1=1 remains rejected by the gate.
+
+The focused interpreter tests passed 51,200 complete success snapshots
+(25,600 taken and 25,600 untaken) and 21,504 invalid class/tag rejects. Tests
+also cover all forbidden FSW bits, bad FCW, invalid source with PF=1, decode
+neighbors/prefixes/truncation, execution boundaries, independent complement
+snapshots against FCMOVU, producer intermediate snapshots and no data access.
+The fixture schema admits exactly the four requested streams and literal
+fixtures cover taken, rejection, repeat and both TEST producers. The fragment
+JIT rejects this operation.
+
+This is local interpreter evidence only. Mac mini, SSH, native runtime and
+physical x86 validation were not run and remain part of the shared final
+physical substage; ISSUE-019 remains open.
