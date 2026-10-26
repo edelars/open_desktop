@@ -114,6 +114,14 @@ native and physical x86 behavior remain unsupported or unverified. See the
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bp-bounded-fld-sti),
 and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30bp--bounded-fld-sti).
 
+S2-30br extends the tag-only FFREE slice from bare `DD C0` to exact bare
+`DD C0..C7`. It empties physical `(TOP+i)&7` while preserving every payload,
+other tag and status bit under the strict FCW/FSW gate. The 24,576-state matrix,
+19-stream schema, indexed literal fixtures, local checks and exclusions are
+documented in the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30br-bounded-bare-ffree-sti-dd-c0c7),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30br-bounded-ffree-sti),
+and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30br--bounded-ffree-sti).
+
 S2-30m adds bare `DE E0+i` FSUBRP through the existing exact same-exponent
 subtraction gate: write old `ST(0)−ST(i)` to old physical `(TOP+i)&7`, then
 empty old TOP and increment it. The decoded `i=0` alias remains Unsupported

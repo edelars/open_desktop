@@ -7295,3 +7295,26 @@ Local coverage has a 35,840-case full-state matrix (seven indices × five magnit
 The interpreter admits only exact unprefixed Long64 `DD C0`. It requires present x87 state, FCW `0x037f`, and `FSW & 0x80ff == 0`. The old physical TOP tag and payload are opaque; the only x87 data change is setting that physical tag to Empty, including an idempotent Empty-to-Empty case. TOP, all eight ten-byte raw payloads, other tags, C0..C3 including C1, FCW/FSW, FDP/FOP, GPR, RFLAGS and memory are preserved under the local policy. FIP records old RIP, RIP advances by two and the instruction retires once. No exception/pending/native/JIT behavior is added. `DD C1..C7`, prefixes, memory forms and neighboring encodings remain unsupported.
 
 Local evidence comprises the 3,072-case TOP/CC/tag/payload matrix, environment/decode/boundary atomicity, exact schema streams `ddc0`, `ddc0dfe0`, `ddc0d9c0dfe0`, and `ddc0d9f7d9e8dfe0`, plus literal fixtures including TOP=7 with C1 set, already Empty, opaque SNaN/malformed payload, and `FFREE→FINCSTP→FLD1` reuse. These are interpreter/schema results only; ISSUE-019 remains open and native/JIT/physical acceptance is not established. See [plan](../plans/STAGE_2.md#s2-30bq-bare-ffree-st0-bounded-tag-only-free-slice), [report](../reports/STAGE_2_REPORT.md#s2-30bq--bounded-ffree-st0), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bq-bounded-ffree-st0).
+
+### Local S2-30br: bounded bare `FFREE ST(i)` (`DD C0..C7`)
+
+The exact unprefixed Long64 forms `DD C0..C7` select physical
+`(old_TOP+i)&7`. Require x87 state, FCW `0x037f`, and
+`FSW & 0x80ff == 0`. The selected prior tag and ten-byte payload are opaque;
+success changes only that tag to Empty and records FIP. Preserve TOP, all
+payloads and other tags, complete FCW/FSW including C0..C3, FDP/FOP, GPR,
+RFLAGS and memory. RIP advances by two and one instruction retires. Repeating
+the instruction on Empty remains accepted. No classification, payload change,
+pop, exception, pending state or native/JIT admission is modeled.
+
+The full-state interpreter matrix has 24,576 cases (eight indices, eight TOPs,
+sixteen CC patterns, four tags and six opaque payloads), retaining the S2-30bq
+3,072-case ST(0) matrix. Decoder and schema checks cover all eight forms; the
+schema allows exactly nineteen indexed FFREE streams, including the specified
+`ST(7)→FLD1` reuse and the existing `ST(0)→FLD ST(0)` atomic rejection. Seven
+literal indexed fixtures and an environment rejection fixture exercise CLI
+snapshots and JIT denial. These are local interpreter/schema results only;
+ISSUE-019 remains open, and native/JIT/physical x86 behavior is not established.
+See [plan](../plans/STAGE_2.md#s2-30br-generalize-bounded-ffree-to-all-sti-indices),
+[report](../reports/STAGE_2_REPORT.md#s2-30br--bounded-ffree-sti), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30br-bounded-ffree-sti).

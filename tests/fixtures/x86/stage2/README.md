@@ -3616,4 +3616,21 @@ Six handwritten schema-v2 success fixtures cover each newly admitted encoding `d
 
 ### S2-30bq bounded `FFREE ST(0)`
 
-The schema allowlist admits exactly `ddc0`, `ddc0dfe0`, `ddc0d9c0dfe0`, and `ddc0d9f7d9e8dfe0`. Literal fixtures cover TOP=7/C1=1 with distinct raw canaries and mixed tags when TOP is already Empty, opaque Special SNaN and malformed payloads, the `FFREE→FINCSTP→FLD1→FNSTSW` reuse composition, an Empty source rejection after `FFREE→FLD ST(0)`, and a forbidden FSW environment. Unit tests also exercise malformed payload bytes and all prior tags. The tag-only operation preserves payloads, all condition-code bits and the TOP; these are local interpreter/schema results, not native or physical x86 evidence. ISSUE-019 remains open.
+S2-30br generalizes the tag-only behavior below from `DD C0` to all indexed
+forms. The original 3,072-case ST(0) matrix and its literal fixtures remain as
+regression coverage.
+
+### S2-30br bounded `FFREE ST(i)`
+
+The schema admits exactly nineteen streams: each `ddc0` through `ddc7` alone
+and each followed by `dfe0`; `ddc0d9c0dfe0`; `ddc0d9f7d9e8dfe0`; and
+`ddc7d9e8dfe0`. Seven indexed literal fixtures use TOP=7 and C1=1 to cover
+physical index wrap, mixed tags, opaque SNaN/malformed payloads and
+`FFREE ST(7)→FLD1` reuse. The reuse fixture starts physical slot 6 with a
+Special tag and opaque payload; FFREE must empty it before FLD1 can commit.
+An additional indexed forbidden-FSW fixture checks
+atomic rejection. The 24,576-case interpreter matrix covers all TOPs, indices,
+CC patterns, prior tags and opaque payloads. The operation changes only the
+selected physical tag and preserves payloads, all condition-code bits and TOP.
+CLI snapshots and explicit JIT denial are local interpreter/schema results,
+not native or physical x86 evidence. ISSUE-019 remains open.

@@ -6007,3 +6007,29 @@ Verify 35,840 full-state successes (seven indices × five magnitudes × two sign
 Admit exactly bare unprefixed Long64 `DD C0`; `DD C1..C7`, prefixes, memory forms, WAIT/FWAIT and aliases stay unsupported. Require present x87 state, FCW `0x037f`, and `FSW & 0x80ff == 0`. Prior tag and all ten payload bytes at physical old TOP are opaque, including already Empty, SNaN and malformed values. Success changes only that physical tag to Empty; preserve TOP, all raw payloads, other tags, all C0..C3 (including C1 under the local undefined-field policy), GPR/RFLAGS/memory, FCW/FSW, FDP/FOP; set FIP to old RIP, advance RIP by two and retire once. The operation is idempotent and produces no exception or pending state.
 
 Verify 3,072 full-state successes (eight TOPs × sixteen prior CC patterns × four old tags × six opaque payload canaries), full snapshot and memory preservation, nine forbidden FSW bits individually/together, bad FCW/missing state, decoder neighbors/prefix/truncation and STOP/budget/fault no-commit. Composition must show `FFREE ST(0) → FINCSTP → FLD1` reuses the freed physical cell while preserving its raw bytes until FLD1 commits. Schema streams are exactly `ddc0`, `ddc0dfe0`, `ddc0d9c0dfe0`, and `ddc0d9f7d9e8dfe0`; add literal fixtures for TOP=7/C1=1 mixed canaries, already Empty, opaque SNaN/malformed, composition, and environment rejection. Keep JIT/native/physical acceptance denied/deferred and ISSUE-019 open.
+
+#### S2-30br. Generalize bounded FFREE to all `ST(i)` indices
+
+Generalize the tag-only operation to exact unprefixed Long64 `DD C0..C7` and
+carry `i=0..7` in the decoded operation. Select physical `(old_TOP+i)&7`;
+require present x87 state, FCW `0x037f`, and `FSW & 0x80ff == 0`. The selected
+tag and all ten payload bytes are opaque. Success sets only that physical
+two-bit tag to Empty, preserving TOP, every payload and other tag, full FCW/FSW
+including C0..C3, FDP/FOP and all non-x87 state; record FIP=old RIP, advance
+RIP by two and retire once. Repeated FFREE is idempotent. Do not classify or
+mutate payload, pop, raise exceptions, create pending state or admit JIT/native
+execution.
+
+Cover the full 24,576-state matrix (eight indices × eight TOPs × sixteen prior
+CC combinations × four tags × six opaque payloads), retaining the earlier
+3,072 `ST(0)` cases. Include wrap for index/TOP, one-tag-only mutation and
+repeated operations. Reject each forbidden FSW bit individually and together,
+bad FCW and missing state atomically; retain decoder, fetch, prefix, memory,
+WAIT/FFREEP, budget and stop-boundary denials. Schema admits exactly nineteen
+streams: each bare `DD C0..C7` at budget one and each followed by `DF E0` at
+budget two, plus `DD C0 D9 C0 DF E0` (FFREE commits then FLD rejects),
+`DD C0 D9 F7 D9 E8 DF E0`, and `DD C7 D9 E8 DF E0`. Add seven indexed literal
+fixtures covering TOP wrap, C1=1, mixed tags, opaque SNaN/malformed payloads,
+and `ST(7)→FLD1` physical reuse, plus indexed environment rejection. The CLI
+checks snapshots and JIT denial. Keep ISSUE-019 open; no Mini, SSH, native or
+physical x86 tests are included.

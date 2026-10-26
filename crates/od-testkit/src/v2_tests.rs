@@ -517,16 +517,21 @@ fn x87_fld_sti_schema_admits_only_indexed_streams_and_bad_sources_reject() {
 }
 
 #[test]
-fn x87_ffree_st0_schema_admits_only_the_four_bare_exact_streams() {
+fn x87_ffree_sti_schema_admits_only_the_nineteen_exact_streams() {
     let base = x87_fixture().fixture;
-    for (stream, budget) in [
-        ("ddc0", 1),
-        ("ddc0dfe0", 2),
-        ("ddc0d9c0dfe0", 3),
-        ("ddc0d9f7d9e8dfe0", 4),
-    ] {
+    let mut allowed = (0xc0u8..=0xc7)
+        .map(|modrm| (format!("dd{modrm:02x}"), 1))
+        .collect::<Vec<_>>();
+    allowed.extend((0xc0u8..=0xc7).map(|modrm| (format!("dd{modrm:02x}dfe0"), 2)));
+    allowed.extend([
+        ("ddc0d9c0dfe0".into(), 3),
+        ("ddc0d9f7d9e8dfe0".into(), 4),
+        ("ddc7d9e8dfe0".into(), 3),
+    ]);
+    assert_eq!(allowed.len(), 19);
+    for (stream, budget) in allowed {
         let mut fixture = base.clone();
-        fixture.case_id = format!("local_ffree_st0_{stream}");
+        fixture.case_id = format!("local_ffree_sti_{stream}");
         fixture.instruction_budget = budget;
         let length = (stream.len() / 2) as u32;
         fixture.stop_rip = Some(HexU64(0x1000 + u64::from(length)));
@@ -541,12 +546,13 @@ fn x87_ffree_st0_schema_admits_only_the_four_bare_exact_streams() {
         fixture.validate().unwrap();
     }
     for stream in [
-        "ddc1",
-        "ddc7",
+        "ddc8",
+        "dd00",
         "66ddc0",
-        "f3ddc0",
+        "f3ddc7",
         "ddc0ddc0",
         "ddc0d9f7d9e8",
+        "9bddc0",
     ] {
         let mut fixture = base.clone();
         fixture.case_id = format!("local_ffree_st0_forbidden_{stream}");

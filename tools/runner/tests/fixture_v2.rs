@@ -86,6 +86,18 @@ const FFREE_ST0_FLD_ST0_REJECT: &[u8] = include_bytes!(
 );
 const FFREE_ST0_ENV_REJECT: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bq_ffree_environment_reject.case.json");
+const FFREE_STI_FIXTURES: [&[u8]; 7] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30br_ffree_st1_opaque.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30br_ffree_st2_opaque.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30br_ffree_st3_opaque.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30br_ffree_st4_opaque.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30br_ffree_st5_opaque.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30br_ffree_st6_opaque.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30br_ffree_st7_fld1_reuse.case.json"),
+];
+const FFREE_STI_ENV_REJECT: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30br_ffree_st7_environment_reject.case.json"
+);
 const FCHS_SIGNED_ZERO: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ao_fchs_signed_zero.case.json");
 const FCHS_ZERO_WRONG_TAG: &[u8] =
@@ -6840,4 +6852,51 @@ fn local_x87_ffree_st0_marks_only_physical_top_and_composes_with_top_adjustment(
     }
     let (_, jit) = run(FFREE_ST0_ALREADY_EMPTY, "jit", 4);
     assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn local_x87_ffree_sti_marks_only_indexed_physical_cell_and_denies_jit() {
+    for (index, bytes) in FFREE_STI_FIXTURES.into_iter().enumerate() {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let initial = &loaded.fixture.initial_state;
+        let (_, result) = run(bytes, "interpreter", 0);
+        let retired = if index == 6 { 3 } else { 1 };
+        assert_eq!(count(&result), retired);
+        let after = snapshot(&result).state.x87.as_ref().unwrap();
+        let before = initial.x87.as_ref().unwrap();
+        let top = ((before.status_word.get() >> 11) & 7) as usize;
+        let physical = (top + index + 1) & 7;
+        if index < 6 {
+            assert_eq!(after.registers, before.registers);
+            assert_eq!(after.status_word, before.status_word);
+            assert_eq!(after.control_word, before.control_word);
+            assert_eq!(after.data_pointer, before.data_pointer);
+            assert_eq!(after.last_opcode, before.last_opcode);
+            assert_eq!(after.instruction_pointer.get(), initial.rip.get());
+            assert_eq!((after.tag_word.get() >> (physical * 2)) & 3, 3);
+            let changed = before.tag_word.get() ^ after.tag_word.get();
+            assert_eq!(changed & !(3 << (physical * 2)), 0);
+            assert_eq!(snapshot(&result).state.rip.get(), initial.rip.get() + 2);
+            assert_eq!(snapshot(&result).state.gpr, initial.gpr);
+            assert_eq!(snapshot(&result).state.rflags, initial.rflags);
+        } else {
+            assert_eq!(
+                (before.tag_word.get() >> 12) & 3,
+                2,
+                "ST(7) target must start Special"
+            );
+            assert_ne!(before.registers[6], "0000000000000080ff3f");
+            assert_eq!((after.status_word.get() >> 11) & 7, 6);
+            assert_eq!(after.registers[6], "0000000000000080ff3f");
+            assert_eq!((after.tag_word.get() >> 12) & 3, 0);
+        }
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    }
+
+    let loaded = Fixture::from_json(FFREE_STI_ENV_REJECT).unwrap();
+    let (_, result) = run(FFREE_STI_ENV_REJECT, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    assert_eq!(snapshot(&result).state, loaded.fixture.initial_state);
 }

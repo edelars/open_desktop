@@ -800,6 +800,20 @@ impl Fixture {
                 "ddc0dfe0" => ("ddc0dfe0", 4),
                 "ddc0d9c0dfe0" => ("ddc0d9c0dfe0", 6),
                 "ddc0d9f7d9e8dfe0" => ("ddc0d9f7d9e8dfe0", 8),
+                "ddc7d9e8dfe0" => ("ddc7d9e8dfe0", 6),
+                _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("ddc")
+                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
+                _ if code_bytes.len() == 8
+                    && code_bytes.starts_with("ddc")
+                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'7')
+                    && code_bytes.ends_with("dfe0") =>
+                {
+                    (code_bytes.as_str(), 4)
+                }
                 "d9f6d9f7dfe0" => ("d9f6d9f7dfe0", 6),
                 _ if code_bytes.len() == 4
                     && code_bytes.starts_with("d9c")
@@ -1335,7 +1349,9 @@ impl Fixture {
                             }
                     })
             });
-            let is_ffree_environment_rejected = code_bytes == "ddc0"
+            let is_ffree_environment_rejected = code_bytes.len() == 4
+                && code_bytes.starts_with("ddc")
+                && matches!(code_bytes.as_bytes()[3], b'0'..=b'7')
                 && self.stop_rip.is_none()
                 && self.expected_exit == ExpectedExit::Unsupported
                 && self.instruction_budget == 1

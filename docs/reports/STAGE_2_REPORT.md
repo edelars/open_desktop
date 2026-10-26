@@ -9588,3 +9588,37 @@ Implemented exact unprefixed Long64 `DD C0`; all `DD C1..C7` aliases and prefixe
 Added 3,072 full-state successes across eight TOPs, sixteen prior CC patterns, four source tags and six opaque payload patterns. Atomic rejects cover each of nine forbidden FSW bits and their combined mask, bad FCW with otherwise-valid FSW, missing x87, decoder neighbors/prefix/truncation, and stop/budget/fetch boundaries. A separate `DD C0 90` execution confirms that `90` is fetched as the next NOP after FFREE retires. Schema is limited to `ddc0`, `ddc0dfe0`, `ddc0d9c0dfe0`, and `ddc0d9f7d9e8dfe0`. Literal fixtures cover TOP=7/C1=1 mixed canaries with an already-Empty entry, opaque SNaN, the FLD ST(0) Empty rejection, bad environment and `FFREE→FINCSTP→FLD1→FNSTSW` physical-cell reuse. The runner also asserts JIT denial.
 
 Local validation passed: `cargo test -p od-isa bounded_ffree_st0 --offline` (2/2), exact DD decoder test (1/1), `cargo test -p od-testkit x87_ffree_st0_schema --offline` (1/1), and `cargo test -p od-runner --test fixture_v2 local_x87_ffree_st0 --offline` (1/1). `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, `python3 tools/check_layout.py`, and `git diff --check` passed. Graphify was refreshed after the implementation and documentation edits. No Mac mini, SSH, native runtime or physical x86 checks were performed; ISSUE-019 remains open. See the [plan](../plans/STAGE_2.md#s2-30bq-bare-ffree-st0-bounded-tag-only-free-slice), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30bq-bounded-bare-ffree-st0-dd-c0), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bq-bounded-ffree-st0).
+
+## S2-30br — bounded `FFREE ST(i)` for all indices
+
+Generalized exact bare Long64 `DD C0..C7` to indexed `FfreeSti`. The selected
+physical slot is `(old_TOP+i)&7`; present x87 state, FCW `0x037f`, and
+`FSW & 0x80ff == 0` are required. The operation does not inspect the selected
+tag or payload and changes only that tag to Empty. TOP, all raw payloads and
+other tags, full FCW/FSW including C0..C3, FDP/FOP, GPR/RFLAGS/memory remain
+unchanged; FIP records old RIP, RIP advances two, and retirement is one.
+Repeated execution is idempotent. Stack exceptions/pending state, JIT/native
+execution and physical x86 claims remain outside scope.
+
+The full-state matrix covers 24,576 cases across eight indices, eight TOPs,
+sixteen prior CC combinations, four tags and six opaque payload patterns,
+including the original 3,072 `ST(0)` states. Atomic environment rejects cover
+each forbidden FSW bit and their combined mask, invalid FCW and absent x87
+state; decoder checks cover exact forms, prefix/neighbor/WAIT/memory denials.
+The exact nineteen-stream schema includes bare indexed forms, FNSTSW forms,
+the existing `ST(0)→FLD ST(0)` rejection, and `ST(7)→FLD1` reuse. Its fixture
+starts the selected physical slot 6 with a Special tag and opaque payload, so
+the successful FLD1 depends on FFREE emptying that occupied slot. Seven indexed
+literal fixtures plus indexed environment rejection exercise CLI snapshots and
+JIT denial.
+
+Validation passed: `cargo test -p od-isa bounded_ffree_sti --offline` (2/2),
+`cargo test -p od-isa exact_bare_dd_c0_to_c7 --offline` (1/1),
+`cargo test -p od-testkit x87_ffree_sti_schema --offline` (1/1), focused indexed
+CLI regression (1/1), full `fixture_v2` suite (191/191),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, and `git diff --check`. No Mac mini, SSH,
+native runtime or physical x86 checks were run. ISSUE-019 remains open. See
+[plan](../plans/STAGE_2.md#s2-30br-generalize-bounded-ffree-to-all-sti-indices),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30br-bounded-bare-ffree-sti-dd-c0c7),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30br-bounded-ffree-sti).

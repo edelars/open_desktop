@@ -233,7 +233,7 @@ fn step_tracked_with_stop(
             | Operation::FstM64FpRax
             | Operation::FstpM64FpRax
             | Operation::FstpM80FpRax
-            | Operation::FfreeSt0
+            | Operation::FfreeSti { .. }
     ) && state.x87.is_none()
     {
         return Ok(StepOutcome::Unsupported {
@@ -376,7 +376,7 @@ fn step_tracked_with_stop(
         || matches!(instruction.operation, Operation::Fld1 | Operation::Fldz)
             && bounded_x87_empty_push_destination(state).is_none()
         || matches!(instruction.operation, Operation::FldSti { source } if bounded_x87_fld_sti(state, source).is_none())
-        || instruction.operation == Operation::FfreeSt0 && bounded_x87_ffree_st0(state).is_none()
+        || matches!(instruction.operation, Operation::FfreeSti { index } if bounded_x87_ffree_sti(state, index).is_none())
         || matches!(instruction.operation, Operation::FstpSti { .. })
             && bounded_x87_fst_sti_source(state).is_none()
         || matches!(instruction.operation, Operation::FstSti { .. })
@@ -562,7 +562,7 @@ fn step_tracked_with_stop(
         | Operation::Fincstp
         | Operation::Fdecstp
         | Operation::FldSti { .. }
-        | Operation::FfreeSt0
+        | Operation::FfreeSti { .. }
         | Operation::Fld1
         | Operation::Fldz
         | Operation::Fabs
@@ -1493,10 +1493,11 @@ fn step_tracked_with_stop(
                 (x87.status_word & !((7 << 11) | (1 << 9))) | ((destination as u16) << 11);
             x87.instruction_pointer = state.rip;
         }
-        Operation::FfreeSt0 => {
-            let top = bounded_x87_ffree_st0(state).expect("FFREE ST(0) was prevalidated");
+        Operation::FfreeSti { index } => {
+            let physical =
+                bounded_x87_ffree_sti(state, index).expect("FFREE ST(i) was prevalidated");
             let x87 = state.x87.as_mut().expect("x87 state was prevalidated");
-            x87.set_tag(top as u8, X87Tag::Empty);
+            x87.set_tag(physical as u8, X87Tag::Empty);
             x87.instruction_pointer = state.rip;
         }
         Operation::FstM32FpRax
@@ -3090,14 +3091,14 @@ fn bounded_x87_fld_sti(state: &LongModeState, source: u8) -> Option<(usize, [u8;
     Some((destination, raw, tag))
 }
 
-/// Preflight exact bare FFREE ST(0). The payload and prior tag are opaque;
-/// only the physical cell selected by the current TOP will be marked Empty.
-fn bounded_x87_ffree_st0(state: &LongModeState) -> Option<usize> {
+/// Preflight exact bare FFREE ST(i). The payload and prior tag are opaque;
+/// only the indexed physical cell selected from the current TOP is marked Empty.
+fn bounded_x87_ffree_sti(state: &LongModeState, index: u8) -> Option<usize> {
     let x87 = state.x87.as_ref()?;
-    if x87.control_word != 0x037f || x87.status_word & 0x80ff != 0 {
+    if index > 7 || x87.control_word != 0x037f || x87.status_word & 0x80ff != 0 {
         return None;
     }
-    Some(usize::from(x87.top()))
+    Some(usize::from(x87.top().wrapping_add(index) & 7))
 }
 
 /// FLD m32fp preserves sticky IE/DE/OE/UE/PE across masked loads while still
@@ -50375,7 +50376,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_ffree_st0_preserves_everything_except_top_tag_and_ip() {
+    fn bounded_ffree_sti_preserves_everything_except_indexed_tag_and_ip() {
         let payloads = [
             [0; 10],
             [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
@@ -50390,67 +50391,73 @@ mod tests {
 
         for top in 0u8..8 {
             for cc in 0u8..16 {
-                for tag in tags {
-                    for raw in payloads {
-                        let mut state = LongModeState::default();
-                        state.rip = 0x8120;
-                        state.rflags = 0x8d7;
-                        state.gpr = std::array::from_fn(|i| 0xfeed_0000_0000_0000 | i as u64);
-                        let mut x87 = crate::state::X87State::fixture_seed();
-                        x87.control_word = 0x037f;
-                        x87.status_word = u16::from(top) << 11;
-                        for (bit, flag) in cc_bits.into_iter().enumerate() {
-                            if cc & (1 << bit) != 0 {
-                                x87.status_word |= flag;
+                for index in 0u8..8 {
+                    let physical = top.wrapping_add(index) & 7;
+                    for tag in tags {
+                        for raw in payloads {
+                            let mut state = LongModeState::default();
+                            state.rip = 0x8120;
+                            state.rflags = 0x8d7;
+                            state.gpr = std::array::from_fn(|i| 0xfeed_0000_0000_0000 | i as u64);
+                            let mut x87 = crate::state::X87State::fixture_seed();
+                            x87.control_word = 0x037f;
+                            x87.status_word = u16::from(top) << 11;
+                            for (bit, flag) in cc_bits.into_iter().enumerate() {
+                                if cc & (1 << bit) != 0 {
+                                    x87.status_word |= flag;
+                                }
                             }
-                        }
-                        x87.instruction_pointer = 0x1234;
-                        x87.data_pointer = 0x5678;
-                        x87.last_opcode = 0x9abc;
-                        for physical in 0u8..8 {
-                            x87.registers[usize::from(physical)] = [physical; 10];
-                            x87.set_tag(physical, tags[usize::from(physical) % tags.len()]);
-                        }
-                        x87.registers[usize::from(top)] = raw;
-                        x87.set_tag(top, tag);
-                        state.x87 = Some(x87);
-                        let mut expected = state.clone();
-                        let expected_x87 = expected.x87.as_mut().unwrap();
-                        expected_x87.set_tag(top, X87Tag::Empty);
-                        expected_x87.instruction_pointer = state.rip;
-                        expected.rip += 2;
+                            x87.instruction_pointer = 0x1234;
+                            x87.data_pointer = 0x5678;
+                            x87.last_opcode = 0x9abc;
+                            for physical in 0u8..8 {
+                                x87.registers[usize::from(physical)] = [physical; 10];
+                                x87.set_tag(physical, tags[usize::from(physical) % tags.len()]);
+                            }
+                            x87.registers[usize::from(physical)] = raw;
+                            x87.set_tag(physical, tag);
+                            state.x87 = Some(x87);
+                            let mut expected = state.clone();
+                            let expected_x87 = expected.x87.as_mut().unwrap();
+                            expected_x87.set_tag(physical, X87Tag::Empty);
+                            expected_x87.instruction_pointer = state.rip;
+                            expected.rip += 2;
 
-                        let mut memory = Memory::at(&[0xdd, 0xc0], state.rip);
-                        let untouched = memory.bytes.clone();
-                        let result = run(
-                            &mut state,
-                            &mut memory,
-                            RunConfig {
-                                instruction_budget: 1,
-                                stop_rip: Some(0x8122),
-                                context: AccessContext::default(),
-                            },
-                            || false,
-                        );
-                        assert_eq!(
-                            result.exit,
-                            RunExit::StopAddress,
-                            "TOP={top} CC={cc} {tag:?} {raw:02x?}"
-                        );
-                        assert_eq!(result.instructions_executed, 1);
-                        assert_eq!(state, expected, "TOP={top} CC={cc} {tag:?} {raw:02x?}");
-                        assert_eq!(memory.bytes, untouched);
-                        assert!(memory.accesses.is_empty());
-                        cases += 1;
+                            let mut memory = Memory::at(&[0xdd, 0xc0 + index], state.rip);
+                            let untouched = memory.bytes.clone();
+                            let result = run(
+                                &mut state,
+                                &mut memory,
+                                RunConfig {
+                                    instruction_budget: 1,
+                                    stop_rip: Some(0x8122),
+                                    context: AccessContext::default(),
+                                },
+                                || false,
+                            );
+                            assert_eq!(
+                                result.exit,
+                                RunExit::StopAddress,
+                                "TOP={top} i={index} CC={cc} {tag:?} {raw:02x?}"
+                            );
+                            assert_eq!(result.instructions_executed, 1);
+                            assert_eq!(
+                                state, expected,
+                                "TOP={top} i={index} CC={cc} {tag:?} {raw:02x?}"
+                            );
+                            assert_eq!(memory.bytes, untouched);
+                            assert!(memory.accesses.is_empty());
+                            cases += 1;
+                        }
                     }
                 }
             }
         }
-        assert_eq!(cases, 3_072);
+        assert_eq!(cases, 24_576);
     }
 
     #[test]
-    fn bounded_ffree_st0_rejections_are_atomic() {
+    fn bounded_ffree_sti_rejections_are_atomic() {
         let forbidden_fsw = [1u16, 2, 4, 8, 0x10, 0x20, 0x40, 0x80, 0x8000];
         let mut states = Vec::new();
         for bits in forbidden_fsw.into_iter().chain([0x80ff]) {
@@ -50475,7 +50482,7 @@ mod tests {
 
         for mut state in states {
             let before = state.clone();
-            let mut memory = Memory::at(&[0xdd, 0xc0], state.rip);
+            let mut memory = Memory::at(&[0xdd, 0xc7], state.rip);
             let result = run(
                 &mut state,
                 &mut memory,
@@ -50497,7 +50504,12 @@ mod tests {
             assert_eq!(state, before);
         }
 
-        for code in [&[0x66, 0xdd, 0xc0][..], &[0xdd, 0xc1], &[0xdd, 0xc7]] {
+        for code in [
+            &[0x66, 0xdd, 0xc0][..],
+            &[0xf3, 0xdd, 0xc7],
+            &[0xdd, 0xc8],
+            &[0xdd, 0x01],
+        ] {
             let mut state = LongModeState::default();
             state.rip = 0x9100;
             let mut x87 = crate::state::X87State::fixture_seed();
@@ -50567,7 +50579,7 @@ mod tests {
             ),
         ] {
             let before = state.clone();
-            let mut memory = Memory::at(&[0xdd, 0xc0], state.rip);
+            let mut memory = Memory::at(&[0xdd, 0xc7], state.rip);
             let result = run(&mut state, &mut memory, config, || false);
             assert_eq!(result.exit, expected_exit);
             assert_eq!(result.instructions_executed, 0);

@@ -451,8 +451,10 @@ pub enum Operation {
     FnstswM16Rax,
     /// Bare `DD 18` FSTP m64fp at [RAX], bounded finite profile.
     FstpM64FpRax,
-    /// Bare `DD C0` FFREE ST(0), marking the physical TOP cell Empty.
-    FfreeSt0,
+    /// Bare `DD C0..C7` FFREE ST(i), marking one indexed physical cell Empty.
+    FfreeSti {
+        index: u8,
+    },
     /// Bare `DB 38` FSTP m80fp at [RAX], bounded raw binary80 profile.
     FstpM80FpRax,
     /// Bare `DB 28` FLD m80fp at [RAX], bounded Normal binary80 stack push.
@@ -1254,8 +1256,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     Operation::FstM64FpRax
                 } else if modrm == 0x18 {
                     Operation::FstpM64FpRax
-                } else if modrm == 0xc0 {
-                    Operation::FfreeSt0
+                } else if (0xc0..=0xc7).contains(&modrm) {
+                    Operation::FfreeSti { index: modrm & 7 }
                 } else if modrm == 0xe1 {
                     Operation::Fucom
                 } else if modrm == 0xe9 {
@@ -7171,30 +7173,22 @@ mod tests {
     }
 
     #[test]
-    fn exact_bare_dd_c0_is_ffree_st0_and_dd_neighbors_stay_unsupported() {
-        assert_eq!(
-            Memory::new(&[0xdd, 0xc0]).decode().unwrap().operation,
-            Operation::FfreeSt0
-        );
+    fn exact_bare_dd_c0_to_c7_are_indexed_ffree_and_neighbors_stay_unsupported() {
         for modrm in 0xc0u8..=0xc7 {
             let decoded = Memory::new(&[0xdd, modrm]).decode();
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
-                if modrm == 0xc0 {
-                    Ok(Operation::FfreeSt0)
-                } else {
-                    Err(DecodeError::Unsupported {
-                        opcode: Opcode {
-                            map: OpcodeMap::Primary,
-                            byte: 0xdd,
-                        },
-                        length: 2,
-                    })
-                },
+                Ok(Operation::FfreeSti { index: modrm & 7 }),
                 "DD {modrm:02x}"
             );
         }
-        for bytes in [&[0x66, 0xdd, 0xc0][..], &[0xdd, 0xc1], &[0xdd, 0xc7]] {
+        for bytes in [
+            &[0x66, 0xdd, 0xc0][..],
+            &[0xf3, 0xdd, 0xc7],
+            &[0xdd, 0xc8],
+            &[0xdd, 0x01],
+            &[0x9b, 0xdd, 0xc0],
+        ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
     }
