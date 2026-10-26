@@ -206,6 +206,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30x | Bare `DD D0+i` FST ST(i), canonical Normal raw copy without TOP change; native closed | S2-30w |
 | [x] | S2-30y | Bare `D9 E0` FCHS, bounded canonical-Normal ST(0) sign-bit flip; native closed | S2-30x |
 | [x] | S2-30z | Bare `D9 E1` FABS, bounded canonical-Normal ST(0) sign-bit clear; native closed | S2-30y |
+| [x] | S2-30ap | Bare `D9 E1` FABS additionally admits canonical Zero-tagged signed zero; Normal-only FTST/FST gates remain unchanged | S2-30ao |
 | [x] | S2-30aa | Bare `D9 E4` FTST, bounded canonical-Normal ST(0) comparison with zero; native closed | S2-30z |
 | [x] | S2-30ab | Bare `D8 D1` FCOM ST(1), exact finite canonical-Normal compare with status-only commit; native closed | S2-30aa |
 | [x] | S2-30ac | Bare `D8 D0+i` FCOM ST(i), exact finite canonical-Normal compare for all register indices; native closed | S2-30ab |
@@ -2067,13 +2068,32 @@ accept a Zero-tagged ST(0) only when all eight significand bytes are zero and
 the sign/exponent word is exactly `0x0000` or `0x8000`. Flip only raw bit
 `source[9] ^= 0x80`, retain Zero tag/TOP/other payloads, clear C1, retain
 C0/C2/C3 by the existing snapshot policy, set FIP and advance RIP by two, then
-retire once. Do not widen the helper shared by FABS, FTST or FST ST(i).
+retire once. Keep FTST and FST ST(i) on the Normal-only source gate; FCHS and
+FABS may share their narrow sign-operation gate.
 
 Cover both signed zeros × all TOP × all 16 prior condition-code combinations,
 full-state and double-operation restoration, malformed payload/tag/environment
 and execution-boundary atomic rejection, Normal regressions, and FLD m32/m64 →
 FCHS → FST → FNSTSW composition. CLI/schema fixtures remain project fixtures;
 native/JIT stay closed. Physical and Mac mini acceptance remain under ISSUE-019.
+
+#### S2-30ap. Admit canonical signed zero to bounded `FABS` (`D9 E1`)
+
+Extend FABS's source admission to match FCHS's bounded domain: retain FCW
+`0x037f`, `FSW & 0x80ff == 0`, and canonical-Normal Valid ST(0), and additionally
+accept Zero-tagged ST(0) only for exact signed zero (zero significand and
+sign/exponent word `0x0000` or `0x8000`). Clear only the raw sign bit, preserve
+Zero tag/TOP/payload and unrelated state, clear C1, retain C0/C2/C3 by the
+existing local snapshot policy, set FIP, advance RIP by two and retire once.
+Share only the narrow FCHS/FABS sign-operation admission helper; FTST and
+FST/FSTP ST(i) remain Normal-only.
+
+Cover both signed zeros × all TOP × all 16 prior condition-code combinations,
+full-state and repeated-FABS idempotence, malformed payload/tag/environment
+and fetch/prefix/truncation/STOP/budget atomicity, Normal/FCHS regressions, and
+FLD m32/m64 → FABS → FST → FNSTSW composition. The handwritten project fixture
+uses exactly `d900d9e1d910dfe0` (four retirements); native/JIT and physical
+acceptance remain closed under ISSUE-019.
 
 #### S2-30z. Bare bounded `FABS` (sign-bit-clear local slice)
 

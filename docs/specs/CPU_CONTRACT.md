@@ -2264,8 +2264,8 @@ when its tag is Zero and its raw ten-byte value is exact signed zero: bytes
 0..7 are zero, and bytes 8..9 are either `00 00` or `00 80`. FCHS toggles only
 byte 9 bit 7. It preserves the Zero tag, TOP and all other state/payload bytes,
 clears C1, retains C0/C2/C3 as a local snapshot policy, records instruction
-start RIP in FIP, advances RIP by two and retires once. This FCHS-only admission
-does not change the shared Normal-only gate used by FABS, FTST and FST ST(i).
+start RIP in FIP, advances RIP by two and retires once. It does not change the
+Normal-only gate used by FTST and FST ST(i); S2-30ap separately extends FABS.
 Other tags/classes/payloads, invalid controls/status and execution-boundary
 failures reject atomically. Native/JIT admission stays closed. Evidence is
 local interpreter/unit and project-fixture coverage, not physical x86 evidence;
@@ -2297,6 +2297,26 @@ denies `D9 E1`.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FABS—Absolute Value,” p.3-309
 ([official PDF, Vol.2A p.3-309](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=427)).
+
+## Local S2-30ap: signed-zero `FABS` admission (`D9 E1`)
+
+FABS retains the S2-30z Normal behavior and additionally accepts ST(0) only
+when its tag is Zero and its raw ten-byte value is exact signed zero: bytes
+0..7 are zero, and bytes 8..9 are either `00 00` or `00 80`. FABS clears only
+byte 9 bit 7, so either signed zero becomes positive zero. It preserves the
+Zero tag, TOP, other payloads and unrelated state, clears C1, retains C0/C2/C3
+as the local snapshot policy, records FIP, advances RIP by two and retires
+once. FCHS and FABS share only this narrow sign-operation source gate;
+FTST and FST/FSTP ST(i) remain on the canonical-Normal-only gate.
+
+Malformed Zero payloads, wrong tags, invalid FCW/FSW, missing state, and
+fetch/prefix/truncation/STOP/budget boundaries reject atomically. Coverage
+includes both signed zeros × all TOP × all 16 condition-code states, repeated
+FABS/full-state idempotence, Normal and FCHS regressions, and FLD m32/m64 →
+FABS → FST → FNSTSW. The handwritten project fixture is exactly
+`d900d9e1d910dfe0` and retires four instructions. Native/JIT remain closed;
+these local results do not establish physical x87 behavior or broader
+architectural semantics under ISSUE-019.
 
 ## Local S2-30aa: bounded `FTST` (`D9 E4`)
 

@@ -8777,3 +8777,36 @@ coverage findings were fixed. No full workspace test suite or physical/native
 execution was performed.
 The required independent gpt-6.1-sol medium-effort review of commit `3ae0e0a`
 was also clean, with no remaining concrete findings.
+
+## S2-30ap — canonical signed zero through bounded FABS
+
+Bare `D9 E1` now admits exact Zero-tagged signed zero in addition to the
+existing canonical-Normal Valid source. FABS clears only the raw sign bit,
+preserves Zero tag/TOP/payload and unrelated state, clears C1, retains C0/C2/C3
+under the local snapshot policy, records FIP, advances RIP by two and retires
+once. The narrow source gate is shared with FCHS; FTST and FST/FSTP ST(i) keep
+their Normal-only gate. Native and JIT admission remain closed.
+
+The literal interpreter matrix covers both zero signs × all eight TOP values ×
+all 16 initial condition-code combinations, compares complete state after each
+operation, and checks repeated-FABS idempotence. Rejection vectors cover
+malformed Zero significands and exponent/special encodings, canonical zero
+bytes under the wrong tag, bad FCW/FSW while the source remains canonical ±0,
+missing state, and fetch/prefix/truncation/STOP/budget boundaries. The
+unchanged-state guard checks FTST and all eight FST plus all eight FSTP ST(i)
+forms remain Normal-only. FLD m32/m64 → FABS →
+FST → FNSTSW is checked locally. The new handwritten project fixture uses the
+exact allowed stream `d900d9e1d910dfe0`, with four retirements; the schema admits
+that exact composition only.
+
+Focused checks passed: FABS Zero matrix, FABS bad-source/boundary atomicity,
+FTST/FST/FSTP ST(i) Normal-only guard, FCHS Zero matrix regression, both-width local
+composition, the exact-composition schema positive/near-miss test, and the
+four-retirement runner fixture CLI check. Final formatting, workspace check,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, and `graphify update .` passed.
+Evidence is local interpreter/project-fixture coverage, not physical or native
+x87 evidence; ISSUE-019 remains open.
+
+The first independent gpt-6.1-sol medium review found two coverage gaps; both
+were fixed. The follow-up review was clean with no remaining concrete findings.

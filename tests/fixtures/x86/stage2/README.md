@@ -1295,6 +1295,19 @@ closed under ISSUE-019.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FCHS—Change Sign,” p.3-318 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=436)).
 
+### S2-30ap signed-zero FABS
+
+The `s2_30ap_fld_fabs_fst_fnstsw.case.json` handwritten project fixture uses
+exactly `d900d9e1d910dfe0`: FLD m32fp loads negative zero, FABS clears its sign,
+FST writes positive zero, and FNSTSW observes the final TOP. It retires four
+instructions and checks full state and memory through the interpreter CLI.
+Local vectors cover both zero signs × all TOP × all prior condition-code
+states, repeated-FABS idempotence, malformed Zero/wrong-tag/environment inputs,
+and execution boundaries; Normal and FCHS behavior remain covered by their
+existing cases. FTST and FST/FSTP ST(i) retain Normal-only admission. This is
+project-fixture evidence, not native or physical evidence; ISSUE-019 remains
+open.
+
 ### S2-30z x87 schema and fixture coverage
 
 The schema admits only bare `D9 E1` for the FABS slice. The positive literal
