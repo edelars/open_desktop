@@ -216,6 +216,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30aw | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit only Special-tagged canonical binary80 QuietNaN, preserving all payload bits; native/JIT closed | S2-30av, S2-31ah |
 | [x] | S2-30ay | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit Special-tagged canonical binary80 subnormals with raw payload preservation; native/JIT closed | S2-30ax |
 | [x] | S2-30ba | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 SignalingNaN, preserving Q=0 and raw payload; native/JIT closed | S2-30az, S2-31ab |
+| [x] | S2-30bb | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy only Special-tagged canonical binary80 subnormals with unchanged bytes/tag; native/JIT closed | S2-30ba, S2-31x |
 | [x] | S2-30az | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 QuietNaN without changing raw bytes; native/JIT closed | S2-30au, S2-30aw |
 | [x] | S2-30aa | Bare `D9 E4` FTST, bounded canonical-Normal ST(0) comparison with zero; native closed | S2-30z |
 | [x] | S2-30ab | Bare `D8 D1` FCOM ST(1), exact finite canonical-Normal compare with status-only commit; native closed | S2-30aa |
@@ -2376,6 +2377,33 @@ streams for these seeded single-instruction cases. Do not use m32/m64 SNaN loads
 because those quiet the value and raise IE. Keep
 ISSUE-019 open; no Mac mini, SSH, native runtime or physical x86 checks belong
 in this substage.
+
+
+#### S2-30bb. Admit canonical binary80 subnormal to bounded `FST/FSTP ST(i)`
+
+Extend only `bounded_x87_fst_sti_source`. Retain Valid-tag canonical Normal,
+Zero-tagged exact signed zero, and Special-tagged canonical infinity, QNaN and
+SNaN. Additionally admit only `(Special, Subnormal)` canonical binary80
+E=0, J=0 with a nonzero 63-bit fraction, either sign. Preserve FCW `0x037f`,
+`FSW & 0x80ff == 0`, all ten source bytes, Special tag and the existing C1
+policy; add no DE/UE/PE/IE. Bare `DD D0+i` copies to physical `(old_TOP+i)&7`
+without changing TOP. Bare `DD D8+i` copies first, empties old physical TOP,
+then advances TOP modulo eight; alias `i=0` retains bytes under Empty and `i=1`
+becomes new ST(0). Do not alter classifier, decoder, wire schema, other gates,
+JIT or native admission. Reject zero under Special, wrong-tag subnormals,
+pseudo-denormal, unnormal and pseudo-special values atomically.
+
+Cover both opcodes × both signs × all TOP/index pairs × 16 prior condition-code
+states × fractions `{1, 1<<62, 0x0123456789abcdef, (1<<63)-1}` (16,384 cases),
+with full-state expectations, destination canaries/tags and alias/pop checks.
+Add malformed neighbors, wrong tags, bad FCW/FSW, missing state and fetch,
+truncation, prefix, WAIT, STOP, budget and fetch-fault atomicity. A raw FLD m80fp
+→ FST/FSTP ST(1) → FNSTSW unit composition checks both signs, raw bytes and no
+DE. Four existing-schema seeded bare fixtures run both forms/signs with
+budget one and stop RIP=start+2; a wrong-tag fixture rejects atomically and
+successful fixtures remain denied by JIT. Local checks do not establish
+physical x86 acceptance; keep ISSUE-019 open and defer host/physical validation
+to the combined final substage.
 
 #### S2-30z. Bare bounded `FABS` (sign-bit-clear local slice)
 

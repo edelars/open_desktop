@@ -1393,6 +1393,23 @@ included. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2
 [plan](../../../../docs/plans/STAGE_2.md#s2-30ba-admit-canonical-binary80-signalingnan-to-bounded-fstfstp-sti),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30ba--canonical-binary80-signalingnan-through-bounded-fstfstp-sti).
 
+<a id="s2-30bb-canonical-binary80-subnormal-fst-fstp-sti"></a>
+
+### S2-30bb canonical binary80 subnormal FST/FSTP ST(i)
+
+Four handwritten schema-v2 fixtures seed canonical nonzero binary80
+subnormals with the Special tag, then execute bare `ddd1` or `ddd9` with budget
+one and stop RIP two bytes later. Both signs are covered. The wrong-tag `ddd1`
+fixture uses a nonzero subnormal with a Valid tag and checks atomic rejection.
+Runner checks compare complete state and raw bytes and deny JIT for successful
+fixtures. The wire schema and `od-testkit` profile are unchanged; the bare
+register-store streams were already admitted for S2-30ba. Local checks do not
+establish physical x87 behavior; ISSUE-019 remains open. See the [CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30bb-canonical-subnormal-fst-fstp-sti),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30bb-admit-canonical-binary80-subnormal-to-bounded-fstfstp-sti),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30bb-canonical-binary80-subnormal-through-bounded-fstfstp-sti).
+
+
 ### S2-30av canonical signed-infinity FCHS/FABS
 
 The handwritten `s2_30av_fld_fchs_fst_fnstsw.case.json` and

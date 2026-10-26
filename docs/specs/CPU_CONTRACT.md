@@ -6940,3 +6940,36 @@ local interpreter/project-fixture results, not native or physical x86
 validation. ISSUE-019 remains open. See the [plan](../plans/STAGE_2.md#s2-30ba-admit-canonical-binary80-signalingnan-to-bounded-fstfstp-sti),
 [report](../reports/STAGE_2_REPORT.md#s2-30ba--canonical-binary80-signalingnan-through-bounded-fstfstp-sti),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30ba-canonical-snan-fst-fstp-sti).
+
+<a id="local-s2-30bb-canonical-subnormal-fst-fstp-sti"></a>
+
+## Local S2-30bb: canonical binary80 subnormal through bounded `FST/FSTP ST(i)`
+
+Only `bounded_x87_fst_sti_source` is extended. Alongside the existing Valid-tag
+canonical Normal, Zero-tagged exact signed zero and Special-tagged canonical
+infinity/QNaN/SNaN pairs, it admits `(Special, Subnormal)` only for E=0, J=0
+and a nonzero 63-bit fraction, either sign. FCW remains exactly `0x037f`,
+and `FSW & 0x80ff` remains zero. The raw ten bytes and Special tag are
+preserved, including the sign and every fraction bit; no DE/UE/PE/IE is added.
+
+Bare FST copies to physical `(old_TOP+i)&7` without changing TOP. Bare FSTP
+copies first, empties old physical TOP and increments TOP modulo eight. Thus
+`i=0` leaves copied bytes with Empty tag; `i=1` places the copy at new ST(0).
+The existing C1, FIP/RIP and retirement policy is unchanged. Zero under Special,
+wrong-tag subnormals, pseudo-denormals, unnormals, pseudo-special encodings,
+malformed values and invalid environments reject atomically. Classifier,
+decoder, schema, other gates and JIT/native admission are unchanged.
+
+The independent 16,384-case state matrix crosses both opcodes, signs, TOP,
+indices, all 16 prior condition-code combinations and fractions `{1, 1<<62,
+0x0123456789abcdef, (1<<63)-1}`; it checks complete state, physical payload/tag
+canaries, aliases, copy-before-pop and TOP wrap. Neighboring-class/wrong-tag,
+control/status, missing-state and fetch/truncation/prefix/WAIT/STOP/budget/fault
+atomicity are covered. Raw FLD m80fp→FST/FSTP ST(1)→FNSTSW unit compositions
+cover both signs and assert byte preservation/no DE. Four seeded bare schema-v2
+fixtures run at budget one and stop RIP +2; wrong-tag rejection preserves full
+state, and successful fixtures are JIT-denied. The schema remains unchanged.
+These local checks do not establish physical x86 behavior. ISSUE-019 remains
+open. See [plan](../plans/STAGE_2.md#s2-30bb-admit-canonical-binary80-subnormal-to-bounded-fstfstp-sti),
+[report](../reports/STAGE_2_REPORT.md#s2-30bb-canonical-binary80-subnormal-through-bounded-fstfstp-sti),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bb-canonical-binary80-subnormal-fst-fstp-sti).

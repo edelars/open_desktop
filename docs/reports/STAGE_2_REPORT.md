@@ -9163,3 +9163,40 @@ with 4,938 nodes, 9,883 edges and 186 communities; the existing header syntax
 warning and unsupported-file skips remain. No Mac mini, SSH, native runtime or
 physical x86 checks were performed. ISSUE-019 remains open for combined
 host/physical acceptance.
+
+<a id="s2-30bb-canonical-binary80-subnormal-through-bounded-fstfstp-sti"></a>
+
+## S2-30bb — canonical binary80 subnormal through bounded FST/FSTP ST(i)
+
+Only `bounded_x87_fst_sti_source` changed: it now additionally admits the
+`(Special, Subnormal)` pair for canonical binary80 E=0, J=0 and nonzero 63-bit
+fraction. The raw ten bytes and Special tag are copied unchanged for either
+sign. Existing FCW `0x037f`, `FSW & 0x80ff == 0`, C1, FIP/RIP and retirement
+policies remain. FST preserves TOP; FSTP copies before emptying old TOP and
+advancing TOP. No DE/UE/PE/IE is added. Classifier, decode, schema, other source
+gates and JIT/native admission are unchanged.
+
+The 16,384-case interpreter matrix crosses both opcodes/signs, every TOP and
+index, all 16 condition-code combinations, and fractions `{1, 1<<62,
+0x0123456789abcdef, (1<<63)-1}`. It compares full state and checks raw payloads,
+destination tag canaries, alias behavior and TOP wrap/copy-before-pop. Atomic
+rejection checks cover zero under Special, wrong-tag subnormals, malformed
+neighbor classes, bad FCW/FSW, missing x87 state, fetch/truncation/prefix/WAIT,
+STOP, budget and fetch fault. Raw FLD m80fp→FST/FSTP ST(1)→FNSTSW unit
+compositions verify both signs/forms preserve exact bytes and do not set DE.
+Four seeded bare schema-v2 fixtures exercise FST/FSTP for both signs with
+budget one and stop RIP +2; a wrong-tag fixture rejects without retirement and
+successful fixtures are denied by JIT. The profile schema and allowlist were
+not changed; the existing bare DD D0+i/DD D8+i fixtures already establish that
+stream profile.
+
+Focused checks passed: the 16,384-case matrix, raw m80 composition, neighbor/
+wrong-tag rejects, subnormal environment/execution-boundary atomicity, the
+runner fixture test (including JIT denial) and `cargo test -p od-testkit
+--offline` (173 tests). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py` and `git diff --check` passed. Graphify updated
+to 4,951 nodes, 9,906 edges and 183 communities; it reported the existing
+`include/open_desktop/host_abi.h` syntax warning and skipped unsupported file
+types. No Mac mini, SSH, native runtime or physical x86 checks were performed.
+ISSUE-019 remains open for combined host/physical acceptance.
