@@ -21,11 +21,20 @@
 - **Основание и проверка:** boundary handling в [`ir.rs`](../crates/od-jit/src/ir.rs), target classification в [`block.rs`](../crates/od-jit/src/block.rs), fallback lowering в [`lowering.rs`](../crates/od-jit/src/lowering.rs), а также [S3-05 contract](specs/JIT_CONTRACT.md#s3-05-decoded-effects-to-typed-ir). Targeted tests покрывают unresolved-first, unresolved-after-prefix и другие branch classes.
 - **Следующий шаг:** S3-15 определяет resolution к будущему block entry без декодирования недостижимого хвоста; до этого unresolved Jcc остаётся interpreter-only.
 
+### ISSUE-023 — Stage 1 test expectations reject currently accepted x87 forms
+
+- **Дата обнаружения:** 2026-10-26.
+- **Компонент:** `od-isa` local Stage 1 test suite; x87 decode/execute admission.
+- **Статус:** открыта; пять тестов падают на Stage 3 baseline commit `9a1376b` и повторно на S3-11 worktree, остальные 706 проходят.
+- **Суть и последствия:** тесты `fabs_rejects_missing_or_invalid_source_and_boundaries_atomically`, `fchs_rejects_invalid_source_and_execution_boundaries_atomically`, `fst_and_fstp_sti_reject_noncanonical_specials_and_bad_infinity_environment_atomically`, `fcomi_family_decodes_only_the_32_bare_indexed_register_forms` и `fninit_accepts_only_bare_db_e3` ожидают `Unsupported`, тогда как соответствующие x87 forms принимаются текущей реализацией. Это не подтверждённый JIT flags дефект, но мешает полному зелёному `od-isa` suite и осложняет проверку Stage 3 изменений.
+- **Основание:** локальный baseline harness [отчёт S3-01](reports/STAGE_3_BASELINE_2026-10-26.md#ограничения-и-следующий-шаг) зафиксировал 703 passed/5 failed; повтор S3-11 дал те же пять имен, serial run также воспроизводит их, а изменённые files не относятся к x87 decoder/execute.
+- **Следующий шаг:** сверить эти ожидания с поддержанным x87 профилем Stage 2, обновить неверные тестовые ожидания или исправить admission только при доказанном semantic дефекте; затем повторить целевые и workspace проверки.
+
 ### ISSUE-022 — Ограниченное покрытие liveness allocator tests
 
 - **Дата обнаружения:** 2026-10-26.
 - **Компонент:** `od-jit::allocator` (S3-09).
-- **Статус:** открыта; S3-10 добавляет unit vector с `ReadGpr` temp, двумя `Integer` uses и двумя helper boundaries, проверяя повторное capture того же register home/slot. Это закрывает конкретный ранее отсутствовавший путь, но не исчерпывает все комбинации liveness.
+- **Статус:** открыта; S3-10 добавила unit vector с `ReadGpr` temp, двумя `Integer` uses и двумя helper boundaries, проверяя повторное capture того же register home/slot. S3-11 emitter snapshots temp/GPR outputs при определении, поэтому диагностика не зависит от allocator home, которое helper мог clobber-нуть после последнего use. Это закрывает lifetime конкретного output path, но не исчерпывает все комбинации allocator liveness.
 - **Суть и последствия:** allocator опирается на first/last-use в linear IR; непокрытое сочетание может ошибочно посчитать временное значение мёртвым или сохранить неверный набор register homes. Подтверждённого runtime-дефекта нет.
 - **Основание:** независимое ревью S3-09 выявило отсутствие отдельных unit vectors для перечисленных liveness сочетаний; native ARM64 probe подтверждает transport для четырёх register homes и двух spills через один helper.
 - **Следующий шаг:** при последующих allocator changes добавить table-driven def/use и boundary combinations, особенно несколько register homes одновременно live-through. Сохранить native helper-clobber probe; до этого считать покрытие базовым, не исчерпывающим.

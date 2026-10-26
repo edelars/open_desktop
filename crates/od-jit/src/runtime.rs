@@ -3,7 +3,7 @@
 //! These tags are integer ABI values. `LongModeState` remains an opaque pointer:
 //! generated code may use the offsets below only when compiled with this crate.
 
-use od_isa::LongModeState;
+use od_isa::{LongModeState, integer_flags};
 
 pub const LONG_MODE_GPR_OFFSET: usize = std::mem::offset_of!(LongModeState, gpr);
 pub const LONG_MODE_RIP_OFFSET: usize = std::mem::offset_of!(LongModeState, rip);
@@ -134,6 +134,36 @@ impl TryFrom<u32> for HelperStatusTag {
 /// x19-x29 and SP. x18 is reserved on Apple.
 pub type ArithmeticFlagsHelper = unsafe extern "C" fn(u32, u64, u64, u64, *mut u64) -> u32;
 
+/// The single JIT-side adapter to shared 64-bit x86 arithmetic flag semantics.
+///
+/// # Safety
+/// `output` must be null or point to one writable, aligned `u64` that remains
+/// valid for the call. It is written only for a recognized operation.
+pub unsafe extern "C" fn arithmetic_flags_helper_adapter(
+    operation: u32,
+    lhs: u64,
+    rhs: u64,
+    old_rflags: u64,
+    output: *mut u64,
+) -> u32 {
+    if output.is_null() {
+        return HelperStatusTag::InvalidArgument as u32;
+    }
+    let Ok(operation) = HelperOperationTag::try_from(operation) else {
+        return HelperStatusTag::Unsupported as u32;
+    };
+    let operation = match operation {
+        HelperOperationTag::Add => integer_flags::ArithmeticFlagOperation::Add,
+        HelperOperationTag::Subtract => integer_flags::ArithmeticFlagOperation::Subtract,
+        HelperOperationTag::Compare => integer_flags::ArithmeticFlagOperation::Compare,
+    };
+    let updated = integer_flags::updated_arithmetic_flags(operation, lhs, rhs, old_rflags);
+    // SAFETY: the caller guarantees that every non-null output points to a
+    // live, aligned, writable u64 for this invocation.
+    unsafe { output.write(updated) };
+    HelperStatusTag::Success as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +187,38 @@ mod tests {
         assert_eq!(HelperOperationTag::try_from(0), Err(0));
         assert_eq!(HelperStatusTag::try_from(0), Ok(HelperStatusTag::Success));
         assert_eq!(HelperStatusTag::try_from(3), Err(3));
+    }
+
+    #[test]
+    fn arithmetic_helper_adapter_writes_only_on_success() {
+        let mut output = 0xDEAD_BEEF_CAFE_BABE;
+        // SAFETY: output is an aligned writable local u64.
+        let status = unsafe {
+            arithmetic_flags_helper_adapter(
+                HelperOperationTag::Add as u32,
+                u64::MAX,
+                1,
+                0xA5A5_F0F0_5A5A_0A0A,
+                &mut output,
+            )
+        };
+        assert_eq!(status, HelperStatusTag::Success as u32);
+        assert_eq!(
+            output,
+            (0xA5A5_F0F0_5A5A_0A0A & !integer_flags::DEFINED_ARITHMETIC_FLAGS) | 0x55
+        );
+
+        output = 0xDEAD_BEEF_CAFE_BABE;
+        // SAFETY: output is an aligned writable local u64.
+        let status = unsafe { arithmetic_flags_helper_adapter(99, 1, 2, 3, &mut output) };
+        assert_eq!(status, HelperStatusTag::Unsupported as u32);
+        assert_eq!(output, 0xDEAD_BEEF_CAFE_BABE);
+
+        // SAFETY: null is explicitly accepted and rejected without dereference.
+        assert_eq!(
+            unsafe { arithmetic_flags_helper_adapter(1, 1, 2, 3, std::ptr::null_mut()) },
+            HelperStatusTag::InvalidArgument as u32
+        );
     }
 
     #[test]

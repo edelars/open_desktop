@@ -112,12 +112,22 @@ allocation, генерирует ARM64 transport через homes/spills и вы
 GPR candidates и отдельный CMP scratch result. Два arithmetic operands читаются
 до result write, включая alias. `WriteGpr` затрагивает только отдельный staging
 copy; emitter возвращает `DATA_EFFECTS_UNCOMMITTED_V1` и не меняет canonical
-CPU state, flags, RIP, budget или retirement. Flags остаются
-`ArithmeticIncomplete`, branch terminals отвергаются. Native od-host test
+CPU state, flags, RIP, budget или retirement. На границе S3-10 flags оставались
+`ArithmeticIncomplete`, branch terminals отвергались; S3-11 ниже добавляет
+eager flags и staged branch selection. Native od-host test
 исполняет полный decoder-to-emitter путь с budgets 0..=4 и сравнивает staged
 vectors. Это промежуточный test harness, не committed guest execution, x86
-physical comparison или benchmark; eager flags и architectural commit относятся
-к S3-11.
+physical comparison или benchmark; eager flags и staged branch selection
+добавляет S3-11, architectural commit и recovery остаются S3-12. Текущий
+S3-11 срез добавляет eager W64 CF/PF/AF/ZF/SF/OF через
+общий `od-isa::integer_flags` helper и тонкий проверяемый ABI adapter. Emitter
+обновляет только staged flags, выбирает staged RIP для JZ/JNZ, snapshots temps
+и GPR candidates при их определении и возвращает тот же uncommitted sentinel;
+canonical guest state и retirement не меняются. Helper failures возвращают
+отдельный raw host-contract sentinel до чтения результата или branch selection.
+Native tests покрывают taken/not-taken JZ/JNZ, MOV flag preservation, CMP без
+GPR write и helper clobbers/status errors. S3-11 завершена; архитектурный
+commit и state recovery остаются в S3-12.
 
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).

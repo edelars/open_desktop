@@ -394,8 +394,9 @@ Test wrapper дополнительно проверяет callee-saved GPR и D
 ### S3-10: staged integer data effects
 
 `emitter::emit_data_effects` принимает только verifier-checked `Program` и
-`Allocation`, созданную для того же объекта Program. Начальный emitter принимает
-W64 `Constant`, `ReadGpr`, `Integer(Add|Subtract|Compare)` и `WriteGpr`; он
+`Allocation`, созданную для того же объекта Program. На границе S3-10 начальная
+версия emitter принимала W64 `Constant`, `ReadGpr`,
+`Integer(Add|Subtract|Compare)` и `WriteGpr`; она
 отвергает другие widths, `FlagEffect` кроме `Arithmetic` у integer operations,
 Jcc/branch terminals и exits кроме `BlockComplete`. Для arithmetic оба входа
 считываются до записи результата, поэтому aliasing и `dst == src` сохраняют
@@ -410,15 +411,48 @@ buffer. `WriteGpr` изменяет только staged GPR copy; outputs экс
 `DATA_EFFECTS_UNCOMMITTED_V1` — host-contract sentinel, не `RuntimeExitTag`.
 Emitter не изменяет canonical `LongModeState`, flags, guest RIP, budget или
 retirement count; результат нельзя считать committed guest instruction или
-`BlockComplete`. Арифметические flags явно помечены `ArithmeticIncomplete`, и
-терминальный Branch пока не исполняется. Следующий S3-11 должен добавить eager
-flags и определить архитектурный commit до успешного guest exit.
+`BlockComplete`. На границе реализации S3-10 arithmetic flags были явно
+помечены `ArithmeticIncomplete`, а terminal Branch не исполнялся. S3-11 ниже
+добавляет eager flags и staged branch selection; архитектурный commit и state
+recovery остаются отдельной задачей S3-12.
 
 Native od-host ARM64 test проходит decoder → bounded block → typed IR → allocator
 → production emitter → `PublishedCode` → execution при budgets 0..=4. Он
 проверяет alias/equal operands, overflow patterns, multi-lane constants,
 spill transport, CMP scratch и неизменность canonical state. Это локальное
 staging evidence, не физический x86 comparison и не performance benchmark.
+
+### S3-11: eager flags и staged branch selection
+
+`od-isa::integer_flags::updated_arithmetic_flags` задаёт один источник W64
+ADD/SUB/CMP semantics для CF/PF/AF/ZF/SF/OF. Он заменяет только mask `0x8d5`,
+сохраняет все остальные RFLAGS bits (включая bit 1), считает carry/borrow,
+signed overflow, auxiliary carry и parity явно и не использует host NZCV.
+`od-jit::runtime::arithmetic_flags_helper_adapter` — тонкий ABI adapter;
+неизвестные operation tags и null output возвращают ненулевой status, а
+output pointer записывается только при успешном вычислении.
+
+Data-effect emitter вызывает helper до materialизации результата операции,
+передаёт оба входа и прежние staged flags, проверяет status прежде чем читать
+helper output или публиковать candidate результата. Ошибка возвращает отдельный
+`RAW_HELPER_CONTRACT_FAILURE_V1`; она не меняет canonical state и не выбирает
+guest exit. После успеха emitter вычисляет transport result, фиксирует
+staged flags и снимки output при определении temp/GPR candidate, чтобы helper
+clobber не уничтожил уже мёртвый allocator home. MOV не вызывает helper и
+сохраняет flags.
+
+JZ/JNZ теперь читают staged guest ZF и выбирают target/fallthrough RIP после
+последнего guest instruction. Flags, GPR candidates и выбранный RIP остаются
+в отдельном staging context; generated entry возвращает
+`DATA_EFFECTS_UNCOMMITTED_V1`, не retire'ит инструкцию и не обновляет
+canonical `LongModeState`, guest budget или успешный `BlockComplete`. Helper
+call и branch selection не создают commit boundary между ними. S3-12 по-прежнему
+должен определить архитектурный commit/state recovery policy.
+
+Проверки включают literal flag vectors, comparison с interpreter, все бюджеты
+allocator 0..=4, helper-clobber/failed-status cases, CMP без GPR write, MOV
+preservation и native taken/not-taken JZ/JNZ. Это evidence для текущего W64
+slice, не полное RFLAGS/x86 equivalence и не физический x86 comparison.
 
 ## 6. Host и этапная приёмка
 

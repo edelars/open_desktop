@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 pub mod execute;
+pub mod integer_flags;
 pub mod long_decode;
 pub mod memory;
 pub mod state;

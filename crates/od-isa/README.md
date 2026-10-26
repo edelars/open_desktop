@@ -6,6 +6,12 @@
 
 Статус на 22 октября 2026 года: decoder и reference interpreter исполняют ограниченный S0-09 из `docs/specs/CPU_CONTRACT.md` (`MOV r64, imm64`, register-only `ADD/SUB/CMP`, `JZ/JNZ`). Есть проверки branch boundaries, flags и instruction budget; этот профиль независимо сравнивается с физическим Intel и ARM64 JIT.
 
+`integer_flags::updated_arithmetic_flags` — общий pure helper для определённых
+W64 ADD/SUB/CMP flags, используемый JIT helper adapter; он не исполняет guest
+instructions и не расширяет поддерживаемый interpreter профиль. Literal
+vectors, сохранение невычисляемых RFLAGS bits и cross-check с reference
+interpreter покрывают текущий S3-11 slice.
+
 В S2-02 добавлены `LongModeState` (16 GPR, RIP u64), `OperandSize` и проверяемые `RegisterView`: low aliases 8/16/32/64, high bytes и различия REX. Это состояние для следующего integer core, а не подтверждение исполнения расширенного ISA. `FragmentState` с C layout и прежнее имя `CpuState` сохраняют четырёхрегистровый S0 API. Явный `TryFrom<&LongModeState>` отклоняет дополнительные регистры, несовместимые flags и непредставимый RIP. Fixture v1 и C ABI v0 не расширены. Подробности и проверки — [отчёт этапа 2](../../docs/reports/STAGE_2_REPORT.md). Выполнять `cargo test -p od-isa --offline`.
 
 Локально принятый S2-08 добавляет реальное исполнение MOV B0–BF immediate register

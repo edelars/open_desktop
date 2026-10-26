@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09 и S3-10 завершены; S3-01 в работе.
+**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10 и S3-11 завершены; S3-01 в работе.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -137,7 +137,7 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-08 | Generated entry и helper ABI | S3-07 |
 | [x] | S3-09 | Простой allocator baseline | S3-03, S3-08 |
 | [x] | S3-10 | Lowering первого integer subset | S3-05, S3-06, S3-09 |
-| [ ] | S3-11 | Корректные eager flags | S3-10 |
+| [x] | S3-11 | Корректные eager flags | S3-10 |
 | [ ] | S3-12 | State points и PC maps | S3-11 |
 | [ ] | S3-13 | Первый сквозной запуск одного блока | S3-07, S3-12 |
 | [ ] | S3-14 | Тройное сравнение register-only | S3-13 |
@@ -293,7 +293,7 @@ S3-10 выполнена: `od-jit::emitter::emit_data_effects` потребля�
 2. Не отождествлять host NZCV с полным x86 RFLAGS. Jcc читает guest condition, а helper clobber не уничтожает pending значение.
 3. Сверить carry/borrow, signed overflow, auxiliary carry и parity по независимым byte fixtures.
 
-**Готово:** арифметика и taken/not-taken branches совпадают с interpreter; definedness masks заданы до наблюдения результата. Eager path остаётся эталонной конфигурацией для проверки S3-29.
+S3-11 выполнена: выделен общий `od-isa::integer_flags` helper для W64 ADD/SUB/CMP; тонкий `od-jit` ABI adapter читает output только при status Success, а data-effect emitter оставляет flags/выбранный RIP в uncommitted staging. Native tests покрывают оба исхода JZ/JNZ, MOV flag preservation, CMP без GPR write, helper failure без текущего guest commit и helper-clobber allocator homes. Literal vectors и interpreter cross-checks проверяют шесть определённых flags и сохранение остальных RFLAGS bits. Independent review clean; workspace check, fmt, `od-jit` 51/51, `od-host` 16/16, targeted `integer_flags` 3/3, diff-check и layout check прошли. Полный `od-isa` suite по-прежнему имеет пять несвязанных x87/decoder failures, зарегистрированных в [ISSUE-023](../KNOWN_ISSUES.md#issue-023--stage-1-test-expectations-reject-currently-accepted-x87-forms). Архитектурный commit и recovery остаются в S3-12.
 
 ### S3-12. Добавить state points и PC maps
 

@@ -527,8 +527,8 @@ mod tests {
     };
     use od_jit::block::{self, BlockLimits, CodeView};
     use od_jit::emitter::{
-        self, DATA_EFFECTS_UNCOMMITTED_V1, DataEffectContextV1, DataEffectEntry,
-        DataEffectOutputKind, FlagMaterialization,
+        self, DATA_EFFECTS_UNCOMMITTED_V1, DataEffectContextV2, DataEffectEntry,
+        DataEffectOutputKind, DataEffectTerminal, FlagMaterialization,
     };
     use od_jit::ir::{ExitKind, GuestGpr, GuestInstruction, IntWidth, Operation, Program, TempId};
     use od_jit::lowering::{self, LoweringOutcome};
@@ -540,6 +540,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, AtomicUsize};
 
     static JIT_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static DATA_EFFECT_HELPER_STATUS: AtomicU32 = AtomicU32::new(0);
 
     fn jit_test_lock() -> std::sync::MutexGuard<'static, ()> {
         JIT_TEST_LOCK
@@ -1023,7 +1024,8 @@ mod tests {
     fn emit_decoder_data_effects(
         code: &[u8],
         register_homes: u8,
-    ) -> (Vec<u8>, Vec<DataEffectOutputKind>) {
+        helper: ArithmeticFlagsHelper,
+    ) -> (Vec<u8>, Vec<DataEffectOutputKind>, DataEffectTerminal) {
         let base_rip = 0x3000;
         let view = CodeView::new(base_rip, code).unwrap();
         let built = block::build_block(
@@ -1036,20 +1038,79 @@ mod tests {
         let LoweringOutcome::Program(lowered) = lowering::lower(&built).unwrap() else {
             panic!("native data-effect test expects an admitted block prefix");
         };
+        let helper_boundaries: Vec<_> = lowered
+            .program
+            .operations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, operation)| {
+                matches!(operation, Operation::Integer { .. })
+                    .then_some(HelperBoundaryPosition::BeforeOperation(index))
+            })
+            .collect();
         let allocation = Allocation::build(
             &lowered.program,
             AllocatorConfig {
                 register_homes,
-                reserved_prefix_bytes: 0,
+                reserved_prefix_bytes: 48,
             },
-            &[],
+            &helper_boundaries,
         )
         .unwrap();
-        let emitted = emitter::emit_data_effects(&lowered.program, &allocation).unwrap();
-        assert_eq!(emitted.flags, FlagMaterialization::ArithmeticIncomplete);
+        let emitted = emitter::emit_data_effects(&lowered.program, &allocation, helper).unwrap();
+        assert_eq!(emitted.flags, FlagMaterialization::ArithmeticComplete);
         assert_eq!(emitted.committed_guest_instructions, 0);
         let output_kinds = emitted.outputs.iter().map(|output| output.kind).collect();
-        (emitted.code.to_le_bytes().unwrap(), output_kinds)
+        (
+            emitted.code.to_le_bytes().unwrap(),
+            output_kinds,
+            emitted.terminal,
+        )
+    }
+
+    unsafe extern "C" fn data_effect_flags_helper(
+        operation: u32,
+        lhs: u64,
+        rhs: u64,
+        old_rflags: u64,
+        output: *mut u64,
+    ) -> u32 {
+        // SAFETY: the generated caller passes a live stack output slot.
+        let status = unsafe {
+            od_jit::runtime::arithmetic_flags_helper_adapter(
+                operation, lhs, rhs, old_rflags, output,
+            )
+        };
+        // The helper boundary must reload base pointers and live allocator
+        // homes after all caller-saved x7-x17 registers have been clobbered.
+        // SAFETY: all named outputs are caller-saved AAPCS64 registers.
+        unsafe {
+            std::arch::asm!(
+                "mov x7, xzr", "mov x8, xzr", "mov x9, xzr", "mov x10, xzr",
+                "mov x11, xzr", "mov x12, xzr", "mov x13, xzr", "mov x14, xzr",
+                "mov x15, xzr", "mov x16, xzr", "mov x17, xzr",
+                lateout("x7") _, lateout("x8") _, lateout("x9") _, lateout("x10") _,
+                lateout("x11") _, lateout("x12") _, lateout("x13") _, lateout("x14") _,
+                lateout("x15") _, lateout("x16") _, lateout("x17") _,
+                options(nostack)
+            );
+        }
+        status
+    }
+
+    unsafe extern "C" fn data_effect_failing_helper(
+        _operation: u32,
+        _lhs: u64,
+        _rhs: u64,
+        _old_rflags: u64,
+        output: *mut u64,
+    ) -> u32 {
+        if !output.is_null() {
+            // SAFETY: test code is called with the emitter's live, aligned
+            // helper-output slot and deliberately scribbles it on failure.
+            unsafe { output.write(0xBAD0_F17E_DEAD_BEEF) };
+        }
+        DATA_EFFECT_HELPER_STATUS.load(Ordering::Relaxed)
     }
 
     fn call_probe_with_simd_canaries(
@@ -1251,11 +1312,14 @@ mod tests {
         let mut canonical_state = od_isa::LongModeState::default();
         canonical_state.gpr[..initial_gprs.len()].copy_from_slice(&initial_gprs);
         canonical_state.rip = 0xAABB_CCDD;
-        canonical_state.rflags = 0x8D7;
+        let old_flags = 0xA5A5_F0F0_5A5A_0A0A;
+        canonical_state.rflags = old_flags;
         let original_canonical = canonical_state.clone();
 
         for register_homes in 0..=4 {
-            let (code, outputs) = emit_decoder_data_effects(&guest_code, register_homes);
+            let (code, outputs, terminal) =
+                emit_decoder_data_effects(&guest_code, register_homes, data_effect_flags_helper);
+            assert!(matches!(terminal, DataEffectTerminal::BlockComplete { .. }));
             let temporary_ids: Vec<_> = outputs
                 .iter()
                 .filter_map(|kind| match kind {
@@ -1273,10 +1337,14 @@ mod tests {
             // slot, and the mapping owner remains live through execution.
             let entry: DataEffectEntry = unsafe { std::mem::transmute(published.as_ptr()) };
             let mut staging_gprs = initial_gprs;
+            let mut staging_flags = old_flags;
+            let mut staging_rip = 0xDEAD_BEEF;
             let mut observed = vec![0xBADD_CAFE_DEAD_BEEF; outputs.len()];
-            let mut context = DataEffectContextV1 {
+            let mut context = DataEffectContextV2 {
                 staging_gprs: staging_gprs.as_mut_ptr(),
                 output_values: observed.as_mut_ptr(),
+                staging_rflags: &mut staging_flags,
+                staging_rip: &mut staging_rip,
             };
             // The assembly wrapper validates x19-x29, valid x29 frame-chain
             // pointer, and exact SP restoration around the generated entry.
@@ -1285,12 +1353,23 @@ mod tests {
             let raw = unsafe {
                 od_jit_allocator_call_with_gpr_canaries(
                     entry as usize,
-                    (&mut context as *mut DataEffectContextV1) as usize,
+                    (&mut context as *mut DataEffectContextV2) as usize,
                 )
             };
 
             assert_eq!(raw, DATA_EFFECTS_UNCOMMITTED_V1);
             assert_eq!(staging_gprs, [0, 1, u64::MAX, doubled]);
+            assert_eq!(
+                staging_flags & od_isa::integer_flags::DEFINED_ARITHMETIC_FLAGS,
+                0x015
+            );
+            assert_eq!(
+                staging_flags & !od_isa::integer_flags::DEFINED_ARITHMETIC_FLAGS,
+                old_flags & !od_isa::integer_flags::DEFINED_ARITHMETIC_FLAGS
+            );
+            if let DataEffectTerminal::BlockComplete { target_rip } = terminal {
+                assert_eq!(staging_rip, target_rip);
+            }
             assert_eq!(canonical_state, original_canonical);
             for (slot, kind) in outputs.iter().enumerate() {
                 match *kind {
@@ -1318,6 +1397,179 @@ mod tests {
                         assert_eq!(instruction_index, 6);
                         assert_eq!(observed[slot], doubled.wrapping_sub(u64::MAX));
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generated_jz_jnz_stage_taken_and_not_taken_rips() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x3000;
+        let old_flags = 0xA5A5_F0F0_5A5A_0A0A;
+
+        for opcode in [0x74, 0x75] {
+            for (lhs, rhs, zero, expected_result) in [(u64::MAX, 1, true, 0), (1, 1, false, 2)] {
+                let code = [0x48, 0x03, 0xC1, opcode, 0xFB]; // ADD; JZ/JNZ back to entry
+                let (native_code, _, terminal) =
+                    emit_decoder_data_effects(&code, 2, data_effect_flags_helper);
+                let DataEffectTerminal::Branch {
+                    condition,
+                    target_rip,
+                    fallthrough_rip,
+                } = terminal
+                else {
+                    panic!("JZ/JNZ program must retain its verified branch terminal");
+                };
+                assert_eq!(target_rip, base_rip);
+                assert_eq!(fallthrough_rip, base_rip + code.len() as u64);
+
+                let published = PublishedCode::publish(&native_code).unwrap();
+                // SAFETY: this entry comes from verified decoder output and the
+                // matching allocator/emitter; all four staging pointers live.
+                let entry: DataEffectEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+                let mut staging_gprs = [lhs, rhs, 0x3333, 0x4444];
+                let mut staging_flags = old_flags;
+                let mut staging_rip = 0xDEAD_BEEF;
+                let mut outputs = [0xBADD_CAFE_DEAD_BEEF; 12];
+                let mut context = DataEffectContextV2 {
+                    staging_gprs: staging_gprs.as_mut_ptr(),
+                    output_values: outputs.as_mut_ptr(),
+                    staging_rflags: &mut staging_flags,
+                    staging_rip: &mut staging_rip,
+                };
+                // SAFETY: owner is live and the pointers above remain valid.
+                let raw = unsafe {
+                    od_jit_allocator_call_with_gpr_canaries(
+                        entry as usize,
+                        (&mut context as *mut DataEffectContextV2) as usize,
+                    )
+                };
+
+                assert_eq!(raw, DATA_EFFECTS_UNCOMMITTED_V1);
+                assert_eq!(staging_gprs[0], expected_result);
+                assert_eq!(staging_gprs[1..], [rhs, 0x3333, 0x4444]);
+                let expected_flags = od_isa::integer_flags::updated_arithmetic_flags(
+                    od_isa::integer_flags::ArithmeticFlagOperation::Add,
+                    lhs,
+                    rhs,
+                    old_flags,
+                );
+                assert_eq!(staging_flags, expected_flags);
+                let taken = match condition {
+                    od_jit::ir::BranchCondition::Zero => zero,
+                    od_jit::ir::BranchCondition::NotZero => !zero,
+                };
+                assert_eq!(
+                    staging_rip,
+                    if taken { target_rip } else { fallthrough_rip }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn generated_mov_preserves_eager_arithmetic_flags_before_branch() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x3000;
+        let immediate = 0xFEDC_BA98_7654_3210_u64;
+        // ADD RAX, RCX; MOV RDX, imm64; JZ back to the block entry.
+        let mut code = vec![0x48, 0x03, 0xC1, 0x48, 0xBA];
+        code.extend_from_slice(&immediate.to_le_bytes());
+        code.extend_from_slice(&[0x74, 0xF1]);
+        let (native_code, _, terminal) =
+            emit_decoder_data_effects(&code, 2, data_effect_flags_helper);
+        let DataEffectTerminal::Branch { target_rip, .. } = terminal else {
+            panic!("JZ must remain a branch terminal after MOV");
+        };
+        assert_eq!(target_rip, base_rip);
+
+        let published = PublishedCode::publish(&native_code).unwrap();
+        // SAFETY: generated code came from the validated block and emitter;
+        // all context pointers remain valid until the mapping is dropped.
+        let entry: DataEffectEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+        let mut staging_gprs = [u64::MAX, 1, 0, 0x4444];
+        let mut staging_flags = 0xA5A5_F0F0_5A5A_0A0A;
+        let old_flags = staging_flags;
+        let mut staging_rip = u64::MAX;
+        let mut outputs = [0_u64; 8];
+        let mut context = DataEffectContextV2 {
+            staging_gprs: staging_gprs.as_mut_ptr(),
+            output_values: outputs.as_mut_ptr(),
+            staging_rflags: &mut staging_flags,
+            staging_rip: &mut staging_rip,
+        };
+        // SAFETY: the published entry is owned above and receives the live
+        // V2 staging context.
+        let raw = unsafe {
+            od_jit_allocator_call_with_gpr_canaries(
+                entry as usize,
+                (&mut context as *mut DataEffectContextV2) as usize,
+            )
+        };
+
+        assert_eq!(raw, DATA_EFFECTS_UNCOMMITTED_V1);
+        assert_eq!(staging_gprs, [0, 1, immediate, 0x4444]);
+        assert_eq!(
+            staging_flags,
+            od_isa::integer_flags::updated_arithmetic_flags(
+                od_isa::integer_flags::ArithmeticFlagOperation::Add,
+                u64::MAX,
+                1,
+                old_flags,
+            ),
+            "MOV must preserve the arithmetic flags produced by ADD"
+        );
+        assert_eq!(staging_rip, base_rip);
+    }
+
+    #[test]
+    fn helper_error_statuses_do_not_publish_current_instruction_or_terminal() {
+        let _guard = jit_test_lock();
+        let code = [0x48, 0x03, 0xC1]; // ADD RAX, RCX
+        let (native_code, output_kinds, _) =
+            emit_decoder_data_effects(&code, 1, data_effect_failing_helper);
+        let published = PublishedCode::publish(&native_code).unwrap();
+        // SAFETY: the entry came from the checked production emitter and uses
+        // live, disjoint staging memory below.
+        let entry: DataEffectEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+        let original_gprs = [1, 2, 3, 4];
+        let original_flags = 0xA5A5_F0F0_5A5A_0A0A;
+        let original_rip = 0x3000;
+        let mut canonical_state = od_isa::LongModeState::default();
+        canonical_state.gpr[..4].copy_from_slice(&original_gprs);
+        canonical_state.rflags = original_flags;
+        canonical_state.rip = original_rip;
+        let original_canonical = canonical_state.clone();
+
+        for status in [1, 2, u32::MAX] {
+            DATA_EFFECT_HELPER_STATUS.store(status, Ordering::Relaxed);
+            let mut staging_gprs = original_gprs;
+            let mut staging_flags = original_flags;
+            let mut staging_rip = original_rip;
+            let sentinel = 0xBADD_CAFE_DEAD_BEEF;
+            let mut outputs = vec![sentinel; output_kinds.len()];
+            let mut context = DataEffectContextV2 {
+                staging_gprs: staging_gprs.as_mut_ptr(),
+                output_values: outputs.as_mut_ptr(),
+                staging_rflags: &mut staging_flags,
+                staging_rip: &mut staging_rip,
+            };
+            // SAFETY: owner and all staging buffers remain live during call.
+            let raw = unsafe {
+                od_jit_allocator_call_with_gpr_canaries(
+                    entry as usize,
+                    (&mut context as *mut DataEffectContextV2) as usize,
+                )
+            };
+            assert_eq!(raw, RAW_HELPER_CONTRACT_FAILURE_V1);
+            assert_eq!(staging_gprs, original_gprs);
+            assert_eq!(staging_flags, original_flags);
+            assert_eq!(staging_rip, original_rip);
+            assert_eq!(canonical_state, original_canonical);
+            for (slot, kind) in output_kinds.iter().enumerate() {
+                if matches!(kind, DataEffectOutputKind::GuestRegisterCandidate { .. }) {
+                    assert_eq!(outputs[slot], sentinel);
                 }
             }
         }

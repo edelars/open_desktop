@@ -782,6 +782,12 @@ destination, включая upper32. INC/DEC сохраняют входной C
 пять flags. NEG: CF=0 только для нуля, иначе 1; signed minimum устанавливает OF.
 DF и остальные незатронутые flags сохраняются.
 
+S3-11 ARM64 JIT reuse'ит pure
+`od_isa::integer_flags::updated_arithmetic_flags` для своего W64 ADD/SUB/CMP
+подмножества, а не дублирует эти формулы в host code. Eager flags и branch
+tests остаются staged и uncommitted; это не меняет interpreter contract и не
+означает commit гостевых инструкций JIT.
+
 Точные нормативные entries Intel SDM093:
 [Vol.2A](https://cdrdv2.intel.com/v1/dl/getContent/671199) ADC pp.3-9–3-11,
 ADD pp.3-14–3-15, CMP pp.3-161–3-162, DEC pp.3-262–3-263,
