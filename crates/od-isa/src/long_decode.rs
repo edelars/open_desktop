@@ -557,8 +557,10 @@ pub enum Operation {
     Fcmovnbe {
         source: u8,
     },
-    /// Exact bare `DA D9` FCMOVU ST(0), ST(1), bounded raw copy when PF is set.
-    Fcmovu,
+    /// Bare `DA D8+i` FCMOVU ST(0), ST(i), bounded raw copy when PF is set.
+    Fcmovu {
+        source: u8,
+    },
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
     FcompSt {
         source: u8,
@@ -820,6 +822,11 @@ fn x87_fcmove(opcode: u8, modrm: u8) -> Option<Operation> {
 fn x87_fcmovbe(opcode: u8, modrm: u8) -> Option<Operation> {
     (opcode == 0xda && (0xd0..=0xd7).contains(&modrm))
         .then_some(Operation::Fcmovbe { source: modrm & 7 })
+}
+
+fn x87_fcmovu(opcode: u8, modrm: u8) -> Option<Operation> {
+    (opcode == 0xda && (0xd8..=0xdf).contains(&modrm))
+        .then_some(Operation::Fcmovu { source: modrm & 7 })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1302,8 +1309,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 if modrm == 0xe9 {
                     Operation::Fucompp
-                } else if modrm == 0xd9 {
-                    Operation::Fcmovu
+                } else if let Some(operation) = x87_fcmovu(opcode.byte, modrm) {
+                    operation
                 } else if let Some(operation) = x87_fcmove(opcode.byte, modrm) {
                     operation
                 } else if let Some(operation) = x87_fcmovbe(opcode.byte, modrm) {
@@ -4354,16 +4361,19 @@ mod tests {
     }
 
     #[test]
-    fn exact_bare_da_d9_fcmovu_rejects_neighbors_prefixes_and_truncation() {
+    fn exact_bare_da_d8_through_df_fcmovu_rejects_neighbors_prefixes_and_truncation() {
         for modrm in 0u8..=u8::MAX {
             let decoded = Memory::new(&[0xda, modrm]).decode();
-            if modrm == 0xd9 {
-                assert_eq!(decoded.unwrap().operation, Operation::Fcmovu);
+            if (0xd8..=0xdf).contains(&modrm) {
+                assert_eq!(
+                    decoded.unwrap().operation,
+                    Operation::Fcmovu { source: modrm & 7 }
+                );
             } else {
                 assert!(
                     !matches!(
                         decoded.map(|instruction| instruction.operation),
-                        Ok(Operation::Fcmovu)
+                        Ok(Operation::Fcmovu { .. })
                     ),
                     "DA {modrm:02x}"
                 );
@@ -4375,10 +4385,12 @@ mod tests {
         .into_iter()
         .chain(0x40..=0x4f)
         {
-            assert!(matches!(
-                Memory::new(&[prefix, 0xda, 0xd9]).decode(),
-                Err(DecodeError::Unsupported { .. })
-            ));
+            for source in 0..8u8 {
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xda, 0xd8 | source]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
         }
         assert!(Memory::new(&[0xda]).decode().is_err());
     }

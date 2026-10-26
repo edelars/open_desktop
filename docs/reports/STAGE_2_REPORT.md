@@ -10004,3 +10004,34 @@ snapshots compare full state and memory and deny JIT for every index.
 
 Verification passed: 10 focused `od-isa` tests, all 185 `od-testkit` tests, all 101 `od-runner`
 unit tests and 199 fixture integration tests, `cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`, and `git diff --check`. `tools/check_layout.py` still reports the known isolated-worktree `.git` pointer and two links to ignored oracle manifests absent from this worktree. No directory structure changed. No Mini, SSH, native runtime or physical x86 verification was performed; ISSUE-019 remains open.
+
+## S2-30ch — indexed bare `FCMOVU ST(0), ST(i)`
+
+Expanded exact unprefixed Long64 `DA D9` to `DA D8..DF`, storing each source
+index in `Operation::Fcmovu`. Execution reuses the existing bounded FCMOV
+preflight: FCW `0x037f`, `FSW & 0x82ff == 0`, and Valid canonical-Normal or
+Zero exact-signed-zero operands. Both participants are checked before PF for
+`i>0`, including untaken moves; self-index checks TOP only and retains its cell
+without inspecting other registers. PF=1 copies the ten raw bytes and tag;
+PF=0 preserves the destination. C1 remains closed and Special/NaN inputs are
+not modeled.
+
+Interpreter tests cover 363,520 successes (358,400 for `i>0`, 5,120 self) and
+161,280 invalid class/tag rejects (150,528 for `i>0`, 10,752 self), including
+both signs, PF, all TOP values and x87 condition-code patterns. The exact
+schema admits 18 streams: eight bare forms at budget 1, their FNSTSW forms at
+budget 2, DA D9 repeat at budget 3, and the retained TEST producer at budget 5.
+Nine new bare successes, a repeat, two retained producer fixtures,
+invalid-source PF=0/1, invalid destination, and C1/ES/B/FCW rejects have
+full-state and memory runner assertions with JIT denial.
+
+S2-30cg's earlier ST(1)-only evidence is retained as 512 success and 768
+invalid class/tag snapshots; S2-30ch is the indexed acceptance claim. The four
+focused `od-isa` decoder/interpreter tests, the exact-schema `od-testkit` test,
+the retained producer fixture test and the indexed success/reject runner test
+all pass. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and `git diff --check` pass.
+`graphify update .` completed; it reports the existing `host_abi.h` parser
+warning and files without extractable symbols. No layout changed. This
+substage does not run Mac mini, SSH, native runtime or physical x86 checks;
+ISSUE-019 remains open.

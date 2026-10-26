@@ -831,3 +831,13 @@ unrelated x87 gate remain unchanged. Binary32 subnormal FLD followed by m64
 FST/FSTP confirms the loaded value converts to binary64 normal while carrying
 DE forward. Binary32/64 subnormal store results remain unsupported. See the
 [S2-31az contract](../specs/CPU_CONTRACT.md#local-s2-31az-admit-sticky-de-m32-m64-fstfstp).
+
+## Local S2-30ch indexed FCMOVU
+
+The Long64 interpreter admits exact unprefixed DA D8..DF only. It reuses the
+bounded FCMOV operand and environment gate, preflights TOP/source before PF
+for every non-self index even when untaken, and checks only TOP for self-index.
+PF=1 raw-copies the ten source bytes and tag; PF=0 keeps the destination. The
+full-state success and rejection matrices, execution-boundary atomicity, exact
+fixture streams and JIT denial are local evidence; C1 and Special/NaN behavior
+remain closed. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ch-bounded-indexed-fcmovu-st0-sti-da-d8df).

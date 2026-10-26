@@ -311,6 +311,33 @@ const FCMOVU_FIXTURES: [&[u8]; 2] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cg_fcmovu_test_pf1_taken.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cg_fcmovu_test_pf0_untaken.case.json"),
 ];
+const FCMOVU_INDEXED_FIXTURES: [&[u8]; 10] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_st0_pf0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_st0_pf1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_i1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_i2.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_zero.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_i4.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_i5.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_i6.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_i7.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_repeat.case.json"),
+];
+const FCMOVU_REJECTS: [&[u8]; 7] = [
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_invalid_source_pf0.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_invalid_source_pf1.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_invalid_destination.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_c1_reject.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_es_reject.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_b_bit_reject.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_bad_fcw_reject.case.json"),
+];
 const FCMOVE_INDEXED_FIXTURES: [&[u8]; 8] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf1.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf0.case.json"),
@@ -7847,6 +7874,131 @@ fn local_x87_fcmovu_test_pf_fixtures_check_full_state_and_deny_jit() {
             .collect::<Vec<_>>();
         assert_eq!(
             observed.memory, expected_memory,
+            "{}",
+            loaded.fixture.case_id
+        );
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(
+            matches!(jit.outcome, Outcome::Unsupported { .. }),
+            "{}",
+            loaded.fixture.case_id
+        );
+    }
+}
+
+#[test]
+fn local_x87_indexed_fcmovu_fixtures_check_full_state_and_deny_jit() {
+    for bytes in FCMOVU_INDEXED_FIXTURES {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let (_, result) = run(bytes, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{}",
+            loaded.fixture.case_id
+        );
+        assert_eq!(
+            count(&result),
+            loaded.fixture.instruction_budget,
+            "{}",
+            loaded.fixture.case_id
+        );
+        let observed = snapshot(&result);
+        let mut expected = loaded.fixture.initial_state.clone();
+        let code = &loaded.fixture.memory[0].initial_bytes_hex;
+        let top = ((expected.x87.as_ref().unwrap().status_word.get() >> 11) & 7) as usize;
+        let source_index = u8::from_str_radix(&code[2..4], 16).unwrap() & 7;
+        let source = (top + usize::from(source_index)) & 7;
+        let instruction_count = loaded.fixture.instruction_budget;
+        let fcmovu_offset = if instruction_count == 3 { 2 } else { 0 };
+        let pf = expected.rflags.get() & 4 != 0;
+        let case_id = loaded.fixture.case_id.as_str();
+        let expected_pf = !case_id.ends_with("st0_pf0");
+        assert_eq!(pf, expected_pf, "{}", loaded.fixture.case_id);
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        let source_bytes = expected_x87.registers[source].clone();
+        let source_tag = (expected_x87.tag_word.get() >> (source * 2)) & 3;
+        if pf {
+            if source_index != 0 {
+                assert_ne!(
+                    expected_x87.registers[top], source_bytes,
+                    "fixture must make the taken copy observable: {}",
+                    loaded.fixture.case_id
+                );
+            }
+            expected_x87.registers[top] = expected_x87.registers[source].clone();
+            let tag_mask = !(3u64 << (top * 2));
+            expected_x87.tag_word =
+                HexU64((expected_x87.tag_word.get() & tag_mask) | (source_tag << (top * 2)));
+            assert_eq!(expected_x87.registers[top], source_bytes);
+            assert_eq!((expected_x87.tag_word.get() >> (top * 2)) & 3, source_tag);
+        }
+        expected_x87.instruction_pointer =
+            HexU64(loaded.fixture.initial_state.rip.get() + fcmovu_offset);
+        if instruction_count == 3 {
+            expected.gpr[0] = HexU64(
+                (expected.gpr[0].get() & !0xffff) | (expected_x87.status_word.get() & 0xffff),
+            );
+        }
+        expected.rip =
+            HexU64(loaded.fixture.initial_state.rip.get() + u64::from(instruction_count) * 2);
+        assert_eq!(observed.state, expected, "{}", loaded.fixture.case_id);
+        let expected_memory = loaded
+            .fixture
+            .memory
+            .iter()
+            .map(|region| MemoryRegionSnapshot {
+                region_id: region.region_id.clone(),
+                guest_address: region.guest_address,
+                bytes_hex: region.initial_bytes_hex.to_ascii_lowercase(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed.memory, expected_memory,
+            "{}",
+            loaded.fixture.case_id
+        );
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(
+            matches!(jit.outcome, Outcome::Unsupported { .. }),
+            "{}",
+            loaded.fixture.case_id
+        );
+    }
+    for bytes in FCMOVU_REJECTS {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let pf = loaded.fixture.initial_state.rflags.get() & 4 != 0;
+        assert_eq!(
+            pf,
+            !loaded.fixture.case_id.ends_with("invalid_source_pf0"),
+            "{}",
+            loaded.fixture.case_id
+        );
+        let (_, result) = run(bytes, "interpreter", 4);
+        assert_eq!(count(&result), 0, "{}", loaded.fixture.case_id);
+        assert!(
+            matches!(result.outcome, Outcome::Unsupported { .. }),
+            "{}",
+            loaded.fixture.case_id
+        );
+        assert_eq!(
+            snapshot(&result).state,
+            loaded.fixture.initial_state,
+            "{}",
+            loaded.fixture.case_id
+        );
+        let expected_memory = loaded
+            .fixture
+            .memory
+            .iter()
+            .map(|region| MemoryRegionSnapshot {
+                region_id: region.region_id.clone(),
+                guest_address: region.guest_address,
+                bytes_hex: region.initial_bytes_hex.to_ascii_lowercase(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            snapshot(&result).memory,
+            expected_memory,
             "{}",
             loaded.fixture.case_id
         );

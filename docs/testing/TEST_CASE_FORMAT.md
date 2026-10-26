@@ -590,3 +590,13 @@ S2-31y load fixtures and unrelated x87 gates are unchanged. See the
 [S2-31az contract](../specs/CPU_CONTRACT.md#local-s2-31az-admit-sticky-de-m32-m64-fstfstp),
 [plan](../plans/STAGE_2.md#s2-31az-admit-sticky-de-in-bounded-m32-m64-fst-fstp),
 and [report](../reports/STAGE_2_REPORT.md#s2-31az--sticky-de-in-bounded-m32-m64-stores).
+
+## S2-30ch literal indexed FCMOVU profile
+
+The S2-30ch x87 fixtures use the exact unprefixed Long64 DA D8..DF bytes.
+The schema admits eight bare indexed forms and their exact FNSTSW AX suffixes,
+the repeated DA D9 stream, and the retained TEST producer. Literal successes
+cover self-index PF=0/1 and indices 1..7; rejects use a bare indexed instruction
+with one-step budget and no stop RIP. This is a local bounded fixture contract;
+JIT/native execution, unordered/NaN operands and physical acceptance are not
+implied. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ch-bounded-indexed-fcmovu-st0-sti-da-d8df).

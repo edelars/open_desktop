@@ -7633,20 +7633,34 @@ See [plan](../plans/STAGE_2.md#s2-30cf-indexed-bare-fcmovnbe-st0-sti-db-d0d7),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30cf-indexed-bare-fcmovnbe-st0-sti-db-d0d7).
 
 
-## Local S2-30cg: exact bare `FCMOVU ST(0), ST(1)` (`DA D9`)
+## Local S2-30cg: historical bare `FCMOVU ST(0), ST(1)` (`DA D9`)
 
-The interpreter admits only unprefixed Long64 `DA D9`. It requires an existing
-x87 snapshot, FCW `0x037f`, `FSW & 0x82ff == 0`, and both old physical TOP and
-TOP+1 to be Valid canonical-Normal or Zero exact-signed-zero values. Both
-participants are validated before integer PF is read, even when the move is
-untaken. PF=1 copies the source's raw binary80 bytes and tag to TOP; PF=0
-preserves the destination. All other state is preserved except FIP=old RIP,
-RIP+=2, and retirement. Invalid operands, environment and execution boundaries
-reject without CPU commit.
+The original local slice accepted only `DA D9`, with TOP and TOP+1 preflight
+before PF, and recorded 512 success plus 768 invalid class/tag snapshots.
+Its two TEST-producer fixtures remain as compatibility coverage. Indexed
+behavior is documented under S2-30ch; unordered/NaN inputs, exception delivery
+and physical x86 execution remain outside the contract.
 
-The exact fixture schema admits only `d9e8d9ee4885c0dad9dfe0`: FLD1, FLDZ,
-TEST RAX,RAX, FCMOVU ST(0),ST(1), FNSTSW AX. Literal runner inputs RAX=3 and
-RAX=1 exercise PF=1 and PF=0, respectively, with ZF=0 in both. JIT and native
-admission remain closed. This local slice does not define FCMOVU behavior for
-unordered/NaN x87 operands, general exception delivery, or physical x86
-execution; ISSUE-019 remains open.
+## Local S2-30ch: bounded indexed `FCMOVU ST(0), ST(i)` (`DA D8..DF`)
+
+The interpreter admits only exact unprefixed Long64 encodings `DA D8..DF`,
+with the low ModR/M bits stored as the source index. It requires x87 state,
+FCW `0x037f`, `FSW & 0x82ff == 0`, and used participants tagged Valid with
+canonical Normal values or Zero with exact signed zero. Before integer PF is
+read, `i>0` preflights old physical TOP and `(old_TOP+i)&7`, even for PF=0;
+`i=0` validates TOP alone and retains its exact bytes/tag without inspecting
+other cells. PF=1 raw-copies the source's ten bytes and tag to TOP; PF=0 keeps
+the destination. C1 remains closed and Special/NaN values are unsupported.
+All other state and memory remain unchanged except FIP=old RIP, RIP+=2 and one
+retirement. Any rejected state or boundary leaves CPU state unchanged.
+
+Local unit coverage comprises 363,520 success snapshots and 161,280 invalid
+class/tag snapshots. The schema admits exactly 18 streams: each DA D8..DF bare
+instruction (budget 1) and with FNSTSW AX (budget 2), DA D9 repeated with
+FNSTSW (budget 3), and the retained FLD1/FLDZ/TEST/DA D9/FNSTSW producer
+(budget 5). Nine bare success literals cover self PF=0/1 and indices 1..7;
+repeat and both producer fixtures are retained, with invalid-source PF=0/1,
+invalid destination, C1, ES, B and FCW rejection literals. The runner compares
+full state and memory and confirms JIT denial. No unordered/NaN semantics,
+general x87 exception delivery, native behavior or physical x86 acceptance is
+claimed. ISSUE-019 remains open.

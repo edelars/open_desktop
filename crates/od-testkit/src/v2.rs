@@ -1594,6 +1594,39 @@ impl Fixture {
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     x87.control_word.get() != 0x037f || x87.status_word.get() & 0x82ff != 0
                 });
+            let fcmovu_source = fcmovu_bare_source(&code_bytes);
+            let is_fcmovu_operand_rejected = fcmovu_source.is_some()
+                && self.stop_rip.is_none()
+                && self.expected_exit == ExpectedExit::Unsupported
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as usize;
+                    let source = (top + usize::from(fcmovu_source.unwrap())) & 7;
+                    let valid_operand = |index: usize| {
+                        let tag = (x87.tag_word.get() >> (index * 2)) & 3;
+                        let Ok(bytes) = decode_bytes(&x87.registers[index]) else {
+                            return false;
+                        };
+                        if bytes.len() != 10 {
+                            return false;
+                        }
+                        let significand = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+                        let exponent = u16::from_le_bytes([bytes[8], bytes[9] & 0x7f]);
+                        match tag {
+                            0 => (1..0x7fff).contains(&exponent) && significand & (1 << 63) != 0,
+                            1 => significand == 0 && exponent == 0 && matches!(bytes[9], 0 | 0x80),
+                            _ => false,
+                        }
+                    };
+                    !valid_operand(top) || (fcmovu_source != Some(0) && !valid_operand(source))
+                });
+            let is_fcmovu_environment_rejected = fcmovu_source.is_some()
+                && self.stop_rip.is_none()
+                && self.expected_exit == ExpectedExit::Unsupported
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    x87.control_word.get() != 0x037f || x87.status_word.get() & 0x82ff != 0
+                });
             let is_ffree_environment_rejected = code_bytes.len() == 4
                 && code_bytes.starts_with("ddc")
                 && matches!(code_bytes.as_bytes()[3], b'0'..=b'7')
@@ -1626,7 +1659,7 @@ impl Fixture {
                 && self.expected_exit == ExpectedExit::Unsupported
                 && self.instruction_budget == 3;
             let expected_budget = match code_bytes.as_str() {
-                _ if fcmovu_stream(&code_bytes) => 5,
+                _ if fcmovu_stream(&code_bytes) => fcmovu_budget(&code_bytes).unwrap(),
                 "db2848b80140000000000000df38dfe0dbe2" | "db28d9fcdfe0dbe2d9fc" => 5,
                 "db28d9fcd9fcdfe0dbe2d9fc"
                 | "d9e8d9e0dbf1dac1dfe0"
@@ -1769,6 +1802,8 @@ impl Fixture {
                     || is_fcmovbe_environment_rejected
                     || is_fcmovnbe_operand_rejected
                     || is_fcmovnbe_environment_rejected
+                    || is_fcmovu_operand_rejected
+                    || is_fcmovu_environment_rejected
                     || is_ffree_environment_rejected
                     || is_fnop_environment_rejected
                     || is_fxam_environment_rejected
@@ -2475,9 +2510,42 @@ fn fcmovnbe_bare_source(code_bytes: &str) -> Option<u8> {
     (opcode == 0xdb && (0xd0..=0xd7).contains(&modrm)).then_some(modrm & 7)
 }
 
-/// Exact S2-30cg producer stream for the bounded DA D9 FCMOVU form.
+fn fcmovu_bare_source(code_bytes: &str) -> Option<u8> {
+    if code_bytes.len() != 4 {
+        return None;
+    }
+    let opcode = u8::from_str_radix(&code_bytes[0..2], 16).ok()?;
+    let modrm = u8::from_str_radix(&code_bytes[2..4], 16).ok()?;
+    (opcode == 0xda && (0xd8..=0xdf).contains(&modrm)).then_some(modrm & 7)
+}
+
+/// Exact S2-30ch FCMOVU bare, FNSTSW, repeat, and retained producer streams.
 fn fcmovu_stream(code_bytes: &str) -> bool {
-    code_bytes == "d9e8d9ee4885c0dad9dfe0"
+    fcmovu_budget(code_bytes).is_some()
+}
+
+fn fcmovu_budget(code_bytes: &str) -> Option<u64> {
+    if code_bytes == "dad9dad9dfe0" {
+        return Some(3);
+    }
+    if code_bytes == "d9e8d9ee4885c0dad9dfe0" {
+        return Some(5);
+    }
+    if code_bytes.len() == 4 {
+        let bytes = u16::from_str_radix(code_bytes, 16).ok()?;
+        return (bytes >> 8 == 0xda && (0xd8..=0xdf).contains(&(bytes as u8))).then_some(1);
+    }
+    if code_bytes.len() == 8 {
+        let instruction = &code_bytes[..4];
+        let suffix = &code_bytes[4..];
+        if suffix == "dfe0" {
+            let bytes = u16::from_str_radix(instruction, 16).ok()?;
+            if bytes >> 8 == 0xda && (0xd8..=0xdf).contains(&(bytes as u8)) {
+                return Some(2);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

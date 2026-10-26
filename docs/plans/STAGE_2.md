@@ -248,7 +248,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cd | Bare Long64 `DA D0..D7` indexed FCMOVBE ST(0), ST(i); preflight before integer `CF || ZF`, TOP-only self-case, exact raw copy; indexed matrices, 20-stream schema and full-state runner; native/JIT closed | S2-30cc |
 | [x] | S2-30ce | Historical exact bare Long64 `DB D1` FCMOVNBE ST(0), ST(1); preflight before integer CF/ZF, raw copy only when both clear; success/invalid matrices, six-stream schema and full-state runner; native/JIT closed | S2-30cd |
 | [x] | S2-30cf | Bare Long64 `DB D0..D7` indexed FCMOVNBE ST(0), ST(i); validate TOP/source before CF/ZF, self-index TOP-only, raw copy when both clear; full matrices, 20-stream schema and full-state runner; native/JIT closed | S2-30ce |
-| [x] | S2-30cg | Exact bare `DA D9` FCMOVU ST(0), ST(1), preflight before PF, raw copy only when PF=1; TEST producer fixtures, exact schema and full-state runner; unordered/NaN and native/JIT closed | S2-30cf |
+| [x] | S2-30cg | Historical exact bare `DA D9` FCMOVU ST(0), ST(1) slice; 512 success and 768 invalid class/tag snapshots, superseded by indexed S2-30ch | S2-30cf |
+| [x] | S2-30ch | Bare Long64 `DA D8..DF` indexed FCMOVU; preflight TOP/source before PF, self-index TOP-only, exact raw copy only when PF=1; full indexed matrices, 18-stream schema and literal full-state fixtures; unordered/NaN and native/JIT closed | S2-30cg |
 | [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
@@ -6318,7 +6319,7 @@ boundary rejection. Compare full machine/memory snapshots and deny JIT for
 each index. This remains local interpreter evidence under ISSUE-019.
 
 
-#### S2-30cg. Exact bare `FCMOVU ST(0), ST(1)` (`DA D9`)
+#### S2-30cg. Historical exact bare `FCMOVU ST(0), ST(1)` (`DA D9`)
 
 Admit only exact unprefixed Long64 `DA D9`. Reuse the existing FCMOV gate:
 require present x87 state, FCW `0x037f`, `FSW & 0x82ff == 0`, and Valid
@@ -6331,10 +6332,30 @@ remain atomic. DA D8 and DA DA..DF, every prefix, memory form, unordered/NaN
 input, x87 exception delivery and physical x86 acceptance remain outside scope;
 native and JIT admission stay closed.
 
-The unit matrix covers every TOP, PF/CF/ZF combination and C0/C2/C3 pattern,
-plus invalid class/tag pairs at both operands, environment gates, truncation,
-STOP and budget boundaries. The exact schema accepts only the five-instruction
-`D9 E8; D9 EE; 48 85 C0; DA D9; DF E0` producer stream. Two literal runner
-fixtures use RAX=3 (TEST PF=1, taken) and RAX=1 (TEST PF=0, untaken), compare
-full machine and memory snapshots, and deny JIT. This is local interpreter
-evidence only; it does not cover unordered x87 values or physical hardware.
+The original local implementation covered 512 success and 768 invalid
+class/tag snapshots, and admitted only the five-instruction producer stream.
+That ST(1)-only slice is historical and is superseded by S2-30ch. Its two
+literal TEST producer fixtures remain compatibility coverage; unordered x87
+values and physical hardware were not covered.
+
+#### S2-30ch. Indexed bare `FCMOVU ST(0), ST(i)` (`DA D8..DF`)
+
+Extend the bounded FCMOVU operation to every exact unprefixed Long64 encoding
+`DA D8..DF`, carrying `i` in the decoded operation. Reuse the strict FCMOV
+preflight gate: require x87 state, FCW `0x037f`, `FSW & 0x82ff == 0`, and Valid
+canonical-Normal or Zero exact-signed-zero participants. For `i>0`, validate
+old physical TOP and `(old_TOP+i)&7` before reading PF, even when untaken; for
+`i=0`, validate only TOP and preserve that cell without inspecting other
+registers. PF=1 copies the raw ten bytes and tag; PF=0 preserves the destination.
+Keep C1 closed, reject Special/NaN values, and preserve all state except
+FIP=old RIP, RIP+=2 and retirement. Rejections are atomic.
+
+Cover exactly 363,520 success and 161,280 invalid class/tag snapshots across
+all indices, values/signs, PF, CF/ZF, TOP and x87 CC patterns. Check missing
+state, FCW/FSW, decode and execution boundaries. The exact 18-stream schema
+allows eight bare forms (budget 1), each followed by FNSTSW (budget 2), the
+DA D9 repeat (budget 3), and the existing TEST producer (budget 5). Add nine
+bare success fixtures, a repeat, two retained producer fixtures, invalid
+sources under PF=0/1, invalid destination and C1/ES/B/FCW rejects. Compare
+full state and memory and deny JIT. This substage excludes Mac mini, SSH,
+native and physical checks and leaves ISSUE-019 open.

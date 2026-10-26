@@ -2982,7 +2982,7 @@ fn x87_fcmovnbe_schema_admits_exact_indexed_streams_and_reject_profiles() {
 }
 
 #[test]
-fn x87_fcmovu_schema_admits_only_the_exact_test_pf_producer_stream() {
+fn x87_fcmovu_schema_admits_exact_indexed_and_test_pf_producer_streams() {
     let base = x87_fixture().fixture;
     let program = "d9e8d9ee4885c0dad9dfe0";
     for rax in [1, 3] {
@@ -3002,9 +3002,44 @@ fn x87_fcmovu_schema_admits_only_the_exact_test_pf_producer_stream() {
         assert!(Fixture::from_json(&fixture.to_json().unwrap()).is_ok());
     }
 
+    for source in 0..8u8 {
+        for (suffix, budget) in [("", 1), ("dfe0", 2)] {
+            let stream = format!("da{:02x}{suffix}", 0xd8 | source);
+            let mut fixture = base.clone();
+            fixture.case_id = format!("x87_fcmovu_index_{source}_{budget}");
+            fixture.instruction_budget = budget;
+            fixture.stop_rip = Some(HexU64(
+                fixture.initial_state.rip.get() + u64::from(budget) * 2,
+            ));
+            let code = fixture
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "code")
+                .unwrap();
+            code.initial_bytes_hex = stream.clone();
+            code.length = (stream.len() / 2) as u32;
+            code.comparison_mask_hex = "ff".repeat(stream.len() / 2);
+            assert!(
+                Fixture::from_json(&fixture.to_json().unwrap()).is_ok(),
+                "{stream}"
+            );
+        }
+    }
+    let mut repeat = base.clone();
+    repeat.case_id = "x87_fcmovu_repeat".into();
+    repeat.instruction_budget = 3;
+    repeat.stop_rip = Some(HexU64(repeat.initial_state.rip.get() + 6));
+    let code = repeat
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "dad9dad9dfe0".into();
+    code.length = 6;
+    code.comparison_mask_hex = "ff".repeat(6);
+    assert!(Fixture::from_json(&repeat.to_json().unwrap()).is_ok());
+
     for malformed in [
-        "dad9",
-        "dad9dfe0",
         "d9e8d9ee4885c0dad8dfe0",
         "d9e8d9ee4885c0dadadfe0",
         "66d9e8d9ee4885c0dad9dfe0",

@@ -76,3 +76,10 @@ S2-30ce adds exactly six `s2-long-x87-state-v1` FCMOVNBE streams for bare
 `DB D1`, FNSTSW observation, repeat, and three FCOMI producer compositions.
 Other DB D0..D7 forms, prefixes, and memory operands remain outside the
 schema. Local fixture validation is not native or physical x86 evidence.
+
+S2-30cg historically admitted only its exact five-instruction TEST producer
+stream, with 512 success and 768 invalid class/tag interpreter snapshots.
+S2-30ch admits exactly 18 FCMOVU streams: bare DA D8..DF and their FNSTSW
+forms, the DA D9 repeat, and the retained producer. The schema still rejects
+prefixes, neighboring encodings and all other sequences; these are local
+fixture-format rules, not native or physical x86 evidence.

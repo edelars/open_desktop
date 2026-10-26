@@ -3800,11 +3800,26 @@ state and memory, including RFLAGS, RIP, FIP and retirement, and deny JIT for
 every indexed form. This is local interpreter evidence only.
 
 
-### S2-30cg exact bare `FCMOVU ST(0), ST(1)` (`DA D9`)
+### S2-30cg historical bare `FCMOVU ST(0), ST(1)` (`DA D9`)
 
 Two handwritten fixtures run the exact five-instruction FLD1/FLDZ/TEST/FCMOVU/FNSTSW
 producer stream. RAX=3 makes `TEST RAX,RAX` set PF with ZF clear, so FCMOVU
 copies ST(1); RAX=1 clears PF while ZF also stays clear, so it preserves ST(0).
-The schema rejects other streams and encodings. Runner checks full state/memory
-and denies JIT. These fixtures are local interpreter evidence only; unordered
-x87 values and physical x86 execution are not covered.
+The schema rejects other streams and encodings. Historical interpreter
+coverage was 512 successes and 768 invalid class/tag snapshots. The two
+fixtures remain as compatibility coverage and do not establish indexed
+behavior; unordered x87 values and physical x86 execution are not covered.
+
+### S2-30ch indexed bare `FCMOVU ST(0), ST(i)` (`DA D8..DF`)
+
+The exact schema admits 18 streams: the eight bare DA D8..DF encodings at
+budget 1, each followed by FNSTSW AX at budget 2, the DA D9 repeat plus
+FNSTSW at budget 3, and the retained FLD1/FLDZ/TEST/DA D9/FNSTSW producer at
+budget 5. Nine new literal bare fixtures cover self-index PF=0/1 and indices
+1..7; a repeat fixture and both earlier producer fixtures remain. Rejection
+literals cover invalid source with PF=0/1, invalid destination, C1, ES, B and
+bad FCW. The runner compares complete state and memory and checks JIT denial
+for accepted and rejected programs. Unit interpreter coverage is 363,520
+successes and 161,280 invalid class/tag snapshots; all evidence is local only.
+No unordered/NaN semantics, native behavior or physical x86 execution is
+claimed.
