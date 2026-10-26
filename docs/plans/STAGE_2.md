@@ -240,6 +240,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30an | Bare indexed DB/DF register FCOMI-family forms for ST(i), bounded canonical-Normal compare and optional physical TOP pop; native closed | S2-30am |
 | [x] | S2-30bu | Bare `DA C1` FCMOVB ST(0), ST(1), both participants preflighted; exact raw conditional copy, local C1=0 gate, native/JIT closed | S2-30an |
 | [x] | S2-30bv | Bare `DA C0..C7` FCMOVB ST(0), ST(i), indexed source preflight, self-index checks only TOP; exact raw conditional copy, local C1=0 gate, native/JIT closed | S2-30bu |
+| [x] | S2-30bw | Bare `DB C1` FCMOVNB ST(0), ST(1), same strict preflight gate, exact raw copy when CF=0, native/JIT closed | S2-30bv |
 | [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
@@ -6108,3 +6109,24 @@ remains denied; no native or physical acceptance is claimed. See
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30bv-bounded-indexed-fcmovb-sti-da-c0c7),
 [report](../reports/STAGE_2_REPORT.md#s2-30bv--bounded-indexed-fcmovb-sti), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bv-bounded-indexed-fcmovb-sti).
+
+#### S2-30bw. Bare `FCMOVNB ST(0), ST(1)`
+
+Admit exactly unprefixed Long64 `DB C1`. Reuse the bounded FCMOV operand
+preflight: x87 state must exist, FCW is `0x037f`, `FSW & 0x82ff == 0`, and
+both physical old TOP and `(old_TOP+1)&7` must be Valid-tagged canonical
+Normal or Zero-tagged exact signed binary80 zero. Preflight both slots before
+reading CF, including the untaken path. If CF=0, copy the source's ten raw
+bytes and tag to TOP; if CF=1, preserve both operands. Preserve all remaining
+x87 state, RFLAGS and machine state; set FIP to old RIP, advance RIP by two,
+and retire once. Keep FCMOVB and all other DB forms unchanged. Exclude memory,
+exceptions, native execution and JIT.
+
+Acceptance includes 51,200 successful state pairs and 21,504 rejected class/tag
+cases, plus environment, decode/prefix, fetch, STOP and budget boundaries. The
+property test compares FCMOVNB at CF=x to FCMOVB at CF=!x over the complete
+success matrix. Schema allows only `dbc1`, `dbc1dfe0`, `dbc1dbc1dfe0`,
+`d9e8d9e8d9e0dbf1dbc1dfe0`, and `d9e8d9e0d9e8dbf1dbc1dfe0` with budgets
+1/2/3/6/6. Literal fixtures cover taken/untaken, distinct tags, signed zero,
+TOP wrap, repeat, both producer streams, invalid source under CF=1, invalid
+destination, C1 and bad FCW. JIT remains denied; ISSUE-019 remains open.

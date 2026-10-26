@@ -3687,3 +3687,13 @@ fixture keeps physical ST(0..6) Special-tagged with opaque malformed bytes;
 the C1 reject fixture gives its indexed ST(7) a valid canonical Normal so the
 status bit is the rejecting condition. All evidence is local;
 native/JIT execution and physical x86 behavior remain outside ISSUE-019.
+
+### S2-30bw bounded `FCMOVNB ST(0), ST(1)`
+
+The exact schema admits `dbc1`, `dbc1dfe0`, `dbc1dbc1dfe0`,
+`d9e8d9e8d9e0dbf1dbc1dfe0`, and `d9e8d9e0d9e8dbf1dbc1dfe0` with budgets
+1/2/3/6/6. Ten literal fixtures cover taken and untaken paths, distinct tags,
+negative zero, TOP=7 wrap, repeat, both real producer streams, invalid source
+under CF=1, invalid destination, C1, and bad FCW. Runner snapshots check
+interpreter behavior and JIT denial. All evidence is local; ISSUE-019 remains
+open.

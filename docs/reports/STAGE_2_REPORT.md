@@ -9726,3 +9726,25 @@ checks were run; the remaining x87 limitations stay under ISSUE-019. See
 [contract](../specs/CPU_CONTRACT.md#local-s2-30bv-bounded-indexed-fcmovb-sti-da-c0c7),
 [plan](../plans/STAGE_2.md#s2-30bv-indexed-bare-fcmovb-st0-sti), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bv-bounded-indexed-fcmovb-sti).
+
+## S2-30bw — bounded `FCMOVNB ST(0), ST(1)`
+
+Implemented exact unprefixed Long64 `DB C1`. It uses the same strict bounded
+preflight gate as indexed FCMOVB, including preflight of both old physical TOP
+and TOP+1 before CF is inspected. CF=0 copies the source's ten raw bytes and
+tag; CF=1 preserves both operands. FIP/RIP/retirement update as specified;
+other state is preserved. Existing FCMOVB and DB instructions remain intact.
+
+Local coverage includes 51,200 CF-complement success comparisons against
+FCMOVB, 21,504 invalid class/tag rejection snapshots, environment and boundary
+rejection, exact bare/prefix/neighbor decoding, five schema streams, and ten
+literal CLI fixtures with JIT denial. These are local checks only. No native
+or physical x86 acceptance is claimed; ISSUE-019 remains open. See [plan](../plans/STAGE_2.md#s2-30bw-bare-fcmovnb-st0-st1), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30bw-bounded-fcmovnb-st0-st1), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bw-bounded-fcmovnb-st0-st1).
+
+Focused validation passed: `cargo test -p od-isa fcmovnb --offline` (3/3),
+`cargo test -p od-isa fcmovb --offline` (6/6), both FCMOV testkit schema cases
+(1/1 each), and both FCMOV runner fixture tests (1/1 each). Workspace check,
+formatting, layout validation, `git diff --check`, and the Linux x86_64
+`od-x86-runner` cross-target check passed. The latter confirms the native
+admission table compiles with FCMOVB/FCMOVNB denied. No physical/native checks
+were run.

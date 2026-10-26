@@ -7407,3 +7407,27 @@ rejection. These results do not resolve full x87 semantics or physical/native
 acceptance; ISSUE-019 remains open. See [plan](../plans/STAGE_2.md#s2-30bv-indexed-bare-fcmovb-st0-sti),
 [report](../reports/STAGE_2_REPORT.md#s2-30bv--bounded-indexed-fcmovb-sti), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bv-bounded-indexed-fcmovb-sti).
+
+## Local S2-30bw: bounded `FCMOVNB ST(0), ST(1)` (`DB C1`)
+
+Admit only exact unprefixed Long64 `DB C1`. Require present x87 state, FCW
+`0x037f`, and `FSW & 0x82ff == 0`. Before reading RFLAGS.CF, preflight both
+physical old TOP and `(old_TOP+1)&7`; each must be Valid-tagged canonical
+Normal or Zero-tagged exact signed binary80 zero, including when CF=1 and the
+move is untaken. For CF=0, copy the source's exact ten bytes and tag to old
+TOP; for CF=1, preserve both operands. Preserve TOP, complete FSW, FCW,
+remaining x87 state, RFLAGS, GPRs and memory. Set FIP to old RIP, advance RIP
+by two and retire once. No memory form, exception delivery, native execution
+or JIT lowering is included. Existing DB forms and `DA C0..C7` FCMOVB remain
+unchanged.
+
+The local success matrix contains 51,200 snapshots across ten admitted values,
+both CF outcomes, all TOP values, C0/C2/C3, and PF/ZF. Invalid class/tag
+coverage contains 21,504 snapshots (42 invalid pairs, signs, both CF values,
+both operand positions, eight TOPs and eight condition combinations). The
+schema accepts exactly `dbc1`, `dbc1dfe0`, `dbc1dbc1dfe0`,
+`d9e8d9e8d9e0dbf1dbc1dfe0`, and `d9e8d9e0d9e8dbf1dbc1dfe0`, with budgets
+1/2/3/6/6. Native/JIT remain closed; physical behavior remains unverified
+under ISSUE-019. See [plan](../plans/STAGE_2.md#s2-30bw-bare-fcmovnb-st0-st1),
+[report](../reports/STAGE_2_REPORT.md#s2-30bw--bounded-fcmovnb-st0-st1), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bw-bounded-fcmovnb-st0-st1).

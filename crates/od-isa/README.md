@@ -312,3 +312,9 @@ S2-30bs adds exact unprefixed Long64 `D9 D0` FNOP to the local x87 interpreter
 profile. With present x87 state, FCW `0x037f`, and clean `FSW & 0x80ff`, it
 updates only FIP and retires; stack tags and payloads are opaque. JIT/native
 and physical x86 execution remain unsupported. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30bs-bounded-bare-fnop-d9-d0), [plan](../../docs/plans/STAGE_2.md#s2-30bs-bare-fnop-with-a-bounded-environment-gate), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bs-bounded-fnop).
+
+S2-30bw adds exact bare `DB C1` FCMOVNB ST(0), ST(1), using the existing
+bounded FCMOV operand gate and raw 10-byte/tag copy when CF is clear. Both
+operands are preflighted before CF is observed. The 51,200 success matrix, the
+21,504 invalid class/tag matrix, exact decoder neighbors and execution-boundary
+checks are local interpreter evidence. Native/JIT remain closed.

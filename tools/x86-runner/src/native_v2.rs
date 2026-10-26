@@ -564,7 +564,7 @@ fn admission_with_tracee_memory(
             | Operation::FldM32FpRax
             | Operation::FldM64FpRax
             | Operation::Fchs
-            | Operation::FxchSt1
+            | Operation::FxchSti { .. }
             | Operation::FldSti { .. }
             | Operation::FfreeSti { .. }
             | Operation::Fabs
@@ -589,7 +589,8 @@ fn admission_with_tracee_memory(
             | Operation::Fcomip { .. }
             | Operation::Fucomi { .. }
             | Operation::Fucomip { .. }
-            | Operation::FcmovbSt0St1
+            | Operation::Fcmovb { .. }
+            | Operation::Fcmovnb { .. }
             | Operation::FcompSt { .. }
             | Operation::Fcompp
             | Operation::Fucompp

@@ -537,6 +537,10 @@ pub enum Operation {
     Fcmovb {
         source: u8,
     },
+    /// Bare `DB C0+i` FCMOVNB ST(0), ST(i), bounded raw copy when CF is clear.
+    Fcmovnb {
+        source: u8,
+    },
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
     FcompSt {
         source: u8,
@@ -778,6 +782,10 @@ fn indexed_x87_compare(opcode: u8, modrm: u8) -> Option<Operation> {
 fn x87_fcmovb(opcode: u8, modrm: u8) -> Option<Operation> {
     (opcode == 0xda && (0xc0..=0xc7).contains(&modrm))
         .then_some(Operation::Fcmovb { source: modrm & 7 })
+}
+
+fn x87_fcmovnb(opcode: u8, modrm: u8) -> Option<Operation> {
+    (opcode == 0xdb && modrm == 0xc1).then_some(Operation::Fcmovnb { source: 1 })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1154,6 +1162,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xe3 => Operation::Fninit,
                     0x10 => Operation::FistM32IntRax,
                     0x18 => Operation::FistpM32IntRax,
+                    0xc1 => {
+                        x87_fcmovnb(opcode.byte, modrm).ok_or_else(|| self.unsupported(opcode))?
+                    }
                     _ => indexed_x87_compare(opcode.byte, modrm)
                         .ok_or_else(|| self.unsupported(opcode))?,
                 }
@@ -4179,6 +4190,34 @@ mod tests {
             Memory::new(&[0x9b, 0xda, 0xe9]).decode(),
             Err(DecodeError::Unsupported { .. })
         ));
+    }
+
+    #[test]
+    fn exact_bare_db_c1_fcmovnb_preserves_db_neighbors_and_rejects_prefixes() {
+        assert_eq!(
+            Memory::new(&[0xdb, 0xc1]).decode().unwrap().operation,
+            Operation::Fcmovnb { source: 1 }
+        );
+        for modrm in 0u8..=u8::MAX {
+            let decoded = Memory::new(&[0xdb, modrm]).decode();
+            if modrm == 0xc1 {
+                assert_eq!(decoded.unwrap().operation, Operation::Fcmovnb { source: 1 });
+            } else if matches!(
+                modrm,
+                0xe2 | 0xe3 | 0xe8..=0xef | 0xf0..=0xf7 | 0x00 | 0x10 | 0x18 | 0x28 | 0x38
+            ) {
+                assert!(decoded.is_ok(), "existing DB {modrm:02x} changed");
+            } else {
+                assert!(decoded.is_err(), "unexpected DB {modrm:02x}");
+            }
+        }
+        for bytes in [
+            &[0x66, 0xdb, 0xc1][..],
+            &[0x48, 0xdb, 0xc1],
+            &[0x9b, 0xdb, 0xc1],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err());
+        }
     }
 
     #[test]

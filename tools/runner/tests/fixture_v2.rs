@@ -114,6 +114,32 @@ const FCMOVB_REJECTS: [&[u8]; 7] = [
         "../../../tests/fixtures/x86/stage2/s2_30bv_fcmovb_st0_bad_fcw_reject.case.json"
     ),
 ];
+const FCMOVNB_FIXTURES: [&[u8]; 6] = [
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_taken_negative_zero.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_untaken_distinct_tags.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_top7_wrap.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_repeat.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_producer_minus1_below_plus1.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_producer_plus1_above_minus1.case.json"
+    ),
+];
+const FCMOVNB_REJECTS: [&[u8]; 4] = [
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_invalid_source_cf1.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_invalid_destination.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_c1_reject.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_bad_fcw_reject.case.json"),
+];
 const FFREE_ST0_ALREADY_EMPTY: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bq_ffree_already_empty.case.json");
 const FFREE_ST0_SNAN_OPAQUE: &[u8] =
@@ -7174,6 +7200,81 @@ fn local_x87_fcmovb_snapshots_and_denies_jit() {
             assert_eq!((x87.tag_word.get() >> 14) & 3, 0);
             assert_eq!(x87.registers[7], "0000000000000080ff3f");
         }
+        let (_, result) = run(bytes, "interpreter", 4);
+        assert_eq!(count(&result), 0);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert_eq!(snapshot(&result).state, loaded.fixture.initial_state);
+    }
+}
+
+#[test]
+fn local_x87_fcmovnb_snapshots_and_denies_jit() {
+    for bytes in FCMOVNB_FIXTURES {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let (_, result) = run(bytes, "interpreter", 0);
+        let observed = snapshot(&result);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{}",
+            loaded.fixture.case_id
+        );
+        assert_eq!(
+            count(&result),
+            (loaded.fixture.memory[0].initial_bytes_hex.len() / 4) as u64
+        );
+        let before = loaded.fixture.initial_state.x87.as_ref().unwrap();
+        let after = observed.state.x87.as_ref().unwrap();
+        if loaded.fixture.case_id == "s2_30bw_fcmovnb_taken_negative_zero" {
+            assert_eq!(after.registers[0], before.registers[1]);
+            assert_eq!(after.tag_word.get() & 3, (before.tag_word.get() >> 2) & 3);
+        }
+        if loaded.fixture.case_id == "s2_30bw_fcmovnb_untaken_distinct_tags" {
+            assert_eq!(after.registers, before.registers);
+            assert_eq!(after.tag_word, before.tag_word);
+        }
+        if loaded.fixture.case_id == "s2_30bw_fcmovnb_top7_wrap" {
+            assert_eq!(after.registers[7], before.registers[0]);
+            assert_eq!(after.tag_word.get() >> 14 & 3, before.tag_word.get() & 3);
+        }
+        if loaded.fixture.case_id == "s2_30bw_fcmovnb_producer_minus1_below_plus1" {
+            assert_ne!(
+                observed.state.rflags.get() & 1,
+                0,
+                "FCOMI 0,1 must leave CF=1"
+            );
+            assert_eq!(
+                after.registers[6], "0000000000000080ffbf",
+                "CF=1 must leave TOP untouched"
+            );
+        }
+        if loaded.fixture.case_id == "s2_30bw_fcmovnb_producer_plus1_above_minus1" {
+            assert_eq!(
+                observed.state.rflags.get() & 1,
+                0,
+                "FCOMI 1,0 must leave CF=0"
+            );
+            assert_eq!(
+                after.registers[6], "0000000000000080ffbf",
+                "CF=0 must copy the produced negative one"
+            );
+            assert_eq!(
+                after.tag_word.get() >> 12 & 3,
+                0,
+                "copied source must retain Valid tag"
+            );
+        }
+        let code = &loaded.fixture.memory[0].initial_bytes_hex;
+        let fcmov_offset = (code.rfind("dbc1").unwrap() / 2) as u64;
+        assert_eq!(
+            after.instruction_pointer.get(),
+            loaded.fixture.initial_state.rip.get() + fcmov_offset
+        );
+        assert_eq!(after.status_word.get() & 0x82ff, 0);
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    }
+    for bytes in FCMOVNB_REJECTS {
+        let loaded = Fixture::from_json(bytes).unwrap();
         let (_, result) = run(bytes, "interpreter", 4);
         assert_eq!(count(&result), 0);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
