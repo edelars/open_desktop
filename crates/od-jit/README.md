@@ -32,9 +32,9 @@ exit. `ir::verify` проверяет определения и widths temporari
 полного списка непрерывных IR guest records. Verifier подтверждает внутреннюю
 структуру IR, причём branch fallthrough и exit target должны совпадать с
 `next_rip` последней guest-записи. Verifier не подтверждает происхождение
-records: S3-04/S3-05 должны строить их из успешно декодированных инструкций.
-IR пока не подключён к fragment compiler;
-lowering, memory/helper effects и runtime dispatch остаются следующими задачами.
+records; decoder-backed lowering добавлен в S3-05. IR пока не подключён к
+fragment compiler; memory/helper effects и runtime dispatch остаются следующими
+задачами.
 
 S3-04 добавил `block::CodeView` и `block::build_block`: borrowed code bytes
 декодируются по одной инструкции через read-only `GuestMemory`, с пределами не
@@ -43,8 +43,9 @@ next RIP и точный byte range. Лимит, buffer exhaustion, unsupported 
 deferred decode boundary и branch представлены разными stop reasons; ошибка
 первой инструкции даёт `NoBlock`, а не гостевой fault. Ветвление останавливает
 сборку без чтения хвоста; незнакомая forward target явно остаётся unresolved.
-Поскольку `ir::verify` пока требует доказанный target boundary в IR records,
-unresolved target нельзя передать ему до согласования в S3-05/S3-15. Target
+Lowering не передаёт её verifier как доказанную branch: он исключает Jcc из IR
+и завершает prefix с `NeedInterpreter` (для пустого prefix — `NoNativePrefix`).
+Dispatch resolution остаётся частью S3-15. Target
 внутрь decoded instruction останавливает сборку перед branch, сохраняя уже
 собранный prefix. Branch target считается 64-битным wrapping сложением, как в
 interpreter. `code_end` и точный `next_rip` текущей Jcc классифицируются как
@@ -52,6 +53,23 @@ interpreter. `code_end` и точный `next_rip` текущей Jcc класс
 forward targets остаются unresolved. `BasicBlock.guest_ranges` фиксирует bytes,
 но не code identity или version: tracking принадлежит S3-17, cache invalidation
 — S3-23.
+
+S3-05 добавил `lowering::lower`, который строит и verifier-checks typed IR из
+decoder records для принятых S0-09 MOV imm64, ADD/SUB/CMP reg64 и JZ/JNZ.
+Lowering сохраняет RIP boundaries, читает оба арифметических источника до
+записи destination, не пишет GPR для CMP и не создаёт flags write для MOV.
+Каждая включённая instruction имеет один commit. Commit перед terminal branch
+и branch target selection составляют одну retirement boundary; observable
+operation между ними запрещена контрактом.
+
+`CodeEnd` передаётся из `BasicBlock` как единственная дополнительная target
+boundary, а verifier проверяет, что records лежат внутри этого code view.
+Unresolved branch не попадает в IR: prefix завершается `NeedInterpreter` на RIP
+Jcc, а branch без prefix даёт `NoNativePrefix`. Mid-instruction target и другие
+unsupported cases дают явный `Unsupported` до неподдержанной инструкции.
+`DecodeBoundary` остаётся отдельной deferred metadata. Это lowering-представление
+без ARM64 emission, publication или dispatcher; для unresolved targets остаётся
+dispatch integration в S3-15. См. [JIT contract](../../docs/specs/JIT_CONTRACT.md#s3-05-decoded-effects-to-typed-ir).
 
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).

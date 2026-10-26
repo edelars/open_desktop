@@ -54,6 +54,9 @@ pub struct GuestInstruction {
 pub struct Program {
     pub guest_instructions: Vec<GuestInstruction>,
     pub operations: Vec<Operation>,
+    /// Exclusive end copied from the validated source `CodeView`. This is the
+    /// sole additional branch boundary admitted beyond IR record boundaries.
+    pub code_end: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,6 +122,10 @@ pub enum VerifyError {
     },
     DiscontinuousInstructionRange {
         index: usize,
+    },
+    InstructionOutsideCodeEnd {
+        index: usize,
+        code_end: u64,
     },
     MissingTerminal,
     MultipleOrNonFinalTerminal {
@@ -201,6 +208,12 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
         if index > 0 && program.guest_instructions[index - 1].next_rip != instruction.guest_rip {
             return Err(VerifyError::DiscontinuousInstructionRange { index });
         }
+        if instruction.next_rip > program.code_end {
+            return Err(VerifyError::InstructionOutsideCodeEnd {
+                index,
+                code_end: program.code_end,
+            });
+        }
     }
 
     let boundaries: Vec<u64> = program
@@ -213,6 +226,7 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                 .last()
                 .map(|instruction| instruction.next_rip),
         )
+        .chain(std::iter::once(program.code_end))
         .collect();
 
     let mut definitions = HashMap::<TempId, IntWidth>::new();
@@ -452,6 +466,7 @@ mod tests {
 
     fn base_program() -> Program {
         Program {
+            code_end: 0x1005,
             guest_instructions: vec![
                 GuestInstruction {
                     guest_rip: 0x1000,
@@ -635,5 +650,18 @@ mod tests {
         let mut program = base_program();
         program.operations.pop();
         assert_eq!(verify(&program), Err(VerifyError::MissingTerminal));
+    }
+
+    #[test]
+    fn rejects_guest_records_beyond_source_code_end() {
+        let mut program = base_program();
+        program.code_end = 0x1004;
+        assert_eq!(
+            verify(&program),
+            Err(VerifyError::InstructionOutsideCodeEnd {
+                index: 1,
+                code_end: 0x1004,
+            })
+        );
     }
 }

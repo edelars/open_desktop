@@ -168,6 +168,8 @@ pub enum BlockStopReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BasicBlock {
     pub entry_rip: u64,
+    /// Exclusive end copied from the validated source `CodeView`.
+    pub code_end: u64,
     pub instructions: Vec<DecodedInstruction>,
     pub guest_ranges: Vec<GuestByteRange>,
     pub stop_reason: BlockStopReason,
@@ -203,6 +205,7 @@ pub fn build_block(
     if entry_rip == code.code_end {
         return Ok(finish(
             entry_rip,
+            code.code_end,
             Vec::new(),
             Vec::new(),
             BlockStopReason::BufferEnd,
@@ -243,6 +246,7 @@ pub fn build_block(
         if instructions.len() >= limits.instructions {
             return Ok(finish(
                 entry_rip,
+                code.code_end,
                 instructions,
                 guest_ranges,
                 BlockStopReason::InstructionLimit,
@@ -251,6 +255,7 @@ pub fn build_block(
         if consumed_bytes >= limits.bytes {
             return Ok(finish(
                 entry_rip,
+                code.code_end,
                 instructions,
                 guest_ranges,
                 BlockStopReason::ByteLimit,
@@ -259,6 +264,7 @@ pub fn build_block(
         if guest_rip == code.code_end {
             return Ok(finish(
                 entry_rip,
+                code.code_end,
                 instructions,
                 guest_ranges,
                 BlockStopReason::BufferEnd,
@@ -272,6 +278,7 @@ pub fn build_block(
                 if is_byte_limit_fetch(&error, read_end_rip, code.code_end) {
                     return Ok(finish(
                         entry_rip,
+                        code.code_end,
                         instructions,
                         guest_ranges,
                         BlockStopReason::ByteLimit,
@@ -283,7 +290,13 @@ pub fn build_block(
                     }
                     error => BlockStopReason::DecodeBoundary(deferred_boundary(guest_rip, error)),
                 };
-                return Ok(finish(entry_rip, instructions, guest_ranges, reason));
+                return Ok(finish(
+                    entry_rip,
+                    code.code_end,
+                    instructions,
+                    guest_ranges,
+                    reason,
+                ));
             }
         };
         if !(1..=15).contains(&decoded.length) {
@@ -296,6 +309,7 @@ pub fn build_block(
         if !is_s0_09_form(decoded) {
             return Ok(finish(
                 entry_rip,
+                code.code_end,
                 instructions,
                 guest_ranges,
                 BlockStopReason::UnsupportedDecoded { guest_rip, decoded },
@@ -311,6 +325,7 @@ pub fn build_block(
         if next_rip > read_end_rip {
             return Ok(finish(
                 entry_rip,
+                code.code_end,
                 instructions,
                 guest_ranges,
                 BlockStopReason::ByteLimit,
@@ -334,6 +349,7 @@ pub fn build_block(
                 TargetClassification::InsideDecodedInstruction => {
                     return Ok(finish(
                         entry_rip,
+                        code.code_end,
                         instructions,
                         guest_ranges,
                         BlockStopReason::UnsupportedBranchTarget {
@@ -364,6 +380,7 @@ pub fn build_block(
         if let Some(target) = branch_target {
             return Ok(finish(
                 entry_rip,
+                code.code_end,
                 instructions,
                 guest_ranges,
                 BlockStopReason::Branch { target },
@@ -386,6 +403,7 @@ fn validate_limits(limits: BlockLimits) -> Result<(), BuildError> {
 
 fn finish(
     entry_rip: u64,
+    code_end: u64,
     instructions: Vec<DecodedInstruction>,
     guest_ranges: Vec<GuestByteRange>,
     stop_reason: BlockStopReason,
@@ -398,6 +416,7 @@ fn finish(
     } else {
         BuildOutcome::Block(BasicBlock {
             entry_rip,
+            code_end,
             instructions,
             guest_ranges,
             stop_reason,
@@ -756,7 +775,7 @@ mod tests {
     }
 }
 
-fn is_s0_09_form(instruction: Instruction) -> bool {
+pub(crate) fn is_s0_09_form(instruction: Instruction) -> bool {
     let prefixes = instruction.prefixes;
     let no_legacy_prefixes = prefixes.group1.is_none()
         && prefixes.segment.is_none()

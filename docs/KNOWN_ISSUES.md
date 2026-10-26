@@ -12,14 +12,14 @@
 
 ## Записи
 
-### ISSUE-020 — unresolved branch-target contract between block builder and IR
+### ISSUE-020 — unresolved branch-target handoff between block builder and IR
 
 - **Дата обнаружения:** 2026-10-26.
 - **Компонент:** `od-jit` bounded block builder и typed IR verifier (S3-03/S3-04).
-- **Статус:** открыта; forward/external branch targets сохраняются как `Unresolved` и пока не могут быть переданы в verifier как проверенные.
-- **Суть и последствия:** `ir::verify` принимает branch targets только на guest instruction boundary из того же набора IR records либо на последний `next_rip`. При этом builder обязан остановиться сразу после условной ветви и не читать недостижимый хвост; будущая или внешняя цель может оставаться неразрешённой. Поэтому S3-05 не может напрямую lowered такие branch blocks, пока не задано отдельное представление/правило проверки target. Нельзя считать target проверенным только потому, что его числовой адрес внутри code buffer, или читать хвост ради проверки после terminator.
-- **Основание:** boundary проверка в [`ir.rs`](../crates/od-jit/src/ir.rs), unresolved classification и fixture в [`block.rs`](../crates/od-jit/src/block.rs), а также контракт [S3-04](plans/STAGE_3.md) и [JIT contract](specs/JIT_CONTRACT.md). Это ограничение интеграции; оно не означает, что текущая interpreter branch semantics неверна.
-- **Следующий шаг:** в S3-05/S3-15 определить безопасное разрешение internal/external targets и их связь с будущим block entry без декодирования недостижимого хвоста; добавить проверки на forward, backward, unresolved и target-inside-instruction cases до снятия ограничения.
+- **Статус:** закрыта для S3-05 IR handoff; unresolved branch безопасно уходит к interpreter до Jcc, а target не выдаётся за проверенную boundary. Dispatch resolution по-прежнему требуется в S3-15.
+- **Суть и последствия:** builder останавливается сразу после условной ветви и не читает недостижимый хвост; будущая или внешняя цель может оставаться `Unresolved`. Теперь lowering исключает такую Jcc из IR records и направляет prefix-only Program на `NeedInterpreter` с RIP ветви; при пустом prefix возвращается `NoNativePrefix`. Verifier не принимает unresolved target как native branch. Нельзя считать target проверенным только потому, что его числовой адрес внутри code buffer, или читать хвост ради проверки после terminator.
+- **Основание и проверка:** boundary handling в [`ir.rs`](../crates/od-jit/src/ir.rs), target classification в [`block.rs`](../crates/od-jit/src/block.rs), fallback lowering в [`lowering.rs`](../crates/od-jit/src/lowering.rs), а также [S3-05 contract](specs/JIT_CONTRACT.md#s3-05-decoded-effects-to-typed-ir). Targeted tests покрывают unresolved-first, unresolved-after-prefix и другие branch classes.
+- **Следующий шаг:** S3-15 определяет resolution к будущему block entry без декодирования недостижимого хвоста; до этого unresolved Jcc остаётся interpreter-only.
 
 ### ISSUE-018 — Специальные значения и исключения indexed FCOMI-family вне bounded профиля
 

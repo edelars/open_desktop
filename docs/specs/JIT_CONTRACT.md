@@ -119,14 +119,41 @@ interpreter. Если target совпадает с `code_end`, он класси
 него не декодируются и не объявляются валидной инструкцией. Targets на уже
 декодированные starts сохраняют `KnownInstructionStart`. Другие forward/unparsed
 и внешние targets имеют статус `Unresolved`. Такой target пока нельзя передать
-в `ir::verify`: его текущий boundary proof принимает только guest-record starts
-или последний `next_rip`. Согласование прочих unresolved targets с IR оставлено
-S3-05/S3-15; S3-04 не объявляет их проверенными.
+в `ir::verify` как проверенную ветвь: verifier принимает только guest-record
+starts, последний `next_rip` или точный `code_end` из block metadata. S3-05
+направляет unresolved branch на interpreter до Jcc, не включая и не retiring
+её; дальнейшее разрешение target для dispatch остаётся S3-15.
 
 `BasicBlock.guest_ranges` хранит точные ranges декодированного блока. Они не
 содержат идентичность или версию executable code и сами не являются cache
 dependencies. Code identity/version tracking принадлежит S3-17, а проверка
 изменений и cache invalidation — S3-23.
+
+### S3-05: decoded effects to typed IR
+
+`lowering::lower` переиспользует уже decoded `long_decode::Instruction` и
+builder admission для точных форм MOV immediate qword, ADD/SUB/CMP qword
+register-register и JZ/JNZ rel8. IR хранит effects и операнды decoder output;
+он не повторяет x86 decode или CPU semantics. Arithmetic lowerer читает оба
+источника до destination write, CMP не пишет GPR, MOV не выдаёт flags write,
+а все значения имеют W64. Каждый включённый instruction record имеет ровно
+один commit.
+
+Для разрешённой Jcc commit marker и следующий terminal `Branch` — единая
+граница retirement и выбора RIP. Между ними запрещены helper calls,
+safepoints и любые наблюдаемые exits. Target `CodeEnd` принимается verifier
+только при точном совпадении с `Program.code_end`, скопированным из
+`BasicBlock`/валидированного `CodeView`; все guest records обязаны лежать до
+этого exclusive end. Это не произвольный список разрешённых адресов.
+
+Unresolved forward/external Jcc не включается в IR records и не коммитится.
+Непустой prefix завершается `NeedInterpreter` на RIP этой branch; если prefix
+пуст, lowering возвращает `NoNativePrefix`. Mid-instruction target завершается
+`Unsupported` до Jcc. Unsupported form также даёт явный Unsupported exit на
+problem RIP. Buffer/limit completion использует последний `next_rip`. Любой
+`DecodeBoundary` остаётся отдельным deferred metadata; lowering не объявляет
+его guest fault или успешным code end. Публикация и runtime dispatch ещё не
+подключены.
 
 ## 5. Runtime boundary (S3-02)
 
