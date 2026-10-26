@@ -25,10 +25,10 @@
 
 - **Дата обнаружения:** 2026-10-26.
 - **Компонент:** `od-jit::allocator` (S3-09).
-- **Статус:** открыта; текущие unit и native tests покрывают fixed homes, spills и живые значения вокруг helper, но не исчерпывают сочетания `Integer`/`ReadGpr` и нескольких helper boundaries.
+- **Статус:** открыта; S3-10 добавляет unit vector с `ReadGpr` temp, двумя `Integer` uses и двумя helper boundaries, проверяя повторное capture того же register home/slot. Это закрывает конкретный ранее отсутствовавший путь, но не исчерпывает все комбинации liveness.
 - **Суть и последствия:** allocator опирается на first/last-use в linear IR; непокрытое сочетание может ошибочно посчитать временное значение мёртвым или сохранить неверный набор register homes. Подтверждённого runtime-дефекта нет.
 - **Основание:** независимое ревью S3-09 выявило отсутствие отдельных unit vectors для перечисленных liveness сочетаний; native ARM64 probe подтверждает transport для четырёх register homes и двух spills через один helper.
-- **Следующий шаг:** расширить table-driven liveness tests по мере подключения S3-10 lowering; сохранить native helper-clobber probe и добавить multiple-boundary cases до объявления allocator baseline широко проверенным.
+- **Следующий шаг:** при последующих allocator changes добавить table-driven def/use и boundary combinations, особенно несколько register homes одновременно live-through. Сохранить native helper-clobber probe; до этого считать покрытие базовым, не исчерпывающим.
 
 ### ISSUE-021 — Ограничение одной MAP_JIT region в publisher contract
 

@@ -525,7 +525,13 @@ mod tests {
     use od_jit::arm64::{
         AddressBase, Condition, Encoder, PairIndexMode, WReg, XReg, XRegOrSp, XRegOrZero,
     };
+    use od_jit::block::{self, BlockLimits, CodeView};
+    use od_jit::emitter::{
+        self, DATA_EFFECTS_UNCOMMITTED_V1, DataEffectContextV1, DataEffectEntry,
+        DataEffectOutputKind, FlagMaterialization,
+    };
     use od_jit::ir::{ExitKind, GuestGpr, GuestInstruction, IntWidth, Operation, Program, TempId};
+    use od_jit::lowering::{self, LoweringOutcome};
     use od_jit::runtime::{
         ArithmeticFlagsHelper, BlockEntry, HelperOperationTag, RAW_HELPER_CONTRACT_FAILURE_V1,
         RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET, RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET,
@@ -1014,6 +1020,38 @@ mod tests {
         encoder.finish().unwrap().to_le_bytes().unwrap()
     }
 
+    fn emit_decoder_data_effects(
+        code: &[u8],
+        register_homes: u8,
+    ) -> (Vec<u8>, Vec<DataEffectOutputKind>) {
+        let base_rip = 0x3000;
+        let view = CodeView::new(base_rip, code).unwrap();
+        let built = block::build_block(
+            view,
+            base_rip,
+            od_isa::memory::AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        let LoweringOutcome::Program(lowered) = lowering::lower(&built).unwrap() else {
+            panic!("native data-effect test expects an admitted block prefix");
+        };
+        let allocation = Allocation::build(
+            &lowered.program,
+            AllocatorConfig {
+                register_homes,
+                reserved_prefix_bytes: 0,
+            },
+            &[],
+        )
+        .unwrap();
+        let emitted = emitter::emit_data_effects(&lowered.program, &allocation).unwrap();
+        assert_eq!(emitted.flags, FlagMaterialization::ArithmeticIncomplete);
+        assert_eq!(emitted.committed_guest_instructions, 0);
+        let output_kinds = emitted.outputs.iter().map(|output| output.kind).collect();
+        (emitted.code.to_le_bytes().unwrap(), output_kinds)
+    }
+
     fn call_probe_with_simd_canaries(
         entry: BlockEntry,
         context: &mut RuntimeContextV1,
@@ -1174,6 +1212,115 @@ mod tests {
             unsafe { std::ptr::addr_of!(ALLOCATOR_PROBE_OUTPUT).read() },
             abi_probe_nested(0x1234 ^ 0x5678 ^ 0x9ABC)
         );
+    }
+
+    #[test]
+    fn decoder_lowering_allocator_and_data_effect_emitter_match_vectors_without_commit() {
+        let _guard = jit_test_lock();
+        let mut guest_code = vec![0x48, 0xB8];
+        guest_code.extend_from_slice(&u64::MAX.to_le_bytes()); // MOV RAX, -1
+        guest_code.extend_from_slice(&[0x48, 0x03, 0xC1]); // ADD RAX, RCX
+        guest_code.extend_from_slice(&[0x48, 0x2B, 0xD2]); // SUB RDX, RDX
+        guest_code.extend_from_slice(&[0x48, 0x2B, 0xD1]); // SUB RDX, RCX (borrow/wrap)
+        guest_code.extend_from_slice(&[0x48, 0xBB]); // MOV RBX, multi-lane immediate
+        guest_code.extend_from_slice(&0x1234_5678_9ABC_DEF0_u64.to_le_bytes());
+        guest_code.extend_from_slice(&[0x48, 0x03, 0xDB]); // ADD RBX, RBX (alias)
+        guest_code.extend_from_slice(&[0x48, 0x3B, 0xDA]); // CMP RBX, RDX
+
+        let initial_gprs = [0x1111, 1, 0x8000_0000_0000_0001, 0xAAAA];
+        let pattern = 0x1234_5678_9ABC_DEF0_u64;
+        let doubled = pattern.wrapping_add(pattern);
+        let expected_temps = [
+            u64::MAX,
+            u64::MAX,
+            1,
+            0,
+            initial_gprs[2],
+            initial_gprs[2],
+            0,
+            0,
+            1,
+            u64::MAX,
+            pattern,
+            pattern,
+            pattern,
+            doubled,
+            doubled,
+            u64::MAX,
+        ];
+        let mut canonical_state = od_isa::LongModeState::default();
+        canonical_state.gpr[..initial_gprs.len()].copy_from_slice(&initial_gprs);
+        canonical_state.rip = 0xAABB_CCDD;
+        canonical_state.rflags = 0x8D7;
+        let original_canonical = canonical_state.clone();
+
+        for register_homes in 0..=4 {
+            let (code, outputs) = emit_decoder_data_effects(&guest_code, register_homes);
+            let temporary_ids: Vec<_> = outputs
+                .iter()
+                .filter_map(|kind| match kind {
+                    DataEffectOutputKind::Temporary(temp) => Some(temp.0),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                temporary_ids,
+                (0..expected_temps.len() as u32).collect::<Vec<_>>()
+            );
+            let published = PublishedCode::publish(&code).unwrap();
+            // SAFETY: bytes come from `build_block -> lower -> allocator ->
+            // emitter`; the staging pointers below are valid for every emitted
+            // slot, and the mapping owner remains live through execution.
+            let entry: DataEffectEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+            let mut staging_gprs = initial_gprs;
+            let mut observed = vec![0xBADD_CAFE_DEAD_BEEF; outputs.len()];
+            let mut context = DataEffectContextV1 {
+                staging_gprs: staging_gprs.as_mut_ptr(),
+                output_values: observed.as_mut_ptr(),
+            };
+            // The assembly wrapper validates x19-x29, valid x29 frame-chain
+            // pointer, and exact SP restoration around the generated entry.
+            // SAFETY: the emitted entry pointer is owned above and accepts one
+            // pointer to this live, non-aliasing staging context.
+            let raw = unsafe {
+                od_jit_allocator_call_with_gpr_canaries(
+                    entry as usize,
+                    (&mut context as *mut DataEffectContextV1) as usize,
+                )
+            };
+
+            assert_eq!(raw, DATA_EFFECTS_UNCOMMITTED_V1);
+            assert_eq!(staging_gprs, [0, 1, u64::MAX, doubled]);
+            assert_eq!(canonical_state, original_canonical);
+            for (slot, kind) in outputs.iter().enumerate() {
+                match *kind {
+                    DataEffectOutputKind::Temporary(temp) => {
+                        assert_eq!(observed[slot], expected_temps[temp.0 as usize]);
+                    }
+                    DataEffectOutputKind::GuestRegisterCandidate {
+                        instruction_index,
+                        register,
+                        ..
+                    } => {
+                        let expected = match (instruction_index, register.0) {
+                            (0, 0) => u64::MAX,
+                            (1, 0) | (2, 2) => 0,
+                            (3, 2) => u64::MAX,
+                            (4, 3) => pattern,
+                            (5, 3) => doubled,
+                            other => panic!("unexpected staged register candidate {other:?}"),
+                        };
+                        assert_eq!(observed[slot], expected);
+                    }
+                    DataEffectOutputKind::CompareScratch {
+                        instruction_index, ..
+                    } => {
+                        assert_eq!(instruction_index, 6);
+                        assert_eq!(observed[slot], doubled.wrapping_sub(u64::MAX));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

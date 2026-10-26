@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08 и S3-09 завершены; S3-01 в работе.
+**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09 и S3-10 завершены; S3-01 в работе.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -136,7 +136,7 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-07 | Executable publication и ownership | S3-02, S3-06 |
 | [x] | S3-08 | Generated entry и helper ABI | S3-07 |
 | [x] | S3-09 | Простой allocator baseline | S3-03, S3-08 |
-| [ ] | S3-10 | Lowering первого integer subset | S3-05, S3-06, S3-09 |
+| [x] | S3-10 | Lowering первого integer subset | S3-05, S3-06, S3-09 |
 | [ ] | S3-11 | Корректные eager flags | S3-10 |
 | [ ] | S3-12 | State points и PC maps | S3-11 |
 | [ ] | S3-13 | Первый сквозной запуск одного блока | S3-07, S3-12 |
@@ -285,7 +285,7 @@ S3-09 выполнена: реализован первый baseline в `od-jit:
 2. Правильно обрабатывать guest widths и host zero/sign extension; CMP не записывает arithmetic result в guest destination.
 3. Проверить chains temporaries, spills и входные registers с крайними bit patterns.
 
-**Готово:** реальные ARM64 bytes исполняются с правильными register results. Flags доводятся в S3-11; до этого instruction support не объявляется полностью готовым.
+S3-10 выполнена: `od-jit::emitter::emit_data_effects` потребляет verifier-checked decoder-derived `Program` и связанную с ним `Allocation`; native od-host test проходит полный путь `CodeView → BasicBlock → lowering → allocation → emitter → publication → execution` для MOV imm64 и ADD/SUB/CMP reg64. Проверены register budgets 0..=4, spills, aliasing/equal operands, крайние bit patterns, многословная immediate и неравные SUB/CMP operands с borrow/wrap. `CMP` производит только наблюдаемый scratch result и не записывает гостевой GPR. Arithmetic flags остаются явно неполными; emitter не обновляет canonical `LongModeState`, RIP, budget или retirement и возвращает host-only uncommitted sentinel. Ветка/Jcc и неподдержанные exits отвергаются. Это промежуточные production bytes и staging probe, а не готовая guest-инструкция: S3-11 должен материализовать flags и определить точку архитектурного commit перед успешным guest exit. Проверки: `cargo fmt --all -- --check`, workspace all-target check, `od-jit` 50/50 tests, `od-host` 13/13 tests, `git diff --check`; integration test прошёл вне Cargo invocation в подписанном Hardened Runtime процессe с allow-jit entitlement; independent review clean, layout check успешен. Coverage ограничения allocator указаны в [ISSUE-022](../KNOWN_ISSUES.md#issue-022--ограниченное-покрытие-liveness-allocator-tests).
 
 ### S3-11. Реализовать eager flags baseline
 

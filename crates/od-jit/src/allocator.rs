@@ -724,6 +724,87 @@ mod tests {
     }
 
     #[test]
+    fn read_gpr_value_is_captured_across_multiple_helper_boundaries() {
+        let program = Program {
+            guest_instructions: vec![GuestInstruction {
+                guest_rip: 0x1000,
+                next_rip: 0x1001,
+            }],
+            operations: vec![
+                Operation::BeginInstruction { index: 0 },
+                Operation::ReadGpr {
+                    dst: TempId(77),
+                    register: GuestGpr(0),
+                    width: IntWidth::W64,
+                },
+                Operation::Constant {
+                    dst: TempId(88),
+                    width: IntWidth::W64,
+                    value: 5,
+                },
+                Operation::Integer {
+                    kind: crate::ir::IntegerKind::Add,
+                    lhs: TempId(77),
+                    rhs: TempId(88),
+                    result: Some(TempId(99)),
+                    width: IntWidth::W64,
+                    flags: crate::ir::FlagEffect::Arithmetic,
+                },
+                Operation::Integer {
+                    kind: crate::ir::IntegerKind::Add,
+                    lhs: TempId(77),
+                    rhs: TempId(99),
+                    result: Some(TempId(100)),
+                    width: IntWidth::W64,
+                    flags: crate::ir::FlagEffect::Arithmetic,
+                },
+                Operation::WriteGpr {
+                    register: GuestGpr(0),
+                    src: TempId(100),
+                    width: IntWidth::W64,
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::Exit {
+                    kind: ExitKind::BlockComplete,
+                    target_rip: 0x1001,
+                },
+            ],
+            code_end: 0x1001,
+        };
+        let allocation = Allocation::build(
+            &program,
+            AllocatorConfig {
+                register_homes: 1,
+                reserved_prefix_bytes: 0,
+            },
+            &[
+                HelperBoundaryPosition::BeforeOperation(3),
+                HelperBoundaryPosition::BeforeOperation(4),
+            ],
+        )
+        .unwrap();
+
+        let first = allocation
+            .helper_boundary(HelperBoundaryPosition::BeforeOperation(3))
+            .unwrap();
+        let second = allocation
+            .helper_boundary(HelperBoundaryPosition::BeforeOperation(4))
+            .unwrap();
+        assert!(first.live_through.contains(&TempId(77)));
+        assert!(second.live_through.contains(&TempId(77)));
+        assert!(second.live_through.contains(&TempId(99)));
+        assert_eq!(first.captures.len(), 1);
+        assert_eq!(second.captures.len(), 1);
+        assert_eq!(first.captures[0].temp, TempId(77));
+        assert_eq!(second.captures[0].temp, TempId(77));
+        assert_eq!(first.captures[0].home, second.captures[0].home);
+        assert_eq!(first.captures[0].slot, second.captures[0].slot);
+        assert_eq!(allocation.counters().helper_capture_slots, 1);
+        assert_eq!(allocation.counters().helper_saves, 2);
+        assert_eq!(allocation.counters().helper_reloads, 2);
+    }
+
+    #[test]
     fn rejects_invalid_budget_width_boundary_and_frame_offset() {
         let p = program(&[1], IntWidth::W64);
         assert!(matches!(

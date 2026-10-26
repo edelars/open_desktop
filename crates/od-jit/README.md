@@ -100,10 +100,24 @@ caller-saved register homes, живые через boundary, получают о
 capture/save/restore slots. Transfer API ограничивает scratch x13..x15 и
 использует checked ARM64 SP-relative LDR/STR. Frame layout учитывает reserved
 prefix, 16-byte alignment, диапазон адресуемых slots и transfer counters.
-Allocator не встраивает call в IR и не выводит clobber из Integer. Это baseline,
-не guest lowering; S3-10 отвечает за его потребление. Native od-host probe
-проверяет четыре register homes и два spills через helper, который портит
-x1..x17, одновременно сохраняя AAPCS64 callee-saved/SIMD canaries.
+Allocator не встраивает call в IR и не выводит clobber из Integer. Unit coverage
+добавляет `ReadGpr` value, живое через две helper boundaries, с одинаковым
+capture slot. Native od-host probe проверяет четыре register homes и два spills
+через helper, который портит x1..x17, одновременно сохраняя AAPCS64
+callee-saved/SIMD canaries.
+
+S3-10 добавил `emitter::emit_data_effects` для W64 MOV imm64 и ADD/SUB/CMP
+reg64. Он потребляет проверенную программу вместе с принадлежащей ей
+allocation, генерирует ARM64 transport через homes/spills и выдаёт temp values,
+GPR candidates и отдельный CMP scratch result. Два arithmetic operands читаются
+до result write, включая alias. `WriteGpr` затрагивает только отдельный staging
+copy; emitter возвращает `DATA_EFFECTS_UNCOMMITTED_V1` и не меняет canonical
+CPU state, flags, RIP, budget или retirement. Flags остаются
+`ArithmeticIncomplete`, branch terminals отвергаются. Native od-host test
+исполняет полный decoder-to-emitter путь с budgets 0..=4 и сравнивает staged
+vectors. Это промежуточный test harness, не committed guest execution, x86
+physical comparison или benchmark; eager flags и architectural commit относятся
+к S3-11.
 
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).

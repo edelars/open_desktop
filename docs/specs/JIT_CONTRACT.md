@@ -387,9 +387,38 @@ estimate, не benchmark.
 host: четыре register homes и два stack spills переживают helper, который
 пишет в volatile x1..x17, после чего generated entry возвращает сумму 21.
 Test wrapper дополнительно проверяет callee-saved GPR и D8-D15 canaries.
-Проверка не является S3-10 guest instruction lowering или производительным
-сравнением. S3-09 остаётся открытой до отдельного review и запуска полного набора
-профильных проверок.
+Проверка не является guest instruction lowering или производительным
+сравнением. Allocator baseline реализован; потребитель и дополнительные
+проверки liveness описываются следующими этапами.
+
+### S3-10: staged integer data effects
+
+`emitter::emit_data_effects` принимает только verifier-checked `Program` и
+`Allocation`, созданную для того же объекта Program. Начальный emitter принимает
+W64 `Constant`, `ReadGpr`, `Integer(Add|Subtract|Compare)` и `WriteGpr`; он
+отвергает другие widths, `FlagEffect` кроме `Arithmetic` у integer operations,
+Jcc/branch terminals и exits кроме `BlockComplete`. Для arithmetic оба входа
+считываются до записи результата, поэтому aliasing и `dst == src` сохраняют
+правильный operand order. Add/Sub записывают только во временное значение;
+`CMP` вычисляет subtraction result в отдельный scratch output и не делает
+guest-GPR write. Generated sequence использует allocation homes/spills и
+caller-saved scratch registers, сохраняет SP и не вызывает helper.
+
+Entry принимает test/staging context с отдельной копией четырёх GPR и output
+buffer. `WriteGpr` изменяет только staged GPR copy; outputs экспонируют temps,
+кандидаты GPR и CMP scratch. Возвращаемый
+`DATA_EFFECTS_UNCOMMITTED_V1` — host-contract sentinel, не `RuntimeExitTag`.
+Emitter не изменяет canonical `LongModeState`, flags, guest RIP, budget или
+retirement count; результат нельзя считать committed guest instruction или
+`BlockComplete`. Арифметические flags явно помечены `ArithmeticIncomplete`, и
+терминальный Branch пока не исполняется. Следующий S3-11 должен добавить eager
+flags и определить архитектурный commit до успешного guest exit.
+
+Native od-host ARM64 test проходит decoder → bounded block → typed IR → allocator
+→ production emitter → `PublishedCode` → execution при budgets 0..=4. Он
+проверяет alias/equal operands, overflow patterns, multi-lane constants,
+spill transport, CMP scratch и неизменность canonical state. Это локальное
+staging evidence, не физический x86 comparison и не performance benchmark.
 
 ## 6. Host и этапная приёмка
 
