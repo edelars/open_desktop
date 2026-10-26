@@ -602,6 +602,34 @@ cargo test -p od-isa -p od-testkit --offline stosb
 cargo test -p od-x86-runner --offline stosb_native_admission
 ```
 
+## Single-iteration LODS B/W/D/Q fixtures S2-18f
+
+Twenty-two literal schema v2 fixtures cover the bounded non-REP LODS slice:
+eight positives (AC, 66 AD, AD, and 48 AD with DF=0/1), four genuinely
+unmapped source reads, four noncanonical DS-source #GP cases, four zero-budget
+cases, and `48 66 AD` / `66 48 AD` prefix-normalization cases. Positive cases
+check the full GPR/RFLAGS/RIP snapshot, distinct source byte lanes, and complete
+unchanged RAM. Fault and budget cases check the full unchanged snapshot and
+RAM. The unmapped cases end as the existing `harness_error` result; this is not
+converted to a guest #PF. `ExpectedExit::HarnessError` records that existing
+backend outcome without changing the schema or profile shape.
+
+[`generate_stage2_lods.py`](../../../cpu/generate_stage2_lods.py) serializes
+the handwritten instruction bytes, input states, memory bytes, and predetermined
+answers; it does not assemble instructions or calculate results from an
+execution engine. These fixtures are local interpreter CLI checks only; native
+and JIT admission remain closed. The 48 explicitly enumerated prefix rejects,
+6,144-case full-state matrix, fault injection, fetch boundaries, address
+residues, page crossing, exact readable end, and RSI wrapping are checked in
+`od-isa` unit tests. Physical execution remains in the shared final acceptance
+substage.
+
+```sh
+python3 tests/cpu/generate_stage2_lods.py --check
+cargo test -p od-isa --offline lods_
+cargo test -p od-runner --test fixture_v2 --offline lods_cli_fixtures
+```
+
 ## Bounded REP STOSB fixtures S2-19a
 
 Five handwritten schema v2 fixtures cover exact `F3 AA`: zero count without a

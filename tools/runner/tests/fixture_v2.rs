@@ -4888,6 +4888,88 @@ fn rep_stosb_cli_fixtures_preserve_full_state_and_one_instruction_retirement() {
 }
 
 #[test]
+fn lods_cli_fixtures_match_literal_full_state_answers_and_fail_atomically() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(&fs::read(directory.join("s2_18f_lods_expected.json")).unwrap())
+            .unwrap();
+    assert_eq!(answers.len(), 22);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let is_unmapped = case_id.contains("_unmapped");
+        let (input, result) = run(&raw, "interpreter", if is_unmapped { 5 } else { 0 });
+        if case_id.contains("budget0") {
+            assert!(matches!(
+                result.outcome,
+                Outcome::InstructionBudgetExhausted {}
+            ));
+            assert_eq!(count(&result), 0, "{case_id}");
+        } else if is_unmapped {
+            // Missing fixture mappings are harness errors, not invented guest faults.
+            assert_eq!(
+                input.fixture.expected_exit,
+                ExpectedExit::HarnessError,
+                "{case_id}"
+            );
+            assert!(
+                matches!(result.outcome, Outcome::HarnessError { .. }),
+                "{case_id}"
+            );
+            assert_eq!(count(&result), 0, "{case_id}");
+        } else if case_id.contains("noncanonical") {
+            assert!(matches!(result.outcome, Outcome::Exception {}), "{case_id}");
+            assert_eq!(count(&result), 0, "{case_id}");
+            let Observation::Available { value: Some(fault) } = &snapshot(&result).exception else {
+                panic!("{case_id}: expected #GP snapshot");
+            };
+            assert_eq!(fault.vector, 13, "{case_id}");
+            assert_eq!(
+                fault.error_code,
+                Observation::Available { value: HexU64(0) }
+            );
+            assert_eq!(fault.faulting_rip, input.fixture.initial_state.rip);
+        } else {
+            assert!(
+                matches!(result.outcome, Outcome::StopAddress {}),
+                "{case_id}"
+            );
+            assert_eq!(count(&result), 1, "{case_id}");
+        }
+        let observed = snapshot(&result);
+        let expected_gprs: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gprs, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.state.rip, expected_rip, "{case_id}");
+        assert_eq!(observed.rflags_defined, HexU64(0x0cd7), "{case_id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+        if case_id.contains("noncanonical") || is_unmapped || case_id.contains("budget0") {
+            assert_eq!(
+                observed.state.gpr, input.fixture.initial_state.gpr,
+                "{case_id}"
+            );
+            assert_eq!(
+                observed.state.rip, input.fixture.initial_state.rip,
+                "{case_id}"
+            );
+            assert_eq!(
+                observed.memory[1].bytes_hex, "d1c2b3a495867768899aabbccddeef10",
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
 fn rep_iteration_work_limit_has_a_distinct_cli_outcome_and_restart_snapshot() {
     let mut fixture: serde_json::Value = serde_json::from_slice(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_19a_rep_stosb_df0.case.json"

@@ -1,0 +1,612 @@
+{
+  "s2_18f_lodsb_df0": {
+    "gpr": [
+      "0x11223344556677d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200001",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100001",
+    "memory": {
+      "code": "ac",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsb_df1": {
+    "gpr": [
+      "0x1122334455667789",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200007",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100001",
+    "memory": {
+      "code": "ac",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsw_df0": {
+    "gpr": [
+      "0x112233445566c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200002",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "66ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsw_df1": {
+    "gpr": [
+      "0x1122334455669a89",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200006",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "66ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsd_df0": {
+    "gpr": [
+      "0x00000000a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200004",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100001",
+    "memory": {
+      "code": "ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsd_df1": {
+    "gpr": [
+      "0x00000000bcab9a89",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200004",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100001",
+    "memory": {
+      "code": "ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsq_df0": {
+    "gpr": [
+      "0x68778695a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200008",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "48ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsq_df1": {
+    "gpr": [
+      "0x10efdecdbcab9a89",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "48ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsb_unmapped": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000210000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "ac",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsw_unmapped": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000210000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "66ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsd_unmapped": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000210000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsq_unmapped": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000210000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "48ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsb_noncanonical": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000800000000000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "ac",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "fault": {
+      "vector": 13,
+      "error_code": 0
+    }
+  },
+  "s2_18f_lodsw_noncanonical": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000800000000000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "66ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "fault": {
+      "vector": 13,
+      "error_code": 0
+    }
+  },
+  "s2_18f_lodsd_noncanonical": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000800000000000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "fault": {
+      "vector": 13,
+      "error_code": 0
+    }
+  },
+  "s2_18f_lodsq_noncanonical": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000800000000000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "48ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "fault": {
+      "vector": 13,
+      "error_code": 0
+    }
+  },
+  "s2_18f_lodsb_budget0": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "ac",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsw_budget0": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "66ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsd_budget0": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsq_budget0": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "48ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsw_ignored_rex": {
+    "gpr": [
+      "0x112233445566c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200002",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "4866ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  },
+  "s2_18f_lodsq_rexw_after_66": {
+    "gpr": [
+      "0x68778695a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200008",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "6648ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    }
+  }
+}

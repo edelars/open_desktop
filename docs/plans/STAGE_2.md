@@ -152,7 +152,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-15 | Bit operations и прочие integer формы профиля | S2-14 |
 | [ ] | S2-16 | Условия, переходы, SETcc/CMOVcc | S2-11 |
 | [ ] | S2-17 | Стек, CALL/RET и косвенные переходы | S2-16 |
-| [ ] | S2-18 | Строковые операции без REP | S2-17 |
+| [ ] | S2-18 | Строковые операции без REP; S2-18a–f локально покрывают только MOVSB/MOVSW/MOVSD/MOVSQ, STOSB и LODS B/W/D/Q; остальные формы и общая приёмка открыты | S2-17 |
 | [ ] | S2-19 | REP и точный частичный прогресс | S2-18 |
 | [ ] | S2-20 | Исключения, приоритеты и fault state | S2-14, S2-19 |
 | [ ] | S2-21 | Нужные однопроцессорные atomic/fence формы | S2-20 |
@@ -808,6 +808,36 @@ policy без hardware restart-state claim (ISSUE-016). После S2-18d deferr
 physical acceptance pool содержал 580 cases; S2-18e добавляет три native
 positive cases и один local-only fault, итого 584. Mac mini execution остаётся
 частью единого финального acceptance substage.
+
+#### S2-18f — одна non-REP LODS итерация (локальный профиль)
+
+Исполняются только `AC` LODSB, `66 AD` LODSW, bare `AD` LODSD и effective
+`REX.W + AD` LODSQ в Long64 с address-size 64 и flat `DS:[RSI]`. Для AD
+effective REX.W имеет приоритет над 66; misplaced REX перед 66 сбрасывается
+общей нормализацией (`48 66 AD` остаётся word, `66 48 AD` — qword). Остальные
+REX bits не меняют implicit operand. REP, LOCK, 67, segment overrides,
+effective non-W REX на AD и любой prefix перед AC не принимаются; это граница
+профиля, не заявление о #UD для каждой законной кодировки.
+
+Интерпретатор выполняет ровно одно чтение ширины операнда из pre-state RSI.
+После успешного чтения AL/AX заменяют только низ RAX, EAX обнуляет верх RAX,
+а RAX записывается полностью. RSI затем wrapping-обновляется на ±1/2/4/8 по DF.
+RIP продвигается по длине инструкции, одна инструкция retire-ится. Любой read
+fault сохраняет полный CPU/RAM state и faulting RIP. Неканонический DS source
+даёт #GP; отсутствующая fixture mapping остаётся harness error. Это не
+добавляет MMU semantics или host-error mapping.
+
+Локальные проверки содержат 6,144 полных успеха (width × DF × шесть значений ×
+два начальных RAX × все 64 комбинации CF/PF/AF/ZF/SF/OF), 48 перечисленных
+prefix-reject encodings, REX/66 ordering, read faults и 22 literal CLI fixtures:
+8 width/direction positives, 4 unmapped-source outcomes, 4 noncanonical-source
+#GPs, 4 zero-budget cases и 2 normalization cases. Также проверяются полные
+снимки состояния и RAM, доступ только для чтения, fault/budget no-commit и
+различие architectural #GP и backend `HarnessError`. Fixture schema/profile
+shape сохранена; валидатор допускает instruction budget 0 для проверки этой
+границы исполнения. S2-18 и S2-19 остаются открытыми; native/JIT исполнение
+LODS не добавлено. ISSUE-016 и ISSUE-019 остаются открытыми. Физическая
+проверка остаётся в едином финальном Mac mini substage.
 
 ### S2-19. REP и частичное выполнение
 

@@ -48,8 +48,14 @@ Code and data use the same guest mappings. `memory` reuses `MemoryRegionSpec`
 with unique IDs, nonoverlapping checked addresses, lengths, read/write/execute
 permissions, initial bytes and per-byte comparison masks. Limits: 16 regions,
 64 KiB total RAM, 512 KiB fixture JSON, 256 KiB result JSON. Budget is
-1…10000000 and wall timeout is 1…30000 ms. `stop_rip` is a harness boundary
+0…10000000 and wall timeout is 1…30000 ms. `stop_rip` is a harness boundary
 checked before fetch, not an x86 instruction or a universal end-of-RAM exit.
+
+`expected_exit` accepts the existing architectural stops plus `harness_error`
+for a bounded-memory/backend failure. A harness error remains distinct from a
+guest exception: the interpreter does not synthesize #PF from an absent mapping.
+Harness errors can be recorded in CLI fixtures, but `compare` only compares
+completed architectural observations and rejects harness-error results.
 
 Result fields include exact input SHA-256, case/profile/backend, build/machine
 metadata, `outcome`, observed instruction count and snapshot. Outcomes separate

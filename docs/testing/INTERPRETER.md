@@ -850,3 +850,20 @@ PF, including the untaken path. PF=0 copies raw binary80 bytes and the source
 tag; PF=1 retains the destination. Local full-state matrices cover 51,200
 successes and 21,504 invalid class/tag rejects. The complete contract and
 limits are recorded in the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ci-exact-bare-fcmovnu-st0-st1-db-d9).
+
+## Local S2-18f non-REP LODS B/W/D/Q
+
+The S2-18f interpreter profile admits bare `AC`, `66 AD`, bare `AD`, and
+effective REX.W + `AD`, with flat DS:[RSI] and 64-bit addressing. It makes one
+width-exact read and commits accumulator and DF-directed wrapping RSI only
+after success. It preserves all other architectural state and RAM. The full
+success matrix contains 6,144 cases and checks complete CPU state, exact RAM,
+one read and zero writes. Additional checks cover aligned and unaligned starts,
+4 KiB crossing, exact readable end, pointer wrap, noncanonical final RSI,
+read-fault no-commit, prefix rejection, and instruction-fetch/budget boundaries.
+There are 22 literal CLI fixtures. A noncanonical DS source yields #GP; a
+missing bounded-memory mapping remains a harness error. REP, LOCK, 67,
+segment prefixes, effective non-W REX on `AD`, prefixed `AC`, JIT and native
+execution are outside this slice. See the
+[CPU contract](../specs/CPU_CONTRACT.md) and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md).

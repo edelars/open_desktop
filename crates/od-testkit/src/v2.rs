@@ -587,6 +587,8 @@ pub enum ExpectedExit {
     RepIterationBudgetExhausted,
     StopRequested,
     Exception,
+    /// The bounded fixture backend could not complete an access; this is not a guest exception.
+    HarnessError,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -653,10 +655,10 @@ impl Fixture {
         if self.memory.is_empty() {
             return Err(invalid("memory", "must contain a mapping"));
         }
-        if !(1..=MAX_INSTRUCTION_BUDGET).contains(&self.instruction_budget) {
+        if self.instruction_budget > MAX_INSTRUCTION_BUDGET {
             return Err(invalid(
                 "instruction_budget",
-                "must be between 1 and 10000000",
+                "must be between 0 and 10000000",
             ));
         }
         if !(1..=MAX_WALL_TIMEOUT_MS).contains(&self.wall_timeout_ms) {
@@ -2264,6 +2266,7 @@ pub fn compare(
                 )
                 | (ExpectedExit::StopRequested, Outcome::StopRequested {})
                 | (ExpectedExit::Exception, Outcome::Exception {})
+                | (ExpectedExit::HarnessError, Outcome::HarnessError { .. })
                 | (ExpectedExit::Unsupported, Outcome::Unsupported { .. })
         );
         if !matches {

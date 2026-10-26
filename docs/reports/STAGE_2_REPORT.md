@@ -1810,6 +1810,61 @@ RFLAGS, fault-only local policy, fixture/canary answers, native admission,
 generator hash, and pool counts. Review was static; Linux native execution,
 SSH, and physical checks were not performed.
 
+## S2-18f — non-REP LODS B/W/D/Q (local)
+
+The interpreter now admits only bare `AC` LODSB, bare `AD` LODSD, `66 AD`
+LODSW, and effective REX.W + `AD` LODSQ in Long64 with implicit flat
+DS:[RSI] and address-size 64. For `AD`, effective REX.W overrides 66;
+normalization preserves the existing prefix order rule, so `48 66 AD` is word
+and `66 48 AD` is qword. Other REX bits do not affect the implicit operands.
+REP, LOCK, 67, segment overrides, effective non-W REX for `AD`, and every
+prefixed `AC` form are outside the admitted profile. This is an implementation
+boundary, not a claim that every rejected legal form raises #UD.
+
+Each successful instruction makes one read of the element width at pre-state
+RSI, updates the corresponding low RAX view (byte/word preserve upper bits,
+dword zero-extends, qword fully replaces), then wrapping-updates RSI by the
+width according to DF. It preserves all other GPRs, flags and definedness,
+segments, x87 state, and RAM; RIP advances by decoded length and retirement is
+one. Read failure commits no CPU or RAM state. Canonicality uses the existing
+DS data-address helper, so a noncanonical source reports #GP(0); missing
+fixture mappings remain backend harness errors rather than being converted to
+guest exceptions.
+
+Local tests cover 6,144 full-state successful inputs: four widths, both DF
+directions, six values (zero, one, all ones, sign bit, `55`, `AA`), two initial
+RAX sentinels and all 64 CF/PF/AF/ZF/SF/OF combinations. They assert one width-
+exact read, no writes, unchanged RAM and complete expected state. Decoder tests
+enumerate 48 rejected prefix cases, all eight REX.W values with/without 66,
+both REX/66 orders, and truncated fetch boundaries. Address tests cover eight
+alignment residues per width, a qword crossing 4 KiB, the exact readable end,
+canonical-range crossing #GP for word/dword/qword DS reads, forward/backward
+RSI wrap, and a successful read whose final RSI is noncanonical. Four true
+unmapped source reads, four noncanonical sources, injected read faults, and
+zero-budget execution preserve the pre-state. The 22
+literal v2 fixtures contain 8 positive width/DF cases,
+4 unmapped source outcomes, 4 noncanonical #GP cases, 4 budget-zero cases, and
+2 prefix-normalization cases. Their generator serializes stated byte/state/
+memory constants and does not derive expected values from execution.
+
+Verification passed: all 745 `od-isa` tests, all 189 `od-testkit` tests, all
+203 v2 runner CLI fixture tests, targeted LODS and existing MOVS/STOSB/REP
+STOSB regressions, formatter check, workspace all-target offline check, all
+59 Stage 2 generator freshness checks, LODS generator freshness and `git diff
+--check`. `tools/check_layout.py` failed because the managed worktree's
+`.git` marker being reported as an unmapped root file and two existing report
+links to ignored `work/stage*` manifests; this task did not alter those paths.
+The fixture JSON field/profile shape is unchanged; the existing `expected_exit`
+string now accepts `harness_error` for that existing backend outcome, and v2
+validation permits a zero instruction budget while retaining the 10,000,000
+maximum. `compare` still rejects nonarchitectural harness-error results. JIT
+and native execution remain unsupported; physical checks remain deferred to
+the single final Mac mini acceptance substage. S2-18 remains partial, and
+ISSUE-016/019 remain open. Independent gpt-6.1-sol high review found no
+remaining issues in decoder/executor admission, commit ordering, fault behavior,
+fixture shape, or the revised prefix matrix. Review was static; no native,
+SSH, or physical execution was performed.
+
 ## S2-19a — bounded `F3 AA` REP STOSB (local)
 
 This slice admits only exact `F3 AA` in long mode. `RCX=0` completes without a
