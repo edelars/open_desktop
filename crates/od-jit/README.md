@@ -36,6 +36,20 @@ records: S3-04/S3-05 должны строить их из успешно дек
 IR пока не подключён к fragment compiler;
 lowering, memory/helper effects и runtime dispatch остаются следующими задачами.
 
+S3-04 добавил `block::CodeView` и `block::build_block`: borrowed code bytes
+декодируются по одной инструкции через read-only `GuestMemory`, с пределами не
+выше 32 инструкций/256 bytes. Записи содержат decoded instruction, guest RIP,
+next RIP и точный byte range. Лимит, buffer exhaustion, unsupported form,
+deferred decode boundary и branch представлены разными stop reasons; ошибка
+первой инструкции даёт `NoBlock`, а не гостевой fault. Ветвление останавливает
+сборку без чтения хвоста; незнакомая forward target явно остаётся unresolved.
+Поскольку `ir::verify` пока требует доказанный target boundary в IR records,
+unresolved target нельзя передать ему до согласования в S3-05/S3-15. Target
+внутрь decoded instruction останавливает сборку перед branch, сохраняя уже
+собранный prefix. Branch target считается 64-битным wrapping сложением, как в
+interpreter. `BasicBlock.guest_ranges` фиксирует bytes, но не code identity или
+version: tracking принадлежит S3-17, cache invalidation — S3-23.
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в

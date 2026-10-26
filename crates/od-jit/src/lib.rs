@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use od_isa::{DecodeError, FragmentState as CpuState, Instruction, Operation, decode};
 
+pub mod block;
 pub mod ir;
 pub mod runtime;
 

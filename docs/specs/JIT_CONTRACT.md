@@ -89,6 +89,41 @@ RAX/RCX/RDX/RBX, без high-byte registers и памяти. Для ModR/M `mod`
   Переходы между блоками и cache принадлежат следующим задачам, а cache появится
   не раньше S3-18.
 
+S3-04 реализует только decoder-backed block builder поверх immutable borrowed
+`CodeView`. `base_rip + len` и entry offset проверяются без переполнения; entry
+может быть любой позицией в view или ровно `code_end` и считается новой decode
+boundary. Настраиваемые limits должны быть положительными и не превышать 32
+instructions/256 bytes. Блок сохраняет точные `[guest_rip, next_rip)` ranges для
+успешно декодированных instructions; range остаётся одной записью и при
+пересечении страницы, без предположений о guest page mapping.
+
+Decoder получает read-only `GuestMemory`, читающий только внутри view. Fetch за
+концом доступного буфера создаёт `DecodeBoundary` stop metadata; это deferred
+decode/fetch result, не guest `#PF`. Ошибка на entry возвращается как `NoBlock`
+с тем же deferred record, чтобы dispatcher/interpreter наблюдал её в нужный
+момент. Buffer exhaustion и block limits сами по себе не являются guest faults.
+Unsupported decoded form не включается в block; builder останавливается перед
+ней. S0-09 admission использует decoder opcode/prefix/operand metadata и точную
+длину известных форм, поэтому лишние и повторные prefixes не проходят как
+поддержанная форма.
+
+Условная branch завершает построение немедленно, до чтения недостижимого хвоста
+или target. Target в уже декодированном range должен совпадать с decoded
+instruction start или `code_end`; если он попадает внутрь instruction, builder
+останавливается перед Jcc и сохраняет ранее собранный prefix. Target вычисляется
+64-битным wrapping сложением `next_rip` и sign-extended displacement, как в
+interpreter; полученный target за пределами `CodeView` сохраняется как
+`Unresolved`. Forward/unparsed и внешние targets также имеют явный статус
+`Unresolved`. Такой target пока нельзя передать в `ir::verify`: его текущий
+boundary proof требует target среди IR guest records либо на последнем
+`next_rip`. Согласование unresolved targets с IR оставлено S3-05/S3-15; S3-04 не
+объявляет их проверенными.
+
+`BasicBlock.guest_ranges` хранит точные ranges декодированного блока. Они не
+содержат идентичность или версию executable code и сами не являются cache
+dependencies. Code identity/version tracking принадлежит S3-17, а проверка
+изменений и cache invalidation — S3-23.
+
 ## 5. Runtime boundary (S3-02)
 
 Legacy fragment entry продолжает использовать `FragmentState` и собственную

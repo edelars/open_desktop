@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02 и S3-03 завершены, S3-01 в работе.
+**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03 и S3-04 завершены, S3-01 в работе.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -130,7 +130,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-01 | Baseline и протокол сравнения вариантов | S3-00 |
 | [x] | S3-02 | Runtime/state/helper contract | S3-00 |
 | [x] | S3-03 | Типизированный IR и verifier | S3-02 |
-| [ ] | S3-04 | Построение bounded basic block | S3-03 |
+| [x] | S3-04 | Построение bounded basic block | S3-03 |
 | [ ] | S3-05 | Перевод decoder output в IR | S3-04 |
 | [ ] | S3-06 | Проверяемый ARM64 encoder | S3-02 |
 | [ ] | S3-07 | Executable publication и ownership | S3-02, S3-06 |
@@ -222,9 +222,9 @@ Host PC map нужен для диагностики и восстановлен
 1. Декодировать с entry RIP по одному instruction, используя существующий decoder и mode context.
 2. Останавливать построение на terminator, лимите, context-changing effect или форме без lowering. Не интерпретировать недостижимый хвост.
 3. На fetch/decode fault после валидного префикса завершить префикс с выходом к следующему RIP. Fault на первой инструкции наблюдать в нужной runtime точке, не раньше исполнения предыдущего блока.
-4. Собрать guest byte ranges и dependencies для всех инструкций, включая переход через границу страницы.
+4. Сохранить guest byte ranges всех decoded instructions, включая переход через границу страницы. Code identity/version tracking относится к S3-17, проверка изменения и cache invalidation — к S3-23.
 
-**Готово:** tests покрывают entry на новом адресе, короткий block limit, boundary fetch и ошибку после успешно исполнимой инструкции без преждевременного fault.
+**Готово:** tests покрывают entry на новой boundary, entry на code_end, instruction/byte limits, truncation на первой инструкции и после валидного префикса, unsupported form после префикса, branch без декодирования хвоста, target внутрь инструкции и unresolved forward target. Для декодированного префикса сохранены точные guest ranges; fetch exhaustion не назван guest fault. Mid-instruction target останавливает сборку до branch и сохраняет prefix. Branch target вычисляется 64-битным wrapping сложением, как в interpreter; unresolved target не передаётся текущему IR verifier до решения S3-05/S3-15. Ranges не устанавливают code identity/version; tracking принадлежит S3-17, а cache invalidation — S3-23.
 
 ### S3-05. Перевести decoder output в IR
 
@@ -637,6 +637,8 @@ S3-00 выполнена как документационная задача. �
 S3-02 выполнена: [JIT_CONTRACT](../specs/JIT_CONTRACT.md#5-runtime-boundary-s3-02) задаёт canonical state pointer/offset boundary, progress/budget outputs, stop-address и STOP/budget/fetch порядок, block exit tags, разделение compile/runtime/host ошибок, scalar helper ABI, AAPCS64 clobbers и executable mapping ownership. `od-jit::runtime` содержит `repr(C)` context, raw tags и same-build offsets; arithmetic helper semantics и legacy fragment path не менялись. GuestFault/EventPending tags зарезервированы для будущей версии. Block compiler, dispatcher и новый host invocation ещё не реализованы.
 
 S3-03 выполнена: добавлен [линейный typed IR](../../crates/od-jit/src/ir.rs) и verifier до будущей публикации кода. IR различает temporaries и guest GPR, сохраняет guest RIP/next RIP и commit markers, описывает integer/flags effects и требует явный terminal с enum condition/kind. Verifier проверяет temp definitions/widths, GPR/flag references, последовательность commits и targets: branch target разрешается только на boundary из полного непрерывного списка guest records, branch fallthrough и exit target должны совпадать с последним `next_rip`. Эта проверка не подтверждает источник guest records; декодерная валидация принадлежит S3-04/S3-05. Целевые unit tests и cargo checks прошли; независимый diff review не выявил actionable замечаний. IR не подключён к legacy fragment compiler и не реализует lowering/runtime dispatch.
+
+S3-04 выполнена: добавила [bounded block builder](../../crates/od-jit/src/block.rs). Он использует `long_decode::decode` по одной инструкции и read-only borrowed `CodeView`, проверяет адресные вычисления и допускает entry на любой позиции buffer/ровно code_end. Стандартные limits ограничены 32 инструкциями и 256 байтами; S0-09 forms принимаются по decoder metadata и exact encoded length. `BasicBlock` содержит decoded records и точные byte ranges, включая диапазон через границу страницы. Terminator завершает построение до декодирования хвоста. Unsupported form, limits, buffer exhaustion и deferred `DecodeBoundary` различаются; первый fetch/decode failure возвращает `NoBlock` с отложенной записью, не guest `#PF`. Mid-instruction branch target останавливает построение перед branch и сохраняет предыдущий prefix; неразобранный target хранится как `Unresolved`. Branch target вычисляется 64-битным wrapping сложением, как в interpreter. Unresolved target несовместим с текущим `ir::verify`, который требует target boundary в IR records или final next RIP; разрешение интеграции отложено до S3-05/S3-15. Guest ranges не содержат code identity/version: tracking относится к S3-17, cache invalidation — к S3-23. Целевые проверки прошли, независимый review не нашёл замечаний.
 
 S3-01 начата: в [BENCHMARKS](../testing/BENCHMARKS.md) описаны workload matrix и раздельные уровни cold process, cold code cache и warm execution. Preflight точной ревизии `9a1376b` описан в [отчёте baseline](../reports/STAGE_3_BASELINE_2026-10-26.md): локальные Cargo tests показали пять x87 failures; удалённый `od-isa --lib` preflight завершился ошибкой без сохранённого списка test names. Физические fixtures и timing не запускались. Из-за параллельной работы этапа 2 этот результат не переносится на последующие revisions. Повторить Stage 1 local/oracle после стабилизации соответствующих изменений; performance baseline остаётся открытым.
 
