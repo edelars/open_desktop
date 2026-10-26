@@ -1359,6 +1359,22 @@ so ISSUE-019 remains open. See the [CPU contract](../../../../docs/specs/CPU_CON
 [plan](../../../../docs/plans/STAGE_2.md#s2-30au-admit-canonical-signed-infinity-to-bounded-fstfstp-sti),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30au--canonical-signed-infinity-through-fstfstp-sti).
 
+<a id="s2-30az-canonical-qnan-fst-fstp-sti"></a>
+
+### S2-30az canonical binary80 QuietNaN FST/FSTP ST(i)
+
+Four handwritten schema-v2 `project_fixture` cases use the unchanged
+`d900ddd1dfe0` and `d900ddd9dfe0` streams with positive and negative
+payload-bearing binary32 QNaNs. Each runs FLD m32fp, FST or FSTP ST(1), then
+FNSTSW. They compare the exact extended bytes/sign, Special tags, full state,
+memory and canary; the pop and no-pop cases have distinct TOP/tag results.
+Direct interpreter compositions also cover m32 and m64 loads for both signs
+and both stores. The schema and JIT/native admissions are unchanged. Local
+evidence does not establish physical x87 behavior; ISSUE-019 remains open. See
+the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30az-canonical-qnan-fst-fstp-sti),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30az-admit-canonical-binary80-quietnan-to-bounded-fstfstp-sti),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30az--canonical-binary80-quietnan-through-bounded-fstfstp-sti).
+
 ### S2-30av canonical signed-infinity FCHS/FABS
 
 The handwritten `s2_30av_fld_fchs_fst_fnstsw.case.json` and

@@ -6872,3 +6872,37 @@ physical x86 behavior; ISSUE-019 remains open. See the
 [plan](../plans/STAGE_2.md#s2-30ay-admit-canonical-binary80-subnormal-to-bounded-fchsfabs),
 [report](../reports/STAGE_2_REPORT.md#s2-30ay--canonical-binary80-subnormal-through-bounded-fchsfabs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30ay-canonical-binary80-subnormal-fchsfabs).
+
+<a id="local-s2-30az-canonical-qnan-fst-fstp-sti"></a>
+
+## Local S2-30az: canonical binary80 QuietNaN through bounded `FST/FSTP ST(i)`
+
+Only `bounded_x87_fst_sti_source` is extended. Alongside the existing Valid-tag
+canonical Normal, Zero-tagged exact signed zero and Special-tagged canonical
+infinity cases, it admits `(Special, QuietNaN)` only when binary80 has E=`0x7fff`,
+J=1 and Q=1. Either sign and every low-62-bit payload, including zero, are
+accepted as classified by the existing binary80 classifier. FCW remains exactly
+`0x037f`, and `FSW & 0x80ff` remains zero. All ten source bytes and the Special
+tag are copied unchanged. No exception flags are added.
+
+Bare `DD D0+i` FST writes the captured bytes/tag to physical
+`(old_TOP+i)&7`, preserving TOP and the full FSW. Bare `DD D8+i` FSTP copies
+first, empties old physical TOP, then advances TOP modulo eight; the `i=0`
+payload remains with Empty tag, and `i=1` becomes new ST(0). The established
+local C1 policy, FIP/RIP update and single retirement are unchanged. Wrong tags,
+SNaN, pseudo-NaN, pseudo-infinity, subnormal, pseudo-denormal, unnormal,
+malformed encodings and bad environments reject atomically. Decode, classifier,
+schema, other gates and JIT/native admission are unchanged.
+
+The interpreter matrix covers 16,384 full-state cases: both operations, both
+signs, all TOP/index pairs, 16 condition-code states and payloads `{0, 1,
+1<<61, (1<<62)-1}`. It checks overwritten destination tag/payload sentinels,
+alias, `i=1`, TOP wrap and copy-before-pop. Rejections cover neighboring
+classes, wrong tags, FCW/FSW, absent x87 state and execution boundaries. Four
+existing-schema fixtures exercise m32 QNaN FLD→FST/FSTP ST(1)→FNSTSW for both
+signs; direct interpreter compositions cover m32 and m64 for both signs and
+store forms. This is local interpreter/project-fixture evidence, not native or
+physical x86 validation. ISSUE-019 remains open. See the
+[plan](../plans/STAGE_2.md#s2-30az-admit-canonical-binary80-quietnan-to-bounded-fstfstp-sti),
+[report](../reports/STAGE_2_REPORT.md#s2-30az--canonical-binary80-quietnan-through-bounded-fstfstp-sti),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30az-canonical-qnan-fst-fstp-sti).

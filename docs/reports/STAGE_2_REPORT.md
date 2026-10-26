@@ -9085,3 +9085,41 @@ wrong-tag tests; `cargo check --workspace --all-targets --offline`;
 `include/open_desktop/host_abi.h` extraction warning and skipped unsupported
 file types. No Mac mini, SSH, native runtime or physical x86 checks were
 performed. ISSUE-019 remains open for combined host/physical acceptance.
+
+## S2-30az — canonical binary80 QuietNaN through bounded FST/FSTP ST(i)
+
+Only `bounded_x87_fst_sti_source` changed. The source gate now also admits
+`(Special, QuietNaN)` canonical binary80 values (E=`0x7fff`, J=1, Q=1) for
+either sign and all low-62 payloads, including zero. FCW `0x037f`,
+`FSW & 0x80ff == 0`, existing Normal/zero/infinity paths and the current C1
+policy remain. FST copies the raw bytes and tag without TOP change; FSTP copies
+first, empties old TOP and advances TOP modulo eight. No exception flags,
+decoder, classifier, schema, other source gate, JIT admission or native
+admission changed.
+
+The 16,384-case interpreter matrix crosses both opcodes, both signs, every TOP
+and index, all 16 condition-code patterns and payloads `{0, 1, 1<<61,
+(1<<62)-1}`. It compares complete state and raw bytes, overwrites prior
+destination tag/payload sentinels, and exercises alias `i=0`, `i=1`, TOP wrap
+and copy-before-pop. Reject cases cover SNaN and malformed neighboring
+classes, wrong tags, FCW/FSW gates, absent x87 state and fetch/truncation/
+prefix/REX/WAIT/STOP/budget boundaries. Direct FLD→FST/FSTP ST(1)→FNSTSW
+compositions cover m32 and m64 QNaNs of both signs. Four existing-schema
+project fixtures run the exact `d900ddd1dfe0` and `d900ddd9dfe0` streams with
+both binary32 signs; they check full state, payload, memory, canary and JIT
+denial.
+
+Validation passed: `cargo test -p od-isa --offline qnan` (8 tests),
+`cargo test -p od-isa --offline fst_sti` (6 tests),
+`cargo test -p od-isa --offline fstp_sti` (7 tests), and the focused
+`cargo test -p od-runner --offline --test fixture_v2
+local_x87_fld_fst_and_fstp_sti_qnan_fixtures_check_state_memory_and_jit_denial`
+(1 test). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, and `git diff --check` passed. `graphify update
+.` rebuilt the graph at 4,926 nodes, 9,864 edges and 182 communities. Its
+existing `include/open_desktop/host_abi.h` syntax warning and skipped
+unsupported file types remain. Independent gpt-6.1-sol medium follow-up review
+found no remaining defects. No Mac mini, SSH, native runtime or physical x86
+checks were performed; ISSUE-019 remains open for combined host/physical
+acceptance.

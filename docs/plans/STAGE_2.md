@@ -215,6 +215,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30av | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit only Special-tagged canonical signed binary80 infinity; native/JIT closed | S2-30ap, S2-30at |
 | [x] | S2-30aw | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit only Special-tagged canonical binary80 QuietNaN, preserving all payload bits; native/JIT closed | S2-30av, S2-31ah |
 | [x] | S2-30ay | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit Special-tagged canonical binary80 subnormals with raw payload preservation; native/JIT closed | S2-30ax |
+| [x] | S2-30az | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 QuietNaN without changing raw bytes; native/JIT closed | S2-30au, S2-30aw |
 | [x] | S2-30aa | Bare `D9 E4` FTST, bounded canonical-Normal ST(0) comparison with zero; native closed | S2-30z |
 | [x] | S2-30ab | Bare `D8 D1` FCOM ST(1), exact finite canonical-Normal compare with status-only commit; native closed | S2-30aa |
 | [x] | S2-30ac | Bare `D8 D0+i` FCOM ST(i), exact finite canonical-Normal compare for all register indices; native closed | S2-30ab |
@@ -2317,6 +2318,33 @@ fixture checks atomic rejection. Correct the prior malformed-vector comment:
 `[0,0,0,0,0,0,0,0,1,0]` is E=1,J=0 unnormal, not subnormal. Keep ISSUE-019
 open and defer Mac mini/SSH/native/physical acceptance to the combined final
 substage.
+
+#### S2-30az. Admit canonical binary80 QuietNaN to bounded `FST/FSTP ST(i)`
+
+Extend only `bounded_x87_fst_sti_source`: retain Valid-tag canonical Normal,
+exact Zero-tagged signed zero, and Special-tagged canonical infinity behavior.
+Additionally admit `(Special, QuietNaN)` for canonical binary80 E=`0x7fff`,
+J=1, Q=1; accept either sign and every low-62-bit payload, including zero.
+Preserve FCW `0x037f`, `FSW & 0x80ff == 0`, all ten source bytes/tag, and the
+current C1 policy. Bare `DD D0+i` copies to physical `(old_TOP+i)&7` without
+changing TOP. Bare `DD D8+i` copies first, empties old physical TOP, then
+advances TOP modulo eight. Thus `i=0` leaves copied bytes under an Empty tag,
+and `i=1` places the copy at new ST(0). Do not change decoding, classifier,
+schema, other gates or JIT/native admission. Reject SNaN, pseudo-NaNs,
+pseudo-infinity, subnormal, pseudo-denormal, unnormal, malformed values and
+wrong tag/class pairs atomically; add no exception flags.
+
+Cover both opcodes × both signs × all TOP × all indices × all 16 prior
+condition-code states × payloads `{0, 1, 1<<61, (1<<62)-1}` with full-state
+expectations, destination tag/payload canaries, `i=0`/`i=1`, TOP wrap and
+copy-before-pop checks. Include invalid neighboring classes/tags/environment,
+missing state and fetch/truncation/prefix/REX/WAIT/STOP/budget atomicity.
+Four existing-schema project fixtures use `d900ddd1dfe0` and
+`d900ddd9dfe0` to load binary32 QNaNs of both signs, store to ST(1), and observe
+status with FNSTSW. Direct interpreter compositions cover m32 and m64, both
+signs and both store forms. Local checks do not establish physical x87 behavior;
+keep ISSUE-019 open and defer Mac mini/SSH/native/physical acceptance to the
+combined final substage.
 
 #### S2-30z. Bare bounded `FABS` (sign-bit-clear local slice)
 

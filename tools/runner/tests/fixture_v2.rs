@@ -153,6 +153,18 @@ const FSTP_STI_INFINITY_POSITIVE: &[u8] = include_bytes!(
 const FSTP_STI_INFINITY_NEGATIVE: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_30au_fld_fstp_sti_negative_infinity_fnstsw.case.json"
 );
+const FST_STI_QNAN_POSITIVE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30az_fld_m32_fst_sti_positive_qnan_fnstsw.case.json"
+);
+const FST_STI_QNAN_NEGATIVE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30az_fld_m32_fst_sti_negative_qnan_fnstsw.case.json"
+);
+const FSTP_STI_QNAN_POSITIVE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30az_fld_m32_fstp_sti_positive_qnan_fnstsw.case.json"
+);
+const FSTP_STI_QNAN_NEGATIVE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30az_fld_m32_fstp_sti_negative_qnan_fnstsw.case.json"
+);
 const FCHS_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30y_fchs_invalid_source.case.json");
 const FRNDINT_TIE: &[u8] =
@@ -2095,6 +2107,66 @@ fn local_x87_fld_fst_and_fstp_sti_infinity_fixtures_check_state_memory_and_jit_d
                 "0000807f"
             }
         );
+        assert_eq!(observed.memory[2].bytes_hex, "a5");
+        let (_, jit_result) = run(fixture, "jit", 4);
+        assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
+fn local_x87_fld_fst_and_fstp_sti_qnan_fixtures_check_state_memory_and_jit_denial() {
+    for (fixture, code, raw, status, tags, input) in [
+        (
+            FST_STI_QNAN_POSITIVE,
+            "d900ddd1dfe0",
+            "00000000004523c1ff7f",
+            0x3800,
+            0xbffe,
+            "4523c17f",
+        ),
+        (
+            FST_STI_QNAN_NEGATIVE,
+            "d900ddd1dfe0",
+            "00000000004523c1ffff",
+            0x3800,
+            0xbffe,
+            "4523c1ff",
+        ),
+        (
+            FSTP_STI_QNAN_POSITIVE,
+            "d900ddd9dfe0",
+            "00000000004523c1ff7f",
+            0x0000,
+            0xfffe,
+            "4523c17f",
+        ),
+        (
+            FSTP_STI_QNAN_NEGATIVE,
+            "d900ddd9dfe0",
+            "00000000004523c1ffff",
+            0x0000,
+            0xfffe,
+            "4523c1ff",
+        ),
+    ] {
+        let (input_fixture, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 3);
+        let observed = snapshot(&result);
+        let mut expected = input_fixture.fixture.initial_state.clone();
+        expected.rip = HexU64(0x0010_0006);
+        expected.gpr[0] = HexU64(0x0030_0000 | status);
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.registers[0] = raw.into();
+        expected_x87.registers[7] = raw.into();
+        expected_x87.status_word = HexU64(status);
+        expected_x87.tag_word = HexU64(tags);
+        expected_x87.instruction_pointer = HexU64(0x0010_0002);
+        expected_x87.data_pointer = HexU64(0x0030_0004);
+        assert_eq!(observed.state, expected, "{code}");
+        assert_eq!(observed.memory.len(), 3);
+        assert_eq!(observed.memory[0].bytes_hex, code);
+        assert_eq!(observed.memory[1].bytes_hex, input);
         assert_eq!(observed.memory[2].bytes_hex, "a5");
         let (_, jit_result) = run(fixture, "jit", 4);
         assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
