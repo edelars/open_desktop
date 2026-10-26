@@ -1304,9 +1304,9 @@ instructions and checks full state and memory through the interpreter CLI.
 Local vectors cover both zero signs × all TOP × all prior condition-code
 states, repeated-FABS idempotence, malformed Zero/wrong-tag/environment inputs,
 and execution boundaries; Normal and FCHS behavior remain covered by their
-existing cases. S2-30aq subsequently admits canonical signed zero to FTST only;
-FST/FSTP ST(i) remain Normal-only. This is project-fixture evidence, not native
-or physical evidence; ISSUE-019 remains open.
+existing cases. At the time, FST/FSTP ST(i) remained Normal-only; S2-30aq later
+extends FTST and S2-30ar later extends bare FST. This is project-fixture
+evidence, not native or physical evidence; ISSUE-019 remains open.
 
 ### S2-30aq signed-zero FTST
 
@@ -1316,9 +1316,22 @@ observes the final status. It retires three instructions and checks full state a
 interpreter CLI. Unit coverage includes m32/m64 FLD compositions for both zero
 signs, both signs × every TOP and initial condition-code combination, repeated
 FTST, malformed Zero/tag/environment inputs, the Normal-only FST/FSTP ST(i)
-guard, and decode/fetch/STOP/budget boundaries.
+guard as of S2-30aq, and decode/fetch/STOP/budget boundaries.
 Schema admission is limited to this exact composition; one-op FTST native
 admission and JIT execution remain closed. No physical x87 behavior is claimed.
+
+### S2-30ar signed-zero FST ST(i)
+
+The handwritten project fixture `s2_30ar_fld_fst_sti_fnstsw.case.json` uses
+exactly `d900ddd1dfe0`: FLD m32fp loads negative zero, FST ST(1) copies the
+original ten bytes and Zero tag, and FNSTSW observes TOP. It retires three
+instructions and checks full state and memory through the interpreter CLI.
+Local vectors cover both zero signs × all TOP × all eight indices × all 16
+condition-code combinations, old destination payload/tag sentinels, alias and
+idempotence, malformed Zero/wrong-tag/environment inputs, FSTP-only zero
+rejection and execution boundaries. Existing Normal FST/FSTP cases remain.
+This is project-fixture evidence, not native or physical evidence; ISSUE-019
+remains open.
 
 ### S2-30z x87 schema and fixture coverage
 

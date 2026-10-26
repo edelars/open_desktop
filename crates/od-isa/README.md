@@ -163,6 +163,11 @@ environment and fetch/stop/budget boundaries preserve full state. Memory
 forms, exception delivery and native x87 admission remain outside this slice.
 See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30x-bounded-fst-sti-dd-d0i), [Stage 2 plan](../../docs/plans/STAGE_2.md#s2-30x-bare-bounded-fst-sti-local-raw-copy-slice), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+S2-30ar extends bare `DD D0+i` FST ST(i) to accept exact Zero-tagged signed
+zero alongside the existing canonical-Normal Valid source. It copies the raw
+bytes and preserves Zero at the physical destination without popping or
+rotating; FSTP remains Normal-only. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30ar-canonical-signed-zero-fst-sti-dd-d0i), [Stage 2 plan](../../docs/plans/STAGE_2.md#s2-30ar-admit-canonical-signed-zero-to-bare-fst-sti-dd-d0i), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30ar-signed-zero-fst-sti).
+
 S2-30z adds bare `D9 E1` FABS through the same bounded canonical-Normal ST(0)
 source gate: it clears only the raw sign bit, clears C1, records FIP and retires
 once. Literal vectors cover every TOP, positive/negative Normal boundaries, C1

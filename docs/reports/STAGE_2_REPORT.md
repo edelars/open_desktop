@@ -8784,8 +8784,9 @@ Bare `D9 E1` now admits exact Zero-tagged signed zero in addition to the
 existing canonical-Normal Valid source. FABS clears only the raw sign bit,
 preserves Zero tag/TOP/payload and unrelated state, clears C1, retains C0/C2/C3
 under the local snapshot policy, records FIP, advances RIP by two and retires
-once. The narrow source gate is shared with FCHS; FTST and FST/FSTP ST(i) keep
-their Normal-only gate. Native and JIT admission remain closed.
+once. The narrow source gate is shared with FCHS. At that point FTST and
+FST/FSTP ST(i) kept their Normal-only gate; S2-30aq and S2-30ar later extend
+FTST and bare FST respectively. Native and JIT admission remain closed.
 
 The literal interpreter matrix covers both zero signs × all eight TOP values ×
 all 16 initial condition-code combinations, compares complete state after each
@@ -8793,8 +8794,9 @@ operation, and checks repeated-FABS idempotence. Rejection vectors cover
 malformed Zero significands and exponent/special encodings, canonical zero
 bytes under the wrong tag, bad FCW/FSW while the source remains canonical ±0,
 missing state, and fetch/prefix/truncation/STOP/budget boundaries. The
-unchanged-state guard checks FTST and all eight FST plus all eight FSTP ST(i)
-forms remain Normal-only. FLD m32/m64 → FABS →
+unchanged-state guard then checked FTST and all eight FST plus all eight FSTP
+ST(i) forms as Normal-only; S2-30aq/ar supersede that scope for FTST/FST, while
+FSTP remains Normal-only. FLD m32/m64 → FABS →
 FST → FNSTSW is checked locally. The new handwritten project fixture uses the
 exact allowed stream `d900d9e1d910dfe0`, with four retirements; the schema admits
 that exact composition only.
@@ -8810,6 +8812,29 @@ x87 evidence; ISSUE-019 remains open.
 
 The first independent gpt-6.1-sol medium review found two coverage gaps; both
 were fixed. The follow-up review was clean with no remaining concrete findings.
+
+## S2-30ar — canonical signed zero through FST ST(i)
+
+Bare `DD D0+i` now admits exact Zero-tagged signed zero under the existing
+`0x037f` FCW and `FSW & 0x80ff == 0` gates. It copies the captured ten bytes and
+Zero tag to physical `(old_TOP+i)&7` without popping or rotating. Existing
+canonical-Normal Valid-source behavior remains, and bare FSTP ST(i) continues
+to reject Zero. TOP, FSW and unrelated state are preserved except FIP; retained
+condition bits, including C1, remain the documented deterministic local policy.
+
+Tests exercise both signs × eight TOP positions × all eight destinations × all
+16 condition-code states, previous destination tag/payload sentinels, alias
+and repeated-operation idempotence, Normal regression vectors, malformed zero,
+wrong tags, environment and execution-boundary atomic rejection. Local m32/m64
+FLD→FST ST(1)→FNSTSW compositions run, and the schema/CLI fixture
+`d900ddd1dfe0` checks the negative m32-zero sequence in three retirements.
+
+Focused `od-isa`, `od-testkit`, and fixture CLI checks passed. Independent
+gpt-6.1-sol medium review was clean after the rejection-boundary coverage was
+extended. Formatting, workspace checks, layout validation and Graphify refresh
+passed. Native/JIT and physical x86 behavior were not tested; ISSUE-019 remains open. S2-30ap's
+and S2-30aq's earlier statements that FST ST(i) is Normal-only are historical;
+S2-30ar supersedes them while FSTP remains Normal-only.
 
 ## S2-30aq — canonical signed zero through bounded FTST
 

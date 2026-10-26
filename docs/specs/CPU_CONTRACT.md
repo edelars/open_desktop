@@ -2307,8 +2307,9 @@ byte 9 bit 7, so either signed zero becomes positive zero. It preserves the
 Zero tag, TOP, other payloads and unrelated state, clears C1, retains C0/C2/C3
 as the local snapshot policy, records FIP, advances RIP by two and retires
 once. FCHS and FABS share only this narrow sign-operation source gate;
-FTST's separate signed-zero extension is specified in S2-30aq, while
-FST/FSTP ST(i) remain on the canonical-Normal-only gate.
+FTST's separate signed-zero extension is specified in S2-30aq. At this
+historical point FST/FSTP ST(i) remained on the canonical-Normal-only gate;
+S2-30ar later extends bare FST while FSTP remains Normal-only.
 
 Malformed Zero payloads, wrong tags, invalid FCW/FSW, missing state, and
 fetch/prefix/truncation/STOP/budget boundaries reject atomically. Coverage
@@ -2331,11 +2332,12 @@ previous C0/C1/C2/C3 value survives. TOP, all physical raw payloads, tags and
 all other x87/CPU fields are preserved. FIP receives instruction-start RIP,
 RIP advances by two, and the operation retires once.
 
-Missing state, invalid FCW/FSW, non-Valid tag, non-Normal source, every other
+For this historical S2-30z slice, missing state, invalid FCW/FSW, non-Valid tag, non-Normal source, every other
 D9 second byte, prefixes/REX/WAIT, truncation, fetch failure, STOP and exhausted
 budget reject without state commit. Signed zero, subnormal/special values,
 memory forms, exceptions, stack faults, CR0/#NM, native admission and FPU
-feature claims are outside this slice.
+feature claims are outside this slice. S2-30ap later admits exact Zero-tagged
+signed zero to FABS, and S2-30ar later admits it to bare FST ST(i).
 
 Coverage enumerates all 256 D9 second bytes, accepting E0 as FCHS, E1 as FABS,
 and E4 as FTST only; it checks all TOP values, both signs, minimum/maximum and
@@ -2360,7 +2362,9 @@ sign. Either signed zero compares equal and replaces the condition field with
 the sign and all raw source bytes, Zero tag, TOP, FCW, FDP, FOP, all other x87
 and CPU state, records FIP, advances RIP by two, and retires once.
 
-This admission is FTST-specific; FST/FSTP ST(i) remain canonical-Normal-only.
+At this historical point this admission was FTST-specific and FST/FSTP ST(i)
+remained canonical-Normal-only. S2-30ar later extends bare FST; FSTP remains
+Normal-only.
 Malformed Zero payloads, mismatched tags, special/subnormal values, bad FCW or
 FSW, missing state, prefixes/REX/WAIT, malformed opcode/truncation, fetch
 failure, STOP, and exhausted budget reject without state commit. Tests cover
@@ -2371,6 +2375,35 @@ composition is exactly `d900d9e4dfe0`: FLD m32fp → FTST → FNSTSW,
 three retirements. One-op admission remains outside the native profile, and
 native/JIT execution remain closed. Local interpreter and fixture evidence do
 not establish physical x87 behavior; ISSUE-019 remains open.
+
+## Local S2-30ar: canonical signed-zero `FST ST(i)` (`DD D0+i`)
+
+The exact bare `DD D0+i`, `i=0..7`, interpreter form retains the existing
+x87-state, FCW `0x037f`, and `FSW & 0x80ff == 0` gates and Valid-tag
+canonical-Normal source behavior. It additionally accepts only Zero-tagged
+exact signed zero: the first nine raw bytes are zero and the last byte is
+`0x00` or `0x80`. The source's ten bytes and tag are captured before mutation,
+copied to physical `(old_TOP+i)&7`, and the destination tag is set to Zero for
+signed zero or Valid for Normal. For `i!=0`, the destination's prior payload and
+tag are ignored. For `i=0`, the same bytes and Zero tag remain in place. No
+physical register rotation or TOP change occurs.
+
+TOP, every FSW bit, FCW, FDP, FOP, unrelated physical payloads/tags, GPRs and
+RFLAGS are preserved; retaining condition bits including C1 is an explicit
+deterministic local policy. FIP receives instruction-start RIP, RIP advances
+by two, and the instruction retires once. `FSTP ST(i)` remains on the prior
+Normal-only source gate. Wrong tags, malformed Zero payloads, bad FCW/FSW,
+missing state, unsupported encodings, fetch fault/truncation, STOP and
+exhausted budget reject without state commit. Native/JIT admission remains
+closed.
+
+Coverage includes both signed zeros × all TOP × all indices × all 16 prior
+condition-code states, sentinel old destination payloads/tags, alias and
+idempotence, retained Normal behavior, FSTP zero rejection for all indices,
+and atomic bad-source/environment/execution-boundary checks. Local m32/m64
+FLD→FST ST(1)→FNSTSW compositions and exact fixture `d900ddd1dfe0` are checked;
+the fixture retires three instructions. These local results do not establish
+physical x87 behavior; ISSUE-019 remains open.
 
 ## Local S2-30ab: bounded `FCOM ST(1)` (`D8 D1`)
 

@@ -220,3 +220,10 @@ does not establish binary32 hardware equivalence, x87 exception priority or
 delivery, MMU/page-walk behavior, MMIO, SMP, or physical x86 behavior. See the
 [S2-31j report](../reports/STAGE_2_REPORT.md#s2-31j--bounded-fstp-m32fp-partial-slice)
 and [S2-31k report](../reports/STAGE_2_REPORT.md#s2-31k--bounded-fst-m32fp-partial-slice).
+
+The bounded signed-zero register-copy slice S2-30ar additionally admits
+`DD D0+i` FST ST(i) for exact Zero-tagged binary80 signed zero, with no pop or
+rotation; `DD D8+i` FSTP remains Normal-only. The literal
+`d900ddd1dfe0` fixture and m32/m64 local compositions are interpreter/project
+fixture checks only. Native/JIT admission and physical x87 comparison remain
+closed under ISSUE-019. See the [S2-30ar contract](../specs/CPU_CONTRACT.md#local-s2-30ar-canonical-signed-zero-fst-sti-dd-d0i) and [report](../reports/STAGE_2_REPORT.md#s2-30ar--canonical-signed-zero-through-fst-sti).
