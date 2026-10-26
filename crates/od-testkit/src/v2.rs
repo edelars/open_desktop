@@ -1489,7 +1489,8 @@ impl Fixture {
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     let top = ((x87.status_word.get() >> 11) & 7) as usize;
-                    let source = (top + 1) & 7;
+                    let source =
+                        (top + usize::from(fcmovne_family_source(&code_bytes).unwrap())) & 7;
                     let valid_operand = |index: usize| {
                         let tag = (x87.tag_word.get() >> (index * 2)) & 3;
                         let Ok(bytes) = decode_bytes(&x87.registers[index]) else {
@@ -1507,6 +1508,13 @@ impl Fixture {
                         }
                     };
                     !valid_operand(top) || !valid_operand(source)
+                });
+            let is_fcmovne_environment_rejected = fcmovne_family_source(&code_bytes).is_some()
+                && self.stop_rip.is_none()
+                && self.expected_exit == ExpectedExit::Unsupported
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    x87.control_word.get() != 0x037f || x87.status_word.get() & 0x82ff != 0
                 });
             let is_ffree_environment_rejected = code_bytes.len() == 4
                 && code_bytes.starts_with("ddc")
@@ -1655,6 +1663,7 @@ impl Fixture {
                     || is_fcmove_operand_rejected
                     || is_fcmove_environment_rejected
                     || is_fcmovne_operand_rejected
+                    || is_fcmovne_environment_rejected
                     || is_ffree_environment_rejected
                     || is_fnop_environment_rejected
                     || is_fxam_environment_rejected
@@ -2305,9 +2314,14 @@ fn fcmove_family_source(code_bytes: &str) -> Option<u8> {
     (opcode == 0xda && (0xc8..=0xcf).contains(&modrm)).then_some(modrm & 7)
 }
 
-/// Exact bare DB C9 FCMOVNE ST(0), ST(1), optionally followed by FNSTSW AX.
+/// Exact bare DB C8+i FCMOVNE ST(0), ST(i), optionally followed by FNSTSW AX.
 fn fcmovne_family_source(code_bytes: &str) -> Option<u8> {
-    matches!(code_bytes, "dbc9" | "dbc9dfe0").then_some(1)
+    if !(code_bytes.len() == 4 || (code_bytes.len() == 8 && code_bytes.ends_with("dfe0"))) {
+        return None;
+    }
+    let opcode = u8::from_str_radix(&code_bytes[0..2], 16).ok()?;
+    let modrm = u8::from_str_radix(&code_bytes[2..4], 16).ok()?;
+    (opcode == 0xdb && (0xc8..=0xcf).contains(&modrm)).then_some(modrm & 7)
 }
 
 #[cfg(test)]

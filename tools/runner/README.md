@@ -118,3 +118,9 @@ the second move in the repeat stream. Schema v2 JIT remains unsupported.
 S2-30ca's `DB C9` FCMOVNE fixtures assert the full x87 result for taken and
 untaken ZF outcomes, reject an invalid source with ZF=1, and explicitly deny
 JIT.
+
+S2-30cb extends those fixtures to indexed `DB C8..CF`. Runner assertions cover
+self-index ZF outcomes, indices 2..7, raw payload/tag copies, repeat and FCOMI
+producer streams, invalid source with ZF=1, forbidden environment, unchanged
+memory and full x87 snapshots. Every fixture explicitly denies JIT. This is
+local interpreter evidence; no native or physical x86 execution is claimed.

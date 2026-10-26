@@ -346,3 +346,10 @@ FCW/status gates and C1 policy match the neighboring bounded FCMOV slices.
 The 51,200 success and 21,504 invalid class/tag matrices, actual FCOMI/FCHS
 producer steps, exact-stream decoding and rejection boundaries remain local
 interpreter evidence. JIT/native and physical x86 execution remain closed.
+
+S2-30cb extends FCMOVNE to exact bare `DB C8..CF`, using `ModR/M & 7` as the
+source index and the same strict canonical-Normal/Zero operand gate. Nonzero
+indices preflight TOP and `(TOP+i)&7` before ZF; self-index checks TOP only.
+ZF=0 copies the source's exact raw bytes and tag. The 363,520 success and
+161,280 invalid-pair matrices, self-index canaries, environment/status/boundary
+checks, and FCMOVE complement property pass locally. JIT/native remain closed.

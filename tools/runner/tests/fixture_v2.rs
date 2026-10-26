@@ -1,6 +1,6 @@
 //! Real CLI/interpreter checks; expected values are hand-calculated from Intel SDM 093.
 use od_testkit::HexU64;
-use od_testkit::result::Observation;
+use od_testkit::result::{MemoryRegionSnapshot, Observation};
 use od_testkit::v2::{ExpectedExit, Fixture, LoadedFixture, Outcome, RunResult, Snapshot};
 use std::fs;
 use std::process::{Command, Output};
@@ -148,17 +148,40 @@ const FCMOVNB_REJECTS: [&[u8]; 4] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_c1_reject.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bw_fcmovnb_bad_fcw_reject.case.json"),
 ];
-const FCMOVNE_FIXTURES: [&[u8]; 2] = [
+const FCMOVNE_FIXTURES: [&[u8]; 13] = [
     include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_30ca_fcmovne_taken_negative_zero.case.json"
     ),
     include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_30ca_fcmovne_untaken_distinct_tags.case.json"
     ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_index_0_0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_index_0_1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_index_2_2.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_index_3_3.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_index_4_4.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_index_5_5.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_index_6_6.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_index_7_7.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_repeat.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_producer_equal_then_fchs.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_producer_unequal_after_fchs.case.json"
+    ),
 ];
-const FCMOVNE_REJECTS: [&[u8]; 1] = [include_bytes!(
-    "../../../tests/fixtures/x86/stage2/s2_30ca_fcmovne_invalid_source_zf1_reject.case.json"
-)];
+const FCMOVNE_REJECTS: [&[u8]; 3] = [
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30ca_fcmovne_invalid_source_zf1_reject.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_st7_invalid_source_zf1_reject.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cb_fcmovne_st7_bad_environment_reject.case.json"
+    ),
+];
 const FCMOVE_INDEXED_FIXTURES: [&[u8]; 8] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf1.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf0.case.json"),
@@ -7465,22 +7488,71 @@ fn local_x87_fcmovne_fixtures_check_raw_copy_and_untaken_state_and_deny_jit() {
             "{}",
             loaded.fixture.case_id
         );
-        assert_eq!(count(&result), 2, "{}", loaded.fixture.case_id);
+        assert_eq!(
+            count(&result),
+            loaded.fixture.instruction_budget,
+            "{}",
+            loaded.fixture.case_id
+        );
         let observed = snapshot(&result);
         let before = loaded.fixture.initial_state.x87.as_ref().unwrap();
         let after = observed.state.x87.as_ref().unwrap();
         let mut expected = before.clone();
-        if loaded.fixture.initial_state.rflags.get() & 0x40 == 0 {
+        let code_hex = &loaded.fixture.memory[0].initial_bytes_hex;
+        let move_offset = (code_hex.rfind("db").unwrap() / 2) as u64;
+        let producer_equal = loaded.fixture.case_id == "s2_30cb_fcmovne_producer_equal_then_fchs";
+        let producer_unequal =
+            loaded.fixture.case_id == "s2_30cb_fcmovne_producer_unequal_after_fchs";
+        let mut expected_flags = loaded.fixture.initial_state.rflags;
+        if producer_equal || producer_unequal {
+            expected.registers[6] = if producer_equal {
+                "0000000000000080ffbf".into()
+            } else {
+                "0000000000000080ff3f".into()
+            };
+            expected.registers[7] = "0000000000000080ff3f".into();
+            expected.status_word = HexU64(0x3000);
+            expected.tag_word = HexU64(0x0ff4);
+            expected_flags = HexU64(if producer_equal { 0x42 } else { 0x03 });
+        } else {
             let top = ((expected.status_word.get() >> 11) & 7) as usize;
-            let source = (top + 1) & 7;
-            expected.registers[top] = expected.registers[source].clone();
-            let tag = (expected.tag_word.get() >> (source * 2)) & 3;
-            let mask = 3u64 << (top * 2);
-            expected.tag_word = HexU64((expected.tag_word.get() & !mask) | (tag << (top * 2)));
+            let modrm_offset = move_offset as usize * 2 + 2;
+            let source_index =
+                u8::from_str_radix(&code_hex[modrm_offset..modrm_offset + 2], 16).unwrap() & 7;
+            let source = (top + usize::from(source_index)) & 7;
+            let moves = if loaded.fixture.case_id == "s2_30cb_fcmovne_repeat" {
+                2
+            } else {
+                1
+            };
+            for _ in 0..moves {
+                if loaded.fixture.initial_state.rflags.get() & 0x40 == 0 {
+                    expected.registers[top] = expected.registers[source].clone();
+                    let tag = (expected.tag_word.get() >> (source * 2)) & 3;
+                    let mask = 3u64 << (top * 2);
+                    expected.tag_word =
+                        HexU64((expected.tag_word.get() & !mask) | (tag << (top * 2)));
+                }
+            }
         }
-        expected.instruction_pointer = loaded.fixture.initial_state.rip;
+        expected.instruction_pointer = HexU64(loaded.fixture.initial_state.rip.get() + move_offset);
         assert_eq!(after, &expected, "{}", loaded.fixture.case_id);
-        assert_eq!(observed.state.rflags, loaded.fixture.initial_state.rflags);
+        assert_eq!(observed.state.rflags, expected_flags);
+        let expected_memory = loaded
+            .fixture
+            .memory
+            .iter()
+            .map(|region| MemoryRegionSnapshot {
+                region_id: region.region_id.clone(),
+                guest_address: region.guest_address,
+                bytes_hex: region.initial_bytes_hex.to_ascii_lowercase(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed.memory, expected_memory,
+            "{}",
+            loaded.fixture.case_id
+        );
         let (_, jit) = run(bytes, "jit", 4);
         assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
     }

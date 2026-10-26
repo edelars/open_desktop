@@ -9836,6 +9836,8 @@ previously documented FABS/FCHS status-vector mismatches; see ISSUE-019.
 
 ## S2-30ca — bounded bare `FCMOVNE ST(0), ST(1)`
 
+Historical ST(1)-only slice; superseded by S2-30cb.
+
 Added the exact bare Long64 `DB C9` decoder and interpreter path. It reuses the
 existing FCMOV preflight, so TOP and TOP+1 are checked before ZF is read,
 including ZF=1. ZF=0 copies the source's raw ten-byte payload and tag to TOP;
@@ -9855,3 +9857,32 @@ reports the two historical oracle manifest links above as broken because their
 ignored `work/` artifacts are not copied into this isolated worktree; both
 manifests exist in the shared checkout. The report links were left intact. No
 native or physical x86 acceptance is claimed. ISSUE-019 remains open.
+
+## S2-30cb — indexed bare `FCMOVNE ST(0), ST(i)`
+
+Expanded the exact unprefixed Long64 FCMOVNE form from DB C9 to DB C8..CF.
+The low ModR/M bits now select the physical source index, while the established
+FCMOV gate remains unchanged. Nonzero indices preflight old TOP and
+`(TOP+i)&7` before ZF; self-index preflights TOP only. ZF=0 performs an exact
+raw ten-byte/tag transfer, and ZF=1 preserves the cells. Existing indexed
+FCMOVNE shares the bounded FCMOV operand validation and remains JIT/native
+closed.
+
+Local evidence includes 363,520 complete success states, 161,280 invalid
+class/tag rejection snapshots, exact 19-stream schema coverage, source-indexed
+environment/status/boundary checks, and the complementary indexed FCMOVE
+property. Handwritten fixtures cover indices 0 and 2..7, self-index both ZF
+outcomes, wrap, Normal/Zero and negative-zero transfer, repeats, both FCOMI
+producer streams, invalid source with ZF=1, and forbidden environment. Runner
+checks full x87 snapshots and RFLAGS, FIP/RIP, retirement, memory preservation,
+and per-fixture JIT denial. Verification passed for `cargo fmt --all -- --check`, `cargo check --workspace
+--all-targets --offline`, all 87 `od-isa` decoder tests, all 7 focused FCMOVNE
+interpreter tests (including the 363,520/161,280 matrices), all 183 `od-testkit` tests, the exact schema
+test, and the complete runner fixture suite (197 tests). The broader combined
+`od-isa`/`od-testkit` run still has two previously recorded unrelated FABS/FCHS
+status-vector failures (`rejection=3` and `rejection=18` under SF|IE); the
+remaining 713 `od-isa` tests passed. `tools/check_layout.py` reports the known
+worktree pointer `.git` as an unmapped root file and two broken links to ignored
+oracle manifests absent from this isolated worktree; those artifacts and links
+exist in the shared checkout. No native or physical execution is claimed;
+ISSUE-019 remains open.

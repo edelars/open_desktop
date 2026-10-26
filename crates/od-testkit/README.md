@@ -58,3 +58,9 @@ S2-30by adds five exact `s2-long-x87-state-v1` FCMOVE streams with budgets
 Operand and environment rejection cases are restricted to bare `dac9`; prefixed
 and neighboring DA encodings remain outside the schema. This is fixture-format
 coverage only and does not claim native or physical x86 behavior.
+
+S2-30cb admits exactly 19 FCMOVNE schema streams: each bare `DB C8..CF` form
+alone and followed by FNSTSW, the repeated C9 stream, and two FCOMI producer
+programs. Operand/environment rejects cover indexed source selection and
+prefixes remain rejected. This schema allowlist is local fixture-format
+coverage only; JIT/native and physical x86 behavior are not implied.

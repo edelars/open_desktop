@@ -3727,8 +3727,24 @@ execution boundaries. This is local evidence only; ISSUE-019 remains open.
 
 ### S2-30ca bounded bare `FCMOVNE ST(0), ST(1)`
 
+Historical ST(1)-only fixture slice, superseded by indexed S2-30cb below.
+
 Two handwritten literal fixtures cover ZF=0 raw payload/tag copying and ZF=1
 operand preservation for exact `DB C9`, including signed zero and distinct
 tags. A third fixture has an invalid source with ZF=1 and checks atomic
 rejection. They are local interpreter evidence and do not claim native
 execution.
+
+### S2-30cb indexed bare `FCMOVNE ST(0), ST(i)`
+
+Eight literal DB C8..CF success fixtures cover the self-index forms with both
+ZF outcomes and source indices 2..7, including TOP wrap, exact Normal/Zero
+values and raw negative-zero/tag transfer. Additional fixtures check a
+two-transfer stream, both FCOMI producer sequences, an invalid index-7 source
+with ZF=1, and an index-7 forbidden environment. The schema admits exactly 19
+streams: each indexed instruction alone and followed by FNSTSW, the repeated
+C9 stream, and the two producers. Runner checks full x87 snapshots, RFLAGS,
+FIP/RIP and retirement; every fixture denies JIT. The local interpreter
+matrices cover 363,520 successes, 161,280 invalid class/tag rejects, and
+per-index environment/status/boundary atomicity. This is local evidence only;
+ISSUE-019 remains open and no native or physical x86 execution is claimed.

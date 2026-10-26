@@ -7492,6 +7492,8 @@ local interpreter/schema/runner evidence only; ISSUE-019 remains open. See
 
 ## Local S2-30ca: bounded bare `FCMOVNE ST(0), ST(1)` (`DB C9`)
 
+Historical ST(1)-only coverage; superseded by indexed S2-30cb.
+
 The exact unprefixed Long64 `DB C9` form validates x87 state, FCW `0x037f`,
 `FSW & 0x82ff == 0`, and both old physical TOP and TOP+1 as Valid canonical
 Normal or Zero exact signed binary80 before consulting integer ZF. ZF=0 copies
@@ -7506,3 +7508,26 @@ resulting source copy/preservation. The five-stream schema, two literal success
 fixtures, a ZF=1 invalid-source fixture and JIT denial are covered. Broader boundary tests are not added for
 this exact single form.
 ISSUE-019 remains open; see the [S2-30ca plan](../plans/STAGE_2.md#s2-30ca-bare-fcmovne-st0-st1-db-c9).
+
+## Local S2-30cb: bounded indexed bare `FCMOVNE ST(0), ST(i)` (`DB C8..CF`)
+
+The exact unprefixed Long64 DB C8..CF forms decode `i` from `ModR/M & 7` and
+reuse the bounded indexed FCMOV operand preflight. For `i>0`, validate the
+old physical TOP and `(TOP+i)&7` before integer ZF, even when ZF=1; for `i=0`,
+validate only TOP. Each participant must be Valid with canonical Normal
+binary80 or Zero with exact signed zero. FCW must equal `0x037f`,
+`FSW & 0x82ff` must be zero, and C1=1, forbidden environment, invalid tag/class,
+or missing x87 state rejects atomically. ZF=0 copies exactly ten source bytes
+and its tag to TOP; ZF=1 preserves both. Only FIP, RIP+2 and retirement change
+on success. JIT/native remain unsupported.
+
+The indexed matrices cover 363,520 complete successes and 161,280 atomic
+invalid class/tag rejections. The 19-stream schema admits each exact one-step
+and FNSTSW stream, a repeated C9 transfer, and the two existing FCOMI producer
+programs. Literal runner fixtures cover self-index ZF cases, indices 2..7,
+wrap, canonical Normal/Zero and negative-zero raw/tag transfer, repeat,
+producer results, invalid source with ZF=1, and a forbidden environment. Unit
+vectors also check each index's environment/status/boundary rejection and the
+complement relation with indexed FCMOVE. Evidence is local interpreter/schema
+coverage only; ISSUE-019 remains open and no physical or native execution is
+claimed.
