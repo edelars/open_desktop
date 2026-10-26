@@ -6922,6 +6922,36 @@ slice; ISSUE-019 remains open. See the [plan](../plans/STAGE_2.md#s2-30bd-admit-
 [report](../reports/STAGE_2_REPORT.md#s2-30bd--historical-sticky-de-through-bounded-fchsfabs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bd-historical-de-fchs-fabs).
 
+<a id="local-s2-30be-historical-pe-fchs-fabs"></a>
+
+## Local S2-30be: historical sticky PE through bounded `FCHS/FABS`
+
+Only `bounded_x87_sign_st0_source` changes its FSW filter from `0x80fc` to
+`0x80dc`. Exact FCW `0x037f` and the same six tag/class pairs remain required:
+Valid+Normal, Zero+exact signed zero, and Special+Infinity/QNaN/SNaN/Subnormal.
+The gate admits exactly all eight IE/DE/PE combinations and rejects ZE/OE/UE/
+SF/ES/B, including when combined with any IE/DE/PE subset. FCHS toggles only
+the raw sign bit; FABS clears only it. Both clear C1 and preserve historical
+IE/DE/PE, CC/TOP/tag, raw payload, current metadata and retirement behavior.
+Decoder/schema/native admission and the JIT deny gate are unchanged.
+
+Coverage includes 24,576 full-state cases, forbidden-status combinations for
+all eight historical states, malformed class/tag/raw values, exact FCW, missing
+state and fetch/truncation/STOP/budget/fault atomic rejection under PE. FCW
+`0x037f` FRNDINT producer tests cover ±1.25→±1, ±1.5→±2 and ±0.5→±0, observing
+both C1 states before FCHS/FABS clears C1 while preserving PE. A canonical
+binary80 subnormal rounds to Zero-tagged signed-zero raw bytes with full FSW
+`0x0022`; FCHS toggles the complete raw sign encoding and FABS returns it to
+positive zero, preserving the Zero tag and full FSW `0x0022` after each
+instruction. FNSTSW/FNCLEX then observes and clears status. Two exact schema-v2
+CLI streams seed ±1.5 and compose FRNDINT,
+FCHS/FABS and FNSTSW; seeded PE-only and IE|DE|PE success plus PE|UE and
+IE|DE|PE|SF rejection fixtures check status admission and atomicity. JIT still
+denies these profiles. Native runtime and physical x86 behavior remain
+unverified; ISSUE-019 stays open. See the [plan](../plans/STAGE_2.md#s2-30be-admit-historical-sticky-pe-to-bounded-fchsfabs),
+[report](../reports/STAGE_2_REPORT.md#s2-30be--historical-sticky-pe-through-bounded-fchsfabs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30be-historical-pe-fchs-fabs).
+
 <a id="local-s2-30az-canonical-qnan-fst-fstp-sti"></a>
 
 ## Local S2-30az: canonical binary80 QuietNaN through bounded `FST/FSTP ST(i)`

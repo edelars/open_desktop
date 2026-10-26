@@ -3458,3 +3458,18 @@ both operations and initial IE clear/set. Local evidence does not establish
 native or physical behavior; ISSUE-019 remains open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30bd-historical-de-fchs-fabs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-30bd-admit-historical-sticky-de-to-bounded-fchsfabs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30bd--historical-sticky-de-through-bounded-fchsfabs).
+
+
+### S2-30be historical PE through bounded FCHS/FABS
+
+Two exact seeded schema-v2 cases run `D9 FC D9 E0 DF E0` and
+`D9 FC D9 E1 DF E0` from positive and negative 1.5 under FCW `0x037f`.
+FRNDINT produces PE; FCHS/FABS clear C1 and preserve PE before FNSTSW observes
+it. Bare Normal-source fixtures admit PE-only and IE|DE|PE, while PE|UE and
+IE|DE|PE|SF reject atomically. All six fixtures exercise interpreter CLI
+behavior; JIT remains denied. These are project fixtures, not native or
+physical evidence. A local interpreter composition additionally checks
+canonical subnormal→FRNDINT→FCHS→FABS, preserving signed zero and DE|PE through
+both sign operations; it asserts the Zero tag, complete binary80 raw bytes and
+full FSW `0x0022` at each intermediate result before FNSTSW/FNCLEX. ISSUE-019
+remains open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30be-historical-pe-fchs-fabs), [plan](../../../../docs/plans/STAGE_2.md#s2-30be-admit-historical-sticky-pe-to-bounded-fchsfabs), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30be--historical-sticky-pe-through-bounded-fchsfabs).

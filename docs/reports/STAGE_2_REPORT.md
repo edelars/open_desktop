@@ -9261,3 +9261,38 @@ three seeded-status fixtures; `cargo fmt --all -- --check`,
 `git diff --check`, and `graphify update .`. No Mac mini, SSH, native runtime
 or physical x86 checks were performed. ISSUE-019 remains open for combined
 acceptance.
+
+## S2-30be — historical sticky PE through bounded FCHS/FABS
+
+Only `bounded_x87_sign_st0_source` changed its FSW mask from `0x80fc` to
+`0x80dc`. FCW `0x037f`, the six accepted tag/class pairs, sign/payload
+semantics, C1 clearing, CC/TOP/tags, metadata/RIP/retirement behavior and
+unrelated gates remain unchanged. Exactly all eight IE/DE/PE combinations are
+admitted; ZE/OE/UE/SF/ES/B remain forbidden with every such combination.
+Decoder/schema/native gates were not widened and the JIT still denies these
+forms.
+
+The full-state interpreter matrix covers 24,576 states: two operations × six
+classes × two signs × eight TOPs × 16 CC states × eight IE/DE/PE combinations.
+Full-state assertions include every forbidden status bit crossed with all eight
+historical states, malformed class/tag/raw and FCW, missing state, and
+fetch/truncation/STOP/budget/fault atomic rejection with PE. FRNDINT at FCW
+`0x037f` produces PE for ±1.25→±1, ±1.5→±2, and ±0.5→±0. Tests observe C1
+clear/set after FRNDINT and verify both FCHS/FABS clear C1 while preserving PE.
+Canonical subnormal→FRNDINT produces Zero-tagged signed-zero raw bytes and full
+FSW `0x0022`; both FCHS and FABS then preserve the Zero tag, exact raw bytes and
+full FSW `0x0022` after their respective sign transforms before FNSTSW/FNCLEX
+observes and clears status.
+Six exact schema-v2 CLI fixtures cover FRNDINT→FCHS/FABS
+from seeded ±1.5, PE-only and IE|DE|PE success, and PE|UE and IE|DE|PE|SF
+atomic rejects. Runner checks retain JIT denial.
+
+Focused checks passed: 18 filtered `od-isa` FCHS/FABS tests, the canonical
+subnormal FRNDINT status test, the historical PE fixture CLI test, and
+`cargo fmt --all -- --check`. `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py` (48 required directories, 6 crate scaffolds,
+14 instruction scopes), `git diff --check`, and `graphify update .` also passed.
+Graphify rebuilt 4,989 nodes, 9,970 edges and 183 communities; it reported the
+existing `host_abi.h` syntax warning, unsupported-file skips, and stale saved
+community labels. No Mac mini, SSH, native runtime or physical x86 checks were
+performed. ISSUE-019 remains open.

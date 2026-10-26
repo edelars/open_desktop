@@ -2691,11 +2691,11 @@ fn bounded_x87_ftst_source(state: &LongModeState) -> Option<X87FtstComparison> {
 /// Return raw ST(0) bytes for bounded sign-only operations. FCHS and FABS
 /// admit canonical Normals, Zero-tagged exact signed zero, and Special-tagged
 /// canonical infinity, NaNs or subnormals; other consumers continue to use
-/// their own source gates. Historical IE and DE are preserved, while other
-/// exception and summary bits remain closed.
+/// their own source gates. Historical IE, DE and PE are preserved, while
+/// other exception and summary bits remain closed.
 fn bounded_x87_sign_st0_source(state: &LongModeState) -> Option<[u8; 10]> {
     let x87 = state.x87.as_ref()?;
-    if x87.control_word != 0x037f || x87.status_word & 0x80fc != 0 {
+    if x87.control_word != 0x037f || x87.status_word & 0x80dc != 0 {
         return None;
     }
     let top = x87.top();
@@ -14627,7 +14627,7 @@ mod tests {
     }
 
     #[test]
-    fn fchs_and_fabs_preserve_historical_ie_for_all_admitted_source_classes() {
+    fn fchs_and_fabs_preserve_historical_ie_de_pe_for_all_admitted_source_classes() {
         let classes = [
             (X87Tag::Valid, 0x8000_0000_0000_0001_u64, 0x3fff_u16),
             (X87Tag::Zero, 0, 0),
@@ -14642,7 +14642,13 @@ mod tests {
                 for negative in [false, true] {
                     for top in 0_u8..8 {
                         for condition_codes in 0_u8..16 {
-                            for historical_flags in 0_u16..4 {
+                            for historical_flags in 0_u16..8 {
+                                let historical_status = (historical_flags & 0x03)
+                                    | if historical_flags & 0x04 != 0 {
+                                        0x20
+                                    } else {
+                                        0
+                                    };
                                 let mut raw = [0_u8; 10];
                                 raw[..8].copy_from_slice(&significand.to_le_bytes());
                                 let sign = if negative { 0x8000_u16 } else { 0 };
@@ -14658,7 +14664,7 @@ mod tests {
                                 state.rflags = 0xa55a_1234_5678_9abc;
                                 let mut x87 = crate::state::X87State::fixture_seed();
                                 x87.control_word = 0x037f;
-                                x87.status_word = (u16::from(top) << 11) | cc | historical_flags;
+                                x87.status_word = (u16::from(top) << 11) | cc | historical_status;
                                 x87.tag_word = 0xa55a;
                                 for physical in 0..8 {
                                     x87.registers[physical] = [0x30 + physical as u8; 10];
@@ -14684,16 +14690,16 @@ mod tests {
                                 assert_eq!(
                                     step(&mut state, &mut memory, AccessContext::default()),
                                     Ok(StepOutcome::Advanced),
-                                    "opcode={opcode:02x?}, tag={tag:?}, negative={negative}, top={top}, cc={condition_codes:04b}, IE/DE={historical_flags:02b}"
+                                    "opcode={opcode:02x?}, tag={tag:?}, negative={negative}, top={top}, cc={condition_codes:04b}, IE/DE/PE={historical_flags:03b}"
                                 );
                                 assert_eq!(
                                     state, expected,
-                                    "opcode={opcode:02x?}, tag={tag:?}, negative={negative}, top={top}, cc={condition_codes:04b}, IE/DE={historical_flags:02b}"
+                                    "opcode={opcode:02x?}, tag={tag:?}, negative={negative}, top={top}, cc={condition_codes:04b}, IE/DE/PE={historical_flags:03b}"
                                 );
                                 assert!(memory.accesses.is_empty());
                                 assert_eq!(
                                     state.x87.as_ref().unwrap().status_word & 0x003f,
-                                    historical_flags
+                                    historical_status
                                 );
                                 let second_rip = state.rip;
                                 let mut repeated = expected.clone();
@@ -14711,7 +14717,7 @@ mod tests {
                                 assert_eq!(state, repeated);
                                 assert_eq!(
                                     state.x87.as_ref().unwrap().status_word & 0x003f,
-                                    historical_flags
+                                    historical_status
                                 );
                                 cases += 1;
                             }
@@ -14720,20 +14726,26 @@ mod tests {
                 }
             }
         }
-        assert_eq!(cases, 12288);
+        assert_eq!(cases, 24576);
     }
 
     #[test]
     fn fchs_and_fabs_reject_forbidden_status_bits_with_ie_or_de_atomically() {
-        let forbidden = [1 << 2, 1 << 3, 1 << 4, 1 << 5, 1 << 6, 1 << 7, 1 << 15];
+        let forbidden = [1 << 2, 1 << 3, 1 << 4, 1 << 6, 1 << 7, 1 << 15];
         for opcode in [&[0xd9, 0xe0][..], &[0xd9, 0xe1][..]] {
-            for historical_flags in 0_u16..4 {
+            for historical_flags in 0_u16..8 {
+                let historical_status = (historical_flags & 0x03)
+                    | if historical_flags & 0x04 != 0 {
+                        0x20
+                    } else {
+                        0
+                    };
                 for status_bit in forbidden {
                     let mut state = LongModeState::default();
                     state.rip = 0x8f90;
                     let mut x87 = crate::state::X87State::fixture_seed();
                     x87.control_word = 0x037f;
-                    x87.status_word = historical_flags | status_bit;
+                    x87.status_word = historical_status | status_bit;
                     x87.registers[0] = [0; 10];
                     x87.registers[0][7] = 0x80;
                     x87.registers[0][8..].copy_from_slice(&0x3fffu16.to_le_bytes());
@@ -14747,7 +14759,7 @@ mod tests {
                     ));
                     assert_eq!(
                         state, before,
-                        "historical={historical_flags:04x}, forbidden={status_bit:04x}"
+                        "historical IE/DE/PE={historical_flags:03b}, forbidden={status_bit:04x}"
                     );
                     assert!(memory.accesses.is_empty());
                 }
@@ -14756,7 +14768,7 @@ mod tests {
     }
 
     #[test]
-    fn fchs_de_only_bad_environment_tag_and_execution_boundaries_are_atomic() {
+    fn fchs_historical_pe_bad_environment_tag_and_execution_boundaries_are_atomic() {
         for opcode in [&[0xd9, 0xe0][..], &[0xd9, 0xe1][..]] {
             for (control_word, tag, with_x87) in [
                 (0x027f, X87Tag::Valid, true),
@@ -14768,7 +14780,7 @@ mod tests {
                 if with_x87 {
                     let mut x87 = crate::state::X87State::fixture_seed();
                     x87.control_word = control_word;
-                    x87.status_word = 2;
+                    x87.status_word = 0x20;
                     x87.registers[0] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
                     x87.set_tag(0, tag);
                     state.x87 = Some(x87);
@@ -14794,7 +14806,7 @@ mod tests {
                 state.rip = 0x8f90;
                 let mut x87 = crate::state::X87State::fixture_seed();
                 x87.control_word = 0x037f;
-                x87.status_word = 2;
+                x87.status_word = 0x20;
                 x87.registers[0] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
                 x87.set_tag(0, X87Tag::Valid);
                 state.x87 = Some(x87);
@@ -15275,7 +15287,7 @@ mod tests {
                 state.rflags = 0x0bad_f00d_0123_4567;
                 let mut x87 = crate::state::X87State::fixture_seed();
                 x87.control_word = 0x037f;
-                x87.status_word = 0x4501;
+                x87.status_word = 0x0020;
                 x87.registers[0] = raw;
                 x87.set_tag(0, tag);
                 state.x87 = Some(x87);
@@ -15381,13 +15393,13 @@ mod tests {
     }
 
     #[test]
-    fn fnstsw_observes_and_fnclex_clears_historical_ie_de_after_sign_operation() {
+    fn fnstsw_observes_and_fnclex_clears_historical_ie_de_pe_after_sign_operation() {
         let code = [0xd9, 0xe0, 0xdf, 0xe0, 0xdb, 0xe2, 0xdf, 0xe0];
         let mut state = LongModeState::default();
         state.rip = 0x8fb0;
         let mut x87 = crate::state::X87State::fixture_seed();
         x87.control_word = 0x037f;
-        x87.status_word = 3;
+        x87.status_word = 0x23;
         x87.registers[0] = binary80_normal(0x8123_4567_89ab_cdef, 0x3fff, false);
         x87.set_tag(0, X87Tag::Valid);
         state.x87 = Some(x87);
@@ -15400,8 +15412,8 @@ mod tests {
             step(&mut state, &mut memory, AccessContext::default()),
             Ok(StepOutcome::Advanced)
         );
-        assert_eq!(state.gpr[Register::Rax as usize] as u16, 3);
-        assert_eq!(state.x87.as_ref().unwrap().status_word & 3, 3);
+        assert_eq!(state.gpr[Register::Rax as usize] as u16, 0x23);
+        assert_eq!(state.x87.as_ref().unwrap().status_word & 0x3f, 0x23);
         assert_eq!(
             step(&mut state, &mut memory, AccessContext::default()),
             Ok(StepOutcome::Advanced)
@@ -15413,6 +15425,137 @@ mod tests {
         );
         assert_eq!(state.gpr[Register::Rax as usize] as u16, 0);
         assert_eq!(state.x87.as_ref().unwrap().status_word & 0x003f, 0);
+    }
+
+    #[test]
+    fn frndint_produced_pe_is_preserved_by_fchs_fabs_and_c1_is_cleared() {
+        for (significand, exponent, rounded_significand, rounded_exponent, c1) in [
+            (
+                0xa000_0000_0000_0000,
+                0x3fff,
+                0x8000_0000_0000_0000,
+                0x3fff,
+                false,
+            ),
+            (
+                0xc000_0000_0000_0000,
+                0x3fff,
+                0x8000_0000_0000_0000,
+                0x4000,
+                true,
+            ),
+            (0x8000_0000_0000_0000, 0x3ffe, 0, 0, false),
+        ] {
+            for negative in [false, true] {
+                for (opcode, fchs) in [(&[0xd9, 0xe0][..], true), (&[0xd9, 0xe1][..], false)] {
+                    let code = [0xd9, 0xfc, opcode[0], opcode[1], 0xdf, 0xe0];
+                    let mut state = LongModeState::default();
+                    state.rip = 0x8fd0;
+                    let mut x87 = crate::state::X87State::fixture_seed();
+                    x87.control_word = 0x037f;
+                    x87.status_word = 0;
+                    x87.registers[0] = binary80_normal(significand, exponent, negative);
+                    x87.set_tag(0, X87Tag::Valid);
+                    state.x87 = Some(x87);
+                    let mut memory = Memory::at(&code, state.rip);
+
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced)
+                    );
+                    let x87 = state.x87.as_ref().unwrap();
+                    assert_eq!(
+                        x87.registers[0],
+                        binary80_normal(rounded_significand, rounded_exponent, negative)
+                    );
+                    assert_ne!(x87.status_word & 0x20, 0, "FRNDINT must produce PE");
+                    assert_eq!(x87.status_word & 0x0200 != 0, c1, "FRNDINT C1 direction");
+
+                    let mut expected_raw =
+                        binary80_normal(rounded_significand, rounded_exponent, negative);
+                    if fchs {
+                        expected_raw[9] ^= 0x80;
+                    } else {
+                        expected_raw[9] &= 0x7f;
+                    }
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced)
+                    );
+                    assert_eq!(state.x87.as_ref().unwrap().registers[0], expected_raw);
+                    assert_eq!(state.x87.as_ref().unwrap().status_word & 0x0220, 0x20);
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced)
+                    );
+                    assert_eq!(state.gpr[Register::Rax as usize] as u16, 0x20);
+                    assert!(memory.accesses.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn frndint_subnormal_zero_preserves_historical_de_pe_through_sign_and_status_clear() {
+        let code = [
+            0xd9, 0xfc, 0xd9, 0xe0, 0xd9, 0xe1, 0xdf, 0xe0, 0xdb, 0xe2, 0xdf, 0xe0,
+        ];
+        for negative in [false, true] {
+            let mut state = LongModeState::default();
+            state.rip = 0x8fe0;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0x0002;
+            x87.registers[0] = binary80_normal(1, 0, negative);
+            x87.set_tag(0, X87Tag::Special);
+            state.x87 = Some(x87);
+            let mut memory = Memory::at(&code, state.rip);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            let x87 = state.x87.as_ref().unwrap();
+            assert_eq!(
+                x87.registers[0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, if negative { 0x80 } else { 0 }]
+            );
+            assert_eq!(x87.tag(0), Some(X87Tag::Zero));
+            assert_eq!(x87.status_word, 0x22);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            let x87 = state.x87.as_ref().unwrap();
+            assert_eq!(
+                x87.registers[0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, if negative { 0 } else { 0x80 }]
+            );
+            assert_eq!(x87.tag(0), Some(X87Tag::Zero));
+            assert_eq!(x87.status_word, 0x22);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            let x87 = state.x87.as_ref().unwrap();
+            assert_eq!(x87.registers[0], [0; 10], "FABS preserves rounded zero");
+            assert_eq!(x87.tag(0), Some(X87Tag::Zero));
+            assert_eq!(x87.status_word, 0x22);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(state.gpr[Register::Rax as usize] as u16, 0x22);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(state.x87.as_ref().unwrap().status_word & 0x003f, 0);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(state.gpr[Register::Rax as usize] as u16, 0);
+        }
     }
 
     #[test]
@@ -18541,7 +18684,7 @@ mod tests {
         for raw in invalid_raw {
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = 0x037f;
-            x87.status_word = 0;
+            x87.status_word = 0x0020;
             x87.registers[0] = raw;
             x87.set_tag(0, X87Tag::Valid);
             rejected.push(x87);
@@ -18556,7 +18699,7 @@ mod tests {
         }
         let mut zero_tagged_normal = crate::state::X87State::fixture_seed();
         zero_tagged_normal.control_word = 0x037f;
-        zero_tagged_normal.status_word = 0;
+        zero_tagged_normal.status_word = 0x0020;
         zero_tagged_normal.registers[0] = normal;
         zero_tagged_normal.set_tag(0, X87Tag::Zero);
         rejected.push(zero_tagged_normal);
@@ -18569,7 +18712,7 @@ mod tests {
         ] {
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = 0x037f;
-            x87.status_word = 0;
+            x87.status_word = 0x0020;
             x87.registers[0] = raw;
             x87.set_tag(0, X87Tag::Zero);
             rejected.push(x87);
@@ -18577,7 +18720,7 @@ mod tests {
         for control_word in [0x027f, 0x037e, 0x077f] {
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = control_word;
-            x87.status_word = 0;
+            x87.status_word = 0x0020;
             x87.registers[0] = normal;
             x87.set_tag(0, X87Tag::Valid);
             rejected.push(x87);

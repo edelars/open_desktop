@@ -217,6 +217,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30ay | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit Special-tagged canonical binary80 subnormals with raw payload preservation; native/JIT closed | S2-30ax |
 | [x] | S2-30bc | Bare D9 E0/E1 FCHS/FABS preserve historical sticky IE for six existing source classes; reject IE with other exception/summary bits; native/JIT closed | S2-30ay, S2-31ah |
 | [x] | S2-30bd | Bare D9 E0/E1 FCHS/FABS additionally preserve historical DE independently or with IE; reject all other exception/summary bits; native/JIT closed | S2-30bc, S2-31ah |
+| [x] | S2-30be | Bare D9 E0/E1 FCHS/FABS additionally preserve historical PE with IE/DE; only IE/DE/PE combinations admitted; native/JIT closed | S2-30bd, S2-31ah |
 | [x] | S2-30ba | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 SignalingNaN, preserving Q=0 and raw payload; native/JIT closed | S2-30az, S2-31ab |
 | [x] | S2-30bb | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy only Special-tagged canonical binary80 subnormals with unchanged bytes/tag; native/JIT closed | S2-30ba, S2-31x |
 | [x] | S2-30az | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 QuietNaN without changing raw bytes; native/JIT closed | S2-30au, S2-30aw |
@@ -2367,6 +2368,29 @@ UE/PE. Four schema-v2 m32 producer fixtures cover operation/sign pairs; seeded
 DE-only success and DE+ZE / IE+DE+SF rejection fixtures exercise the CLI and
 JIT denial. Keep ISSUE-019 open; defer Mac mini/SSH/native/physical checks to
 the combined final substage.
+
+#### S2-30be. Admit historical sticky PE to bounded `FCHS/FABS`
+
+Change only `bounded_x87_sign_st0_source`: change its FSW mask from `0x80fc`
+to `0x80dc`. Keep exact FCW `0x037f`, the six admitted tag/class pairs, and
+all raw sign, C1, CC/TOP/tag, metadata and retirement behavior. Admit exactly
+the eight IE/DE/PE combinations; reject ZE/OE/UE/SF/ES/B, alone and combined
+with any admitted historical flags. Keep decoder/schema/JIT/native gates
+unchanged; JIT remains denied.
+
+Expand the full-state matrix to 24,576 cases (two operations × six classes ×
+two signs × eight TOP × 16 CC × eight IE/DE/PE states), and combine each
+forbidden status bit with every historical state. Check malformed class/tag/
+raw values, FCW, missing x87 state and fetch/truncation/STOP/budget/fault
+atomicity under PE. FRNDINT under FCW `0x037f` must produce PE and the results
+±1.25→±1, ±1.5→±2 and ±0.5→±0; verify C1 clear and set producer cases before
+FCHS/FABS clears C1 and preserves PE. Also check canonical subnormal FRNDINT to
+Zero-tagged signed-zero raw bytes through both FCHS and FABS, with the complete
+FSW retaining DE|PE after each, then
+observe and clear status with FNSTSW/FNCLEX. Add two exact CLI
+producer fixtures (`D9 FC D9 E0 DF E0` and `D9 FC D9 E1 DF E0`) seeded with
+±1.5, plus PE-only and IE|DE|PE success and PE|UE and IE|DE|PE|SF atomic reject
+fixtures. Keep ISSUE-019 open and defer Mac mini/SSH/native/physical checks.
 
 #### S2-30az. Admit canonical binary80 QuietNaN to bounded `FST/FSTP ST(i)`
 
