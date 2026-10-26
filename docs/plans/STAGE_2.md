@@ -6158,3 +6158,26 @@ including both self-index CF outcomes, TOP wrap, Normal↔Zero copies, signed
 zero, invalid-source CF=1 and indexed environment rejection. Runner snapshots
 check interpreter results and deny JIT. The former S2-30bw DB C1-only limit
 is historical and superseded here. ISSUE-019 remains open.
+
+#### S2-30by. Bare `FCMOVE ST(0), ST(1)` (`DA C9`)
+
+Admit only exact unprefixed Long64 `DA C9`. Require x87 state, FCW `0x037f`,
+and `FSW & 0x82ff == 0`. Before reading integer RFLAGS.ZF, preflight both
+physical old TOP and `(old_TOP+1)&7`, including when ZF is clear. Each must be
+Valid-tagged canonical Normal or Zero-tagged exact signed binary80 zero. When
+ZF=1 copy the source's exact ten bytes and tag to old TOP; when ZF=0 preserve
+both operands. Preserve TOP, full FSW/FCW, integer flags and all other state
+except FIP=old RIP, RIP+2 and one retirement. C1=1 remains unsupported. Keep
+existing `DA C0..C7` FCMOVB and `DA E9` FUCOMPP unchanged. Do not add memory,
+exceptions, JIT, native execution or physical x86 claims.
+
+Cover 51,200 success snapshots (ten destination values × ten source values ×
+two ZF outcomes × eight TOPs × eight C0/C2/C3 combinations × four CF/PF
+combinations) and 21,504 invalid class/tag snapshots, plus status/FCW/missing
+x87 and fetch/truncation/STOP/budget boundaries. Schema admits exactly
+`dac9`, `dac9dfe0`, `dac9dac9dfe0`, `d9e8d9e8dbf1d9e0dac9dfe0`, and
+`d9e8d9e8d9e0dbf1dac9dfe0` with budgets 1/2/3/6/6. Literal fixtures cover
+taken and untaken distinct tags, signed zero, TOP wrap, repeat, both FCOMI
+producers, invalid source with ZF=0, invalid destination, C1, ES|B and bad
+FCW. Check actual producer snapshots after compare, FCHS and FCMOVE. Keep JIT
+denied; ISSUE-019 remains open.

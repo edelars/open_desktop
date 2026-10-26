@@ -9787,3 +9787,39 @@ x86, native runtime or JIT execution was performed; ISSUE-019 remains open.
 Independent review identified and corrected the success-snapshot scope wording;
 no code or runtime finding remained. Documentation links and diff checks passed,
 and Graphify was refreshed after the final source and document edits.
+
+## S2-30by — bounded `FCMOVE ST(0), ST(1)`
+
+The Long64 interpreter admits only exact unprefixed `DA C9`. It preflights both
+physical old TOP and TOP+1 through the existing bounded FCMOV gate before
+reading integer RFLAGS.ZF, even when ZF is clear. ZF=1 copies all ten raw source
+bytes and its tag to TOP; ZF=0 preserves both cells. FSW.C3 is never used as
+the condition. The profile retains FCW `0x037f`, `FSW & 0x82ff == 0`, C1=0,
+and preservation of remaining x87 state, RFLAGS, GPRs and memory; only FIP,
+RIP and retirement update. Existing DA C0..C7 FCMOVB and DA E9 FUCOMPP decode
+paths remain intact.
+
+Unit coverage checks 51,200 success snapshots and 21,504 invalid class/tag
+rejections. It also checks each forbidden FSW bit, bad FCW, missing x87,
+prefix/decode neighbors, fetch/truncation, STOP and budget behavior. Two real
+producer sequences inspect state after FCOMI, after FCHS and after FCMOVE: one
+compares equal before FCHS and copies the changed destination back to +1; the
+other flips first, compares unequal, and retains -1. The fixture schema admits
+only `dac9`, `dac9dfe0`, `dac9dac9dfe0`,
+`d9e8d9e8dbf1d9e0dac9dfe0`, and `d9e8d9e8d9e0dbf1dac9dfe0` at budgets
+1/2/3/6/6. Six success fixtures exercise taken/untaken transfer, TOP wrap,
+repeat, and both producer streams; five reject fixtures exercise invalid
+source/destination, C1, ES|B and bad FCW. Runner assertions check instruction
+counts, stop outcome, FIP and JIT
+denial, plus selected x87/RFLAGS fields for the conditional-transfer and
+producer cases; they do not compare every final-state field for every success
+fixture. Full-state transfer/preservation coverage comes from the 51,200 ISA
+success snapshots, while the 21,504 invalid class/tag snapshots check atomic
+rejection. All evidence is local; no physical x86, native or JIT execution was
+performed. ISSUE-019 remains open.
+
+Validation passed: `cargo test -p od-isa fcmove --offline` (4/4),
+`cargo test -p od-testkit x87_fcmove_schema --offline` (1/1), and
+`cargo test -p od-runner --test fixture_v2
+local_x87_fcmove_snapshots_and_denies_jit --offline` (1/1). `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, and `git diff --check` also passed.

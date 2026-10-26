@@ -7457,3 +7457,33 @@ runner checks snapshots while denying JIT. No physical x86 evidence is
 claimed; ISSUE-019 remains open. See [plan](../plans/STAGE_2.md#s2-30bx-indexed-bare-fcmovnb-st0-sti),
 [report](../reports/STAGE_2_REPORT.md#s2-30bx--bounded-indexed-fcmovnb-st0-sti), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bx-bounded-indexed-fcmovnb-sti).
+
+## Local S2-30by: bounded bare `FCMOVE ST(0), ST(1)` (`DA C9`)
+
+Admit only exact unprefixed Long64 `DA C9`. Require present x87 state, FCW
+`0x037f`, and `FSW & 0x82ff == 0`. Before consulting integer
+`RFLAGS.ZF`, preflight physical old TOP and `(old_TOP+1)&7`, including when
+ZF=0. Each participant must have a Valid tag and canonical Normal binary80
+value, or a Zero tag and exact signed binary80 zero. When ZF=1, copy the
+source's exact ten raw bytes and tag into old physical TOP; when ZF=0, preserve
+both operand cells. Preserve TOP, the complete FSW and FCW, RFLAGS, GPRs,
+memory and all other state. Set FIP to old RIP, advance RIP by two and retire
+once. No x87 C3 substitution for integer ZF is made. C1=1 remains closed under
+the local environment gate; other C0/C2/C3 values are preserved. Existing
+`DA C0..C7` FCMOVB and `DA E9` FUCOMPP behavior is unchanged. Memory forms,
+exception delivery, JIT, native execution and physical x86 acceptance are
+outside this bounded contract.
+
+The interpreter checks 51,200 full-state successes: ten admitted destination
+values and ten source values (four canonical Normals in both signs plus exact
+±0), ZF, all TOP values, eight C0/C2/C3 patterns, and four CF/PF patterns.
+It checks 21,504 atomically rejected class/tag cases across 42 invalid pairs,
+both signs, both ZF values, both participant positions, all TOPs and all
+C0/C2/C3 combinations. Additional checks cover every forbidden status bit,
+invalid FCW, missing x87, prefix/decode neighbors, fetch/truncation, STOP and
+budget boundaries. Exact schema streams are `dac9`, `dac9dfe0`,
+`dac9dac9dfe0`, `d9e8d9e8dbf1d9e0dac9dfe0`, and
+`d9e8d9e8d9e0dbf1dac9dfe0` with budgets 1/2/3/6/6. Literal fixtures cover
+raw/tag transfer and preservation, both actual FCOMI/FCHS producers, rejects
+and JIT denial. Evidence is local interpreter/schema/runner evidence only;
+ISSUE-019 remains open. See [plan](../plans/STAGE_2.md#s2-30by-bare-fcmove-st0-st1-da-c9), [report](../reports/STAGE_2_REPORT.md#s2-30by--bounded-fcmove-st0-st1), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30by-bounded-fcmove-st0-st1).

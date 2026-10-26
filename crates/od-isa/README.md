@@ -328,3 +328,11 @@ local-only evidence. The former C1-only extent is historical; native/JIT remain
 closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30bx-bounded-indexed-fcmovnb-st0-sti-db-c0c7),
 [plan](../../docs/plans/STAGE_2.md#s2-30bx-indexed-bare-fcmovnb-st0-sti), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bx-bounded-indexed-fcmovnb-sti).
+
+S2-30by adds exact bare `DA C9` FCMOVE ST(0), ST(1). It reuses the strict
+bounded operand preflight and copies raw binary80 bytes plus tag only when
+integer RFLAGS.ZF is set. Both operands are checked before consulting ZF;
+FCW/status gates and C1 policy match the neighboring bounded FCMOV slices.
+The 51,200 success and 21,504 invalid class/tag matrices, actual FCOMI/FCHS
+producer steps, exact-stream decoding and rejection boundaries remain local
+interpreter evidence. JIT/native and physical x86 execution remain closed.

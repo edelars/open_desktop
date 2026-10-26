@@ -3710,3 +3710,20 @@ slots for self-index. Runner snapshots verify each index and deny JIT. The
 local interpreter also checks invalid class/tag pairs with CF=1, per-index
 environment and execution boundaries, and the FCMOVNB/FCMOVB CF-complement
 property. This is local evidence only; ISSUE-019 remains open.
+
+### S2-30by bounded `FCMOVE ST(0), ST(1)`
+
+The local schema admits exactly `dac9`, `dac9dfe0`, `dac9dac9dfe0`,
+`d9e8d9e8dbf1d9e0dac9dfe0`, and `d9e8d9e8d9e0dbf1dac9dfe0` at budgets
+1/2/3/6/6. Six success fixtures cover ZF-taken transfer of negative zero,
+ZF-untaken distinct tags, TOP=7 wrap, repeat, and both real FCOMI producers.
+The producer fixtures sequence the actual compare and FCHS in both orders; the
+runner checks the final compare ZF and selected payload/tag outcomes. For the
+other success fixtures, it checks completion, instruction count, stop outcome, FIP
+and JIT denial; the repeat stream has no separate runner assertion for its
+second transfer. Five reject fixtures cover invalid source with ZF=0, invalid
+destination, C1, bad FCW and ES|B; unit tests separately cover missing x87
+state. Full-state transfer and preservation coverage comes from the 51,200
+ISA success snapshots; the 21,504 invalid class/tag snapshots check atomic
+rejection. Unit tests also cover each forbidden status bit and execution
+boundaries. This is local evidence only; ISSUE-019 remains open.

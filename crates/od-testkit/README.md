@@ -52,3 +52,9 @@ mapped positive cases and two local-only injected access faults. Their literal
 state and full data-memory answers are serialized by
 `tests/cpu/generate_stage2_movsd.py`; the generator does not calculate x86
 semantics. The five cases extend the deferred physical pool from 568 to 573.
+
+S2-30by adds five exact `s2-long-x87-state-v1` FCMOVE streams with budgets
+1/2/3/6/6: bare, status observation, repeat, and two FCOMI/FCHS producers.
+Operand and environment rejection cases are restricted to bare `dac9`; prefixed
+and neighboring DA encodings remain outside the schema. This is fixture-format
+coverage only and does not claim native or physical x86 behavior.

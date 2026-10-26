@@ -541,6 +541,8 @@ pub enum Operation {
     Fcmovnb {
         source: u8,
     },
+    /// Bare `DA C9` FCMOVE ST(0), ST(1), bounded raw copy when ZF is set.
+    Fcmove,
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
     FcompSt {
         source: u8,
@@ -787,6 +789,10 @@ fn x87_fcmovb(opcode: u8, modrm: u8) -> Option<Operation> {
 fn x87_fcmovnb(opcode: u8, modrm: u8) -> Option<Operation> {
     (opcode == 0xdb && (0xc0..=0xc7).contains(&modrm))
         .then_some(Operation::Fcmovnb { source: modrm & 7 })
+}
+
+fn x87_fcmove(opcode: u8, modrm: u8) -> Option<Operation> {
+    (opcode == 0xda && modrm == 0xc9).then_some(Operation::Fcmove)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1265,6 +1271,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 if modrm == 0xe9 {
                     Operation::Fucompp
+                } else if let Some(operation) = x87_fcmove(opcode.byte, modrm) {
+                    operation
                 } else {
                     x87_fcmovb(opcode.byte, modrm).ok_or_else(|| self.unsupported(opcode))?
                 }
@@ -4154,6 +4162,7 @@ mod tests {
                 match modrm {
                     0xe9 => Ok(Operation::Fucompp),
                     0xc0..=0xc7 => Ok(Operation::Fcmovb { source: modrm & 7 }),
+                    0xc9 => Ok(Operation::Fcmove),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
@@ -4191,6 +4200,9 @@ mod tests {
             Memory::new(&[0x9b, 0xda, 0xe9]).decode(),
             Err(DecodeError::Unsupported { .. })
         ));
+        for prefix in [0x66, 0x48, 0x9b] {
+            assert!(Memory::new(&[prefix, 0xda, 0xc9]).decode().is_err());
+        }
     }
 
     #[test]
