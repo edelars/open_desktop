@@ -215,6 +215,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30av | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit only Special-tagged canonical signed binary80 infinity; native/JIT closed | S2-30ap, S2-30at |
 | [x] | S2-30aw | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit only Special-tagged canonical binary80 QuietNaN, preserving all payload bits; native/JIT closed | S2-30av, S2-31ah |
 | [x] | S2-30ay | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit Special-tagged canonical binary80 subnormals with raw payload preservation; native/JIT closed | S2-30ax |
+| [x] | S2-30ba | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 SignalingNaN, preserving Q=0 and raw payload; native/JIT closed | S2-30az, S2-31ab |
 | [x] | S2-30az | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 QuietNaN without changing raw bytes; native/JIT closed | S2-30au, S2-30aw |
 | [x] | S2-30aa | Bare `D9 E4` FTST, bounded canonical-Normal ST(0) comparison with zero; native closed | S2-30z |
 | [x] | S2-30ab | Bare `D8 D1` FCOM ST(1), exact finite canonical-Normal compare with status-only commit; native closed | S2-30aa |
@@ -2345,6 +2346,36 @@ status with FNSTSW. Direct interpreter compositions cover m32 and m64, both
 signs and both store forms. Local checks do not establish physical x87 behavior;
 keep ISSUE-019 open and defer Mac mini/SSH/native/physical acceptance to the
 combined final substage.
+
+#### S2-30ba. Admit canonical binary80 SignalingNaN to bounded `FST/FSTP ST(i)`
+
+Extend only `bounded_x87_fst_sti_source`: retain Valid-tag canonical Normal,
+exact Zero-tagged signed zero, Special-tagged canonical infinity and QNaN.
+Additionally admit only `(Special, SignalingNaN)` with binary80 E=`0x7fff`,
+J=1, Q=0 and a nonzero lower-62-bit payload, either sign. The J=1/Q=0
+zero-payload encoding remains the canonical Infinity path. Preserve FCW `0x037f`,
+`FSW & 0x80ff == 0`, all ten source bytes/tag and existing C1 behavior. Bare
+`DD D0+i` copies to physical `(old_TOP+i)&7` without changing TOP; bare
+`DD D8+i` copies first, empties old physical TOP and advances TOP modulo eight.
+For `i=0` the copied bytes remain under Empty; for `i=1` the destination is
+new ST(0). Add no IE/PE and do not change classifier, wire schema, decode,
+other gates, JIT or native admission.
+
+Canonical Infinity remains admitted through its existing path. Reject only
+pseudo-infinity, pseudo-NaNs, subnormal, pseudo-denormal, unnormal, malformed
+values, wrong tag/class pairs and bad environments atomically. Cover both
+operations × both signs × all TOP × all indices × 16 condition-code states ×
+payloads `{1, 1<<61, 0x0123456789abcdef, (1<<62)-1}` (16,384 cases), with full
+state, physical canaries, destination tag/payload sentinels, alias/pop/wrap
+checks and execution boundaries. Add raw FLD m80fp→FST/FSTP ST(1)→FNSTSW unit
+compositions for both signs/forms, asserting Q=0 and no IE. Four seeded bare
+schema-v2 fixtures run with budget one and stop RIP=start+2; the wrong-tag
+fixture verifies no retirement, and successful fixtures remain denied by JIT. The
+wire schema stays unchanged; `od-testkit` admits only bare `DD D0+i`/`DD D8+i`
+streams for these seeded single-instruction cases. Do not use m32/m64 SNaN loads
+because those quiet the value and raise IE. Keep
+ISSUE-019 open; no Mac mini, SSH, native runtime or physical x86 checks belong
+in this substage.
 
 #### S2-30z. Bare bounded `FABS` (sign-bit-clear local slice)
 

@@ -2624,7 +2624,7 @@ fn operand_width(size: OperandSize) -> u32 {
 
 /// Return raw ST(0) bytes and tag for bounded register FST/FSTP forms.
 /// Admit canonical Normals, exact Zero-tagged signed zero, and canonical
-/// Special-tagged infinity or quiet NaN only.
+/// Special-tagged infinity or NaNs only.
 fn bounded_x87_fst_sti_source(state: &LongModeState) -> Option<([u8; 10], X87Tag)> {
     let x87 = state.x87.as_ref()?;
     if x87.control_word != 0x037f || x87.status_word & 0x80ff != 0 {
@@ -2636,6 +2636,11 @@ fn bounded_x87_fst_sti_source(state: &LongModeState) -> Option<([u8; 10], X87Tag
         (X87Tag::Valid, X87Binary80Class::Normal) => Some((source, X87Tag::Valid)),
         (X87Tag::Special, X87Binary80Class::Infinity) => Some((source, X87Tag::Special)),
         (X87Tag::Special, X87Binary80Class::QuietNaN) => Some((source, X87Tag::Special)),
+        (X87Tag::Special, X87Binary80Class::SignalingNaN)
+            if u64::from_le_bytes(source[..8].try_into().ok()?) & ((1 << 62) - 1) != 0 =>
+        {
+            Some((source, X87Tag::Special))
+        }
         (X87Tag::Zero, X87Binary80Class::Zero)
             if source[..9].iter().all(|byte| *byte == 0) && matches!(source[9], 0x00 | 0x80) =>
         {
@@ -19209,6 +19214,88 @@ mod tests {
     }
 
     #[test]
+    fn fst_and_fstp_sti_snan_copy_raw_source_for_full_state_matrix() {
+        let payloads = [1, 1 << 61, 0x0123_4567_89ab_cdef, (1 << 62) - 1];
+        let destination_tags = [X87Tag::Valid, X87Tag::Zero, X87Tag::Special, X87Tag::Empty];
+        let mut cases = 0;
+        for (opcode, popping) in [([0xdd, 0xd0], false), ([0xdd, 0xd8], true)] {
+            for negative in [false, true] {
+                for top in 0u8..8 {
+                    for index in 0u8..8 {
+                        for condition_codes in 0u8..16 {
+                            for payload in payloads {
+                                let significand = (1 << 63) | payload;
+                                let source = binary80_normal(significand, 0x7fff, negative);
+                                let physical_destination = (top + index) & 7;
+                                let new_top = top.wrapping_add(1) & 7;
+                                let cc = (u16::from(condition_codes & 1) << 8)
+                                    | (u16::from((condition_codes >> 1) & 1) << 9)
+                                    | (u16::from((condition_codes >> 2) & 1) << 10)
+                                    | (u16::from((condition_codes >> 3) & 1) << 14);
+                                let mut state = LongModeState::default();
+                                state.rip = 0x9b40;
+                                state.gpr =
+                                    std::array::from_fn(|n| 0x1234_5678_9abc_def0 ^ n as u64);
+                                state.rflags = 0xa55a_1234_5678_9abc;
+                                let mut x87 = crate::state::X87State::fixture_seed();
+                                x87.control_word = 0x037f;
+                                x87.status_word = (u16::from(top) << 11) | cc;
+                                x87.tag_word = u16::MAX;
+                                for physical in 0..8 {
+                                    x87.registers[physical] = [0x40 + physical as u8; 10];
+                                    x87.set_tag(physical as u8, X87Tag::Valid);
+                                }
+                                x87.registers[usize::from(top)] = source;
+                                x87.set_tag(top, X87Tag::Special);
+                                if physical_destination != top {
+                                    x87.set_tag(
+                                        physical_destination,
+                                        destination_tags[usize::from(condition_codes % 4)],
+                                    );
+                                }
+                                x87.instruction_pointer = 0x1234;
+                                x87.data_pointer = 0x5678;
+                                x87.last_opcode = 0x05aa;
+                                state.x87 = Some(x87);
+                                let before = state.clone();
+                                let mut expected = before.clone();
+                                let expected_x87 = expected.x87.as_mut().unwrap();
+                                expected_x87.registers[usize::from(physical_destination)] = source;
+                                expected_x87.set_tag(physical_destination, X87Tag::Special);
+                                if popping {
+                                    expected_x87.set_tag(top, X87Tag::Empty);
+                                    expected_x87.status_word = (expected_x87.status_word
+                                        & !(7 << 11))
+                                        | (u16::from(new_top) << 11);
+                                }
+                                expected_x87.instruction_pointer = before.rip;
+                                expected.rip += 2;
+
+                                let mut memory =
+                                    Memory::at(&[opcode[0], opcode[1] | index], state.rip);
+                                assert_eq!(
+                                    step(&mut state, &mut memory, AccessContext::default()),
+                                    Ok(StepOutcome::Advanced),
+                                    "pop={popping}, negative={negative}, TOP={top}, i={index}, cc={condition_codes:04b}, lower_payload={payload:016x}"
+                                );
+                                assert_eq!(state, expected);
+                                assert_eq!(memory.accesses, []);
+                                assert_eq!(
+                                    state.x87.as_ref().unwrap().registers
+                                        [usize::from(physical_destination)],
+                                    source
+                                );
+                                cases += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 16_384);
+    }
+
+    #[test]
     fn fst_sti_and_fstp_sti_qnan_compositions_preserve_both_memory_widths_and_signs() {
         for (load, source) in [
             (
@@ -19302,19 +19389,86 @@ mod tests {
     }
 
     #[test]
+    fn fld_m80fp_fst_fstp_st1_fnstsw_preserves_signaling_nan_payload() {
+        for (store, popping, status) in [
+            (&[0xdd, 0xd1][..], false, 0x3800u16),
+            (&[0xdd, 0xd9][..], true, 0x0000u16),
+        ] {
+            for negative in [false, true] {
+                let source = binary80_normal((1 << 63) | 0x0123_4567_89ab_cdef, 0x7fff, negative);
+                let mut code = vec![0xdb, 0x28];
+                code.extend_from_slice(store);
+                code.extend_from_slice(&[0xdf, 0xe0]);
+                let mut state = LongModeState::default();
+                state.rip = 0x8fa0;
+                state.gpr[Register::Rax as usize] = 0x1000;
+                let mut x87 = crate::state::X87State::fixture_seed();
+                x87.control_word = 0x037f;
+                x87.status_word = 0;
+                x87.set_tag(7, X87Tag::Empty);
+                state.x87 = Some(x87);
+                let mut memory = Memory::at(&code, state.rip);
+                memory.bytes[..10].copy_from_slice(&source);
+
+                for step_index in 0..3 {
+                    let at = state.rip;
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced)
+                    );
+                    let x87 = state.x87.as_ref().unwrap();
+                    match step_index {
+                        0 => {
+                            assert_eq!(x87.registers[7], source);
+                            assert_eq!(x87.tag(7), Some(X87Tag::Special));
+                        }
+                        1 => {
+                            assert_eq!(x87.registers[0], source);
+                            assert_eq!(x87.tag(0), Some(X87Tag::Special));
+                            assert_eq!(
+                                x87.tag(7),
+                                Some(if popping {
+                                    X87Tag::Empty
+                                } else {
+                                    X87Tag::Special
+                                })
+                            );
+                            assert_eq!(x87.top(), if popping { 0 } else { 7 });
+                        }
+                        2 => assert_eq!(
+                            state.gpr[Register::Rax as usize] & 0xffff,
+                            u64::from(status)
+                        ),
+                        _ => unreachable!(),
+                    }
+                    assert_eq!(x87.status_word & 1, 0, "no IE");
+                    if step_index < 2 {
+                        assert_eq!(
+                            x87.registers[if step_index == 0 { 7 } else { 0 }][7] & 0x40,
+                            0,
+                            "Q remains clear"
+                        );
+                        assert_eq!(x87.instruction_pointer, at);
+                    }
+                }
+                assert_eq!(state.rip, 0x8fa0 + 6);
+            }
+        }
+    }
+
+    #[test]
     fn fst_sti_and_fstp_sti_reject_noncanonical_qnan_neighbors_and_wrong_tags() {
         let qnan = binary80_normal((1 << 63) | (1 << 62), 0x7fff, false);
-        let snan = binary80_normal((1 << 63) | (1 << 61), 0x7fff, false);
         let pseudo_qnan = binary80_normal(1 << 62, 0x7fff, false);
         let pseudo_snan = binary80_normal(1 << 61, 0x7fff, false);
         let pseudo_infinity = binary80_normal(0, 0x7fff, false);
         let subnormal = binary80_normal(1, 0, false);
         let pseudo_denormal = binary80_normal((1 << 63) | 1, 0, false);
         let unnormal = binary80_normal(1, 1, false);
+        let snan = binary80_normal((1 << 63) | 1, 0x7fff, false);
 
         for (opcode, _) in [([0xdd, 0xd1], false), ([0xdd, 0xd9], true)] {
             for (raw, tag) in [
-                (snan, X87Tag::Special),
                 (pseudo_qnan, X87Tag::Special),
                 (pseudo_snan, X87Tag::Special),
                 (pseudo_infinity, X87Tag::Special),
@@ -19324,6 +19478,9 @@ mod tests {
                 (qnan, X87Tag::Valid),
                 (qnan, X87Tag::Zero),
                 (qnan, X87Tag::Empty),
+                (snan, X87Tag::Valid),
+                (snan, X87Tag::Zero),
+                (snan, X87Tag::Empty),
             ] {
                 let mut state = LongModeState::default();
                 state.rip = 0x9c80;
@@ -19738,11 +19895,8 @@ mod tests {
     #[test]
     fn fst_and_fstp_sti_reject_noncanonical_specials_and_bad_infinity_environment_atomically() {
         let rejected_sources = [
-            // J=0 pseudo-infinity, canonical SNaN, canonical subnormal,
-            // pseudo-denormal, unnormal, and a malformed exponent/significand.
+            // Pseudo-infinity, canonical subnormal, pseudo-denormal and unnormal.
             [0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x7f],
-            [0, 0, 0, 0, 0, 0, 0, 0xa0, 0xff, 0x7f],
-            [1, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f],
             [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0],
             [0, 0, 0, 0, 0, 0, 0, 0, 1, 0x40],

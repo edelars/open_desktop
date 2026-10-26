@@ -1375,6 +1375,24 @@ the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30az-canonica
 [plan](../../../../docs/plans/STAGE_2.md#s2-30az-admit-canonical-binary80-quietnan-to-bounded-fstfstp-sti),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30az--canonical-binary80-quietnan-through-bounded-fstfstp-sti).
 
+<a id="s2-30ba-canonical-snan-fst-fstp-sti"></a>
+
+### S2-30ba canonical binary80 SignalingNaN FST/FSTP ST(i)
+
+Four handwritten schema-v2 fixtures seed canonical SNaN raw bytes and Special
+tags, then execute bare `ddd1` or `ddd9` with budget one and stop RIP two bytes
+later. Both signs are covered. The wrong-tag `ddd1` fixture uses the same
+canonical SNaN bytes with a Valid tag and expects unsupported execution without
+retirement or RIP movement. Runner checks compare complete state and raw bytes
+and deny JIT for successful fixtures. The wire schema is unchanged; the narrow
+`od-testkit` profile allowlist now recognizes only bare DD D0+i / DD D8+i
+register-store single-op streams. Unit compositions load raw m80fp values,
+copy to ST(1), and observe status with FNSTSW while asserting Q remains clear
+and IE remains absent. No m32/m64 SNaN load composition or physical x86 claim is
+included. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30ba-canonical-snan-fst-fstp-sti),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30ba-admit-canonical-binary80-signalingnan-to-bounded-fstfstp-sti),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30ba--canonical-binary80-signalingnan-through-bounded-fstfstp-sti).
+
 ### S2-30av canonical signed-infinity FCHS/FABS
 
 The handwritten `s2_30av_fld_fchs_fst_fnstsw.case.json` and

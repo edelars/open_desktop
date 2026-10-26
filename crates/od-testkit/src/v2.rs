@@ -843,6 +843,14 @@ impl Fixture {
                 {
                     (code_bytes.as_str(), 2)
                 }
+                // Bare seeded FST/FSTP ST(i) fixtures are restricted to the
+                // exact DD D0+i and DD D8+i register encodings.
+                _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("ddd")
+                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'7' | b'8'..=b'f') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
                 _ if code_bytes.len() == 4
                     && code_bytes.starts_with("dcc")
                     && matches!(code_bytes.as_bytes()[3], b'0'..=b'7') =>

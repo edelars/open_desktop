@@ -9123,3 +9123,43 @@ unsupported file types remain. Independent gpt-6.1-sol medium follow-up review
 found no remaining defects. No Mac mini, SSH, native runtime or physical x86
 checks were performed; ISSUE-019 remains open for combined host/physical
 acceptance.
+
+## S2-30ba — canonical binary80 SignalingNaN through bounded FST/FSTP ST(i)
+
+Only `bounded_x87_fst_sti_source` was extended. It now admits canonical
+`(Special, SignalingNaN)` binary80 encodings with E=`0x7fff`, J=1, Q=0 and a
+nonzero lower-62-bit payload, for either sign. The zero-payload J=1/Q=0 value
+continues through the existing canonical Infinity path. FCW `0x037f`,
+`FSW & 0x80ff == 0`, prior Normal/zero/infinity/QNaN cases, and existing C1
+handling are unchanged. FST copies raw bytes/tag without TOP movement; FSTP
+copies before emptying old physical TOP and incrementing TOP modulo eight. No
+Q bit, IE or PE is introduced.
+
+The 16,384-case state matrix crosses both forms/signs, all TOP/index pairs,
+16 condition-code states and payloads `{1, 1<<61, 0x0123456789abcdef,
+(1<<62)-1}`. It compares full state, payload bytes, tag canaries and physical
+register sentinels, including alias, ST(1), TOP wrap and copy-before-pop. The
+old canonical SNaN positive reject vectors were removed; pseudo-SNaN and other
+invalid neighbor/tag/environment/boundary rejects remain covered. A raw
+FLD m80fp→FST/FSTP ST(1)→FNSTSW unit composition covers both signs and forms
+and verifies Q=0/no IE. Four seeded bare schema-v2 cases run `DD D1`/`DD D9`
+with budget one and stop RIP +2; wrong-tag input returns Unsupported without
+retirement/RIP movement. Successful runner fixtures are denied by JIT.
+
+The v2 wire schema is unchanged. To support the requested bare CLI cases, the
+`od-testkit` profile now recognizes only exact single-op `DD D0+i` and
+`DD D8+i` register-store streams. Two stale invalid-environment test witnesses
+were corrected from admitted UE to rejected ZE; forbidden-status lists also
+exclude admitted OE and UE under the shared `0x80c4` gate. This did not change
+production execution gates.
+
+Focused checks passed: the full `od-isa` unit suite (652 tests), including the
+16,384-case SNaN matrix, raw m80 composition, canonical neighbor/tag rejects
+and special-class/environment rejects; the seeded runner fixture test including
+JIT denial; and `cargo test -p od-testkit --offline` (173 tests).
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py` and `git diff --check` passed. Graphify rebuilt
+with 4,938 nodes, 9,883 edges and 186 communities; the existing header syntax
+warning and unsupported-file skips remain. No Mac mini, SSH, native runtime or
+physical x86 checks were performed. ISSUE-019 remains open for combined
+host/physical acceptance.

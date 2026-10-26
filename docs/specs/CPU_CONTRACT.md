@@ -6906,3 +6906,37 @@ physical x86 validation. ISSUE-019 remains open. See the
 [plan](../plans/STAGE_2.md#s2-30az-admit-canonical-binary80-quietnan-to-bounded-fstfstp-sti),
 [report](../reports/STAGE_2_REPORT.md#s2-30az--canonical-binary80-quietnan-through-bounded-fstfstp-sti),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30az-canonical-qnan-fst-fstp-sti).
+
+
+<a id="local-s2-30ba-canonical-snan-fst-fstp-sti"></a>
+
+## Local S2-30ba: canonical binary80 SignalingNaN through bounded `FST/FSTP ST(i)`
+
+Only `bounded_x87_fst_sti_source` is extended. Existing Valid-tag canonical
+Normal, Zero-tagged exact signed zero, and Special-tagged canonical infinity
+and QNaN remain admitted. The new pair is `(Special, SignalingNaN)` only for
+E=`0x7fff`, J=1, Q=0 and nonzero lower-62-bit payload, either sign. The J=1,
+Q=0 zero-payload encoding remains canonical Infinity. The classifier and wire
+schema do not change. FCW stays `0x037f`; `FSW & 0x80ff` stays zero.
+
+FST copies all ten bytes and the Special tag to physical `(old_TOP+i)&7` and
+preserves TOP/FSW. FSTP copies first, empties old physical TOP and increments
+TOP modulo eight. For `i=0`, bytes remain with Empty tag; for `i=1`, the copy is
+new ST(0). C1, condition-code policy, FIP/RIP and single retirement are
+unchanged. No IE/PE is added and Q remains clear. Pseudo-infinity, pseudo-NaNs,
+subnormal, pseudo-denormal, unnormal, malformed values, wrong tags and invalid
+environments reject atomically; canonical Infinity remains admitted through its
+existing path. JIT/native admission remains closed.
+
+Coverage includes a 16,384-case sign/TOP/index/condition/payload full-state
+matrix, canaries and destination sentinels, alias/pop/wrap behavior, rejection
+boundaries and raw FLD m80fp→FST/FSTP ST(1)→FNSTSW compositions. Four seeded
+bare schema-v2 fixtures check both signs and forms at budget one / stop RIP +2;
+a wrong-tag fixture checks no state or RIP commit. The wire schema remains
+unchanged; the `od-testkit` profile allowlist admits only exact DD D0+i / DD
+D8+i one-instruction store streams. m32/m64 SNaN load compositions are
+excluded because those loads quiet and raise IE. These are
+local interpreter/project-fixture results, not native or physical x86
+validation. ISSUE-019 remains open. See the [plan](../plans/STAGE_2.md#s2-30ba-admit-canonical-binary80-signalingnan-to-bounded-fstfstp-sti),
+[report](../reports/STAGE_2_REPORT.md#s2-30ba--canonical-binary80-signalingnan-through-bounded-fstfstp-sti),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30ba-canonical-snan-fst-fstp-sti).

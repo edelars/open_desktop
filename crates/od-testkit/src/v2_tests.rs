@@ -551,6 +551,36 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     fixture.stop_rip = Some(HexU64(0x1002));
     assert!(Fixture::from_json(&fixture.to_json().unwrap()).is_ok());
 
+    for second in 0xd0_u8..=0xdf {
+        let mut seeded_store = fixture.clone();
+        let code = seeded_store
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = format!("dd{second:02x}");
+        seeded_store.stop_rip = Some(HexU64(0x1002));
+        assert!(
+            Fixture::from_json(&seeded_store.to_json().unwrap()).is_ok(),
+            "bare DD D0+i / DD D8+i encoding {second:02x}"
+        );
+    }
+    for bytes in ["ddc1", "ddd?", "40ddd1", "fddd1"] {
+        let mut outside_register_stores = fixture.clone();
+        let code = outside_register_stores
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        outside_register_stores.stop_rip = Some(HexU64(0x1000 + (bytes.len() / 2) as u64));
+        assert!(
+            Fixture::from_json(&serde_json::to_vec(&outside_register_stores).unwrap()).is_err()
+        );
+    }
+
     let mut fnstsw = fixture.clone();
     let code = fnstsw
         .memory
@@ -668,7 +698,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         .x87
         .as_mut()
         .unwrap()
-        .status_word = HexU64(0x0010);
+        .status_word = HexU64(0x0004);
     invalid_fld_m32.stop_rip = None;
     invalid_fld_m32.expected_exit = ExpectedExit::Unsupported;
     assert!(Fixture::from_json(&invalid_fld_m32.to_json().unwrap()).is_ok());
@@ -706,7 +736,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             "admitted sticky status {sticky:04x} must not admit Unsupported"
         );
     }
-    for forbidden_status in [0x0004, 0x0008, 0x0010, 0x0040, 0x0080, 0x8000] {
+    for forbidden_status in [0x0004, 0x0040, 0x0080, 0x8000] {
         let mut forbidden_status_fixture = invalid_fld_m32.clone();
         forbidden_status_fixture
             .initial_state
@@ -786,7 +816,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         .x87
         .as_mut()
         .unwrap()
-        .status_word = HexU64(0x10);
+        .status_word = HexU64(0x04);
     invalid_fld_m64
         .memory
         .iter_mut()
@@ -830,7 +860,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             "admitted sticky status {sticky:04x} must not admit Unsupported"
         );
     }
-    for forbidden_status in [0x0004, 0x0008, 0x0010, 0x0040, 0x0080, 0x8000] {
+    for forbidden_status in [0x0004, 0x0040, 0x0080, 0x8000] {
         let mut forbidden_status_fixture = invalid_fld_m64.clone();
         forbidden_status_fixture
             .initial_state
