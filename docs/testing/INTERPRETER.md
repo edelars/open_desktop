@@ -509,6 +509,34 @@ contract](../specs/CPU_CONTRACT.md#local-s2-31u-bounded-fld-m64fp-rax-dd-00-sign
 [plan](../plans/STAGE_2.md#s2-31u-extend-bounded-fld-m64fp-rax-dd-00-to-signed-zero),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+## REP MOVSB/W/D/Q — S2-19d local interpreter coverage
+
+Exact `F3 A4`, `F3 66 A5`, `F3 A5` and effective REX.W `A5` are admitted for
+byte/word/dword/qword. The decoder accepts all `48..4F` REX.W bytes and the
+specified 66 ordering, while rejecting F3 66 A4, duplicate or conflicting
+prefixes, segment/address overrides and non-W REX A5 forms. Existing non-REP
+MOVS and REP STOS/LODS retain their admission and execution behavior.
+
+Each repeat performs one source read followed by one destination write. Only a
+successful pair commits both DF-directed index changes and decrements RCX. A
+read error skips the write; a write error occurs after the source read but
+commits no destination or current-iteration registers. Previously successful
+transfers remain committed; replay rereads the current source. Zero count makes
+no data accesses. Completion precedes STOP and the 1024-success local limit;
+STOP precedes the limit. Fault/STOP/limit preserve the REP-start RIP and retire
+zero instructions. RAX, flags/definedness, DF and unrelated state remain
+unchanged within a run. A new `run()` reinitializes definedness. Missing
+mapping/backend errors remain harness errors rather than synthetic #PFs, and
+this does not claim MMIO rollback or SMP atomicity.
+
+Local evidence includes 12,288 full-state completions with alternating ordered
+read/write logs, 192 injected read/write failures across four error classes,
+16 STOP/replay cases, 24 work-limit cases, 36 sequential overlap cases, 48
+prefix rejects, and 56 literal schema-v2 fixtures. JIT remains fail-closed;
+native and physical execution are deferred. Source-first ordering remains a
+local policy under [ISSUE-021](../KNOWN_ISSUES.md#issue-021--не-подтверждён-победитель-dual-fault-для-rep-movs-rsirdi).
+ISSUE-016 and ISSUE-020 remain open.
+
 
 ## Local S2-31aq signed-infinity m32 stores
 

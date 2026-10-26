@@ -70,3 +70,11 @@ Bounded `FST/FSTP m32fp` (`D9 10`/`D9 18`) also converts canonical
 Special-tagged binary80 QuietNaNs to binary32, preserving sign and the upper 23
 payload bits while truncating the lower 40. It adds no flags; native/JIT
 admission remains closed.
+
+Bounded Long64 REP MOVSB/W/D/Q (`F3 A4/A5`) is implemented in the local
+interpreter with source-first, destination-second element transfers. RSI, RDI
+and RCX commit only after both accesses succeed; STOP, errors and the local
+1024-transfer limit preserve completed pairs. The new forms remain closed to
+JIT/native execution and await the shared physical acceptance. Details:
+[CPU contract](docs/specs/CPU_CONTRACT.md#local-s2-19d-bounded-rep-movsbwdq-contract),
+[Stage 2 plan](docs/plans/STAGE_2.md#s2-19d--f3-a4a5-rep-movsbwdq-ограниченный-локальный-контракт).

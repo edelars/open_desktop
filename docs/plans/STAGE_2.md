@@ -157,7 +157,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-16 | Условия, переходы, SETcc/CMOVcc | S2-11 |
 | [ ] | S2-17 | Стек, CALL/RET и косвенные переходы | S2-16 |
 | [ ] | S2-18 | Строковые операции без REP; S2-18a–f локально покрывают только MOVSB/MOVSW/MOVSD/MOVSQ, STOSB и LODS B/W/D/Q; остальные формы и общая приёмка открыты | S2-17 |
-| [ ] | S2-19 | REP и точный частичный прогресс; S2-19a–c реализуют локальные bounded REP STOS/LODS с partial progress, остальные REP формы и общая приёмка открыты | S2-18 |
+| [ ] | S2-19 | REP и точный частичный прогресс; S2-19a–d реализуют bounded REP STOS/LODS/MOVS с partial progress, остальные REP формы и общая приёмка открыты | S2-18 |
 | [ ] | S2-20 | Исключения, приоритеты и fault state | S2-14, S2-19 |
 | [ ] | S2-21 | Нужные однопроцессорные atomic/fence формы | S2-20 |
 | [ ] | S2-22 | Сегменты и права доступа | S2-20 |
@@ -1032,6 +1032,44 @@ non-REP LODS и REP STOS regression. Добавить ровно 36 literal sche
 fixtures: восемь на каждую ширину, две prefix-normalization и два TEST→REP
 потока. Generator только сериализует литералы; profile/schema остаются
 неизменными. ISSUE-016/020 остаются открытыми; весь batch в финальном substage.
+
+#### S2-19d — `F3 A4/A5` REP MOVSB/W/D/Q (ограниченный локальный контракт)
+
+Добавить `Operation::RepMovs { size }` только для Long64 и адресного размера
+64: exact `F3 A4` byte, `F3 66 A5` word, `F3 A5` dword и effective REX.W
+`A5` qword. Для A5 допускаются F3, отсутствие segment/address override,
+отсутствующий REX или effective REX.W; все `48..4F` допустимы. 66 может
+сочетаться с F3 и misplaced/effective REX: `66 F3 A5` и `F3 48 66 A5` — word,
+`F3 66 48 A5` — qword. `F3 66 A4`, F2, LOCK, 67, segment overrides, non-W
+REX на A5 и остальные prefixed A4 формы остаются Unsupported. Существующие
+non-REP MOVS и REP STOS/LODS сохранить. JIT/native не расширять.
+
+При `RCX=0` завершить без проверки/доступа к RSI или RDI. В каждой итерации
+выполнять ровно одну width-sized read `DS:[RSI]`, затем одну all-or-error
+write в `ES:[RDI]`. Только после обеих успешных операций wrapping-adjust RSI и
+RDI на ±width согласно DF и уменьшить RCX. После commit проверять completion,
+STOP, затем локальный предел 1024 успешных передач. Completion выигрывает у
+STOP/limit; STOP выигрывает у limit. Лимит считается успешными передачами, а
+instruction budget — одной инструкцией. Fault/STOP/limit оставляют RIP на REP
+start и retirement=0; уже успешные передачи остаются. Ошибка чтения пропускает
+write; ошибка записи фиксирует успешное чтение, но не меняет destination,
+индексы или RCX. Replay повторно читает текущий source; hidden pending source
+не хранится. В run сохраняются RAX, RFLAGS/definedness и DF. Новый `run()`
+переинициализирует definedness, поэтому across-run metadata preservation не
+заявляется.
+
+Проверить 12,288 completion states, 192 injected failures, 16 STOP/replay,
+24 work-limit boundaries, 36 overlap cases с последовательной семантикой:
+same source/destination and destination ±width at every width/DF, plus ±1-byte
+destination offsets for word/dword/qword in both directions,
+width-cross failures обоих operands, zero-count с двумя invalid адресами,
+`u64::MAX` bounded progress, wrap/page/alignment/STOP@1024/budget-zero/fetch и
+TEST composition. 48 prefix rejects. Добавить 56 полных literal schema-v2
+fixtures: 44 (11 per width), 8 overlap, 2 normalization и 2 TEST→REP; generator
+только сериализует заранее заданные bytes/state/memory. Schema/profile не
+менять. Source-first — local policy, не подтверждённый dual-invalid priority;
+зарегистрировать отдельно. ISSUE-016/020 оставить открытыми. Mac mini, SSH,
+native и physical проверки — только в общем финальном acceptance.
 
 ### S2-20. Точность исключений и exit state
 

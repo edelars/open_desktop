@@ -4007,3 +4007,30 @@ python3 tests/cpu/generate_stage2_rep_lods.py --check
 cargo test -p od-testkit --offline rep_lods_
 cargo test -p od-runner --test fixture_v2 --offline rep_lods
 ```
+
+## Bounded REP MOVSB/W/D/Q fixtures S2-19d
+
+Fifty-six literal schema-v2 fixtures cover exact REP MOVSB/W/D/Q admission and
+progress: 44 base cases (11 per width), eight overlapping source/destination
+cases, two 66/REX normalization cases, and two TEST→REP compositions. Per width,
+the base rows cover zero count with invalid RSI/RDI, DF=0/1 completion, source
+and destination failures before and after one transfer, noncanonical source
+and destination, zero instruction budget, and the 1025-count local work limit.
+Overlap snapshots use a single region and record sequential source-first
+transfer results. The TEST composition checks successful retirement and a
+destination error after the first completed transfer. Expected sidecars retain
+complete register, flags/definedness, RIP and memory state; the generator only
+serializes predetermined values.
+
+The interpreter suite also checks 12,288 full machine states with exact
+alternating access logs, 192 injected read/write failures, 16 STOP/replay
+cases, 24 limit boundaries, 36 overlap cases and 48 prefix rejects. JIT is
+denied for all 56 fixtures without fallback. Native/physical execution is
+deferred; ISSUE-021 tracks the unresolved hardware winner for dual-invalid
+source/destination addresses. ISSUE-016 and ISSUE-020 remain open.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_movs.py --check
+cargo test -p od-testkit --offline rep_movs
+cargo test -p od-runner --test fixture_v2 --offline rep_movs_cli_fixtures_check_full_state_and_jit_denial
+```

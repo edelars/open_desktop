@@ -4987,6 +4987,153 @@ fn rep_stos_wdq_cli_fixtures_check_outcomes_and_full_snapshots() {
 }
 
 #[test]
+fn rep_movs_cli_fixtures_check_full_state_and_jit_denial() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(&fs::read(directory.join("s2_19d_rep_movs_expected.json")).unwrap())
+            .unwrap();
+    assert_eq!(answers.len(), 56);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let expected_input = Fixture::from_json(&raw).unwrap();
+        let harness = expected_input.fixture.expected_exit == ExpectedExit::HarnessError;
+        let (input, result) = run(&raw, "interpreter", if harness { 5 } else { 0 });
+        assert_eq!(input.fixture.case_id, case_id);
+        match input.fixture.expected_exit {
+            ExpectedExit::StopAddress => assert!(
+                matches!(result.outcome, Outcome::StopAddress {}),
+                "{case_id}"
+            ),
+            ExpectedExit::InstructionBudgetExhausted => assert!(
+                matches!(result.outcome, Outcome::InstructionBudgetExhausted {}),
+                "{case_id}"
+            ),
+            ExpectedExit::RepIterationBudgetExhausted => assert!(
+                matches!(result.outcome, Outcome::RepIterationBudgetExhausted {}),
+                "{case_id}"
+            ),
+            ExpectedExit::Exception => {
+                assert!(matches!(result.outcome, Outcome::Exception {}), "{case_id}")
+            }
+            ExpectedExit::HarnessError => assert!(
+                matches!(result.outcome, Outcome::HarnessError { .. }),
+                "{case_id}"
+            ),
+            _ => panic!("unexpected outcome for {case_id}"),
+        }
+        let expected_retired = if case_id.starts_with("s2_19d_test_rep_movs_") {
+            if case_id.ends_with("_success") { 2 } else { 1 }
+        } else if input.fixture.expected_exit == ExpectedExit::StopAddress {
+            1
+        } else {
+            0
+        };
+        assert_eq!(count(&result), expected_retired, "{case_id}");
+        let (_, jit_result) = run(&raw, "jit", 4);
+        assert!(
+            matches!(jit_result.outcome, Outcome::Unsupported { .. }),
+            "{case_id}"
+        );
+        assert!(
+            matches!(&jit_result.instructions_executed, Observation::Unavailable { reason } if reason == "engine was not executed"),
+            "{case_id}"
+        );
+        assert!(
+            matches!(jit_result.snapshot, Observation::Unavailable { .. }),
+            "{case_id}"
+        );
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(observed.state.rip, expected_rip, "{case_id}");
+        if let Some(fault) = answer.get("fault") {
+            if input.fixture.expected_exit == ExpectedExit::Exception {
+                let exception = match &observed.exception {
+                    Observation::Available {
+                        value: Some(exception),
+                    } => exception,
+                    _ => panic!("missing architectural exception snapshot for {case_id}"),
+                };
+                assert_eq!(
+                    exception.vector,
+                    fault["vector"].as_u64().unwrap() as u8,
+                    "{case_id}"
+                );
+                if let Some(error_code) = fault["error_code"].as_u64() {
+                    assert_eq!(
+                        exception.error_code,
+                        Observation::Available {
+                            value: HexU64(error_code)
+                        },
+                        "{case_id}"
+                    );
+                } else {
+                    assert!(
+                        matches!(exception.error_code, Observation::Unavailable { .. }),
+                        "{case_id}"
+                    );
+                }
+                if let Some(address) = fault["linear_address"].as_str() {
+                    assert_eq!(
+                        exception.fault_address,
+                        Observation::Available {
+                            value: HexU64(
+                                u64::from_str_radix(address.trim_start_matches("0x"), 16).unwrap()
+                            )
+                        },
+                        "{case_id}"
+                    );
+                } else {
+                    assert!(
+                        matches!(exception.fault_address, Observation::Unavailable { .. }),
+                        "{case_id}"
+                    );
+                }
+                assert_eq!(exception.faulting_rip, expected_rip, "{case_id}");
+            } else if input.fixture.expected_exit == ExpectedExit::HarnessError {
+                let reason = match &result.outcome {
+                    Outcome::HarnessError { reason } => reason,
+                    _ => unreachable!(),
+                };
+                let access = fault["access"].as_str().unwrap();
+                let access_name = if access == "read" { "Read" } else { "Write" };
+                let address = fault["address"].as_str().unwrap();
+                let address_value =
+                    u64::from_str_radix(address.trim_start_matches("0x"), 16).unwrap();
+                assert!(
+                    reason.contains(&format!("access: {access_name}")),
+                    "{case_id}: {reason}"
+                );
+                assert!(
+                    reason.contains(&format!("address: {address_value}")),
+                    "{case_id}: {reason}"
+                );
+                if case_id.contains("destination_fault_first") {
+                    assert!(reason.contains("PermissionDenied"), "{case_id}: {reason}");
+                } else {
+                    assert!(reason.contains("Unmapped"), "{case_id}: {reason}");
+                }
+            }
+        }
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
 fn rep_lods_jit_remains_fail_closed_without_fallback() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

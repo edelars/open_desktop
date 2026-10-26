@@ -10335,3 +10335,45 @@ noncanonical next-pointer cases are covered. Fixture tests check expected read
 fault address/type and architectural exception fields. The independent
 re-review found no remaining concrete defects. No native/physical testing was
 performed.
+
+## S2-19d — bounded `F3 A4/A5` REP MOVSB/W/D/Q (local)
+
+Added `Operation::RepMovs { size }` for exact Long64 forms `F3 A4` byte,
+`F3 66 A5` word, `F3 A5` dword and effective REX.W A5 qword. The decoder accepts
+all REX.W bytes 48..4F and the specified 66/REX orderings. Segment/address-size
+overrides, non-W REX A5, F3 66 A4, conflicting/repeated group prefixes and
+other unsupported prefixed A4 forms remain admission failures. Existing
+non-REP MOVS, REP STOS and REP LODS remain covered. Native/JIT admission is not
+expanded.
+
+The executor reads one width from DS:[RSI], then writes one width to ES:[RDI].
+It commits both DF-directed wrapping pointer steps and RCX decrement only
+after both accesses succeed. A failed read skips the write; a failed write
+follows the successful read without committing the current destination or
+register progress. Previously completed transfers persist; replay rereads the
+current source. Completion takes priority over STOP and the 1024-success local
+limit, and STOP takes priority over that limit. A full REP retires once;
+partial fault/STOP/limit keeps the original RIP and retires zero. Zero count
+performs no data access even for invalid pointers. This remains a local policy:
+no synthetic #PF, MMIO rollback or SMP atomicity claim is made. Flag
+definedness is preserved within one run only because a new run reinitializes
+the metadata.
+
+Local verification added 12,288 full-state completions with exact alternating
+read/write access logs; 192 injected read/write failures across architectural,
+unmapped, permission and backend errors, including RAM no-commit checks; 16
+STOP/replay states; 24 count/limit boundaries; 36 overlap transfer cases;
+prefix admission/rejection checks; and bounded u64::MAX count progress. It
+also checks zero count with two invalid pointers, page-edge success and
+crossing failures for each operand/width, pointer wrap, and truncated fetch.
+Fifty-six schema-v2 fixtures cover each width's zero, direction, fault,
+noncanonical, budget and limit cases, overlap, normalization and TEST
+composition. Expected overlap snapshots and pointer progress are handwritten
+literal tables; fixture generation only serializes those values. The profile
+and schema are unchanged. ISSUE-021 records that source-first ordering is not
+established as physical dual-invalid exception priority; ISSUE-016 and ISSUE-020
+remain open.
+
+Focused local checks passed: `cargo test -p od-isa --offline rep_movs`,
+`cargo test -p od-testkit --offline rep_movs`,
+`cargo test -p od-runner --test fixture_v2 --offline rep_movs_cli_fixtures_check_full_state_and_jit_denial`, and all four REP fixture generators passed `--check`. Final validation passed `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, and `cargo test --workspace --offline` (all workspace suites, including 750 od-isa, 225 od-testkit, 101 runner unit tests and 209 runner fixture tests). The 56 CLI fixtures compare full state and memory even on harness errors, check fault details and retirement, and deny JIT execution for every new fixture. Independent review found three test-evidence issues; all were fixed and re-reviewed with no remaining concrete findings. No Mac mini, SSH, native or physical tests were run.

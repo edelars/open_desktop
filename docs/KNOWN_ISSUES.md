@@ -1175,3 +1175,12 @@
 - **Суть и последствия:** текущий bounded interpreter выполняет чтение flat DS:[RSI] до чтения flat ES:[RDI], поэтому локальная модель сохраняет ошибку первого чтения при двух одновременно некорректных адресах. Этот порядок нужен для ограниченной и тестируемой локальной семантики, но сам по себе не доказывает hardware exception priority. Нет основания переносить его как установленный приоритет для dual-invalid адресов. Реализация не утверждает rollback для MMIO/backend side effects.
 - **Основание:** S2-18i явно задаёт RSI-first local policy; unit tests отдельно проверяют первый и второй отказ, но не сравнивают dual-invalid outcome с hardware. См. [CPU contract](specs/CPU_CONTRACT.md#local-s2-18i-cmps-bwdq-contract), [plan](plans/STAGE_2.md#s2-18i--одна-non-rep-cmps-bwdq-итерация-локальный-профиль), [report](reports/STAGE_2_REPORT.md#s2-18i--non-rep-cmps-bwdq-local) и [fixture notes](../tests/fixtures/x86/stage2/README.md#single-iteration-cmps-bwdq-fixtures-s2-18i).
 - **Следующий шаг:** если потребуется аппаратный dual-fault claim, сначала найти нормативное evidence либо сформировать изолированный dual-invalid case, затем проверить его на physical x86 в общем финальном acceptance substage. До такого результата сохранять локальную политику и не выдавать её за hardware priority.
+
+### ISSUE-021 — Не подтверждён победитель dual-fault для REP MOVS RSI/RDI
+
+- **Дата обнаружения:** 2026-10-26.
+- **Компонент:** `od-isa`, локальный Long64 REP MOVSB/W/D/Q профиль S2-19d.
+- **Статус:** открыта; это не подтверждённый дефект.
+- **Суть и последствия:** bounded interpreter выполняет source read `DS:[RSI]` перед destination write `ES:[RDI]`. Это зафиксированная local policy и обеспечивает проверяемый доступ к каждому элементу, но при одновременно некорректных RSI и RDI не устанавливает hardware exception priority. Ошибка чтения не вызывает write; ошибка записи происходит после успешной source read, но до commit destination/index/count. Никакого MMIO rollback не заявляется.
+- **Основание:** локальный REP MOVS контракт и injected read/write error matrix S2-19d; dual-invalid source/destination не сравнивался с физическим x86.
+- **Следующий шаг:** при необходимости аппаратного dual-fault claim найти нормативное основание либо провести изолированное dual-invalid сравнение на physical x86 в общем финальном acceptance. До результата оставлять порядок source-first только local policy.

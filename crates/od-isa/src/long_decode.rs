@@ -671,6 +671,9 @@ pub enum Operation {
     Movs {
         size: OperandSize,
     },
+    RepMovs {
+        size: OperandSize,
+    },
     /// One accepted long-mode LODS iteration using implicit DS and RSI.
     Lods {
         size: OperandSize,
@@ -1234,11 +1237,25 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         ..Prefixes::default()
                     })
                 || opcode.byte == 0xad && prefixes.rex.is_none_or(|rex| rex & 8 != 0));
+        let rep_movs = opcode.map == OpcodeMap::Primary
+            && matches!(opcode.byte, 0xa4 | 0xa5)
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.address_override
+            && (opcode.byte == 0xa4
+                && self.length == 2
+                && prefixes
+                    == (Prefixes {
+                        group1: Some(0xf3),
+                        ..Prefixes::default()
+                    })
+                || opcode.byte == 0xa5 && prefixes.rex.is_none_or(|rex| rex & 8 != 0));
         if !known
             || (prefixes.group1.is_some()
                 && !rep_stosb
                 && !rep_stos
                 && !rep_lods
+                && !rep_movs
                 && !locked_qword_memory_xadd_candidate)
         {
             return Err(self.unsupported(opcode));
@@ -1506,10 +1523,28 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Primary, 0xa4) => {
-                size = OperandSize::Byte;
-                Operation::Movs { size }
+                if rep_movs {
+                    size = OperandSize::Byte;
+                    Operation::RepMovs { size }
+                } else {
+                    size = OperandSize::Byte;
+                    Operation::Movs { size }
+                }
             }
-            (OpcodeMap::Primary, 0xa5) => Operation::Movs { size },
+            (OpcodeMap::Primary, 0xa5) => {
+                if rep_movs {
+                    size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                        OperandSize::Qword
+                    } else if prefixes.operand_override {
+                        OperandSize::Word
+                    } else {
+                        OperandSize::Dword
+                    };
+                    Operation::RepMovs { size }
+                } else {
+                    Operation::Movs { size }
+                }
+            }
             (OpcodeMap::Primary, 0xac) => {
                 if rep_lods {
                     size = OperandSize::Byte;
@@ -5843,6 +5878,87 @@ mod tests {
     }
 
     #[test]
+    fn rep_movs_decodes_exact_widths_and_normalized_prefix_ordering() {
+        for (bytes, size) in [
+            (&[0xf3, 0xa4][..], OperandSize::Byte),
+            (&[0xf3, 0x66, 0xa5][..], OperandSize::Word),
+            (&[0x66, 0xf3, 0xa5][..], OperandSize::Word),
+            (&[0xf3, 0xa5][..], OperandSize::Dword),
+            (&[0xf3, 0x48, 0xa5][..], OperandSize::Qword),
+            (&[0xf3, 0x48, 0x66, 0xa5][..], OperandSize::Word),
+            (&[0xf3, 0x66, 0x48, 0xa5][..], OperandSize::Qword),
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::RepMovs { size },
+                "{bytes:02x?}"
+            );
+        }
+        for rex in 0x48..=0x4f {
+            assert_eq!(
+                Memory::new(&[0xf3, rex, 0xa5]).decode().unwrap().operation,
+                Operation::RepMovs {
+                    size: OperandSize::Qword
+                }
+            );
+        }
+        let forms: [&[u8]; 4] = [
+            &[0xf3, 0xa4],
+            &[0xf3, 0x66, 0xa5],
+            &[0xf3, 0xa5],
+            &[0xf3, 0x48, 0xa5],
+        ];
+        let prefixes: [&[u8]; 10] = [
+            &[0xf0],
+            &[0xf2],
+            &[0x67],
+            &[0x26],
+            &[0x2e],
+            &[0x36],
+            &[0x3e],
+            &[0x64],
+            &[0x65],
+            &[0xf3],
+        ];
+        let mut rejected = 0;
+        for form in forms {
+            for prefix in prefixes {
+                let bytes = [prefix, form].concat();
+                assert!(
+                    matches!(
+                        Memory::new(&bytes).decode(),
+                        Err(DecodeError::Unsupported { .. })
+                    ),
+                    "{bytes:02x?}"
+                );
+                rejected += 1;
+            }
+        }
+        let extras: [&[u8]; 8] = [
+            &[0xf3, 0x66, 0xa4],
+            &[0xf3, 0x40, 0xa4],
+            &[0xf3, 0x48, 0xa4],
+            &[0xf3, 0x40, 0xa5],
+            &[0xf3, 0x47, 0xa5],
+            &[0xf3, 0x66, 0x66, 0xa5],
+            &[0xf3, 0x66, 0x40, 0xa5],
+            &[0xf3, 0x66, 0x47, 0xa5],
+        ];
+        for bytes in extras {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+            rejected += 1;
+        }
+        assert_eq!(rejected, 48);
+    }
+
+    #[test]
     fn rep_lods_decodes_widths_and_normalized_prefix_ordering() {
         for (bytes, size) in [
             (&[0xf3, 0xac][..], OperandSize::Byte),
@@ -6056,10 +6172,12 @@ mod tests {
         assert!(address_override.prefixes.address_override);
         let segment_override = Memory::new(&[0x2e, 0xa5]).decode().unwrap();
         assert_eq!(segment_override.prefixes.segment, Some(0x2e));
-        assert!(matches!(
-            Memory::new(&[0xf3, 0xa5]).decode(),
-            Err(DecodeError::Unsupported { .. })
-        ));
+        assert_eq!(
+            Memory::new(&[0xf3, 0xa5]).decode().unwrap().operation,
+            Operation::RepMovs {
+                size: OperandSize::Dword
+            }
+        );
     }
 
     #[test]

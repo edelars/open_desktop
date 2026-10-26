@@ -1102,6 +1102,30 @@ fn step_tracked_with_stop(
                                 && !instruction.prefixes.operand_override
                                 && size == OperandSize::Dword))))
         }
+        Operation::RepMovs { size } => {
+            instruction.opcode.map == OpcodeMap::Primary
+                && ((instruction.opcode.byte == 0xa4
+                    && instruction.length == 2
+                    && instruction.prefixes
+                        == (Prefixes {
+                            group1: Some(0xf3),
+                            ..Prefixes::default()
+                        })
+                    && size == OperandSize::Byte)
+                    || (instruction.opcode.byte == 0xa5
+                        && instruction.prefixes.group1 == Some(0xf3)
+                        && instruction.prefixes.segment.is_none()
+                        && !instruction.prefixes.address_override
+                        && instruction.prefixes.rex.map_or(true, |rex| rex & 8 != 0)
+                        && ((instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                            && size == OperandSize::Qword)
+                            || (instruction.prefixes.rex.is_none()
+                                && instruction.prefixes.operand_override
+                                && size == OperandSize::Word)
+                            || (instruction.prefixes.rex.is_none()
+                                && !instruction.prefixes.operand_override
+                                && size == OperandSize::Dword))))
+        }
         Operation::PopMemory { destination } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0x8f
@@ -2346,6 +2370,59 @@ fn step_tracked_with_stop(
                 state.gpr[Register::Rsi as usize].wrapping_add(step);
             state.gpr[Register::Rdi as usize] =
                 state.gpr[Register::Rdi as usize].wrapping_add(step);
+        }
+        Operation::RepMovs { size } => {
+            let mut completed = 0;
+            while state.gpr[Register::Rcx as usize] != 0 {
+                let source = Operand::Memory(MemoryOperand {
+                    base: AddressBase::Register(Register::Rsi),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size: OperandSize::Qword,
+                    size,
+                });
+                let destination = Operand::Memory(MemoryOperand {
+                    base: AddressBase::Register(Register::Rdi),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size: OperandSize::Qword,
+                    size,
+                });
+                let value = match read_operand(state, memory, context, next_rip, source) {
+                    Ok(value) => value,
+                    Err(MemoryError::Architectural(fault)) => {
+                        return Ok(StepOutcome::Fault(fault));
+                    }
+                    Err(error) => return Err(error),
+                };
+                if let Err(error) =
+                    write_operand(state, memory, context, next_rip, destination, value)
+                {
+                    return report_memory_error(error);
+                }
+                let step = if state.rflags & (1 << 10) == 0 {
+                    size.bytes() as u64
+                } else {
+                    0u64.wrapping_sub(size.bytes() as u64)
+                };
+                state.gpr[Register::Rsi as usize] =
+                    state.gpr[Register::Rsi as usize].wrapping_add(step);
+                state.gpr[Register::Rdi as usize] =
+                    state.gpr[Register::Rdi as usize].wrapping_add(step);
+                state.gpr[Register::Rcx as usize] -= 1;
+                completed += 1;
+                if state.gpr[Register::Rcx as usize] == 0 {
+                    break;
+                }
+                if stop_requested() {
+                    return Ok(StepOutcome::StopRequested);
+                }
+                if completed == REP_ITERATION_WORK_LIMIT {
+                    return Ok(StepOutcome::RepIterationBudgetExhausted);
+                }
+            }
         }
         Operation::Lods { size } => {
             // Long-mode DS is flat. Read the complete source from the

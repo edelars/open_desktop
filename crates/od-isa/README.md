@@ -375,3 +375,12 @@ Long64 interpreter. Its strict environment and both-operand preflight copy raw
 binary80 bytes/tag only when integer PF is clear. Other FCMOVNU indices and
 unordered/NaN behavior remain unsupported; native and physical behavior are
 not claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30ci-exact-bare-fcmovnu-st0-st1-db-d9) and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30ci--exact-bare-fcmovnu-st0-st1).
+
+S2-19d adds bounded REP MOVSB/W/D/Q with exact F3-prefix admission and
+source-read-then-destination-write progress. Both indices and RCX advance only
+after a complete transfer; STOP, errors and the local 1024-transfer limit
+preserve earlier successful pairs and leave the REP-start RIP. This is local
+interpreter policy; JIT/native and physical execution remain unverified. See
+the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-19d-bounded-rep-movsbwdq-contract),
+[plan](../../docs/plans/STAGE_2.md#s2-19d--f3-a4a5-rep-movsbwdq-ограниченный-локальный-контракт),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md#bounded-rep-movs-bwdq-fixtures-s2-19d).
