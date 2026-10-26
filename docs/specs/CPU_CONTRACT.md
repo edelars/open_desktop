@@ -2307,7 +2307,8 @@ byte 9 bit 7, so either signed zero becomes positive zero. It preserves the
 Zero tag, TOP, other payloads and unrelated state, clears C1, retains C0/C2/C3
 as the local snapshot policy, records FIP, advances RIP by two and retires
 once. FCHS and FABS share only this narrow sign-operation source gate;
-FTST and FST/FSTP ST(i) remain on the canonical-Normal-only gate.
+FTST's separate signed-zero extension is specified in S2-30aq, while
+FST/FSTP ST(i) remain on the canonical-Normal-only gate.
 
 Malformed Zero payloads, wrong tags, invalid FCW/FSW, missing state, and
 fetch/prefix/truncation/STOP/budget boundaries reject atomically. Coverage
@@ -2347,6 +2348,29 @@ D9 E4.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FTST—Test,” pp.3-400–3-401
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf)).
+
+## Local S2-30aq: canonical signed-zero `FTST` (`D9 E4`)
+
+The exact bare `D9 E4` interpreter form retains the existing x87-state,
+FCW `0x037f`, and `FSW & 0x80ff == 0` gates. It accepts canonical-Normal
+Valid ST(0), plus only exact Zero-tagged signed zero: raw significand bytes
+0..7 are zero and the final two bytes are `00 00` or `00 80`. A Normal value compares less or greater according to its
+sign. Either signed zero compares equal and replaces the condition field with
+`(old_fsw & !0x4700) | 0x4000`, setting C3 and clearing C0/C1/C2. It preserves
+the sign and all raw source bytes, Zero tag, TOP, FCW, FDP, FOP, all other x87
+and CPU state, records FIP, advances RIP by two, and retires once.
+
+This admission is FTST-specific; FST/FSTP ST(i) remain canonical-Normal-only.
+Malformed Zero payloads, mismatched tags, special/subnormal values, bad FCW or
+FSW, missing state, prefixes/REX/WAIT, malformed opcode/truncation, fetch
+failure, STOP, and exhausted budget reject without state commit. Tests cover
+both signed zeros × all TOP × all 16 prior condition-code combinations,
+repeated idempotence, and m32/m64 FLD→FTST→FNSTSW compositions for both signs,
+plus Normal regressions and full-state boundaries. The literal project
+composition is exactly `d900d9e4dfe0`: FLD m32fp → FTST → FNSTSW,
+three retirements. One-op admission remains outside the native profile, and
+native/JIT execution remain closed. Local interpreter and fixture evidence do
+not establish physical x87 behavior; ISSUE-019 remains open.
 
 ## Local S2-30ab: bounded `FCOM ST(1)` (`D8 D1`)
 

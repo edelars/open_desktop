@@ -8810,3 +8810,21 @@ x87 evidence; ISSUE-019 remains open.
 
 The first independent gpt-6.1-sol medium review found two coverage gaps; both
 were fixed. The follow-up review was clean with no remaining concrete findings.
+
+## S2-30aq — canonical signed zero through bounded FTST
+
+Bare `D9 E4` additionally admits only exact Zero-tagged signed zero alongside
+the previous canonical-Normal Valid source. Both zero signs compare equal and
+set C3 alone with `(old_fsw & !0x4700) | 0x4000`; raw bytes/sign, Zero tag, TOP,
+FCW/FDP/FOP, GPRs and RFLAGS are preserved, FIP records instruction RIP, and
+RIP advances by two. FST/FSTP ST(i) remain Normal-only. Native and JIT remain
+closed.
+
+Local unit coverage spans both signed zeros × all TOP × all 16 old condition
+fields with repeated execution and complete-state comparisons. Malformed zero
+payloads, wrong tags, invalid environment, missing state and decode/fetch/STOP/
+budget boundaries reject atomically. Existing Normal FTST cases remain; local
+FLD m32/m64→FTST→FNSTSW vectors cover both zero signs. The handwritten fixture
+admits only `d900d9e4dfe0` (FLD m32 → FTST → FNSTSW, three
+retirements) and checks full state/memory through the interpreter CLI. This is
+local evidence only; physical x87 behavior remains open under ISSUE-019.

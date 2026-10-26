@@ -207,6 +207,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30y | Bare `D9 E0` FCHS, bounded canonical-Normal ST(0) sign-bit flip; native closed | S2-30x |
 | [x] | S2-30z | Bare `D9 E1` FABS, bounded canonical-Normal ST(0) sign-bit clear; native closed | S2-30y |
 | [x] | S2-30ap | Bare `D9 E1` FABS additionally admits canonical Zero-tagged signed zero; Normal-only FTST/FST gates remain unchanged | S2-30ao |
+| [x] | S2-30aq | Bare `D9 E4` FTST additionally admits canonical Zero-tagged signed zero as equal; FST/FSTP ST(i) remain Normal-only; native/JIT closed | S2-30ap |
 | [x] | S2-30aa | Bare `D9 E4` FTST, bounded canonical-Normal ST(0) comparison with zero; native closed | S2-30z |
 | [x] | S2-30ab | Bare `D8 D1` FCOM ST(1), exact finite canonical-Normal compare with status-only commit; native closed | S2-30aa |
 | [x] | S2-30ac | Bare `D8 D0+i` FCOM ST(i), exact finite canonical-Normal compare for all register indices; native closed | S2-30ab |
@@ -281,7 +282,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31aw | Convert Special-tagged canonical binary80 SignalingNaN through exact DD10/DD18 stores, quieting binary64 and setting sticky IE | S2-31au |
 | [x] | S2-31ax | Convert Special-tagged canonical binary80 SignalingNaN through exact D910/D918 stores, quieting binary32 and setting sticky IE | S2-31av, S2-31aw |
 | [x] | S2-31ay | Admit masked sticky IE only in exact D910/D918 and DD10/DD18 stores; preserve sticky IE/PE and successful SNaN status | S2-31ax |
-| [ ] | S2-31az | Admit masked sticky DE in the same bounded m32/m64 FST/FSTP helpers; retain IE/DE/PE and keep subnormal store results unsupported | S2-31ay |
+| [x] | S2-31az | Admit masked sticky DE in the same bounded m32/m64 FST/FSTP helpers; retain IE/DE/PE and keep subnormal store results unsupported | S2-31ay |
 | [x] | S2-31ba | Admit masked sticky IE/DE in exact raw DB38 FSTP m80fp stores; preserve bytes and pop atomically | S2-31az |
 | [x] | S2-31bb | Extend exact D910/D918 finite binary32 stores through exponent 127; reject rounded exponent 128 before access | S2-31az, S2-31av |
 | [x] | S2-31bc | Extend exact DD10/DD18 finite binary64 stores through exponent 1023; reject rounded exponent 1024 before access | S2-31ba, S2-31bb |
@@ -2094,6 +2095,24 @@ and fetch/prefix/truncation/STOP/budget atomicity, Normal/FCHS regressions, and
 FLD m32/m64 → FABS → FST → FNSTSW composition. The handwritten project fixture
 uses exactly `d900d9e1d910dfe0` (four retirements); native/JIT and physical
 acceptance remain closed under ISSUE-019.
+
+#### S2-30aq. Admit canonical signed zero to bounded `FTST` (`D9 E4`)
+
+Keep bare `D9 E4`, existing x87 state, FCW `0x037f`, and `FSW & 0x80ff == 0`.
+Accept the existing canonical-Normal Valid source and exact Zero-tagged signed
+zero only (zero significand and sign/exponent word `0x0000` or `0x8000`).
+Normal results remain less/greater by sign; either signed zero compares equal
+and sets C3 only using `(old_fsw & !0x4700) | 0x4000`. Preserve sign/raw bytes,
+tag, TOP, FCW/FDP/FOP, other state, record FIP, advance RIP by two, and retire
+once. FST/FSTP ST(i) retain their Normal-only source gate; native/JIT remain
+closed.
+
+Cover both signed zeros × all TOP × all 16 prior condition-code states,
+repeated-operation idempotence, malformed zero/tag/environment rejection,
+m32/m64 FLD→FTST→FNSTSW for both signs, Normal regressions, and
+fetch/prefix/REX/WAIT/truncation/STOP/budget atomicity.
+The exact handwritten fixture `d900d9e4dfe0` composes FLD m32fp, FTST, and
+FNSTSW in three retirements. Physical behavior remains open under ISSUE-019.
 
 #### S2-30z. Bare bounded `FABS` (sign-bit-clear local slice)
 

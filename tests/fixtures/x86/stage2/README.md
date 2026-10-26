@@ -1304,9 +1304,21 @@ instructions and checks full state and memory through the interpreter CLI.
 Local vectors cover both zero signs × all TOP × all prior condition-code
 states, repeated-FABS idempotence, malformed Zero/wrong-tag/environment inputs,
 and execution boundaries; Normal and FCHS behavior remain covered by their
-existing cases. FTST and FST/FSTP ST(i) retain Normal-only admission. This is
-project-fixture evidence, not native or physical evidence; ISSUE-019 remains
-open.
+existing cases. S2-30aq subsequently admits canonical signed zero to FTST only;
+FST/FSTP ST(i) remain Normal-only. This is project-fixture evidence, not native
+or physical evidence; ISSUE-019 remains open.
+
+### S2-30aq signed-zero FTST
+
+The handwritten `s2_30aq_fld_ftst_fnstsw.case.json` fixture uses exactly
+`d900d9e4dfe0`: FLD m32fp loads negative zero, FTST sets C3 for equality, and FNSTSW
+observes the final status. It retires three instructions and checks full state and memory through the
+interpreter CLI. Unit coverage includes m32/m64 FLD compositions for both zero
+signs, both signs × every TOP and initial condition-code combination, repeated
+FTST, malformed Zero/tag/environment inputs, the Normal-only FST/FSTP ST(i)
+guard, and decode/fetch/STOP/budget boundaries.
+Schema admission is limited to this exact composition; one-op FTST native
+admission and JIT execution remain closed. No physical x87 behavior is claimed.
 
 ### S2-30z x87 schema and fixture coverage
 

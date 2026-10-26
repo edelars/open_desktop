@@ -41,6 +41,8 @@ const FCHS_ZERO_COMPOSITION: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ao_fld_fchs_fst_fnstsw.case.json");
 const FABS_ZERO_COMPOSITION: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ap_fld_fabs_fst_fnstsw.case.json");
+const FTST_ZERO_COMPOSITION: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30aq_fld_ftst_fnstsw.case.json");
 const FCHS_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30y_fchs_invalid_source.case.json");
 const FRNDINT_TIE: &[u8] =
@@ -1665,6 +1667,30 @@ fn local_x87_fld_fabs_fst_fnstsw_zero_fixture_checks_state_and_memory() {
     assert_eq!(observed.memory[0].bytes_hex, "d900d9e1d910dfe0");
     assert_eq!(observed.memory[1].bytes_hex, "00000000");
     assert_eq!(observed.memory[2].bytes_hex, "a5");
+}
+
+#[test]
+fn local_x87_fld_ftst_fnstsw_zero_fixture_checks_state_and_memory() {
+    let (input, result) = run(FTST_ZERO_COMPOSITION, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 3);
+    let observed = snapshot(&result);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0006);
+    expected.gpr[0] = HexU64(0x0000_0000_0030_7800);
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.registers[7] = "00000000000000000080".into();
+    expected_x87.status_word = HexU64(0x7800);
+    expected_x87.tag_word = HexU64(0x7ffc);
+    expected_x87.instruction_pointer = HexU64(0x0010_0002);
+    expected_x87.data_pointer = HexU64(0x0030_0004);
+    assert_eq!(observed.state, expected);
+    assert_eq!(observed.memory.len(), 3);
+    assert_eq!(observed.memory[0].bytes_hex, "d900d9e4dfe0");
+    assert_eq!(observed.memory[1].bytes_hex, "00000080");
+    assert_eq!(observed.memory[2].bytes_hex, "a5");
+    let (_, jit_result) = run(FTST_ZERO_COMPOSITION, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
 }
 
 #[test]
