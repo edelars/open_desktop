@@ -6873,6 +6873,29 @@ physical x86 behavior; ISSUE-019 remains open. See the
 [report](../reports/STAGE_2_REPORT.md#s2-30ay--canonical-binary80-subnormal-through-bounded-fchsfabs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30ay-canonical-binary80-subnormal-fchsfabs).
 
+<a id="local-s2-30bc-historical-ie-fchs-fabs"></a>
+
+## Local S2-30bc: historical sticky IE through bounded `FCHS/FABS`
+
+Only `bounded_x87_sign_st0_source` changes its FSW filter to `0x80fe`: exact
+FCW `0x037f` is retained, historical IE (bit 0) is admitted independently of
+the source, and DE/ZE/OE/UE/PE/SF/ES/B remain rejected, including when combined
+with IE. The same six admitted pairs remain: Valid+Normal, Zero+exact signed
+zero, and Special+Infinity/QNaN/SNaN/Subnormal. FCHS toggles only the raw sign
+bit; FABS clears only it. Both preserve IE and all other previously preserved
+state, clear C1, add no flags, and do not quiet a current SNaN. Other operation
+gates, decode, schema and JIT/native admission are unchanged.
+
+Local tests cover 6,144 full-state cases across opcodes/classes/signs/TOP/CC/IE,
+forbidden status combinations, invalid environment/tag and execution boundaries,
+repeated operations, status observation/clearing, and same-width m32/m64 SNaN
+load→sign operation→store→FNSTSW compositions. The four schema-v2 producer
+fixtures use m32 SNaNs and check that FLD itself produces QNaN+IE before the sign
+operation. Local checks do not establish native or physical x86 behavior;
+ISSUE-019 remains open. See the [plan](../plans/STAGE_2.md#s2-30bc-admit-historical-sticky-ie-to-bounded-fchsfabs),
+[report](../reports/STAGE_2_REPORT.md#s2-30bc--historical-sticky-ie-through-bounded-fchs-fabs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bc-historical-ie-fchs-fabs).
+
 <a id="local-s2-30az-canonical-qnan-fst-fstp-sti"></a>
 
 ## Local S2-30az: canonical binary80 QuietNaN through bounded `FST/FSTP ST(i)`

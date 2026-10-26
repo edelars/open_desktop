@@ -3431,3 +3431,17 @@ sentinels, `i=0`, `i=1`, TOP wrap, Normal regressions, malformed/wrong-tag and
 bad-environment rejection, and atomic execution boundaries. Local m32/m64
 compositions cover both signs. Native/JIT and physical acceptance remain
 unverified; ISSUE-019 remains open.
+
+### S2-30bc historical IE through bounded FCHS/FABS
+
+Four handwritten schema-v2 producer fixtures load positive/negative binary32
+SNaNs, run FCHS or FABS, store at the same width and execute FNSTSW. The
+interpreter assertions inspect the quieted binary80 QNaN+IE immediately after
+FLD and verify sign/payload and IE after the operation/store. Bare Normal-source
+fixtures separately check IE-only success and IE+SF atomic rejection. The
+6,144-case unit matrix spans the six accepted source classes, both operations,
+signs, TOP, prior CC and IE state; forbidden exception/summary combinations
+remain rejected. Native/JIT and physical behavior remain outside this slice;
+ISSUE-019 is open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30bc-historical-ie-fchs-fabs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30bc-admit-historical-sticky-ie-to-bounded-fchsfabs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30bc--historical-sticky-ie-through-bounded-fchs-fabs).

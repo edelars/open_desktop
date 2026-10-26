@@ -135,6 +135,40 @@ const FCHS_FABS_SUBNORMAL_FIXTURES: [(&[u8], bool, bool); 4] = [
 ];
 const FCHS_SUBNORMAL_WRONG_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ay_fchs_subnormal_wrong_tag.case.json");
+const FCHS_FABS_SNAN_PRODUCER_FIXTURES: [(&[u8], bool, bool); 4] = [
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30bc_fld_m32_fchs_fst_fnstsw_positive_snan.case.json"
+        ),
+        true,
+        false,
+    ),
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30bc_fld_m32_fchs_fst_fnstsw_negative_snan.case.json"
+        ),
+        true,
+        true,
+    ),
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30bc_fld_m32_fabs_fst_fnstsw_positive_snan.case.json"
+        ),
+        false,
+        false,
+    ),
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30bc_fld_m32_fabs_fst_fnstsw_negative_snan.case.json"
+        ),
+        false,
+        true,
+    ),
+];
+const FCHS_IE_ONLY: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bc_fchs_normal_ie_only.case.json");
+const FCHS_IE_SF: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bc_fchs_normal_ie_sf.case.json");
 const FTST_ZERO_COMPOSITION: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30aq_fld_ftst_fnstsw.case.json");
 const FST_STI_ZERO_COMPOSITION: &[u8] =
@@ -1902,6 +1936,61 @@ fn local_x87_fld_qnan_sign_operations_preserve_payloads_and_deny_jit() {
         let (_, jit_result) = run(fixture, "jit", 4);
         assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
     }
+}
+
+#[test]
+fn local_x87_m32_snan_producers_preserve_historical_ie_through_sign_operations() {
+    for (fixture, fchs, negative) in FCHS_FABS_SNAN_PRODUCER_FIXTURES {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 4);
+        let observed = snapshot(&result);
+        let expected_negative = if fchs { !negative } else { false };
+        let expected_raw = if expected_negative {
+            "00000000004523c1ffff"
+        } else {
+            "00000000004523c1ff7f"
+        };
+        let expected_memory = if expected_negative {
+            "4523c1ff"
+        } else {
+            "4523c17f"
+        };
+        let mut expected = input.fixture.initial_state.clone();
+        expected.rip = HexU64(0x0010_0008);
+        expected.gpr[0] = HexU64(0x0000_0000_0030_3801);
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.registers[7] = expected_raw.into();
+        expected_x87.status_word = HexU64(0x3801);
+        expected_x87.tag_word = HexU64(0xbffc);
+        expected_x87.instruction_pointer = HexU64(0x0010_0004);
+        expected_x87.data_pointer = HexU64(0x0030_0004);
+        assert_eq!(observed.state, expected, "FCHS={fchs}, negative={negative}");
+        assert_eq!(observed.memory[1].bytes_hex, expected_memory);
+        assert_eq!(observed.memory[2].bytes_hex, "a5");
+        let (_, jit_result) = run(fixture, "jit", 4);
+        assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
+fn local_x87_historical_ie_bare_success_and_ie_sf_rejection_fixtures() {
+    let (input, result) = run(FCHS_IE_ONLY, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0002);
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.registers[0] = "0000000000000080ffbf".into();
+    expected_x87.status_word = HexU64(1);
+    expected_x87.instruction_pointer = HexU64(0x0010_0000);
+    assert_eq!(snapshot(&result).state, expected);
+    let (_, jit_result) = run(FCHS_IE_ONLY, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    let (input, result) = run(FCHS_IE_SF, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    assert_eq!(snapshot(&result).state, input.fixture.initial_state);
 }
 
 #[test]

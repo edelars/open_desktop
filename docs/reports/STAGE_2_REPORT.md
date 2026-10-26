@@ -9200,3 +9200,35 @@ to 4,951 nodes, 9,906 edges and 183 communities; it reported the existing
 `include/open_desktop/host_abi.h` syntax warning and skipped unsupported file
 types. No Mac mini, SSH, native runtime or physical x86 checks were performed.
 ISSUE-019 remains open for combined host/physical acceptance.
+
+## S2-30bc — historical sticky IE through bounded FCHS/FABS
+
+Only `bounded_x87_sign_st0_source` changed its FSW acceptance mask from
+`0x80ff` to `0x80fe`; FCW `0x037f`, the six accepted tag/class pairs, the
+remaining exception/summary rejects and every other operation/JIT/native gate
+remain unchanged. IE is preserved independently of source class. FCHS/FABS
+retain their sign-only raw update, clear C1 and add no exception flags; current
+SNaN bytes remain signaling and unchanged apart from the sign transform.
+
+The interpreter matrix contains 6,144 cases (both opcodes × six admitted
+classes × signs × TOP × 16 condition-code states × IE clear/set), compares full
+state and canaries, and repeats each operation to verify IE persistence. Atomic
+rejects cover IE plus each forbidden FSW bit, invalid FCW with IE, malformed
+tags with IE, missing x87 state and fetch/truncation/STOP/budget/fault
+boundaries. FNSTSW observes IE and FNCLEX clears it. Direct m32/m64 SNaN
+compositions assert that FLD quiets the SNaN and sets IE before FCHS/FABS, then
+check the same-width stored QNaN sign/payload and FNSTSW-observed IE. Four
+schema-v2 m32 producer fixtures cover both signs and operations; separate
+fixtures check IE-only Normal success and IE+SF atomic rejection. All fixture
+success cases are denied by JIT.
+
+Validation passed: the eight focused `od-isa` FCHS/FABS tests (including the
+6,144-case matrix and forbidden-bit atomic rejects), direct m32/m64 SNaN
+composition, and FNSTSW/FNCLEX check; the four m32 producer CLI fixtures and
+IE-only/IE+SF CLI fixtures; `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `python3 tools/check_layout.py`,
+and `git diff --check`. `graphify update .` rebuilt 4,964 nodes, 9,929 edges
+and 177 communities. It reported the existing `host_abi.h` syntax warning,
+unsupported-file skips, and that community labels need refresh. No Mac mini,
+SSH, native runtime or physical x86 checks were performed. ISSUE-019 remains
+open for combined host/physical acceptance.
