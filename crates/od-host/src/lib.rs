@@ -211,6 +211,23 @@ pub enum FragmentExecutionError {
     Memory(ExecutableMemoryError),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockEntryError {
+    HelperContractFailure,
+    InvalidExitTag(u32),
+}
+
+/// Decodes a raw generated-entry result before a caller inspects context
+/// outputs. Helper failures use a host-only sentinel, never a guest exit tag.
+pub fn decode_block_entry_result(
+    raw: u32,
+) -> Result<od_jit::runtime::RuntimeExitTag, BlockEntryError> {
+    if raw == od_jit::runtime::RAW_HELPER_CONTRACT_FAILURE_V1 {
+        return Err(BlockEntryError::HelperContractFailure);
+    }
+    od_jit::runtime::RuntimeExitTag::try_from(raw).map_err(BlockEntryError::InvalidExitTag)
+}
+
 /// Owns published executable code for repeated execution of one validated
 /// x86 fragment. The mapping stays alive for every call to `execute`.
 pub struct CompiledFragment {
@@ -504,6 +521,15 @@ pub unsafe extern "C" fn od_fragment_destroy(handle: *mut std::ffi::c_void) -> u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use od_jit::arm64::{
+        AddressBase, Condition, Encoder, PairIndexMode, WReg, XReg, XRegOrSp, XRegOrZero,
+    };
+    use od_jit::runtime::{
+        ArithmeticFlagsHelper, BlockEntry, HelperOperationTag, RAW_HELPER_CONTRACT_FAILURE_V1,
+        RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET, RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET,
+        RuntimeContextV1, RuntimeExitTag,
+    };
+    use std::sync::atomic::{AtomicU32, AtomicUsize};
 
     static JIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -511,6 +537,457 @@ mod tests {
         JIT_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    const PROBE_HELPER_SENTINEL: u64 = 0xD15E_A5E0_CAFE_BEEF;
+    const PROBE_REGISTER_MISMATCH: u64 = 0xA100;
+    static PROBE_HELPER_STATUS: AtomicU32 = AtomicU32::new(0);
+    static PROBE_NESTED_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct ProbeObservation {
+        operation: u32,
+        lhs: u64,
+        rhs: u64,
+        flags: u64,
+        output_address: usize,
+    }
+
+    static PROBE_OBSERVATION: Mutex<Option<ProbeObservation>> = Mutex::new(None);
+
+    extern "C" fn abi_probe_nested(value: u64) -> u64 {
+        PROBE_NESTED_CALLS.fetch_add(1, Ordering::Relaxed);
+        value.rotate_left(17) ^ 0x55AA_1234_DEAD_BEEF
+    }
+
+    unsafe extern "C" fn abi_probe_helper(
+        operation: u32,
+        lhs: u64,
+        rhs: u64,
+        flags: u64,
+        output: *mut u64,
+    ) -> u32 {
+        let status = PROBE_HELPER_STATUS.load(Ordering::Relaxed);
+        let nested = abi_probe_nested(lhs ^ rhs ^ flags);
+        let Ok(mut observation) = PROBE_OBSERVATION.try_lock() else {
+            return 2;
+        };
+        *observation = Some(ProbeObservation {
+            operation,
+            lhs,
+            rhs,
+            flags,
+            output_address: output as usize,
+        });
+        if output.is_null() {
+            return 2;
+        }
+        // Deliberately write even for error statuses. The generated caller
+        // must ignore staged output unless helper status is Success.
+        // SAFETY: the generated probe passes an aligned 8-byte local stack slot.
+        unsafe { output.write(nested) };
+
+        // Model the AAPCS64 volatile general-register clobbers used by a
+        // nested host call. x18 remains reserved and is intentionally untouched.
+        unsafe {
+            std::arch::asm!(
+                "mov x1, xzr",
+                "mov x2, xzr",
+                "mov x3, xzr",
+                "mov x4, xzr",
+                "mov x5, xzr",
+                "mov x6, xzr",
+                "mov x7, xzr",
+                "mov x8, xzr",
+                "mov x9, xzr",
+                "mov x10, xzr",
+                "mov x11, xzr",
+                "mov x12, xzr",
+                "mov x13, xzr",
+                "mov x14, xzr",
+                "mov x15, xzr",
+                "mov x16, xzr",
+                "mov x17, xzr",
+                lateout("x1") _,
+                lateout("x2") _,
+                lateout("x3") _,
+                lateout("x4") _,
+                lateout("x5") _,
+                lateout("x6") _,
+                lateout("x7") _,
+                lateout("x8") _,
+                lateout("x9") _,
+                lateout("x10") _,
+                lateout("x11") _,
+                lateout("x12") _,
+                lateout("x13") _,
+                lateout("x14") _,
+                lateout("x15") _,
+                lateout("x16") _,
+                lateout("x17") _,
+                options(nostack),
+            );
+        }
+        status
+    }
+
+    fn xr(number: u8) -> XReg {
+        XReg::new(number).unwrap()
+    }
+
+    fn emit_u64(encoder: &mut Encoder, register: u8, value: u64) {
+        let destination = xr(register);
+        encoder.movz_x(destination, value as u16, 0).unwrap();
+        for halfword in 1..4 {
+            encoder
+                .movk_x(
+                    destination,
+                    (value >> (halfword * 16)) as u16,
+                    halfword as u8,
+                )
+                .unwrap();
+        }
+    }
+
+    fn emit_pair_push(encoder: &mut Encoder, first: u8, second: u8) {
+        encoder
+            .stp_x(
+                xr(first),
+                xr(second),
+                AddressBase::Sp,
+                -16,
+                PairIndexMode::PreIndex,
+            )
+            .unwrap();
+    }
+
+    fn emit_pair_pop(encoder: &mut Encoder, first: u8, second: u8) {
+        encoder
+            .ldp_x(
+                xr(first),
+                xr(second),
+                AddressBase::Sp,
+                16,
+                PairIndexMode::PostIndex,
+            )
+            .unwrap();
+    }
+
+    /// Emits an ABI canary wrapper followed by a BlockEntry helper probe.
+    /// The wrapper is test-only and has its own AAPCS64 frame before it seeds
+    /// x19-x28. The entry under test must preserve x19-x29 and x30.
+    fn emit_runtime_abi_probe(helper: ArithmeticFlagsHelper) -> Vec<u8> {
+        let mut encoder = Encoder::new();
+        let entry = encoder.new_label().unwrap();
+        let wrapper_epilogue = encoder.new_label().unwrap();
+        let entry_epilogue = encoder.new_label().unwrap();
+
+        // Test wrapper frame chain and save caller's callee-saved GPRs.
+        emit_pair_push(&mut encoder, 29, 30);
+        encoder
+            .adds_imm_x(XRegOrZero::Reg(xr(29)), XRegOrSp::Sp, 0)
+            .unwrap();
+        for first in [19, 21, 23, 25, 27] {
+            emit_pair_push(&mut encoder, first, first + 1);
+        }
+        // Reserve one aligned slot containing the expected wrapper x29.
+        emit_pair_push(&mut encoder, 11, 12);
+        encoder.mov_x(xr(16), XRegOrZero::Reg(xr(29)));
+        encoder
+            .str_x(XRegOrZero::Reg(xr(16)), AddressBase::Sp, 0)
+            .unwrap();
+        for first in [19, 21, 23, 25, 27] {
+            for register in [first, first + 1] {
+                encoder
+                    .movz_x(xr(register), u16::from(register) + 0x100, 0)
+                    .unwrap();
+            }
+        }
+        encoder.bl(entry).unwrap();
+
+        // Compare each seeded callee-saved register. A mismatch returns a
+        // separate test sentinel; a passing wrapper preserves the entry tag.
+        for first in [19, 21, 23, 25, 27] {
+            for register in [first, first + 1] {
+                let next = encoder.new_label().unwrap();
+                encoder
+                    .subs_imm_x(
+                        XRegOrZero::Zero,
+                        XRegOrSp::Reg(xr(register)),
+                        u16::from(register) + 0x100,
+                    )
+                    .unwrap();
+                encoder.b_cond(Condition::Equal, next).unwrap();
+                emit_u64(&mut encoder, 0, PROBE_REGISTER_MISMATCH);
+                encoder.b(wrapper_epilogue).unwrap();
+                encoder.bind(next).unwrap();
+            }
+        }
+        let x29_ok = encoder.new_label().unwrap();
+        encoder
+            .ldr_x(XRegOrZero::Reg(xr(16)), AddressBase::Sp, 0)
+            .unwrap();
+        encoder.subs_x(XRegOrZero::Zero, xr(29), XRegOrZero::Reg(xr(16)));
+        encoder.b_cond(Condition::Equal, x29_ok).unwrap();
+        emit_u64(&mut encoder, 0, PROBE_REGISTER_MISMATCH);
+        encoder.bind(x29_ok).unwrap();
+        encoder.b(wrapper_epilogue).unwrap();
+
+        encoder.bind(wrapper_epilogue).unwrap();
+        emit_pair_pop(&mut encoder, 11, 12);
+        for first in [27, 25, 23, 21, 19] {
+            emit_pair_pop(&mut encoder, first, first + 1);
+        }
+        emit_pair_pop(&mut encoder, 29, 30);
+        encoder.ret(xr(30));
+
+        encoder.bind(entry).unwrap();
+        // Generated entry frame record and saves for every changed x19-x29.
+        emit_pair_push(&mut encoder, 29, 30);
+        encoder
+            .adds_imm_x(XRegOrZero::Reg(xr(29)), XRegOrSp::Sp, 0)
+            .unwrap();
+        for first in [19, 21, 23, 25, 27] {
+            emit_pair_push(&mut encoder, first, first + 1);
+        }
+        encoder.mov_x(xr(19), XRegOrZero::Reg(xr(0)));
+        // Stage helper output in aligned local storage. The context isn't
+        // updated or read back until helper status has been accepted.
+        emit_pair_push(&mut encoder, 16, 17);
+        emit_u64(&mut encoder, 16, PROBE_HELPER_SENTINEL);
+        encoder
+            .str_x(XRegOrZero::Reg(xr(16)), AddressBase::Sp, 0)
+            .unwrap();
+
+        // Fixed probe inputs make no claim about x86 arithmetic semantics.
+        encoder
+            .movz_x(xr(0), HelperOperationTag::Add as u16, 0)
+            .unwrap();
+        emit_u64(&mut encoder, 1, 0x1122_3344_5566_7788);
+        emit_u64(&mut encoder, 2, 0x8877_6655_4433_2211);
+        emit_u64(&mut encoder, 3, 0x0123_4567_89AB_CDEF);
+        encoder
+            .adds_imm_x(XRegOrZero::Reg(xr(4)), XRegOrSp::Sp, 0)
+            .unwrap();
+        emit_u64(&mut encoder, 16, helper as usize as u64);
+        encoder.blr(xr(16));
+        let success = encoder.new_label().unwrap();
+        encoder.cbz_w(WReg::new(0).unwrap(), success).unwrap();
+
+        emit_u64(&mut encoder, 0, u64::from(RAW_HELPER_CONTRACT_FAILURE_V1));
+        encoder.b(entry_epilogue).unwrap();
+
+        encoder.bind(success).unwrap();
+        encoder
+            .ldr_x(XRegOrZero::Reg(xr(20)), AddressBase::Sp, 0)
+            .unwrap();
+        encoder
+            .str_x(
+                XRegOrZero::Reg(xr(20)),
+                AddressBase::Reg(xr(19)),
+                RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET as u32,
+            )
+            .unwrap();
+        encoder.movz_x(xr(20), 1, 0).unwrap();
+        encoder
+            .str_x(
+                XRegOrZero::Reg(xr(20)),
+                AddressBase::Reg(xr(19)),
+                RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET as u32,
+            )
+            .unwrap();
+        encoder
+            .movz_x(xr(0), RuntimeExitTag::BlockComplete as u16, 0)
+            .unwrap();
+
+        // Entry epilogue uses the same saved frame and restores LR/SP.
+        encoder.bind(entry_epilogue).unwrap();
+        emit_pair_pop(&mut encoder, 16, 17);
+        for first in [27, 25, 23, 21, 19] {
+            emit_pair_pop(&mut encoder, first, first + 1);
+        }
+        emit_pair_pop(&mut encoder, 29, 30);
+        encoder.ret(xr(30));
+
+        encoder.finish().unwrap().to_le_bytes().unwrap()
+    }
+
+    fn call_probe_with_simd_canaries(
+        entry: BlockEntry,
+        context: &mut RuntimeContextV1,
+    ) -> (u32, [u64; 8]) {
+        let mut d8 = 0xD008;
+        let mut d9 = 0xD009;
+        let mut d10 = 0xD00A;
+        let mut d11 = 0xD00B;
+        let mut d12 = 0xD00C;
+        let mut d13 = 0xD00D;
+        let mut d14 = 0xD00E;
+        let mut d15 = 0xD00F;
+        let context_address = context as *mut RuntimeContextV1 as usize as u64;
+        let entry_address = entry as usize as u64;
+        let raw_result: u64;
+
+        // SAFETY: `entry` points into a live PublishedCode made from the
+        // checked Encoder probe above, has the BlockEntry ABI, receives a
+        // valid mutable context, and the mapping owner remains alive here.
+        unsafe {
+            std::arch::asm!(
+                "blr x16",
+                inlateout("x0") context_address => raw_result,
+                inlateout("x16") entry_address => _,
+                inout("v8") d8 => d8,
+                inout("v9") d9 => d9,
+                inout("v10") d10 => d10,
+                inout("v11") d11 => d11,
+                inout("v12") d12 => d12,
+                inout("v13") d13 => d13,
+                inout("v14") d14 => d14,
+                inout("v15") d15 => d15,
+                clobber_abi("C"),
+            );
+        }
+        (raw_result as u32, [d8, d9, d10, d11, d12, d13, d14, d15])
+    }
+
+    fn make_probe_context<'a>(
+        state: &'a mut od_isa::LongModeState,
+        stop: &'a AtomicU8,
+    ) -> RuntimeContextV1 {
+        RuntimeContextV1 {
+            state,
+            initial_budget: 17,
+            stop_rip_enabled: 0,
+            reserved: 0,
+            stop_rip: 0,
+            stop_requested: (stop as *const AtomicU8).cast::<u8>(),
+            remaining_budget: PROBE_HELPER_SENTINEL,
+            retired_instructions: 0xBADD_CAFE_1234_5678,
+        }
+    }
+
+    fn probe_state() -> od_isa::LongModeState {
+        let mut state = od_isa::LongModeState::default();
+        state.gpr = [
+            0x1001, 0x2002, 0x3003, 0x4004, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+        ];
+        state.rip = 0x1234_5678;
+        state.rflags = 0x8D7;
+        state
+    }
+
+    fn expected_probe_output() -> u64 {
+        (0x1122_3344_5566_7788_u64 ^ 0x8877_6655_4433_2211_u64 ^ 0x0123_4567_89AB_CDEF_u64)
+            .rotate_left(17)
+            ^ 0x55AA_1234_DEAD_BEEF
+    }
+
+    #[test]
+    fn generated_entry_obeys_aapcs_and_nested_helper_abi() {
+        let _guard = jit_test_lock();
+        PROBE_HELPER_STATUS.store(0, Ordering::Relaxed);
+        PROBE_NESTED_CALLS.store(0, Ordering::Relaxed);
+        *PROBE_OBSERVATION.lock().unwrap() = None;
+
+        let code = emit_runtime_abi_probe(abi_probe_helper);
+        let published = PublishedCode::publish(&code).unwrap();
+        // SAFETY: the bytes come from the test-only typed Encoder probe and
+        // start with its AAPCS64 BlockEntry-compatible canary wrapper.
+        let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+
+        let mut state = probe_state();
+        let original_state = state.clone();
+        let stop = AtomicU8::new(0);
+        let mut context = make_probe_context(&mut state, &stop);
+        let context_output_address = std::ptr::addr_of!(context.remaining_budget) as usize;
+        let (raw, simd_values) = call_probe_with_simd_canaries(entry, &mut context);
+
+        assert_eq!(raw, RuntimeExitTag::BlockComplete as u32);
+        assert_eq!(
+            decode_block_entry_result(raw),
+            Ok(RuntimeExitTag::BlockComplete)
+        );
+        assert_eq!(
+            simd_values,
+            [
+                0xD008, 0xD009, 0xD00A, 0xD00B, 0xD00C, 0xD00D, 0xD00E, 0xD00F
+            ]
+        );
+        assert_eq!(context.remaining_budget, expected_probe_output());
+        assert_eq!(context.retired_instructions, 1);
+        assert_eq!(state, original_state);
+        assert_eq!(PROBE_NESTED_CALLS.load(Ordering::Relaxed), 1);
+        let observation = PROBE_OBSERVATION.lock().unwrap().unwrap();
+        assert_eq!(observation.operation, HelperOperationTag::Add as u32);
+        assert_eq!(observation.lhs, 0x1122_3344_5566_7788);
+        assert_eq!(observation.rhs, 0x8877_6655_4433_2211);
+        assert_eq!(observation.flags, 0x0123_4567_89AB_CDEF);
+        assert_eq!(observation.output_address % 16, 0);
+        assert_ne!(observation.output_address, context_output_address);
+    }
+
+    #[test]
+    fn helper_failures_return_host_sentinel_without_guest_commit() {
+        let _guard = jit_test_lock();
+        let code = emit_runtime_abi_probe(abi_probe_helper);
+        let published = PublishedCode::publish(&code).unwrap();
+        // SAFETY: see the success-path test; this is the same checked probe.
+        let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+
+        for status in [1, 2, 3, u32::MAX] {
+            PROBE_HELPER_STATUS.store(status, Ordering::Relaxed);
+            PROBE_NESTED_CALLS.store(0, Ordering::Relaxed);
+            *PROBE_OBSERVATION.lock().unwrap() = None;
+
+            let mut state = probe_state();
+            let original_state = state.clone();
+            let stop = AtomicU8::new(0);
+            let mut context = make_probe_context(&mut state, &stop);
+            let (raw, simd_values) = call_probe_with_simd_canaries(entry, &mut context);
+
+            assert_eq!(raw, RAW_HELPER_CONTRACT_FAILURE_V1);
+            assert_eq!(
+                decode_block_entry_result(raw),
+                Err(BlockEntryError::HelperContractFailure)
+            );
+            assert_eq!(
+                RuntimeExitTag::try_from(raw),
+                Err(RAW_HELPER_CONTRACT_FAILURE_V1)
+            );
+            assert_eq!(
+                simd_values,
+                [
+                    0xD008, 0xD009, 0xD00A, 0xD00B, 0xD00C, 0xD00D, 0xD00E, 0xD00F
+                ]
+            );
+            assert_eq!(context.remaining_budget, PROBE_HELPER_SENTINEL);
+            assert_eq!(context.retired_instructions, 0xBADD_CAFE_1234_5678);
+            assert_eq!(state, original_state);
+            assert_eq!(PROBE_NESTED_CALLS.load(Ordering::Relaxed), 1);
+            let observation = PROBE_OBSERVATION.lock().unwrap().unwrap();
+            assert_eq!(observation.operation, HelperOperationTag::Add as u32);
+            assert_eq!(observation.output_address % 16, 0);
+            assert_ne!(
+                observation.output_address,
+                std::ptr::addr_of!(context.remaining_budget) as usize
+            );
+        }
+    }
+
+    #[test]
+    fn host_entry_decoder_keeps_helper_failure_out_of_guest_exit_tags() {
+        assert_eq!(
+            decode_block_entry_result(RAW_HELPER_CONTRACT_FAILURE_V1),
+            Err(BlockEntryError::HelperContractFailure)
+        );
+        assert_eq!(
+            RuntimeExitTag::try_from(RAW_HELPER_CONTRACT_FAILURE_V1),
+            Err(RAW_HELPER_CONTRACT_FAILURE_V1)
+        );
+        assert_eq!(
+            decode_block_entry_result(6),
+            Err(BlockEntryError::InvalidExitTag(6))
+        );
     }
 
     #[test]

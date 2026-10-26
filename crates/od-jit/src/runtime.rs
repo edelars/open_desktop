@@ -9,6 +9,23 @@ pub const LONG_MODE_GPR_OFFSET: usize = std::mem::offset_of!(LongModeState, gpr)
 pub const LONG_MODE_RIP_OFFSET: usize = std::mem::offset_of!(LongModeState, rip);
 pub const LONG_MODE_RFLAGS_OFFSET: usize = std::mem::offset_of!(LongModeState, rflags);
 
+pub const RUNTIME_CONTEXT_STATE_OFFSET: usize = std::mem::offset_of!(RuntimeContextV1, state);
+pub const RUNTIME_CONTEXT_INITIAL_BUDGET_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV1, initial_budget);
+pub const RUNTIME_CONTEXT_STOP_RIP_ENABLED_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV1, stop_rip_enabled);
+pub const RUNTIME_CONTEXT_STOP_RIP_OFFSET: usize = std::mem::offset_of!(RuntimeContextV1, stop_rip);
+pub const RUNTIME_CONTEXT_STOP_REQUESTED_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV1, stop_requested);
+pub const RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV1, remaining_budget);
+pub const RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV1, retired_instructions);
+
+/// Raw entry result reserved for an unaccepted helper status. It is not a
+/// `RuntimeExitTag` and must be rejected by the host boundary.
+pub const RAW_HELPER_CONTRACT_FAILURE_V1: u32 = 0xFFFF_FFFE;
+
 /// Versioned raw call record. The state pointer is opaque and same-build only;
 /// all other members are fixed-width integers or opaque pointers.
 #[repr(C)]
@@ -28,7 +45,10 @@ pub struct RuntimeContextV1 {
     pub retired_instructions: u64,
 }
 
-/// Block entry takes a non-null `RuntimeContextV1` pointer and returns a raw tag.
+/// Block entry takes a non-null `RuntimeContextV1` pointer in x0 and returns a
+/// raw tag in w0. It follows AAPCS64: x0-x17, x30, NZCV and caller-clobbered
+/// SIMD state are volatile; x19-x29 and SP are preserved. Generated code must
+/// not use Apple-reserved x18 or unwind through a generated frame.
 pub type BlockEntry = unsafe extern "C" fn(*mut RuntimeContextV1) -> u32;
 
 /// Raw block exit values. Unknown values are host/runtime contract failures.
@@ -107,8 +127,11 @@ impl TryFrom<u32> for HelperStatusTag {
     }
 }
 
-/// Scalar helper ABI alias. Its implementation and semantics are introduced
-/// with the lowering that first calls it.
+/// Scalar helper ABI: operation in w0, inputs in x1-x3, and a writable output
+/// pointer in x4. Status 0 is success; every other status is a host-contract
+/// failure, and its output is valid only on success. The caller treats
+/// x0-x17, x30 and NZCV as clobbered; the helper follows AAPCS64 and preserves
+/// x19-x29 and SP. x18 is reserved on Apple.
 pub type ArithmeticFlagsHelper = unsafe extern "C" fn(u32, u64, u64, u64, *mut u64) -> u32;
 
 #[cfg(test)]
@@ -188,5 +211,18 @@ mod tests {
             2 * pointer_size + 40
         );
         assert_eq!(RuntimeExitTag::StopAddress as u32, 4);
+        assert_eq!(RUNTIME_CONTEXT_STATE_OFFSET, 0);
+        assert_eq!(RUNTIME_CONTEXT_INITIAL_BUDGET_OFFSET, pointer_size);
+        assert_eq!(RUNTIME_CONTEXT_STOP_RIP_ENABLED_OFFSET, pointer_size + 8);
+        assert_eq!(RUNTIME_CONTEXT_STOP_RIP_OFFSET, pointer_size + 16);
+        assert_eq!(RUNTIME_CONTEXT_STOP_REQUESTED_OFFSET, pointer_size + 24);
+        assert_eq!(
+            RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET,
+            2 * pointer_size + 24
+        );
+        assert_eq!(
+            RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET,
+            2 * pointer_size + 32
+        );
     }
 }

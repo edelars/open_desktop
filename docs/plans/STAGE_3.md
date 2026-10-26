@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06 и S3-07 завершены; S3-01 в работе.
+**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07 и S3-08 завершены; S3-01 в работе.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -134,7 +134,7 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-05 | Перевод decoder output в IR | S3-04 |
 | [x] | S3-06 | Проверяемый ARM64 encoder | S3-02 |
 | [x] | S3-07 | Executable publication и ownership | S3-02, S3-06 |
-| [ ] | S3-08 | Generated entry и helper ABI | S3-07 |
+| [x] | S3-08 | Generated entry и helper ABI | S3-07 |
 | [ ] | S3-09 | Простой allocator baseline | S3-03, S3-08 |
 | [ ] | S3-10 | Lowering первого integer subset | S3-05, S3-06, S3-09 |
 | [ ] | S3-11 | Корректные eager flags | S3-10 |
@@ -267,7 +267,9 @@ Ad-hoc подписанный Hardened Runtime VMHost smoke с allow-jit entitle
 2. Создать один реальный helper call с объявленными clobbers; проверить state до/после, nested host call и error return.
 3. Исключить unwind через generated code и aliasing живых Rust references с generated state access. Host failures не преобразовывать в guest exceptions.
 
-**Готово:** ABI stress tests сохраняют host state и guest values; неверные helper outcomes не проходят как completed.
+S3-08 выполнена: `runtime` объявляет все `RuntimeContextV1` offsets через `offset_of!`, `BlockEntry`/helper AAPCS64 clobber contract и отдельный raw helper-failure sentinel. `od-host::decode_block_entry_result` отвергает sentinel как host contract failure до guest-exit interpretation. Native ARM64 test-only typed-Encoder probe создаёт frame record через x29/x30, сохраняет x19-x29, вызывает nested Rust helper по ABI `(w0,x1,x2,x3,x4)`, проверяет exact arguments, volatile x1-x17 clobbers, SIMD D8-D15 canaries, status 0/1/2/unknown и failure output staging без guest-state write/retirement. Он не добавляет x86 helper semantics или общий block entry compiler.
+
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, `cargo test -p od-host --offline` прошли на Apple M3 Max/macOS 26.7.1 (11 tests); generated-entry success/error probes дополнительно прошли в ad-hoc подписанном Hardened Runtime test process с allow-jit entitlement. `git diff --check`, independent review clean и `tools/check_layout.py` прошли. C ABI не менялся. S3-13 ещё должен соединить этот contract с IR lowering; raw generic entry invocation остаётся unsafe.
 
 ### S3-09. Реализовать простой allocator baseline
 

@@ -324,6 +324,33 @@ copy/cache-sync; конкурентная публикация второго с
 отвергается. Выбор `pthread_jit_write_protect_np` несовместим с JIT write
 callback allowlist entitlement, который его запрещает.
 
+S3-08 фиксирует entry ABI в `runtime::BlockEntry`: `x0 = *mut RuntimeContextV1`,
+raw exit в `w0`; `x19-x29`, LR и SP сохраняются, SP остаётся 16-byte aligned,
+frame chain строится через `x29/x30`; `x18` не используется. Остальные caller-
+clobbered GPR, NZCV и volatile SIMD нельзя считать живыми через helper call.
+Context offsets экспортируются только как `offset_of!` constants.
+
+Scalar helper получает `(operation: w0, input1: x1, input2: x2, old_flags: x3,
+output: x4)` и возвращает raw status в `w0`. Успех — 0; ненулевые и неизвестные
+status кодируются entry как `RAW_HELPER_CONTRACT_FAILURE_V1`, который host
+отвергает отдельным `BlockEntryError::HelperContractFailure` до разбора guest
+exit tag. Это host-contract failure, не `RuntimeExitTag`, guest exception или
+interpreter fallback. Entry staging output в локальном aligned stack slot;
+только status 0 позволяет прочитать его и обновить test probe outputs. Для error
+entry не читает staging output, не retire-ит instruction и не трогает guest
+state/outputs, даже если helper записал staging slot до возврата ошибки.
+
+Native ARM64 probe в `od-host` tests сгенерирован checked `arm64::Encoder` и
+исполнялся только через raw `BlockEntry` function pointer в unsafe test boundary,
+пока `PublishedCode` owner жив. Test wrapper проверяет `x19-x29`, а inline-asm
+canaries — сохранение `D8-D15`; helper делает вложенный host call и принудительно
+портит volatile `x1-x17`. Это ABI-only probe: x86 arithmetic/helper semantics,
+generic safe invocation arbitrary bytes, IR lowering и dispatcher в нём
+отсутствуют. Сгенерированные frames не поддерживают unwind; host helpers не
+должны panic/unwind через generated code. В production safe entry boundary может
+вызвать только code object, чьё происхождение/verification задаёт будущий
+compiler; этот срез не добавляет general raw-pointer invocation API.
+
 Локально проверено на macOS 26.7.1 ARM64 / Xcode macOS SDK 27.0; SDK помечает
 `pthread_jit_write_protect_np` как доступный с macOS 11.0; Cargo test binary
 имеет `LC_BUILD_VERSION minos 11.0`. Подписанный Swift smoke binary имеет

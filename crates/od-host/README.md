@@ -32,6 +32,19 @@ Developer ID/notarization, packaged application и полный GUI lifecycle о
 [стенд](../../docs/testing/STAND.md) и
 [ISSUE-004](../../docs/KNOWN_ISSUES.md#issue-004--s0-08-developer-id-distribution-и-проверка-конечного-bundle).
 
+S3-08 закрепил host-side разбор `BlockEntry` result: helper status 0 может
+завершиться raw `RuntimeExitTag`; любой ненулевой status генерирует отдельный
+`RAW_HELPER_CONTRACT_FAILURE_V1`, который `decode_block_entry_result` возвращает
+как host error, не guest exit. Тестовый generated probe проверяет ARM64 frame
+chain, сохранение x19-x29/LR/SP, D8-D15 canaries и helper output staging; helper
+делает nested host call и намеренно пишет в staging даже при ошибке, чтобы
+проверить, что entry не читает/не публикует output и не retire-ит guest state на
+failure. Native tests прошли как ad-hoc подписанный Hardened Runtime процесс с
+`com.apple.security.cs.allow-jit` на macOS 26.7.1 ARM64. Это ABI probe, не block
+compiler/dispatcher, не arithmetic helper semantics и не универсальная safe
+обёртка для произвольного entry pointer. Raw invocation остаётся unsafe;
+`PublishedCode` owner удерживается до конца вызова.
+
 Для будущего block runtime `od-host` остаётся владельцем executable mapping:
 mapping должен жить на всём протяжении generated call. `od-jit` описывает
 runtime tags и same-build offsets, но не зависит от `od-host` и не владеет

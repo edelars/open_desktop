@@ -83,6 +83,14 @@ Pair writeback отвергает base-register overlap, а LDP — повтор
 Полный legacy MOV fragment сохраняет прежний word vector, включая MOVZ X0,#0
 на successful completion.
 
+S3-08 добавил `offset_of!` constants для всех полей `RuntimeContextV1`, явный
+AAPCS64 contract для `BlockEntry`/scalar helper, и raw host-contract failure
+sentinel, отдельный от `RuntimeExitTag`. `od-host` проверяет sentinel как host
+error. Его native test-only ARM64 probe вызывает typed-Encoder entry и nested
+helper, проверяя callee-saved registers, SIMD canaries, output staging и helper
+error statuses. Это не добавляет arithmetic semantics, x86 lowering, block
+compiler, generic raw-entry invocation или dispatcher.
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в
