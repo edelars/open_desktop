@@ -3467,8 +3467,8 @@ Two exact seeded schema-v2 cases run `D9 FC D9 E0 DF E0` and
 FRNDINT produces PE; FCHS/FABS clear C1 and preserve PE before FNSTSW observes
 it. Bare Normal-source fixtures admit PE-only and IE|DE|PE, while PE|OE and
 IE|DE|PE|SF rejected atomically at that stage. S2-30bg later admits OE; the
-former PE|OE case is now named `s2_30be_fchs_normal_pe_ze` and rejects ZE|PE
-(`0x0024`). All six S2-30be fixtures exercise interpreter CLI
+former PE|OE case was renamed `s2_30be_fchs_normal_pe_sf` and now rejects PE|SF
+(`0x0060`) after S2-30bh admits historical ZE. All six S2-30be fixtures exercise interpreter CLI
 behavior; JIT remains denied. These are project fixtures, not native or
 physical evidence. A local interpreter composition additionally checks
 canonical subnormal→FRNDINT→FCHS→FABS, preserving signed zero and DE|PE through
@@ -3481,8 +3481,8 @@ remains open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#loca
 
 At this stage the bounded source filter admitted all IE/DE/UE/PE history
 combinations while rejecting ZE/OE/SF/ES/B; S2-30bg later admits OE. The former
-UE|OE case is now named `s2_30bf_fchs_normal_ue_ze` and rejects ZE|UE
-(`0x0014`). Unit producer compositions use non-popping FST m32/m64
+UE|OE case was renamed `s2_30bf_fchs_normal_ue_es` and now rejects ZE|UE|ES
+(`0x0094`) after S2-30bh admits historical ZE. Unit producer compositions use non-popping FST m32/m64
 under FCW `0x037f` for ±2^-150 / ±3×2^-151 and ±2^-1075 / ±3×2^-1076; they
 assert signed-zero or minimum-subnormal bytes, UE|PE, C1 clear/set, and the exact
 unchanged Normal+Valid binary80 source before applying both FCHS and FABS. The
@@ -3512,3 +3512,18 @@ Mac mini, SSH, native runtime or physical x86 checks were performed. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30bg-historical-oe-through-bounded-fchsfabs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-30bg-admit-historical-sticky-oe-to-bounded-fchsfabs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30bg--historical-sticky-oe-through-bounded-fchsfabs).
+
+
+### S2-30bh historical ZE through bounded FCHS/FABS
+
+The exact sign-operation gate admits all 64 IE/DE/ZE/OE/UE/PE histories while
+SF, ES and B continue to reject atomically. Seeded CLI fixtures cover ZE-only
+and all-six-flags success, ZE|SF rejection and all-six-flags|ES rejection; ZE
+is set explicitly in the initial x87 state, and no guest instruction here
+produces divide-by-zero. Obsolete DE|ZE and PE|ZE rejects were renamed with
+SF/ES status combinations. The FRNDINT compositions preserve seeded ZE while
+FRNDINT adds PE for inexact inputs or IE while quieting an SNaN; FCHS/FABS then
+preserve those histories and clear C1. These project fixtures are not native
+evidence. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30bh-historical-ze-through-bounded-fchsfabs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30bh-admit-historical-sticky-ze-to-bounded-fchsfabs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30bh--historical-sticky-ze-through-bounded-fchsfabs).

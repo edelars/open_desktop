@@ -6982,6 +6982,29 @@ the [plan](../plans/STAGE_2.md#s2-30bg-admit-historical-sticky-oe-to-bounded-fch
 [report](../reports/STAGE_2_REPORT.md#s2-30bg--historical-sticky-oe-through-bounded-fchsfabs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bg-historical-oe-through-bounded-fchsfabs).
 
+<a id="local-s2-30bh-historical-ze-through-bounded-fchsfabs"></a>
+
+## Local S2-30bh: historical sticky ZE through bounded `FCHS/FABS`
+
+Only `bounded_x87_sign_st0_source` changes its FSW filter from `0x80c4` to
+`0x80c0`. FCW remains exactly `0x037f`; the existing six tag/class pairs are
+unchanged. All 64 combinations of IE/DE/ZE/OE/UE/PE are admitted and preserved.
+SF, ES and B remain rejected atomically, including when combined with histories.
+FCHS toggles only the binary80 sign bit; FABS clears only it. Both clear C1,
+preserve TOP, tags, payload, metadata, retirement and all other status, and
+generate no exception flags. ZE is seeded explicitly; this slice has no
+divide-by-zero producer. Arithmetic, decode, JIT and native gates are unchanged.
+
+The full-state matrix has 196,608 cases and the forbidden-status product has
+4,608 atomic rejects. Additional checks cover environment/tag/raw/missing-state
+and fetch/truncation/STOP/budget/fault boundaries with ZE, repeated operations,
+FNSTSW/FNCLEX, and project CLI fixtures for seeded ZE-only/all-six success and
+ZE|SF/all-six|ES rejection. FRNDINT compositions check seeded ZE through
+inexact ±1.5/±1.25 rounding, exact ±1/±0, and SNaN quieting. The SNaN becomes
+QNaN and IE is produced by FRNDINT before the sign operation preserves ZE|IE.
+These are local interpreter/fixture results, not physical x86 or native evidence;
+ISSUE-019 remains open for combined final acceptance.
+
 <a id="local-s2-30az-canonical-qnan-fst-fstp-sti"></a>
 
 ## Local S2-30az: canonical binary80 QuietNaN through bounded `FST/FSTP ST(i)`

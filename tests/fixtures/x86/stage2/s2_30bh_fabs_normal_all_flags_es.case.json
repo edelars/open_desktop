@@ -1,12 +1,12 @@
 {
   "schema_version": 2,
-  "case_id": "s2_30bd_fchs_normal_de_ze",
+  "case_id": "s2_30bh_fabs_normal_all_flags_es",
   "profile": "s2-long-x87-state-v1",
   "provenance": {
     "kind": "project_fixture",
-    "source": "Handwritten bare D9 E0 with canonical-Normal ST(0) and literal status bits for the bounded S2-30bd admission/rejection check; this project fixture is not native evidence.",
-    "specification": "Intel SDM revision 093, Vol.2A, FCHS entry; local bounded S2-30bd contract.",
-    "specification_version": "Intel SDM revision 093; project S2-30bd"
+    "source": "Handwritten exact bare sign opcode with canonical-Normal ST(0) and forbidden IE|DE|ZE|OE|UE|PE|ES status 0x00bf; project fixture checks atomic rejection, not native evidence.",
+    "specification": "Intel SDM revision 093, Vol.2A, FABS entry; local bounded S2-30bh contract.",
+    "specification_version": "Intel SDM revision 093; project S2-30bh"
   },
   "seed": null,
   "converted_from_v1_sha256": null,
@@ -44,7 +44,7 @@
         "00000000000000000000"
       ],
       "control_word": "0x000000000000037f",
-      "status_word": "0x0000000000000006",
+      "status_word": "0x00000000000000bf",
       "tag_word": "0x000000000000fffc",
       "instruction_pointer": "0x0000000000001234",
       "data_pointer": "0x0000000000005678",
@@ -61,7 +61,7 @@
         "write": false,
         "execute": true
       },
-      "initial_bytes_hex": "d9e0",
+      "initial_bytes_hex": "d9e1",
       "comparison_mask_hex": "ffff"
     },
     {

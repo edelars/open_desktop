@@ -9301,10 +9301,10 @@ performed. ISSUE-019 remains open.
 
 At S2-30bf, the earlier S2-30be PE|UE rejection fixture was renamed to
 `s2_30be_fchs_normal_pe_oe` and seeded PE|OE (`0x0028`), since UE was admitted
-while OE remained forbidden. S2-30bg later admits OE and renames this fixture
-to `s2_30be_fchs_normal_pe_ze`, which seeds ZE|PE (`0x0024`). The former
-S2-30bf UE|OE negative fixture is now `s2_30bf_fchs_normal_ue_ze`, seeded
-with ZE|UE (`0x0014`).
+while OE remained forbidden. S2-30bg later admits OE and used a ZE|PE
+(`0x0024`) reject fixture. S2-30bh admits ZE, so the current repository
+fixtures are rebased to `s2_30be_fchs_normal_pe_sf` and
+`s2_30bf_fchs_normal_ue_es` to retain forbidden-status coverage.
 
 
 Only `bounded_x87_sign_st0_source` changed its FSW mask from `0x80dc` to
@@ -9365,7 +9365,8 @@ check store bytes, unchanged Normal+Valid source, sign-only source
 transformation, C1 clear, retained OE|PE, unchanged memory, and FNSTSW/FNCLEX
 visibility. Failed and out-of-range writes preserve full state and memory.
 CLI fixtures execute `d910d9e0dfe0` and `dd10d9e1dfe0`, include seeded
-OE-only success and ZE|PE/ZE|UE rejects, and retain JIT denial.
+OE-only success and the then-forbidden ZE|PE/ZE|UE rejects, later replaced
+with PE|SF and UE|ES when S2-30bh admitted historical ZE, and retain JIT denial.
 
 Focused checks passed: the 98,304-case matrix, 3,072 forbidden-status cases,
 OE boundary rejection, the m32/m64 producer and atomic-write unit test, and
@@ -9376,3 +9377,30 @@ JIT denial. `cargo fmt --all -- --check`,
 14 instruction scopes), and `git diff --check` passed. `graphify update .` was
 run after these changes. No Mac mini, SSH, native runtime or physical x86
 checks were performed; ISSUE-019 remains open.
+
+
+## S2-30bh — historical sticky ZE through bounded FCHS/FABS
+
+Only `bounded_x87_sign_st0_source` changed its local FSW mask from `0x80c4` to
+`0x80c0`. The exact FCW and six tag/class pairs remain unchanged. The 196,608
+case full-state matrix spans both operations, all class/tag pairs, signs, TOP,
+CC and 64 IE/DE/ZE/OE/UE/PE histories. The 4,608 forbidden product checks SF,
+ES and B against each history. The operation continues to clear C1 and preserves
+all other status, raw payload, TOP/tag, metadata and retirement; it adds no
+exception flags.
+
+ZE was seeded in the initial x87 state. No guest divide-by-zero producer is
+claimed. Seeded CLI fixtures cover ZE-only and all-six-flags success and ZE|SF
+and all-six-flags|ES rejection, with JIT denial. Former DE|ZE, PE|ZE and UE|ZE
+rejection fixtures were renamed/rebased to DE|SF, PE|SF and UE|ES.
+
+The focused FRNDINT compositions seed ZE and check ±1.5→±2 and ±1.25→±1
+with newly generated PE, exact ±1/±0 without new PE, and SNaN→QNaN where
+FRNDINT performs quieting and adds IE; FCHS/FABS preserves the resulting
+history. FNSTSW/FNCLEX observe and clear state. Documentation and fixture
+provenance explicitly distinguish seeded ZE from a producer.
+
+Local validation is limited to focused ISA/CLI coverage, formatting, offline
+workspace check, layout validation, diff checks and Graphify update. Mac mini,
+SSH, native runtime and physical x86 checks were not run; ISSUE-019 remains open
+for the combined final acceptance substage.

@@ -1113,3 +1113,14 @@
 
 - **S2-30bf historical IE/DE/UE/PE evidence:** the bounded sign-operation source gate now uses mask `0x80cc`, admitting all 16 sticky IE/DE/UE/PE combinations and rejecting ZE/OE/SF/ES/B across each. Local 49,152-case matrix, masked-underflow FST producers and CLI status fixtures do not establish native/JIT execution or physical x86 behavior. ISSUE-019 remains open; next step is combined final-substage acceptance. See [CPU contract](specs/CPU_CONTRACT.md#local-s2-30bf-historical-ue-fchs-fabs), [plan](plans/STAGE_2.md#s2-30bf-admit-historical-sticky-ue-to-bounded-fchsfabs), [report](reports/STAGE_2_REPORT.md#s2-30bf--historical-sticky-ue-through-bounded-fchs-fabs), and [fixture notes](../tests/fixtures/x86/stage2/README.md#s2-30bf-historical-ue-fchs-fabs).
 - **S2-30bg historical IE/DE/OE/UE/PE evidence:** the bounded sign-operation source gate now uses mask `0x80c4`, admitting all 32 sticky histories while preserving ZE/SF/ES/B atomic rejects. The 98,304-state full matrix, 3,072 forbidden-status cases, real m32/m64 FST overflow-midpoint producers and neighbors, seeded OE CLI case, ZE rejection fixtures, and JIT denial are local evidence only. No Mac mini, SSH, native runtime or physical x86 checks were performed. ISSUE-019 remains open for combined host/physical acceptance. See [CPU contract](specs/CPU_CONTRACT.md#local-s2-30bg-historical-oe-through-bounded-fchsfabs), [plan](plans/STAGE_2.md#s2-30bg-admit-historical-sticky-oe-to-bounded-fchsfabs), [report](reports/STAGE_2_REPORT.md#s2-30bg--historical-sticky-oe-through-bounded-fchsfabs), and [fixture notes](../tests/fixtures/x86/stage2/README.md#s2-30bg-historical-oe-through-bounded-fchsfabs).
+
+- **S2-30bh historical IE/DE/ZE/OE/UE/PE evidence:** the bounded `FCHS/FABS`
+  gate uses mask `0x80c0`, admitting all 64 sticky histories while SF/ES/B
+  remain atomic rejects. The 196,608 full-state matrix, 4,608 forbidden-status
+  product, seeded ZE/all-flags CLI fixtures, FRNDINT compositions and JIT denial
+  are local evidence only. ZE is explicitly seeded; no divide-by-zero producer
+  is claimed. No Mac mini, SSH, native runtime or physical x86 checks were run.
+  ISSUE-019 remains open for combined final acceptance. See [CPU contract](specs/CPU_CONTRACT.md#local-s2-30bh-historical-ze-through-bounded-fchsfabs),
+  [plan](plans/STAGE_2.md#s2-30bh-admit-historical-sticky-ze-to-bounded-fchsfabs),
+  [report](reports/STAGE_2_REPORT.md#s2-30bh--historical-sticky-ze-through-bounded-fchsfabs),
+  and [fixture notes](../tests/fixtures/x86/stage2/README.md#s2-30bh-historical-ze-through-bounded-fchsfabs).

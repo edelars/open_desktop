@@ -220,6 +220,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30be | Bare D9 E0/E1 FCHS/FABS additionally preserve historical PE with IE/DE; only IE/DE/PE combinations admitted; native/JIT closed | S2-30bd, S2-31ah |
 | [x] | S2-30bf | Bare D9 E0/E1 FCHS/FABS additionally preserve historical UE with IE/DE/PE; admit all IE/DE/UE/PE combinations, reject ZE/OE/SF/ES/B; local only, native/physical deferred | S2-30be |
 | [x] | S2-30bg | Bare D9 E0/E1 FCHS/FABS additionally preserve historical OE with IE/DE/UE/PE; admit all 32 sticky exception combinations, reject ZE/SF/ES/B; local only, native/physical deferred | S2-30bf, S2-31bp, S2-31bq |
+| [x] | S2-30bh | Bare D9 E0/E1 FCHS/FABS additionally preserve historical ZE; admit all 64 IE/DE/ZE/OE/UE/PE histories; reject SF/ES/B; local only, final acceptance deferred | S2-30bg |
 | [x] | S2-30ba | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 SignalingNaN, preserving Q=0 and raw payload; native/JIT closed | S2-30az, S2-31ab |
 | [x] | S2-30bb | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy only Special-tagged canonical binary80 subnormals with unchanged bytes/tag; native/JIT closed | S2-30ba, S2-31x |
 | [x] | S2-30az | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical binary80 QuietNaN without changing raw bytes; native/JIT closed | S2-30au, S2-30aw |
@@ -2418,6 +2419,29 @@ produced flags and memory, then observe FNSTSW/FNCLEX. Include write/range
 atomicity and seeded IE/DE/UE/PE. CLI coverage uses exact m32/m64 streams,
 seeded OE-only success and ZE-based rejects; JIT remains denied. Keep ISSUE-019
 open and defer Mac mini/SSH/native/physical checks to combined final acceptance.
+
+#### S2-30bh. Admit historical sticky ZE to bounded `FCHS/FABS`
+
+Change only `bounded_x87_sign_st0_source` from FSW mask `0x80c4` to
+`0x80c0`. Keep FCW `0x037f`, the same six accepted tag/class pairs,
+sign-only transforms, C1 clearing, TOP/tag/payload/metadata/retirement and
+all other execution behavior. Accept all 64 IE/DE/ZE/OE/UE/PE histories;
+SF/ES/B remain atomic rejects. Sign operations generate no exception flags.
+ZE is explicitly seeded in state/fixtures; no divide-by-zero producer is
+claimed in this slice. No arithmetic/decode/JIT/native change is in scope.
+
+Cover the 196,608 full-state product (two operations × six tag/class pairs ×
+two signs × eight TOP × 16 CC × 64 histories) and the 4,608 forbidden product
+(three bits × 64 histories × two operations × six pairs × two signs). Include
+bad FCW/tag/raw/missing-state and fetch/truncation/STOP/budget/fault atomicity
+with ZE, repeated sign operations, FNSTSW/FNCLEX, and seeded CLI ZE-only/all-six
+success plus ZE|SF/all-six|ES rejection fixtures and JIT denial. FRNDINT
+compositions with seeded ZE cover ±1.5→±2 and ±1.25→±1 (FRNDINT adds PE and
+sets/clears C1 respectively), exact ±1/±0 (no new PE), and SNaN→QNaN where
+FRNDINT performs the quieting and adds IE before FCHS/FABS preserves ZE|IE.
+Check complete state at each stage, observe with FNSTSW and clear with FNCLEX.
+Do not run Mini/SSH/native/physical checks; those remain in combined final
+acceptance under ISSUE-019.
 
 #### S2-30be. Admit historical sticky PE to bounded `FCHS/FABS`
 
