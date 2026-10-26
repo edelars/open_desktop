@@ -533,6 +533,8 @@ pub enum Operation {
     Fucomip {
         source: u8,
     },
+    /// Bare `DA C1` FCMOVB ST(0), ST(1), bounded raw copy when CF is set.
+    FcmovbSt0St1,
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
     FcompSt {
         source: u8,
@@ -769,6 +771,10 @@ fn indexed_x87_compare(opcode: u8, modrm: u8) -> Option<Operation> {
         (0xdf, 0xf0..=0xf7) => Some(Operation::Fcomip { source: modrm & 7 }),
         _ => None,
     }
+}
+
+fn x87_dac1(opcode: u8, modrm: u8) -> Option<Operation> {
+    (opcode == 0xda && modrm == 0xc1).then_some(Operation::FcmovbSt0St1)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1241,10 +1247,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 if prefixes != Prefixes::default() {
                     return Err(self.unsupported(opcode));
                 }
-                if self.byte()? == 0xe9 {
+                let modrm = self.byte()?;
+                if modrm == 0xe9 {
                     Operation::Fucompp
                 } else {
-                    return Err(self.unsupported(opcode));
+                    x87_dac1(opcode.byte, modrm).ok_or_else(|| self.unsupported(opcode))?
                 }
             }
             (OpcodeMap::Primary, 0xdd) => {
@@ -4110,7 +4117,7 @@ mod tests {
     }
 
     #[test]
-    fn fucompp_accepts_only_bare_da_e9() {
+    fn da_e9_fucompp_and_da_c1_fcmovb_are_exact_bare_encodings() {
         let mut memory = Memory::new(&[0xda, 0xe9]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::Fucompp);
@@ -4118,20 +4125,25 @@ mod tests {
         assert_eq!(instruction.prefixes, Prefixes::default());
         assert_eq!(memory.fetched, [0xfff, 0x1000]);
 
+        let fcmovb = Memory::new(&[0xda, 0xc1]).decode().unwrap();
+        assert_eq!(fcmovb.operation, Operation::FcmovbSt0St1);
+        assert_eq!(fcmovb.length, 2);
+        assert_eq!(fcmovb.prefixes, Prefixes::default());
+
         for modrm in 0u8..=u8::MAX {
             let decoded = Memory::new(&[0xda, modrm]).decode();
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
-                if modrm == 0xe9 {
-                    Ok(Operation::Fucompp)
-                } else {
-                    Err(DecodeError::Unsupported {
+                match modrm {
+                    0xe9 => Ok(Operation::Fucompp),
+                    0xc1 => Ok(Operation::FcmovbSt0St1),
+                    _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
                             byte: 0xda,
                         },
                         length: 2,
-                    })
+                    }),
                 },
                 "DA {modrm:02x}"
             );
@@ -4144,6 +4156,10 @@ mod tests {
         {
             assert!(matches!(
                 Memory::new(&[prefix, 0xda, 0xe9]).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+            assert!(matches!(
+                Memory::new(&[prefix, 0xda, 0xc1]).decode(),
                 Err(DecodeError::Unsupported { .. })
             ));
         }

@@ -9675,3 +9675,23 @@ local_x87_fxam --offline`. Formatting, workspace check, layout validation and
 performed; ISSUE-019 remains open. See [plan](../plans/STAGE_2.md#s2-30bt-bounded-bare-fxam-normal-and-signed-zero-classification),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30bt-bounded-bare-fxam-d9-e5),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bt-bounded-fxam).
+
+## S2-30bu — bounded `FCMOVB ST(0), ST(1)`
+
+Implemented exact bare Long64 `DA C1`. Both old physical TOP and its next
+physical slot are preflighted as Valid canonical Normal or Zero exact signed
+zero before CF is observed. A taken move copies ten raw bytes and tag; an
+untaken move preserves both operands. The executor preserves all status bits
+and requires `FSW & 0x82ff == 0`, which is a deliberately local C1=0 condition;
+no physical value is claimed for FSW.C1. TOP and all other fields are preserved
+except FIP, RIP and retirement. Existing `DA E9` is unchanged. No memory, pop,
+exception, JIT, native or physical behavior was added.
+
+The local interpreter matrices cover 51,200 success snapshots using four
+canonical Normal values (minimum, 1, 1+ULP and maximum finite) in both signs
+plus exact ±0, and 21,504 invalid class/tag snapshots, plus FCW/status,
+missing-x87 and decode checks.
+Five exact schema streams and ten literal fixture inputs cover taken/untaken,
+distinct tags, negative zero, TOP wrap, repeat, FLD1/FCHS/FCOMI producers,
+invalid source with CF=0, invalid destination, C1=1 and bad FCW. Results are
+local only; native/JIT remain closed and ISSUE-019 stays open.

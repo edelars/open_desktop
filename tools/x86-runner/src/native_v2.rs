@@ -589,6 +589,7 @@ fn admission_with_tracee_memory(
             | Operation::Fcomip { .. }
             | Operation::Fucomi { .. }
             | Operation::Fucomip { .. }
+            | Operation::FcmovbSt0St1
             | Operation::FcompSt { .. }
             | Operation::Fcompp
             | Operation::Fucompp

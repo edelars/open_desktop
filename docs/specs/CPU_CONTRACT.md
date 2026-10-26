@@ -7345,3 +7345,32 @@ native and physical x86 behavior remain unverified under ISSUE-019.
 The local Long64 interpreter admits only unprefixed `D9 E5` when x87 state is present, FCW is `0x037f`, `FSW & 0x80ff == 0`, and physical old TOP contains either a Valid-tagged canonical Normal binary80 value or a Zero-tagged exact signed zero. Normal yields CC `0x0400`; zero yields `0x4000`; C1 is additionally set to the operand sign. All four condition-code bits are replaced with `(old_FSW & !0x4700) | cc`. The remaining status/control words, TOP, tags, eight raw cells, FDP/FOP and all non-x87 machine state are preserved. FIP receives old RIP; RIP advances by two and retirement increments once.
 
 All other tags/classes, malformed payloads and environment failures reject without mutation. Empty and Special FXAM encodings, exception delivery, pending state, JIT and native execution are outside this contract. This local slice does not change the separate FTST source gate and does not establish physical x86 behavior. See [S2-30bt plan](../plans/STAGE_2.md#s2-30bt-bounded-bare-fxam-normal-and-signed-zero-classification), [report](../reports/STAGE_2_REPORT.md#s2-30bt--bounded-bare-fxam), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bt-bounded-fxam).
+
+## Local S2-30bu: bounded `FCMOVB ST(0), ST(1)` (`DA C1`)
+
+Admit only exact unprefixed Long64 `DA C1` with present x87 state, FCW
+`0x037f`, and `FSW & 0x82ff == 0`. Before reading RFLAGS.CF, validate both
+physical old TOP and `(old_TOP+1)&7`: each must be Valid-tagged canonical
+Normal, or Zero-tagged exact positive/negative binary80 zero. This applies on
+the untaken path too. If CF=1, copy the source's exact ten bytes and tag to
+old TOP; if CF=0, preserve both values and tags. Preserve TOP, the entire FSW
+(including its required C1=0), FCW, other x87 fields, and all remaining machine
+state. Record FIP=old RIP, advance RIP by two, and retire once. No memory access,
+pop, x87 exception delivery, JIT, or native execution is included. Keep
+`DA E9` FUCOMPP unchanged. This local profile intentionally restricts incoming
+C1 to zero even though the instruction does not define FSW.C1; it does not
+claim a physical value for that undefined bit.
+
+Success tests cover 51,200 full-state cases: ten admitted values (minimum
+Normal, 1, 1+ULP and maximum finite, each with both signs, plus exact ±0),
+all destination/source pairs, both CF values, eight TOPs, eight C0/C2/C3
+patterns and four PF/ZF patterns.
+Rejections cover 21,504 class/tag cases (42 nonadmitted class/tag pairs, sign,
+CF, participant position, TOP and C0/C2/C3 patterns), plus environment and
+boundary cases. The schema permits exactly `dac1`, `dac1dfe0`,
+`dac1dac1dfe0`, `d9e8d9e0dbf1dac1dfe0`, and
+`d9e8d9e0d9e8dbf1dac1dfe0`, with budgets 1, 2, 3, 6 and 6. Literal fixtures
+cover taken/untaken tag preservation, exact negative-zero copy, TOP wrap,
+repeat, both FLD1/FCHS/FCOMI producers, source rejection with CF=0, destination
+rejection, C1=1 and bad FCW. Native/JIT remain denied; physical acceptance is
+deferred under ISSUE-019.

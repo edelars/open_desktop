@@ -3655,3 +3655,14 @@ negative Normal at TOP=7; producer fixtures assert FSW `0x3c00` (FLD1),
 Special, ES|B, and invalid FCW. Local runner assertions check full snapshots,
 FIP and JIT denial. These are local results only; native/physical x86 behavior
 remains open under ISSUE-019.
+
+### S2-30bu bounded `FCMOVB ST(0), ST(1)`
+
+The schema accepts exactly `dac1`, `dac1dfe0`, `dac1dac1dfe0`,
+`d9e8d9e0dbf1dac1dfe0`, and `d9e8d9e0d9e8dbf1dac1dfe0` with budgets
+1/2/3/6/6. Ten handwritten local fixtures cover taken and untaken moves with
+distinct participant tags, exact negative-zero copying, TOP=7 wrap, repeat,
+real `FLD1/FCHS/FCOMI` producers for the two relation directions, invalid
+source with CF=0, invalid destination, incoming C1=1 and bad FCW. The runner
+checks local snapshots and JIT denial. These fixtures do not establish native
+or physical x86 behavior; ISSUE-019 remains open.

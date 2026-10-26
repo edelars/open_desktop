@@ -545,6 +545,11 @@ fn step_tracked_with_stop(
             opcode: instruction.opcode.byte,
         });
     }
+    if instruction.operation == Operation::FcmovbSt0St1 && bounded_x87_fcmovb(state).is_none() {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
     // Direct control flow uses the decoded condition/displacement; integer
     // operations below use normalized operands at each accepted width.
     let executable = match instruction.operation {
@@ -600,6 +605,7 @@ fn step_tracked_with_stop(
         | Operation::Fcomip { .. }
         | Operation::Fucomi { .. }
         | Operation::Fucomip { .. }
+        | Operation::FcmovbSt0St1
         | Operation::FdivSt0St { .. }
         | Operation::FdivrSt0St { .. }
         | Operation::FdivrStSt0 { .. }
@@ -1628,6 +1634,18 @@ fn step_tracked_with_stop(
                     0x4000 => crate::ZF,
                     _ => unreachable!("bounded compare returns only ordered relations"),
                 };
+        }
+        Operation::FcmovbSt0St1 => {
+            let (top, source_raw, source_tag) =
+                bounded_x87_fcmovb(state).expect("FCMOVB operands were prevalidated");
+            let x87 = state.x87.as_mut().expect("FCMOVB state was prevalidated");
+            if state.rflags & crate::CF != 0 {
+                let source = (top + 1) & 7;
+                x87.registers[usize::from(top)] = source_raw;
+                let _ = x87.set_tag(top, source_tag);
+                debug_assert_eq!(source, (x87.top() + 1) & 7);
+            }
+            x87.instruction_pointer = state.rip;
         }
         Operation::FcompSt { source } => {
             let condition =
@@ -3831,6 +3849,31 @@ fn bounded_x87_fcom_result(state: &LongModeState, source_index: u8) -> Option<u1
         core::cmp::Ordering::Less => 0x0100,
         core::cmp::Ordering::Equal => 0x4000,
     })
+}
+
+/// Preflight both physical operands for the exact bounded DA C1 form before
+/// the integer CF condition is observed. The returned payload/tag are ST(1).
+fn bounded_x87_fcmovb(state: &LongModeState) -> Option<(u8, [u8; 10], X87Tag)> {
+    let x87 = state.x87.as_ref()?;
+    if x87.control_word != 0x037f || x87.status_word & 0x82ff != 0 {
+        return None;
+    }
+    let top = x87.top();
+    let source = (top + 1) & 7;
+    for index in [top, source] {
+        let tag = x87.tag(index)?;
+        let raw = x87.registers[usize::from(index)];
+        let class = X87Binary80::from_bytes(raw).classify();
+        match (tag, class) {
+            (X87Tag::Valid, X87Binary80Class::Normal) => {}
+            (X87Tag::Zero, X87Binary80Class::Zero)
+                if raw[..8].iter().all(|byte| *byte == 0)
+                    && raw[8] == 0
+                    && matches!(raw[9], 0 | 0x80) => {}
+            _ => return None,
+        }
+    }
+    Some((top, x87.registers[usize::from(source)], x87.tag(source)?))
 }
 
 fn exact_fadd_result(
@@ -19115,6 +19158,270 @@ mod tests {
             assert_eq!(state, before);
             assert_eq!(result.instructions_executed, 0);
         }
+    }
+
+    #[test]
+    fn fcmovb_copies_raw_st1_only_when_cf_is_set_across_full_success_matrix() {
+        let magnitudes = [
+            (0x8000_0000_0000_0000, 0x0001), // minimum Normal
+            (0x8000_0000_0000_0000, 0x3fff), // 1
+            (0x8000_0000_0000_0001, 0x3fff), // 1 + ULP
+            (0xffff_ffff_ffff_ffff, 0x7ffe), // maximum finite
+        ];
+        let values: Vec<([u8; 10], X87Tag)> = magnitudes
+            .into_iter()
+            .flat_map(|(magnitude, exponent)| {
+                [false, true].map(move |negative| {
+                    (
+                        binary80_normal(magnitude, exponent, negative),
+                        X87Tag::Valid,
+                    )
+                })
+            })
+            .chain([
+                ([0; 10], X87Tag::Zero),
+                ([0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80], X87Tag::Zero),
+            ])
+            .collect();
+        let started = 0xa900;
+        for destination in 0..values.len() {
+            for source in 0..values.len() {
+                for take in [false, true] {
+                    for top in 0..8u8 {
+                        for cc in 0..8u16 {
+                            for pfzf in 0..4u64 {
+                                let mut state = LongModeState::default();
+                                state.rip = started;
+                                state.gpr =
+                                    std::array::from_fn(|i| 0x1234_5678_9abc_def0 ^ i as u64);
+                                state.rflags = 0xa500_0000_0000_0002
+                                    | ((pfzf & 1) * crate::PF)
+                                    | (((pfzf >> 1) & 1) * crate::ZF)
+                                    | if take { crate::CF } else { 0 };
+                                let mut x87 = crate::state::X87State::fixture_seed();
+                                x87.control_word = 0x037f;
+                                x87.status_word = (u16::from(top) << 11)
+                                    | (cc & 1) << 8
+                                    | ((cc >> 1) & 1) << 10
+                                    | ((cc >> 2) & 1) << 14;
+                                let destination_physical = usize::from(top);
+                                let source_physical = usize::from((top + 1) & 7);
+                                x87.registers[destination_physical] = values[destination].0;
+                                x87.registers[source_physical] = values[source].0;
+                                x87.set_tag(top, values[destination].1);
+                                x87.set_tag((top + 1) & 7, values[source].1);
+                                state.x87 = Some(x87);
+                                let mut expected = state.clone();
+                                if take {
+                                    let x87 = expected.x87.as_mut().unwrap();
+                                    x87.registers[destination_physical] = values[source].0;
+                                    x87.set_tag(top, values[source].1);
+                                }
+                                expected.x87.as_mut().unwrap().instruction_pointer = started;
+                                expected.rip += 2;
+                                let mut memory = Memory::at(&[0xda, 0xc1], started);
+                                assert_eq!(
+                                    step(&mut state, &mut memory, AccessContext::default()),
+                                    Ok(StepOutcome::Advanced)
+                                );
+                                assert_eq!(
+                                    state, expected,
+                                    "dst={destination}, src={source}, CF={take}, TOP={top}, CC={cc}, PF/ZF={pfzf}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fcmovb_preflights_both_operands_and_rejects_gates_atomically_even_when_cf_clear() {
+        let normal = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+        let invalids = [
+            (X87Tag::Empty, normal),
+            (X87Tag::Valid, [0; 10]),
+            (X87Tag::Zero, normal),
+            (X87Tag::Zero, [0, 0, 0, 0, 0, 0, 0, 0, 1, 0]),
+            (X87Tag::Special, normal),
+        ];
+        for bad_position in 0..2 {
+            for (bad_tag, bad_raw) in invalids {
+                for take in [false, true] {
+                    let mut state = LongModeState::default();
+                    state.rip = 0xaa00;
+                    state.rflags = 2 | if take { crate::CF } else { 0 };
+                    let mut x87 = crate::state::X87State::fixture_seed();
+                    x87.control_word = 0x037f;
+                    x87.status_word = 7 << 11;
+                    x87.registers[7] = normal;
+                    x87.registers[0] = normal;
+                    x87.set_tag(7, X87Tag::Valid);
+                    x87.set_tag(0, X87Tag::Valid);
+                    let bad = if bad_position == 0 { 7 } else { 0 };
+                    x87.registers[usize::from(bad)] = bad_raw;
+                    x87.set_tag(bad, bad_tag);
+                    state.x87 = Some(x87);
+                    let before = state.clone();
+                    let mut memory = Memory::at(&[0xda, 0xc1], state.rip);
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Unsupported { opcode: 0xda })
+                    );
+                    assert_eq!(state, before);
+                }
+            }
+        }
+        for (bad_fcw, bad_status, has_x87) in [
+            (0x077f, 0, true),
+            (0x037f, 0x0200, true),
+            (0x037f, 0x8000, true),
+            (0x037f, 0x0080, true),
+            (0x037f, 0, false),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0xaa00;
+            state.rflags = 2;
+            if has_x87 {
+                let mut x87 = crate::state::X87State::fixture_seed();
+                x87.control_word = bad_fcw;
+                x87.status_word = bad_status;
+                x87.registers[0] = normal;
+                x87.registers[1] = normal;
+                x87.set_tag(0, X87Tag::Valid);
+                x87.set_tag(1, X87Tag::Valid);
+                state.x87 = Some(x87);
+            }
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xda, 0xc1], state.rip);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xda })
+            );
+            assert_eq!(state, before);
+        }
+        for (bytes, budget, stop_rip, expected_exit) in [
+            (&[0xda, 0xc1][..], 1, Some(0xaa00), RunExit::StopAddress),
+            (
+                &[0xda, 0xc1][..],
+                0,
+                None,
+                RunExit::InstructionBudgetExhausted,
+            ),
+            (
+                &[0xda][..],
+                1,
+                None,
+                RunExit::MemoryError(MemoryError::Backend("expected".into())),
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0xaa00;
+            state.rflags = 3;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.registers[0] = normal;
+            x87.registers[1] = normal;
+            x87.set_tag(0, X87Tag::Valid);
+            x87.set_tag(1, X87Tag::Valid);
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(bytes, state.rip);
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.instructions_executed, 0);
+            match expected_exit {
+                RunExit::MemoryError(_) => assert!(matches!(result.exit, RunExit::MemoryError(_))),
+                _ => assert_eq!(result.exit, expected_exit),
+            }
+            assert_eq!(state, before);
+        }
+    }
+
+    #[test]
+    fn fcmovb_rejects_all_noncanonical_class_tag_pairs_at_both_participants() {
+        let encodings = [
+            [0u8; 10],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            binary80_normal(0x8000_0000_0000_0000, 0x3fff, false),
+            binary80_normal(0x8000_0000_0000_0000, 0x7fff, false),
+            binary80_normal(0xc000_0000_0000_0001, 0x7fff, false),
+            binary80_normal(0x8000_0000_0000_0001, 0x7fff, false),
+            binary80_normal(0x8000_0000_0000_0000, 0, false),
+            binary80_normal(1, 1, false),
+            binary80_normal(0, 0x7fff, false),
+            binary80_normal(0x4000_0000_0000_0000, 0x7fff, false),
+            binary80_normal(1, 0x7fff, false),
+        ];
+        let tags = [X87Tag::Valid, X87Tag::Zero, X87Tag::Special, X87Tag::Empty];
+        let canonical = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+        let mut rejected_pairs = 0;
+        for raw in encodings {
+            for tag in tags {
+                if (tag == X87Tag::Valid
+                    && X87Binary80::from_bytes(raw).classify() == X87Binary80Class::Normal)
+                    || (tag == X87Tag::Zero
+                        && X87Binary80::from_bytes(raw).classify() == X87Binary80Class::Zero)
+                {
+                    continue;
+                }
+                rejected_pairs += 1;
+                for negative in [false, true] {
+                    for take in [false, true] {
+                        for invalid_position in 0..2 {
+                            for top in 0..8u8 {
+                                for cc in 0..8u16 {
+                                    let mut state = LongModeState::default();
+                                    state.rip = 0xaa80;
+                                    state.rflags = 2 | if take { crate::CF } else { 0 };
+                                    let mut x87 = crate::state::X87State::fixture_seed();
+                                    x87.control_word = 0x037f;
+                                    x87.status_word = (u16::from(top) << 11)
+                                        | (cc & 1) << 8
+                                        | ((cc >> 1) & 1) << 10
+                                        | ((cc >> 2) & 1) << 14;
+                                    let destination = top;
+                                    let source = (top + 1) & 7;
+                                    x87.registers[usize::from(destination)] = canonical;
+                                    x87.registers[usize::from(source)] = canonical;
+                                    x87.set_tag(destination, X87Tag::Valid);
+                                    x87.set_tag(source, X87Tag::Valid);
+                                    let invalid = if invalid_position == 0 {
+                                        destination
+                                    } else {
+                                        source
+                                    };
+                                    let mut signed_raw = raw;
+                                    if negative {
+                                        signed_raw[9] |= 0x80;
+                                    }
+                                    x87.registers[usize::from(invalid)] = signed_raw;
+                                    x87.set_tag(invalid, tag);
+                                    state.x87 = Some(x87);
+                                    let before = state.clone();
+                                    let mut memory = Memory::at(&[0xda, 0xc1], state.rip);
+                                    assert_eq!(
+                                        step(&mut state, &mut memory, AccessContext::default()),
+                                        Ok(StepOutcome::Unsupported { opcode: 0xda })
+                                    );
+                                    assert_eq!(state, before);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(rejected_pairs, 42);
     }
 
     #[test]

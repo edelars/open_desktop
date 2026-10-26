@@ -197,8 +197,8 @@ fn x87_schema_admits_d9_fst_ftst_fnstcw_and_a_budget_one_source_rejection() {
             accepted,
             matches!(
                 second,
-                0x00 | 0x10 | 0x18 | 0x28 | 0x38 | 0xc8
-                    ..=0xcf | 0xe0 | 0xe1 | 0xe4 | 0xe8 | 0xee | 0xf6 | 0xf7 | 0xfc
+                0x00 | 0x10 | 0x18 | 0x28 | 0x38 | 0xd0 | 0xc0..=0xc6
+                    | 0xc8..=0xcf | 0xe0 | 0xe1 | 0xe4 | 0xe5 | 0xe8 | 0xee | 0xf6 | 0xf7 | 0xfc
             ),
             "D9 {second:02x}"
         );
@@ -259,14 +259,7 @@ fn x87_fxch_st1_schema_admits_only_the_three_exact_streams() {
         }
     }
 
-    for alias in [
-        "d9c7",
-        "d9d0",
-        "d909",
-        "66d9c9",
-        "d9c8d9c9dfe0",
-        "d9c8dfe0d9c9",
-    ] {
+    for alias in ["d9c7", "d909", "66d9c9", "d9c8d9c9dfe0", "d9c8dfe0d9c9"] {
         let mut rejected = fixture.clone();
         rejected
             .memory
@@ -1029,7 +1022,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             "bare DD D0+i / DD D8+i encoding {second:02x}"
         );
     }
-    for bytes in ["ddc1", "ddd?", "40ddd1", "fddd1"] {
+    for bytes in ["ddd?", "40ddd1", "fddd1"] {
         let mut outside_register_stores = fixture.clone();
         let code = outside_register_stores
             .memory
@@ -2305,6 +2298,78 @@ fn x87_fcomi_family_schema_admits_exact_64_programs_and_narrow_actual_source_rej
             code.comparison_mask_hex = "ff".repeat(code.length as usize);
             assert!(invalid.validate().is_err(), "{near_miss}");
         }
+    }
+}
+
+#[test]
+fn x87_fcmovb_schema_admits_only_the_five_exact_streams_and_operand_rejects() {
+    let base = x87_fixture().fixture;
+    for (program, budget) in [
+        ("dac1", 1),
+        ("dac1dfe0", 2),
+        ("dac1dac1dfe0", 3),
+        ("d9e8d9e0dbf1dac1dfe0", 6),
+        ("d9e8d9e0d9e8dbf1dac1dfe0", 6),
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("x87_fcmovb_{program}");
+        fixture.instruction_budget = budget;
+        let length = (program.len() / 2) as u32;
+        fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + u64::from(length)));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = program.into();
+        code.length = length;
+        code.comparison_mask_hex = "ff".repeat(length as usize);
+        assert!(
+            Fixture::from_json(&fixture.to_json().expect(program)).is_ok(),
+            "{program}"
+        );
+    }
+    for program in ["dac0", "dac2", "66dac1", "40dac1", "dae9dfe0", "dac1dfe1"] {
+        let mut fixture = base.clone();
+        fixture.instruction_budget = 1;
+        fixture.stop_rip = Some(HexU64(
+            fixture.initial_state.rip.get() + (program.len() / 2) as u64,
+        ));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = program.into();
+        code.length = (program.len() / 2) as u32;
+        code.comparison_mask_hex = "ff".repeat(code.length as usize);
+        assert!(fixture.validate().is_err(), "{program}");
+    }
+    for (tag_word, raw) in [
+        (u16::MAX, "0000000000000080ff3f"),
+        (0, "00000000000000000000"),
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id = "x87_fcmovb_bad_operand_cf0".into();
+        fixture.stop_rip = None;
+        fixture.instruction_budget = 1;
+        fixture.expected_exit = ExpectedExit::Unsupported;
+        fixture.initial_state.rflags = HexU64(2);
+        let x87 = fixture.initial_state.x87.as_mut().unwrap();
+        x87.control_word = HexU64(0x037f);
+        x87.status_word = HexU64(0);
+        x87.tag_word = HexU64(u64::from(tag_word));
+        x87.registers[0] = raw.into();
+        x87.registers[1] = "0000000000000080ff3f".into();
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = "dac1".into();
+        code.length = 2;
+        code.comparison_mask_hex = "ffff".into();
+        assert!(Fixture::from_json(&fixture.to_json().unwrap()).is_ok());
     }
 }
 

@@ -238,6 +238,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30al | Bare `DB E9` FUCOMI ST(0), ST(1), bounded canonical-Normal compare to RFLAGS; native closed | S2-30ak |
 | [x] | S2-30am | Bare `DF E9` FUCOMIP ST(0), ST(1), bounded canonical-Normal compare to RFLAGS and one physical TOP pop; native closed | S2-30al |
 | [x] | S2-30an | Bare indexed DB/DF register FCOMI-family forms for ST(i), bounded canonical-Normal compare and optional physical TOP pop; native closed | S2-30am |
+| [x] | S2-30bu | Bare `DA C1` FCMOVB ST(0), ST(1), both participants preflighted; exact raw conditional copy, local C1=0 gate, native/JIT closed | S2-30an |
 | [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
@@ -6057,3 +6058,21 @@ remains deferred under ISSUE-019.
 Admit only exact unprefixed Long64 `D9 E5` with present x87 state, FCW `0x037f`, and `FSW & 0x80ff == 0`. Physical old TOP may be Valid-tagged canonical Normal or Zero-tagged exact signed binary80 zero. Normal maps to `C3:C2:C0 = 010` (`FSW` mask `0x0400`), zero maps to `100` (`0x4000`), and C1 is replaced with the source sign. Replace all C0/C1/C2/C3 using `(old_FSW & !0x4700) | result`; preserve TOP and every other x87 byte/field and machine state. Set FIP to old RIP, advance RIP by two and retire once. Reject other tags/classes, malformed payloads, invalid FCW/status, missing state, prefixes, neighbors, truncation/fetch and execution boundaries atomically. Keep FTST's admission gate unchanged; do not model Empty/Special FXAM outputs, exceptions, native execution or JIT.
 
 Verify 5,120 full-state successes (four canonical Normal representatives: minimum normal, 1, 1+ULP and maximum finite; plus exact Zero; both signs, eight TOP values, sixteen old CC combinations, four non-source canary layouts) and 10,752 rejected class/tag combinations (42 × two signs × eight TOPs × sixteen old CC patterns), plus environment and boundary rejects. Schema allows exactly `d9e5`, `d9e5dfe0`, `d9e5d9e5dfe0`, `d9e8d9e5dfe0`, `d9eed9e5dfe0`, `d9e8d9e0d9e5dfe0`, and `d9eed9e0d9e5dfe0`. Literal fixtures cover signed Normal/TOP wrap, FNSTSW, repeat, FLD1/FLDZ producer composition with and without FCHS, wrong tag, Empty, Special, ES|B and invalid FCW. JIT/native remain denied. ISSUE-019 stays open; do not run Mac mini, SSH or physical x86 checks.
+
+#### S2-30bu. Bare `FCMOVB ST(0), ST(1)`
+
+Implement only `DA C1` in exact unprefixed Long64 form. Preflight Valid+canonical
+Normal or Zero+exact signed zero for both old physical TOP and `(TOP+1)&7`
+before reading CF, even on the untaken path. CF=1 copies raw binary80 bytes and
+tag; CF=0 leaves both operands untouched. Preserve TOP, complete FSW under a
+local incoming `C1=0` restriction, and all unrelated state; update FIP/RIP and
+retirement only. Preserve existing `DA E9` behavior. No memory, pop, exception,
+JIT, native, or physical claim.
+
+Acceptance: 51,200 full-state successes using minimum Normal, 1, 1+ULP and
+maximum finite in both signs plus exact ±0, and 21,504 invalid class/tag rejects,
+plus environment and boundary rejects. Schema allows only the five exact streams
+and budgets recorded in the CPU contract. Literal CLI fixtures cover both CF
+outcomes, tags, signed zero, TOP wrap, repeat, both real FLD1/FCHS/FCOMI
+producers, invalid source with CF=0, invalid destination, C1 and FCW rejection.
+Keep JIT/native closed and record remaining x87 limitations under ISSUE-019.

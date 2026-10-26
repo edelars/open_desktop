@@ -714,6 +714,11 @@ impl Fixture {
                 "dbe9dfe0" => ("dbe9dfe0", 4),
                 "dbf1" => ("dbf1", 2),
                 "dbf1dfe0" => ("dbf1dfe0", 4),
+                "dac1" => ("dac1", 2),
+                "dac1dfe0" => ("dac1dfe0", 4),
+                "dac1dac1dfe0" => ("dac1dac1dfe0", 6),
+                "d9e8d9e0dbf1dac1dfe0" => ("d9e8d9e0dbf1dac1dfe0", 10),
+                "d9e8d9e0d9e8dbf1dac1dfe0" => ("d9e8d9e0d9e8dbf1dac1dfe0", 12),
                 "dff1" => ("dff1", 2),
                 "dff1dfe0" => ("dff1dfe0", 4),
                 "dfe9" => ("dfe9", 2),
@@ -1360,6 +1365,39 @@ impl Fixture {
                             }
                     })
             });
+            let is_fcmovb_operand_rejected = code_bytes == "dac1"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
+                    let source = (top + 1) & 7;
+                    let valid_operand = |index: u8| {
+                        let tag = (x87.tag_word.get() >> (u32::from(index) * 2)) & 3;
+                        let Some(encoded) = x87.registers.get(usize::from(index)) else {
+                            return false;
+                        };
+                        let Ok(bytes) = decode_bytes(encoded) else {
+                            return false;
+                        };
+                        if bytes.len() != 10 {
+                            return false;
+                        }
+                        let significand = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+                        let exponent = u16::from_le_bytes([bytes[8], bytes[9] & 0x7f]);
+                        match tag {
+                            0 => (1..0x7fff).contains(&exponent) && significand & (1 << 63) != 0,
+                            1 => significand == 0 && exponent == 0 && matches!(bytes[9], 0 | 0x80),
+                            _ => false,
+                        }
+                    };
+                    !valid_operand(top) || !valid_operand(source)
+                });
+            let is_fcmovb_environment_rejected = code_bytes == "dac1"
+                && self.stop_rip.is_none()
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    x87.control_word.get() != 0x037f || x87.status_word.get() & 0x82ff != 0
+                });
             let is_ffree_environment_rejected = code_bytes.len() == 4
                 && code_bytes.starts_with("ddc")
                 && matches!(code_bytes.as_bytes()[3], b'0'..=b'7')
@@ -1393,7 +1431,10 @@ impl Fixture {
                 && self.instruction_budget == 3;
             let expected_budget = match code_bytes.as_str() {
                 "db2848b80140000000000000df38dfe0dbe2" | "db28d9fcdfe0dbe2d9fc" => 5,
-                "db28d9fcd9fcdfe0dbe2d9fc" => 6,
+                "db28d9fcd9fcdfe0dbe2d9fc"
+                | "d9e8d9e0dbf1dac1dfe0"
+                | "d9e8d9e0d9e8dbf1dac1dfe0" => 6,
+                "dac1dac1dfe0" => 3,
                 "d9fcdfe0dbe2" => 3,
                 "ddc0d9c0dfe0" => 3,
                 "ddc0d9f7d9e8dfe0" => 4,
@@ -1465,6 +1506,8 @@ impl Fixture {
                     || is_fucom_source_rejected
                     || is_fucomp_source_rejected
                     || is_fcomi_source_rejected
+                    || is_fcmovb_operand_rejected
+                    || is_fcmovb_environment_rejected
                     || is_ffree_environment_rejected
                     || is_fnop_environment_rejected
                     || is_fxam_environment_rejected
