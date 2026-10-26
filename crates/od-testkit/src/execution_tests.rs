@@ -5140,7 +5140,7 @@ fn s2_30ci_test_producers_check_each_full_intermediate_snapshot() {
 }
 
 #[test]
-fn s2_30ci_literal_transfer_rejection_and_repeat_fixtures_run_as_written() {
+fn s2_30cj_literal_transfer_rejection_and_repeat_fixtures_match_full_snapshots() {
     for raw in [
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ci_fcmovnu_taken_zero.case.json")
             .as_slice(),
@@ -5150,6 +5150,45 @@ fn s2_30ci_literal_transfer_rejection_and_repeat_fixtures_run_as_written() {
         .as_slice(),
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ci_fcmovnu_repeat.case.json")
             .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_i1.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_i2.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_i3.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_i4.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_i5.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_i6.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_i7.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_wrap_top7_i1.case.json")
+            .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_zero_to_normal_i2.case.json"
+        )
+        .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_self_pf0.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_self_pf1.case.json")
+            .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_invalid_source_pf0.case.json"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_invalid_destination.case.json"
+        )
+        .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_c1.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_es.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_b.case.json").as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_fcw.case.json")
+            .as_slice(),
     ] {
         let fixture = Fixture::from_json(raw).unwrap().fixture;
         let mut state = fixture
@@ -5158,6 +5197,7 @@ fn s2_30ci_literal_transfer_rejection_and_repeat_fixtures_run_as_written() {
             .unwrap();
         let before = state.clone();
         let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+        let memory_before = memory.snapshot();
         let result = run(
             &mut state,
             &mut memory,
@@ -5176,6 +5216,7 @@ fn s2_30ci_literal_transfer_rejection_and_repeat_fixtures_run_as_written() {
             );
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
+            assert_eq!(memory.snapshot(), memory_before, "{}", fixture.case_id);
         } else {
             assert_eq!(result.exit, RunExit::StopAddress, "{}", fixture.case_id);
             assert_eq!(
@@ -5189,6 +5230,44 @@ fn s2_30ci_literal_transfer_rejection_and_repeat_fixtures_run_as_written() {
                 "{}",
                 fixture.case_id
             );
+            let code_hex = &fixture
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .unwrap()
+                .initial_bytes_hex;
+            let code = crate::v2::decode_bytes(code_hex).unwrap();
+            let mut expected = before;
+            let mut offset = 0usize;
+            while offset < code.len() {
+                match code[offset..] {
+                    [0xdb, modrm, ..] if (0xd8..=0xdf).contains(&modrm) => {
+                        let source_index = modrm & 7;
+                        let x87 = expected.x87.as_mut().unwrap();
+                        let top = x87.top();
+                        let source = (top + source_index) & 7;
+                        if expected.rflags & (1 << 2) == 0 {
+                            x87.registers[usize::from(top)] =
+                                x87.registers[usize::from(source)].clone();
+                            let source_tag = (x87.tag_word >> (u32::from(source) * 2)) & 3;
+                            let tag_mask = !(3u16 << (u32::from(top) * 2));
+                            x87.tag_word =
+                                (x87.tag_word & tag_mask) | (source_tag << (u32::from(top) * 2));
+                        }
+                        x87.instruction_pointer = fixture.initial_state.rip.get() + offset as u64;
+                        offset += 2;
+                    }
+                    [0xdf, 0xe0, ..] => {
+                        let status = expected.x87.as_ref().unwrap().status_word;
+                        expected.gpr[0] = (expected.gpr[0] & !0xffff) | u64::from(status);
+                        offset += 2;
+                    }
+                    _ => panic!("unexpected S2-30cj fixture stream: {code_hex}"),
+                }
+            }
+            expected.rip = fixture.initial_state.rip.get() + code.len() as u64;
+            assert_eq!(state, expected, "{}", fixture.case_id);
+            assert_eq!(memory.snapshot(), memory_before, "{}", fixture.case_id);
             if fixture.case_id == "s2_30ci_fcmovnu_taken_zero" {
                 assert_eq!(
                     state

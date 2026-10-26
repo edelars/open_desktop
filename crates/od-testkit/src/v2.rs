@@ -1597,13 +1597,14 @@ impl Fixture {
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     x87.control_word.get() != 0x037f || x87.status_word.get() & 0x82ff != 0
                 });
-            let fcmovnu_operand_rejected = fcmovnu_bare(&code_bytes)
+            let fcmovnu_source = fcmovnu_bare_source(&code_bytes);
+            let fcmovnu_operand_rejected = fcmovnu_source.is_some()
                 && self.stop_rip.is_none()
                 && self.expected_exit == ExpectedExit::Unsupported
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     let top = ((x87.status_word.get() >> 11) & 7) as usize;
-                    let source = (top + 1) & 7;
+                    let source = (top + usize::from(fcmovnu_source.unwrap())) & 7;
                     let valid_operand = |index: usize| {
                         let tag = (x87.tag_word.get() >> (index * 2)) & 3;
                         let Ok(bytes) = decode_bytes(&x87.registers[index]) else {
@@ -1620,9 +1621,9 @@ impl Fixture {
                             _ => false,
                         }
                     };
-                    !valid_operand(top) || !valid_operand(source)
+                    !valid_operand(top) || (fcmovnu_source.unwrap() != 0 && !valid_operand(source))
                 });
-            let fcmovnu_environment_rejected = fcmovnu_bare(&code_bytes)
+            let fcmovnu_environment_rejected = fcmovnu_source.is_some()
                 && self.stop_rip.is_none()
                 && self.expected_exit == ExpectedExit::Unsupported
                 && self.instruction_budget == 1
@@ -2548,23 +2549,33 @@ fn fcmovnbe_bare_source(code_bytes: &str) -> Option<u8> {
     (opcode == 0xdb && (0xd0..=0xd7).contains(&modrm)).then_some(modrm & 7)
 }
 
-fn fcmovnu_bare(code_bytes: &str) -> bool {
-    code_bytes == "dbd9"
-}
-
 /// Exact S2-30ci FCMOVNU bare, status, repeat, and TEST producer streams.
 fn fcmovnu_stream(code_bytes: &str) -> bool {
     fcmovnu_budget(code_bytes).is_some()
 }
 
 fn fcmovnu_budget(code_bytes: &str) -> Option<u64> {
+    if code_bytes.len() == 4 {
+        return fcmovnu_bare_source(code_bytes).map(|_| 1);
+    }
+    if code_bytes.len() == 8 && code_bytes.ends_with("dfe0") {
+        return fcmovnu_bare_source(&code_bytes[..4]).map(|_| 2);
+    }
     match code_bytes {
-        "dbd9" => Some(1),
-        "dbd9dfe0" => Some(2),
-        "dbd9dbd9dfe0" => Some(3),
-        "d9e8d9ee4885c0dbd9dfe0" => Some(5),
+        "dbd9dbd9dfe0" | "d9e8d9ee4885c0dbd9dfe0" => {
+            Some(if code_bytes.starts_with("dbd9") { 3 } else { 5 })
+        }
         _ => None,
     }
+}
+
+fn fcmovnu_bare_source(code_bytes: &str) -> Option<u8> {
+    if code_bytes.len() != 4 {
+        return None;
+    }
+    let opcode = u8::from_str_radix(&code_bytes[0..2], 16).ok()?;
+    let modrm = u8::from_str_radix(&code_bytes[2..4], 16).ok()?;
+    (opcode == 0xdb && (0xd8..=0xdf).contains(&modrm)).then_some(modrm & 7)
 }
 
 fn fcmovu_bare_source(code_bytes: &str) -> Option<u8> {

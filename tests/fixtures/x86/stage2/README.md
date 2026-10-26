@@ -3824,7 +3824,7 @@ successes and 161,280 invalid class/tag snapshots; all evidence is local only.
 No unordered/NaN semantics, native behavior or physical x86 execution is
 claimed.
 
-### S2-30ci exact bare `FCMOVNU ST(0), ST(1)` (`DB D9`)
+### S2-30ci historical exact bare `FCMOVNU ST(0), ST(1)` (`DB D9`)
 
 Five handwritten literal fixtures cover taken PF=0 raw transfer, invalid
 source while PF=1, repeat plus FNSTSW, and both TEST producers. The producer
@@ -3832,4 +3832,16 @@ program is exactly `D9 E8 D9 EE 48 85 C0 DB D9 DF E0` (11 bytes): RAX=1 gives
 PF=0/ZF=0 and takes the move; RAX=3 gives PF=1/ZF=0 and preserves ST(0).
 The schema allows those four stream shapes only. Local unit tests compare each
 producer intermediate state and full-state success/rejection matrices; these
-fixtures do not establish native or physical behavior.
+fixtures do not establish native or physical behavior. The one-index scope is
+superseded by S2-30cj; these fixtures remain compatibility coverage.
+
+### S2-30cj indexed bare `FCMOVNU ST(0), ST(i)` (`DB D8..DF`)
+
+Nine bare success fixtures cover indices 1..7 plus self-index PF=0 and PF=1.
+Additional literals exercise TOP=7 wraparound, Normal-to-Zero and Zero-to-
+Normal raw tag transfer, invalid source under PF=0/1, invalid destination,
+and the C1, ES, B and FCW gates. The historical repeat and both TEST producer
+fixtures remain. Testkit literal interpretation compares complete state and
+memory; the CLI runner separately checks JIT denial. These are local evidence. Unordered/NaN values, x87
+exception delivery, native execution and physical x86 behavior remain outside
+this bounded profile.

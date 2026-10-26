@@ -561,8 +561,10 @@ pub enum Operation {
     Fcmovu {
         source: u8,
     },
-    /// Exact bare `DB D9` FCMOVNU ST(0), ST(1), bounded raw copy when PF is clear.
-    Fcmovnu,
+    /// Bare `DB D8+i` FCMOVNU ST(0), ST(i), bounded raw copy when PF is clear.
+    Fcmovnu {
+        source: u8,
+    },
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
     FcompSt {
         source: u8,
@@ -832,7 +834,8 @@ fn x87_fcmovu(opcode: u8, modrm: u8) -> Option<Operation> {
 }
 
 fn x87_fcmovnu(opcode: u8, modrm: u8) -> Option<Operation> {
-    (opcode == 0xdb && modrm == 0xd9).then_some(Operation::Fcmovnu)
+    (opcode == 0xdb && (0xd8..=0xdf).contains(&modrm))
+        .then_some(Operation::Fcmovnu { source: modrm & 7 })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1212,7 +1215,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xc0..=0xc7 => {
                         x87_fcmovnb(opcode.byte, modrm).ok_or_else(|| self.unsupported(opcode))?
                     }
-                    0xd9 => {
+                    0xd8..=0xdf => {
                         x87_fcmovnu(opcode.byte, modrm).ok_or_else(|| self.unsupported(opcode))?
                     }
                     0xc8..=0xcf => {
@@ -2471,7 +2474,7 @@ mod tests {
                     0xc0..=0xc7 => Ok(Operation::Fcmovnb { source: second & 7 }),
                     0xd0..=0xd7 => Ok(Operation::Fcmovnbe { source: second & 7 }),
                     0xc8..=0xcf => Ok(Operation::Fcmovne { source: second & 7 }),
-                    0xd9 => Ok(Operation::Fcmovnu),
+                    0xd8..=0xdf => Ok(Operation::Fcmovnu { source: second & 7 }),
                     _ if indexed_x87_compare(0xdb, second).is_some() => {
                         Ok(indexed_x87_compare(0xdb, second).unwrap())
                     }
@@ -2588,7 +2591,7 @@ mod tests {
                     0xc0..=0xc7 => Ok(Operation::Fcmovnb { source: modrm & 7 }),
                     0xd0..=0xd7 => Ok(Operation::Fcmovnbe { source: modrm & 7 }),
                     0xc8..=0xcf => Ok(Operation::Fcmovne { source: modrm & 7 }),
-                    0xd9 => Ok(Operation::Fcmovnu),
+                    0xd8..=0xdf => Ok(Operation::Fcmovnu { source: modrm & 7 }),
                     _ if indexed_x87_compare(0xdb, modrm).is_some() => {
                         Ok(indexed_x87_compare(0xdb, modrm).unwrap())
                     }
@@ -2826,8 +2829,8 @@ mod tests {
                     Ok(Operation::Fcmovne { source: modrm & 7 })
                 } else if opcode == 0xdb && (0xd0..=0xd7).contains(&modrm) {
                     Ok(Operation::Fcmovnbe { source: modrm & 7 })
-                } else if opcode == 0xdb && modrm == 0xd9 {
-                    Ok(Operation::Fcmovnu)
+                } else if opcode == 0xdb && (0xd8..=0xdf).contains(&modrm) {
+                    Ok(Operation::Fcmovnu { source: modrm & 7 })
                 } else if opcode == 0xdf && modrm == 0x00 {
                     Ok(Operation::FildM16IntRax)
                 } else if opcode == 0xdf && modrm == 0x28 {
@@ -4294,7 +4297,7 @@ mod tests {
                 );
             } else if matches!(
                 modrm,
-                0xc8..=0xcf | 0xd0..=0xd7 | 0xd9 | 0xe2 | 0xe3 | 0xe8..=0xef | 0xf0..=0xf7 | 0x00 | 0x10 | 0x18 | 0x28 | 0x38
+                0xc8..=0xcf | 0xd0..=0xdf | 0xe2 | 0xe3 | 0xe8..=0xef | 0xf0..=0xf7 | 0x00 | 0x10 | 0x18 | 0x28 | 0x38
             ) {
                 assert!(decoded.is_ok(), "existing DB {modrm:02x} changed");
             } else {
@@ -4321,7 +4324,7 @@ mod tests {
         }
         for modrm in 0u8..=u8::MAX {
             if !matches!(modrm, 0xc8..=0xcf)
-                && !matches!(modrm, 0xc0..=0xc7 | 0xd0..=0xd7 | 0xd9 | 0xe2 | 0xe3 | 0xe8..=0xef | 0xf0..=0xf7 | 0x00 | 0x10 | 0x18 | 0x28 | 0x38)
+                && !matches!(modrm, 0xc0..=0xc7 | 0xd0..=0xdf | 0xe2 | 0xe3 | 0xe8..=0xef | 0xf0..=0xf7 | 0x00 | 0x10 | 0x18 | 0x28 | 0x38)
             {
                 assert!(
                     Memory::new(&[0xdb, modrm]).decode().is_err(),
@@ -4410,19 +4413,22 @@ mod tests {
     }
 
     #[test]
-    fn exact_bare_db_d9_fcmovnu_rejects_every_neighbor_prefix_and_truncation() {
+    fn bare_db_d8_df_fcmovnu_rejects_every_neighbor_prefix_and_truncation() {
         for modrm in 0u8..=u8::MAX {
             let decoded = Memory::new(&[0xdb, modrm]).decode();
-            if modrm == 0xd9 {
+            if (0xd8..=0xdf).contains(&modrm) {
                 let instruction = decoded.unwrap();
-                assert_eq!(instruction.operation, Operation::Fcmovnu);
+                assert_eq!(
+                    instruction.operation,
+                    Operation::Fcmovnu { source: modrm & 7 }
+                );
                 assert_eq!(instruction.length, 2);
                 assert_eq!(instruction.prefixes, Prefixes::default());
             } else {
                 assert!(
                     !matches!(
                         decoded.map(|instruction| instruction.operation),
-                        Ok(Operation::Fcmovnu)
+                        Ok(Operation::Fcmovnu { .. })
                     ),
                     "DB {modrm:02x}"
                 );
@@ -4434,10 +4440,12 @@ mod tests {
         .into_iter()
         .chain(0x40..=0x4f)
         {
-            assert!(matches!(
-                Memory::new(&[prefix, 0xdb, 0xd9]).decode(),
-                Err(DecodeError::Unsupported { .. })
-            ));
+            for source in 0..8u8 {
+                assert!(matches!(
+                    Memory::new(&[prefix, 0xdb, 0xd8 | source]).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ));
+            }
         }
         assert!(Memory::new(&[0xdb]).decode().is_err());
     }

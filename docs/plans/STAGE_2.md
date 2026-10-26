@@ -250,7 +250,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cf | Bare Long64 `DB D0..D7` indexed FCMOVNBE ST(0), ST(i); validate TOP/source before CF/ZF, self-index TOP-only, raw copy when both clear; full matrices, 20-stream schema and full-state runner; native/JIT closed | S2-30ce |
 | [x] | S2-30cg | Historical exact bare `DA D9` FCMOVU ST(0), ST(1) slice; 512 success and 768 invalid class/tag snapshots, superseded by indexed S2-30ch | S2-30cf |
 | [x] | S2-30ch | Bare Long64 `DA D8..DF` indexed FCMOVU; preflight TOP/source before PF, self-index TOP-only, exact raw copy only when PF=1; full indexed matrices, 18-stream schema and literal full-state fixtures; unordered/NaN and native/JIT closed | S2-30cg |
-| [x] | S2-30ci | Exact bare Long64 `DB D9` FCMOVNU; TOP/TOP+1 preflight before PF, raw copy only when PF=0; 51,200 success and 21,504 reject snapshots, four-stream schema and literal producer fixtures; JIT/native/physical acceptance deferred | S2-30ch |
+| [x] | S2-30ci | Historical exact bare Long64 `DB D9` FCMOVNU ST(0), ST(1); superseded by indexed S2-30cj | S2-30ch |
+| [x] | S2-30cj | Bare Long64 `DB D8..DF` indexed FCMOVNU; preflight TOP/source before PF, self-index TOP-only, raw copy when PF=0; 363,520 success and 161,280 reject snapshots, 18-stream schema and literal fixtures; native/physical acceptance deferred | S2-30ci |
 | [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
@@ -6361,7 +6362,7 @@ sources under PF=0/1, invalid destination and C1/ES/B/FCW rejects. Compare
 full state and memory and deny JIT. This substage excludes Mac mini, SSH,
 native and physical checks and leaves ISSUE-019 open.
 
-#### S2-30ci. Exact bare `FCMOVNU ST(0), ST(1)` (`DB D9`)
+#### S2-30ci. Historical exact bare `FCMOVNU ST(0), ST(1)` (`DB D9`)
 
 Admit only exact unprefixed Long64 `DB D9`. Reuse the bounded FCMOV preflight:
 require x87 state, FCW `0x037f`, `FSW & 0x82ff == 0`, and both old physical
@@ -6387,4 +6388,33 @@ invalid-source, repeat, and both TEST producer fixtures. The producer cases use
 RAX=1 (PF=0, ZF=0, taken) and RAX=3 (PF=1, ZF=0, untaken); check each
 intermediate state, FCMOV at RIP+7 and final RIP+11. Deny JIT. Update ISSUE-019
 with local results; the shared Mac mini/SSH/native/physical validation substage
-remains deferred and ISSUE-019 stays open.
+remains deferred and ISSUE-019 stays open. S2-30cj supersedes the one-index
+extent; the original fixtures remain historical compatibility evidence.
+
+#### S2-30cj. Indexed bare `FCMOVNU ST(0), ST(i)` (`DB D8..DF`)
+
+Admit only exact unprefixed Long64 `DB D8..DF` and retain `ModR/M & 7` as the
+source index. Require present x87, FCW `0x037f`, `FSW & 0x82ff == 0`, and each
+used physical participant to be Valid with canonical Normal binary80 or Zero
+with exact signed zero. For `i>0`, validate old TOP and `(TOP+i)&7` before PF,
+including untaken executions. For `i=0`, validate TOP alone and do not inspect
+other cells; the self operation never changes payload or tag. PF=0 copies the
+source's ten raw bytes and tag into TOP; PF=1 preserves the destination. Keep
+C1 closed and exclude Special/NaN semantics. Preserve all other state/memory
+except FIP=old RIP, RIP+=2 and retirement; rejects are atomic.
+
+Cover exactly 363,520 success snapshots (7×51,200 for `i>0`, plus 5,120
+self-index) and 161,280 invalid participant class/tag snapshots (150,528 for
+`i>0`, plus 10,752 self-index). Check all PF, CF/ZF, TOP and x87 CC patterns,
+environment/status gates, missing x87, index wrap, signed-zero and raw tag
+copy, repeat, no data access, execution boundaries and independently built
+FCMOVU complement snapshots.
+
+The schema admits exactly 18 streams: eight bare DB D8..DF forms (budget 1),
+each followed by FNSTSW AX (budget 2), DB D9 repeat plus FNSTSW (budget 3),
+and the existing TEST producer (budget 5). Add nine bare success fixtures
+covering indices 1..7 and self PF=0/1, plus invalid source under PF=0/1,
+invalid destination, C1/ES/B/FCW rejects. Preserve the historical repeat and
+both TEST producers. Compare full state and memory, deny JIT, and update
+ISSUE-019 with local results. Mac mini, SSH, native and physical checks remain
+for the shared final acceptance substage.

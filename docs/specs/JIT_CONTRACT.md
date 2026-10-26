@@ -69,6 +69,10 @@ RAX/RCX/RDX/RBX, без high-byte registers и памяти. Для ModR/M `mod`
 | Остальные формы, уже принятые interpreter этапа 2 | Runner не допускает их к текущему legacy JIT. Interpreter fallback запланирован в S3-16 и не реализован текущим contract | Завершённая interpreter semantics конкретной формы и fallback с точным progress/state |
 | x87, SIMD, privilege/system, interrupts, unsupported/invalid decode | Runner не допускает эти формы к текущему legacy JIT; interpreter путь разрешён только если соответствующая форма уже реализована и запрошен явный fallback после S3-16 | Отдельные S2 contracts, CPU state mapping и сопоставимые внешние evidence для каждой формы |
 
+Bounded S2-30cj `FCMOVNU ST(0), ST(i)` (`DB D8..DF`) remains interpreter-only;
+the native runner explicitly rejects its decoded operation for every source
+index, including the historically supported `DB D9` encoding.
+
 Не вводить один общий `supported-v2` переключатель. Каждая новая форма требует
 отдельного решения о lowering, fallback, сравнении состояния и prerequisites.
 Ни native execution, ни память, ни исключения этапа 2 не наследуются этапом 3

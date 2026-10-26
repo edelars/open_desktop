@@ -2390,17 +2390,23 @@ fn x87_fcmovb_schema_admits_only_indexed_exact_streams_and_operand_rejects() {
 }
 
 #[test]
-fn x87_fcmovnu_schema_admits_only_its_four_exact_streams_and_rejects_bad_inputs() {
+fn x87_fcmovnu_schema_admits_exactly_eighteen_streams_and_rejects_bad_inputs() {
     let base = x87_fixture().fixture;
-    for (program, budget) in [
-        ("dbd9", 1),
-        ("dbd9dfe0", 2),
-        ("dbd9dbd9dfe0", 3),
-        ("d9e8d9ee4885c0dbd9dfe0", 5),
-    ] {
+    let programs: Vec<(String, u64)> = (0xd8u8..=0xdf)
+        .flat_map(|modrm| {
+            let bare = format!("db{modrm:02x}");
+            [(bare.clone(), 1), (format!("{bare}dfe0"), 2)]
+        })
+        .chain([
+            ("dbd9dbd9dfe0".into(), 3),
+            ("d9e8d9ee4885c0dbd9dfe0".into(), 5),
+        ])
+        .collect();
+    assert_eq!(programs.len(), 18);
+    for (program, budget) in &programs {
         let mut fixture = base.clone();
         fixture.case_id = format!("x87_fcmovnu_{program}");
-        fixture.instruction_budget = budget;
+        fixture.instruction_budget = *budget;
         let length = (program.len() / 2) as u32;
         fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + u64::from(length)));
         let code = fixture
@@ -2417,12 +2423,12 @@ fn x87_fcmovnu_schema_admits_only_its_four_exact_streams_and_rejects_bad_inputs(
         );
     }
     for program in [
-        "dbd8",
-        "dbda",
         "66dbd9",
         "40dbd9",
         "dbd9dfe1",
         "dbd9dbd8dfe0",
+        "dbd8dfe0dfe0",
+        "d9e8d9ee4885c0dbd8dfe0",
     ] {
         let mut fixture = base.clone();
         fixture.instruction_budget = 1;
@@ -2439,6 +2445,61 @@ fn x87_fcmovnu_schema_admits_only_its_four_exact_streams_and_rejects_bad_inputs(
         code.comparison_mask_hex = "ff".repeat(code.length as usize);
         assert!(fixture.validate().is_err(), "{program}");
     }
+
+    let mut indexed_bad_source = base.clone();
+    indexed_bad_source.expected_exit = ExpectedExit::Unsupported;
+    indexed_bad_source.stop_rip = None;
+    indexed_bad_source.instruction_budget = 1;
+    let code = indexed_bad_source
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "dbda".into();
+    code.length = 2;
+    code.comparison_mask_hex = "ffff".into();
+    {
+        let x87 = indexed_bad_source.initial_state.x87.as_mut().unwrap();
+        x87.control_word = HexU64(0x037f);
+        x87.status_word = HexU64(0x3800);
+        x87.registers.fill("0000000000000080ff3f".into());
+        x87.tag_word = HexU64(0);
+        let top = 7usize;
+        let selected = (top + 2) & 7;
+        x87.tag_word.0 &= !(3 << (selected * 2));
+        x87.tag_word.0 |= 2 << (selected * 2);
+    }
+    assert!(
+        indexed_bad_source.validate().is_ok(),
+        "invalid selected ST(2)"
+    );
+
+    let mut unrelated_bad_self = indexed_bad_source.clone();
+    let code = unrelated_bad_self
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "dbd8".into();
+    {
+        let x87 = unrelated_bad_self.initial_state.x87.as_mut().unwrap();
+        x87.tag_word = HexU64(0);
+        let top = 7usize;
+        x87.tag_word.0 &= !(3 << (top * 2));
+        x87.tag_word.0 |= 0 << (top * 2);
+        x87.tag_word.0 &= !3;
+        x87.tag_word.0 |= 2;
+    }
+    assert!(
+        unrelated_bad_self.validate().is_err(),
+        "self-index must not inspect an unrelated invalid cell"
+    );
+
+    let mut invalid_self_top = unrelated_bad_self.clone();
+    let x87 = invalid_self_top.initial_state.x87.as_mut().unwrap();
+    x87.tag_word.0 &= !(3 << 14);
+    x87.tag_word.0 |= 2 << 14;
+    assert!(invalid_self_top.validate().is_ok(), "invalid self TOP");
 }
 
 #[test]
@@ -2478,7 +2539,7 @@ fn x87_fcmovnb_schema_admits_only_nineteen_exact_streams_and_reject_profiles() {
             "{program}"
         );
     }
-    for program in ["66dbc1", "48dbc1", "9bdbc1", "dbd8", "dbc1dfe1"] {
+    for program in ["66dbc1", "48dbc1", "9bdbc1", "dbe0", "dbc1dfe1"] {
         let mut fixture = base.clone();
         fixture.instruction_budget = 1;
         let length = (program.len() / 2) as u32;
@@ -2712,7 +2773,7 @@ fn x87_fcmovne_schema_admits_exact_bare_c9_streams_only() {
             "{program}"
         );
     }
-    for program in ["dbd8", "db", "dbc9dfe1"] {
+    for program in ["dbe0", "db", "dbc9dfe1"] {
         let mut fixture = base.clone();
         fixture.instruction_budget = 1;
         let length = (program.len() / 2) as u32;
@@ -2905,7 +2966,7 @@ fn x87_fcmovnbe_schema_admits_exact_indexed_streams_and_reject_profiles() {
         code.comparison_mask_hex = "ff".repeat(code.length as usize);
         assert!(fixture.validate().is_err(), "{program}");
     }
-    for modrm in [0xd8, 0xda, 0xe0, 0xe7] {
+    for modrm in [0xe0, 0xe7] {
         let mut fixture = base.clone();
         fixture.instruction_budget = 1;
         fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + 2));

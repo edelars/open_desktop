@@ -7665,9 +7665,9 @@ full state and memory and confirms JIT denial. No unordered/NaN semantics,
 general x87 exception delivery, native behavior or physical x86 acceptance is
 claimed. ISSUE-019 remains open.
 
-## Local S2-30ci: exact bare `FCMOVNU ST(0), ST(1)` (`DB D9`)
+## Local S2-30ci: historical bare `FCMOVNU ST(0), ST(1)` (`DB D9`)
 
-The local Long64 interpreter accepts only unprefixed `DB D9`. Before consulting
+The local Long64 interpreter originally accepted only unprefixed `DB D9`. Before consulting
 integer PF it requires x87 state, FCW `0x037f`, `FSW & 0x82ff == 0`, and both
 physical slots TOP and `(TOP+1)&7` to be Valid-tagged canonical Normal or
 Zero-tagged exact signed zero. The pair is validated even when PF=1 leaves the
@@ -7676,11 +7676,35 @@ to physical TOP. PF=1 leaves TOP bytes/tag unchanged. C1=1 is rejected by the ex
 other condition-code bit, FCW/FSW value, integer flag, register or memory byte
 changes. On success, x87 FIP receives old RIP,
 RIP advances by two and one instruction retires. Gate and operand failures are
-atomic. No other FCMOVNU index or unordered/NaN behavior is included.
+atomic. This historical one-index scope is superseded by S2-30cj; its fixtures
+remain compatibility evidence. No unordered/NaN behavior is included.
 
 Local interpreter evidence is 51,200 full-state success snapshots, evenly
 split between taken and untaken, and 21,504 invalid class/tag snapshots. The
-four-stream fixture allowlist, literal cases, producer intermediate-state
+original four-stream fixture allowlist, literal cases, producer intermediate-state
 checks, prefix/boundary rejects and JIT denial are local checks. Native/JIT
 execution, x87 exception delivery and physical x86 behavior remain unverified;
 see [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
+## Local S2-30cj: bounded indexed `FCMOVNU ST(0), ST(i)` (`DB D8..DF`)
+
+The interpreter admits only exact unprefixed Long64 encodings `DB D8..DF`,
+retaining `ModR/M & 7` as source. Require present x87, FCW `0x037f`,
+`FSW & 0x82ff == 0`, and each used participant tagged Valid with canonical
+Normal binary80 or Zero with exact signed zero. For `i>0`, preflight physical
+TOP and `(TOP+i)&7` before integer PF on taken and untaken paths. For `i=0`,
+check TOP only and do not inspect any other cell. PF=0 copies the exact ten
+source bytes and source tag into TOP; PF=1 keeps TOP. Self-index changes no
+payload or tag. C1 remains closed and Special/NaN values are unsupported.
+Preserve all other state and memory except FIP=old RIP, RIP+=2 and one
+retirement. Rejects leave the complete state unchanged.
+
+Local unit coverage is 363,520 complete success snapshots (358,400 for
+`i>0`, plus 5,120 self-index) and 161,280 invalid class/tag snapshots
+(150,528 for `i>0`, plus 10,752 self-index). Exact schema has 18 streams;
+literal fixtures cover every index, self PF=0/1, signed zero, wrap, invalid
+participants under PF=0/1, bad destination/environment, repeat and both TEST
+producers. Independent complete snapshots check the FCMOVU complement. The testkit literal interpreter checks full state and memory, and the CLI
+runner denies JIT for both accepted and rejected rows. Native/JIT execution, x87
+exception delivery and physical x86 acceptance remain unverified; ISSUE-019
+stays open.

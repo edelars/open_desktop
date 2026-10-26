@@ -10036,24 +10036,38 @@ warning and files without extractable symbols. No layout changed. This
 substage does not run Mac mini, SSH, native runtime or physical x86 checks;
 ISSUE-019 remains open.
 
-## S2-30ci — exact bare `FCMOVNU ST(0), ST(1)`
+## S2-30ci — historical exact bare `FCMOVNU ST(0), ST(1)`
 
-Implemented exact unprefixed Long64 `DB D9` with the existing strict FCMOV
-environment and participant gates. TOP and TOP+1 are checked before PF on
-taken and untaken paths. PF=0 copies the raw ten-byte value and source tag;
-PF=1 retains the destination. The implementation records old RIP in x87 FIP,
-advances RIP by two and retires once. Other FCMOVNU indices and unordered/NaN
-behavior remain unsupported; C1=1 remains rejected by the gate.
+The original exact unprefixed Long64 `DB D9` one-index implementation used the
+strict FCMOV environment and participant gates. This historical extent is now
+superseded by indexed S2-30cj; its fixtures remain compatibility evidence.
+Unordered/NaN behavior remains unsupported and C1=1 remains rejected.
 
-The focused interpreter tests passed 51,200 complete success snapshots
-(25,600 taken and 25,600 untaken) and 21,504 invalid class/tag rejects. Tests
-also cover all forbidden FSW bits, bad FCW, invalid source with PF=1, decode
-neighbors/prefixes/truncation, execution boundaries, independent complement
-snapshots against FCMOVU, producer intermediate snapshots and no data access.
-The fixture schema admits exactly the four requested streams and literal
-fixtures cover taken, rejection, repeat and both TEST producers. The fragment
-JIT rejects this operation.
+The historical focused interpreter tests passed 51,200 complete success
+snapshots and 21,504 invalid class/tag rejects. The four-stream schema and
+producer checks describe only the original DB D9 extent.
 
-This is local interpreter evidence only. Mac mini, SSH, native runtime and
-physical x86 validation were not run and remain part of the shared final
-physical substage; ISSUE-019 remains open.
+## S2-30cj — indexed bare `FCMOVNU ST(0), ST(i)`
+
+Implemented exact unprefixed Long64 `DB D8..DF`, carrying `ModR/M & 7` into the
+operation. For `i>0`, the interpreter preflights physical TOP and
+`(TOP+i)&7` before PF even when untaken; self-index validates TOP only and
+does not inspect other cells. Valid participants are Valid canonical Normal
+or Zero exact signed zero under FCW `0x037f` and `FSW & 0x82ff == 0`. PF=0
+raw-copies the source bytes and tag; PF=1 keeps the destination. C1 stays
+closed, Special/NaN semantics are unsupported, and the only other state
+changes are FIP=old RIP, RIP advancement and retirement. Rejections are atomic.
+
+Local matrices passed for 363,520 success snapshots (358,400 `i>0`, 5,120
+self) and 161,280 invalid class/tag snapshots (150,528 `i>0`, 10,752 self).
+The 18-stream schema, decode neighbor/prefix/truncation and execution-boundary
+checks for all indices, testkit full-state/memory literal interpreter rows, wrap and both
+signed-zero/tag transfer directions, repeat, both TEST producer intermediates,
+independent indexed FCMOVU complement snapshots, and explicit native/JIT
+denial passed.
+
+Validation passed: focused `od-isa` FCMOVNU tests (5/5), exact `od-testkit`
+schema and full-state literal testkit tests; the full
+`cargo test -p od-runner --test fixture_v2 --offline` suite passed 202/202. No Mac mini, SSH, native runtime
+or physical x86 checks were run; those remain in the shared final physical
+substage. ISSUE-019 remains open.

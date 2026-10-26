@@ -338,6 +338,34 @@ const FCMOVU_REJECTS: [&[u8]; 7] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_b_bit_reject.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ch_fcmovu_bad_fcw_reject.case.json"),
 ];
+const FCMOVNU_INDEXED_FIXTURES: [&[u8]; 9] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_i1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_i7.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_self_pf0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_self_pf1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_wrap_top7_i1.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_zero_to_normal_i2.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ci_fcmovnu_repeat.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ci_fcmovnu_test_pf0_taken.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ci_fcmovnu_test_pf1_untaken.case.json"),
+];
+const FCMOVNU_REJECTS: [&[u8]; 7] = [
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_invalid_source_pf0.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30ci_fcmovnu_invalid_source_pf1.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_invalid_destination.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_c1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_es.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_b.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cj_fcmovnu_fcw.case.json"),
+];
 const FCMOVE_INDEXED_FIXTURES: [&[u8]; 8] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf1.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf0.case.json"),
@@ -8002,6 +8030,19 @@ fn local_x87_indexed_fcmovu_fixtures_check_full_state_and_deny_jit() {
             "{}",
             loaded.fixture.case_id
         );
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(
+            matches!(jit.outcome, Outcome::Unsupported { .. }),
+            "{}",
+            loaded.fixture.case_id
+        );
+    }
+}
+
+#[test]
+fn local_x87_indexed_fcmovnu_fixtures_deny_jit_for_success_and_reject_rows() {
+    for bytes in FCMOVNU_INDEXED_FIXTURES.into_iter().chain(FCMOVNU_REJECTS) {
+        let loaded = Fixture::from_json(bytes).unwrap();
         let (_, jit) = run(bytes, "jit", 4);
         assert!(
             matches!(jit.outcome, Outcome::Unsupported { .. }),
