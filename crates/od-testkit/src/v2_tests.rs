@@ -2302,11 +2302,25 @@ fn x87_fcomi_family_schema_admits_exact_64_programs_and_narrow_actual_source_rej
 }
 
 #[test]
-fn x87_fcmovb_schema_admits_only_the_five_exact_streams_and_operand_rejects() {
+fn x87_fcmovb_schema_admits_only_indexed_exact_streams_and_operand_rejects() {
     let base = x87_fixture().fixture;
     for (program, budget) in [
+        ("dac0", 1),
         ("dac1", 1),
+        ("dac2", 1),
+        ("dac3", 1),
+        ("dac4", 1),
+        ("dac5", 1),
+        ("dac6", 1),
+        ("dac7", 1),
+        ("dac0dfe0", 2),
         ("dac1dfe0", 2),
+        ("dac2dfe0", 2),
+        ("dac3dfe0", 2),
+        ("dac4dfe0", 2),
+        ("dac5dfe0", 2),
+        ("dac6dfe0", 2),
+        ("dac7dfe0", 2),
         ("dac1dac1dfe0", 3),
         ("d9e8d9e0dbf1dac1dfe0", 6),
         ("d9e8d9e0d9e8dbf1dac1dfe0", 6),
@@ -2329,7 +2343,9 @@ fn x87_fcmovb_schema_admits_only_the_five_exact_streams_and_operand_rejects() {
             "{program}"
         );
     }
-    for program in ["dac0", "dac2", "66dac1", "40dac1", "dae9dfe0", "dac1dfe1"] {
+    for program in [
+        "66dac1", "40dac1", "dae9dfe0", "dac8", "dac1dfe1", "dac0dfe1",
+    ] {
         let mut fixture = base.clone();
         fixture.instruction_budget = 1;
         fixture.stop_rip = Some(HexU64(

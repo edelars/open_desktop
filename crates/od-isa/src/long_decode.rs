@@ -533,8 +533,10 @@ pub enum Operation {
     Fucomip {
         source: u8,
     },
-    /// Bare `DA C1` FCMOVB ST(0), ST(1), bounded raw copy when CF is set.
-    FcmovbSt0St1,
+    /// Bare `DA C0+i` FCMOVB ST(0), ST(i), bounded raw copy when CF is set.
+    Fcmovb {
+        source: u8,
+    },
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
     FcompSt {
         source: u8,
@@ -773,8 +775,9 @@ fn indexed_x87_compare(opcode: u8, modrm: u8) -> Option<Operation> {
     }
 }
 
-fn x87_dac1(opcode: u8, modrm: u8) -> Option<Operation> {
-    (opcode == 0xda && modrm == 0xc1).then_some(Operation::FcmovbSt0St1)
+fn x87_fcmovb(opcode: u8, modrm: u8) -> Option<Operation> {
+    (opcode == 0xda && (0xc0..=0xc7).contains(&modrm))
+        .then_some(Operation::Fcmovb { source: modrm & 7 })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1251,7 +1254,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 if modrm == 0xe9 {
                     Operation::Fucompp
                 } else {
-                    x87_dac1(opcode.byte, modrm).ok_or_else(|| self.unsupported(opcode))?
+                    x87_fcmovb(opcode.byte, modrm).ok_or_else(|| self.unsupported(opcode))?
                 }
             }
             (OpcodeMap::Primary, 0xdd) => {
@@ -4125,10 +4128,12 @@ mod tests {
         assert_eq!(instruction.prefixes, Prefixes::default());
         assert_eq!(memory.fetched, [0xfff, 0x1000]);
 
-        let fcmovb = Memory::new(&[0xda, 0xc1]).decode().unwrap();
-        assert_eq!(fcmovb.operation, Operation::FcmovbSt0St1);
-        assert_eq!(fcmovb.length, 2);
-        assert_eq!(fcmovb.prefixes, Prefixes::default());
+        for source in 0..8u8 {
+            let fcmovb = Memory::new(&[0xda, 0xc0 | source]).decode().unwrap();
+            assert_eq!(fcmovb.operation, Operation::Fcmovb { source });
+            assert_eq!(fcmovb.length, 2);
+            assert_eq!(fcmovb.prefixes, Prefixes::default());
+        }
 
         for modrm in 0u8..=u8::MAX {
             let decoded = Memory::new(&[0xda, modrm]).decode();
@@ -4136,7 +4141,7 @@ mod tests {
                 decoded.map(|instruction| instruction.operation),
                 match modrm {
                     0xe9 => Ok(Operation::Fucompp),
-                    0xc1 => Ok(Operation::FcmovbSt0St1),
+                    0xc0..=0xc7 => Ok(Operation::Fcmovb { source: modrm & 7 }),
                     _ => Err(DecodeError::Unsupported {
                         opcode: Opcode {
                             map: OpcodeMap::Primary,
@@ -4159,7 +4164,7 @@ mod tests {
                 Err(DecodeError::Unsupported { .. })
             ));
             assert!(matches!(
-                Memory::new(&[prefix, 0xda, 0xc1]).decode(),
+                Memory::new(&[prefix, 0xda, 0xc7]).decode(),
                 Err(DecodeError::Unsupported { .. })
             ));
         }

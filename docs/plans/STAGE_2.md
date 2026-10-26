@@ -239,6 +239,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30am | Bare `DF E9` FUCOMIP ST(0), ST(1), bounded canonical-Normal compare to RFLAGS and one physical TOP pop; native closed | S2-30al |
 | [x] | S2-30an | Bare indexed DB/DF register FCOMI-family forms for ST(i), bounded canonical-Normal compare and optional physical TOP pop; native closed | S2-30am |
 | [x] | S2-30bu | Bare `DA C1` FCMOVB ST(0), ST(1), both participants preflighted; exact raw conditional copy, local C1=0 gate, native/JIT closed | S2-30an |
+| [x] | S2-30bv | Bare `DA C0..C7` FCMOVB ST(0), ST(i), indexed source preflight, self-index checks only TOP; exact raw conditional copy, local C1=0 gate, native/JIT closed | S2-30bu |
 | [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
@@ -6076,3 +6077,34 @@ and budgets recorded in the CPU contract. Literal CLI fixtures cover both CF
 outcomes, tags, signed zero, TOP wrap, repeat, both real FLD1/FCHS/FCOMI
 producers, invalid source with CF=0, invalid destination, C1 and FCW rejection.
 Keep JIT/native closed and record remaining x87 limitations under ISSUE-019.
+This S2-30bu ST(1)-only register extent is historical and is superseded by
+S2-30bv for source indices `i=0..7`.
+
+#### S2-30bv. Indexed bare `FCMOVB ST(0), ST(i)`
+
+Extend S2-30bu only to exact unprefixed Long64 `DA C0..C7`; the low three
+ModR/M bits select source `i`. Preserve the S2-30bu gate: x87 state present,
+FCW exactly `0x037f`, `FSW & 0x82ff == 0`, and each inspected participant is
+Valid-tagged canonical Normal or Zero-tagged exact signed zero. For `i>0`,
+preflight physical old TOP and `(old_TOP+i)&7` before reading CF, including
+when CF is clear. For `i=0`, inspect only old TOP; never inspect ST(1) or any
+other tag/payload. Both self-index outcomes preserve that slot's bytes/tag.
+When CF is set for `i>0`, copy the source's exact ten bytes and tag to old
+TOP; otherwise preserve both operands. Preserve all other state except FIP,
+RIP and retirement. Keep `DA E9` unchanged and C1=1 unsupported.
+
+Acceptance: 363,520 success snapshots (51,200 each for `i=1..7`, plus 5,120
+self-index cases) and 161,280 rejected class/tag snapshots (21,504 each for
+`i=1..7`, plus 10,752 self-index cases), plus per-index environment and
+execution-boundary checks. Successes cover the four canonical Normal values
+in both signs and exact ±0, all TOP values, CF, C0/C2/C3, and PF/ZF. Rejections
+cover malformed encodings, Empty/Special and mismatched tags even when CF=0.
+The exact schema admits the eight bare bytes and eight corresponding
+FNSTSW-terminated streams, plus the S2-30bu repeat and two producer streams
+(19 exact streams total). Literal CLI fixtures exercise every index, TOP wrap,
+self-index with opaque unrelated registers, signed-zero/raw-tag copying,
+invalid source under CF=0 and indexed environment rejection. Local JIT admission
+remains denied; no native or physical acceptance is claimed. See
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30bv-bounded-indexed-fcmovb-sti-da-c0c7),
+[report](../reports/STAGE_2_REPORT.md#s2-30bv--bounded-indexed-fcmovb-sti), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bv-bounded-indexed-fcmovb-sti).

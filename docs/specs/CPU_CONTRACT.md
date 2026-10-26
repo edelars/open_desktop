@@ -7374,3 +7374,36 @@ cover taken/untaken tag preservation, exact negative-zero copy, TOP wrap,
 repeat, both FLD1/FCHS/FCOMI producers, source rejection with CF=0, destination
 rejection, C1=1 and bad FCW. Native/JIT remain denied; physical acceptance is
 deferred under ISSUE-019.
+
+This S2-30bu ST(1)-only scope is historical and is superseded for register
+source indices by [S2-30bv](#local-s2-30bv-bounded-indexed-fcmovb-sti-da-c0c7).
+
+## Local S2-30bv: bounded indexed `FCMOVB ST(0), ST(i)` (`DA C0..C7`)
+
+Admit only exact unprefixed Long64 `DA C0..C7`. The low ModR/M bits are the
+source index `i`, and the physical source is `(old_TOP+i)&7`. Preserve the
+S2-30bu environment gate: x87 state is present, FCW is exactly `0x037f`, and
+`FSW & 0x82ff == 0`. Before reading CF, validate old physical TOP and the
+indexed source for `i>0`, even when CF is clear. Each inspected participant
+must be Valid-tagged canonical Normal or Zero-tagged exact signed binary80
+zero. For `i=0`, TOP is the only inspected slot; no tag or payload from ST(1)
+or another slot may be consulted. Both self-index branches leave that slot's
+raw bytes and tag unchanged. For CF=1 and `i>0`, copy the exact source bytes
+and tag to old TOP; CF=0 preserves both. Preserve TOP, complete FSW, FCW,
+other x87 fields and all other machine state except FIP=old RIP, RIP+2 and one
+retirement. C1=1 remains unsupported. Keep `DA E9` FUCOMPP unchanged. There is
+no memory, pop, exception delivery, JIT or native execution in this profile.
+
+The interpreter matrices cover 363,520 successful full-state vectors: 51,200
+per index for `i=1..7`, plus 5,120 self-index vectors. Invalid operand/tag
+coverage is 161,280 vectors: 21,504 per nonzero index and 10,752 self-index
+vectors, including invalid participants when CF=0. Per-index environment and
+execution boundary checks are also local tests. The schema admits only eight
+bare DA C0..C7 streams, their eight FNSTSW-terminated forms, the S2-30bu repeat,
+and its two producer streams (19 streams total). Literal fixtures cover each
+index, source/tag preservation, signed zero, TOP wrap, self-index with opaque
+unrelated registers, an invalid indexed source with CF=0 and indexed env
+rejection. These results do not resolve full x87 semantics or physical/native
+acceptance; ISSUE-019 remains open. See [plan](../plans/STAGE_2.md#s2-30bv-indexed-bare-fcmovb-st0-sti),
+[report](../reports/STAGE_2_REPORT.md#s2-30bv--bounded-indexed-fcmovb-sti), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bv-bounded-indexed-fcmovb-sti).

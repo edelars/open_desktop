@@ -9695,3 +9695,34 @@ Five exact schema streams and ten literal fixture inputs cover taken/untaken,
 distinct tags, negative zero, TOP wrap, repeat, FLD1/FCHS/FCOMI producers,
 invalid source with CF=0, invalid destination, C1=1 and bad FCW. Results are
 local only; native/JIT remain closed and ISSUE-019 stays open.
+
+The ST(1)-only register extent is historical and is superseded by S2-30bv for
+the indexed register forms `DA C0..C7`.
+
+## S2-30bv — bounded indexed `FCMOVB ST(0), ST(i)`
+
+The decoder and interpreter now admit exact bare Long64 `DA C0..C7` and use
+the ModR/M low bits as `i`. For nonzero indices the implementation preflights
+both old physical TOP and `(TOP+i)&7` before observing CF, including the
+untaken path. Self-index `i=0` checks only TOP and preserves its bytes/tag for
+both CF outcomes; unrelated physical slots are not inspected. The existing
+FCW `0x037f`, `FSW & 0x82ff == 0`, Valid canonical-Normal or Zero exact-signed-
+zero domain remains. Taken moves copy exact bytes and tag. `DA E9` remains
+unchanged, and JIT/native remain closed.
+
+Local interpreter coverage passed 363,520 full-state successes (51,200 per
+`i=1..7` plus 5,120 for `i=0`) and 161,280 invalid class/tag cases (21,504 per
+nonzero index plus 10,752 for `i=0`). The matrix includes both CF values,
+TOP, all C0/C2/C3 and PF/ZF combinations, signed Normal/Zero values, and
+invalid operands even when CF is clear. Per-index environment and execution
+boundary checks passed. The exact schema test admits 19 streams; 8 literal
+CLI success fixtures cover DA C0..C7 and the runner checks interpreter
+snapshots plus JIT denial. Additional indexed rejects cover an invalid source
+under CF=0, C1 and FCW gates. `cargo test -p od-isa --lib fcmovb --offline`,
+`cargo test -p od-testkit --lib
+x87_fcmovb_schema_admits_only_indexed_exact_streams_and_operand_rejects
+--offline`, and the focused runner fixture test passed. No physical/native
+checks were run; the remaining x87 limitations stay under ISSUE-019. See
+[contract](../specs/CPU_CONTRACT.md#local-s2-30bv-bounded-indexed-fcmovb-sti-da-c0c7),
+[plan](../plans/STAGE_2.md#s2-30bv-indexed-bare-fcmovb-st0-sti), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bv-bounded-indexed-fcmovb-sti).

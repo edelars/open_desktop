@@ -73,7 +73,7 @@ const FLD_STI_REJECTS: [&[u8]; 2] = [
         "../../../tests/fixtures/x86/stage2/s2_30bp_fld_st6_occupied_destination.case.json"
     ),
 ];
-const FCMOVB_FIXTURES: [&[u8]; 6] = [
+const FCMOVB_FIXTURES: [&[u8]; 14] = [
     include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_30bu_fcmovb_taken_negative_zero.case.json"
     ),
@@ -88,8 +88,16 @@ const FCMOVB_FIXTURES: [&[u8]; 6] = [
     include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_30bu_fcmovb_producer_plus1_vs_minus1.case.json"
     ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bv_fcmovb_st0_top7_fnstsw.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bv_fcmovb_st1_top7_fnstsw.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bv_fcmovb_st2_top7_fnstsw.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bv_fcmovb_st3_top7_fnstsw.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bv_fcmovb_st4_top7_fnstsw.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bv_fcmovb_st5_top7_fnstsw.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bv_fcmovb_st6_top7_fnstsw.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bv_fcmovb_st7_top7_fnstsw.case.json"),
 ];
-const FCMOVB_REJECTS: [&[u8]; 4] = [
+const FCMOVB_REJECTS: [&[u8]; 7] = [
     include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_30bu_fcmovb_invalid_source_cf0.case.json"
     ),
@@ -98,6 +106,13 @@ const FCMOVB_REJECTS: [&[u8]; 4] = [
     ),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bu_fcmovb_c1_reject.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bu_fcmovb_bad_fcw_reject.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bv_fcmovb_st6_invalid_source_cf0.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bv_fcmovb_st7_c1_reject.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bv_fcmovb_st0_bad_fcw_reject.case.json"
+    ),
 ];
 const FFREE_ST0_ALREADY_EMPTY: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bq_ffree_already_empty.case.json");
@@ -1136,7 +1151,8 @@ fn run(bytes: &[u8], engine: &str, exit: i32) -> (LoadedFixture, RunResult) {
     assert_eq!(
         output.status.code(),
         Some(exit),
-        "{}",
+        "case {}: {}",
+        loaded.fixture.case_id,
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
@@ -7093,9 +7109,11 @@ fn local_x87_fcmovb_snapshots_and_denies_jit() {
         let initial = loaded.fixture.initial_state.x87.as_ref().unwrap();
         let after = observed.state.x87.as_ref().unwrap();
         let top = ((initial.status_word.get() >> 11) & 7) as usize;
-        let source = (top + 1) & 7;
         let code = loaded.fixture.memory[0].initial_bytes_hex.as_str();
-        if code == "dac1dfe0" && loaded.fixture.initial_state.rflags.get() & 1 != 0
+        let modrm_offset = code.rfind("da").unwrap();
+        let modrm = u8::from_str_radix(&code[modrm_offset + 2..modrm_offset + 4], 16).unwrap();
+        let source = (top + (modrm & 7) as usize) & 7;
+        if (code.starts_with("dac") && loaded.fixture.initial_state.rflags.get() & 1 != 0)
             || code == "dac1dac1dfe0"
         {
             assert_eq!(after.registers[top], initial.registers[source]);
@@ -7110,8 +7128,20 @@ fn local_x87_fcmovb_snapshots_and_denies_jit() {
         if loaded.fixture.case_id == "s2_30bu_fcmovb_producer_plus1_vs_minus1" {
             assert_eq!(after.registers[6], "0000000000000080ff3f");
         }
+        if loaded.fixture.case_id == "s2_30bv_fcmovb_st0_top7_fnstsw" {
+            let mut expected = initial.clone();
+            expected.instruction_pointer = loaded.fixture.initial_state.rip;
+            assert_eq!(
+                after, &expected,
+                "self-index must preserve opaque non-TOP cells"
+            );
+            for index in 0..7 {
+                assert_eq!((initial.tag_word.get() >> (index * 2)) & 3, 2);
+                assert_eq!(initial.registers[index], "a5".repeat(10));
+            }
+        }
         assert_eq!(after.status_word.get() & 0x82ff, 0);
-        let fcmovb_offset = (code.rfind("dac1").unwrap() / 2) as u64;
+        let fcmovb_offset = (modrm_offset / 2) as u64;
         assert_eq!(
             after.instruction_pointer.get(),
             loaded.fixture.initial_state.rip.get() + fcmovb_offset
@@ -7123,7 +7153,10 @@ fn local_x87_fcmovb_snapshots_and_denies_jit() {
         let loaded = Fixture::from_json(bytes).unwrap();
         if matches!(
             loaded.fixture.case_id.as_str(),
-            "s2_30bu_fcmovb_c1_reject" | "s2_30bu_fcmovb_bad_fcw_reject"
+            "s2_30bu_fcmovb_c1_reject"
+                | "s2_30bu_fcmovb_bad_fcw_reject"
+                | "s2_30bv_fcmovb_st7_c1_reject"
+                | "s2_30bv_fcmovb_st0_bad_fcw_reject"
         ) {
             let x87 = loaded.fixture.initial_state.x87.as_ref().unwrap();
             assert_eq!(x87.status_word.get() >> 11 & 7, 0);
@@ -7133,7 +7166,13 @@ fn local_x87_fcmovb_snapshots_and_denies_jit() {
             assert_eq!(
                 x87.control_word.get() == 0x037f,
                 loaded.fixture.case_id == "s2_30bu_fcmovb_c1_reject"
+                    || loaded.fixture.case_id == "s2_30bv_fcmovb_st7_c1_reject"
             );
+        }
+        if loaded.fixture.case_id == "s2_30bv_fcmovb_st7_c1_reject" {
+            let x87 = loaded.fixture.initial_state.x87.as_ref().unwrap();
+            assert_eq!((x87.tag_word.get() >> 14) & 3, 0);
+            assert_eq!(x87.registers[7], "0000000000000080ff3f");
         }
         let (_, result) = run(bytes, "interpreter", 4);
         assert_eq!(count(&result), 0);

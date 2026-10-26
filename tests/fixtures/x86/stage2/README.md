@@ -3666,3 +3666,24 @@ real `FLD1/FCHS/FCOMI` producers for the two relation directions, invalid
 source with CF=0, invalid destination, incoming C1=1 and bad FCW. The runner
 checks local snapshots and JIT denial. These fixtures do not establish native
 or physical x86 behavior; ISSUE-019 remains open.
+
+The `ST(1)`-only register extent above is historical; S2-30bv supersedes it for
+the indexed `DA C0..C7` forms.
+
+### S2-30bv bounded indexed `FCMOVB ST(0), ST(i)`
+
+The schema accepts the eight exact bare streams `dac0` through `dac7`, each
+with budget 1, plus `dac0dfe0` through `dac7dfe0`, each with budget 2. It also
+retains the S2-30bu `dac1dac1dfe0` repeat and two exact producer streams, for
+19 streams total. Eight new literal success fixtures exercise every source
+index with TOP=7 and FNSTSW observation; source data/tag combinations include
+the signed-zero source and canonical Normals, and every indexed fixture is
+checked by the runner under interpreter and JIT-denial modes. Three indexed
+reject fixtures cover an invalid source with CF=0, C1=1, and bad FCW. Unit
+matrices additionally cover both CF outcomes, every TOP, full supported status
+patterns, `i=0` with Special/malformed non-TOP canaries and no incidental tag
+reads, and the complete invalid class/tag pair matrix. The CLI self-index
+fixture keeps physical ST(0..6) Special-tagged with opaque malformed bytes;
+the C1 reject fixture gives its indexed ST(7) a valid canonical Normal so the
+status bit is the rejecting condition. All evidence is local;
+native/JIT execution and physical x86 behavior remain outside ISSUE-019.
