@@ -3815,6 +3815,28 @@ mod tests {
         let actual = prefixed.fixture.initial_state.to_cpu().unwrap();
         let mut decoder = FlatMemory::from_fixture(&prefixed.fixture).unwrap();
         assert!(admission(&prefixed.fixture, &mut decoder, &actual).is_err());
+
+        for bytes in [
+            "f366ab",   // REP STOSW
+            "f3ab",     // REP STOSD
+            "f348ab",   // REP STOSQ
+            "f36648ab", // REX.W takes precedence over 66
+        ] {
+            let mut unsupported = Fixture::from_json(
+                &std::fs::read(directory.join("s2_19a_rep_stosb_one.case.json")).unwrap(),
+            )
+            .unwrap();
+            unsupported.fixture.memory[0].length = (bytes.len() / 2) as u32;
+            unsupported.fixture.memory[0].initial_bytes_hex = bytes.into();
+            unsupported.fixture.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+            unsupported.fixture.stop_rip = Some(HexU64(0x0010_0000 + (bytes.len() / 2) as u64));
+            let actual = unsupported.fixture.initial_state.to_cpu().unwrap();
+            let mut decoder = FlatMemory::from_fixture(&unsupported.fixture).unwrap();
+            assert!(
+                admission(&unsupported.fixture, &mut decoder, &actual).is_err(),
+                "native REP STOS unexpectedly admitted {bytes}"
+            );
+        }
     }
 
     #[test]

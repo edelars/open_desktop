@@ -5317,6 +5317,9 @@ fn stos_prefix_rejects_are_unsupported_before_any_data_access() {
     let mut cases = Vec::new();
     for form in forms {
         for prefix in prefixes {
+            if *prefix == [0xf3] {
+                continue;
+            }
             cases.push([prefix, form].concat());
         }
     }
@@ -5327,7 +5330,7 @@ fn stos_prefix_rejects_are_unsupported_before_any_data_access() {
         vec![0xf2, 0xf3, 0xab],
         vec![0x64, 0x65, 0xab],
     ]);
-    assert_eq!(cases.len(), 35);
+    assert_eq!(cases.len(), 32);
     for code in cases {
         let mut state = LongModeState::default();
         state.rip = 0x1000;
@@ -5805,6 +5808,783 @@ fn rep_stosb_rejects_other_prefix_combinations_without_commit() {
         );
         assert_eq!(result.instructions_executed, 0, "{bytes}");
         assert_eq!(state, original_state, "{bytes}");
+    }
+}
+
+#[test]
+fn rep_stos_wdq_complete_state_matrix_and_prefix_boundary() {
+    let directory = arithmetic_fixture_directory();
+    let template = Fixture::from_json(
+        &std::fs::read(directory.join("s2_19a_rep_stosb_one.case.json")).unwrap(),
+    )
+    .unwrap()
+    .fixture;
+    let widths = [
+        (OperandSize::Byte, vec![0xf3, 0xaa]),
+        (OperandSize::Word, vec![0xf3, 0x66, 0xab]),
+        (OperandSize::Dword, vec![0xf3, 0xab]),
+        (OperandSize::Qword, vec![0xf3, 0x48, 0xab]),
+    ];
+    let values = [0, 1, 0x1122, 0x1122_3344, 0x1122_3344_5566_7788, u64::MAX];
+    let flag_bits = [0, 2, 4, 6, 7, 11];
+    let mut completed = 0;
+    for (width, code) in &widths {
+        let size = width.bytes() as usize;
+        for df in [false, true] {
+            for value in values {
+                for count in 0..=3u64 {
+                    for pattern in 0..64usize {
+                        let mut input = template.clone();
+                        let gprs = &mut input.initial_state.gpr;
+                        gprs[0] = HexU64(value);
+                        gprs[1] = HexU64(count);
+                        gprs[7] = HexU64(0x0020_0010);
+                        input.initial_state.rflags = HexU64(
+                            0x2 | if df { 1 << 10 } else { 0 }
+                                | flag_bits
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(index, _)| pattern & (1 << index) != 0)
+                                    .fold(0, |bits, (_, bit)| bits | (1 << bit)),
+                        );
+                        input.memory[0].length = code.len() as u32;
+                        input.memory[0].initial_bytes_hex = encode_bytes(code);
+                        input.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                        input.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+                        let data_len = 64usize;
+                        input.memory[1].length = data_len as u32;
+                        input.memory[1].initial_bytes_hex = "5a".repeat(data_len);
+                        input.memory[1].comparison_mask_hex = "ff".repeat(data_len);
+
+                        let before = input.initial_state.to_cpu().unwrap();
+                        let mut state = before.clone();
+                        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+                        let result = run(
+                            &mut state,
+                            &mut memory,
+                            config(1, input.stop_rip.map(HexU64::get)),
+                            || false,
+                        );
+                        assert_eq!(result.exit, RunExit::StopAddress);
+                        assert_eq!(result.instructions_executed, 1);
+                        let mut expected_data = vec![0x5a; data_len];
+                        let value_bytes = value.to_le_bytes();
+                        for index in 0..count as usize {
+                            let address = if df {
+                                16usize - index * size
+                            } else {
+                                16usize + index * size
+                            };
+                            expected_data[address..address + size]
+                                .copy_from_slice(&value_bytes[..size]);
+                        }
+                        let expected_rdi = if df {
+                            0x0020_0010u64.wrapping_sub(count * size as u64)
+                        } else {
+                            0x0020_0010u64.wrapping_add(count * size as u64)
+                        };
+                        let mut expected_state = before.clone();
+                        expected_state.gpr[Register::Rcx as usize] = 0;
+                        expected_state.gpr[Register::Rdi as usize] = expected_rdi;
+                        expected_state.rip = input.stop_rip.unwrap().get();
+                        assert_eq!(state, expected_state);
+                        assert_eq!(memory.snapshot()[1].bytes_hex, encode_bytes(&expected_data));
+                        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+                        completed += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(completed, 12_288);
+
+    let mut input = template;
+    for (bytes, width) in [
+        (vec![0x66, 0xf3, 0xab], OperandSize::Word),
+        (vec![0xf3, 0x66, 0xab], OperandSize::Word),
+        (vec![0xf3, 0x48, 0x66, 0xab], OperandSize::Word),
+        (vec![0xf3, 0x66, 0x48, 0xab], OperandSize::Qword),
+    ] {
+        input.memory[0].length = bytes.len() as u32;
+        input.memory[0].initial_bytes_hex = encode_bytes(&bytes);
+        input.memory[0].comparison_mask_hex = "ff".repeat(bytes.len());
+        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+        let mut state = input.initial_state.to_cpu().unwrap();
+        state.gpr[Register::Rcx as usize] = 1;
+        state.gpr[Register::Rdi as usize] = 0x0020_0000;
+        let result = run(&mut state, &mut memory, config(1, None), || false);
+        assert_eq!(result.instructions_executed, 1, "{bytes:02x?}");
+        assert_eq!(
+            state.gpr[Register::Rdi as usize],
+            0x0020_0000 + width.bytes() as u64
+        );
+        assert_eq!(state.gpr[Register::Rcx as usize], 0);
+    }
+}
+
+#[test]
+fn rep_stos_wdq_rejects_the_exact_out_of_profile_prefix_set() {
+    let directory = arithmetic_fixture_directory();
+    let mut fixture = Fixture::from_json(
+        &std::fs::read(directory.join("s2_19a_rep_stosb_one.case.json")).unwrap(),
+    )
+    .unwrap()
+    .fixture;
+    let forms = [
+        vec![0xf3, 0x66, 0xab],
+        vec![0xf3, 0xab],
+        vec![0xf3, 0x48, 0xab],
+    ];
+    let prefixes = [0xf0, 0xf2, 0xf3, 0x67, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65];
+    let mut rejected = Vec::new();
+    for form in forms {
+        for prefix in prefixes {
+            let mut bytes = vec![prefix];
+            bytes.extend_from_slice(&form);
+            rejected.push(bytes);
+        }
+    }
+    rejected.extend([
+        vec![0xf3, 0x40, 0xab],
+        vec![0xf3, 0x47, 0xab],
+        vec![0xf3, 0x66, 0x66, 0xab],
+        vec![0xf3, 0x66, 0x40, 0xab],
+        vec![0xf3, 0x66, 0x47, 0xab],
+    ]);
+    assert_eq!(rejected.len(), 35);
+    for bytes in rejected {
+        fixture.memory[0].length = bytes.len() as u32;
+        fixture.memory[0].initial_bytes_hex = encode_bytes(&bytes);
+        fixture.memory[0].comparison_mask_hex = "ff".repeat(bytes.len());
+        let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+        let mut state = fixture.initial_state.to_cpu().unwrap();
+        let before = state.clone();
+        let result = run(&mut state, &mut memory, config(1, None), || false);
+        assert_eq!(
+            result.exit,
+            RunExit::Unsupported { opcode: 0xab },
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+
+    for bytes in [
+        vec![0xf3, 0x66, 0xaa],
+        vec![0xf3, 0x48, 0xaa],
+        vec![0xf3, 0x67, 0xaa],
+        vec![0xf3, 0x26, 0xaa],
+    ] {
+        fixture.memory[0].length = bytes.len() as u32;
+        fixture.memory[0].initial_bytes_hex = encode_bytes(&bytes);
+        fixture.memory[0].comparison_mask_hex = "ff".repeat(bytes.len());
+        let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+        let mut state = fixture.initial_state.to_cpu().unwrap();
+        let result = run(&mut state, &mut memory, config(1, None), || false);
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xaa });
+    }
+}
+
+#[test]
+fn rep_stos_wdq_write_fault_matrix_preserves_only_completed_iterations() {
+    let directory = arithmetic_fixture_directory();
+    let template = Fixture::from_json(
+        &std::fs::read(directory.join("s2_19a_rep_stosb_one.case.json")).unwrap(),
+    )
+    .unwrap()
+    .fixture;
+    let widths = [
+        (OperandSize::Byte, vec![0xf3, 0xaa]),
+        (OperandSize::Word, vec![0xf3, 0x66, 0xab]),
+        (OperandSize::Dword, vec![0xf3, 0xab]),
+        (OperandSize::Qword, vec![0xf3, 0x48, 0xab]),
+    ];
+    let failures = [
+        MemoryError::Architectural(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(6),
+            linear_address: Some(0),
+        }),
+        MemoryError::Unmapped {
+            address: 0,
+            access: AccessKind::Write,
+        },
+        MemoryError::PermissionDenied {
+            address: 0,
+            access: AccessKind::Write,
+        },
+        MemoryError::Backend("injected store failure".into()),
+    ];
+    let mut cases = 0;
+    for (width, code) in widths {
+        for df in [false, true] {
+            for successes in 0..=2u64 {
+                for failure in &failures {
+                    let mut input = template.clone();
+                    input.memory[0].length = code.len() as u32;
+                    input.memory[0].initial_bytes_hex = encode_bytes(&code);
+                    input.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                    input.memory[1].length = 64;
+                    input.memory[1].initial_bytes_hex = "00".repeat(64);
+                    input.memory[1].comparison_mask_hex = "ff".repeat(64);
+                    let start = if df { 0x0020_0030 } else { 0x0020_0000 };
+                    input.initial_state.gpr[Register::Rcx as usize] = HexU64(successes + 1);
+                    input.initial_state.gpr[Register::Rdi as usize] = HexU64(start);
+                    input.initial_state.rflags = HexU64(if df { 0x0cd7 } else { 0x08d7 });
+                    let fault_address = if df {
+                        start.wrapping_sub(successes * width.bytes() as u64)
+                    } else {
+                        start + successes * width.bytes() as u64
+                    };
+                    let before = input.initial_state.to_cpu().unwrap();
+                    let mut state = before.clone();
+                    let mut memory = MovsbAccessLog {
+                        inner: FlatMemory::from_fixture(&input).unwrap(),
+                        accesses: Vec::new(),
+                        mfences: Vec::new(),
+                        mfence_error: None,
+                    };
+                    let injected = match failure {
+                        MemoryError::Architectural(fault) => {
+                            MemoryError::Architectural(ArchitecturalFault {
+                                linear_address: Some(fault_address),
+                                ..fault.clone()
+                            })
+                        }
+                        MemoryError::Unmapped { access, .. } => MemoryError::Unmapped {
+                            address: fault_address,
+                            access: *access,
+                        },
+                        MemoryError::PermissionDenied { access, .. } => {
+                            MemoryError::PermissionDenied {
+                                address: fault_address,
+                                access: *access,
+                            }
+                        }
+                        other => other.clone(),
+                    };
+                    memory
+                        .inner
+                        .inject_once(fault_address, AccessKind::Write, injected.clone());
+                    let result = run(&mut state, &mut memory, config(1, None), || false);
+                    match injected {
+                        MemoryError::Architectural(fault) => {
+                            assert_eq!(result.exit, RunExit::Fault(fault));
+                        }
+                        other => assert_eq!(result.exit, RunExit::MemoryError(other)),
+                    }
+                    assert_eq!(result.instructions_executed, 0);
+                    let expected_rdi = if df {
+                        start.wrapping_sub(successes * width.bytes() as u64)
+                    } else {
+                        start + successes * width.bytes() as u64
+                    };
+                    let mut expected_state = before.clone();
+                    expected_state.gpr[Register::Rcx as usize] = 1;
+                    expected_state.gpr[Register::Rdi as usize] = expected_rdi;
+                    assert_eq!(state, expected_state);
+                    let mut expected = vec![0u8; 64];
+                    let value = before.gpr[Register::Rax as usize].to_le_bytes();
+                    for index in 0..successes as usize {
+                        let offset = if df {
+                            48 - index * width.bytes()
+                        } else {
+                            index * width.bytes()
+                        };
+                        expected[offset..offset + width.bytes()]
+                            .copy_from_slice(&value[..width.bytes()]);
+                    }
+                    assert_eq!(
+                        memory.inner.snapshot()[1].bytes_hex,
+                        encode_bytes(&expected)
+                    );
+                    let writes: Vec<_> = memory
+                        .accesses
+                        .iter()
+                        .filter(|(kind, _, _)| *kind == AccessKind::Write)
+                        .collect();
+                    assert_eq!(writes.len(), successes as usize + 1);
+                    assert_eq!(writes.last().unwrap().1, fault_address);
+                    assert_eq!(writes.last().unwrap().2, width.bytes());
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 96);
+}
+
+#[test]
+fn rep_stos_wdq_stop_replay_limit_and_max_count_boundaries() {
+    let directory = arithmetic_fixture_directory();
+    let template = Fixture::from_json(
+        &std::fs::read(directory.join("s2_19a_rep_stosb_one.case.json")).unwrap(),
+    )
+    .unwrap()
+    .fixture;
+    let widths = [
+        (OperandSize::Byte, vec![0xf3, 0xaa]),
+        (OperandSize::Word, vec![0xf3, 0x66, 0xab]),
+        (OperandSize::Dword, vec![0xf3, 0xab]),
+        (OperandSize::Qword, vec![0xf3, 0x48, 0xab]),
+    ];
+    let mut stop_cases = 0;
+    for (width, code) in &widths {
+        for df in [false, true] {
+            for after in [1u64, 2] {
+                let mut input = template.clone();
+                input.memory[0].length = code.len() as u32;
+                input.memory[0].initial_bytes_hex = encode_bytes(code);
+                input.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                input.memory[1].length = 64;
+                input.memory[1].initial_bytes_hex = "00".repeat(64);
+                input.memory[1].comparison_mask_hex = "ff".repeat(64);
+                let start = if df { 0x0020_0030 } else { 0x0020_0000 };
+                input.initial_state.gpr[Register::Rcx as usize] = HexU64(3);
+                input.initial_state.gpr[Register::Rdi as usize] = HexU64(start);
+                input.initial_state.rflags = HexU64(if df { 0x0cd7 } else { 0x08d7 });
+                input.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+                let mut state = input.initial_state.to_cpu().unwrap();
+                let mut memory = MovsbAccessLog {
+                    inner: FlatMemory::from_fixture(&input).unwrap(),
+                    accesses: Vec::new(),
+                    mfences: Vec::new(),
+                    mfence_error: None,
+                };
+                let mut polls = 0;
+                let stopped = run(
+                    &mut state,
+                    &mut memory,
+                    config(1, input.stop_rip.map(HexU64::get)),
+                    || {
+                        polls += 1;
+                        polls == after + 1
+                    },
+                );
+                assert_eq!(stopped.exit, RunExit::StopRequested);
+                assert_eq!(stopped.instructions_executed, 0);
+                let next = if df {
+                    start.wrapping_sub(after * width.bytes() as u64)
+                } else {
+                    start + after * width.bytes() as u64
+                };
+                let mut expected_partial = input.initial_state.to_cpu().unwrap();
+                expected_partial.gpr[Register::Rcx as usize] = 3 - after;
+                expected_partial.gpr[Register::Rdi as usize] = next;
+                assert_eq!(state, expected_partial);
+                let first_writes: Vec<_> = memory
+                    .accesses
+                    .iter()
+                    .filter(|(kind, _, _)| *kind == AccessKind::Write)
+                    .copied()
+                    .collect();
+                let expected_first: Vec<_> = (0..after)
+                    .map(|index| {
+                        let address = if df {
+                            start.wrapping_sub(index * width.bytes() as u64)
+                        } else {
+                            start + index * width.bytes() as u64
+                        };
+                        (AccessKind::Write, address, width.bytes())
+                    })
+                    .collect();
+                assert_eq!(first_writes, expected_first);
+                let resumed = run(
+                    &mut state,
+                    &mut memory,
+                    config(1, input.stop_rip.map(HexU64::get)),
+                    || false,
+                );
+                assert_eq!(resumed.exit, RunExit::StopAddress);
+                assert_eq!(resumed.instructions_executed, 1);
+                let mut expected_final = input.initial_state.to_cpu().unwrap();
+                expected_final.gpr[Register::Rcx as usize] = 0;
+                expected_final.gpr[Register::Rdi as usize] = if df {
+                    start.wrapping_sub(3 * width.bytes() as u64)
+                } else {
+                    start + 3 * width.bytes() as u64
+                };
+                expected_final.rip = input.stop_rip.unwrap().get();
+                assert_eq!(state, expected_final);
+                let all_writes: Vec<_> = memory
+                    .accesses
+                    .iter()
+                    .filter(|(kind, _, _)| *kind == AccessKind::Write)
+                    .copied()
+                    .collect();
+                let expected_all: Vec<_> = (0..3)
+                    .map(|index| {
+                        let address = if df {
+                            start.wrapping_sub(index * width.bytes() as u64)
+                        } else {
+                            start + index * width.bytes() as u64
+                        };
+                        (AccessKind::Write, address, width.bytes())
+                    })
+                    .collect();
+                assert_eq!(all_writes, expected_all);
+                stop_cases += 1;
+            }
+        }
+    }
+    assert_eq!(stop_cases, 16);
+
+    let mut limit_cases = 0;
+    let mut stop_at_limit_cases = 0;
+    for (width, code) in &widths {
+        for df in [false, true] {
+            for count in [1023u64, 1024, 1025] {
+                let mut input = template.clone();
+                input.memory[0].length = code.len() as u32;
+                input.memory[0].initial_bytes_hex = encode_bytes(code);
+                input.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                input.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+                let data_len = 1025 * width.bytes();
+                input.memory[1].guest_address = HexU64(if df { 0x0020_0000 } else { 0x0020_0000 });
+                input.memory[1].length = data_len as u32;
+                input.memory[1].initial_bytes_hex = "00".repeat(data_len);
+                input.memory[1].comparison_mask_hex = "ff".repeat(data_len);
+                let start = if df {
+                    0x0020_0000 + 1024 * width.bytes() as u64
+                } else {
+                    0x0020_0000
+                };
+                input.initial_state.gpr[Register::Rcx as usize] = HexU64(count);
+                input.initial_state.gpr[Register::Rdi as usize] = HexU64(start);
+                input.initial_state.rflags = HexU64(if df { 0x0cd7 } else { 0x08d7 });
+                let mut state = input.initial_state.to_cpu().unwrap();
+                let mut memory = FlatMemory::from_fixture(&input).unwrap();
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    config(1, input.stop_rip.map(HexU64::get)),
+                    || false,
+                );
+                let expected_exit = if count <= 1024 {
+                    RunExit::StopAddress
+                } else {
+                    RunExit::RepIterationBudgetExhausted
+                };
+                assert_eq!(
+                    result.exit, expected_exit,
+                    "{width:?}, DF={df}, count={count}"
+                );
+                let done = count.min(1024);
+                let expected_rdi = if df {
+                    start.wrapping_sub(done * width.bytes() as u64)
+                } else {
+                    start.wrapping_add(done * width.bytes() as u64)
+                };
+                let mut expected_state = input.initial_state.to_cpu().unwrap();
+                expected_state.gpr[Register::Rcx as usize] = count - done;
+                expected_state.gpr[Register::Rdi as usize] = expected_rdi;
+                if count <= 1024 {
+                    expected_state.rip = input.stop_rip.unwrap().get();
+                }
+                assert_eq!(state, expected_state);
+                assert_eq!(result.instructions_executed, u64::from(count <= 1024));
+                limit_cases += 1;
+            }
+
+            // STOP is observed at the boundary after store 1024 before the
+            // iteration limit is returned.
+            let mut input = template.clone();
+            input.memory[0].length = code.len() as u32;
+            input.memory[0].initial_bytes_hex = encode_bytes(code);
+            input.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+            input.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+            let data_len = 1025 * width.bytes();
+            input.memory[1].length = data_len as u32;
+            input.memory[1].initial_bytes_hex = "00".repeat(data_len);
+            input.memory[1].comparison_mask_hex = "ff".repeat(data_len);
+            let start = if df {
+                0x0020_0000 + 1024 * width.bytes() as u64
+            } else {
+                0x0020_0000
+            };
+            input.initial_state.gpr[Register::Rcx as usize] = HexU64(1025);
+            input.initial_state.gpr[Register::Rdi as usize] = HexU64(start);
+            input.initial_state.rflags = HexU64(if df { 0x0cd7 } else { 0x08d7 });
+            let mut state = input.initial_state.to_cpu().unwrap();
+            let mut memory = FlatMemory::from_fixture(&input).unwrap();
+            let mut polls = 0;
+            let result = run(
+                &mut state,
+                &mut memory,
+                config(1, input.stop_rip.map(HexU64::get)),
+                || {
+                    polls += 1;
+                    polls == 1025
+                },
+            );
+            assert_eq!(result.exit, RunExit::StopRequested);
+            let mut expected_stop = input.initial_state.to_cpu().unwrap();
+            expected_stop.gpr[Register::Rcx as usize] = 1;
+            expected_stop.gpr[Register::Rdi as usize] = if df {
+                start.wrapping_sub(1024 * width.bytes() as u64)
+            } else {
+                start + 1024 * width.bytes() as u64
+            };
+            assert_eq!(state, expected_stop);
+            stop_at_limit_cases += 1;
+        }
+    }
+    assert_eq!(limit_cases, 24);
+    assert_eq!(stop_at_limit_cases, 8);
+
+    let mut max = template;
+    let code = [0xf3, 0x48, 0xab];
+    max.memory[0].length = code.len() as u32;
+    max.memory[0].initial_bytes_hex = encode_bytes(&code);
+    max.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+    max.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+    max.memory[1].length = (1024 * 8) as u32;
+    max.memory[1].initial_bytes_hex = "00".repeat(1024 * 8);
+    max.memory[1].comparison_mask_hex = "ff".repeat(1024 * 8);
+    max.initial_state.gpr[Register::Rcx as usize] = HexU64(u64::MAX);
+    max.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0020_0000);
+    let mut state = max.initial_state.to_cpu().unwrap();
+    let mut expected_max = state.clone();
+    let mut memory = FlatMemory::from_fixture(&max).unwrap();
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(1, max.stop_rip.map(HexU64::get)),
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::RepIterationBudgetExhausted);
+    expected_max.gpr[Register::Rcx as usize] = u64::MAX - 1024;
+    expected_max.gpr[Register::Rdi as usize] = 0x0020_2000;
+    assert_eq!(state, expected_max);
+}
+
+#[test]
+fn rep_stos_wdq_literal_fixtures_match_the_complete_local_contract() {
+    let directory = arithmetic_fixture_directory();
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(directory.join("s2_19b_rep_stos_wdq_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 28);
+    for (case_id, answer) in answers {
+        let input = Fixture::from_json(
+            &std::fs::read(directory.join(format!("{case_id}.case.json"))).unwrap(),
+        )
+        .unwrap()
+        .fixture;
+        let mut state = input.initial_state.to_cpu().unwrap();
+        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            || false,
+        );
+        match input.expected_exit {
+            ExpectedExit::StopAddress => assert_eq!(result.exit, RunExit::StopAddress, "{case_id}"),
+            ExpectedExit::InstructionBudgetExhausted => {
+                assert_eq!(
+                    result.exit,
+                    RunExit::InstructionBudgetExhausted,
+                    "{case_id}"
+                )
+            }
+            ExpectedExit::RepIterationBudgetExhausted => {
+                assert_eq!(
+                    result.exit,
+                    RunExit::RepIterationBudgetExhausted,
+                    "{case_id}"
+                )
+            }
+            ExpectedExit::Exception => {
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None,
+                    }),
+                    "{case_id}"
+                )
+            }
+            ExpectedExit::HarnessError => {
+                assert!(
+                    matches!(result.exit, RunExit::MemoryError(_)),
+                    "{case_id}: {:?}",
+                    result.exit
+                )
+            }
+            _ => panic!("unexpected REP fixture outcome in {case_id}"),
+        }
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(state.gpr, expected_gpr.map(HexU64::get), "{case_id}");
+        assert_eq!(state.rflags, expected_flags.get(), "{case_id}");
+        assert_eq!(result.rflags_defined, expected_defined.get(), "{case_id}");
+        assert_eq!(state.rip, expected_rip.get(), "{case_id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in memory.snapshot() {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rep_stos_wdq_zero_budget_fetch_alignment_page_and_wrap_edges() {
+    let directory = arithmetic_fixture_directory();
+    let mut fixture = Fixture::from_json(
+        &std::fs::read(directory.join("s2_19a_rep_stosb_one.case.json")).unwrap(),
+    )
+    .unwrap()
+    .fixture;
+
+    // Zero count does not validate a noncanonical RDI; budget zero does not fetch.
+    fixture.memory[0].length = 3;
+    fixture.memory[0].initial_bytes_hex = "f348ab".into();
+    fixture.memory[0].comparison_mask_hex = "ffffff".into();
+    fixture.stop_rip = Some(HexU64(0x0010_0003));
+    fixture.initial_state.gpr[Register::Rcx as usize] = HexU64(0);
+    fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0000800000000000);
+    fixture.memory[1].length = 16;
+    fixture.memory[1].initial_bytes_hex = "00".repeat(16);
+    fixture.memory[1].comparison_mask_hex = "ff".repeat(16);
+    let mut memory = MovsbAccessLog {
+        inner: FlatMemory::from_fixture(&fixture).unwrap(),
+        accesses: Vec::new(),
+        mfences: Vec::new(),
+        mfence_error: None,
+    };
+    let mut state = fixture.initial_state.to_cpu().unwrap();
+    let zero = run(
+        &mut state,
+        &mut memory,
+        config(1, fixture.stop_rip.map(HexU64::get)),
+        || false,
+    );
+    assert_eq!(zero.exit, RunExit::StopAddress);
+    assert_eq!(zero.instructions_executed, 1);
+    assert_eq!(memory.accesses.len(), 3);
+    assert!(
+        memory
+            .accesses
+            .iter()
+            .all(|(kind, _, _)| *kind == AccessKind::Fetch)
+    );
+
+    fixture.initial_state.gpr[Register::Rcx as usize] = HexU64(1);
+    fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(0x0020_0000);
+    let mut state = fixture.initial_state.to_cpu().unwrap();
+    let before = state.clone();
+    let mut memory = MovsbAccessLog {
+        inner: FlatMemory::from_fixture(&fixture).unwrap(),
+        accesses: Vec::new(),
+        mfences: Vec::new(),
+        mfence_error: None,
+    };
+    let budget = run(
+        &mut state,
+        &mut memory,
+        config(0, fixture.stop_rip.map(HexU64::get)),
+        || false,
+    );
+    assert_eq!(budget.exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state, before);
+    assert!(memory.accesses.is_empty());
+
+    // An incomplete prefix fetch remains a backend fetch error with no state commit.
+    let mut malformed = fixture.clone();
+    malformed.memory[0].length = 1;
+    malformed.memory[0].initial_bytes_hex = "f3".into();
+    malformed.memory[0].comparison_mask_hex = "ff".into();
+    malformed.stop_rip = None;
+    malformed.expected_exit = ExpectedExit::HarnessError;
+    let mut state = malformed.initial_state.to_cpu().unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&malformed).unwrap();
+    let truncated = run(&mut state, &mut memory, config(1, None), || false);
+    assert!(matches!(
+        truncated.exit,
+        RunExit::MemoryError(MemoryError::Unmapped {
+            access: AccessKind::Fetch,
+            ..
+        })
+    ));
+    assert_eq!(state, before);
+
+    let widths = [
+        (OperandSize::Word, vec![0xf3, 0x66, 0xab]),
+        (OperandSize::Dword, vec![0xf3, 0xab]),
+        (OperandSize::Qword, vec![0xf3, 0x48, 0xab]),
+    ];
+    for (width, code) in widths {
+        for residue in 0..width.bytes() {
+            let mut input = fixture.clone();
+            input.memory[0].length = code.len() as u32;
+            input.memory[0].initial_bytes_hex = encode_bytes(&code);
+            input.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+            input.memory[1].guest_address = HexU64(0x0020_0ff8);
+            input.memory[1].length = 64;
+            input.memory[1].initial_bytes_hex = "00".repeat(64);
+            input.memory[1].comparison_mask_hex = "ff".repeat(64);
+            let address = 0x0020_0ffcu64 + residue as u64;
+            input.initial_state.gpr[Register::Rcx as usize] = HexU64(1);
+            input.initial_state.gpr[Register::Rdi as usize] = HexU64(address);
+            input.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+            let mut state = input.initial_state.to_cpu().unwrap();
+            let mut memory = FlatMemory::from_fixture(&input).unwrap();
+            let result = run(
+                &mut state,
+                &mut memory,
+                config(1, input.stop_rip.map(HexU64::get)),
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(
+                state.gpr[Register::Rdi as usize],
+                address + width.bytes() as u64
+            );
+            let mut expected = vec![0u8; 64];
+            expected[(4 + residue) as usize..(4 + residue) as usize + width.bytes()]
+                .copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes()[..width.bytes()]);
+            assert_eq!(memory.snapshot()[1].bytes_hex, encode_bytes(&expected));
+        }
+
+        let mut input = fixture.clone();
+        input.memory[0].length = code.len() as u32;
+        input.memory[0].initial_bytes_hex = encode_bytes(&code);
+        input.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+        input.memory[1].guest_address = HexU64(0);
+        input.memory[1].length = width.bytes() as u32;
+        input.memory[1].initial_bytes_hex = "00".repeat(width.bytes());
+        input.memory[1].comparison_mask_hex = "ff".repeat(width.bytes());
+        input.initial_state.gpr[Register::Rcx as usize] = HexU64(1);
+        input.initial_state.gpr[Register::Rdi as usize] = HexU64(0);
+        input.initial_state.rflags = HexU64(0x0cd7);
+        input.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+        let mut state = input.initial_state.to_cpu().unwrap();
+        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(1, input.stop_rip.map(HexU64::get)),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(
+            state.gpr[Register::Rdi as usize],
+            0u64.wrapping_sub(width.bytes() as u64)
+        );
+        assert_eq!(
+            memory.snapshot()[1].bytes_hex,
+            "8877665544332211"[..width.bytes() * 2]
+        );
     }
 }
 

@@ -1056,14 +1056,27 @@ fn step_tracked_with_stop(
         }
         Operation::RepStos { size } => {
             instruction.opcode.map == OpcodeMap::Primary
-                && instruction.opcode.byte == 0xaa
-                && instruction.length == 2
-                && instruction.prefixes
-                    == (Prefixes {
-                        group1: Some(0xf3),
-                        ..Prefixes::default()
-                    })
-                && size == OperandSize::Byte
+                && ((instruction.opcode.byte == 0xaa
+                    && instruction.length == 2
+                    && instruction.prefixes
+                        == (Prefixes {
+                            group1: Some(0xf3),
+                            ..Prefixes::default()
+                        })
+                    && size == OperandSize::Byte)
+                    || (instruction.opcode.byte == 0xab
+                        && instruction.prefixes.group1 == Some(0xf3)
+                        && instruction.prefixes.segment.is_none()
+                        && !instruction.prefixes.address_override
+                        && instruction.prefixes.rex.map_or(true, |rex| rex & 8 != 0)
+                        && ((instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                            && size == OperandSize::Qword)
+                            || (instruction.prefixes.rex.is_none()
+                                && instruction.prefixes.operand_override
+                                && size == OperandSize::Word)
+                            || (instruction.prefixes.rex.is_none()
+                                && !instruction.prefixes.operand_override
+                                && size == OperandSize::Dword))))
         }
         Operation::PopMemory { destination } => {
             instruction.opcode.map == OpcodeMap::Primary
@@ -2337,7 +2350,6 @@ fn step_tracked_with_stop(
                 state.gpr[Register::Rsi as usize].wrapping_add(step);
         }
         Operation::RepStos { size } => {
-            debug_assert_eq!(size, OperandSize::Byte);
             let mut completed = 0;
             while state.gpr[Register::Rcx as usize] != 0 {
                 let destination = Operand::Memory(MemoryOperand {
@@ -2346,18 +2358,18 @@ fn step_tracked_with_stop(
                     scale: 1,
                     displacement: 0,
                     address_size: OperandSize::Qword,
-                    size: OperandSize::Byte,
+                    size,
                 });
-                let accumulator = state.gpr[Register::Rax as usize] & 0xff;
+                let accumulator = state.gpr[Register::Rax as usize] & size.mask();
                 if let Err(error) =
                     write_operand(state, memory, context, next_rip, destination, accumulator)
                 {
                     return report_memory_error(error);
                 }
                 let step = if state.rflags & (1 << 10) == 0 {
-                    1
+                    size.bytes() as u64
                 } else {
-                    u64::MAX
+                    0u64.wrapping_sub(size.bytes() as u64)
                 };
                 state.gpr[Register::Rdi as usize] =
                     state.gpr[Register::Rdi as usize].wrapping_add(step);

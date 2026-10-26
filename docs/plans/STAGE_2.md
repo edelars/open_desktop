@@ -966,6 +966,41 @@ DF=0/1 и local-only fault после успешной итерации; direct 
 проверяют STOP/replay и iteration work limit. Native admission допускает только
 полностью mapped small-count cases, work-limit outcome остаётся local.
 
+#### S2-19b — `F3 AB` REP STOSW/D/Q (ограниченный локальный контракт)
+
+Расширить существующий `Operation::RepStos { size }` на `F3 66 AB` (word),
+`F3 AB` (dword) и `F3 effective-REX.W AB` (qword); все `48..4F` допустимы.
+Для AB разрешить только группу F3, отсутствие segment/address-size override,
+и отсутствие REX либо effective REX.W. 66 может идти до или после F3 и сочетаться с REX.W; общий
+normalizer сохраняет `F3 48 66 AB` как word и `F3 66 48 AB` как qword.
+`F3 AA` остаётся строго byte-only; `F3 66 AA`, F2, LOCK, 67, segment,
+non-W REX, дублирующие operand-size и прочие REP формы остаются Unsupported.
+JIT/native admission не расширять.
+
+Для `RCX=0` завершить без destination validation/access. Иначе выполнять одну
+all-or-error write низкого выбранного RAX-width в текущий RDI; только после
+успеха wrapping-adjust RDI на ±width и decrement RCX. Сначала проверить
+completion; если count ещё не ноль, проверить STOP, затем лимит 1024 успешных
+stores на один вызов, иначе продолжить. STOP и limit оставляют RIP на начале
+REP, retirement=0; завершение продвигает RIP и retire-ит одну инструкцию.
+Fault текущей записи не меняет её RDI/RCX, но оставляет прежние stores и
+индексы/count; replay продолжает с сохранённой пары. Instruction budget
+считается как одна инструкция. RAX/RSI/RFLAGS и flags definedness внутри run
+не меняются; отдельный новый run заново инициализирует definedness, поэтому
+lossless across-run claim не делается.
+
+Добавить 12,288 полных нормальных состояний (4 widths × 2 DF × 6 значений ×
+4 counts × 64 комбинации flags), 96 ошибок write, 16 STOP/replay, 24 limit
+границы, точные 35 REP-prefix rejects и byte regression boundary. Проверить
+STOP после 1024-й записи, RCX=`u64::MAX` bounded progress, нулевой count с
+неканоническим RDI, width crossing, mapped page/alignment/wrap, budget zero,
+malformed fetch, byte/word/dword/qword aliases, TEST→REP success и partial
+definedness. Добавить ровно 28 literal schema-v2 fixtures: по восемь на новую
+ширину, две normalization и два TEST→REP потока (полный и partial после одной
+записи). Генератор лишь сериализует заданные bytes/state/memory; profile/schema
+не меняются. ISSUE-016 и ISSUE-020 остаются открытыми; физические проверки,
+Mac mini, SSH и native остаются в едином финальном acceptance.
+
 ### S2-20. Точность исключений и exit state
 
 1. Свести для реализованных форм `#UD`, `#DE`, `#GP`, `#SS`, memory faults и traps только там, где они действительно определены профилем/адаптером.

@@ -615,3 +615,15 @@ Rejection fixtures use only the bare `dbd9` instruction with one-step budget
 and no stop RIP. Two TEST producer fixtures use RAX=1 and RAX=3 and preserve
 full input state and memory for runner comparison. JIT remains denied. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ci-exact-bare-fcmovnu-st0-st1-db-d9).
+
+## Stage 2 interpreter budget boundaries
+
+Schema-v2 fixtures allow `instruction_budget` zero through the existing upper
+bound. Zero budget stops before fetch and leaves CPU/memory unchanged; it is
+used to distinguish the outer instruction budget from a bounded REP instruction
+that may perform up to 1024 successful iterations while consuming one retired
+instruction only on complete success. `rep_iteration_budget_exhausted` and
+`harness_error` remain distinct from architectural exceptions. A missing bounded
+mapping does not imply `#PF`; partial store progress is observable only when
+the fixture runner returns a snapshot, while injected/unit checks may inspect
+local memory after harness failure.

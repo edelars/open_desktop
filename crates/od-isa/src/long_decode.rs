@@ -687,7 +687,7 @@ pub enum Operation {
     Cmps {
         size: OperandSize,
     },
-    /// One bounded invocation of long-mode REP STOSB (`F3 AA`).
+    /// One bounded invocation of long-mode REP STOS at the selected width.
     RepStos {
         size: OperandSize,
     },
@@ -1211,8 +1211,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     group1: Some(0xf3),
                     ..Prefixes::default()
                 });
+        let rep_stos = opcode.map == OpcodeMap::Primary
+            && opcode.byte == 0xab
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.address_override
+            && prefixes.rex.is_none_or(|rex| rex & 8 != 0);
         if !known
-            || (prefixes.group1.is_some() && !rep_stosb && !locked_qword_memory_xadd_candidate)
+            || (prefixes.group1.is_some()
+                && !rep_stosb
+                && !rep_stos
+                && !locked_qword_memory_xadd_candidate)
         {
             return Err(self.unsupported(opcode));
         }
@@ -1519,21 +1528,31 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Primary, 0xab) => {
-                if prefixes.group1.is_some()
+                if rep_stos {
+                    size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                        OperandSize::Qword
+                    } else if prefixes.operand_override {
+                        OperandSize::Word
+                    } else {
+                        OperandSize::Dword
+                    };
+                    Operation::RepStos { size }
+                } else if prefixes.group1.is_some()
                     || prefixes.segment.is_some()
                     || prefixes.address_override
                     || prefixes.rex.is_some_and(|rex| rex & 8 == 0)
                 {
                     return Err(self.unsupported(opcode));
-                }
-                size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
-                    OperandSize::Qword
-                } else if prefixes.operand_override {
-                    OperandSize::Word
                 } else {
-                    OperandSize::Dword
-                };
-                Operation::Stos { size }
+                    size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                        OperandSize::Qword
+                    } else if prefixes.operand_override {
+                        OperandSize::Word
+                    } else {
+                        OperandSize::Dword
+                    };
+                    Operation::Stos { size }
+                }
             }
             (OpcodeMap::Primary, 0xae) => {
                 if prefixes != Prefixes::default() {
@@ -5761,6 +5780,36 @@ mod tests {
     }
 
     #[test]
+    fn rep_stos_decodes_widths_and_normalized_prefix_ordering() {
+        for (bytes, size) in [
+            (&[0xf3, 0xaa][..], OperandSize::Byte),
+            (&[0xf3, 0x66, 0xab][..], OperandSize::Word),
+            (&[0x66, 0xf3, 0xab][..], OperandSize::Word),
+            (&[0xf3, 0xab][..], OperandSize::Dword),
+            (&[0xf3, 0x48, 0xab][..], OperandSize::Qword),
+            (&[0xf3, 0x48, 0x66, 0xab][..], OperandSize::Word),
+            (&[0xf3, 0x66, 0x48, 0xab][..], OperandSize::Qword),
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(instruction.operand_size, size, "{bytes:02x?}");
+            assert_eq!(
+                instruction.operation,
+                Operation::RepStos { size },
+                "{bytes:02x?}"
+            );
+        }
+        for rex in 0x48..=0x4f {
+            let instruction = Memory::new(&[0xf3, rex, 0xab]).decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::RepStos {
+                    size: OperandSize::Qword
+                }
+            );
+        }
+    }
+
+    #[test]
     fn stos_ab_decodes_bounded_widths_and_rex_66_ordering() {
         for (bytes, size) in [
             (&[0xaa][..], OperandSize::Byte),
@@ -5821,6 +5870,9 @@ mod tests {
         let mut cases = Vec::new();
         for form in forms {
             for prefix in prefixes {
+                if *prefix == [0xf3] {
+                    continue;
+                }
                 cases.push([prefix, form].concat());
             }
         }
@@ -5831,7 +5883,7 @@ mod tests {
             vec![0xf2, 0xf3, 0xab],
             vec![0x64, 0x65, 0xab],
         ]);
-        assert_eq!(cases.len(), 35);
+        assert_eq!(cases.len(), 32);
         for bytes in cases {
             assert!(
                 matches!(

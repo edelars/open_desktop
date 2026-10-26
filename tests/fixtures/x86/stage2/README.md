@@ -3955,3 +3955,29 @@ fixtures remain. Testkit literal interpretation compares complete state and
 memory; the CLI runner separately checks JIT denial. These are local evidence. Unordered/NaN values, x87
 exception delivery, native execution and physical x86 behavior remain outside
 this bounded profile.
+
+## Bounded REP STOSW/D/Q fixtures S2-19b
+
+Twenty-eight literal schema-v2 fixtures cover the three new `F3 AB` widths: for
+each width, zero count with a noncanonical RDI, DF=0/1 count-three success, an
+unmapped first store, a missing mapping after one committed store, noncanonical
+first destination, zero instruction budget, and the 1024-store limit with
+count 1025. Two further fixtures exercise `F3 48 66 AB` word and `F3 66 48 AB`
+qword normalization; two `TEST`→`REP STOSD` programs cover completion and a
+partial second-store backend failure. Full GPR, RFLAGS/definedness, RIP, and
+complete memory answers are serialized in the expected sidecar. The fixture
+generator serializes predetermined constants and does not compute CPU results.
+The profile/schema are unchanged. Native/JIT remain fail-closed; no physical
+execution is claimed.
+
+The interpreter checks include 12,288 full completion states, 96 injected
+write failures, 16 STOP/replay cases, 24 work-limit boundaries, STOP at 1024,
+`RCX=u64::MAX` bounded progress, prefix rejection, memory edges, and malformed
+fetch/budget behavior. The fixture pool and all physical/native checks remain
+reserved for the shared final acceptance.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_stos_wdq.py --check
+cargo test -p od-testkit --offline rep_stos_wdq
+cargo test -p od-runner --test fixture_v2 --offline rep_stos_wdq
+```

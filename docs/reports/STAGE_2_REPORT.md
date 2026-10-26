@@ -10243,3 +10243,43 @@ pointer as unmapped and two pre-existing report links to ignored oracle
 manifests absent from this checkout. No layout change was made. No Mac mini,
 SSH, native runtime, or physical x86 checks were run. ISSUE-016 and ISSUE-019
 remain open.
+
+## S2-19b — bounded `F3 AB` REP STOSW/D/Q (local)
+
+Extended the existing REP STOS operation to word, dword, and qword forms while
+keeping exact `F3 AA` byte behavior. Accepted AB prefix forms are F3 with
+optional 66, no segment/address override, and absent REX or effective REX.W;
+all REX.W values are admitted. Normalization covers `F3 48 66 AB` as word and
+`F3 66 48 AB` as qword. All other requested prefix combinations remain
+Unsupported, and the native/JIT gate was not expanded.
+
+The loop writes the low accumulator width in one all-or-error store, then
+commits DF-directed wrapping RDI and RCX decrement. Zero count avoids access.
+Completion is checked before STOP, which is checked before the 1024-successful
+store work limit. Partial STOP/limit/fault leaves RIP at the REP start and
+retirement zero; earlier successful stores persist. Instruction budget still
+counts the completed REP as one instruction. RAX, RSI, RFLAGS and definedness
+remain unchanged during one `run()`; definedness resets on a new run.
+
+Added the 12,288-state normal completion matrix, exact prefix and byte boundary
+checks, and 28 literal schema-v2 fixtures with full expected-state sidecar.
+Fixture generation writes the fixed case constants. ISSUE-016 and ISSUE-020
+remain open. Mac mini, SSH, native and physical checks were not run and remain
+reserved for final acceptance.
+
+Final local validation for S2-19b: `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, the complete offline test
+suites for `od-isa`, `od-testkit`, and `od-runner`, and the S2-19b fixture
+freshness check passed. Focused assertions cover the complete 12,288-state
+matrix, 96 write failures, 16 STOP/replay paths with exact access sequences,
+24 work-limit boundaries, STOP after store 1024, bounded `RCX=u64::MAX`,
+zero-count invalid RDI, fetch/budget edges, page/alignment crossing, pointer
+wrap, byte regressions, TEST definedness, and CLI JIT denial. Native admission
+remains byte-only; its fail-closed condition was checked by static review, but
+the native runner test was not executed on this host. An independent static
+review found no remaining concrete defects.
+
+`python3 tools/check_layout.py` was attempted but reports the managed worktree's
+`.git` marker as an unmapped root file and two absent ignored oracle manifests
+referenced by the existing report. No structure was added by S2-19b. No
+Mac mini, SSH, native execution, or physical x86 checks were run.

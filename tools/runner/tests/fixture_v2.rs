@@ -4888,6 +4888,105 @@ fn rep_stosb_cli_fixtures_preserve_full_state_and_one_instruction_retirement() {
 }
 
 #[test]
+fn rep_stos_wdq_cli_fixtures_check_outcomes_and_full_snapshots() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_19b_rep_stos_wdq_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 28);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let expected_input = Fixture::from_json(&raw).unwrap();
+        let exit = if expected_input.fixture.expected_exit == ExpectedExit::HarnessError {
+            5
+        } else {
+            0
+        };
+        let (input, result) = run(&raw, "interpreter", exit);
+        match input.fixture.expected_exit {
+            ExpectedExit::StopAddress => {
+                assert!(
+                    matches!(result.outcome, Outcome::StopAddress {}),
+                    "{case_id}"
+                );
+            }
+            ExpectedExit::InstructionBudgetExhausted => {
+                assert!(
+                    matches!(result.outcome, Outcome::InstructionBudgetExhausted {}),
+                    "{case_id}"
+                );
+            }
+            ExpectedExit::RepIterationBudgetExhausted => {
+                assert!(
+                    matches!(result.outcome, Outcome::RepIterationBudgetExhausted {}),
+                    "{case_id}"
+                );
+            }
+            ExpectedExit::Exception => {
+                assert!(matches!(result.outcome, Outcome::Exception {}), "{case_id}");
+            }
+            ExpectedExit::HarnessError => {
+                assert!(
+                    matches!(result.outcome, Outcome::HarnessError { .. }),
+                    "{case_id}"
+                );
+            }
+            _ => panic!("unexpected fixture outcome in {case_id}"),
+        }
+        if matches!(result.outcome, Outcome::HarnessError { .. }) {
+            continue;
+        }
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(observed.state.rip, expected_rip, "{case_id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+        if [
+            "s2_19b_rep_stos_word_df0",
+            "s2_19b_rep_stos_word_df1",
+            "s2_19b_rep_stos_dword_df0",
+            "s2_19b_rep_stos_dword_df1",
+            "s2_19b_rep_stos_qword_df0",
+            "s2_19b_rep_stos_qword_df1",
+        ]
+        .contains(&case_id.as_str())
+        {
+            let (_, jit_result) = run(&raw, "jit", 4);
+            assert!(
+                matches!(jit_result.outcome, Outcome::Unsupported { .. }),
+                "{case_id}"
+            );
+            assert!(
+                matches!(
+                    &jit_result.instructions_executed,
+                    Observation::Unavailable { reason } if reason == "engine was not executed"
+                ),
+                "{case_id}"
+            );
+            assert!(
+                matches!(jit_result.snapshot, Observation::Unavailable { .. }),
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
 fn lods_cli_fixtures_match_literal_full_state_answers_and_fail_atomically() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

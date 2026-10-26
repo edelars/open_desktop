@@ -910,3 +910,23 @@ segment prefixes, effective non-W REX on `AD`, prefixed `AC`, JIT and native
 execution are outside this slice. See the
 [CPU contract](../specs/CPU_CONTRACT.md) and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## REP STOSW/D/Q — S2-19b local interpreter coverage
+
+The local profile extends exact `F3 AA` with `F3 66 AB` (word), `F3 AB`
+(dword), and effective REX.W `F3 REX.W AB` (qword), including all `48..4F`
+REX.W forms and `66` ordering. Byte remains exact `F3 AA`; unsupported prefixes
+remain admission failures. Per-iteration width writes commit before DF-directed
+wrapping RDI and RCX updates. Zero count performs no access; completion precedes
+STOP, STOP precedes the 1024-successful-store work limit, and partial/faulted
+execution leaves RIP at the REP start with successful earlier stores retained.
+The retirement budget counts the full instruction once. Definedness remains
+unchanged within one `run()`; a new run resets it. JIT/native admission remains
+closed.
+
+Local evidence includes the full 12,288-state completion matrix, prefix and
+byte regressions, literal schema-v2 fixtures, replay/fault/limit cases, and
+TEST→REP definedness checks. Missing mappings remain harness errors, not guest
+page faults. ISSUE-016 and ISSUE-020 remain open; physical acceptance is
+deferred. See the [CPU contract](../specs/CPU_CONTRACT.md) and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md).
