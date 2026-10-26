@@ -355,6 +355,38 @@ internal RIP означает `Unsupported`, так как для него ну�
 2. Сравнить interpreter, новый JIT и Mac mini native по определённому состоянию; повторить каждый case минимум дважды. Завершение native программы должно совпадать с выбранной границей сравнения.
 3. Сохранить input, snapshots, fingerprints, host/toolchain и failures. Включить ABI/spill/branch boundary cases нового pipeline. Полный multi-block corpus этапа 1 запускается после S3-15.
 
+Локальная подготовка добавила manifest
+[`stage3_s3_14_jit_block.json`](../../tests/cpu/manifests/stage3_s3_14_jit_block.json):
+8 исторических одно-блочных cases и 5 новых boundary inputs. Он исключает
+`s0_09_sub_jnz_loop` (backward edge требует повторного dispatch) и
+`s1_06_jz_not_taken` (fallthrough продолжает после Jcc в следующую инструкцию).
+Новые случаи различают taken JZ/JNZ через валидный хвост до `code_end`,
+not-taken JZ/JNZ с известной backward target boundary и fallthrough в
+`code_end`, а также длинную цепочку helper calls с aliased ADD/SUB и
+live-through значением. Целевой `od-jit` test на этой цепочке использует ту же
+production allocation config и проверяет реальные value spill slots и helper
+captures. Отдельный budget-boundary fixture в manifest отмечен
+`local_only`: он завершает блок до `code_end` и не входит в физический набор.
+Команда для будущего physical acceptance:
+
+```sh
+python3 tests/cpu/stage1_oracle.py --engine jit-block --manifest \
+  tests/cpu/manifests/stage3_s3_14_jit_block.json --repeats 2 \
+  --remote-root /ABSOLUTE/PATH/TO/ISOLATED_STAGE3_CHECKOUT
+```
+
+Legacy oracle сохраняет `jit` по умолчанию; `jit-block` без явных cases/manifest отклоняется,
+а его результаты должны иметь backend `jit_ir_block`. Run manifest фиксирует
+stage/suite, engine/backend и fixture/program digests; перед будущим oracle он
+проверит что каждый обязательный fixture начинается с RIP 0 и ожидает
+`reached_code_end`. Harness сравнивает interpreter непосредственно с выбранным
+JIT, каждый из них — с native, и сравнивает каждый backend между повторами.
+Orchestration tests проверяют выбор engine/backend, два повтора, отсутствие
+implicit selection и failure при неверном backend tag. Все тринадцать manifest inputs локально совпали
+между interpreter и `jit_ir_block`; вместе с harness tests это подтверждает
+только локальную подготовку, не запуск Mac mini или triple physical acceptance.
+S3-14 остаётся открытым.
+
 **Готово:** срез A подтверждён тройным сравнением. Неподдержанные обязательные cases, недоступный SSH и mismatch оставляют задачу открытой.
 
 ## 7. Dispatcher, cache и память

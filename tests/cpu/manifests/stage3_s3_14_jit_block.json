@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "engine": "jit-block",
+  "cases": [
+    {
+      "path": "tests/fixtures/x86/s0_09_mov_imm64.case.json",
+      "fixture_sha256": "45139dedf0d845010e5773fe4b776919ebb5c0af125680d0e27540dac732a5db",
+      "program_sha256": "087825b9724b52b2ad2ff19a9b15a5e88547c3f3739f680cfd9b90be008f7e4c",
+      "required": true,
+      "kind": "historical",
+      "category": "mov_imm64",
+      "terminal_boundary": "code_end",
+      "one_block_reason": "One MOV completes at the fixture code end."
+    },
+    {
+      "path": "tests/fixtures/x86/s0_09_add_overflow.case.json",
+      "fixture_sha256": "12e43c2a15e5b41e868092fd9223c1e4ff888da49d6b39a1474ce8e362d2a729",
+      "program_sha256": "03a7e82ef1eb38c34110c2b0761f6e7c58ba0cda9a1589597b5ba87b2962dd66",
+      "required": true,
+      "kind": "historical",
+      "category": "add_flags",
+      "terminal_boundary": "code_end",
+      "one_block_reason": "One ADD completes at the fixture code end."
+    },
+    {
+      "path": "tests/fixtures/x86/s0_09_cmp_jz.case.json",
+      "fixture_sha256": "0828f14b6ef6035e1dffb812c79b3ec81c0d78aa86c2f7cc8a8aa422d96ca58b",
+      "program_sha256": "1bf677cde757de00523445b837946b5f7620cb2c4a7888634b762072900b7857",
+      "required": true,
+      "kind": "historical",
+      "category": "cmp_terminal_jz",
+      "terminal_boundary": "code_end",
+      "one_block_reason": "CMP is followed by terminal JZ whose target and fallthrough are code_end."
+    },
+    {
+      "path": "tests/fixtures/x86/s1_06_add_signed_overflow.case.json",
+      "fixture_sha256": "740d7bf6e9408a9db1dcab0f6d1a399b3200aac63d11ad3e51b6baa1f95c0d15",
+      "program_sha256": "03a7e82ef1eb38c34110c2b0761f6e7c58ba0cda9a1589597b5ba87b2962dd66",
+      "required": true,
+      "kind": "historical",
+      "category": "add_overflow",
+      "terminal_boundary": "code_end",
+      "one_block_reason": "One ADD completes at the fixture code end."
+    },
+    {
+      "path": "tests/fixtures/x86/s1_06_sub_borrow.case.json",
+      "fixture_sha256": "994a3b4ad68580a9e3138fe4ce18e18d5f94647064afe06311de654bb19e6ad0",
+      "program_sha256": "d970d8f06fa2f7f5a26c1a3c70f8995e2f1ae5f053bc270e53403b7b208bf496",
+      "required": true,
+      "kind": "historical",
+      "category": "sub_borrow",
+      "terminal_boundary": "code_end",
+      "one_block_reason": "One SUB completes at the fixture code end."
+    },
+    {
+      "path": "tests/fixtures/x86/s1_06_cmp_signed_boundary.case.json",
+      "fixture_sha256": "a8a47e5f25bc1fd3493cc5432cc614e92365cc2c15f70fb37f40be5b7e86d6a5",
+      "program_sha256": "92a3e236cfd6e406dc248fa76347e5555d9e6dfa7951decf57e711c454e46518",
+      "required": true,
+      "kind": "historical",
+      "category": "cmp_flags",
+      "terminal_boundary": "code_end",
+      "one_block_reason": "One CMP completes at the fixture code end."
+    },
+    {
+      "path": "tests/fixtures/x86/s1_06_jz_taken.case.json",
+      "fixture_sha256": "f7a04d7ab9cb67f3a475dfeb28d6b7ba1b032411048d898a80a2a05dc2e8889d",
+      "program_sha256": "bfaad59638918f84f6ada8ca72ea11334d4b86cb47a92d01266cf78618d224f5",
+      "required": true,
+      "kind": "historical",
+      "category": "taken_jz",
+      "terminal_boundary": "code_end",
+      "one_block_reason": "The taken JZ targets code_end over a valid trailing MOV."
+    },
+    {
+      "path": "tests/fixtures/x86/s1_06_mov_preserves_flags.case.json",
+      "fixture_sha256": "01eb759e88337a61b6e1801ceda16903764263172eb10977316796ac65b0608c",
+      "program_sha256": "5d1749d322acbccebdea69c7675a747d7e0847a400489994b39444777e352c2b",
+      "required": true,
+      "kind": "historical",
+      "category": "cmp_mov_flags",
+      "terminal_boundary": "code_end",
+      "one_block_reason": "CMP followed by MOV falls through to code_end in one linear block."
+    },
+    {
+      "path": "tests/fixtures/x86/stage3/s3_14_jz_to_end_skips_tail.case.json",
+      "fixture_sha256": "8da5f28d8409ae63a1851862f416bc786a6db43606b227c9a52fff879cf4543d",
+      "program_sha256": "da994a588724123fa3689e59b840ecb1b32aae4b128ed12d7b0a98d26622c2bf",
+      "required": true,
+      "kind": "boundary",
+      "category": "taken_jz_valid_tail",
+      "terminal_boundary": "code_end",
+      "one_block_reason": "CMP sets ZF; taken terminal JZ targets code_end over a valid MOV."
+    },
+    {
+      "path": "tests/fixtures/x86/stage3/s3_14_jnz_to_end_skips_tail.case.json",
+      "fixture_sha256": "cadf3cda3d7c536d6a0d8626b908215586ba6ef0b5d2c9421122cdaacb8d951c",
+      "program_sha256": "adca9b3a6ddc1df07fb0d7596b7a9d3debf87ad7c19abd36b89ad24ecc5ed3d0",
+      "required": true,
+      "kind": "boundary",
+      "category": "taken_jnz_valid_tail",
+      "terminal_boundary": "code_end",
+      "one_block_reason": "CMP clears ZF; taken terminal JNZ targets code_end over a valid MOV."
+    },
+    {
+      "path": "tests/fixtures/x86/stage3/s3_14_jz_not_taken_backward_target.case.json",
+      "fixture_sha256": "0f0e9f1c81ecc671d642ba124934b0adb8f03b5a35413728445be1f834ff9760",
+      "program_sha256": "71de34e1cf7c0488c3be31e95871abac33c47fbad77e89dfb95d34726981d4b8",
+      "required": true,
+      "kind": "boundary",
+      "category": "not_taken_jz_fallthrough",
+      "terminal_boundary": "code_end",
+      "one_block_reason": "JZ target is the decoded entry; unequal CMP makes its code_end fallthrough execute."
+    },
+    {
+      "path": "tests/fixtures/x86/stage3/s3_14_jnz_not_taken_backward_target.case.json",
+      "fixture_sha256": "97552173b206628db8001500d5a4553070090a4eaeec2c8e79d7dc00afbfbd33",
+      "program_sha256": "bc9a764963804ed2555985528d89b4c16719bcfaa204749a9fa76dc870b7c71a",
+      "required": true,
+      "kind": "boundary",
+      "category": "not_taken_jnz_fallthrough",
+      "terminal_boundary": "code_end",
+      "one_block_reason": "JNZ target is the decoded entry; equal CMP makes its code_end fallthrough execute."
+    },
+    {
+      "path": "tests/fixtures/x86/stage3/s3_14_live_through_helpers.case.json",
+      "fixture_sha256": "479ea8ccc52ca53e676989279cdd068ed76dcdde78a9e06deb98fecb3ef87998",
+      "program_sha256": "4fe980f463d01c3fc413943b73860314d9c780c638acdc9bf50072290c89f778",
+      "required": true,
+      "kind": "boundary",
+      "category": "alias_flags_spill_helpers",
+      "terminal_boundary": "code_end",
+      "one_block_reason": "Five arithmetic helper calls end with terminal JZ to code_end; the first ADD value stays live across a later helper."
+    }
+  ],
+  "local_only": [
+    {
+      "path": "tests/fixtures/x86/stage3/s3_14_budget_at_linear_boundary.case.json",
+      "fixture_sha256": "b4bb4db870b6fe1d4473cbfadef17e536213983109f555bf3b2aacbb9e94c8ad",
+      "program_sha256": "6368ad254b7d2b308bb15f448c3354bfaf8c80b0ab6a0e81d4787608008c6b68",
+      "required": false,
+      "kind": "local_only",
+      "category": "budget_boundary_local",
+      "terminal_boundary": "budget",
+      "one_block_reason": "Stops at the budget boundary before code_end; local check only, excluded from physical terminal acceptance."
+    }
+  ],
+  "excluded": [
+    {
+      "path": "tests/fixtures/x86/s0_09_sub_jnz_loop.case.json",
+      "reason": "The terminal JNZ targets the block entry; completing the loop requires dispatching another block."
+    },
+    {
+      "path": "tests/fixtures/x86/s1_06_jz_not_taken.case.json",
+      "reason": "The not-taken JZ falls through to a trailing MOV after the Jcc block boundary; executing it requires a next block."
+    }
+  ],
+  "stage": "S3-14",
+  "suite": "register-only one-block triple comparison"
+}

@@ -87,6 +87,27 @@ fn compile_lowered(
     code_end: u64,
     lowered: LoweredProgram,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
+    let allocation = allocate_block(&lowered)?;
+    let emitted =
+        emit_runtime_block(&lowered.program, &allocation).map_err(BlockCompileError::Emitter)?;
+    let actual = emitted
+        .to_le_bytes()
+        .map_err(|error| BlockCompileError::Emitter(BlockEmitterError::Encoding(error)))?
+        .len();
+    if actual > MAX_EMITTED_BLOCK_BYTES {
+        return Err(BlockCompileError::EmittedCodeTooLarge {
+            actual,
+            max: MAX_EMITTED_BLOCK_BYTES,
+        });
+    }
+    Ok(BlockCompileOutcome::Compiled(CompiledBlock {
+        emitted,
+        code_end,
+        deferred_error: lowered.deferred_error,
+    }))
+}
+
+fn allocate_block(lowered: &LoweredProgram) -> Result<Allocation<'_>, BlockCompileError> {
     let helper_boundaries: Vec<_> = lowered
         .program
         .operations
@@ -106,23 +127,7 @@ fn compile_lowered(
         &helper_boundaries,
     )
     .map_err(BlockCompileError::Allocation)?;
-    let emitted =
-        emit_runtime_block(&lowered.program, &allocation).map_err(BlockCompileError::Emitter)?;
-    let actual = emitted
-        .to_le_bytes()
-        .map_err(|error| BlockCompileError::Emitter(BlockEmitterError::Encoding(error)))?
-        .len();
-    if actual > MAX_EMITTED_BLOCK_BYTES {
-        return Err(BlockCompileError::EmittedCodeTooLarge {
-            actual,
-            max: MAX_EMITTED_BLOCK_BYTES,
-        });
-    }
-    Ok(BlockCompileOutcome::Compiled(CompiledBlock {
-        emitted,
-        code_end,
-        deferred_error: lowered.deferred_error,
-    }))
+    Ok(allocation)
 }
 
 #[cfg(test)]
@@ -178,5 +183,34 @@ mod tests {
             panic!("valid MOV prefix should be retained");
         };
         assert!(compiled.deferred_error().is_some());
+    }
+
+    #[test]
+    fn multi_helper_alias_fixture_uses_production_spills_and_live_through_captures() {
+        let code = [
+            0x48, 0x03, 0xC0, // ADD RAX, RAX
+            0x48, 0x2B, 0xD2, // SUB RDX, RDX
+            0x48, 0x03, 0xC3, // ADD RAX, RBX
+            0x48, 0x2B, 0xC9, // SUB RCX, RCX
+            0x48, 0x3B, 0xC3, // CMP RAX, RBX
+            0x74, 0x00, // JZ code_end
+        ];
+        let view = CodeView::new(0, &code).unwrap();
+        let built =
+            block::build_block(view, 0, AccessContext::default(), BlockLimits::default()).unwrap();
+        if !matches!(built, BuildOutcome::Block(_)) {
+            panic!("the aliased helper sequence should form one block");
+        }
+        let lowered = match lowering::lower(&built).unwrap() {
+            LoweringOutcome::Program(lowered) => lowered,
+            LoweringOutcome::NoNativePrefix { .. } => panic!("fixture must have native prefix"),
+        };
+        let allocation = allocate_block(&lowered).unwrap();
+        assert!(allocation.counters().value_spill_slots > 0);
+        assert!(allocation.counters().helper_capture_slots > 0);
+        assert!(allocation.counters().helper_saves > 0);
+
+        let compiled = compile_block(view, 0).unwrap();
+        assert!(matches!(compiled, BlockCompileOutcome::Compiled(_)));
     }
 }

@@ -87,6 +87,241 @@ class OracleInputTests(unittest.TestCase):
 
 
 class HarnessSelectionTests(unittest.TestCase):
+    def test_s3_14_manifest_selects_eight_historical_and_five_boundary_cases(self):
+        path = oracle.ROOT / oracle.JIT_BLOCK_MANIFEST
+        manifest = json.loads(path.read_text())
+        self.assertEqual(manifest["stage"], "S3-14")
+        self.assertEqual(manifest["suite"], "register-only one-block triple comparison")
+        self.assertEqual(manifest["engine"], "jit-block")
+        self.assertEqual(sum(case["kind"] == "historical" for case in manifest["cases"]), 8)
+        self.assertEqual(sum(case["kind"] == "boundary" for case in manifest["cases"]), 5)
+        self.assertEqual(len(manifest["excluded"]), 2)
+        self.assertTrue(all(item["reason"] for item in manifest["excluded"]))
+        self.assertEqual(len(manifest["local_only"]), 1)
+        self.assertIn("budget", manifest["local_only"][0]["one_block_reason"])
+        for case in manifest["cases"]:
+            raw = (oracle.ROOT / case["path"]).read_bytes()
+            fixture = json.loads(raw)
+            self.assertEqual(fixture["expected_exit"], "reached_code_end", case["path"])
+            self.assertEqual(oracle.hashlib.sha256(raw).hexdigest(), case["fixture_sha256"])
+            self.assertEqual(fixture["program"]["sha256"], case["program_sha256"])
+        local_fixture = json.loads((oracle.ROOT / manifest["local_only"][0]["path"]).read_text())
+        self.assertEqual(local_fixture["expected_exit"], "instruction_budget_exhausted")
+        self.assertEqual(
+            {Path(item["path"]).name for item in manifest["excluded"]},
+            {"s0_09_sub_jnz_loop.case.json", "s1_06_jz_not_taken.case.json"},
+        )
+        self.assertEqual(oracle.load_case_manifest(oracle.JIT_BLOCK_MANIFEST), [
+            case["path"] for case in manifest["cases"]
+        ])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            cases = oracle.prepare_cases(oracle.load_case_manifest(oracle.JIT_BLOCK_MANIFEST), output)
+        self.assertEqual(len(cases), 13)
+
+    def test_jit_block_requires_explicit_manifest_or_cases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(oracle, "ROOT", Path(directory)), \
+                 patch("sys.argv", ["stage1_oracle.py", "--engine", "jit-block"]), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    oracle.main()
+        self.assertEqual(error.exception.code, 2)
+
+    def test_manifest_rejects_local_only_or_unknown_selected_case_kind(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest_path = root / "manifest.json"
+            for kind in ("local_only", "future_kind"):
+                manifest_path.write_text(json.dumps({
+                    "schema_version": 1,
+                    "engine": "jit-block",
+                    "cases": [{"kind": kind}],
+                    "excluded": [],
+                }))
+                with self.subTest(kind=kind), patch.object(oracle, "ROOT", root):
+                    with self.assertRaisesRegex(oracle.Stage1Error, "historical or boundary"):
+                        oracle.load_case_manifest(manifest_path)
+
+    def _run_oracle_main(self, *, engine="jit-block", selection="manifest", result_backend=None):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        fixture_rel = "tests/fixtures/x86/s0_09_mov_imm64.case.json"
+        fixture_path = root / fixture_rel
+        fixture_path.parent.mkdir(parents=True)
+        raw_fixture = (oracle.ROOT / fixture_rel).read_bytes()
+        fixture_path.write_bytes(raw_fixture)
+        manifest_rel = "tests/cpu/manifest.json"
+        manifest_path = root / manifest_rel
+        manifest_path.parent.mkdir(parents=True)
+        fixture = json.loads(raw_fixture)
+        manifest_path.write_text(json.dumps({
+            "schema_version": 1,
+            "stage": "S3-14",
+            "suite": "test one-block selection",
+            "engine": "jit-block",
+            "cases": [{
+                "path": fixture_rel,
+                "fixture_sha256": oracle.hashlib.sha256(raw_fixture).hexdigest(),
+                "program_sha256": fixture["program"]["sha256"],
+                "required": True,
+                "kind": "historical",
+                "category": "test_mov",
+                "terminal_boundary": "code_end",
+                "one_block_reason": "One MOV reaches the code end.",
+            }],
+            "excluded": [],
+        }))
+
+        engines = []
+        native_batches = []
+        comparisons = []
+        fingerprint = "a" * 64
+        machine = {
+            "host_os": "test-os", "host_arch": "test-arch", "cpu_model": None,
+            "kernel": "test-kernel", "page_size": 4096,
+            "rustc": "rustc test", "cargo": "cargo test",
+        }
+
+        def result_value(fixture, input_digest, backend):
+            return {
+                "schema_version": 1,
+                "case_id": fixture["case_id"],
+                "input_sha256": input_digest,
+                "profile": fixture["profile"],
+                "backend": backend,
+                "status": "completed",
+                "expected_exit": fixture["expected_exit"],
+                "build": {
+                    "revision": f"sha256:{fingerprint}",
+                    "target": "test-target",
+                    "profile": "debug",
+                    "compiler": "rustc test",
+                },
+                "machine": {"host_os": "test-os", "host_arch": "test-arch"},
+                "snapshot": {
+                    field: {"status": "available", "value": {}}
+                    for field in ("gpr", "rip", "rflags")
+                },
+            }
+
+        def fake_run(argv, *, cwd=oracle.ROOT, env=None, timeout=60.0):
+            if argv[0] in {"cargo", "scp"}:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            engine = argv[argv.index("--engine") + 1]
+            engines.append(engine)
+            selected_path = Path(argv[argv.index("--fixture") + 1])
+            fixture = json.loads(selected_path.read_text())
+            input_digest = oracle.hashlib.sha256(selected_path.read_bytes()).hexdigest()
+            if engine == "interpreter":
+                backend = "interpreter"
+            else:
+                backend = result_backend or oracle.expected_backend(engine)
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps(result_value(fixture, input_digest, backend)), ""
+            )
+
+        def fake_ssh_run(target, command, *, timeout=60.0):
+            if "python3 -c" in command:
+                return fingerprint + "\n"
+            if "rustc --version" in command:
+                return "rustc remote\n"
+            if "cargo --version" in command:
+                return "cargo remote\n"
+            return "test result: ok\n"
+
+        def fake_native_batch(target, remote_root, runner, fixture_dir, cases, output_dir, *, process_runner=None):
+            native_batches.append(output_dir.name)
+            for _, fixture, _ in cases:
+                (output_dir / fixture["case_id"]).mkdir()
+            return {
+                path.name: result_value(fixture, digest, "native_x86")
+                for path, fixture, digest in cases
+            }
+
+        def fake_compare(runner, left, right, fixture_path, output_path, env, *, process_runner=None):
+            fixture = json.loads(fixture_path.read_text())
+            comparisons.append((fixture["case_id"], left.name, right.name))
+            return {"case_id": fixture["case_id"], "differences": []}
+
+        argv = ["stage1_oracle.py"]
+        if selection == "manifest":
+            argv.extend(["--engine", engine, "--manifest", manifest_rel])
+        elif selection == "cases":
+            argv.extend([fixture_rel, "--engine", engine])
+        elif selection == "default":
+            argv.append(fixture_rel)
+        else:
+            raise AssertionError(selection)
+        argv.extend(["--repeats", "2", "--output-root", "work/test-oracle"])
+        output = io.StringIO()
+        with patch.object(oracle, "ROOT", root), \
+             patch("sys.argv", argv), \
+             patch.object(oracle, "source_fingerprint", return_value=fingerprint), \
+             patch.object(oracle, "local_machine", return_value=machine), \
+             patch.object(oracle, "ssh_run", side_effect=fake_ssh_run), \
+             patch.object(oracle, "run", side_effect=fake_run), \
+             patch.object(oracle, "run_remote_batch", side_effect=fake_native_batch), \
+             patch.object(oracle, "compare", side_effect=fake_compare), \
+             contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+            status = oracle.main()
+        manifest_paths = list((root / "work/test-oracle").glob("*/manifest.json"))
+        saved = json.loads(manifest_paths[0].read_text())
+        return status, engines, native_batches, comparisons, saved
+
+    def test_jit_block_orchestration_checks_backend_and_repeats_all_three_engines(self):
+        status, engines, native_batches, comparisons, saved = self._run_oracle_main()
+        self.assertEqual(status, 0, saved)
+        self.assertEqual(engines, ["interpreter", "jit-block"] * 2)
+        self.assertEqual(len(native_batches), 2)
+        self.assertEqual(len(comparisons), 9)  # cross-backend, native, and all three repeat checks
+        self.assertEqual(saved["status"], "passed")
+        self.assertEqual(saved["stage"], "S3-14")
+        self.assertEqual(saved["suite"], "register-only one-block triple comparison")
+        self.assertEqual(saved["engine"], "jit-block")
+        self.assertEqual(saved["jit_backend"], "jit_ir_block")
+        self.assertEqual(saved["repeats"], 2)
+        entry = saved["fixtures"][1]
+        self.assertIn("local_jit_block", entry["build"])
+        self.assertEqual(entry["differences"]["interpreter_vs_jit_block"], 0)
+        self.assertEqual(entry["differences"]["jit_block_vs_native"], 0)
+        self.assertEqual(entry["repeat_differences"], {
+            "interpreter": 0, "jit_block": 0, "native_x86": 0,
+        })
+
+    def test_jit_block_orchestration_rejects_legacy_backend_tag_and_records_failure(self):
+        status, _, _, _, saved = self._run_oracle_main(result_backend="jit")
+        self.assertEqual(status, 1)
+        self.assertEqual(saved["status"], "failed")
+        self.assertIn("expected 'jit_ir_block'", saved["error"])
+
+    def test_legacy_run_manifest_does_not_claim_s3_14_one_block_suite(self):
+        status, _, _, _, saved = self._run_oracle_main(engine="jit", selection="default")
+        self.assertEqual(status, 0)
+        self.assertEqual(saved["stage"], "Stage1")
+        self.assertEqual(saved["suite"], "legacy fixture oracle")
+        self.assertNotIn("one-block", saved["suite"])
+
+    def test_explicit_jit_block_cases_do_not_claim_curated_manifest_suite(self):
+        status, _, _, _, saved = self._run_oracle_main(engine="jit-block", selection="cases")
+        self.assertEqual(status, 0)
+        self.assertEqual(saved["stage"], "S3-14")
+        self.assertEqual(saved["suite"], "explicit jit-block case comparison")
+        self.assertNotIn("one-block triple", saved["suite"])
+
+    def test_explicit_jit_block_case_selection_and_legacy_default_engine(self):
+        block_status, block_engines, _, _, block_saved = self._run_oracle_main(selection="cases")
+        self.assertEqual(block_status, 0)
+        self.assertEqual(block_engines, ["interpreter", "jit-block"] * 2)
+        self.assertEqual(block_saved["engine"], "jit-block")
+
+        jit_status, jit_engines, _, _, jit_saved = self._run_oracle_main(engine="jit", selection="default")
+        self.assertEqual(jit_status, 0)
+        self.assertEqual(jit_engines, ["interpreter", "jit"] * 2)
+        self.assertEqual(jit_saved["engine"], "jit")
+        self.assertIn("local_jit", jit_saved["fixtures"][0]["build"])
+
     def test_generated_corpus_keeps_manual_boundary_cases(self):
         commands = []
         with tempfile.TemporaryDirectory() as directory:
