@@ -397,6 +397,10 @@ implicit selection и failure при неверном backend tag. Все три
 code в run folder до продолжения или abort; timeout сохраняет partial output,
 timeout status, limit и команду (exit code остаётся null). Harness tests
 покрывают routing, nonzero exit и timeout.
+После этой правки повторная доставка ревизии `b8924dc` в отдельный remote
+checkout остановилась на SSH connect timeout. Native fixtures не запускались;
+физическая приёмка остаётся открытой. Детали попыток записаны в
+[`S3-14 report`](../reports/STAGE_3_S3-14_2026-10-26.md).
 S3-14 остаётся открытым.
 
 **Готово:** срез A подтверждён тройным сравнением. Неподдержанные обязательные cases, недоступный SSH и mismatch оставляют задачу открытой.
