@@ -297,13 +297,41 @@ instruction cache и удерживает mapping живым весь generated 
 allocate/publish/invoke остаётся host-side. Старые C ABI и fragment mapping
 остаются совместимыми.
 
-Для macOS используется существующая граница публикации кода в `od-host`.
-Apple описывает `MAP_JIT`, hardened-runtime entitlement и необходимость
-`sys_icache_invalidate` после записи кода. Не смешивать
-`pthread_jit_write_protect_np` с JIT write callback allowlist: Apple указывает,
-что allowlist entitlement запрещает вызов первого API. Реальное поведение
-проверить на выбранных Apple Silicon host и signing configuration; Stage 0
-оставляет поставку/notarization открытой.
+S3-07 добавляет `od_host::PublishedCode`: конструктор `publish(&[u8])` создаёт
+private `MAP_JIT` region, копирует bytes с выключенной write protection,
+восстанавливает protection через RAII guard, вызывает `sys_icache_invalidate` и
+только затем отдаёт owning handle. Любая ошибка до handle publication возвращает
+host error; успешный handle освобождает mapping при Drop. Generic `PublishedCode`
+не предоставляет safe invocation arbitrary bytes; только узкие verified entry
+API могут исполнять generated code, удерживая owner на весь вызов.
+
+Apple разрешает Hardened Runtime процессу с
+`com.apple.security.cs.allow-jit` только одну `MAP_JIT` region. Поэтому текущий
+`od-host` резервирует максимум один одновременно живой mapping: вторая
+публикация возвращает `MappingAlreadyLive`, а legacy C ABI использует уже
+существующий `STATUS_BUSY`; после Drop mapping slot доступен снова. Это
+ограничение касается mappings, создаваемых `od-host`; OS остаётся последним
+контролем, если другая библиотека уже заняла разрешённую process JIT region.
+Multi-block cache не может считать каждый block отдельным mapping: для него
+нужен отдельный bounded-slot allocator внутри одной region или иная проверенная
+стратегия (см. ISSUE-021).
+
+`pthread_jit_write_protect_np` меняет доступ текущего потока. Publisher
+восстанавливает protection для своего потока до публикации и не предоставляет
+post-publication writes. Это не process-wide synchronization с посторонним JIT
+кодом. Внутри `od-host` generated execution начинается только после полного
+copy/cache-sync; конкурентная публикация второго собственного mapping
+отвергается. Выбор `pthread_jit_write_protect_np` несовместим с JIT write
+callback allowlist entitlement, который его запрещает.
+
+Локально проверено на macOS 26.7.1 ARM64 / Xcode macOS SDK 27.0; SDK помечает
+`pthread_jit_write_protect_np` как доступный с macOS 11.0; Cargo test binary
+имеет `LC_BUILD_VERSION minos 11.0`. Подписанный Swift smoke binary имеет
+`minos 26.0`, потому что его локальная команда сборки не задаёт deployment target.
+В проекте не найден явный deployment target конечного приложения. Ad-hoc подписанный Hardened Runtime
+VMHost smoke с allow-jit entitlement исполнил fragment через launcher на этой
+машине. Developer ID/notarization, packaged application и другой Mac остаются
+непроверенными под ISSUE-004.
 
 ## 6. Host и этапная приёмка
 

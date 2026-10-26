@@ -21,6 +21,15 @@
 - **Основание и проверка:** boundary handling в [`ir.rs`](../crates/od-jit/src/ir.rs), target classification в [`block.rs`](../crates/od-jit/src/block.rs), fallback lowering в [`lowering.rs`](../crates/od-jit/src/lowering.rs), а также [S3-05 contract](specs/JIT_CONTRACT.md#s3-05-decoded-effects-to-typed-ir). Targeted tests покрывают unresolved-first, unresolved-after-prefix и другие branch classes.
 - **Следующий шаг:** S3-15 определяет resolution к будущему block entry без декодирования недостижимого хвоста; до этого unresolved Jcc остаётся interpreter-only.
 
+### ISSUE-021 — Ограничение одной MAP_JIT region в publisher contract
+
+- **Дата обнаружения:** 2026-10-26.
+- **Компонент:** `od-host::PublishedCode` (S3-07), будущий block cache (S3-18).
+- **Статус:** открыта; текущий publisher допускает один живой mapping, bounded slots не реализованы.
+- **Суть и последствия:** Apple ограничивает процесс с Hardened Runtime и allow-jit entitlement одной `MAP_JIT` region. `od-host` отвергает вторую собственную публикацию как `MappingAlreadyLive` (C ABI: существующий `STATUS_BUSY`). Поэтому несколько разных fragments нельзя одновременно держать в отдельных mappings; будущий multi-block cache требует bounded slots внутри одной region или иной проверенной стратегии. `pthread_jit_write_protect_np` действует на текущий поток, а локальный gate не координирует посторонних JIT-пользователей процесса.
+- **Основание:** Apple [JIT porting documentation](https://developer.apple.com/documentation/apple-silicon/porting-just-in-time-compilers-to-apple-silicon) и [entitlement documentation](https://developer.apple.com/documentation/BundleResources/Entitlements/com.apple.security.cs.allow-jit?changes=latest_7_7_7&language=objc); реализация и тесты в [`od-host/src/lib.rs`](../crates/od-host/src/lib.rs); локальный ad-hoc signed Hardened Runtime smoke подтверждает только текущую конфигурацию.
+- **Следующий шаг:** до реализации S3-18 определить и проверить slot allocation/reuse, lifetime/pinning и synchronization между публикацией и исполнением внутри единственной region. Не создавать per-block MAP_JIT mappings.
+
 ### ISSUE-018 — Специальные значения и исключения indexed FCOMI-family вне bounded профиля
 
 - **Дата обнаружения:** 2026-10-24.
@@ -188,6 +197,7 @@
 - **Статус:** открыта; локальные fault-diagnostics закрыты, но этап 0 не принят до проверки пути выпуска.
 - **Суть и последствия:** unit test подтверждает fault в generated code внутри дочернего процесса, а protocol-level test helper подтверждает `SIGSEGV` диагностику launcher-а. Временная ad-hoc `.app` smoke-упаковка валидна и исполняет JIT, но не подтверждает Developer ID distribution или notarization. Владелец сообщает о наличии Developer ID certificate, но соответствующая signing identity (сертификат с доступным private key) не найдена в keychains проверенных M3 Max и M1 Pro. Членство Apple Developer Program не активно; Apple notary service недоступен до его возобновления.
 - **Основание:** проверки `generated_code_fault_is_confined_to_child_process`, `vmhost_generated_fault_smoke.py` и `vmhost_app_bundle_smoke.sh` прошли на M3 Max. Инвентаризация подписи и пределы теста записаны в [STAND.md](testing/STAND.md) и [отчёте этапа 0](reports/STAGE_0_REPORT.md).
+- **Проверка S3-07 (2026-10-26):** на macOS 26.7.1 ARM64 ad-hoc подписанный Hardened Runtime VMHost с `com.apple.security.cs.allow-jit` прошёл launcher smoke и исполнил фрагмент; Developer ID/notarization и packaged distribution этим не подтверждены.
 - **Следующий шаг:** установить на M3 Max действующую Developer ID Application identity вместе с соответствующим private key и проверить подписание конечного Open Desktop bundle. Если требуется проверить notarization, владелец должен возобновить членство Apple Developer Program и предоставить авторизацию для notary service; учетные данные не передавать через чат. Затем повторить S0-14 review. До появления доступной identity Developer ID signing не проверено, а без активного членства notarization недоступна. Ответственный: владелец конфигурации подписи совместно с инженером macOS.
 
 ### ISSUE-018 — S2-22 покрывает только ограниченные selector/descriptor slices

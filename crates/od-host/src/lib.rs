@@ -1,5 +1,6 @@
 //! Host operating-system primitives and the engine's host ABI boundary.
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::ptr::NonNull;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -8,19 +9,106 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 pub enum ExecutableMemoryError {
     UnsupportedPlatform,
     AllocationFailed,
+    MappingAlreadyLive,
 }
 
-/// A page of memory populated with generated code and mapped executable.
+/// A fully initialized, immutable owner of a published native-code mapping.
 ///
-/// The object owns the mapping. Callers must ensure no generated-code pointer
-/// is used after this value is dropped.
-pub struct ExecutableMemory {
+/// On macOS ARM64 this owns the process's single MAP_JIT region. A second
+/// simultaneous publication is rejected until this value is dropped. The
+/// pointer is only valid while this owner remains alive.
+pub struct PublishedCode {
+    region: MappedRegion,
+}
+
+/// Compatibility name for the published executable mapping API.
+pub type ExecutableMemory = PublishedCode;
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+static MAP_JIT_REGION_LIVE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+struct MapJitLease;
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl MapJitLease {
+    fn acquire() -> Result<Self, ExecutableMemoryError> {
+        MAP_JIT_REGION_LIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self)
+            .map_err(|_| ExecutableMemoryError::MappingAlreadyLive)
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl Drop for MapJitLease {
+    fn drop(&mut self) {
+        MAP_JIT_REGION_LIVE.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+struct MappedRegion {
     ptr: NonNull<u8>,
     len: usize,
+    _lease: MapJitLease,
 }
 
-impl ExecutableMemory {
-    pub fn new(code: &[u8]) -> Result<Self, ExecutableMemoryError> {
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+struct MappedRegion;
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl Drop for MappedRegion {
+    fn drop(&mut self) {
+        use std::ffi::c_void;
+        unsafe extern "C" {
+            fn munmap(addr: *mut c_void, len: usize) -> i32;
+        }
+        unsafe {
+            // The mapping and its lease are both owned by this value. A failed
+            // munmap cannot be reported from Drop; keep teardown best-effort.
+            // SAFETY: `ptr` and `len` are the exact successful `mmap` result
+            // kept alive by this owner and have not been unmapped earlier.
+            let _ = munmap(self.ptr.as_ptr().cast(), self.len);
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+struct JitWriteAccess;
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl JitWriteAccess {
+    fn begin() -> Self {
+        unsafe extern "C" {
+            fn pthread_jit_write_protect_np(enabled: i32);
+        }
+        // SAFETY: this changes JIT write permission for only the current
+        // thread; Drop restores it before the mapping is published.
+        unsafe { pthread_jit_write_protect_np(0) };
+        Self
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl Drop for JitWriteAccess {
+    fn drop(&mut self) {
+        unsafe extern "C" {
+            fn pthread_jit_write_protect_np(enabled: i32);
+        }
+        // SAFETY: restoring the current thread's JIT write protection is valid
+        // on the same macOS ARM64 platform where `begin` disabled it.
+        unsafe { pthread_jit_write_protect_np(1) };
+    }
+}
+
+impl PublishedCode {
+    /// Constructs code in a private MAP_JIT mapping, closes write access,
+    /// synchronizes the instruction cache, and only then publishes an owner.
+    ///
+    /// This safe API only publishes bytes. Calling arbitrary bytes remains
+    /// unsafe and requires a separately verified entry contract.
+    pub fn publish(code: &[u8]) -> Result<Self, ExecutableMemoryError> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             use std::ffi::c_void;
@@ -30,6 +118,7 @@ impl ExecutableMemory {
             const MAP_PRIVATE: i32 = 0x0002;
             const MAP_ANON: i32 = 0x1000;
             const MAP_JIT: i32 = 0x0800;
+            const MAP_FAILED: *mut c_void = -1_isize as *mut c_void;
 
             unsafe extern "C" {
                 fn mmap(
@@ -40,11 +129,14 @@ impl ExecutableMemory {
                     fd: i32,
                     offset: i64,
                 ) -> *mut c_void;
-                fn pthread_jit_write_protect_np(enabled: i32);
                 fn sys_icache_invalidate(start: *mut c_void, len: usize);
+                fn munmap(addr: *mut c_void, len: usize) -> i32;
             }
 
+            let lease = MapJitLease::acquire()?;
             let len = code.len().max(4);
+            // SAFETY: the arguments request one anonymous private MAP_JIT
+            // mapping; `len` is nonzero, fd is -1, and offset is zero.
             let raw = unsafe {
                 mmap(
                     std::ptr::null_mut(),
@@ -55,18 +147,36 @@ impl ExecutableMemory {
                     0,
                 )
             };
-            if raw as isize == -1 {
+            if raw == MAP_FAILED {
                 return Err(ExecutableMemoryError::AllocationFailed);
             }
-            let ptr =
-                NonNull::new(raw.cast::<u8>()).ok_or(ExecutableMemoryError::AllocationFailed)?;
+            let Some(ptr) = NonNull::new(raw.cast::<u8>()) else {
+                // mmap succeeded but returned an address the public non-null
+                // pointer contract cannot represent. Release it immediately.
+                // SAFETY: this is the successful raw mapping above with the
+                // exact length passed to mmap.
+                unsafe {
+                    let _ = munmap(raw, len);
+                }
+                return Err(ExecutableMemoryError::AllocationFailed);
+            };
+            let region = MappedRegion {
+                ptr,
+                len,
+                _lease: lease,
+            };
             unsafe {
-                pthread_jit_write_protect_np(0);
+                let write_access = JitWriteAccess::begin();
+                // SAFETY: `region` owns a mapping of at least `code.len()`
+                // bytes, the immutable source slice cannot alias the fresh
+                // mapping, and the current thread has write access enabled.
                 std::ptr::copy_nonoverlapping(code.as_ptr(), ptr.as_ptr(), code.len());
-                pthread_jit_write_protect_np(1);
+                drop(write_access);
+                // SAFETY: this is the just-written range in the live mapping;
+                // invalidating it is required before its entry becomes visible.
                 sys_icache_invalidate(ptr.as_ptr().cast(), code.len());
             }
-            return Ok(Self { ptr, len });
+            return Ok(Self { region });
         }
 
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -76,22 +186,21 @@ impl ExecutableMemory {
         }
     }
 
-    /// Returns the start of the owned mapping. The pointer remains valid only
-    /// while this `ExecutableMemory` value is alive.
-    pub fn as_ptr(&self) -> *const u8 {
-        self.ptr.as_ptr()
+    /// Legacy constructor retained for existing `ExecutableMemory` callers.
+    pub fn new(code: &[u8]) -> Result<Self, ExecutableMemoryError> {
+        Self::publish(code)
     }
-}
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-impl Drop for ExecutableMemory {
-    fn drop(&mut self) {
-        use std::ffi::c_void;
-        unsafe extern "C" {
-            fn munmap(addr: *mut c_void, len: usize) -> i32;
+    /// Returns the start of the owned mapping. The pointer remains valid only
+    /// while this `PublishedCode` value is alive. Invoking it is unsafe.
+    pub fn as_ptr(&self) -> *const u8 {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.region.ptr.as_ptr()
         }
-        unsafe {
-            munmap(self.ptr.as_ptr().cast(), self.len);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            std::ptr::null()
         }
     }
 }
@@ -324,6 +433,9 @@ pub unsafe extern "C" fn od_fragment_execute(
         Err(FragmentExecutionError::Memory(ExecutableMemoryError::AllocationFailed)) => {
             return STATUS_ALLOCATION_FAILED;
         }
+        Err(FragmentExecutionError::Memory(ExecutableMemoryError::MappingAlreadyLive)) => {
+            return STATUS_BUSY;
+        }
         Err(FragmentExecutionError::Jit(od_jit::JitError::Decode(_))) => {
             return STATUS_INVALID_CODE;
         }
@@ -393,8 +505,17 @@ pub unsafe extern "C" fn od_fragment_destroy(handle: *mut std::ffi::c_void) -> u
 mod tests {
     use super::*;
 
+    static JIT_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn jit_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        JIT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn generated_code_fault_is_confined_to_child_process() {
+        let _guard = jit_test_lock();
         const CHILD_MODE: &str = "OD_HOST_GENERATED_FAULT_CHILD";
 
         if std::env::var_os(CHILD_MODE).is_some() {
@@ -448,6 +569,7 @@ mod tests {
 
     #[test]
     fn native_jit_matches_interpreter_for_s0_09_programs() {
+        let _guard = jit_test_lock();
         let programs: &[(&[u8], [u64; 4])] = &[
             (
                 &[0x48, 0xB8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88],
@@ -475,6 +597,7 @@ mod tests {
 
     #[test]
     fn native_jit_supports_manifest_rip_budget_and_invalid_rip() {
+        let _guard = jit_test_lock();
         let code = [
             0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0, 0x48, 0xB9, 2, 0, 0, 0, 0, 0, 0, 0,
         ];
@@ -507,6 +630,7 @@ mod tests {
 
     #[test]
     fn compiled_fragment_reuses_published_code() {
+        let _guard = jit_test_lock();
         let code = [0x48, 0x2B, 0xC1, 0x75, 0xFB];
         let fragment = CompiledFragment::compile(&code).unwrap();
         let initial = od_isa::CpuState {
@@ -527,6 +651,7 @@ mod tests {
 
     #[test]
     fn c_abi_create_execute_stop_destroy_lifecycle() {
+        let _guard = jit_test_lock();
         use std::ffi::c_void;
         use std::thread;
 
@@ -562,6 +687,7 @@ mod tests {
 
     #[test]
     fn c_abi_stop_requested_before_execute_is_honored_once() {
+        let _guard = jit_test_lock();
         use std::ffi::c_void;
 
         let code = [0x75, 0xFE]; // jnz to itself; initial ZF is clear.
@@ -587,6 +713,49 @@ mod tests {
         );
         assert_eq!(result.reason, 1);
         assert_eq!(result.instructions_executed, 1);
+        assert_eq!(unsafe { od_fragment_destroy(raw_handle) }, STATUS_OK);
+    }
+
+    #[test]
+    fn publication_rejects_second_live_mapping_and_reuses_slot_after_drop() {
+        let _guard = jit_test_lock();
+        let first = PublishedCode::publish(&[0xC0, 0x03, 0x5F, 0xD6]).unwrap(); // ret
+        assert!(!first.as_ptr().is_null());
+        assert_eq!(
+            PublishedCode::publish(&[0xC0, 0x03, 0x5F, 0xD6]).err(),
+            Some(ExecutableMemoryError::MappingAlreadyLive)
+        );
+
+        drop(first);
+        let second = PublishedCode::publish(&[0xC0, 0x03, 0x5F, 0xD6]).unwrap();
+        assert!(!second.as_ptr().is_null());
+    }
+
+    #[test]
+    fn c_abi_reports_live_process_mapping_as_busy() {
+        let _guard = jit_test_lock();
+        use std::ffi::c_void;
+
+        let code = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let mut raw_handle: *mut c_void = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { od_fragment_create(code.as_ptr(), code.len(), &mut raw_handle) },
+            STATUS_OK
+        );
+
+        let mapping = PublishedCode::publish(&[0xC0, 0x03, 0x5F, 0xD6]).unwrap();
+        let initial = OdCpuStateV0::default();
+        let mut result = OdExecutionResultV0::default();
+        assert_eq!(
+            unsafe { od_fragment_execute(raw_handle, &initial, 1, &mut result) },
+            STATUS_BUSY
+        );
+
+        drop(mapping);
+        assert_eq!(
+            unsafe { od_fragment_execute(raw_handle, &initial, 1, &mut result) },
+            STATUS_OK
+        );
         assert_eq!(unsafe { od_fragment_destroy(raw_handle) }, STATUS_OK);
     }
 }

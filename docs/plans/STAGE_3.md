@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05 и S3-06 завершены; S3-01 в работе.
+**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06 и S3-07 завершены; S3-01 в работе.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -133,7 +133,7 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-04 | Построение bounded basic block | S3-03 |
 | [x] | S3-05 | Перевод decoder output в IR | S3-04 |
 | [x] | S3-06 | Проверяемый ARM64 encoder | S3-02 |
-| [ ] | S3-07 | Executable publication и ownership | S3-02, S3-06 |
+| [x] | S3-07 | Executable publication и ownership | S3-02, S3-06 |
 | [ ] | S3-08 | Generated entry и helper ABI | S3-07 |
 | [ ] | S3-09 | Простой allocator baseline | S3-03, S3-08 |
 | [ ] | S3-10 | Lowering первого integer subset | S3-05, S3-06, S3-09 |
@@ -255,7 +255,11 @@ Host PC map нужен для диагностики и восстановлен
 3. Возвращать owning handle; allocation/publication failure не возвращает usable entry. Проверить очистку частично созданного mapping.
 4. Сначала immutable blocks; никаких конкурентных write/execute в одной области и patching активного кода.
 
-**Готово:** generated smoke исполняется вне debugger в предусмотренной host-конфигурации; failures детерминированны, память освобождается. Это не закрывает ISSUE-004 о distribution signing.
+**Фактически сделано:** `od-host::PublishedCode::publish` строит байты в private `MAP_JIT`, RAII guard возвращает write protection до cache sync, `sys_icache_invalidate` происходит до выдачи owner. Owner удерживает один mapping и освобождает его в Drop. Проверены отказ второй публикации и повторное использование slot после Drop; C ABI переводит конкурентный host resource отказ в существующий `STATUS_BUSY`, layout/signatures C ABI не менялись. `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, `cargo test -p od-host --offline` (8/8), `git diff --check`; layout check прошёл в основном checkout. Независимое review clean после исправления ссылки на ISSUE-021.
+
+Apple SDK 27.0 объявляет `pthread_jit_write_protect_np` доступным с macOS 11.0; явный deployment target проекта не найден. В Hardened Runtime с allow-jit допускается одна MAP_JIT region на процесс, поэтому этот срез явно ограничивает `od-host` одним живым mapping. Указанная write protection действует на текущий thread и не является process-wide synchronization с посторонними JIT users; `od-host` не пишет опубликованный code повторно. Подробная граница — [ISSUE-021](../KNOWN_ISSUES.md#issue-021--ограничение-одной-map_jit-region-в-publisher-contract).
+
+Ad-hoc подписанный Hardened Runtime VMHost smoke с allow-jit entitlement и JIT execution через launcher прошёл на macOS 26.7.1 ARM64 / Xcode SDK 27.0 вне debugger. Это локальная проверка текущей машины, не Developer ID signing, notarization, packaged-app acceptance или подтверждение другой версии macOS; ISSUE-004 остаётся открытой. Много-block cache потребует отдельного bounded-slot дизайна внутри одной region либо иной проверенной стратегии; не использовать per-block mmap как multi-block implementation.
 
 ### S3-08. Реализовать generated entry и helper calls
 
