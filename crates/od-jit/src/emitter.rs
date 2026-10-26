@@ -172,7 +172,12 @@ pub fn emit_data_effects(
         .operations
         .iter()
         .position(|operation| {
-            matches!(operation, Operation::Branch { .. } | Operation::Exit { .. })
+            matches!(
+                operation,
+                Operation::Branch { .. }
+                    | Operation::DispatchBranch { .. }
+                    | Operation::Exit { .. }
+            )
         })
         .ok_or(EmitterError::InvalidProgram(VerifyError::MissingTerminal))?;
     let terminal = match program.operations.get(terminal_index) {
@@ -192,6 +197,16 @@ pub fn emit_data_effects(
             condition,
             target_rip,
             fallthrough_rip,
+        }) => DataEffectTerminal::Branch {
+            condition: *condition,
+            target_rip: *target_rip,
+            fallthrough_rip: *fallthrough_rip,
+        },
+        Some(Operation::DispatchBranch {
+            condition,
+            target_rip,
+            fallthrough_rip,
+            ..
         }) => DataEffectTerminal::Branch {
             condition: *condition,
             target_rip: *target_rip,
@@ -289,7 +304,9 @@ pub fn emit_data_effects(
                     },
                 )?);
             }
-            Operation::Branch { .. } | Operation::Exit { .. } => {}
+            Operation::Branch { .. }
+            | Operation::DispatchBranch { .. }
+            | Operation::Exit { .. } => {}
         }
     }
 
@@ -533,7 +550,9 @@ pub fn emit_data_effects(
                     xreg(13)?,
                 )?;
             }
-            Operation::Exit { .. } | Operation::Branch { .. } => {}
+            Operation::Exit { .. }
+            | Operation::Branch { .. }
+            | Operation::DispatchBranch { .. } => {}
         }
     }
 

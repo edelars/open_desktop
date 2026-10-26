@@ -61,6 +61,9 @@ pub enum RuntimeExitTag {
     StopRequested = 3,
     StopAddress = 4,
     Unsupported = 5,
+    /// A Jcc selected and committed a guest RIP for the dispatcher. The
+    /// caller must use the returned canonical RIP and must not retry the Jcc.
+    DispatchCandidate = 8,
 }
 
 impl TryFrom<u32> for RuntimeExitTag {
@@ -74,6 +77,7 @@ impl TryFrom<u32> for RuntimeExitTag {
             3 => Ok(Self::StopRequested),
             4 => Ok(Self::StopAddress),
             5 => Ok(Self::Unsupported),
+            8 => Ok(Self::DispatchCandidate),
             _ => Err(raw),
         }
     }
@@ -179,7 +183,10 @@ mod tests {
             RuntimeExitTag::try_from(RESERVED_EVENT_PENDING_EXIT_V1),
             Err(RESERVED_EVENT_PENDING_EXIT_V1)
         );
-        assert_eq!(RuntimeExitTag::try_from(8), Err(8));
+        assert_eq!(
+            RuntimeExitTag::try_from(RuntimeExitTag::DispatchCandidate as u32),
+            Ok(RuntimeExitTag::DispatchCandidate)
+        );
         assert_eq!(
             HelperOperationTag::try_from(3),
             Ok(HelperOperationTag::Compare)

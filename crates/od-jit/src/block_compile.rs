@@ -3,7 +3,10 @@
 use od_isa::memory::AccessContext;
 
 use crate::allocator::{Allocation, AllocatorConfig, AllocatorError, HelperBoundaryPosition};
-use crate::block::{self, BlockLimits, BlockStopReason, BuildError, CodeView, DecodeBoundary};
+use crate::block::{
+    self, AdmittedInstructionBoundaries, BlockLimits, BlockStopReason, BuildError, BuildOutcome,
+    CodeView, DecodeBoundary,
+};
 use crate::block_emitter::{BlockEmitterError, EmittedRuntimeBlock, emit_runtime_block};
 use crate::ir::Operation;
 use crate::lowering::{self, LoweredProgram, LoweringError, LoweringOutcome};
@@ -50,6 +53,9 @@ pub enum BlockCompileError {
     Allocation(AllocatorError),
     Emitter(BlockEmitterError),
     EmittedCodeTooLarge { actual: usize, max: usize },
+    DispatchAdmissionDoesNotMatchCode,
+    DispatchEntryNotAdmitted { entry_rip: u64 },
+    DispatchBlockBoundaryNotAdmitted { rip: u64 },
 }
 
 /// Build and compile a single bounded block with the current runtime profile.
@@ -59,6 +65,31 @@ pub fn compile_block(
     code: CodeView<'_>,
     entry_rip: u64,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_block_inner(code, entry_rip, None)
+}
+
+/// Compile one block with a typed Jcc dispatch handoff, using boundaries from
+/// complete fixture-v1 decoder admission. This does not dispatch or retry the
+/// selected target; it commits once and returns `DispatchCandidate`.
+pub fn compile_block_for_dispatch(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &AdmittedInstructionBoundaries,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::DispatchAdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) {
+        return Err(BlockCompileError::DispatchEntryNotAdmitted { entry_rip });
+    }
+    compile_block_inner(code, entry_rip, Some(admission))
+}
+
+fn compile_block_inner(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: Option<&AdmittedInstructionBoundaries>,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
     let built = block::build_block(
         code,
         entry_rip,
@@ -66,7 +97,23 @@ pub fn compile_block(
         BlockLimits::default(),
     )
     .map_err(BlockCompileError::Build)?;
-    let lowered = match lowering::lower(&built).map_err(BlockCompileError::Lowering)? {
+    if let Some(admission) = admission {
+        if let BuildOutcome::Block(block) = &built {
+            for instruction in &block.instructions {
+                for rip in [instruction.guest_rip, instruction.next_rip] {
+                    if !admission.contains(rip) {
+                        return Err(BlockCompileError::DispatchBlockBoundaryNotAdmitted { rip });
+                    }
+                }
+            }
+        }
+    }
+    let lowered_outcome = match admission {
+        Some(admission) => lowering::lower_for_dispatch(&built, admission),
+        None => lowering::lower(&built),
+    }
+    .map_err(BlockCompileError::Lowering)?;
+    let lowered = match lowered_outcome {
         LoweringOutcome::NoNativePrefix {
             rip,
             reason,
@@ -166,6 +213,83 @@ mod tests {
                 deferred_error: None,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn dispatch_compile_requires_fixture_boundaries_and_legacy_path_stays_one_block() {
+        let forward = [0x74, 0x02, 0x74, 0x00, 0x74, 0x00];
+        let view = CodeView::new(0, &forward).unwrap();
+        let decoded = od_isa::decode(&forward).unwrap();
+        let admission =
+            block::AdmittedInstructionBoundaries::from_fixture_decode(view, &decoded).unwrap();
+        assert!(matches!(
+            compile_block_for_dispatch(view, 0, &admission).unwrap(),
+            BlockCompileOutcome::Compiled(_)
+        ));
+
+        let changed_bytes = [0x75, 0x02, 0x74, 0x00, 0x74, 0x00];
+        assert_eq!(
+            compile_block_for_dispatch(CodeView::new(0, &changed_bytes).unwrap(), 0, &admission),
+            Err(BlockCompileError::DispatchAdmissionDoesNotMatchCode)
+        );
+
+        let mut invalid_target = vec![0x75, 0x02, 0x48, 0xB8];
+        invalid_target.extend_from_slice(&0_u64.to_le_bytes()); // JNZ targets inside this MOV.
+        let substitute_bytes = [
+            0x74, 0x00, 0x74, 0x00, 0x74, 0x00, 0x74, 0x00, 0x74, 0x00, 0x74, 0x00,
+        ];
+        assert_eq!(invalid_target.len(), substitute_bytes.len());
+        let substitute_decode = od_isa::decode(&substitute_bytes).unwrap();
+        assert!(matches!(
+            block::AdmittedInstructionBoundaries::from_fixture_decode(
+                CodeView::new(0, &invalid_target).unwrap(),
+                &substitute_decode,
+            ),
+            Err(block::AdmissionError::FixtureDecodeRejected(_))
+        ));
+
+        // A rel8 target into its own instruction is rejected by fixture-v1
+        // admission and by the bounded one-block builder; it is never promoted
+        // into a dispatch candidate from numeric buffer membership.
+        let mid_instruction = [0x74, 0xFF];
+        assert!(od_isa::decode(&mid_instruction).is_err());
+        assert!(matches!(
+            compile_block(CodeView::new(0, &mid_instruction).unwrap(), 0).unwrap(),
+            BlockCompileOutcome::NoNativePrefix {
+                reason: BlockStopReason::UnsupportedBranchTarget { .. },
+                ..
+            }
+        ));
+
+        // The old compile_block API still does not admit the forward target
+        // without whole-fixture boundary evidence.
+        assert!(matches!(
+            compile_block(view, 0).unwrap(),
+            BlockCompileOutcome::NoNativePrefix {
+                reason: BlockStopReason::Branch { .. },
+                ..
+            }
+        ));
+
+        let overlapping_fixture = [0x48, 0xB8, 0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0x74, 0x00];
+        let overlapping_view = CodeView::new(0, &overlapping_fixture).unwrap();
+        let full_decode = od_isa::decode(&overlapping_fixture).unwrap();
+        let full_admission = block::AdmittedInstructionBoundaries::from_fixture_decode(
+            overlapping_view,
+            &full_decode,
+        )
+        .unwrap();
+        assert_eq!(
+            compile_block_for_dispatch(overlapping_view, 2, &full_admission),
+            Err(BlockCompileError::DispatchEntryNotAdmitted { entry_rip: 2 })
+        );
+        // The generic block builder still treats an explicit in-view entry as
+        // a fresh boundary; only fixture-dispatch compilation enforces the
+        // whole-fixture admission boundary.
+        assert!(matches!(
+            compile_block(overlapping_view, 2).unwrap(),
+            BlockCompileOutcome::Compiled(_)
         ));
     }
 

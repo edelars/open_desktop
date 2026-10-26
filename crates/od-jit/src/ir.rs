@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 
+use crate::block::AdmittedInstructionBoundaries;
+
 /// Identity of a temporary value. Temporaries are separate from guest GPRs.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TempId(pub u32);
@@ -108,6 +110,14 @@ pub enum Operation {
         target_rip: u64,
         fallthrough_rip: u64,
     },
+    /// Commit a conditional guest branch and return its selected RIP as a
+    /// dispatcher candidate. Both edges carry a full fixture-decode witness.
+    DispatchBranch {
+        condition: BranchCondition,
+        target_rip: u64,
+        fallthrough_rip: u64,
+        admission: AdmittedInstructionBoundaries,
+    },
     Exit {
         kind: ExitKind,
         target_rip: u64,
@@ -187,6 +197,13 @@ pub enum VerifyError {
         rip: u64,
     },
     InvalidFallthrough {
+        operation: usize,
+        rip: u64,
+    },
+    DispatchAdmissionMismatch {
+        operation: usize,
+    },
+    InvalidDispatchBoundary {
         operation: usize,
         rip: u64,
     },
@@ -343,6 +360,41 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                     });
                 }
                 if *fallthrough_rip != final_rip {
+                    return Err(VerifyError::InvalidFallthrough {
+                        operation: operation_index,
+                        rip: *fallthrough_rip,
+                    });
+                }
+                terminal_seen = true;
+            }
+            Operation::DispatchBranch {
+                condition: _,
+                target_rip,
+                fallthrough_rip,
+                admission,
+            } => {
+                validate_terminal_position(
+                    active_instruction,
+                    next_commit,
+                    program.guest_instructions.len(),
+                    operation_index,
+                )?;
+                if admission.code_end() != program.code_end
+                    || !admission.covers_records(&program.guest_instructions)
+                {
+                    return Err(VerifyError::DispatchAdmissionMismatch {
+                        operation: operation_index,
+                    });
+                }
+                for rip in [target_rip, fallthrough_rip] {
+                    if !admission.contains(*rip) {
+                        return Err(VerifyError::InvalidDispatchBoundary {
+                            operation: operation_index,
+                            rip: *rip,
+                        });
+                    }
+                }
+                if *fallthrough_rip != program.guest_instructions.last().unwrap().next_rip {
                     return Err(VerifyError::InvalidFallthrough {
                         operation: operation_index,
                         rip: *fallthrough_rip,

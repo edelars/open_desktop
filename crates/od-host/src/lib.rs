@@ -675,7 +675,8 @@ mod tests {
     use od_jit::arm64::{
         AddressBase, Condition, Encoder, PairIndexMode, WReg, XReg, XRegOrSp, XRegOrZero,
     };
-    use od_jit::block::{self, BlockLimits, CodeView};
+    use od_jit::block::{self, AdmittedInstructionBoundaries, BlockLimits, CodeView};
+    use od_jit::block_compile::{BlockCompileOutcome, compile_block, compile_block_for_dispatch};
     use od_jit::emitter::{
         self, DATA_EFFECTS_UNCOMMITTED_V1, DataEffectContextV2, DataEffectEntry,
         DataEffectOutputKind, DataEffectTerminal, FlagMaterialization,
@@ -1991,6 +1992,94 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn dispatch_candidate_commits_selected_branch_once_with_exact_count() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x7A00;
+        let stop = AtomicU8::new(0);
+
+        let publish_dispatch = |code: &[u8]| {
+            let view = CodeView::new(base_rip, code).unwrap();
+            let fixture_decode = od_isa::decode(code).unwrap();
+            let admission =
+                AdmittedInstructionBoundaries::from_fixture_decode(view, &fixture_decode).unwrap();
+            let compiled = compile_block_for_dispatch(view, base_rip, &admission).unwrap();
+            let BlockCompileOutcome::Compiled(compiled) = compiled else {
+                panic!("validated Jcc fixture should produce a runtime block");
+            };
+            PublishedCode::publish_block(compiled.emitted()).unwrap()
+        };
+
+        // The branch target is a forward instruction start in the fixture
+        // tail. Runtime returns either that target or the distinct fallthrough
+        // as a candidate; it does not execute or retry another block.
+        let forward = [0x74, 0x02, 0x74, 0x00, 0x74, 0x00];
+        for (zero, expected_offset) in [(true, 4_u64), (false, 2_u64)] {
+            let published = publish_dispatch(&forward);
+            let mut state = od_isa::LongModeState::default();
+            state.rip = base_rip;
+            state.rflags = 2 | if zero { 1 << 6 } else { 0 };
+            let result = published.execute_block(&mut state, 8, None, &stop).unwrap();
+            assert_eq!(result.exit, RuntimeExitTag::DispatchCandidate);
+            assert_eq!(state.rip, base_rip + expected_offset);
+            assert_eq!(result.retired_instructions, 1);
+            assert_eq!(result.remaining_budget, 7);
+        }
+
+        // A backward/internal edge commits the MOV prefix and the Jcc exactly
+        // once before returning its target for future dispatch.
+        let backward = [
+            0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0, // MOV RAX, 1
+            0x74, 0xF4, // JZ entry
+            0x74, 0x00, // validated tail
+        ];
+        let published = publish_dispatch(&backward);
+        let mut state = od_isa::LongModeState::default();
+        state.rip = base_rip;
+        state.rflags = 2 | (1 << 6);
+        let result = published.execute_block(&mut state, 8, None, &stop).unwrap();
+        assert_eq!(result.exit, RuntimeExitTag::DispatchCandidate);
+        assert_eq!(state.rip, base_rip);
+        assert_eq!(state.gpr[0], 1);
+        assert_eq!(result.retired_instructions, 2);
+        assert_eq!(result.remaining_budget, 6);
+        drop(published);
+
+        // Code-end is also returned as a typed candidate for the caller to
+        // classify; it is not silently normalized to one-block completion.
+        let code_end = [0x75, 0x00];
+        let published = publish_dispatch(&code_end);
+        let mut state = od_isa::LongModeState::default();
+        state.rip = base_rip;
+        let result = published.execute_block(&mut state, 8, None, &stop).unwrap();
+        assert_eq!(result.exit, RuntimeExitTag::DispatchCandidate);
+        assert_eq!(state.rip, base_rip + code_end.len() as u64);
+        assert_eq!(result.retired_instructions, 1);
+        assert_eq!(result.remaining_budget, 7);
+        drop(published);
+
+        // The original one-block compiler has no complete fixture-boundary
+        // proof, so it still commits only the MOV prefix and returns at Jcc.
+        let mut one_block = vec![0x48, 0xB8];
+        one_block.extend_from_slice(&1_u64.to_le_bytes());
+        one_block.extend_from_slice(&[0x74, 0x02, 0x74, 0x00, 0x74, 0x00]);
+        let view = CodeView::new(base_rip, &one_block).unwrap();
+        let compiled = compile_block(view, base_rip).unwrap();
+        let BlockCompileOutcome::Compiled(compiled) = compiled else {
+            panic!("legacy one-block prefix should compile");
+        };
+        let published = PublishedCode::publish_block(compiled.emitted()).unwrap();
+        let mut state = od_isa::LongModeState::default();
+        state.rip = base_rip;
+        state.rflags = 2 | (1 << 6);
+        let result = published.execute_block(&mut state, 8, None, &stop).unwrap();
+        assert_eq!(result.exit, RuntimeExitTag::NeedInterpreter);
+        assert_eq!(state.rip, base_rip + 10);
+        assert_eq!(state.gpr[0], 1);
+        assert_eq!(result.retired_instructions, 1);
+        assert_eq!(result.remaining_budget, 7);
     }
 
     #[test]

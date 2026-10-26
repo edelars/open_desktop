@@ -94,10 +94,129 @@ impl<'a> CodeView<'a> {
         self.bytes.is_empty()
     }
 
+    pub(crate) fn bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+
     fn offset(self, rip: u64) -> Option<usize> {
         let offset = rip.checked_sub(self.base_rip)?;
         let offset = usize::try_from(offset).ok()?;
         (offset <= self.bytes.len()).then_some(offset)
+    }
+}
+
+/// Full fixture-v1 instruction boundaries admitted by `od_isa::decode`.
+///
+/// This is distinct from a bounded block's decoded prefix: it may establish
+/// that a branch target in the fixture tail is an instruction start, without
+/// asking the block builder to fetch or decode that tail again.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdmittedInstructionBoundaries {
+    code_base: u64,
+    code_end: u64,
+    code_bytes: Vec<u8>,
+    boundaries: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AdmissionError {
+    FixtureDecodeRejected(od_isa::DecodeError),
+    FixtureDecodeDoesNotMatchCode,
+    NonContiguousFixtureDecode {
+        index: usize,
+        expected_offset: usize,
+        actual_offset: usize,
+    },
+    InvalidFixtureInstructionLength {
+        index: usize,
+    },
+    IncompleteFixtureDecode {
+        decoded_length: usize,
+        code_length: usize,
+    },
+}
+
+impl AdmittedInstructionBoundaries {
+    /// Construct from the complete successful output of fixture-v1 decoding.
+    /// The offsets must cover the entire immutable `CodeView` contiguously.
+    pub fn from_fixture_decode(
+        code: CodeView<'_>,
+        decoded: &[od_isa::Instruction],
+    ) -> Result<Self, AdmissionError> {
+        let actual_decode =
+            od_isa::decode(code.bytes()).map_err(AdmissionError::FixtureDecodeRejected)?;
+        if actual_decode != decoded {
+            return Err(AdmissionError::FixtureDecodeDoesNotMatchCode);
+        }
+
+        let mut boundaries = Vec::with_capacity(decoded.len() + 1);
+        let mut expected_offset = 0usize;
+        for (index, instruction) in decoded.iter().enumerate() {
+            if instruction.offset != expected_offset {
+                return Err(AdmissionError::NonContiguousFixtureDecode {
+                    index,
+                    expected_offset,
+                    actual_offset: instruction.offset,
+                });
+            }
+            if instruction.length == 0 {
+                return Err(AdmissionError::InvalidFixtureInstructionLength { index });
+            }
+            let end_offset = instruction
+                .offset
+                .checked_add(instruction.length)
+                .ok_or(AdmissionError::InvalidFixtureInstructionLength { index })?;
+            if end_offset > code.len() {
+                return Err(AdmissionError::InvalidFixtureInstructionLength { index });
+            }
+            let offset = u64::try_from(instruction.offset)
+                .map_err(|_| AdmissionError::InvalidFixtureInstructionLength { index })?;
+            boundaries.push(
+                code.base_rip()
+                    .checked_add(offset)
+                    .ok_or(AdmissionError::InvalidFixtureInstructionLength { index })?,
+            );
+            expected_offset = end_offset;
+        }
+        if expected_offset != code.len() {
+            return Err(AdmissionError::IncompleteFixtureDecode {
+                decoded_length: expected_offset,
+                code_length: code.len(),
+            });
+        }
+        boundaries.push(code.code_end());
+        Ok(Self {
+            code_base: code.base_rip(),
+            code_end: code.code_end(),
+            code_bytes: code.bytes().to_vec(),
+            boundaries,
+        })
+    }
+
+    pub const fn code_base(&self) -> u64 {
+        self.code_base
+    }
+
+    pub const fn code_end(&self) -> u64 {
+        self.code_end
+    }
+
+    pub(crate) fn contains(&self, rip: u64) -> bool {
+        self.boundaries.contains(&rip)
+    }
+
+    pub(crate) fn matches_code(&self, code: CodeView<'_>) -> bool {
+        self.code_base == code.base_rip()
+            && self.code_end == code.code_end()
+            && self.code_bytes == code.bytes()
+    }
+
+    pub(crate) fn covers_records(&self, records: &[crate::ir::GuestInstruction]) -> bool {
+        records.iter().all(|record| {
+            record.guest_rip < record.next_rip
+                && self.contains(record.guest_rip)
+                && self.contains(record.next_rip)
+        })
     }
 }
 

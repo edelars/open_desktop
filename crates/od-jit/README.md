@@ -160,3 +160,14 @@ Runner v1 opt-in подключён отдельно от legacy fragment transl
 компилятора сам не публикует и не исполняет код. Реальные CLI limits и exit
 mapping описаны в [JIT contract](../../docs/specs/JIT_CONTRACT.md) и отчёте
 S3-13.
+
+Первый локальный S3-15 handoff slice добавляет `compile_block_for_dispatch`
+с явным `AdmittedInstructionBoundaries` из полного fixture-v1 decode.
+Verifier принимает typed `DispatchBranch` только если target/fallthrough и все
+IR instruction records входят в этот admission. Witness перепроверяет полный
+fixture-v1 decode по тем же bytes; dispatch compiler также валидирует entry и
+все decoded block boundaries. Runtime атомарно commit-ит
+Jcc и возвращает выбранный RIP как `DispatchCandidate` (tag 8), без повторного
+исполнения branch. Старый `compile_block` и runner сохраняют one-block
+`BlockComplete`/`NeedInterpreter` behavior. Dispatcher loop, cache, fallback
+и CLI multi-block execution в этом срезе не добавлены; S3-15 остаётся открытой.

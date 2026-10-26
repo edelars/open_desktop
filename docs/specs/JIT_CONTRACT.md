@@ -247,12 +247,28 @@ Block exit tags (`repr(u32)`; остальные значения — host contr
 | `StopRequested` | 3 | Вернуть cooperative stop |
 | `StopAddress` | 4 | Остановиться на `stop_rip`, не исполняя инструкцию по этому RIP |
 | `Unsupported` | 5 | Не исполнять форму; interpreter допускается только при явном fallback policy |
+| `DispatchCandidate` | 8 | Jcc committed один раз; вернуть выбранный RIP и counters будущему dispatcher |
 
 `GuestFault` (tag 6) и `EventPending` (tag 7) зарезервированы и недопустимы в
 runtime contract v1: начальный S0-09 профиль не содержит faulting forms или
 event input/model. Возврат этих или любого неизвестного tag — host contract
 failure. В будущей версии fault exit потребует отдельного raw fault record с
 явными полями, до его появления гостевой fault не заявляется.
+
+Локальный срез S3-15 вводит typed `Operation::DispatchBranch` и runtime tag
+`DispatchCandidate` (8). Terminal выбирает Jcc edge и выполняет единый guest
+commit, затем возвращает выбранный RIP в canonical state с точными
+`remaining_budget`/`retired_instructions`; он не исполняет следующий block и
+не повторяет branch. Target и fallthrough допускаются только как boundaries
+полного непрерывного fixture-v1 decode, переданного через
+`AdmittedInstructionBoundaries`; verifier также требует, чтобы IR records
+принадлежали этому admission и `code_end` совпадал. Dispatch compiler сверяет
+полный decode с теми же immutable bytes, отвергает entry и все builder ranges,
+которые не входят в fixture boundaries. Bounded builder по-прежнему
+останавливается сразу после branch и не читает tail. Legacy `compile_block`
+не получает admission и сохраняет прежний `BlockComplete`/`NeedInterpreter`
+контракт. Этот tag не означает наличия dispatcher, interpreter fallback,
+cache или multi-block CLI.
 
 Compile result остаётся Rust-side: успешная компиляция даёт непубликованный
 код/metadata; неподдержанная форма классифицируется как `Unsupported`, а

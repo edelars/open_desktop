@@ -166,7 +166,12 @@ fn emit_runtime_block_inner(
         .operations
         .iter()
         .position(|operation| {
-            matches!(operation, Operation::Branch { .. } | Operation::Exit { .. })
+            matches!(
+                operation,
+                Operation::Branch { .. }
+                    | Operation::DispatchBranch { .. }
+                    | Operation::Exit { .. }
+            )
         })
         .ok_or(BlockEmitterError::InvalidProgram(
             VerifyError::MissingTerminal,
@@ -432,6 +437,12 @@ fn emit_runtime_block_inner(
                         condition,
                         target_rip,
                         fallthrough_rip,
+                    })
+                    | Some(Operation::DispatchBranch {
+                        condition,
+                        target_rip,
+                        fallthrough_rip,
+                        ..
                     }) => Some((*condition, *target_rip, *fallthrough_rip)),
                     _ => None,
                 };
@@ -469,7 +480,7 @@ fn emit_runtime_block_inner(
                 });
                 active_instruction = None;
             }
-            Operation::Branch { .. } => {
+            operation @ (Operation::Branch { .. } | Operation::DispatchBranch { .. }) => {
                 let start = code_offset(&encoder)?;
                 let label = encoder.new_label()?;
                 encoder.b(label)?;
@@ -485,7 +496,11 @@ fn emit_runtime_block_inner(
                 );
                 return_stubs.push(ReturnStub {
                     label,
-                    raw_tag: RuntimeExitTag::BlockComplete as u32,
+                    raw_tag: if matches!(operation, Operation::DispatchBranch { .. }) {
+                        RuntimeExitTag::DispatchCandidate as u32
+                    } else {
+                        RuntimeExitTag::BlockComplete as u32
+                    },
                     guest_rip: GuestRipSource::CanonicalState,
                     instruction_index: Some(to_u32(index)?),
                     snapshot: SnapshotAdmissibility::CanonicalBoundary,
@@ -637,7 +652,7 @@ fn validate_runtime_shape(
                 })?;
                 let is_branch_record = matches!(
                     program.operations.get(terminal_index),
-                    Some(Operation::Branch { .. })
+                    Some(Operation::Branch { .. } | Operation::DispatchBranch { .. })
                 ) && guest_index + 1 == program.guest_instructions.len();
                 if is_branch_record && (integer_count != 0 || write_count != 0) {
                     return Err(BlockEmitterError::UnsupportedShape {
@@ -651,7 +666,9 @@ fn validate_runtime_shape(
                 }
                 active = None;
             }
-            Operation::Branch { .. } | Operation::Exit { .. } => {}
+            Operation::Branch { .. }
+            | Operation::DispatchBranch { .. }
+            | Operation::Exit { .. } => {}
         }
     }
     Ok(())

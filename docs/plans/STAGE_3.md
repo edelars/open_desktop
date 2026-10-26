@@ -416,6 +416,28 @@ S3-14 остаётся открытым.
 
 **Готово:** multi-block program даёт состояние interpreter при том же budget; ошибочный target или невозможный exit не зацикливает runtime.
 
+**Локальная partial реализация:** `od-jit` теперь имеет отдельный
+`compile_block_for_dispatch`/`lower_for_dispatch` путь, который принимает
+boundary witness только из полного непрерывного fixture-v1 decode, повторно
+сверенного с теми же bytes. Dispatch API проверяет entry и все decoded block
+ranges против этого admission. Typed `DispatchBranch` дополнительно
+проверяется verifier по target, fallthrough, всем included IR records и точному
+`code_end`. Runtime commit-ит выбранный Jcc RIP один раз и
+возвращает `DispatchCandidate` (tag 8) с обычными guest counters. Legacy
+`compile_block`/S3-13 runner не получают admission и сохраняют прежний
+one-block `BlockComplete`/`NeedInterpreter` результат. Это handoff без loop:
+нет повторного compile/dispatch, cache, fallback или CLI integration. Целевые
+tests прошли на admitted forward/backward/code-end edges, rejection
+mid-instruction target, positive retirement/counters и unchanged one-block
+`NeedInterpreter`. Проверки прошли: `cargo fmt --all -- --check`,
+`cargo check -p od-jit --all-targets --offline`, `cargo test -p od-jit --offline`
+(60 tests), `cargo test -p od-host --offline` (23 tests), workspace all-target
+check и `git diff --check`. Native ARM64 od-host test исполняет production
+emitter output и проверяет taken target, not-taken fallthrough, backward target,
+code_end и prefix-only one-block path. Independent review и Graphify update
+остаются следующими шагами. S3-15 остаётся открытой до полного
+dispatcher/budget критериев выше.
+
 ### S3-16. Подключить interpreter fallback
 
 1. На форме без lowering материализовать state и вызвать реально поддерживающий её interpreter step. При отсутствии поддержки обоих вернуть unsupported.

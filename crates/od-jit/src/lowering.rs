@@ -10,7 +10,8 @@ use od_isa::RegisterView;
 use od_isa::long_decode::{ArithmeticKind, ConditionCode, Operand, Operation as DecodedOperation};
 
 use crate::block::{
-    self, BlockStopReason, BranchTargetResolution, BuildOutcome, DecodeBoundary, DecodedInstruction,
+    self, AdmittedInstructionBoundaries, BlockStopReason, BranchTargetResolution, BuildOutcome,
+    DecodeBoundary, DecodedInstruction,
 };
 use crate::ir::{
     self, BranchCondition, ExitKind, FlagEffect, GuestGpr, GuestInstruction, IntWidth, IntegerKind,
@@ -44,6 +45,24 @@ pub enum LoweringError {
 
 /// Lower one bounded block-builder result and verify every emitted Program.
 pub fn lower(outcome: &BuildOutcome) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission(outcome, None)
+}
+
+/// Lower a block for a future dispatcher using complete fixture-v1 decode
+/// boundaries. Unlike `lower`, an admitted Jcc commits and returns a typed
+/// dispatch candidate; unresolved targets absent from the proof remain
+/// non-retired `NeedInterpreter` exits.
+pub(crate) fn lower_for_dispatch(
+    outcome: &BuildOutcome,
+    admission: &AdmittedInstructionBoundaries,
+) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission(outcome, Some(admission))
+}
+
+fn lower_with_admission(
+    outcome: &BuildOutcome,
+    admission: Option<&AdmittedInstructionBoundaries>,
+) -> Result<LoweringOutcome, LoweringError> {
     let block = match outcome {
         BuildOutcome::NoBlock(no_block) => {
             let deferred_error = deferred_error(&no_block.stop_reason);
@@ -69,22 +88,42 @@ pub fn lower(outcome: &BuildOutcome) -> Result<LoweringOutcome, LoweringError> {
                     guest_rip: branch.guest_rip,
                 });
             }
-            match target.resolution {
-                BranchTargetResolution::KnownInstructionStart
-                | BranchTargetResolution::NextRipBoundary
-                | BranchTargetResolution::CodeEnd => (
-                    block.instructions.len(),
-                    Terminal::Branch {
-                        target_rip: target.rip,
-                    },
-                ),
-                BranchTargetResolution::Unresolved => (
+            match admission {
+                Some(admission)
+                    if admission.contains(target.rip) && admission.contains(branch.next_rip) =>
+                {
+                    (
+                        block.instructions.len(),
+                        Terminal::DispatchBranch {
+                            target_rip: target.rip,
+                            admission: admission.clone(),
+                        },
+                    )
+                }
+                Some(_) => (
                     block.instructions.len() - 1,
                     Terminal::Exit {
                         kind: ExitKind::NeedInterpreter,
                         target_rip: branch.guest_rip,
                     },
                 ),
+                None => match target.resolution {
+                    BranchTargetResolution::KnownInstructionStart
+                    | BranchTargetResolution::NextRipBoundary
+                    | BranchTargetResolution::CodeEnd => (
+                        block.instructions.len(),
+                        Terminal::Branch {
+                            target_rip: target.rip,
+                        },
+                    ),
+                    BranchTargetResolution::Unresolved => (
+                        block.instructions.len() - 1,
+                        Terminal::Exit {
+                            kind: ExitKind::NeedInterpreter,
+                            target_rip: branch.guest_rip,
+                        },
+                    ),
+                },
             }
         }
         BlockStopReason::UnsupportedBranchTarget { branch_rip, .. } => (
@@ -181,6 +220,35 @@ pub fn lower(outcome: &BuildOutcome) -> Result<LoweringOutcome, LoweringError> {
                 fallthrough_rip: branch.next_rip,
             });
         }
+        Terminal::DispatchBranch {
+            target_rip,
+            admission,
+        } => {
+            let branch = instructions
+                .last()
+                .ok_or(LoweringError::InvalidDecodedForm {
+                    guest_rip: block.entry_rip,
+                })?;
+            let DecodedOperation::Branch { condition, .. } = branch.decoded.operation else {
+                return Err(LoweringError::InvalidDecodedForm {
+                    guest_rip: branch.guest_rip,
+                });
+            };
+            operations.push(Operation::DispatchBranch {
+                condition: match condition {
+                    ConditionCode::Equal => BranchCondition::Zero,
+                    ConditionCode::NotEqual => BranchCondition::NotZero,
+                    _ => {
+                        return Err(LoweringError::InvalidDecodedForm {
+                            guest_rip: branch.guest_rip,
+                        });
+                    }
+                },
+                target_rip,
+                fallthrough_rip: branch.next_rip,
+                admission,
+            });
+        }
         Terminal::Exit { kind, target_rip } => {
             operations.push(Operation::Exit { kind, target_rip });
         }
@@ -198,16 +266,27 @@ pub fn lower(outcome: &BuildOutcome) -> Result<LoweringOutcome, LoweringError> {
     }))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Terminal {
-    Branch { target_rip: u64 },
-    Exit { kind: ExitKind, target_rip: u64 },
+    Branch {
+        target_rip: u64,
+    },
+    DispatchBranch {
+        target_rip: u64,
+        admission: AdmittedInstructionBoundaries,
+    },
+    Exit {
+        kind: ExitKind,
+        target_rip: u64,
+    },
 }
 
 impl Terminal {
     fn target_rip(self) -> u64 {
         match self {
-            Self::Branch { target_rip } | Self::Exit { target_rip, .. } => target_rip,
+            Self::Branch { target_rip }
+            | Self::DispatchBranch { target_rip, .. }
+            | Self::Exit { target_rip, .. } => target_rip,
         }
     }
 }
@@ -327,6 +406,12 @@ mod tests {
             BlockLimits::default(),
         )
         .unwrap()
+    }
+
+    fn admission(bytes: &[u8]) -> AdmittedInstructionBoundaries {
+        let code = CodeView::new(BASE, bytes).unwrap();
+        let decoded = od_isa::decode(bytes).unwrap();
+        AdmittedInstructionBoundaries::from_fixture_decode(code, &decoded).unwrap()
     }
 
     fn program(bytes: &[u8]) -> LoweredProgram {
@@ -555,6 +640,135 @@ mod tests {
                 .iter()
                 .any(|op| matches!(op, Operation::Branch { .. }))
         );
+    }
+
+    #[test]
+    fn dispatch_lowering_hands_off_only_admitted_full_fixture_boundaries() {
+        // First JZ targets the second instruction in the undecoded tail. The
+        // bounded builder stops after JZ; fixture admission supplies the full
+        // boundary proof without asking the builder to decode that tail.
+        let forward = [0x74, 0x02, 0x74, 0x00, 0x74, 0x00];
+        let built = build(&forward);
+        let BuildOutcome::Block(block) = &built else {
+            panic!("valid branch should form a block");
+        };
+        assert_eq!(block.instructions.len(), 1);
+        assert!(matches!(
+            block.stop_reason,
+            BlockStopReason::Branch {
+                target: crate::block::BranchTarget {
+                    resolution: BranchTargetResolution::Unresolved,
+                    ..
+                }
+            }
+        ));
+        let dispatched = lower_for_dispatch(&built, &admission(&forward)).unwrap();
+        let LoweringOutcome::Program(dispatched) = dispatched else {
+            panic!("admitted Jcc must produce a dispatchable prefix");
+        };
+        assert_eq!(dispatched.program.guest_instructions.len(), 1);
+        assert!(matches!(
+            dispatched.program.operations.last(),
+            Some(Operation::DispatchBranch {
+                condition: BranchCondition::Zero,
+                target_rip,
+                fallthrough_rip,
+                ..
+            }) if *target_rip == BASE + 4 && *fallthrough_rip == BASE + 2
+        ));
+        assert_eq!(
+            dispatched
+                .program
+                .operations
+                .iter()
+                .filter(|operation| matches!(operation, Operation::CommitInstruction { .. }))
+                .count(),
+            1
+        );
+        ir::verify(&dispatched.program).unwrap();
+
+        // A target inside an admitted instruction is not promoted to a
+        // dispatch boundary, even though its scalar RIP is in the code view.
+        let mut malformed = dispatched.program;
+        let Some(Operation::DispatchBranch { target_rip, .. }) = malformed.operations.last_mut()
+        else {
+            unreachable!();
+        };
+        *target_rip = BASE + 3;
+        assert!(matches!(
+            ir::verify(&malformed),
+            Err(ir::VerifyError::InvalidDispatchBoundary { rip, .. }) if rip == BASE + 3
+        ));
+    }
+
+    #[test]
+    fn dispatch_lowering_covers_backward_and_code_end_edges_but_one_block_stays_legacy() {
+        let backward = [
+            0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0, // MOV RAX, 1
+            0x74, 0xF4, // JZ entry
+            0x74, 0x00, // valid fixture tail
+        ];
+        let backward_program =
+            match lower_for_dispatch(&build(&backward), &admission(&backward)).unwrap() {
+                LoweringOutcome::Program(lowered) => lowered.program,
+                other => panic!("expected dispatch program, got {other:?}"),
+            };
+        assert!(matches!(
+            backward_program.operations.last(),
+            Some(Operation::DispatchBranch {
+                target_rip: BASE,
+                fallthrough_rip,
+                ..
+            }) if *fallthrough_rip == BASE + 12
+        ));
+
+        let code_end = [0x75, 0x00]; // JNZ target and fallthrough are code_end.
+        let code_end_program =
+            match lower_for_dispatch(&build(&code_end), &admission(&code_end)).unwrap() {
+                LoweringOutcome::Program(lowered) => lowered.program,
+                other => panic!("expected code_end dispatch program, got {other:?}"),
+            };
+        assert!(matches!(
+            code_end_program.operations.last(),
+            Some(Operation::DispatchBranch {
+                condition: BranchCondition::NotZero,
+                target_rip,
+                fallthrough_rip,
+                ..
+            }) if *target_rip == BASE + 2 && *fallthrough_rip == BASE + 2
+        ));
+
+        // Without fixture-admission proof, the existing one-block API keeps
+        // Jcc out of the retired prefix and requests a later execution step.
+        let mut one_block = vec![0x48, 0xB8];
+        one_block.extend_from_slice(&1_u64.to_le_bytes());
+        one_block.extend_from_slice(&[0x74, 0x02, 0x74, 0x00, 0x74, 0x00]);
+        let legacy = lower(&build(&one_block)).unwrap();
+        let LoweringOutcome::Program(legacy) = legacy else {
+            panic!("MOV prefix should remain compilable");
+        };
+        assert!(
+            !legacy
+                .program
+                .operations
+                .iter()
+                .any(|operation| matches!(operation, Operation::DispatchBranch { .. }))
+        );
+        assert!(
+            !legacy
+                .program
+                .operations
+                .iter()
+                .any(|operation| matches!(operation, Operation::Branch { .. }))
+        );
+        assert!(matches!(
+            legacy.program.operations.last(),
+            Some(Operation::Exit {
+                kind: ExitKind::NeedInterpreter,
+                target_rip,
+            })
+            if *target_rip == BASE + 10
+        ));
     }
 
     #[test]

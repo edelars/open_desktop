@@ -181,7 +181,12 @@ impl<'program> Allocation<'program> {
             .operations
             .iter()
             .position(|operation| {
-                matches!(operation, Operation::Branch { .. } | Operation::Exit { .. })
+                matches!(
+                    operation,
+                    Operation::Branch { .. }
+                        | Operation::DispatchBranch { .. }
+                        | Operation::Exit { .. }
+                )
             })
             .ok_or_else(|| AllocatorError::InvalidProgram(VerifyError::MissingTerminal))?;
         for &position in helper_boundaries {
