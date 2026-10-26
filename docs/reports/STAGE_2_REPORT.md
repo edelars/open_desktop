@@ -9438,3 +9438,27 @@ Local checks passed: focused ISA full-state and rejection matrices; schema-v2
 runner fixtures; formatting; offline workspace check; layout validation;
 fixture validation and diff checks; Graphify update. No Mac mini, SSH, native
 runtime or physical x86 checks were performed. ISSUE-019 remains open.
+
+## S2-30bj — narrow bare `FXCH ST(1)`
+
+Implemented exact no-prefix `D9 C9` decode and interpreter semantics. The gate
+requires FCW `0x037f`, no FSW bits in `0x80ff`, and Valid-tagged canonical-Normal
+values in both physical TOP slots before committing. Success swaps the complete
+raw values, preserves their tags and TOP, preserves C0/C2/C3 as a local policy,
+clears C1, records FIP, advances RIP by two, and retires once. GPR/RFLAGS/memory
+and unrelated x87 payloads remain untouched. No aliases, memory form, stack
+underflow, exception delivery, WAIT, JIT lowering, or native acceptance was
+added. C0/C2/C3 preservation is deterministic local behavior; no hardware
+comparison is claimed for those architecturally undefined fields.
+
+Validation passed: `cargo test -p od-isa fxch_st1 --offline` (3 tests, including
+truncated/faulting fetch, stop callback/address and budget-zero atomicity), the
+exhaustive D9 decoder test (1), the FXCH schema test (1), and the added CLI
+fixture test (1). The complete `fixture_v2` suite passed 184/184;
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+and `python3 tools/check_layout.py` passed. `graphify update .` completed.
+Graphify reported an existing C-header extraction warning for
+`include/open_desktop/host_abi.h` and refreshed the graph to 5,035 nodes; these
+do not affect the FXCH implementation. No Mac mini, SSH, native runtime, or
+physical x86 checks were run. ISSUE-019 remains open for the explicitly
+excluded classes and final host/physical acceptance.

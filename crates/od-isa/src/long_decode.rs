@@ -461,6 +461,8 @@ pub enum Operation {
     FldM64FpRax,
     /// Bare `D9 E0` FCHS, flipping the sign of canonical-Normal ST(0) only.
     Fchs,
+    /// Bare `D9 C9` FXCH ST(1), exchanging two canonical-Normal stack entries.
+    FxchSt1,
     /// Bare `D9 E1` FABS, clearing the sign of canonical-Normal ST(0) only.
     Fabs,
     /// Bare `D9 E4` FTST, comparing canonical-Normal ST(0) with zero.
@@ -1257,6 +1259,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 match self.byte()? {
+                    0xc9 => Operation::FxchSt1,
                     0x00 => Operation::FldM32FpRax,
                     0x28 => Operation::FldcwM16Rax,
                     0x38 => Operation::FnstcwM16Rax,
@@ -2910,7 +2913,7 @@ mod tests {
     }
 
     #[test]
-    fn d9_accepts_only_bare_fldcw_fst_fstp_fchs_fabs_ftst_frndint_and_fnstcw_m16_rax() {
+    fn d9_accepts_only_bare_fldcw_fst_fstp_fxch_fchs_fabs_ftst_frndint_and_fnstcw_m16_rax() {
         let mut memory = Memory::new(&[0xd9, 0xe0]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::Fchs);
@@ -2930,6 +2933,8 @@ mod tests {
                     Ok(Operation::FstM32FpRax)
                 } else if second == 0x18 {
                     Ok(Operation::FstpM32FpRax)
+                } else if second == 0xc9 {
+                    Ok(Operation::FxchSt1)
                 } else if second == 0x38 {
                     Ok(Operation::FnstcwM16Rax)
                 } else if second == 0xe0 {
@@ -2959,7 +2964,7 @@ mod tests {
         .into_iter()
         .chain(0x40..=0x4f)
         {
-            for second in [0x00, 0x10, 0x18, 0x28, 0x38, 0xe0, 0xe1, 0xe4, 0xfc] {
+            for second in [0x00, 0x10, 0x18, 0x28, 0x38, 0xc9, 0xe0, 0xe1, 0xe4, 0xfc] {
                 assert!(matches!(
                     Memory::new(&[prefix, 0xd9, second]).decode(),
                     Err(DecodeError::Unsupported { .. })

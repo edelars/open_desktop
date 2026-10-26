@@ -211,6 +211,68 @@ fn x87_schema_admits_d9_fst_ftst_fnstcw_and_a_budget_one_source_rejection() {
 }
 
 #[test]
+fn x87_fxch_st1_schema_admits_only_the_three_exact_streams() {
+    let mut fixture = x87_fixture().fixture;
+    fixture.case_id = "local_fxch_st1_seeded_top7".into();
+    fixture.instruction_budget = 1;
+    fixture.stop_rip = Some(HexU64(0x1002));
+    fixture.expected_exit = ExpectedExit::StopAddress;
+    {
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = 2;
+        code.initial_bytes_hex = "d9c9".into();
+        code.comparison_mask_hex = "ffff".into();
+    }
+    let x87 = fixture.initial_state.x87.as_mut().unwrap();
+    x87.control_word = HexU64(0x037f);
+    x87.status_word = HexU64(0x3a00); // TOP=7 and C1 set.
+    x87.tag_word = HexU64(0);
+    x87.registers[7] = "0000000000000080ff3f".into();
+    x87.registers[0] = "00000000000000c00040".into();
+    fixture.validate().unwrap();
+
+    for (code_bytes, length, budget) in [("d9c9dfe0", 4, 2), ("d9c9d9c9dfe0", 6, 3)] {
+        let mut composition = fixture.clone();
+        composition.case_id = format!("local_fxch_{code_bytes}");
+        composition.instruction_budget = budget;
+        composition.stop_rip = Some(HexU64(0x1000 + length));
+        let code = composition
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = length as u32;
+        code.initial_bytes_hex = code_bytes.into();
+        code.comparison_mask_hex = "ff".repeat(length as usize);
+        composition.validate().unwrap();
+    }
+
+    for alias in [
+        "d9c8", "d9ca", "d9cb", "d9cc", "d9cd", "d9ce", "d9cf", "d909",
+    ] {
+        let mut rejected = fixture.clone();
+        rejected
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap()
+            .initial_bytes_hex = alias.into();
+        assert!(rejected.validate().is_err(), "{alias}");
+    }
+
+    let mut wrong_tag = fixture.clone();
+    wrong_tag.case_id = "local_fxch_st1_wrong_tag".into();
+    wrong_tag.stop_rip = None;
+    wrong_tag.expected_exit = ExpectedExit::Unsupported;
+    wrong_tag.initial_state.x87.as_mut().unwrap().tag_word = HexU64(3 << 14);
+    wrong_tag.validate().unwrap();
+}
+
+#[test]
 fn fld_m32_m64_budget_one_normal_unsupported_rejects_oe_only_status() {
     for (width, opcode, normal_bytes) in [(4, "d900", "0000803f"), (8, "dd00", "000000000000f03f")]
     {

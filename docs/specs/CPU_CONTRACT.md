@@ -7161,3 +7161,26 @@ rejection; JIT remains denied. Native/runtime and physical x86 behavior remain
 unverified; ISSUE-019 stays open. See the [plan](../plans/STAGE_2.md#s2-30bf-admit-historical-sticky-ue-to-bounded-fchsfabs),
 [report](../reports/STAGE_2_REPORT.md#s2-30bf--historical-sticky-ue-through-bounded-fchs-fabs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bf-historical-ue-fchs-fabs).
+
+## Local S2-30bj: bare `FXCH ST(1)` (`D9 C9`)
+
+The local slice admits only exact no-prefix Long64 bytes `D9 C9`. It requires
+present x87 state, FCW `0x037f`, and `FSW & 0x80ff == 0`; both physical
+`TOP` and `(TOP+1)&7` must independently carry Valid tags and canonical-Normal
+raw binary80 encodings. Both checks complete before either register changes.
+Execution exchanges the complete ten-byte physical payloads. It preserves both
+tags, TOP, and C0/C2/C3 under a deterministic local policy; the latter are
+architecturally undefined and this is not a hardware-equality claim. It clears
+C1, adds no exception flags, and performs no push, pop, arithmetic, rounding,
+or stack-underflow response. FIP records the old RIP; FDP/FOP follow the
+register-only pointer policy. RIP advances by two, one instruction retires,
+and GPR, RFLAGS, and memory are unchanged.
+
+Empty/Zero/Special or otherwise mismatched tags, any non-Normal or malformed
+raw encoding, any FCW other than `0x037f`, any set bit in FSW mask `0x80ff`, or
+missing x87 state reject without partial swap or metadata/RIP changes. There is
+no memory form, D9 C8+i alias family, stack-fault/IE/SF/#MF/#NM/WAIT semantics,
+or JIT/native admission. Schema-v2 permits only bare `d9c9`,
+`d9c9dfe0` (observe status), and `d9c9d9c9dfe0` (roundtrip then observe).
+ISSUE-019 remains open for broader x87 state/class handling, undefined CC
+physical comparisons, and final native/physical acceptance.

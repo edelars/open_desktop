@@ -3551,3 +3551,13 @@ and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30bi--historical-sf-o
 
 Normative source: [Intel SDM Vol.1 revision 081 §8.1.3.4 p.8-6 and §8.5.1.1
 p.8-26](https://cdrdv2-public.intel.com/789574/253665-sdm-vol-1.pdf#page=208).
+
+### S2-30bj narrow FXCH ST(1)
+
+The local `s2-long-x87-state-v1` schema admits only bare `D9 C9`,
+`D9 C9 DF E0` (status observation), and `D9 C9 D9 C9 DF E0` (double-exchange
+roundtrip and observation). Seeded TOP=7/C1 success preserves the physical tag
+word and exchanges the two wrapped entries' full binary80 bytes; the roundtrip
+restores their bytes while C1 remains clear. Empty/wrong-tag unsupported cases
+retire zero instructions and preserve the complete initial snapshot. This is
+local project-fixture evidence only, not native or physical x86 evidence.

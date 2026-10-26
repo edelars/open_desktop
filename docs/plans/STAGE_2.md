@@ -5878,3 +5878,31 @@ Do not claim an OE producer under toward-zero-directed modes. Add a schema
 regression for the bare budget-one/no-stop Normal Unsupported case mutated to
 OE-only, and change old reject fixtures to ZE. Keep ISSUE-019 open; no Mac mini,
 SSH or physical x86 checks are part of this substage.
+
+#### S2-30bj. Narrow bare `FXCH ST(1)` (`D9 C9`)
+
+Implement only exact no-prefix Long64 `D9 C9`; adjacent D9 encodings and memory
+forms remain unsupported. Require present x87 state, FCW `0x037f`,
+`FSW & 0x80ff == 0`, and both physical `(TOP)` and `(TOP+1)&7` entries to have
+Valid tags and raw canonical-Normal binary80 payloads. Validate both operands
+before mutation, then exchange all ten bytes. Tags and TOP stay fixed; C1 clears;
+no push, pop, rounding, exception, or stack-underflow response is added. Local
+deterministic policy preserves C0/C2/C3, without a hardware-equality claim.
+FIP records old RIP; FDP/FOP follow the existing register-only policy; RIP
+advances by two and the instruction retires once. GPR, RFLAGS, and memory stay
+unchanged. Missing state, bad FCW, any status bit in the rejection mask, wrong
+tags, and non-Normal or malformed raw values reject atomically. Do not add
+#MF/#NM/WAIT behavior or IE/SF handling.
+
+Cover 2,048 independent full-state successes (four positive-magnitude pairs,
+four sign combinations, eight TOP values, sixteen prior CC patterns), six-cell
+canaries, TOP wrap, C1 clearing and CC preservation. Check double FXCH byte/tag
+roundtrip with fixed TOP and per-step metadata/RIP. Reject all nine status bits
+individually and together, both operand positions for Empty/Zero/Special/wrong
+tags and Valid-tagged non-Normal classes, plus missing state and instruction
+boundaries. The schema-v2 allowlist is exactly `d9c9`, `d9c9dfe0`, and
+`d9c9d9c9dfe0`; add seeded TOP=7/C1 and wrong-tag Unsupported fixture coverage.
+JIT/native remain denied. Keep ISSUE-019 open for non-Normal/Empty/stack
+exceptions, wider FXCH, undefined condition codes, and final host/physical
+acceptance. No Mac mini, SSH, native runtime, or physical x86 checks in this
+slice.

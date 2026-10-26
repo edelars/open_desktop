@@ -6298,3 +6298,111 @@ fn faulting_logic_cli_does_not_commit_undefined_flags_effect() {
         assert_eq!(actual.bytes_hex, initial.initial_bytes_hex);
     }
 }
+
+#[test]
+fn local_x87_fxch_st1_cli_wraparound_roundtrip_wrong_tag_and_jit_denial() {
+    let mut fixture = Fixture::from_json(FCHS_NORMAL).unwrap().fixture;
+    fixture.case_id = "s2_30bj_fxch_st1_top7_c1".into();
+    fixture.profile = od_testkit::v2::Profile::LongX87StateV1;
+    fixture.initial_state.rip = HexU64(0x0010_0000);
+    let mut x87 = fixture
+        .initial_state
+        .x87
+        .as_ref()
+        .unwrap()
+        .to_cpu()
+        .unwrap();
+    x87.control_word = 0x037f;
+    x87.status_word = 0x3a00;
+    x87.tag_word = 0;
+    x87.registers[7] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f];
+    x87.registers[0] = [0, 0, 0, 0, 0, 0, 0, 0xc0, 0x00, 0x40];
+    x87.set_tag(7, od_isa::state::X87Tag::Valid);
+    x87.set_tag(0, od_isa::state::X87Tag::Valid);
+    fixture.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&x87));
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|r| r.region_id == "code")
+        .unwrap();
+    code.guest_address = HexU64(0x0010_0000);
+    code.length = 2;
+    code.initial_bytes_hex = "d9c9".into();
+    code.comparison_mask_hex = "ffff".into();
+    fixture.instruction_budget = 1;
+    fixture.stop_rip = Some(HexU64(0x0010_0002));
+    fixture.expected_exit = ExpectedExit::StopAddress;
+    let input = fixture.to_json().unwrap();
+    let (loaded, result) = run(&input, "interpreter", 0);
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    let actual = observed.state.x87.as_ref().unwrap();
+    assert_eq!(actual.registers[7], "00000000000000c00040");
+    assert_eq!(actual.registers[0], "0000000000000080ff3f");
+    assert_eq!(actual.tag_word, HexU64(0));
+    assert_eq!(actual.status_word, HexU64(0x3800)); // TOP=7 and C1 cleared.
+    assert_eq!(actual.instruction_pointer, loaded.fixture.initial_state.rip);
+    assert_eq!(
+        actual.data_pointer,
+        loaded
+            .fixture
+            .initial_state
+            .x87
+            .as_ref()
+            .unwrap()
+            .data_pointer
+    );
+    assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+
+    let mut observe = loaded.fixture.clone();
+    observe.case_id = "s2_30bj_fxch_fnstsw".into();
+    let code = observe
+        .memory
+        .iter_mut()
+        .find(|r| r.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "d9c9dfe0".into();
+    code.length = 4;
+    code.comparison_mask_hex = "ffff".repeat(2);
+    observe.instruction_budget = 2;
+    observe.stop_rip = Some(HexU64(0x0010_0004));
+    let (_, observed_result) = run(&observe.to_json().unwrap(), "interpreter", 0);
+    assert_eq!(count(&observed_result), 2);
+    assert_eq!(
+        snapshot(&observed_result).state.gpr[0].get() & 0xffff,
+        0x3800
+    );
+
+    let mut roundtrip = loaded.fixture.clone();
+    roundtrip.case_id = "s2_30bj_fxch_roundtrip".into();
+    let code = roundtrip
+        .memory
+        .iter_mut()
+        .find(|r| r.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "d9c9d9c9dfe0".into();
+    code.length = 6;
+    code.comparison_mask_hex = "ff".repeat(6);
+    roundtrip.instruction_budget = 3;
+    roundtrip.stop_rip = Some(HexU64(0x0010_0006));
+    let (roundtrip_input, roundtrip_result) = run(&roundtrip.to_json().unwrap(), "interpreter", 0);
+    assert_eq!(count(&roundtrip_result), 3);
+    let final_state = snapshot(&roundtrip_result);
+    let mut expected_x87 = roundtrip_input.fixture.initial_state.x87.clone().unwrap();
+    expected_x87.status_word = HexU64(0x3800);
+    expected_x87.instruction_pointer = HexU64(0x0010_0002);
+    assert_eq!(final_state.state.x87, Some(expected_x87));
+
+    let mut wrong_tag = loaded.fixture;
+    wrong_tag.case_id = "s2_30bj_fxch_wrong_tag".into();
+    wrong_tag.stop_rip = None;
+    wrong_tag.expected_exit = ExpectedExit::Unsupported;
+    wrong_tag.initial_state.x87.as_mut().unwrap().tag_word = HexU64(3 << 14);
+    let (_, rejected) = run(&wrong_tag.to_json().unwrap(), "interpreter", 4);
+    assert_eq!(count(&rejected), 0);
+    assert!(matches!(rejected.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(snapshot(&rejected).state.x87, wrong_tag.initial_state.x87);
+
+    let (_, jit) = run(&input, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}

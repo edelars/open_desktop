@@ -198,6 +198,7 @@ fn step_tracked_with_stop(
             | Operation::FldM64FpRax
             | Operation::FldM80FpRax
             | Operation::Fchs
+            | Operation::FxchSt1
             | Operation::Fabs
             | Operation::Ftst
             | Operation::FcomSt { .. }
@@ -362,6 +363,8 @@ fn step_tracked_with_stop(
     }
     if matches!(instruction.operation, Operation::Fchs | Operation::Fabs)
         && bounded_x87_sign_st0_source(state).is_none()
+        || instruction.operation == Operation::FxchSt1
+            && bounded_x87_fxch_st1_operands(state).is_none()
         || matches!(instruction.operation, Operation::FstpSti { .. })
             && bounded_x87_fst_sti_source(state).is_none()
         || matches!(instruction.operation, Operation::FstSti { .. })
@@ -543,6 +546,7 @@ fn step_tracked_with_stop(
         | Operation::FldcwM16Rax
         | Operation::FnstswM16Rax
         | Operation::Fchs
+        | Operation::FxchSt1
         | Operation::Fabs
         | Operation::Ftst
         | Operation::Frndint
@@ -1410,6 +1414,14 @@ fn step_tracked_with_stop(
             let x87 = state.x87.as_mut().expect("FCHS state was prevalidated");
             let top = usize::from(x87.top());
             x87.registers[top] = source;
+            x87.status_word &= !(1 << 9);
+            x87.instruction_pointer = state.rip;
+        }
+        Operation::FxchSt1 => {
+            let (top, next) = bounded_x87_fxch_st1_operands(state)
+                .expect("FXCH ST(1) operands were prevalidated");
+            let x87 = state.x87.as_mut().expect("FXCH state was prevalidated");
+            x87.registers.swap(usize::from(top), usize::from(next));
             x87.status_word &= !(1 << 9);
             x87.instruction_pointer = state.rip;
         }
@@ -2735,6 +2747,27 @@ fn bounded_x87_sign_st0_source(state: &LongModeState) -> Option<[u8; 10]> {
         }
         _ => None,
     }
+}
+
+/// Validate both physical operands of the deliberately narrow bare FXCH ST(1)
+/// slice before either register is modified. C0/C2/C3 are locally preserved;
+/// their post-instruction values are not claimed to match physical hardware.
+fn bounded_x87_fxch_st1_operands(state: &LongModeState) -> Option<(u8, u8)> {
+    let x87 = state.x87.as_ref()?;
+    if x87.control_word != 0x037f || x87.status_word & 0x80ff != 0 {
+        return None;
+    }
+    let top = x87.top();
+    let next = (top + 1) & 7;
+    for physical in [top, next] {
+        if x87.tag(physical)? != X87Tag::Valid
+            || X87Binary80::from_bytes(x87.registers[usize::from(physical)]).classify()
+                != X87Binary80Class::Normal
+        {
+            return None;
+        }
+    }
+    Some((top, next))
 }
 
 /// Preflight the bounded register-only FRNDINT slice and return the packed
@@ -13696,6 +13729,255 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn fxch_st1_exchanges_only_two_valid_normal_physical_entries() {
+        let magnitude_pairs = [
+            (
+                (0x8000_0000_0000_0000, 0x3fff),
+                (0xc000_0000_0000_0000, 0x4000),
+            ),
+            (
+                (0x8123_4567_89ab_cdef, 0x4001),
+                (0x9234_5678_9abc_def0, 0x4002),
+            ),
+            ((u64::MAX, 0x7ffe), (0x8000_0000_0000_0001, 1)),
+            (
+                (0xfedc_ba98_7654_3210, 0x3ffd),
+                (0x8765_4321_0fed_cba9, 0x4003),
+            ),
+        ];
+        for (left, right) in magnitude_pairs {
+            for negative_left in [false, true] {
+                for negative_right in [false, true] {
+                    let raw = |(significand, exponent): (u64, u16), negative: bool| {
+                        let mut value = [0; 10];
+                        value[..8].copy_from_slice(&significand.to_le_bytes());
+                        value[8] = exponent as u8;
+                        value[9] = ((exponent >> 8) as u8 & 0x7f) | if negative { 0x80 } else { 0 };
+                        value
+                    };
+                    for top in 0u8..8 {
+                        for prior_cc in 0u8..16 {
+                            let cc = (u16::from(prior_cc & 1) << 8)
+                                | (u16::from((prior_cc >> 1) & 1) << 9)
+                                | (u16::from((prior_cc >> 2) & 1) << 10)
+                                | (u16::from((prior_cc >> 3) & 1) << 14);
+                            let mut state = LongModeState::default();
+                            state.rip = 0x8f20;
+                            state.gpr = std::array::from_fn(|i| 0x1234_5678_9abc_def0 ^ i as u64);
+                            state.rflags = 0xa55a_1234_5678_9abc;
+                            let next = (top + 1) & 7;
+                            let mut x87 = crate::state::X87State::fixture_seed();
+                            x87.control_word = 0x037f;
+                            x87.status_word = (u16::from(top) << 11) | cc;
+                            x87.tag_word = u16::MAX;
+                            for physical in 0..8 {
+                                x87.registers[physical] = [0x40 + physical as u8; 10];
+                            }
+                            x87.registers[usize::from(top)] = raw(left, negative_left);
+                            x87.registers[usize::from(next)] = raw(right, negative_right);
+                            x87.set_tag(top, X87Tag::Valid);
+                            x87.set_tag(next, X87Tag::Valid);
+                            x87.instruction_pointer = 0x1234;
+                            x87.data_pointer = 0x5678;
+                            x87.last_opcode = 0x05aa;
+                            state.x87 = Some(x87);
+                            let before = state.clone();
+                            let mut expected = before.clone();
+                            let expected_x87 = expected.x87.as_mut().unwrap();
+                            expected_x87
+                                .registers
+                                .swap(usize::from(top), usize::from(next));
+                            expected_x87.status_word &= !(1 << 9);
+                            expected_x87.instruction_pointer = before.rip;
+                            expected.rip += 2;
+
+                            let mut memory = Memory::at(&[0xd9, 0xc9], state.rip);
+                            assert_eq!(
+                                step(&mut state, &mut memory, AccessContext::default()),
+                                Ok(StepOutcome::Advanced)
+                            );
+                            assert_eq!(
+                                state, expected,
+                                "TOP={top}, CC={prior_cc:04b}, signs={negative_left}/{negative_right}"
+                            );
+                            assert!(memory.accesses.is_empty());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fxch_st1_rejects_bad_environment_tags_and_raw_classes_atomically() {
+        let normal = |significand: u64, exponent: u16| {
+            let mut value = [0; 10];
+            value[..8].copy_from_slice(&significand.to_le_bytes());
+            value[8..].copy_from_slice(&exponent.to_le_bytes());
+            value
+        };
+        let mut bad_raw = vec![[0; 10]]; // Valid tag paired with raw zero.
+        bad_raw.push(normal(1, 0)); // Subnormal.
+        bad_raw.push(normal(0x8000_0000_0000_0000, 0x7fff)); // Infinity.
+        bad_raw.push(normal(0xc000_0000_0000_0000, 0x7fff)); // QNaN.
+        bad_raw.push(normal(0x8000_0000_0000_0001, 0x7fff)); // SNaN.
+        bad_raw.push(normal(0x8000_0000_0000_0000, 0)); // Pseudo-denormal.
+        bad_raw.push(normal(0x4000_0000_0000_0000, 0x3fff)); // Unnormal.
+
+        let mut cases: Vec<Box<dyn Fn(&mut crate::state::X87State)>> = Vec::new();
+        for bit in [0, 1, 2, 3, 4, 5, 6, 7, 15] {
+            cases.push(Box::new(move |x87| x87.status_word |= 1 << bit));
+        }
+        cases.push(Box::new(|x87| x87.status_word |= 0x80ff));
+        cases.push(Box::new(|x87| x87.control_word = 0x077f));
+        for operand in [3, 4] {
+            for tag in [X87Tag::Empty, X87Tag::Zero, X87Tag::Special] {
+                cases.push(Box::new(move |x87| {
+                    x87.set_tag(operand, tag);
+                }));
+            }
+            for raw in bad_raw.iter().copied() {
+                cases.push(Box::new(move |x87| {
+                    x87.registers[usize::from(operand)] = raw
+                }));
+            }
+        }
+        for mutate in cases {
+            let mut state = LongModeState::default();
+            state.rip = 0x9200;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0x1800 | 0x4500;
+            x87.tag_word = u16::MAX;
+            x87.registers[3] = normal(0x8000_0000_0000_0000, 0x3fff);
+            x87.registers[4] = normal(0xc000_0000_0000_0000, 0x4000);
+            x87.set_tag(3, X87Tag::Valid);
+            x87.set_tag(4, X87Tag::Valid);
+            mutate(&mut x87);
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd9, 0xc9], state.rip);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xd9 })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut missing_state = LongModeState::default();
+        missing_state.rip = 0x9200;
+        let before = missing_state.clone();
+        let mut memory = Memory::at(&[0xd9, 0xc9], missing_state.rip);
+        assert_eq!(
+            step(&mut missing_state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xd9 })
+        );
+        assert_eq!(missing_state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn fxch_st1_fetch_stop_and_budget_boundaries_preserve_full_state() {
+        let make_state = || {
+            let mut state = LongModeState::default();
+            state.rip = 0x9320;
+            state.gpr = std::array::from_fn(|index| 0x1234_5678_9abc_def0 ^ index as u64);
+            state.rflags = 0xa55a_1234_5678_9abc;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0x3a00; // TOP=7, C1 set before an instruction.
+            x87.tag_word = 0;
+            x87.registers[7] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+            x87.registers[0] = binary80_normal(0xc000_0000_0000_0000, 0x4000, true);
+            x87.set_tag(7, X87Tag::Valid);
+            x87.set_tag(0, X87Tag::Valid);
+            x87.instruction_pointer = 0x5678;
+            x87.data_pointer = 0x9abc;
+            x87.last_opcode = 0x05aa;
+            state.x87 = Some(x87);
+            state
+        };
+        let cases = [
+            ("truncated second byte", &[0xd9][..], None, 1, None),
+            (
+                "first-byte fetch fault",
+                &[0xd9, 0xc9][..],
+                None,
+                1,
+                Some(0),
+            ),
+            (
+                "second-byte fetch fault",
+                &[0xd9, 0xc9][..],
+                None,
+                1,
+                Some(1),
+            ),
+        ];
+        for (label, bytes, stop_rip, budget, fault_offset) in cases {
+            let mut state = make_state();
+            let before = state.clone();
+            let mut memory = Memory::at(bytes, state.rip);
+            if let Some(offset) = fault_offset {
+                let address = state.rip + offset;
+                memory.fetch_error = Some((
+                    address,
+                    MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    },
+                ));
+            }
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.instructions_executed, 0, "{label}");
+            assert_eq!(state, before, "{label}");
+            assert!(memory.accesses.is_empty(), "{label}");
+            assert!(matches!(result.exit, RunExit::MemoryError(_)), "{label}");
+        }
+
+        for (label, stop_rip, budget, stop_requested, expected_exit) in [
+            ("stop RIP", Some(0x9320), 1, false, RunExit::StopAddress),
+            ("stop callback", None, 1, true, RunExit::StopRequested),
+            (
+                "zero budget",
+                None,
+                0,
+                false,
+                RunExit::InstructionBudgetExhausted,
+            ),
+        ] {
+            let mut state = make_state();
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xd9, 0xc9], state.rip);
+            let mut requested = stop_requested;
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || std::mem::take(&mut requested),
+            );
+            assert_eq!(result.exit, expected_exit, "{label}");
+            assert_eq!(result.instructions_executed, 0, "{label}");
+            assert_eq!(state, before, "{label}");
+            assert!(memory.accesses.is_empty(), "{label}");
         }
     }
 
