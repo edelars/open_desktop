@@ -268,6 +268,83 @@ def ssh_run(target: str, command: str, *, timeout: float = 60.0) -> str:
     return require_success(run(ssh_argv(target, command), timeout=timeout), "SSH command")
 
 
+def remote_test_packages(engine: str) -> tuple[str, ...]:
+    """Keep jit-block's remote preflight on the relevant downstream suites."""
+    if engine == "jit-block":
+        # od-isa still builds as a dependency, but its full unit suite has known
+        # x87 expectation failures tracked by ISSUE-023.
+        return ("od-testkit", "od-runner", "od-x86-runner")
+    return ("od-isa", "od-testkit", "od-runner", "od-x86-runner")
+
+
+def remote_test_command(remote_root: str, engine: str) -> str:
+    packages = " ".join(f"-p {package}" for package in remote_test_packages(engine))
+    return (
+        f"cd {shlex.quote(remote_root)} && . \"$HOME/.cargo/env\" && "
+        f"cargo test --offline {packages}"
+    )
+
+
+def run_preflight_process(argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def run_remote_test_preflight(
+    target: str,
+    command: str,
+    output_dir: Path,
+    *,
+    process_runner=None,
+) -> dict:
+    """Run Cargo preflight and persist complete process evidence, including failure."""
+    argv = ssh_argv(target, command)
+    stdout_path = output_dir / "remote-test-preflight.stdout.log"
+    stderr_path = output_dir / "remote-test-preflight.stderr.log"
+    record_path = output_dir / "remote-test-preflight.json"
+
+    def as_text(value: str | bytes | None) -> str:
+        if value is None:
+            return ""
+        return value.decode(errors="replace") if isinstance(value, bytes) else value
+
+    try:
+        process = (process_runner or run_preflight_process)(argv, timeout=1800.0)
+        stdout = process.stdout
+        stderr = process.stderr
+        exit_code = process.returncode
+        failure = {}
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout if error.stdout is not None else error.output
+        stderr = error.stderr
+        exit_code = None
+        failure = {"timed_out": True, "timeout_seconds": 1800.0}
+    except OSError as error:
+        stdout = stderr = ""
+        exit_code = None
+        failure = {"launch_error": str(error)}
+
+    stdout_path.write_text(as_text(stdout))
+    stderr_path.write_text(as_text(stderr))
+    record = {
+        "host": target,
+        "command": command,
+        "exit_code": exit_code,
+        "stdout_path": stdout_path.name,
+        "stderr_path": stderr_path.name,
+        **failure,
+    }
+    record_path.write_text(json.dumps(record, indent=2) + "\n")
+    return record
+
+
 def parse_result(output: str, path: Path) -> dict:
     try:
         result = json.loads(output)
@@ -509,12 +586,24 @@ def main() -> int:
         manifest["source_fingerprint"] = fingerprint
         manifest["machines"] = {"local": local_info, "remote_rustc": remote_rustc, "remote_cargo": remote_cargo}
 
-        remote_tests = (
-            f"{remote_cd} && . \"$HOME/.cargo/env\" && "
-            "cargo test --offline -p od-isa -p od-testkit -p od-runner -p od-x86-runner"
-        )
+        remote_tests = remote_test_command(args.remote_root, args.engine)
         manifest["commands"].append({"host": target, "command": remote_tests})
-        remote_test_output = ssh_run(target, remote_tests, timeout=1800.0)
+        preflight = run_remote_test_preflight(target, remote_tests, output_dir)
+        manifest["remote_test_preflight"] = preflight
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+        if preflight["exit_code"] != 0:
+            reason = (
+                f"timed out after {preflight['timeout_seconds']} seconds"
+                if preflight.get("timed_out")
+                else f"could not start ({preflight['launch_error']})"
+                if preflight.get("launch_error")
+                else f"exited {preflight['exit_code']}"
+            )
+            raise Stage1Error(
+                f"remote Cargo test preflight failed: {reason}; full stdout/stderr are saved at "
+                f"{preflight['stdout_path']} and {preflight['stderr_path']}"
+            )
+        remote_test_output = (output_dir / preflight["stdout_path"]).read_text()
         manifest["remote_test_summary"] = [
             line.strip()
             for line in remote_test_output.splitlines()

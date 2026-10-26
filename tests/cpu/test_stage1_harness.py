@@ -87,6 +87,52 @@ class OracleInputTests(unittest.TestCase):
 
 
 class HarnessSelectionTests(unittest.TestCase):
+    def test_remote_test_routing_keeps_legacy_suite_and_skips_known_isa_failures_for_block(self):
+        legacy = oracle.remote_test_command("/remote/repo", "jit")
+        block = oracle.remote_test_command("/remote/repo", "jit-block")
+        self.assertIn("cargo test --offline -p od-isa -p od-testkit -p od-runner -p od-x86-runner", legacy)
+        self.assertIn("cargo test --offline -p od-testkit -p od-runner -p od-x86-runner", block)
+        self.assertNotIn("-p od-isa ", block)
+        self.assertIn("cd /remote/repo", block)
+
+    def test_remote_preflight_persists_full_process_output_and_exit_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            output_dir.mkdir(exist_ok=True)
+
+            def failed_process(argv, *, timeout):
+                return subprocess.CompletedProcess(argv, 101, "stdout: full\n", "stderr: full\n")
+
+            record = oracle.run_remote_test_preflight(
+                "host", "cargo test", output_dir, process_runner=failed_process
+            )
+            self.assertEqual(record["exit_code"], 101)
+            self.assertEqual((output_dir / record["stdout_path"]).read_text(), "stdout: full\n")
+            self.assertEqual((output_dir / record["stderr_path"]).read_text(), "stderr: full\n")
+            saved = json.loads((output_dir / "remote-test-preflight.json").read_text())
+            self.assertEqual(saved, record)
+
+    def test_remote_preflight_timeout_persists_partial_output_and_timeout_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+
+            def timeout_process(argv, *, timeout):
+                raise subprocess.TimeoutExpired(
+                    argv, timeout, output=b"partial stdout\n", stderr=b"partial stderr\n"
+                )
+
+            record = oracle.run_remote_test_preflight(
+                "host", "cargo test", output_dir, process_runner=timeout_process
+            )
+            self.assertIsNone(record["exit_code"])
+            self.assertTrue(record["timed_out"])
+            self.assertEqual(record["timeout_seconds"], 1800.0)
+            self.assertEqual((output_dir / record["stdout_path"]).read_text(), "partial stdout\n")
+            self.assertEqual((output_dir / record["stderr_path"]).read_text(), "partial stderr\n")
+            self.assertEqual(
+                json.loads((output_dir / "remote-test-preflight.json").read_text()), record
+            )
+
     def test_s3_14_manifest_selects_eight_historical_and_five_boundary_cases(self):
         path = oracle.ROOT / oracle.JIT_BLOCK_MANIFEST
         manifest = json.loads(path.read_text())
@@ -143,7 +189,8 @@ class HarnessSelectionTests(unittest.TestCase):
                     with self.assertRaisesRegex(oracle.Stage1Error, "historical or boundary"):
                         oracle.load_case_manifest(manifest_path)
 
-    def _run_oracle_main(self, *, engine="jit-block", selection="manifest", result_backend=None):
+    def _run_oracle_main(self, *, engine="jit-block", selection="manifest", result_backend=None,
+                         preflight_exit_code=0, preflight_timeout=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name).resolve()
@@ -207,6 +254,11 @@ class HarnessSelectionTests(unittest.TestCase):
             }
 
         def fake_run(argv, *, cwd=oracle.ROOT, env=None, timeout=60.0):
+            if argv[0] == "ssh":
+                return subprocess.CompletedProcess(
+                    argv, preflight_exit_code, "preflight stdout: all lines\n",
+                    "preflight stderr: all lines\n" if preflight_exit_code else "",
+                )
             if argv[0] in {"cargo", "scp"}:
                 return subprocess.CompletedProcess(argv, 0, "", "")
             engine = argv[argv.index("--engine") + 1]
@@ -230,6 +282,17 @@ class HarnessSelectionTests(unittest.TestCase):
             if "cargo --version" in command:
                 return "cargo remote\n"
             return "test result: ok\n"
+
+        def fake_preflight_process(argv, *, timeout):
+            if preflight_timeout:
+                raise subprocess.TimeoutExpired(
+                    argv, timeout, output="preflight partial stdout\n",
+                    stderr="preflight partial stderr\n",
+                )
+            return subprocess.CompletedProcess(
+                argv, preflight_exit_code, "preflight stdout: all lines\n",
+                "preflight stderr: all lines\n" if preflight_exit_code else "",
+            )
 
         def fake_native_batch(target, remote_root, runner, fixture_dir, cases, output_dir, *, process_runner=None):
             native_batches.append(output_dir.name)
@@ -262,12 +325,17 @@ class HarnessSelectionTests(unittest.TestCase):
              patch.object(oracle, "local_machine", return_value=machine), \
              patch.object(oracle, "ssh_run", side_effect=fake_ssh_run), \
              patch.object(oracle, "run", side_effect=fake_run), \
+             patch.object(oracle, "run_preflight_process", side_effect=fake_preflight_process), \
              patch.object(oracle, "run_remote_batch", side_effect=fake_native_batch), \
              patch.object(oracle, "compare", side_effect=fake_compare), \
              contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
             status = oracle.main()
         manifest_paths = list((root / "work/test-oracle").glob("*/manifest.json"))
         saved = json.loads(manifest_paths[0].read_text())
+        if "remote_test_preflight" in saved:
+            preflight = saved["remote_test_preflight"]
+            saved["_preflight_stdout"] = (manifest_paths[0].parent / preflight["stdout_path"]).read_text()
+            saved["_preflight_stderr"] = (manifest_paths[0].parent / preflight["stderr_path"]).read_text()
         return status, engines, native_batches, comparisons, saved
 
     def test_jit_block_orchestration_checks_backend_and_repeats_all_three_engines(self):
@@ -281,6 +349,8 @@ class HarnessSelectionTests(unittest.TestCase):
         self.assertEqual(saved["suite"], "register-only one-block triple comparison")
         self.assertEqual(saved["engine"], "jit-block")
         self.assertEqual(saved["jit_backend"], "jit_ir_block")
+        self.assertEqual(saved["remote_test_preflight"]["exit_code"], 0)
+        self.assertEqual(saved["_preflight_stdout"], "preflight stdout: all lines\n")
         self.assertEqual(saved["repeats"], 2)
         entry = saved["fixtures"][1]
         self.assertIn("local_jit_block", entry["build"])
@@ -302,6 +372,29 @@ class HarnessSelectionTests(unittest.TestCase):
         self.assertEqual(saved["stage"], "Stage1")
         self.assertEqual(saved["suite"], "legacy fixture oracle")
         self.assertNotIn("one-block", saved["suite"])
+
+    def test_remote_preflight_failure_is_logged_and_aborts_before_build_or_execution(self):
+        status, engines, native_batches, _, saved = self._run_oracle_main(preflight_exit_code=101)
+        self.assertEqual(status, 1)
+        self.assertEqual(saved["status"], "failed")
+        self.assertEqual(saved["remote_test_preflight"]["exit_code"], 101)
+        self.assertEqual(saved["_preflight_stdout"], "preflight stdout: all lines\n")
+        self.assertEqual(saved["_preflight_stderr"], "preflight stderr: all lines\n")
+        self.assertEqual(engines, [])
+        self.assertEqual(native_batches, [])
+        self.assertIn("full stdout/stderr are saved", saved["error"])
+
+    def test_remote_preflight_timeout_is_logged_before_aborting(self):
+        status, engines, native_batches, _, saved = self._run_oracle_main(preflight_timeout=True)
+        self.assertEqual(status, 1)
+        self.assertEqual(saved["status"], "failed")
+        self.assertIsNone(saved["remote_test_preflight"]["exit_code"])
+        self.assertTrue(saved["remote_test_preflight"]["timed_out"])
+        self.assertEqual(saved["_preflight_stdout"], "preflight partial stdout\n")
+        self.assertEqual(saved["_preflight_stderr"], "preflight partial stderr\n")
+        self.assertEqual(engines, [])
+        self.assertEqual(native_batches, [])
+        self.assertIn("timed out after 1800.0 seconds", saved["error"])
 
     def test_explicit_jit_block_cases_do_not_claim_curated_manifest_suite(self):
         status, _, _, _, saved = self._run_oracle_main(engine="jit-block", selection="cases")

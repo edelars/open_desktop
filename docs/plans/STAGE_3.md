@@ -385,6 +385,18 @@ Orchestration tests проверяют выбор engine/backend, два пов�
 implicit selection и failure при неверном backend tag. Все тринадцать manifest inputs локально совпали
 между interpreter и `jit_ir_block`; вместе с harness tests это подтверждает
 только локальную подготовку, не запуск Mac mini или triple physical acceptance.
+
+Первый удалённый preflight для ревизии `980efd3` остановился на общем наборе
+`od-isa`, `od-testkit`, `od-runner`, `od-x86-runner`: 706/711 тестов прошли,
+пять известных x87/decode cases из [ISSUE-023](../KNOWN_ISSUES.md#issue-023--stage-1-test-expectations-reject-currently-accepted-x87-forms)
+упали до сборки и запуска native fixtures. Полный stdout/stderr этого запуска
+не был сохранён. Для `jit-block` harness теперь запускает только suites
+`od-testkit`, `od-runner`, `od-x86-runner` (один `od-isa` всё равно собирается
+как dependency), а стандартный `jit` сохраняет прежний полный набор. Любой
+результат remote preflight записывает полный доступный stdout/stderr и exit
+code в run folder до продолжения или abort; timeout сохраняет partial output,
+timeout status, limit и команду (exit code остаётся null). Harness tests
+покрывают routing, nonzero exit и timeout.
 S3-14 остаётся открытым.
 
 **Готово:** срез A подтверждён тройным сравнением. Неподдержанные обязательные cases, недоступный SSH и mismatch оставляют задачу открытой.
