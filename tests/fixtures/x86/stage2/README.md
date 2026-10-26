@@ -1391,6 +1391,21 @@ contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30aw-canonical-qnan-fc
 [plan](../../../../docs/plans/STAGE_2.md#s2-30aw-admit-canonical-binary80-quietnan-to-bounded-fchsfabs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30aw--canonical-binary80-quietnan-through-bounded-fchsfabs).
 
+### S2-30ax canonical binary80 SignalingNaN FCHS/FABS
+
+Four handwritten schema-v2 fixtures seed canonical Q=0 binary80 SNaNs with
+nonzero low-62 payloads directly in ST(0), then run bare `D9 E0` or `D9 E1`
+with budget one. They cross both signs and operations; the CLI runner checks
+full state and JIT denial. A separate wrong-tag fixture confirms zero
+retirement and unchanged state. An od-isa unit composition inspects raw bytes
+immediately after `FLD m80fp` and after the sign operation, stores with
+`FSTP m80fp`, and observes status with `FNSTSW AX`, without converting through
+m32/m64 FLD (which quiets an SNaN and raises IE). Local fixtures are not
+physical x86 evidence; ISSUE-019 remains open. See the [CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30ax-canonical-snan-fchs-fabs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30ax-admit-canonical-binary80-signalingnan-to-bounded-fchsfabs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30ax--canonical-binary80-signalingnan-through-bounded-fchsfabs).
+
 ### S2-30z x87 schema and fixture coverage
 
 The schema admits only bare `D9 E1` for the FABS slice. The positive literal

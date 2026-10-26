@@ -2263,6 +2263,34 @@ and m64 widths. CLI assertions include full state, JIT denial and a wrong-tag
 fixture. Keep ISSUE-019 open; no Mac mini/SSH/native runtime/physical x86 checks
 belong to this substage.
 
+#### S2-30ax. Admit canonical binary80 SignalingNaN to bounded `FCHS/FABS`
+
+Extend only `bounded_x87_sign_st0_source`: retain FCW `0x037f`,
+`FSW & 0x80ff == 0`, canonical-Normal Valid, exact Zero-tagged signed zero,
+Special-tagged canonical infinity and QuietNaN behavior. Additionally admit
+only `(Special, SignalingNaN)` where binary80 has E=`0x7fff`, J=1, Q=0 and a
+nonzero lower 62-bit payload; accept either sign. The zero-payload J=1/Q=0
+encoding remains admitted through the existing canonical-infinity path. FCHS
+toggles only the sign bit and FABS clears only it. Preserve Q=0, every payload
+bit, Special tag, TOP and all other state, clear C1, add no IE/PE, and retain
+the local C0/C2/C3 policy. Reject pseudo-NaN, pseudo-infinity, subnormal,
+pseudo-denormal, unnormal, wrong tags and invalid environments atomically.
+Do not change decode/classifier/schema or JIT/native admission.
+
+The interpreter matrix covers both opcodes × signs × TOP × 16 prior condition
+codes × payloads `{1, 1<<61, 0x0123456789abcdef, (1<<62)-1}`. Compare full
+state and canaries, test double FCHS and repeated FABS, and reject malformed
+classes/tags/environment and fetch/truncation/STOP/budget/fetch-fault
+boundaries. A unit composition loads raw `FLD m80fp`, checks the SNaN bytes,
+applies FCHS/FABS and checks unchanged Q/payload, stores with `FSTP m80fp`,
+and observes status with `FNSTSW AX`; it covers both signs and operations
+without converting through m32/m64. Four exact schema-v2 CLI fixtures perform
+the bare sign operations across both signs/operations with a seeded SNaN and
+budget one; a wrong-tag CLI fixture verifies atomic rejection. All four
+success fixtures are denied by JIT. Keep ISSUE-019 open; defer Mac mini, SSH,
+native runtime and physical
+x86 acceptance to the combined final substage.
+
 #### S2-30z. Bare bounded `FABS` (sign-bit-clear local slice)
 
 Accept exactly bare `D9 E1` with an existing `Some(X87State)`, using the same

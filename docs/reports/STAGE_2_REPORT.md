@@ -9011,3 +9011,41 @@ and wrong-tag tests, `cargo fmt --all -- --check`,
 refreshed the code graph. No Mac mini, SSH, native runtime or physical x86
 checks were performed; ISSUE-019 remains open pending combined host/physical
 acceptance.
+
+## S2-30ax — canonical binary80 SignalingNaN through bounded FCHS/FABS
+
+The shared `bounded_x87_sign_st0_source` gate additionally admits only
+`(Special, SignalingNaN)` with canonical binary80 exponent `0x7fff`, J=1, Q=0,
+and nonzero low-62 payload, for either sign. Existing canonical infinity
+remains admitted through its separate class path; in particular, the J=1,
+Q=0 zero-payload encoding retains the classifier's established Infinity
+classification. FCHS toggles only the sign bit, FABS clears only the sign bit,
+and both preserve Q=0, payload, Special tag, TOP, C0/C2/C3 and all other state
+while clearing C1 and adding no IE/PE. No decoder, classifier, schema, JIT or
+native gate changed.
+
+The 2,048-case full-state unit matrix crosses both operations, both signs, all
+eight TOP values, 16 prior condition-code combinations and payloads `{1,
+1<<61, 0x0123456789abcdef, (1<<62)-1}`. It checks full state and canaries,
+double-FCHS restoration, repeated-FABS idempotence and continued SNaN
+classification with IE/PE clear. Atomic rejection coverage includes
+pseudo-NaNs/infinities, subnormal, pseudo-denormal, unnormal, wrong tags,
+invalid control/status, absent x87 state, truncation, STOP, exhausted budget
+and fetch fault. A raw `FLD m80fp` → FCHS/FABS → `FSTP m80fp` → `FNSTSW AX`
+unit composition checks bytes after load and after the operation as well as
+the stored ten bytes, for both signs/operations. Four bare schema-v2 fixtures
+seed the SNaN directly in ST(0), each execute one operation with budget one,
+check full state and are denied by JIT; the separate wrong-tag CLI fixture
+rejects atomically. The fixture sequence was restricted to bare operations
+because the schema-v2 CLI contract for this substage requires one instruction.
+
+Validation passed: `cargo test -p od-isa --offline fchs_and_fabs` (five
+admission, malformed-source, boundary and prior infinity/QuietNaN tests),
+`cargo test -p od-isa --offline
+fld_m80_fchs_fabs_fstp_m80_preserves_raw_signaling_nan`, both targeted
+`od-runner --test fixture_v2` SNaN success/wrong-tag cases,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, and `git diff --check`. `graphify update .`
+completed at 4,904 nodes, 9,827 edges and 195 communities; its existing
+`include/open_desktop/host_abi.h` extraction warning remains. No Mac mini, SSH,
+native runtime or physical x86 checks were performed; ISSUE-019 remains open.

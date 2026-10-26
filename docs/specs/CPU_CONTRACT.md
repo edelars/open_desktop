@@ -6808,3 +6808,36 @@ FST and FNSTSW. These local results do not establish physical x87 behavior; ISSU
 remains open. See the [plan](../plans/STAGE_2.md#s2-30aw-admit-canonical-binary80-quietnan-to-bounded-fchsfabs),
 [report](../reports/STAGE_2_REPORT.md#s2-30aw--canonical-binary80-quietnan-through-bounded-fchsfabs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30aw-canonical-binary80-quietnan-fchsfabs).
+
+<a id="local-s2-30ax-canonical-snan-fchs-fabs"></a>
+
+## Local S2-30ax: canonical binary80 SignalingNaN through bounded `FCHS/FABS`
+
+The shared `FCHS/FABS` source gate additionally admits only
+`(Special, SignalingNaN)` for canonical binary80: exponent `0x7fff`, explicit
+integer bit J=1, quiet bit Q=0, and nonzero lower 62-bit payload, with either
+sign. The J=1/Q=0 zero-payload encoding remains admitted by the existing
+canonical-infinity class path. FCHS toggles only raw sign bit 7 of byte 9;
+FABS clears only that bit.
+Both preserve Q=0, every payload bit, Special tag, TOP, C0/C2/C3 and all other
+state, clear C1, set FIP, advance RIP by two, and retire once without adding
+IE/PE. Pseudo-NaNs, pseudo-infinity, subnormal,
+pseudo-denormal, unnormal, wrong tags and invalid environment stay
+unsupported atomically. No decoder, classifier, schema, JIT or native gate
+changes.
+
+The full-state interpreter matrix crosses both operations, signs, all TOPs,
+all 16 prior condition-code combinations and payloads `{1, 1<<61,
+0x0123456789abcdef, (1<<62)-1}`. It checks full state and canaries,
+double-FCHS restoration, repeated-FABS idempotence, malformed neighbors,
+wrong tags/environment and execution boundaries. A raw `FLD m80fp` → FCHS or
+FABS → `FSTP m80fp` → `FNSTSW AX` unit composition checks SNaN bytes after load
+and operation and in the stored ten bytes for both signs/operations, without
+using m32/m64 conversion. Four exact schema-v2 CLI fixtures seed the raw SNaN
+in ST(0) and execute one bare sign operation with budget one; they cover both
+signs/operations and verify full state plus JIT denial. A wrong-tag fixture
+verifies atomic rejection.
+Local interpreter/project-fixture evidence does not establish physical x86
+behavior. ISSUE-019 remains open. See the [plan](../plans/STAGE_2.md#s2-30ax-admit-canonical-binary80-signalingnan-to-bounded-fchsfabs),
+[report](../reports/STAGE_2_REPORT.md#s2-30ax--canonical-binary80-signalingnan-through-bounded-fchsfabs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30ax-canonical-binary80-signalingnan-fchsfabs).
