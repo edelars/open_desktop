@@ -41,6 +41,12 @@ const FCHS_ZERO_COMPOSITION: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ao_fld_fchs_fst_fnstsw.case.json");
 const FABS_ZERO_COMPOSITION: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ap_fld_fabs_fst_fnstsw.case.json");
+const FCHS_INFINITY_COMPOSITION: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30av_fld_fchs_fst_fnstsw.case.json");
+const FABS_INFINITY_COMPOSITION: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30av_fld_fabs_fst_fnstsw.case.json");
+const FCHS_INFINITY_WRONG_TAG: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30av_fchs_infinity_wrong_tag.case.json");
 const FTST_ZERO_COMPOSITION: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30aq_fld_ftst_fnstsw.case.json");
 const FST_STI_ZERO_COMPOSITION: &[u8] =
@@ -1683,6 +1689,61 @@ fn local_x87_fld_fabs_fst_fnstsw_zero_fixture_checks_state_and_memory() {
     assert_eq!(observed.memory[0].bytes_hex, "d900d9e1d910dfe0");
     assert_eq!(observed.memory[1].bytes_hex, "00000000");
     assert_eq!(observed.memory[2].bytes_hex, "a5");
+}
+
+#[test]
+fn local_x87_fld_sign_operation_fst_fnstsw_infinity_fixtures_check_state_memory_and_jit_denial() {
+    for (fixture, code, expected_top, operation) in [
+        (
+            FCHS_INFINITY_COMPOSITION,
+            "d900d9e0d910dfe0",
+            "0000000000000080ff7f",
+            "FCHS",
+        ),
+        (
+            FABS_INFINITY_COMPOSITION,
+            "d900d9e1d910dfe0",
+            "0000000000000080ff7f",
+            "FABS",
+        ),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{operation}"
+        );
+        assert_eq!(count(&result), 4, "{operation}");
+        let observed = snapshot(&result);
+        let mut expected = input.fixture.initial_state.clone();
+        expected.rip = HexU64(0x0010_0008);
+        expected.gpr[0] = HexU64(0x0000_0000_0030_3800);
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.registers[7] = expected_top.into();
+        expected_x87.status_word = HexU64(0x3800);
+        expected_x87.tag_word = HexU64(0xbffc);
+        expected_x87.instruction_pointer = HexU64(0x0010_0004);
+        expected_x87.data_pointer = HexU64(0x0030_0004);
+        assert_eq!(observed.state, expected, "{operation}");
+        assert_eq!(observed.memory.len(), 3, "{operation}");
+        assert_eq!(observed.memory[0].bytes_hex, code, "{operation}");
+        assert_eq!(observed.memory[1].bytes_hex, "0000807f", "{operation}");
+        assert_eq!(observed.memory[2].bytes_hex, "a5", "{operation}");
+
+        let (_, jit_result) = run(fixture, "jit", 4);
+        assert!(
+            matches!(jit_result.outcome, Outcome::Unsupported { .. }),
+            "{operation}"
+        );
+    }
+}
+
+#[test]
+fn local_x87_fchs_infinity_wrong_tag_fixture_is_atomic_in_the_cli_runner() {
+    let (input, result) = run(FCHS_INFINITY_WRONG_TAG, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state, input.fixture.initial_state);
 }
 
 #[test]

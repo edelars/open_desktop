@@ -1359,6 +1359,24 @@ so ISSUE-019 remains open. See the [CPU contract](../../../../docs/specs/CPU_CON
 [plan](../../../../docs/plans/STAGE_2.md#s2-30au-admit-canonical-signed-infinity-to-bounded-fstfstp-sti),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30au--canonical-signed-infinity-through-fstfstp-sti).
 
+### S2-30av canonical signed-infinity FCHS/FABS
+
+The handwritten `s2_30av_fld_fchs_fst_fnstsw.case.json` and
+`s2_30av_fld_fabs_fst_fnstsw.case.json` fixtures use exactly
+`d900d9e0d910dfe0` and `d900d9e1d910dfe0`. FLD m32fp loads negative infinity,
+the sign operation produces positive infinity, FST writes it back, and FNSTSW
+observes TOP. Each fixture retires four instructions. A no-stop, budget-one
+fixture carries canonical positive-infinity bytes with a Valid tag and checks
+atomic FCHS rejection. Interpreter vectors cover both opcodes, signs, all TOPs
+and prior condition-code states, full-state canaries, repeated operations,
+malformed neighboring classes, wrong tags, invalid environments and execution
+boundaries. m32/m64 compositions cover both signs. The schema is unchanged and
+JIT/native admission remains closed; local fixture evidence does not establish
+physical x86 behavior, so ISSUE-019 remains open. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30av-canonical-signed-infinity-fchs-fabs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30av-admit-canonical-signed-infinity-to-bounded-fchsfabs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30av--canonical-signed-infinity-through-bounded-fchsfabs).
+
 ### S2-30z x87 schema and fixture coverage
 
 The schema admits only bare `D9 E1` for the FABS slice. The positive literal

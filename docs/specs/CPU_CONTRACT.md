@@ -6752,3 +6752,32 @@ Normal Unsupported fixtures from treating OE-only as a rejection reason.
 These are local interpreter/project-fixture results, not native x86 evidence.
 General exception delivery, native runtime and physical acceptance remain open
 under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31du-admit-historical-sticky-oe-through-exact-binary32binary64-fld), [report](../reports/STAGE_2_REPORT.md#s2-31du--historical-sticky-oe-for-bounded-m32m64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+<a id="local-s2-30av-canonical-signed-infinity-fchs-fabs"></a>
+
+## Local S2-30av: canonical signed infinity through bounded `FCHS/FABS`
+
+Bare `D9 E0` FCHS and `D9 E1` FABS keep their exact FCW `0x037f` and FSW
+`FSW & 0x80ff == 0` gates, and retain canonical-Normal Valid and exact
+Zero-tagged signed-zero sources. They additionally admit only the tag/class pair
+`(Special, Infinity)` at ST(0), where binary80 has exponent `0x7fff`, integer
+bit J=1 and zero fraction, with either sign. FCHS toggles raw bit 7 of byte 9;
+FABS clears it. Both preserve Special tag, TOP, C0/C2/C3 and all other state,
+clear C1, record FIP, advance RIP by two and retire once. Signaling/pseudo
+infinities, NaNs, pseudo-NaNs, subnormals, pseudo-denormals, unnormals, malformed
+encodings and wrong tags remain atomically unsupported. No JIT or native gate
+is widened.
+
+Local interpreter coverage spans both operations × both signs × all TOP values
+× all 16 prior condition-code combinations, compares full machine/x87 state,
+checks double-FCHS restoration and FABS idempotence, rejects wrong tags and
+neighboring classes, and checks invalid FCW/FSW, missing state, fetch,
+truncation, STOP and budget boundaries. m32/m64 FLD → sign operation → FST →
+FNSTSW compositions cover both signs. The two handwritten project fixtures use
+only `d900d9e0d910dfe0` and `d900d9e1d910dfe0`; a no-stop budget-one fixture
+checks wrong-tag rejection, and runner assertions retain JIT denial. These are
+local interpreter/project-fixture results, not physical x86 evidence. Physical
+and Mac mini acceptance remain open under ISSUE-019. See the
+[plan](../plans/STAGE_2.md#s2-30av-admit-canonical-signed-infinity-to-bounded-fchsfabs),
+[report](../reports/STAGE_2_REPORT.md#s2-30av--canonical-signed-infinity-through-bounded-fchsfabs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30av-canonical-signed-infinity-fchsfabs).

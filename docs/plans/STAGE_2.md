@@ -212,6 +212,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30ar | Bare `DD D0+i` FST ST(i) also copies exact Zero-tagged signed zero, retaining Zero without pop; FSTP's then-Normal-only scope is historical / superseded by S2-30as; native/JIT closed | S2-30aq |
 | [x] | S2-30as | Bare `DD D8+i` FSTP ST(i) copies exact Zero-tagged signed zero before emptying old TOP and advancing TOP; native/JIT closed | S2-30ar |
 | [x] | S2-30au | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical signed infinity; native/JIT closed | S2-30as |
+| [x] | S2-30av | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit only Special-tagged canonical signed binary80 infinity; native/JIT closed | S2-30ap, S2-30at |
 | [x] | S2-30aa | Bare `D9 E4` FTST, bounded canonical-Normal ST(0) comparison with zero; native closed | S2-30z |
 | [x] | S2-30ab | Bare `D8 D1` FCOM ST(1), exact finite canonical-Normal compare with status-only commit; native closed | S2-30aa |
 | [x] | S2-30ac | Bare `D8 D0+i` FCOM ST(i), exact finite canonical-Normal compare for all register indices; native closed | S2-30ab |
@@ -2214,6 +2215,28 @@ Reuse only existing fixture byte patterns `d900ddd1dfe0` and
 JIT-denial, workspace and layout checks do not establish native or physical
 behavior. Keep ISSUE-019 open; no Mac mini, SSH or physical x86 checks belong to
 this substage.
+
+#### S2-30av. Admit canonical signed infinity to bounded `FCHS/FABS`
+
+Extend only `bounded_x87_sign_st0_source`: retain FCW `0x037f`,
+`FSW & 0x80ff == 0`, canonical-Normal Valid and exact Zero-tagged signed-zero
+behavior, and additionally admit `(Special, Infinity)` for canonical binary80
+infinity (E=`0x7fff`, J=1, fraction=0), either sign. FCHS flips only the raw
+sign bit; FABS clears only that bit. Preserve the Special tag, TOP, C0/C2/C3,
+all other payload/state, and the existing C1-clear/FIP/RIP/retirement behavior.
+Keep pseudo-infinity, NaNs, pseudo-NaNs, subnormal, pseudo-denormal, unnormal,
+other malformed special values and wrong tags atomically unsupported. Do not
+change JIT/native gates.
+
+Cover both opcodes × both signs × all eight TOP positions × all 16 prior
+condition-code values, with full-state expectations, idempotent FABS, double
+FCHS restoration, neighboring-class/tag/environment rejection and canaries.
+Check fetch, truncation, STOP and budget atomicity with admitted infinity and
+compose FLD m32/m64 → each sign operation → FST → FNSTSW. Keep the exact
+project-fixture instruction streams `d900d9e0d910dfe0` and
+`d900d9e1d910dfe0`; add CLI success/rejection and JIT denial assertions without
+changing the schema. Local evidence does not establish physical x87 behavior;
+ISSUE-019 remains open and no Mac mini/SSH/physical x86 check belongs here.
 
 #### S2-30z. Bare bounded `FABS` (sign-bit-clear local slice)
 

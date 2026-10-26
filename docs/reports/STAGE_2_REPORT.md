@@ -8939,3 +8939,39 @@ passed, along with `cargo fmt --all -- --check`,
 clean after adding the malformed-class/environment and literal-fixture checks.
 Local interpreter/project-fixture evidence does not establish physical x87
 behavior; ISSUE-019 remains open.
+
+## S2-30av — canonical signed infinity through bounded FCHS/FABS
+
+The shared bounded FCHS/FABS source gate now additionally accepts only the
+`(Special, Infinity)` pair for canonical signed binary80 infinity. FCW remains
+`0x037f`, the existing `FSW & 0x80ff == 0` mask is unchanged, and Normal and
+Zero-tagged exact signed-zero behavior is unchanged. FCHS flips the sign bit;
+FABS clears it. Both retain the Special tag and TOP, clear C1, and preserve the
+rest of the local snapshot state. Pseudo-infinity, NaNs and pseudo-NaNs,
+subnormal, pseudo-denormal, unnormal, wrong tags, invalid controls/status and
+execution-boundary cases reject atomically.
+
+The full-state interpreter matrix covers both opcodes × both signs × all eight
+TOP values × all 16 prior condition-code states, with repeated operations and
+malformed-source/environment/boundary rejection. m32/m64 FLD→FCHS/FABS→FST→
+FNSTSW compositions cover both signs. The two literal project fixtures use
+exactly `d900d9e0d910dfe0` and `d900d9e1d910dfe0`; the no-stop, budget-one
+wrong-tag fixture confirms CLI rejection. JIT requests remain unsupported and
+the schema was not widened. These checks passed:
+
+- `cargo test -p od-isa --offline fchs_and_fabs` (acceptance, malformed-source
+  and execution-boundary tests).
+- `cargo test -p od-isa --offline fld_signed_infinity_sign_operations_fst_fnstsw_compose_for_both_source_widths`.
+- `cargo test -p od-isa --offline fchs_flips_only_the_raw_sign_byte_for_normal_st0_and_clears_c1`,
+  `... fchs_toggles_canonical_zero_for_every_top_and_condition_code`,
+  `... fabs_clears_only_the_raw_sign_byte_for_normal_st0_and_clears_c1`, and
+  `... fabs_clears_canonical_zero_sign_for_every_top_and_condition_code`.
+- `cargo test -p od-runner --offline --test fixture_v2 local_x87_fld_sign_operation_fst_fnstsw_infinity_fixtures_check_state_memory_and_jit_denial`
+  and `... local_x87_fchs_infinity_wrong_tag_fixture_is_atomic_in_the_cli_runner`.
+- `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+  `python3 tools/check_layout.py`, and `git diff --check`.
+- `graphify update .` completed; it refreshed the graph and reported its
+  existing extractor warning for `include/open_desktop/host_abi.h`.
+
+No Mac mini, SSH, native runtime or physical x86 checks were performed; ISSUE-019
+remains open.
