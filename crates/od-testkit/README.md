@@ -71,3 +71,8 @@ followed by FNSTSW, plus the retained repeat and three FCOMI producer
 sequences. The schema rejects prefixes, neighboring encodings, invalid
 operands and forbidden FCW/FSW. It describes local fixture format only and
 does not establish JIT, native or physical behavior.
+
+S2-30ce adds exactly six `s2-long-x87-state-v1` FCMOVNBE streams for bare
+`DB D1`, FNSTSW observation, repeat, and three FCOMI producer compositions.
+Other DB D0..D7 forms, prefixes, and memory operands remain outside the
+schema. Local fixture validation is not native or physical x86 evidence.

@@ -23,3 +23,7 @@ JIT backend для v2 fixtures.
 Проверки корректности и измерений по задачам этапа — в
 [методике JIT](../../docs/testing/JIT.md). Добавлять формы инструкций можно
 после подтверждения их interpreter semantics и требуемых внешних проверок.
+
+The bounded S2-30ce `DB D1` FCMOVNBE operation has no v2 JIT lowering; runner
+fixtures must continue to return `unsupported` for this instruction on the JIT
+backend.

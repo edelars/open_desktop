@@ -362,3 +362,10 @@ self-index case. Exact raw bytes/tag transfer occurs when `CF || ZF`. Local
 full-state matrices cover 363,520 successes and 645,120 invalid class/tag
 rejects, plus environment, boundary, indexed fixture, and exact-schema checks.
 JIT, native and physical x86 execution remain unverified.
+
+S2-30ce implements only bare Long64 `DB D1` FCMOVNBE ST(0), ST(1). It
+preflights canonical Normal/Zero operands before integer CF/ZF and copies raw
+bytes plus tag only when both flags are clear. The 51,200-success and
+86,016-invalid matrices, complement property, producer checkpoints and repeat
+intermediate states are local interpreter evidence; JIT/native and physical
+x86 remain outside the slice.

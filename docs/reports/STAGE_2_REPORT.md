@@ -9949,3 +9949,34 @@ worktree `.git` pointer as an unmapped root file and two missing ignored oracle
 manifest links in this isolated worktree; those artifacts exist in the
 shared checkout. No native or physical execution is claimed; ISSUE-019
 remains open.
+
+## S2-30ce — bare `FCMOVNBE ST(0), ST(1)`
+
+Implemented exact unprefixed Long64 `DB D1` only. The interpreter requires a
+present x87 state, FCW `0x037f`, `FSW & 0x82ff == 0`, and Valid canonical-Normal
+or Zero exact-signed-zero participants at physical TOP and TOP+1. Both cells
+are checked before integer CF/ZF; raw ten-byte/tag transfer occurs only when
+both flags are clear. C1=1, other encodings, prefixes, memory, exception
+delivery, JIT, native and physical execution remain unsupported.
+
+Local checks cover 51,200 success states, split into 12,800 taken and 38,400
+untaken cases, plus 86,016 invalid participant snapshots. They include a
+same-CF/ZF complement property against FCMOVBE, all environment gates,
+decode/prefix and execution boundaries, producer checkpoints after FCOMI/FCHS,
+and complete intermediate snapshots for both steps of a repeat. The exact
+six-stream fixture schema contains the
+bare and FNSTSW forms, repeat, and greater/equal-then-FCHS/less FCOMI producer
+streams. Eight literal success fixtures and two atomic rejects pass full
+machine/memory runner checks and deny JIT. This is local interpreter evidence;
+it does not establish native or physical x86 behavior, and ISSUE-019 remains
+open.
+
+Verification passed for `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, all 185 `od-testkit` tests,
+and all 199 `od-runner` fixture tests. The full `od-isa` suite reports 725
+passed and two previously documented FABS/FCHS expectation failures at
+`rejection=3` and `rejection=18` under SF|IE (ISSUE-019); all seven focused
+FCMOVNBE tests pass. `git diff --check` passes. `tools/check_layout.py` still
+reports the known isolated-worktree `.git` pointer and two broken links to
+ignored oracle manifests absent from this worktree. No directory structure
+changed. No native or physical x86 execution was performed.

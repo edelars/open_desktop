@@ -2791,6 +2791,102 @@ fn x87_fcmovbe_schema_admits_exact_indexed_streams_and_reject_profiles() {
 }
 
 #[test]
+fn x87_fcmovnbe_schema_admits_exact_six_st1_streams_and_reject_profiles() {
+    let base = x87_fixture().fixture;
+    for (program, budget) in [
+        ("dbd1", 1),
+        ("dbd1dfe0", 2),
+        ("dbd1dbd1dfe0", 3),
+        ("d9e8d9e0d9e8dbf1dbd1dfe0", 6),
+        ("d9e8d9e8dbf1d9e0dbd1dfe0", 6),
+        ("d9e8d9e8d9e0dbf1dbd1dfe0", 6),
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("x87_fcmovnbe_{program}");
+        fixture.instruction_budget = budget;
+        let length = (program.len() / 2) as u32;
+        fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + u64::from(length)));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = program.into();
+        code.length = length;
+        code.comparison_mask_hex = "ff".repeat(length as usize);
+        assert!(
+            Fixture::from_json(&fixture.to_json().expect(program)).is_ok(),
+            "{program}"
+        );
+    }
+
+    for program in [
+        "dbd0",
+        "dbd2",
+        "dbd1dfe1",
+        "66dbd1",
+        "40dbd1",
+        "9bdbd1",
+        "dbd1dbd1",
+        "d9e8dbf1dbd1dfe0",
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("x87_fcmovnbe_reject_{program}");
+        fixture.instruction_budget = 1;
+        fixture.stop_rip = Some(HexU64(
+            fixture.initial_state.rip.get() + (program.len() / 2) as u64,
+        ));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = program.into();
+        code.length = (program.len() / 2) as u32;
+        code.comparison_mask_hex = "ff".repeat(code.length as usize);
+        assert!(fixture.validate().is_err(), "{program}");
+    }
+
+    let mut invalid = base.clone();
+    invalid.case_id = "x87_fcmovnbe_invalid_untaken_source".into();
+    invalid.stop_rip = None;
+    invalid.instruction_budget = 1;
+    invalid.expected_exit = ExpectedExit::Unsupported;
+    invalid.initial_state.rflags = HexU64(2 | 0x41);
+    let x87 = invalid.initial_state.x87.as_mut().unwrap();
+    x87.control_word = HexU64(0x037f);
+    x87.status_word = HexU64(0);
+    x87.tag_word = HexU64(u16::MAX.into());
+    x87.registers[0] = "0000000000000080ff3f".into();
+    x87.registers[1] = "00000000000000000000".into();
+    let code = invalid
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "dbd1".into();
+    code.length = 2;
+    code.comparison_mask_hex = "ffff".into();
+    assert!(Fixture::from_json(&invalid.to_json().unwrap()).is_ok());
+
+    let mut bad_environment = invalid;
+    bad_environment.case_id = "x87_fcmovnbe_bad_environment".into();
+    bad_environment
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .control_word = HexU64(0x077f);
+    bad_environment
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .registers[1] = "0000000000000080ff3f".into();
+    assert!(Fixture::from_json(&bad_environment.to_json().unwrap()).is_ok());
+}
+
+#[test]
 fn result_rejects_observed_fs_base_different_from_initial() {
     let input = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_22a_fs_base_qword_load_alias.case.json"

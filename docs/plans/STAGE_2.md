@@ -246,6 +246,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cb | Bare `DB C8..CF` FCMOVNE ST(0), ST(i), indexed preflight before ZF and self-index TOP-only, exact raw copy when ZF=0, native/JIT closed | S2-30ca |
 | [x] | S2-30cc | Exact bare Long64 `DA D1` FCMOVBE ST(0), ST(1); preflight both participants before integer `CF || ZF`; full local matrices, six-stream schema and fixture runner; native/JIT closed | S2-30cb |
 | [x] | S2-30cd | Bare Long64 `DA D0..D7` indexed FCMOVBE ST(0), ST(i); preflight before integer `CF || ZF`, TOP-only self-case, exact raw copy; indexed matrices, 20-stream schema and full-state runner; native/JIT closed | S2-30cc |
+| [x] | S2-30ce | Exact bare Long64 `DB D1` FCMOVNBE ST(0), ST(1); preflight before integer CF/ZF, raw copy only when both clear; success/invalid matrices, six-stream schema and full-state runner; native/JIT closed | S2-30cd |
 | [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
@@ -6262,3 +6263,29 @@ zero/tag transfer, untaken invalid operands, bad environment, repeat, and
 the retained producers. Runner assertions compare full machine state and
 memory and deny JIT. Local evidence does not resolve ISSUE-019 or establish
 physical x86 behavior.
+
+#### S2-30ce. Exact bare `FCMOVNBE ST(0), ST(1)` (`DB D1`)
+
+Admit only the exact unprefixed Long64 `DB D1` form. Require present x87
+state, FCW `0x037f`, and `FSW & 0x82ff == 0`. Preflight physical TOP and
+`(TOP+1)&7` before reading integer flags, whether the instruction is taken or
+not. Each participant must be Valid-tagged canonical Normal binary80 or
+Zero-tagged exact signed zero. Copy the source's raw ten bytes and tag to TOP
+only when both integer CF and ZF are clear (`!(CF || ZF)`); otherwise preserve
+the destination. Preserve all other state except FIP=old RIP, RIP+=2, and one
+retirement. Rejections are atomic. C1=1, all other DB D0..D7 forms, prefixes,
+memory forms, x87 exception delivery, JIT, native execution and physical
+acceptance remain excluded.
+
+The interpreter matrix contains 51,200 complete success states (10×10 values,
+four CF/ZF rows, both PF values, eight TOP values and eight C0/C2/C3 patterns),
+including 12,800 taken and 38,400 untaken cases. An additional matrix checks
+86,016 invalid class/tag operand snapshots, including untaken conditions. The
+test suite explicitly verifies the complementary truth table against FCMOVBE
+at identical CF/ZF values. Schema v2 admits exactly six streams: `dbd1` (1),
+`dbd1dfe0` (2), `dbd1dbd1dfe0` (3), and the three six-instruction FCOMI
+producer streams for greater, equal-then-FCHS, and less. Literal fixtures cover
+the CF/ZF rows, signed-zero/tag transfer with TOP wrap, both repeat steps,
+producer truth cases, invalid untaken source, and bad environment. The runner
+compares full machine and memory snapshots and denies JIT. Local evidence does
+not resolve ISSUE-019 or establish physical x86 behavior.

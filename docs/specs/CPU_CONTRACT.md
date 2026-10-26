@@ -7581,3 +7581,26 @@ DAD1 repeat, and three retained FCOMI producers. Literal fixtures and the
 runner compare complete state/memory, RFLAGS, RIP/FIP and retirement, and deny
 JIT for every index. This is local evidence only; ISSUE-019 and physical x86
 behavior remain open.
+
+## Local S2-30ce: bounded bare `FCMOVNBE ST(0), ST(1)` (`DB D1`)
+
+Admit only exact unprefixed Long64 `DB D1`. Require present x87 state, FCW
+`0x037f`, and `FSW & 0x82ff == 0`. Before reading integer CF/ZF, preflight
+physical TOP and `(TOP+1)&7`, including when the move is untaken. Each
+participant must be Valid-tagged canonical Normal binary80 or Zero-tagged
+exact signed binary80 zero. Copy the source's raw ten bytes and tag to TOP
+exactly when `CF=0 && ZF=0`; otherwise preserve both cells. Preserve all state
+except FIP=old RIP, RIP+=2 and one retirement. Rejections are atomic.
+
+Coverage includes 51,200 successful snapshots (12,800 taken and 38,400
+untaken), 86,016 invalid class/tag rejects, an explicit same-CF/ZF complement
+property against FCMOVBE, environment/decode/boundary checks, and repeat
+intermediate states plus producer checkpoints after FCOMI/FCHS. The schema
+admits exactly the six documented bare, observation, repeat, and FCOMI
+producer streams. Literal runner fixtures check
+full machine and memory snapshots and deny JIT. C1=1, other DB D0..D7 forms,
+memory operands, x87 exception delivery, native/JIT execution, and physical
+x86 acceptance remain outside this local contract. ISSUE-019 remains open.
+See the [S2-30ce plan](../plans/STAGE_2.md#s2-30ce-exact-bare-fcmovnbe-st0-st1-db-d1),
+[report](../reports/STAGE_2_REPORT.md#s2-30ce--bare-fcmovnbe-st0-st1), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30ce-bare-fcmovnbe-st0-st1-db-d1).

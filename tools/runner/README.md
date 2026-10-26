@@ -130,3 +130,8 @@ state and memory for the truth table, TOP wrap, both repeated transfers and
 three FCOMI producers; invalid participant and environment fixtures remain
 atomic. Every success and rejection fixture denies JIT. No native or physical
 x86 execution is claimed.
+
+S2-30ce fixture runs compare full machine and memory snapshots for bare
+FCMOVNBE, signed-zero transfer, repeat, and FCOMI-produced conditions. Both
+repeat instructions are checked by interpreter state tests; the runner denies
+JIT for all success and rejection fixtures.

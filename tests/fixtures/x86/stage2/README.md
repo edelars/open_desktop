@@ -3772,3 +3772,17 @@ The runner compares complete state and memory, including RFLAGS, RIP, FIP and
 retirement, on each accepted index and on both repeated transfers; it also
 checks JIT denial. These are local interpreter fixtures only and establish no
 native or physical x86 behavior.
+
+### S2-30ce bare `FCMOVNBE ST(0), ST(1)` (`DB D1`)
+
+Eight handwritten success fixtures cover all four integer CF/ZF rows, signed
+negative-zero raw/tag transfer with TOP wrap, a two-transfer stream, and the
+three FCOMI producer cases: greater is taken; equal-then-FCHS and less are
+untaken. Two reject fixtures cover an invalid source under an untaken
+condition and a forbidden FCW environment. The exact schema allowlist is six
+streams: `dbd1`, `dbd1dfe0`, `dbd1dbd1dfe0`,
+`d9e8d9e0d9e8dbf1dbd1dfe0`, `d9e8d9e8dbf1d9e0dbd1dfe0`, and
+`d9e8d9e8d9e0dbf1dbd1dfe0` with budgets 1/2/3/6/6/6. Runner snapshots
+compare full machine state and memory and explicitly deny JIT. These fixtures
+are local interpreter evidence only; ISSUE-019 and physical x86 behavior
+remain open.
