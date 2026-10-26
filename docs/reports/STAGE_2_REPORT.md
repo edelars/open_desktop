@@ -8775,3 +8775,5 @@ physical acceptance remain open under ISSUE-019. Focused checks passed:
 Independent gpt-6.1-sol high-effort re-review was clean after the first review's
 coverage findings were fixed. No full workspace test suite or physical/native
 execution was performed.
+The required independent gpt-6.1-sol medium-effort review of commit `3ae0e0a`
+was also clean, with no remaining concrete findings.
