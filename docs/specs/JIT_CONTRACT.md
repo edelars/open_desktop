@@ -89,12 +89,109 @@ RAX/RCX/RDX/RBX, без high-byte registers и памяти. Для ModR/M `mod`
   Переходы между блоками и cache принадлежат следующим задачам, а cache появится
   не раньше S3-18.
 
-Текущий legacy entry использует `FragmentState` и отдельный fragment ABI:
-`(*mut FragmentState, u64, *mut u64, *const u8) -> u32`. Его нельзя незаметно
-переинтерпретировать как новый architectural CPU state. Адаптер, точный
-generated entry ABI, сохранение регистров и helper calling convention
-фиксируются отдельно в S3-02. Старые C ABI и `od-host` `ExecutableMemory`
-остаются совместимыми до отдельного решения.
+## 5. Runtime boundary (S3-02)
+
+Legacy fragment entry продолжает использовать `FragmentState` и собственную
+сигнатуру `(*mut FragmentState, u64, *mut u64, *const u8) -> u32`. Этот путь
+не является новым runtime ABI и не преобразуется неявно в architectural state.
+Переход к нему из `LongModeState` возможен только через существующий
+fallible `FragmentState::try_from(&LongModeState)`; потеря дополнительных
+регистров, flags и режима запрещена.
+
+Будущий block entry внутри одной linked Rust build принимает non-null
+`*mut RuntimeContextV1` и возвращает raw `u32` exit tag. `RuntimeContextV1` —
+versioned `repr(C)` record: `state` — opaque non-null `*mut LongModeState`,
+`initial_budget` — входной неизменяемый лимит этого вызова, `remaining_budget`
+и `retired_instructions` — выходы, `stop_requested` — обязательный non-null
+указатель на живой выровненный atomic byte. `stop_rip_enabled` задаётся raw
+значением 0 (disabled) или 1 (enabled); иные значения и ненулевой `reserved`
+являются host contract failure. При disabled `stop_rip` игнорируется. Ни один
+из этих полей не имеет Rust `Option` encoding.
+
+При любом определённом runtime exit `remaining_budget` равен начальному
+лимиту минус число retired guest instructions, а `retired_instructions`
+содержит именно число инструкций, уже committed этим вызовом. Их сумма
+сохраняет бюджет при переходе dispatcher между blocks; `NeedInterpreter`
+возвращает RIP неподдержанной инструкции после ранее committed префикса и
+только committed state, поэтому interpreter может продолжить с остатком
+бюджета без двойного retirement. Инструкция
+retired только после полного commit её effects и next RIP. `initial_budget` не
+меняется. `LongModeState` не является C record: native code получает `gpr`,
+`rip` и `rflags` по `offset_of!` значениям, вычисленным в том же `od-jit`
+build, и не читает другие поля. Эти offsets не являются стабильным on-disk,
+IPC или cross-version ABI. Внешние raw ABI используют только примитивы,
+указатели и явно `repr(C)` records; Rust enum, `Result`, `Option` и trait
+objects через такую границу не передаются.
+
+Host wrapper формирует `context` из валидных Rust references и удерживает их
+заимствования вместе с `LongModeState` и `AtomicU8` на весь call; pointers
+должны быть non-null, aligned и доступны по назначению. Raw ABI не позволяет
+достоверно проверить lifetime или доступность произвольного address. Их
+нарушение — ошибка вызывающей стороны с неопределённым поведением, не
+диагностируемый runtime exit и не guest fault. Перед generated call host
+wrapper проверяет scalar fields `reserved == 0` и `stop_rip_enabled ∈ {0, 1}`;
+невалидные значения являются host-side contract failure. Stop byte читается
+атомарно с acquire порядком; host публикует запрос с release порядком. Ноль
+означает отсутствие запроса. При отсутствии cooperative-stop источника host
+передаёт адрес собственного нулевого atomic byte, не null.
+
+Block exit tags (`repr(u32)`; остальные значения — host contract failure):
+
+| Tag | Значение | Действие dispatcher |
+|---|---:|---|
+| `BlockComplete` | 0 | Продолжить dispatch с committed state/RIP |
+| `BudgetExhausted` | 1 | Вернуть budget exit |
+| `NeedInterpreter` | 2 | Передать interpreter на том же committed RIP/state |
+| `StopRequested` | 3 | Вернуть cooperative stop |
+| `StopAddress` | 4 | Остановиться на `stop_rip`, не исполняя инструкцию по этому RIP |
+| `Unsupported` | 5 | Не исполнять форму; interpreter допускается только при явном fallback policy |
+
+`GuestFault` (tag 6) и `EventPending` (tag 7) зарезервированы и недопустимы в
+runtime contract v1: начальный S0-09 профиль не содержит faulting forms или
+event input/model. Возврат этих или любого неизвестного tag — host contract
+failure. В будущей версии fault exit потребует отдельного raw fault record с
+явными полями, до его появления гостевой fault не заявляется.
+
+Compile result остаётся Rust-side: успешная компиляция даёт непубликованный
+код/metadata; неподдержанная форма классифицируется как `Unsupported`, а
+ошибка декодирования, размера или внутреннего контракта — как compilation
+failure. Только runtime `NeedInterpreter` является запросом продолжить через
+interpreter, причём с неизменённого RIP и корректно committed state.
+`Unsupported` не превращается в fallback сам по себе. Guest fault будет guest
+результатом только после добавления fault record в следующую версию; сейчас tag
+зарезервирован. Неизвестный raw tag, invalid pointer, mapping/publication
+failure, helper ABI violation и panic/unwind — ошибка host/runtime, не guest
+exit.
+`StopAddress`, `StopRequested`, `BudgetExhausted`, `Unsupported` и
+`NeedInterpreter` не retire текущую инструкцию; `remaining_budget` и
+`retired_instructions` всё же отражают ранее committed инструкции текущего
+вызова. `BudgetExhausted` возвращается только с нулевым remaining budget.
+
+На каждой границе guest instruction entry проверяет включённый `stop_rip`,
+затем cooperative STOP, затем оставшийся budget, и только потом fetch/decode.
+Таким образом, STOP и budget не скрывают stop-at-RIP, а fetch не выполняется
+после любого из этих выходов. Commit RIP/state для уже завершённой инструкции
+сохраняется.
+
+Scalar helper ABI alias: `(operation: u32, lhs: u64, rhs: u64, old_rflags: u64,
+output_rflags: *mut u64) -> u32`. Operations: Add=1, Subtract=2, Compare=3;
+reserved status tags: Success=0, Unsupported=1, InvalidArgument=2. Это только
+calling contract; реализация helper и его arithmetic semantics появятся вместе
+с lowering, который его вызывает. По контракту helper не меняет state, RIP
+или budget, пишет только `output_rflags` при Success и не unwinds через ABI.
+
+Generated ARM64 code следует AAPCS64: после helper call считать volatile
+`X0–X17`, `X30`, `NZCV` и caller-clobbered SIMD registers уничтоженными; не
+оставлять в них live значения. Сохранять `X19–X29`, держать `SP` выровненным на
+16 байт и не использовать зарезервированный `X18`. Callee обязан сохранить
+`X19–X29`; это правило не разрешает emitter временно держать live значения в
+callee-saved регистрах без корректного prologue/epilogue.
+
+Executable handle владеет только `od-host`: он публикует код, синхронизирует
+instruction cache и удерживает mapping живым весь generated call. `od-jit`
+возвращает code bytes/metadata и не зависит от `od-host`; host failure при
+allocate/publish/invoke остаётся host-side. Старые C ABI и fragment mapping
+остаются совместимыми.
 
 Для macOS используется существующая граница публикации кода в `od-host`.
 Apple описывает `MAP_JIT`, hardened-runtime entitlement и необходимость
@@ -104,7 +201,7 @@ Apple описывает `MAP_JIT`, hardened-runtime entitlement и необхо
 проверить на выбранных Apple Silicon host и signing configuration; Stage 0
 оставляет поставку/notarization открытой.
 
-## 5. Host и этапная приёмка
+## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,
 дополнительный ARM64 host — M1 Pro. Единственный физический x86 oracle,

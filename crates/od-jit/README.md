@@ -18,6 +18,11 @@ interpreter fallback. `od-jit` сохраняет legacy `FragmentState` interfa
 не предоставляет v2 architectural-state entry; test runner отклоняет выбор
 JIT backend для v2 fixtures.
 
+S3-02 добавил `repr(C)` runtime context, raw tags, same-build `LongModeState`
+field offsets и alias скалярного arithmetic helper ABI в `runtime`. Это задаёт
+будущую границу block entry, но не реализует block compiler/dispatcher/helper
+и не меняет legacy fragment entry. См. [runtime contract](../../docs/specs/JIT_CONTRACT.md#5-runtime-boundary-s3-02).
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в
