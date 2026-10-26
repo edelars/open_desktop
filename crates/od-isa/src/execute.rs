@@ -1078,6 +1078,30 @@ fn step_tracked_with_stop(
                                 && !instruction.prefixes.operand_override
                                 && size == OperandSize::Dword))))
         }
+        Operation::RepLods { size } => {
+            instruction.opcode.map == OpcodeMap::Primary
+                && ((instruction.opcode.byte == 0xac
+                    && instruction.length == 2
+                    && instruction.prefixes
+                        == (Prefixes {
+                            group1: Some(0xf3),
+                            ..Prefixes::default()
+                        })
+                    && size == OperandSize::Byte)
+                    || (instruction.opcode.byte == 0xad
+                        && instruction.prefixes.group1 == Some(0xf3)
+                        && instruction.prefixes.segment.is_none()
+                        && !instruction.prefixes.address_override
+                        && instruction.prefixes.rex.map_or(true, |rex| rex & 8 != 0)
+                        && ((instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                            && size == OperandSize::Qword)
+                            || (instruction.prefixes.rex.is_none()
+                                && instruction.prefixes.operand_override
+                                && size == OperandSize::Word)
+                            || (instruction.prefixes.rex.is_none()
+                                && !instruction.prefixes.operand_override
+                                && size == OperandSize::Dword))))
+        }
         Operation::PopMemory { destination } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0x8f
@@ -2373,6 +2397,43 @@ fn step_tracked_with_stop(
                 };
                 state.gpr[Register::Rdi as usize] =
                     state.gpr[Register::Rdi as usize].wrapping_add(step);
+                state.gpr[Register::Rcx as usize] -= 1;
+                completed += 1;
+                if state.gpr[Register::Rcx as usize] == 0 {
+                    break;
+                }
+                if stop_requested() {
+                    return Ok(StepOutcome::StopRequested);
+                }
+                if completed == REP_ITERATION_WORK_LIMIT {
+                    return Ok(StepOutcome::RepIterationBudgetExhausted);
+                }
+            }
+        }
+        Operation::RepLods { size } => {
+            let mut completed = 0;
+            while state.gpr[Register::Rcx as usize] != 0 {
+                let source = Operand::Memory(MemoryOperand {
+                    base: AddressBase::Register(Register::Rsi),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size: OperandSize::Qword,
+                    size,
+                });
+                let value = match read_operand(state, memory, context, next_rip, source) {
+                    Ok(value) => value,
+                    Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
+                    Err(error) => return Err(error),
+                };
+                state.write(RegisterView::low(Register::Rax, size), value);
+                let step = if state.rflags & (1 << 10) == 0 {
+                    size.bytes() as u64
+                } else {
+                    0u64.wrapping_sub(size.bytes() as u64)
+                };
+                state.gpr[Register::Rsi as usize] =
+                    state.gpr[Register::Rsi as usize].wrapping_add(step);
                 state.gpr[Register::Rcx as usize] -= 1;
                 completed += 1;
                 if state.gpr[Register::Rcx as usize] == 0 {
@@ -5747,10 +5808,9 @@ mod tests {
     #[test]
     fn lods_prefix_rejects_leave_cpu_and_data_memory_untouched() {
         let forms: [&[u8]; 4] = [&[0xac], &[0x66, 0xad], &[0xad], &[0x48, 0xad]];
-        let prefixes: [&[u8]; 10] = [
+        let prefixes: [&[u8]; 9] = [
             &[0xf0],
             &[0xf2],
-            &[0xf3],
             &[0x67],
             &[0x26],
             &[0x2e],
@@ -5771,11 +5831,11 @@ mod tests {
             vec![0x48, 0xac],
             vec![0x40, 0xad],
             vec![0x47, 0xad],
-            vec![0x66, 0x66, 0xad],
+            vec![0xf3, 0x66, 0xac],
             vec![0xf2, 0xf3, 0xad],
             vec![0x64, 0x65, 0xad],
         ]);
-        assert_eq!(cases.len(), 48);
+        assert_eq!(cases.len(), 44);
         let mut rejected = 0;
         for code in cases {
             let opcode = *code.last().unwrap();
@@ -5793,7 +5853,7 @@ mod tests {
             assert!(memory.accesses.is_empty(), "{code:02x?}");
             rejected += 1;
         }
-        assert_eq!(rejected, 48);
+        assert_eq!(rejected, 44);
 
         let mut byte_prefixes = vec![vec![0x66, 0xac]];
         byte_prefixes.extend((0x40..=0x4f).map(|rex| vec![rex, 0xac]));

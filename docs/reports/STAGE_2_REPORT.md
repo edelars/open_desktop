@@ -10283,3 +10283,55 @@ review found no remaining concrete defects.
 `.git` marker as an unmapped root file and two absent ignored oracle manifests
 referenced by the existing report. No structure was added by S2-19b. No
 Mac mini, SSH, native execution, or physical x86 checks were run.
+
+## S2-19c — bounded `F3 AC/AD` REP LODSB/W/D/Q (local)
+
+Added `Operation::RepLods { size }` for exact REP LODSB/W/D/Q profile forms.
+Admission accepts exact `F3 AC`, F3 plus optional 66 on `AD`, no segment or
+address-size override, and no REX or effective REX.W; every `48..4F` REX.W is
+admitted. Normalization yields word for `66 F3 AD` and `F3 48 66 AD`, and qword
+for `F3 66 48 AD`. `F3 66 AC`, F2/LOCK/67/segment, non-W REX `AD`, and other
+prefixed `AC` forms remain unsupported. Native and JIT do not execute REP
+LODS and do not fall back to the interpreter.
+
+Each nonzero iteration reads one width from flat `DS:[RSI]`. Only successful
+reads commit the width-selected accumulator alias, DF-directed wrapping RSI
+and RCX decrement. Zero count does not read or validate RSI. Completion wins
+over STOP; STOP wins over the 1024 successful-read work limit. Partial
+STOP/limit leaves RIP on REP and retires zero; read failure preserves prior
+completed elements and commits no current-element state. A replay resumes from
+that exact RSI/RCX without rereading prior elements. Flags, DF, RDI and RAM do
+not change. Missing mapping remains a harness error, no #PF is synthesized,
+and no MMIO rollback claim is made. Definedness is checked within a run only;
+`run()` reinitializes it on a new invocation.
+
+Added a 12,288-state full completion matrix (4 widths × 2 DF × 6 data seeds ×
+4 counts × 64 incoming flag combinations), 96 injected read errors, 16
+STOP/replay cases plus initial STOP, 24 limit cases, `RCX=u64::MAX`, zero-count
+and zero-budget checks, alignment/page/short-range/wrap/noncanonical-next-pointer
+coverage, TEST→REP completion/partial definedness, 48 prefix rejects, and
+non-REP LODS/REP STOS regressions. Exactly 36 literal schema-v2 fixtures were
+added: eight per width, two normalization cases and two TEST→REP streams. The
+generator serializes constants only; no profile/schema fields were added.
+ISSUE-016 and ISSUE-020 remain open.
+
+Final local validation in the Stage2 managed worktree passed: `cargo fmt --all
+-- --check`, `cargo check --workspace --all-targets --offline`, complete offline
+suites for `od-isa` (749 tests), `od-testkit` (218), `od-runner` (101 unit and
+208 fixture tests), and `od-x86-runner` (9 host-available tests), plus
+`python3 tests/cpu/generate_stage2_rep_lods.py --check`. Focused assertions
+cover full snapshots and exact read sequences. The host-available x86-runner
+tests omit its Linux-only native admission module. No Mac mini, SSH, native
+runtime or physical x86 checks were run; all batch evidence remains in the
+final substage.
+
+Independent review initially found one `48 F3 AC` decoder-admission leak and
+missing full-state/fault-metadata assertions in STOP, limit, and literal cases.
+The decoder now requires raw exact two-byte `F3 AC`; the 48 prescribed prefix
+rejects and the discarded-REX `48 F3 AC` case are checked without data access
+or state changes. STOP/replay, work-limit and `RCX=u64::MAX` cases now compare
+full state and retirement; page crossing, short range, wrapped RSI and
+noncanonical next-pointer cases are covered. Fixture tests check expected read
+fault address/type and architectural exception fields. The independent
+re-review found no remaining concrete defects. No native/physical testing was
+performed.

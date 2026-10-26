@@ -691,6 +691,10 @@ pub enum Operation {
     RepStos {
         size: OperandSize,
     },
+    /// One bounded invocation of long-mode REP LODS at the selected width.
+    RepLods {
+        size: OperandSize,
+    },
     /// Long-mode 16- or 64-bit PUSH immediate; `value` is extended to the stack width.
     PushImmediate {
         value: u64,
@@ -1217,10 +1221,24 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && prefixes.segment.is_none()
             && !prefixes.address_override
             && prefixes.rex.is_none_or(|rex| rex & 8 != 0);
+        let rep_lods = opcode.map == OpcodeMap::Primary
+            && matches!(opcode.byte, 0xac | 0xad)
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.address_override
+            && (opcode.byte == 0xac
+                && self.length == 2
+                && prefixes
+                    == (Prefixes {
+                        group1: Some(0xf3),
+                        ..Prefixes::default()
+                    })
+                || opcode.byte == 0xad && prefixes.rex.is_none_or(|rex| rex & 8 != 0));
         if !known
             || (prefixes.group1.is_some()
                 && !rep_stosb
                 && !rep_stos
+                && !rep_lods
                 && !locked_qword_memory_xadd_candidate)
         {
             return Err(self.unsupported(opcode));
@@ -1493,28 +1511,44 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Primary, 0xa5) => Operation::Movs { size },
             (OpcodeMap::Primary, 0xac) => {
-                if prefixes != Prefixes::default() {
-                    return Err(self.unsupported(opcode));
+                if rep_lods {
+                    size = OperandSize::Byte;
+                    Operation::RepLods { size }
+                } else {
+                    if prefixes != Prefixes::default() {
+                        return Err(self.unsupported(opcode));
+                    }
+                    size = OperandSize::Byte;
+                    Operation::Lods { size }
                 }
-                size = OperandSize::Byte;
-                Operation::Lods { size }
             }
             (OpcodeMap::Primary, 0xad) => {
-                if prefixes.group1.is_some()
-                    || prefixes.segment.is_some()
-                    || prefixes.address_override
-                    || prefixes.rex.is_some_and(|rex| rex & 8 == 0)
-                {
-                    return Err(self.unsupported(opcode));
-                }
-                size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
-                    OperandSize::Qword
-                } else if prefixes.operand_override {
-                    OperandSize::Word
+                if rep_lods {
+                    size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                        OperandSize::Qword
+                    } else if prefixes.operand_override {
+                        OperandSize::Word
+                    } else {
+                        OperandSize::Dword
+                    };
+                    Operation::RepLods { size }
                 } else {
-                    OperandSize::Dword
-                };
-                Operation::Lods { size }
+                    if prefixes.group1.is_some()
+                        || prefixes.segment.is_some()
+                        || prefixes.address_override
+                        || prefixes.rex.is_some_and(|rex| rex & 8 == 0)
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                    size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                        OperandSize::Qword
+                    } else if prefixes.operand_override {
+                        OperandSize::Word
+                    } else {
+                        OperandSize::Dword
+                    };
+                    Operation::Lods { size }
+                }
             }
             (OpcodeMap::Primary, 0xaa) => {
                 if rep_stosb {
@@ -5717,12 +5751,11 @@ mod tests {
     }
 
     #[test]
-    fn lods_rejects_48_explicitly_enumerated_prefix_cases() {
+    fn lods_rejects_44_explicitly_enumerated_prefix_cases() {
         let forms: [&[u8]; 4] = [&[0xac], &[0x66, 0xad], &[0xad], &[0x48, 0xad]];
-        let prefixes: [&[u8]; 10] = [
+        let prefixes: [&[u8]; 9] = [
             &[0xf0],
             &[0xf2],
-            &[0xf3],
             &[0x67],
             &[0x26],
             &[0x2e],
@@ -5743,11 +5776,11 @@ mod tests {
             vec![0x48, 0xac],
             vec![0x40, 0xad],
             vec![0x47, 0xad],
-            vec![0x66, 0x66, 0xad],
+            vec![0xf3, 0x66, 0xac],
             vec![0xf2, 0xf3, 0xad],
             vec![0x64, 0x65, 0xad],
         ]);
-        assert_eq!(cases.len(), 48);
+        assert_eq!(cases.len(), 44);
         let mut rejected = 0;
         for bytes in cases {
             assert!(
@@ -5759,7 +5792,7 @@ mod tests {
             );
             rejected += 1;
         }
-        assert_eq!(rejected, 48);
+        assert_eq!(rejected, 44);
 
         for bytes in [&[0x66, 0xac][..]] {
             assert!(matches!(
@@ -5810,6 +5843,98 @@ mod tests {
     }
 
     #[test]
+    fn rep_lods_decodes_widths_and_normalized_prefix_ordering() {
+        for (bytes, size) in [
+            (&[0xf3, 0xac][..], OperandSize::Byte),
+            (&[0xf3, 0x66, 0xad][..], OperandSize::Word),
+            (&[0x66, 0xf3, 0xad][..], OperandSize::Word),
+            (&[0xf3, 0xad][..], OperandSize::Dword),
+            (&[0xf3, 0x48, 0xad][..], OperandSize::Qword),
+            (&[0xf3, 0x48, 0x66, 0xad][..], OperandSize::Word),
+            (&[0xf3, 0x66, 0x48, 0xad][..], OperandSize::Qword),
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(instruction.operand_size, size, "{bytes:02x?}");
+            assert_eq!(
+                instruction.operation,
+                Operation::RepLods { size },
+                "{bytes:02x?}"
+            );
+        }
+        for rex in 0x48..=0x4f {
+            let instruction = Memory::new(&[0xf3, rex, 0xad]).decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::RepLods {
+                    size: OperandSize::Qword
+                }
+            );
+        }
+        assert!(matches!(
+            Memory::new(&[0xf3, 0x66, 0xac]).decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            Memory::new(&[0x48, 0xf3, 0xac]).decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
+
+        let forms: [&[u8]; 4] = [
+            &[0xf3, 0xac],
+            &[0xf3, 0x66, 0xad],
+            &[0xf3, 0xad],
+            &[0xf3, 0x48, 0xad],
+        ];
+        let prefixes: [&[u8]; 10] = [
+            &[0xf0],
+            &[0xf2],
+            &[0x67],
+            &[0x26],
+            &[0x2e],
+            &[0x36],
+            &[0x3e],
+            &[0x64],
+            &[0x65],
+            &[0xf3],
+        ];
+        let mut rejected = 0;
+        for form in forms {
+            for prefix in prefixes {
+                let bytes = [prefix, form].concat();
+                assert!(
+                    matches!(
+                        Memory::new(&bytes).decode(),
+                        Err(DecodeError::Unsupported { .. })
+                    ),
+                    "{bytes:02x?}"
+                );
+                rejected += 1;
+            }
+        }
+        let extras: [&[u8]; 8] = [
+            &[0xf3, 0x66, 0xac],
+            &[0xf3, 0x40, 0xac],
+            &[0xf3, 0x48, 0xac],
+            &[0xf3, 0x40, 0xad],
+            &[0xf3, 0x47, 0xad],
+            &[0xf3, 0x66, 0x66, 0xad],
+            &[0xf3, 0x66, 0x40, 0xad],
+            &[0xf3, 0x66, 0x47, 0xad],
+        ];
+        for bytes in extras {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+            rejected += 1;
+        }
+        assert_eq!(rejected, 48);
+    }
+
+    #[test]
     fn stos_ab_decodes_bounded_widths_and_rex_66_ordering() {
         for (bytes, size) in [
             (&[0xaa][..], OperandSize::Byte),
@@ -5855,10 +5980,9 @@ mod tests {
     #[test]
     fn stos_ab_rejects_the_explicit_prefix_boundary_matrix() {
         let forms: [&[u8]; 3] = [&[0x66, 0xab], &[0xab], &[0x48, 0xab]];
-        let prefixes: [&[u8]; 10] = [
+        let prefixes: [&[u8]; 9] = [
             &[0xf0],
             &[0xf2],
-            &[0xf3],
             &[0x67],
             &[0x26],
             &[0x2e],

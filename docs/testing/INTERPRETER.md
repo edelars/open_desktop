@@ -930,3 +930,29 @@ TEST→REP definedness checks. Missing mappings remain harness errors, not guest
 page faults. ISSUE-016 and ISSUE-020 remain open; physical acceptance is
 deferred. See the [CPU contract](../specs/CPU_CONTRACT.md) and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## REP LODSB/W/D/Q — S2-19c local interpreter coverage
+
+The bounded interpreter admits exact `F3 AC` byte, `F3 66 AD` word, `F3 AD`
+dword and effective REX.W `AD` qword forms. All REX.W values `48..4F` are
+accepted; optional 66 ordering is normalized for `AD`, with effective REX.W
+taking precedence. Unsupported prefixes remain admission failures. REP LODS
+reads each element from flat `DS:[RSI]` and commits the width-appropriate RAX
+alias, wrapping DF-directed RSI step and RCX decrement only after that read
+succeeds. It preserves flags/definedness, DF, RDI and RAM.
+
+Zero count avoids reads and RSI validation. Completion is checked before STOP,
+then the 1024-successful-read work limit. Completed REP retires once; partial
+STOP/limit/fault keeps RIP at REP start and current REP retirement zero. Prior
+successful values and index/count progress persist; replay starts at the next
+source element. Missing mappings remain harness errors, not synthesized guest
+page faults, and no MMIO rollback is claimed. Definedness is checked only
+within one `run()` because a new run reinitializes its metadata.
+
+Local evidence includes the 12,288-state completion matrix, 96 injected read
+errors, 16 STOP/replay states plus initial STOP and STOP at the limit boundary, 24 limit boundaries, bounded
+`RCX=u64::MAX`, address/alignment/page/wrap edges, TEST→REP definedness, 48
+prefix rejects and 36 full-state literal fixtures. Non-REP LODS and REP STOS
+regressions remain covered. Native/JIT and physical execution remain deferred;
+ISSUE-016 and ISSUE-020 remain open. See the [CPU contract](../specs/CPU_CONTRACT.md)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).

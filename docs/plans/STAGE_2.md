@@ -157,7 +157,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-16 | Условия, переходы, SETcc/CMOVcc | S2-11 |
 | [ ] | S2-17 | Стек, CALL/RET и косвенные переходы | S2-16 |
 | [ ] | S2-18 | Строковые операции без REP; S2-18a–f локально покрывают только MOVSB/MOVSW/MOVSD/MOVSQ, STOSB и LODS B/W/D/Q; остальные формы и общая приёмка открыты | S2-17 |
-| [ ] | S2-19 | REP и точный частичный прогресс | S2-18 |
+| [ ] | S2-19 | REP и точный частичный прогресс; S2-19a–c реализуют локальные bounded REP STOS/LODS с partial progress, остальные REP формы и общая приёмка открыты | S2-18 |
 | [ ] | S2-20 | Исключения, приоритеты и fault state | S2-14, S2-19 |
 | [ ] | S2-21 | Нужные однопроцессорные atomic/fence формы | S2-20 |
 | [ ] | S2-22 | Сегменты и права доступа | S2-20 |
@@ -1000,6 +1000,38 @@ definedness. Добавить ровно 28 literal schema-v2 fixtures: по в�
 записи). Генератор лишь сериализует заданные bytes/state/memory; profile/schema
 не меняются. ISSUE-016 и ISSUE-020 остаются открытыми; физические проверки,
 Mac mini, SSH и native остаются в едином финальном acceptance.
+
+#### S2-19c — `F3 AC/AD` REP LODSB/W/D/Q (ограниченный локальный контракт)
+
+Добавить `Operation::RepLods { size }` для exact `F3 AC` byte, `F3 66 AD`
+word, `F3 AD` dword и effective REX.W `AD` qword. Для `AD` разрешить F3,
+необязательный 66 и отсутствующий REX или effective REX.W; все `48..4F`
+допустимы. Нормализация принимает `66 F3 AD` как word, `F3 48 66 AD` как
+word и `F3 66 48 AD` как qword. `F3 66 AC`, F2/LOCK/67/segment, не-W REX
+`AD`, прочие prefixed `AC` и остальные неподдержанные комбинации остаются
+admission failures. Native/JIT не исполняют REP LODS.
+
+При `RCX=0` не читать и не валидировать RSI, сохранять RAX/RSI и завершать одну
+инструкцию. Иначе одна ширинно-точная read из flat `DS:[RSI]` должна успешно
+завершиться до любого commit; после неё записать AL/AX/EAX/RAX через
+`RegisterView`, wrapping-adjust RSI по DF на ±width, уменьшить RCX. Затем
+проверить completion, STOP, предел 1024 успешных reads и продолжить. Полное
+completion retire-ит REP один раз. STOP/limit оставляют RIP на REP начале и
+retire-ят ноль; fault сохраняет все ранее завершённые значения/индексы/count,
+а текущая неудачная read не меняет регистры. Replay продолжает со следующего
+элемента без повторного чтения завершённых элементов. Flags/DF/RDI/RAM не
+меняются. Это локальный mapping/fault контракт, не синтезированный #PF и не
+заявление об MMIO rollback. Новая `run()` заново инициализирует flag
+definedness; across-run сохранение metadata не заявляется.
+
+Покрыть 12,288 completion states, 96 injected read failures, 16 STOP/replay
+states и initial STOP, 24 limit states, bounded `RCX=u64::MAX`, zero count,
+zero instruction budget, alignment/page/short-range/wrap/noncanonical-next-pointer,
+TEST→REP completion/partial definedness, все 48 prefix rejects, а также
+non-REP LODS и REP STOS regression. Добавить ровно 36 literal schema-v2
+fixtures: восемь на каждую ширину, две prefix-normalization и два TEST→REP
+потока. Generator только сериализует литералы; profile/schema остаются
+неизменными. ISSUE-016/020 остаются открытыми; весь batch в финальном substage.
 
 ### S2-20. Точность исключений и exit state
 

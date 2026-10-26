@@ -4987,6 +4987,38 @@ fn rep_stos_wdq_cli_fixtures_check_outcomes_and_full_snapshots() {
 }
 
 #[test]
+fn rep_lods_jit_remains_fail_closed_without_fallback() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    for id in [
+        "s2_19c_rep_lods_byte_df0",
+        "s2_19c_rep_lods_word_df0",
+        "s2_19c_rep_lods_dword_df0",
+        "s2_19c_rep_lods_qword_df0",
+        "s2_19c_rep_lods_normalize_misplaced_rex",
+        "s2_19c_rep_lods_normalize_rexw",
+    ] {
+        let raw = fs::read(directory.join(format!("{id}.case.json"))).unwrap();
+        let (_, result) = run(&raw, "jit", 4);
+        assert!(
+            matches!(result.outcome, Outcome::Unsupported { .. }),
+            "{id}"
+        );
+        assert!(
+            matches!(
+                &result.instructions_executed,
+                Observation::Unavailable { reason } if reason == "engine was not executed"
+            ),
+            "{id}"
+        );
+        assert!(
+            matches!(result.snapshot, Observation::Unavailable { .. }),
+            "{id}"
+        );
+    }
+}
+
+#[test]
 fn lods_cli_fixtures_match_literal_full_state_answers_and_fail_atomically() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

@@ -3821,6 +3821,13 @@ mod tests {
             "f3ab",     // REP STOSD
             "f348ab",   // REP STOSQ
             "f36648ab", // REX.W takes precedence over 66
+            "f3ac",     // REP LODSB
+            "f366ad",   // REP LODSW
+            "f3ad",     // REP LODSD
+            "f348ad",   // REP LODSQ
+            "f34866ad", // normalized REP LODSW
+            "f36648ad", // normalized REP LODSQ
+            "66f3ad",   // normalized REP LODSW
         ] {
             let mut unsupported = Fixture::from_json(
                 &std::fs::read(directory.join("s2_19a_rep_stosb_one.case.json")).unwrap(),

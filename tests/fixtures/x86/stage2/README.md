@@ -3981,3 +3981,29 @@ python3 tests/cpu/generate_stage2_rep_stos_wdq.py --check
 cargo test -p od-testkit --offline rep_stos_wdq
 cargo test -p od-runner --test fixture_v2 --offline rep_stos_wdq
 ```
+
+## Bounded REP LODSB/W/D/Q fixtures S2-19c
+
+Thirty-six literal schema-v2 fixtures cover all four `F3 AC/AD` widths: eight
+per width for zero count with invalid RSI, DF=0/1 count-three completion,
+unmapped first read, missing mapping after one committed read, noncanonical
+first RSI, zero instruction budget and count-1025 work-limit exhaustion. Two
+more fixtures exercise `F3 48 66 AD` word and `F3 66 48 AD` qword
+normalization. Two `TEST`→`REP LODSD` programs cover completion and a partial
+second-read harness error. The sidecar records complete GPR, flags and
+in-run definedness, RIP and unchanged memory, including partial RAX/RSI/RCX
+and retirement state. The generator only serializes predetermined literals;
+profile and fixture schema remain unchanged.
+
+The interpreter checks include 12,288 complete machine states, 96 injected
+read errors, 16 STOP/replay cases plus initial STOP and STOP at the limit boundary, 24 work-limit boundaries,
+`RCX=u64::MAX`, no-access zero count, zero instruction budget, page/alignment/
+short-range/wrap/noncanonical-next-pointer edges and TEST definedness. Native/JIT
+remain fail-closed and no native or physical execution is claimed. ISSUE-016
+and ISSUE-020 remain open.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_lods.py --check
+cargo test -p od-testkit --offline rep_lods_
+cargo test -p od-runner --test fixture_v2 --offline rep_lods
+```
