@@ -3607,3 +3607,8 @@ Four handwritten schema-v2 success fixtures cover the exact allowed byte strings
 ### S2-30bo bounded `FLD ST(0)`
 
 Four exact schema-v2 streams are admitted: `d9c0`, `d9c0dfe0`, `d9e8d9c0dfe0`, and `d9eed9c0dfe0`. The bare fixture seeds negative zero with TOP=0 to check physical wrap to slot 7 and raw/tag transfer; the status-observation fixture seeds Normal at TOP=7 to copy into physical slot 6. Two composition fixtures verify FLD1/FLDZ producer values can be duplicated and observed with FNSTSW. Separate budget-one fixtures reject an Empty source and an occupied destination. All are local interpreter/schema evidence. JIT/native and physical x86 behavior remain unverified under ISSUE-019.
+
+
+### S2-30bp bounded `FLD ST(i)`
+
+Six handwritten schema-v2 success fixtures cover each newly admitted encoding `d9c1` through `d9c6`. The C1 fixture selects physical source `(TOP+1)&7` with TOP=7; the C6 fixture selects a nonadjacent source while logical ST(0) is Empty. An additional C1 fixture copies negative zero from ST(1) through TOP=0 to wrapped physical slot 7 while ST(0) is Empty. Two budget-one fixtures reject a wrong source tag and an occupied push destination. Runner assertions compare copied raw value/tag, retained source, new TOP, C1 clearing, retirement and JIT denial. These are local interpreter/schema results only; native and physical x86 acceptance remains deferred under ISSUE-019.

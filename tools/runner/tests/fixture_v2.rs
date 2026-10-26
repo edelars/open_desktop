@@ -56,6 +56,23 @@ const FLD_ST0_EMPTY_SOURCE_REJECTS: &[u8] = include_bytes!(
 const FLD_ST0_OCCUPIED_DESTINATION_REJECTS: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_30bo_fld_st0_occupied_destination_rejects.case.json"
 );
+const FLD_STI_FIXTURES: [&[u8]; 6] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bp_fld_st1_normal.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bp_fld_st2_normal.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bp_fld_st3_normal.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bp_fld_st4_normal.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bp_fld_st5_normal.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bp_fld_st6_normal.case.json"),
+];
+const FLD_STI_SIGNED_ZERO_WRAP: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30bp_fld_st1_negative_zero_top_wrap.case.json"
+);
+const FLD_STI_REJECTS: [&[u8]; 2] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bp_fld_st6_wrong_source_tag.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_30bp_fld_st6_occupied_destination.case.json"
+    ),
+];
 const FCHS_SIGNED_ZERO: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ao_fchs_signed_zero.case.json");
 const FCHS_ZERO_WRONG_TAG: &[u8] =
@@ -6696,5 +6713,64 @@ fn local_x87_fld_st0_wrap_producers_atomic_rejects_and_jit_denial() {
         assert_eq!(snapshot(&result).state, loaded.fixture.initial_state);
     }
     let (_, jit) = run(FLD_ST0_NEGATIVE_ZERO_WRAP, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn local_x87_fld_sti_indexes_copy_selected_physical_source_and_remain_jit_denied() {
+    for (source_index, bytes) in FLD_STI_FIXTURES.into_iter().enumerate() {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let before = loaded.fixture.initial_state.x87.as_ref().unwrap().clone();
+        let old_top = ((before.status_word.get() >> 11) & 7) as usize;
+        let source = (old_top + source_index + 1) & 7;
+        let destination = (old_top + 7) & 7;
+        let raw = before.registers[source].clone();
+        let tag = (before.tag_word.get() >> (source * 2)) & 3;
+        let (_, result) = run(bytes, "interpreter", 0);
+        assert_eq!(count(&result), 1);
+        let after = snapshot(&result).state.x87.as_ref().unwrap();
+        assert_eq!(after.registers[source], raw);
+        assert_eq!((after.tag_word.get() >> (source * 2)) & 3, tag);
+        assert_eq!(after.registers[destination], raw);
+        assert_eq!((after.tag_word.get() >> (destination * 2)) & 3, tag);
+        assert_eq!(((after.status_word.get() >> 11) & 7) as usize, destination);
+        assert_eq!(after.status_word.get() & (1 << 9), 0);
+        assert_eq!(after.instruction_pointer, loaded.fixture.initial_state.rip);
+        let mut expected_x87 = before;
+        expected_x87.registers[destination] = raw;
+        expected_x87.tag_word = HexU64(
+            (expected_x87.tag_word.get() & !(3 << (destination * 2))) | (tag << (destination * 2)),
+        );
+        expected_x87.status_word = HexU64(
+            (expected_x87.status_word.get() & !((7 << 11) | (1 << 9)))
+                | ((destination as u64) << 11),
+        );
+        expected_x87.instruction_pointer = loaded.fixture.initial_state.rip;
+        let mut expected_state = loaded.fixture.initial_state.clone();
+        expected_state.rip = HexU64(expected_state.rip.get() + 2);
+        expected_state.x87 = Some(expected_x87);
+        assert_eq!(snapshot(&result).state, expected_state);
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    }
+    for bytes in FLD_STI_REJECTS {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let (_, result) = run(bytes, "interpreter", 4);
+        assert_eq!(count(&result), 0);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert_eq!(snapshot(&result).state, loaded.fixture.initial_state);
+    }
+    let loaded = Fixture::from_json(FLD_STI_SIGNED_ZERO_WRAP).unwrap();
+    let before = loaded.fixture.initial_state.x87.as_ref().unwrap();
+    assert_eq!((before.status_word.get() >> 11) & 7, 0);
+    assert_eq!((before.tag_word.get() >> 2) & 3, 1); // source ST(1)
+    assert_eq!((before.tag_word.get() & 3), 3); // ST(0) is Empty
+    let (_, result) = run(FLD_STI_SIGNED_ZERO_WRAP, "interpreter", 0);
+    assert_eq!(count(&result), 1);
+    let after = snapshot(&result).state.x87.as_ref().unwrap();
+    assert_eq!((after.status_word.get() >> 11) & 7, 7);
+    assert_eq!(after.registers[7], "00000000000000000080");
+    assert_eq!((after.tag_word.get() >> 14) & 3, 1);
+    let (_, jit) = run(FLD_STI_SIGNED_ZERO_WRAP, "jit", 4);
     assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
 }

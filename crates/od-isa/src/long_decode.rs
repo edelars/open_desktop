@@ -465,8 +465,10 @@ pub enum Operation {
     FxchSti {
         source: u8,
     },
-    /// Bare `D9 C0` FLD ST(0), copying the top value into the physical push slot.
-    FldSt0,
+    /// Bare `D9 C0..C6` FLD ST(i), copying a bounded stack source into the physical push slot.
+    FldSti {
+        source: u8,
+    },
     /// Bare `D9 F7` FINCSTP, rotating the x87 TOP field forward.
     Fincstp,
     /// Bare `D9 F6` FDECSTP, rotating the x87 TOP field backward.
@@ -1271,7 +1273,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 match self.byte()? {
-                    0xc0 => Operation::FldSt0,
+                    modrm @ 0xc0..=0xc6 => Operation::FldSti { source: modrm & 7 },
                     modrm @ 0xc8..=0xcf => Operation::FxchSti { source: modrm & 7 },
                     0xe8 => Operation::Fld1,
                     0xee => Operation::Fldz,
@@ -3111,11 +3113,13 @@ mod tests {
     }
 
     #[test]
-    fn d9_c0_fld_st0_decodes_only_the_exact_bare_form() {
-        let instruction = Memory::new(&[0xd9, 0xc0]).decode().unwrap();
-        assert_eq!(instruction.operation, Operation::FldSt0);
-        assert_eq!(instruction.length, 2);
-        assert_eq!(instruction.prefixes, Prefixes::default());
+    fn d9_c0_through_c6_fld_sti_decode_only_the_exact_bare_forms() {
+        for source in 0u8..7 {
+            let instruction = Memory::new(&[0xd9, 0xc0 + source]).decode().unwrap();
+            assert_eq!(instruction.operation, Operation::FldSti { source });
+            assert_eq!(instruction.length, 2);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+        }
         for bytes in [
             &[0x66, 0xd9, 0xc0],
             &[0x48, 0xd9, 0xc0],
@@ -3126,7 +3130,7 @@ mod tests {
                 Err(DecodeError::Unsupported { .. })
             ));
         }
-        for modrm in 0xc1..=0xc7 {
+        for modrm in [0xc7] {
             assert!(matches!(
                 Memory::new(&[0xd9, modrm]).decode(),
                 Err(DecodeError::Unsupported { .. })

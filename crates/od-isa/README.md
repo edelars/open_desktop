@@ -105,6 +105,15 @@ or general GS/SS, LDT, other-CPL or prefixed form is claimed. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md), [fixtures](../../tests/fixtures/x86/stage2/README.md)
 and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
 
+S2-30bp extends the local raw-copy push slice from bare `D9 C0` to `D9 C0..C6`:
+the selected source is physical `(old_TOP+i)&7`, and the Empty push destination
+is `(old_TOP+7)&7`. Only canonical-Normal Valid or exact signed-Zero Zero sources
+are admitted, with the same strict environment and atomic preflight. C7, JIT,
+native and physical x86 behavior remain unsupported or unverified. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30bp-bounded-bare-fld-sti-d9-c0c6),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30bp-bounded-fld-sti),
+and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30bp--bounded-fld-sti).
+
 S2-30m adds bare `DE E0+i` FSUBRP through the existing exact same-exponent
 subtraction gate: write old `ST(0)−ST(i)` to old physical `(TOP+i)&7`, then
 empty old TOP and increment it. The decoded `i=0` alias remains Unsupported

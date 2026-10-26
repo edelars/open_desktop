@@ -565,7 +565,7 @@ fn admission_with_tracee_memory(
             | Operation::FldM64FpRax
             | Operation::Fchs
             | Operation::FxchSt1
-            | Operation::FldSt0
+            | Operation::FldSti { .. }
             | Operation::Fabs
             | Operation::Ftst
             | Operation::Frndint

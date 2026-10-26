@@ -374,7 +374,7 @@ fn step_tracked_with_stop(
         ) && bounded_x87_top_adjustment(state).is_none()
         || matches!(instruction.operation, Operation::Fld1 | Operation::Fldz)
             && bounded_x87_empty_push_destination(state).is_none()
-        || instruction.operation == Operation::FldSt0 && bounded_x87_fld_st0(state).is_none()
+        || matches!(instruction.operation, Operation::FldSti { source } if bounded_x87_fld_sti(state, source).is_none())
         || matches!(instruction.operation, Operation::FstpSti { .. })
             && bounded_x87_fst_sti_source(state).is_none()
         || matches!(instruction.operation, Operation::FstSti { .. })
@@ -559,7 +559,7 @@ fn step_tracked_with_stop(
         | Operation::FxchSti { .. }
         | Operation::Fincstp
         | Operation::Fdecstp
-        | Operation::FldSt0
+        | Operation::FldSti { .. }
         | Operation::Fld1
         | Operation::Fldz
         | Operation::Fabs
@@ -1478,9 +1478,9 @@ fn step_tracked_with_stop(
             x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9))) | (next_top << 11);
             x87.instruction_pointer = state.rip;
         }
-        Operation::FldSt0 => {
+        Operation::FldSti { source } => {
             let (destination, raw, tag) =
-                bounded_x87_fld_st0(state).expect("FLD ST(0) operands were prevalidated");
+                bounded_x87_fld_sti(state, source).expect("FLD ST(i) operands were prevalidated");
             let x87 = state.x87.as_mut().expect("x87 state was prevalidated");
             // Capture the old physical source before updating TOP; the old
             // destination payload is intentionally opaque while its tag is Empty.
@@ -3058,15 +3058,15 @@ fn bounded_x87_empty_push_destination(state: &LongModeState) -> Option<usize> {
     (x87.tag(destination) == Some(X87Tag::Empty)).then_some(usize::from(destination))
 }
 
-/// Preflight bounded bare FLD ST(0). Both the old physical TOP source and
-/// the physical push destination are validated before the executor mutates
-/// either entry; stale bytes under an Empty destination remain opaque.
-fn bounded_x87_fld_st0(state: &LongModeState) -> Option<(usize, [u8; 10], X87Tag)> {
+/// Preflight bounded bare FLD ST(i). Both the indexed physical source
+/// `(old_TOP+i)&7` and push destination `(old_TOP+7)&7` are validated before
+/// mutation; stale bytes under an Empty destination remain opaque.
+fn bounded_x87_fld_sti(state: &LongModeState, source: u8) -> Option<(usize, [u8; 10], X87Tag)> {
     let x87 = state.x87.as_ref()?;
-    if x87.control_word != 0x037f || x87.status_word & 0x80ff != 0 {
+    if source > 6 || x87.control_word != 0x037f || x87.status_word & 0x80ff != 0 {
         return None;
     }
-    let source = usize::from(x87.top());
+    let source = usize::from(x87.top().wrapping_add(source) & 7);
     let destination = bounded_x87_empty_push_destination(state)?;
     let tag = x87.tag(source as u8)?;
     let raw = x87.registers[source];
@@ -14035,103 +14035,110 @@ mod tests {
     }
 
     #[test]
-    fn fld_st0_copies_full_state_matrix_and_preserves_canaries() {
+    fn fld_sti_copies_full_state_matrix_and_preserves_canaries() {
         let normals = [
             (1u64 << 63, 0x0001u16),
             (1u64 << 63, 0x3fffu16),
             (0xc000_0000_0000_0000, 0x4000u16),
             (u64::MAX, 0x7ffeu16),
         ];
-        for normal in normals.into_iter().map(Some).chain([None]) {
-            for negative in [false, true] {
-                for top in 0u8..8 {
-                    for prior_cc in 0u8..16 {
-                        for snapshot in 0u8..4 {
-                            let cc = (u16::from(prior_cc & 1) << 8)
-                                | (u16::from((prior_cc >> 1) & 1) << 9)
-                                | (u16::from((prior_cc >> 2) & 1) << 10)
-                                | (u16::from((prior_cc >> 3) & 1) << 14);
-                            let mut state = LongModeState::default();
-                            state.rip = 0x9400;
-                            state.gpr = std::array::from_fn(|index| {
-                                0x7654_3210_fedc_ba98 ^ (index as u64).wrapping_mul(0x101)
-                            });
-                            state.rflags = 0xa55a_1234_5678_9abc;
-                            let mut x87 = crate::state::X87State::fixture_seed();
-                            x87.control_word = 0x037f;
-                            x87.status_word = (u16::from(top) << 11) | cc;
-                            for physical in 0u8..8 {
-                                x87.registers[usize::from(physical)] =
-                                    std::array::from_fn(|byte| {
-                                        snapshot
-                                            .wrapping_mul(41)
-                                            .wrapping_add(physical.wrapping_mul(13))
-                                            .wrapping_add(byte as u8)
-                                    });
-                                x87.set_tag(
-                                    physical,
-                                    [X87Tag::Valid, X87Tag::Zero, X87Tag::Special, X87Tag::Empty]
-                                        [usize::from((physical + snapshot) & 3)],
+        for source_index in 0u8..7 {
+            for normal in normals.into_iter().map(Some).chain([None]) {
+                for negative in [false, true] {
+                    for top in 0u8..8 {
+                        for prior_cc in 0u8..16 {
+                            for snapshot in 0u8..4 {
+                                let cc = (u16::from(prior_cc & 1) << 8)
+                                    | (u16::from((prior_cc >> 1) & 1) << 9)
+                                    | (u16::from((prior_cc >> 2) & 1) << 10)
+                                    | (u16::from((prior_cc >> 3) & 1) << 14);
+                                let mut state = LongModeState::default();
+                                state.rip = 0x9400;
+                                state.gpr = std::array::from_fn(|index| {
+                                    0x7654_3210_fedc_ba98 ^ (index as u64).wrapping_mul(0x101)
+                                });
+                                state.rflags = 0xa55a_1234_5678_9abc;
+                                let mut x87 = crate::state::X87State::fixture_seed();
+                                x87.control_word = 0x037f;
+                                x87.status_word = (u16::from(top) << 11) | cc;
+                                for physical in 0u8..8 {
+                                    x87.registers[usize::from(physical)] =
+                                        std::array::from_fn(|byte| {
+                                            snapshot
+                                                .wrapping_mul(41)
+                                                .wrapping_add(physical.wrapping_mul(13))
+                                                .wrapping_add(byte as u8)
+                                        });
+                                    x87.set_tag(
+                                        physical,
+                                        [
+                                            X87Tag::Valid,
+                                            X87Tag::Zero,
+                                            X87Tag::Special,
+                                            X87Tag::Empty,
+                                        ][usize::from((physical + snapshot) & 3)],
+                                    );
+                                }
+                                let source = usize::from(top.wrapping_add(source_index) & 7);
+                                let destination = usize::from(top.wrapping_add(7) & 7);
+                                let raw = if let Some((significand, magnitude_exponent)) = normal {
+                                    let sign_exponent =
+                                        magnitude_exponent | if negative { 0x8000 } else { 0 };
+                                    let mut raw = [0u8; 10];
+                                    raw[..8].copy_from_slice(&significand.to_le_bytes());
+                                    raw[8..].copy_from_slice(&sign_exponent.to_le_bytes());
+                                    raw
+                                } else {
+                                    let mut raw = [0u8; 10];
+                                    raw[9] = if negative { 0x80 } else { 0 };
+                                    raw
+                                };
+                                let tag = if normal.is_some() {
+                                    X87Tag::Valid
+                                } else {
+                                    X87Tag::Zero
+                                };
+                                x87.registers[source] = raw;
+                                x87.set_tag(source as u8, tag);
+                                x87.set_tag(destination as u8, X87Tag::Empty);
+                                x87.registers[destination] = [0xffu8.wrapping_sub(snapshot); 10];
+                                x87.instruction_pointer = 0x1234;
+                                x87.data_pointer = 0x5678;
+                                x87.last_opcode = 0x05aa;
+                                state.x87 = Some(x87);
+                                let before = state.clone();
+                                let mut memory =
+                                    Memory::at(&[0xd9, 0xc0 + source_index], state.rip);
+                                assert_eq!(
+                                    step(&mut state, &mut memory, AccessContext::default()),
+                                    Ok(StepOutcome::Advanced)
                                 );
+                                let old_x87 = before.x87.as_ref().unwrap();
+                                let new_x87 = state.x87.as_ref().unwrap();
+                                let mut expected_registers = old_x87.registers;
+                                expected_registers[destination] = old_x87.registers[source];
+                                assert_eq!(new_x87.registers, expected_registers);
+                                let mut expected_tags = old_x87.tag_word;
+                                expected_tags &= !(3 << (destination * 2));
+                                expected_tags |= (u16::from(tag as u8) & 3) << (destination * 2);
+                                assert_eq!(new_x87.tag_word, expected_tags);
+                                assert_eq!(new_x87.tag(source as u8), Some(tag));
+                                assert_eq!(new_x87.registers[source], raw);
+                                assert_eq!(new_x87.tag(destination as u8), Some(tag));
+                                assert_eq!(
+                                    new_x87.status_word,
+                                    (old_x87.status_word & !((7 << 11) | (1 << 9)))
+                                        | ((destination as u16) << 11)
+                                );
+                                assert_eq!(new_x87.instruction_pointer, before.rip);
+                                assert_eq!(new_x87.data_pointer, old_x87.data_pointer);
+                                assert_eq!(new_x87.last_opcode, old_x87.last_opcode);
+                                assert_eq!(new_x87.control_word, old_x87.control_word);
+                                assert_eq!(state.rip, before.rip + 2);
+                                assert_eq!(state.gpr, before.gpr);
+                                assert_eq!(state.rflags, before.rflags);
+                                assert!(memory.accesses.is_empty());
                             }
-                            let source = usize::from(top);
-                            let destination = usize::from(top.wrapping_add(7) & 7);
-                            let raw = if let Some((significand, magnitude_exponent)) = normal {
-                                let sign_exponent =
-                                    magnitude_exponent | if negative { 0x8000 } else { 0 };
-                                let mut raw = [0u8; 10];
-                                raw[..8].copy_from_slice(&significand.to_le_bytes());
-                                raw[8..].copy_from_slice(&sign_exponent.to_le_bytes());
-                                raw
-                            } else {
-                                let mut raw = [0u8; 10];
-                                raw[9] = if negative { 0x80 } else { 0 };
-                                raw
-                            };
-                            let tag = if normal.is_some() {
-                                X87Tag::Valid
-                            } else {
-                                X87Tag::Zero
-                            };
-                            x87.registers[source] = raw;
-                            x87.set_tag(source as u8, tag);
-                            x87.set_tag(destination as u8, X87Tag::Empty);
-                            x87.registers[destination] = [0xffu8.wrapping_sub(snapshot); 10];
-                            x87.instruction_pointer = 0x1234;
-                            x87.data_pointer = 0x5678;
-                            x87.last_opcode = 0x05aa;
-                            state.x87 = Some(x87);
-                            let before = state.clone();
-                            let mut memory = Memory::at(&[0xd9, 0xc0], state.rip);
-                            assert_eq!(
-                                step(&mut state, &mut memory, AccessContext::default()),
-                                Ok(StepOutcome::Advanced)
-                            );
-                            let old_x87 = before.x87.as_ref().unwrap();
-                            let new_x87 = state.x87.as_ref().unwrap();
-                            let mut expected_registers = old_x87.registers;
-                            expected_registers[destination] = old_x87.registers[source];
-                            assert_eq!(new_x87.registers, expected_registers);
-                            let mut expected_tags = old_x87.tag_word;
-                            expected_tags &= !(3 << (destination * 2));
-                            expected_tags |= (u16::from(tag as u8) & 3) << (destination * 2);
-                            assert_eq!(new_x87.tag_word, expected_tags);
-                            assert_eq!(new_x87.tag(source as u8), Some(tag));
-                            assert_eq!(new_x87.registers[source], raw);
-                            assert_eq!(new_x87.tag(destination as u8), Some(tag));
-                            assert_eq!(
-                                new_x87.status_word,
-                                (old_x87.status_word & !((7 << 11) | (1 << 9)))
-                                    | ((destination as u16) << 11)
-                            );
-                            assert_eq!(new_x87.instruction_pointer, before.rip);
-                            assert_eq!(new_x87.data_pointer, old_x87.data_pointer);
-                            assert_eq!(new_x87.last_opcode, old_x87.last_opcode);
-                            assert_eq!(new_x87.control_word, old_x87.control_word);
-                            assert_eq!(state.rip, before.rip + 2);
-                            assert_eq!(state.gpr, before.gpr);
-                            assert_eq!(state.rflags, before.rflags);
-                            assert!(memory.accesses.is_empty());
                         }
                     }
                 }

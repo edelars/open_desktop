@@ -776,10 +776,21 @@ impl Fixture {
                 "d9f6" => ("d9f6", 2),
                 "d9e8" => ("d9e8", 2),
                 "d9ee" => ("d9ee", 2),
-                "d9c0" => ("d9c0", 2),
                 "d9e8dfe0" => ("d9e8dfe0", 4),
                 "d9eedfe0" => ("d9eedfe0", 4),
-                "d9c0dfe0" => ("d9c0dfe0", 4),
+                _ if code_bytes.len() == 4
+                    && code_bytes.starts_with("d9c")
+                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'6') =>
+                {
+                    (code_bytes.as_str(), 2)
+                }
+                _ if code_bytes.len() == 8
+                    && code_bytes.starts_with("d9c")
+                    && matches!(code_bytes.as_bytes()[3], b'0'..=b'6')
+                    && code_bytes.ends_with("dfe0") =>
+                {
+                    (code_bytes.as_str(), 4)
+                }
                 "d9e8d9c0dfe0" => ("d9e8d9c0dfe0", 6),
                 "d9eed9c0dfe0" => ("d9eed9c0dfe0", 6),
                 "d9f7dfe0" => ("d9f7dfe0", 4),
@@ -1040,11 +1051,14 @@ impl Fixture {
                             || x87.status_word.get() & 0x80ff != 0
                             || (x87.tag_word.get() >> (u32::from(destination) * 2)) & 3 != 3
                     });
-            let is_fld_st0_rejected = code_bytes == "d9c0"
+            let is_fld_sti_rejected = code_bytes.len() == 4
+                && code_bytes.starts_with("d9c")
+                && matches!(code_bytes.as_bytes()[3], b'0'..=b'6')
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     let top = ((x87.status_word.get() >> 11) & 7) as usize;
+                    let source = (top + usize::from(code_bytes.as_bytes()[3] - b'0')) & 7;
                     let destination = (top + 7) & 7;
                     let tag = |index: usize| (x87.tag_word.get() >> (index * 2)) & 3;
                     let raw_is_canonical = |index: usize| {
@@ -1067,7 +1081,7 @@ impl Fixture {
                     };
                     x87.control_word.get() != 0x037f
                         || x87.status_word.get() & 0x80ff != 0
-                        || !raw_is_canonical(top)
+                        || !raw_is_canonical(source)
                         || tag(destination) != 3
                 });
             let is_fchs_source_rejected = code_bytes == "d9e0" && self.stop_rip.is_none();
@@ -1349,7 +1363,7 @@ impl Fixture {
                     || is_fxch_source_rejected
                     || is_top_adjustment_source_rejected
                     || is_fld_constant_destination_rejected
-                    || is_fld_st0_rejected
+                    || is_fld_sti_rejected
                     || is_fchs_source_rejected
                     || is_fabs_source_rejected
                     || is_ftst_source_rejected

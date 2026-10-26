@@ -398,7 +398,7 @@ fn x87_top_adjustment_schema_admits_only_the_six_exact_streams() {
 }
 
 #[test]
-fn x87_fld_st0_schema_admits_only_four_exact_streams_and_bad_source_rejects() {
+fn x87_fld_sti_schema_admits_only_indexed_streams_and_bad_sources_reject() {
     let mut fixture = x87_fixture().fixture;
     fixture.case_id = "local_fld_st0_seeded_normal_top_wrap".into();
     let x87 = fixture.initial_state.x87.as_mut().unwrap();
@@ -419,29 +419,50 @@ fn x87_fld_st0_schema_admits_only_four_exact_streams_and_bad_source_rejects() {
     fixture.instruction_budget = 1;
     fixture.stop_rip = Some(HexU64(0x1002));
 
-    for (stream, budget) in [
-        ("d9c0", 1),
-        ("d9c0dfe0", 2),
-        ("d9e8d9c0dfe0", 3),
-        ("d9eed9c0dfe0", 3),
-    ] {
+    for source in 0u8..7 {
+        for (stream, budget) in [
+            (format!("d9c{source:x}"), 1),
+            (format!("d9c{source:x}dfe0"), 2),
+        ] {
+            let mut exact = fixture.clone();
+            exact.case_id = format!("local_fld_sti_{stream}");
+            exact.instruction_budget = budget;
+            let length = (stream.len() / 2) as u32;
+            exact.stop_rip = Some(HexU64(0x1000 + u64::from(length)));
+            let x87 = exact.initial_state.x87.as_mut().unwrap();
+            x87.status_word = HexU64(0x0200); // TOP=0, prior C1 set.
+            x87.tag_word = HexU64(u64::from(u16::MAX));
+            x87.registers[usize::from(source)] = "0000000000000080ff3f".into();
+            x87.tag_word = HexU64(x87.tag_word.get() & !(3 << (u32::from(source) * 2)));
+            x87.tag_word = HexU64((x87.tag_word.get() & !(3 << 14)) | (3 << 14));
+            let code = exact
+                .memory
+                .iter_mut()
+                .find(|r| r.region_id == "code")
+                .unwrap();
+            code.length = length;
+            code.initial_bytes_hex = stream.clone();
+            code.comparison_mask_hex = "ff".repeat(length as usize);
+            exact.validate().unwrap();
+        }
+    }
+    for stream in ["d9e8d9c0dfe0", "d9eed9c0dfe0"] {
         let mut exact = fixture.clone();
-        exact.case_id = format!("local_fld_st0_{stream}");
-        exact.instruction_budget = budget;
-        let length = (stream.len() / 2) as u32;
-        exact.stop_rip = Some(HexU64(0x1000 + u64::from(length)));
+        exact.case_id = format!("local_fld_st0_producer_{stream}");
+        exact.instruction_budget = 3;
+        exact.stop_rip = Some(HexU64(0x1006));
         let code = exact
             .memory
             .iter_mut()
             .find(|r| r.region_id == "code")
             .unwrap();
-        code.length = length;
+        code.length = 6;
         code.initial_bytes_hex = stream.into();
-        code.comparison_mask_hex = "ff".repeat(length as usize);
+        code.comparison_mask_hex = "ff".repeat(6);
         exact.validate().unwrap();
     }
 
-    for stream in ["d9c1", "d9c7", "66d9c0", "d9c0d9c0dfe0", "d9e8d9c0"] {
+    for stream in ["d9c7", "66d9c0", "d9c0d9c0dfe0", "d9e8d9c0"] {
         let mut rejected = fixture.clone();
         rejected.case_id = format!("local_fld_st0_alias_{stream}");
         let code = rejected
@@ -454,16 +475,17 @@ fn x87_fld_st0_schema_admits_only_four_exact_streams_and_bad_source_rejects() {
         code.comparison_mask_hex = "ff".repeat(stream.len() / 2);
         assert!(rejected.validate().is_err(), "{stream}");
     }
-    for source in 1u8..=7 {
-        let stream = format!("d9c{source:x}");
+    for stream in ["d9c7", "66d9c1", "d9c1d9c1dfe0", "d9e8d9c1dfe0"] {
         let mut rejected = fixture.clone();
-        rejected.case_id = format!("local_fld_st0_register_neighbor_{source}");
+        rejected.case_id = format!("local_fld_sti_neighbor_{stream}");
         let code = rejected
             .memory
             .iter_mut()
             .find(|r| r.region_id == "code")
             .unwrap();
-        code.initial_bytes_hex = stream.clone();
+        code.length = (stream.len() / 2) as u32;
+        code.initial_bytes_hex = stream.into();
+        code.comparison_mask_hex = "ff".repeat(stream.len() / 2);
         assert!(rejected.validate().is_err(), "{stream}");
     }
 
