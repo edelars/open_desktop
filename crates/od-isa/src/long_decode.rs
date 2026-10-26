@@ -557,6 +557,8 @@ pub enum Operation {
     Fcmovnbe {
         source: u8,
     },
+    /// Exact bare `DA D9` FCMOVU ST(0), ST(1), bounded raw copy when PF is set.
+    Fcmovu,
     /// Bare `D8 D8+i` FCOMP ST(i), bounded compare then physical TOP pop.
     FcompSt {
         source: u8,
@@ -1300,6 +1302,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 if modrm == 0xe9 {
                     Operation::Fucompp
+                } else if modrm == 0xd9 {
+                    Operation::Fcmovu
                 } else if let Some(operation) = x87_fcmove(opcode.byte, modrm) {
                     operation
                 } else if let Some(operation) = x87_fcmovbe(opcode.byte, modrm) {
@@ -4347,6 +4351,36 @@ mod tests {
             Memory::new(&[0xdb]).decode(),
             Err(DecodeError::Memory(_))
         ));
+    }
+
+    #[test]
+    fn exact_bare_da_d9_fcmovu_rejects_neighbors_prefixes_and_truncation() {
+        for modrm in 0u8..=u8::MAX {
+            let decoded = Memory::new(&[0xda, modrm]).decode();
+            if modrm == 0xd9 {
+                assert_eq!(decoded.unwrap().operation, Operation::Fcmovu);
+            } else {
+                assert!(
+                    !matches!(
+                        decoded.map(|instruction| instruction.operation),
+                        Ok(Operation::Fcmovu)
+                    ),
+                    "DA {modrm:02x}"
+                );
+            }
+        }
+        for prefix in [
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+        ]
+        .into_iter()
+        .chain(0x40..=0x4f)
+        {
+            assert!(matches!(
+                Memory::new(&[prefix, 0xda, 0xd9]).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+        }
+        assert!(Memory::new(&[0xda]).decode().is_err());
     }
 
     #[test]

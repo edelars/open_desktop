@@ -2982,6 +2982,80 @@ fn x87_fcmovnbe_schema_admits_exact_indexed_streams_and_reject_profiles() {
 }
 
 #[test]
+fn x87_fcmovu_schema_admits_only_the_exact_test_pf_producer_stream() {
+    let base = x87_fixture().fixture;
+    let program = "d9e8d9ee4885c0dad9dfe0";
+    for rax in [1, 3] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("x87_fcmovu_test_rax_{rax}");
+        fixture.initial_state.gpr[0] = HexU64(rax);
+        fixture.instruction_budget = 5;
+        fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + 11));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = program.into();
+        code.length = 11;
+        code.comparison_mask_hex = "ff".repeat(11);
+        assert!(Fixture::from_json(&fixture.to_json().unwrap()).is_ok());
+    }
+
+    for malformed in [
+        "dad9",
+        "dad9dfe0",
+        "d9e8d9ee4885c0dad8dfe0",
+        "d9e8d9ee4885c0dadadfe0",
+        "66d9e8d9ee4885c0dad9dfe0",
+        "d9e8d9ee4885c0dad9dfe090",
+        "d9e8d9ee4885c0dad9",
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("x87_fcmovu_reject_{malformed}");
+        fixture.instruction_budget = 5;
+        let length = (malformed.len() / 2) as u32;
+        fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + u64::from(length)));
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = malformed.into();
+        code.length = length;
+        code.comparison_mask_hex = "ff".repeat(length as usize);
+        assert!(fixture.validate().is_err(), "{malformed}");
+    }
+
+    let mut wrong_budget = base.clone();
+    wrong_budget.instruction_budget = 4;
+    wrong_budget.stop_rip = Some(HexU64(wrong_budget.initial_state.rip.get() + 11));
+    let code = wrong_budget
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = program.into();
+    code.length = 11;
+    code.comparison_mask_hex = "ff".repeat(11);
+    assert!(wrong_budget.validate().is_err());
+
+    let mut missing_x87 = base;
+    missing_x87.initial_state.x87 = None;
+    missing_x87.instruction_budget = 5;
+    missing_x87.stop_rip = Some(HexU64(missing_x87.initial_state.rip.get() + 11));
+    let code = missing_x87
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = program.into();
+    code.length = 11;
+    code.comparison_mask_hex = "ff".repeat(11);
+    assert!(missing_x87.validate().is_err());
+}
+
+#[test]
 fn result_rejects_observed_fs_base_different_from_initial() {
     let input = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_22a_fs_base_qword_load_alias.case.json"

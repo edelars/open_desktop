@@ -714,6 +714,9 @@ impl Fixture {
                 "dbe9dfe0" => ("dbe9dfe0", 4),
                 "dbf1" => ("dbf1", 2),
                 "dbf1dfe0" => ("dbf1dfe0", 4),
+                _ if fcmovu_stream(&code_bytes) => {
+                    (code_bytes.as_str(), (code_bytes.len() / 2) as u32)
+                }
                 "dac9dac9dfe0"
                 | "d9e8d9e8dbf1d9e0dac9dfe0"
                 | "d9e8d9e8d9e0dbf1dac9dfe0"
@@ -1623,6 +1626,7 @@ impl Fixture {
                 && self.expected_exit == ExpectedExit::Unsupported
                 && self.instruction_budget == 3;
             let expected_budget = match code_bytes.as_str() {
+                _ if fcmovu_stream(&code_bytes) => 5,
                 "db2848b80140000000000000df38dfe0dbe2" | "db28d9fcdfe0dbe2d9fc" => 5,
                 "db28d9fcd9fcdfe0dbe2d9fc"
                 | "d9e8d9e0dbf1dac1dfe0"
@@ -2469,6 +2473,11 @@ fn fcmovnbe_bare_source(code_bytes: &str) -> Option<u8> {
     let opcode = u8::from_str_radix(&code_bytes[0..2], 16).ok()?;
     let modrm = u8::from_str_radix(&code_bytes[2..4], 16).ok()?;
     (opcode == 0xdb && (0xd0..=0xd7).contains(&modrm)).then_some(modrm & 7)
+}
+
+/// Exact S2-30cg producer stream for the bounded DA D9 FCMOVU form.
+fn fcmovu_stream(code_bytes: &str) -> bool {
+    code_bytes == "d9e8d9ee4885c0dad9dfe0"
 }
 
 #[cfg(test)]

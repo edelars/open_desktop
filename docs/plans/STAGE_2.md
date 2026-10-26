@@ -248,6 +248,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cd | Bare Long64 `DA D0..D7` indexed FCMOVBE ST(0), ST(i); preflight before integer `CF || ZF`, TOP-only self-case, exact raw copy; indexed matrices, 20-stream schema and full-state runner; native/JIT closed | S2-30cc |
 | [x] | S2-30ce | Historical exact bare Long64 `DB D1` FCMOVNBE ST(0), ST(1); preflight before integer CF/ZF, raw copy only when both clear; success/invalid matrices, six-stream schema and full-state runner; native/JIT closed | S2-30cd |
 | [x] | S2-30cf | Bare Long64 `DB D0..D7` indexed FCMOVNBE ST(0), ST(i); validate TOP/source before CF/ZF, self-index TOP-only, raw copy when both clear; full matrices, 20-stream schema and full-state runner; native/JIT closed | S2-30ce |
+| [x] | S2-30cg | Exact bare `DA D9` FCMOVU ST(0), ST(1), preflight before PF, raw copy only when PF=1; TEST producer fixtures, exact schema and full-state runner; unordered/NaN and native/JIT closed | S2-30cf |
 | [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; its then-Normal-only FTST/FST/FSTP scopes are historical and superseded by S2-30aq/ar/as; native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
@@ -6315,3 +6316,25 @@ self CF/ZF rows, wraparound, Normal/Zero and signed-zero transfer, invalid
 source under taken and untaken conditions, and environment/status/decode and
 boundary rejection. Compare full machine/memory snapshots and deny JIT for
 each index. This remains local interpreter evidence under ISSUE-019.
+
+
+#### S2-30cg. Exact bare `FCMOVU ST(0), ST(1)` (`DA D9`)
+
+Admit only exact unprefixed Long64 `DA D9`. Reuse the existing FCMOV gate:
+require present x87 state, FCW `0x037f`, `FSW & 0x82ff == 0`, and Valid
+canonical-Normal or Zero exact-signed-zero operands at physical TOP and
+TOP+1. Preflight both participants before reading integer PF, including when
+PF=0. Copy the source's raw ten bytes and tag to TOP only when PF=1; otherwise
+preserve the destination. Preserve all other state except FIP=old RIP, RIP+=2
+and one retirement. Invalid state/environment/operands and execution boundaries
+remain atomic. DA D8 and DA DA..DF, every prefix, memory form, unordered/NaN
+input, x87 exception delivery and physical x86 acceptance remain outside scope;
+native and JIT admission stay closed.
+
+The unit matrix covers every TOP, PF/CF/ZF combination and C0/C2/C3 pattern,
+plus invalid class/tag pairs at both operands, environment gates, truncation,
+STOP and budget boundaries. The exact schema accepts only the five-instruction
+`D9 E8; D9 EE; 48 85 C0; DA D9; DF E0` producer stream. Two literal runner
+fixtures use RAX=3 (TEST PF=1, taken) and RAX=1 (TEST PF=0, untaken), compare
+full machine and memory snapshots, and deny JIT. This is local interpreter
+evidence only; it does not cover unordered x87 values or physical hardware.

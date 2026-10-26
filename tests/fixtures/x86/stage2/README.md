@@ -3798,3 +3798,13 @@ conditions; existing environment, boundary, status observation, repeat, and
 producer fixtures remain covered. Runner assertions compare complete machine
 state and memory, including RFLAGS, RIP, FIP and retirement, and deny JIT for
 every indexed form. This is local interpreter evidence only.
+
+
+### S2-30cg exact bare `FCMOVU ST(0), ST(1)` (`DA D9`)
+
+Two handwritten fixtures run the exact five-instruction FLD1/FLDZ/TEST/FCMOVU/FNSTSW
+producer stream. RAX=3 makes `TEST RAX,RAX` set PF with ZF clear, so FCMOVU
+copies ST(1); RAX=1 clears PF while ZF also stays clear, so it preserves ST(0).
+The schema rejects other streams and encodings. Runner checks full state/memory
+and denies JIT. These fixtures are local interpreter evidence only; unordered
+x87 values and physical x86 execution are not covered.

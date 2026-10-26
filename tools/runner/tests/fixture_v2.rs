@@ -307,6 +307,10 @@ const FCMOVNBE_REJECTS: [&[u8]; 5] = [
         "../../../tests/fixtures/x86/stage2/s2_30cf_fcmovnbe_st6_bad_environment.case.json"
     ),
 ];
+const FCMOVU_FIXTURES: [&[u8]; 2] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cg_fcmovu_test_pf1_taken.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30cg_fcmovu_test_pf0_untaken.case.json"),
+];
 const FCMOVE_INDEXED_FIXTURES: [&[u8]; 8] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf1.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30bz_fcmove_st0_zf0.case.json"),
@@ -7799,6 +7803,59 @@ fn local_x87_fcmovbe_fixtures_check_full_state_producers_and_deny_jit() {
         assert_eq!(snapshot(&result).state, loaded.fixture.initial_state);
         let (_, jit) = run(bytes, "jit", 4);
         assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
+fn local_x87_fcmovu_test_pf_fixtures_check_full_state_and_deny_jit() {
+    let one = "0000000000000080ff3f";
+    for bytes in FCMOVU_FIXTURES {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let (_, result) = run(bytes, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{}",
+            loaded.fixture.case_id
+        );
+        assert_eq!(count(&result), 5, "{}", loaded.fixture.case_id);
+        let observed = snapshot(&result);
+        let mut expected = loaded.fixture.initial_state.clone();
+        let pf = expected.gpr[0].get() == 3;
+        assert!(matches!(expected.gpr[0].get(), 1 | 3));
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.registers[7] = one.into();
+        expected_x87.registers[6] = if pf { one } else { "00000000000000000000" }.into();
+        let mut tag_word = expected_x87.tag_word.get();
+        tag_word &= !(3 << (7 * 2));
+        tag_word = (tag_word & !(3 << (6 * 2))) | if pf { 0 } else { 1 << (6 * 2) };
+        expected_x87.tag_word = HexU64(tag_word);
+        expected_x87.status_word = HexU64((expected_x87.status_word.get() & !0x3800) | 0x3000);
+        expected_x87.instruction_pointer = HexU64(loaded.fixture.initial_state.rip.get() + 7);
+        expected.gpr[0] = HexU64((expected.gpr[0].get() & !0xffff) | 0x3000);
+        expected.rflags = HexU64((expected.rflags.get() & !0x8d5) | if pf { 0x4 } else { 0 });
+        expected.rip = HexU64(loaded.fixture.initial_state.rip.get() + 11);
+        assert_eq!(observed.state, expected, "{}", loaded.fixture.case_id);
+        let expected_memory = loaded
+            .fixture
+            .memory
+            .iter()
+            .map(|region| MemoryRegionSnapshot {
+                region_id: region.region_id.clone(),
+                guest_address: region.guest_address,
+                bytes_hex: region.initial_bytes_hex.to_ascii_lowercase(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed.memory, expected_memory,
+            "{}",
+            loaded.fixture.case_id
+        );
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(
+            matches!(jit.outcome, Outcome::Unsupported { .. }),
+            "{}",
+            loaded.fixture.case_id
+        );
     }
 }
 

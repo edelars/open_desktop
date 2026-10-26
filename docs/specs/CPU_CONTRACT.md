@@ -7631,3 +7631,22 @@ deny JIT at every index. Evidence is local only; ISSUE-019 remains open.
 See [plan](../plans/STAGE_2.md#s2-30cf-indexed-bare-fcmovnbe-st0-sti-db-d0d7),
 [report](../reports/STAGE_2_REPORT.md#s2-30cf--indexed-bare-fcmovnbe-st0-sti), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30cf-indexed-bare-fcmovnbe-st0-sti-db-d0d7).
+
+
+## Local S2-30cg: exact bare `FCMOVU ST(0), ST(1)` (`DA D9`)
+
+The interpreter admits only unprefixed Long64 `DA D9`. It requires an existing
+x87 snapshot, FCW `0x037f`, `FSW & 0x82ff == 0`, and both old physical TOP and
+TOP+1 to be Valid canonical-Normal or Zero exact-signed-zero values. Both
+participants are validated before integer PF is read, even when the move is
+untaken. PF=1 copies the source's raw binary80 bytes and tag to TOP; PF=0
+preserves the destination. All other state is preserved except FIP=old RIP,
+RIP+=2, and retirement. Invalid operands, environment and execution boundaries
+reject without CPU commit.
+
+The exact fixture schema admits only `d9e8d9ee4885c0dad9dfe0`: FLD1, FLDZ,
+TEST RAX,RAX, FCMOVU ST(0),ST(1), FNSTSW AX. Literal runner inputs RAX=3 and
+RAX=1 exercise PF=1 and PF=0, respectively, with ZF=0 in both. JIT and native
+admission remain closed. This local slice does not define FCMOVU behavior for
+unordered/NaN x87 operands, general exception delivery, or physical x86
+execution; ISSUE-019 remains open.
