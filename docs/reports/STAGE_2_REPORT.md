@@ -8975,3 +8975,39 @@ the schema was not widened. These checks passed:
 
 No Mac mini, SSH, native runtime or physical x86 checks were performed; ISSUE-019
 remains open.
+
+## S2-30aw — canonical binary80 QuietNaN through bounded FCHS/FABS
+
+The shared FCHS/FABS source gate now admits `(Special, QuietNaN)` in addition
+to the established canonical-Normal, exact Zero-tagged signed-zero and
+Special-tagged canonical-infinity pairs. The canonical binary80 classifier
+defines QuietNaN as E=`0x7fff`, J=1, Q=1; both signs and all low 62 payload bits
+are retained. FCHS toggles only the raw sign bit and FABS clears only it. Both
+preserve Special tag, TOP and existing C0/C2/C3 policy, clear C1, retain all
+exception flags, and keep the existing FIP/RIP/retirement behavior. SNaN,
+pseudo-NaNs, pseudo-infinity, subnormal, pseudo-denormal, unnormal and wrong
+tags remain rejected before commit. No classifier, schema or JIT/native gate
+changed.
+
+The od-isa full-state matrix contains 2,048 distinct combinations:
+2 opcodes × 2 signs × 8 TOP values × 16 condition-code patterns × 4 payloads
+(`0`, `1`, `1<<61`, `(1<<62)-1`). Expectations mutate a cloned raw-byte snapshot
+directly, check all state/canaries, then repeat FABS or execute FCHS twice.
+Negative tests cover malformed neighbors, wrong tags, invalid FCW/FSW, absent
+x87 state and truncation, STOP, zero budget and fetch faults. Four exact
+schema-v2 `project_fixture` programs use the existing m32 FLD payload QNaN →
+FCHS or FABS → FST → FNSTSW compositions across both source signs. Direct
+interpreter compositions additionally cover m64 FLD/FST for both operations
+and signs. The CLI verifies full state and memory bytes and confirms JIT
+denial; a no-stop wrong-tag fixture confirms zero retirement and unchanged
+state. The schema is unchanged.
+
+Validation passed: `cargo test -p od-isa --offline
+fchs_and_fabs_admit_canonical_quiet_nan_and_preserve_every_payload_bit`,
+the focused FCHS/FABS reject/boundary/legacy matrices, the runner QNaN fixture
+and wrong-tag tests, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, and `git diff --check`. `graphify update .`
+refreshed the code graph. No Mac mini, SSH, native runtime or physical x86
+checks were performed; ISSUE-019 remains open pending combined host/physical
+acceptance.

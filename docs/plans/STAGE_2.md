@@ -213,6 +213,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30as | Bare `DD D8+i` FSTP ST(i) copies exact Zero-tagged signed zero before emptying old TOP and advancing TOP; native/JIT closed | S2-30ar |
 | [x] | S2-30au | Bare `DD D0+i`/`DD D8+i` FST/FSTP ST(i) additionally copy Special-tagged canonical signed infinity; native/JIT closed | S2-30as |
 | [x] | S2-30av | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit only Special-tagged canonical signed binary80 infinity; native/JIT closed | S2-30ap, S2-30at |
+| [x] | S2-30aw | Bare `D9 E0` FCHS and `D9 E1` FABS additionally admit only Special-tagged canonical binary80 QuietNaN, preserving all payload bits; native/JIT closed | S2-30av, S2-31ah |
 | [x] | S2-30aa | Bare `D9 E4` FTST, bounded canonical-Normal ST(0) comparison with zero; native closed | S2-30z |
 | [x] | S2-30ab | Bare `D8 D1` FCOM ST(1), exact finite canonical-Normal compare with status-only commit; native closed | S2-30aa |
 | [x] | S2-30ac | Bare `D8 D0+i` FCOM ST(i), exact finite canonical-Normal compare for all register indices; native closed | S2-30ab |
@@ -2237,6 +2238,30 @@ project-fixture instruction streams `d900d9e0d910dfe0` and
 `d900d9e1d910dfe0`; add CLI success/rejection and JIT denial assertions without
 changing the schema. Local evidence does not establish physical x87 behavior;
 ISSUE-019 remains open and no Mac mini/SSH/physical x86 check belongs here.
+
+#### S2-30aw. Admit canonical binary80 QuietNaN to bounded `FCHS/FABS`
+
+Extend only `bounded_x87_sign_st0_source`: retain FCW `0x037f`,
+`FSW & 0x80ff == 0`, canonical-Normal Valid, exact Zero-tagged signed zero,
+and Special-tagged canonical infinity behavior. Additionally admit only
+`(Special, QuietNaN)` where the canonical binary80 encoding has E=`0x7fff`,
+J=1 and Q=1; accept either sign and every low-62-bit payload value, including
+zero. FCHS changes only the sign bit and FABS clears only the sign bit. Keep
+the Special tag, TOP, C0/C2/C3 policy, all payload bits, and other state; clear
+C1 and add no exception flags. Reject SNaN, pseudo-NaN, pseudo-infinity,
+subnormal, pseudo-denormal, unnormal and wrong tags atomically. Do not change
+the classifier/schema or JIT/native gates.
+
+The interpreter matrix covers both opcodes × both signs × all eight TOP values
+× all 16 prior condition-code states × payloads `{0, 1, 1<<61, (1<<62)-1}`
+with independent raw-byte full-state expectations, repeated FABS and double
+FCHS. Add detailed malformed-class/tag/environment and fetch/truncation/STOP/
+budget/fetch-fault rejection. Exact schema-v2 fixtures use the existing m32
+FLD QNaN → each sign operation → FST → FNSTSW composition for both signs;
+direct interpreter compositions cover both signs and both operations at m32
+and m64 widths. CLI assertions include full state, JIT denial and a wrong-tag
+fixture. Keep ISSUE-019 open; no Mac mini/SSH/native runtime/physical x86 checks
+belong to this substage.
 
 #### S2-30z. Bare bounded `FABS` (sign-bit-clear local slice)
 

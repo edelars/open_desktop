@@ -6781,3 +6781,30 @@ and Mac mini acceptance remain open under ISSUE-019. See the
 [plan](../plans/STAGE_2.md#s2-30av-admit-canonical-signed-infinity-to-bounded-fchsfabs),
 [report](../reports/STAGE_2_REPORT.md#s2-30av--canonical-signed-infinity-through-bounded-fchsfabs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30av-canonical-signed-infinity-fchsfabs).
+
+<a id="local-s2-30aw-canonical-qnan-fchs-fabs"></a>
+
+## Local S2-30aw: canonical binary80 QuietNaN through bounded `FCHS/FABS`
+
+Bare `D9 E0` and `D9 E1` retain FCW `0x037f`, `FSW & 0x80ff == 0`,
+canonical-Normal Valid and exact Zero-tagged signed zero, and Special-tagged
+canonical infinity. The shared source gate additionally admits only
+`(Special, QuietNaN)` for canonical binary80 QuietNaN: exponent `0x7fff`,
+explicit integer bit J=1, quiet bit Q=1, either sign, and any low 62 payload
+bits including zero. FCHS toggles only raw sign bit 7 of byte 9; FABS clears
+only that bit. Both preserve all remaining ten bytes, the Special tag, TOP,
+C0/C2/C3 and other state, clear C1, set FIP, advance RIP by two, and retire
+once without adding exception flags. SNaN, pseudo-NaNs, pseudo-infinity,
+subnormal, pseudo-denormal, unnormal and wrong tag/class pairs stay
+unsupported atomically. Classifier, schema and JIT/native admission are
+unchanged.
+
+The local full-state matrix crosses both operations, signs, TOP values, all
+16 condition-code combinations and representative low-62 payload values
+including both boundaries. Project fixtures use the existing exact m32 FLD
+QNaN composition for both operations and input signs; direct interpreter
+compositions cover both m32/m64 widths, operations and signs through same-width
+FST and FNSTSW. These local results do not establish physical x87 behavior; ISSUE-019
+remains open. See the [plan](../plans/STAGE_2.md#s2-30aw-admit-canonical-binary80-quietnan-to-bounded-fchsfabs),
+[report](../reports/STAGE_2_REPORT.md#s2-30aw--canonical-binary80-quietnan-through-bounded-fchsfabs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30aw-canonical-binary80-quietnan-fchsfabs).

@@ -47,6 +47,38 @@ const FABS_INFINITY_COMPOSITION: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30av_fld_fabs_fst_fnstsw.case.json");
 const FCHS_INFINITY_WRONG_TAG: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30av_fchs_infinity_wrong_tag.case.json");
+const FCHS_QNAN_WRONG_TAG: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30aw_fchs_qnan_wrong_tag.case.json");
+const FCHS_FABS_QNAN_FIXTURES: [(&[u8], bool, bool); 4] = [
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30aw_fld_m32_fchs_fst_fnstsw_positive_qnan.case.json"
+        ),
+        true,
+        false,
+    ),
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30aw_fld_m32_fchs_fst_fnstsw_negative_qnan.case.json"
+        ),
+        true,
+        true,
+    ),
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30aw_fld_m32_fabs_fst_fnstsw_positive_qnan.case.json"
+        ),
+        false,
+        false,
+    ),
+    (
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30aw_fld_m32_fabs_fst_fnstsw_negative_qnan.case.json"
+        ),
+        false,
+        true,
+    ),
+];
 const FTST_ZERO_COMPOSITION: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30aq_fld_ftst_fnstsw.case.json");
 const FST_STI_ZERO_COMPOSITION: &[u8] =
@@ -1735,6 +1767,56 @@ fn local_x87_fld_sign_operation_fst_fnstsw_infinity_fixtures_check_state_memory_
             "{operation}"
         );
     }
+}
+
+#[test]
+fn local_x87_fld_qnan_sign_operations_preserve_payloads_and_deny_jit() {
+    for (fixture, fchs, negative) in FCHS_FABS_QNAN_FIXTURES {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 4);
+        let observed = snapshot(&result);
+        let expected_negative = fchs && !negative;
+        let code = if fchs {
+            "d900d9e0d910dfe0"
+        } else {
+            "d900d9e1d910dfe0"
+        };
+        let expected_raw = "00000000004523c1ff7f";
+        let expected_memory = if expected_negative {
+            "4523c1ff"
+        } else {
+            "4523c17f"
+        };
+        let mut expected = input.fixture.initial_state.clone();
+        expected.rip = HexU64(0x0010_0008);
+        expected.gpr[0] = HexU64(0x0000_0000_0030_3800);
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.registers[7] = if expected_negative {
+            expected_raw.replace("ff7f", "ffff")
+        } else {
+            expected_raw.into()
+        };
+        expected_x87.status_word = HexU64(0x3800);
+        expected_x87.tag_word = HexU64(0xbffc);
+        expected_x87.instruction_pointer = HexU64(0x0010_0004);
+        expected_x87.data_pointer = HexU64(0x0030_0004);
+        assert_eq!(observed.state, expected, "FCHS={fchs}, negative={negative}");
+        assert_eq!(observed.memory[0].bytes_hex, code);
+        assert_eq!(observed.memory[1].bytes_hex, expected_memory);
+        assert_eq!(observed.memory[2].bytes_hex, "a5");
+
+        let (_, jit_result) = run(fixture, "jit", 4);
+        assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
+fn local_x87_fchs_qnan_wrong_tag_fixture_is_atomic_in_the_cli_runner() {
+    let (input, result) = run(FCHS_QNAN_WRONG_TAG, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    assert_eq!(snapshot(&result).state, input.fixture.initial_state);
 }
 
 #[test]

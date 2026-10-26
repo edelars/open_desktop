@@ -1377,6 +1377,20 @@ physical x86 behavior, so ISSUE-019 remains open. See the
 [plan](../../../../docs/plans/STAGE_2.md#s2-30av-admit-canonical-signed-infinity-to-bounded-fchsfabs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30av--canonical-signed-infinity-through-bounded-fchsfabs).
 
+### S2-30aw canonical binary80 QuietNaN FCHS/FABS
+
+Four handwritten schema-v2 fixtures use existing m32 payload-bearing QNaN
+sequences through FLD → FCHS or FABS → FST → FNSTSW, covering both input signs
+and operations. Direct interpreter coverage adds the same compositions for
+m64. They check extended QNaN payload/sign bits, Special tag and status word;
+CLI fixtures are denied by JIT admission. The separate no-stop, budget-one
+FCHS fixture has canonical QNaN bytes with a Valid tag and checks atomic
+rejection. Fixture schema is unchanged; project fixtures are not native
+evidence. ISSUE-019 remains open. See the [CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-30aw-canonical-qnan-fchs-fabs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-30aw-admit-canonical-binary80-quietnan-to-bounded-fchsfabs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-30aw--canonical-binary80-quietnan-through-bounded-fchsfabs).
+
 ### S2-30z x87 schema and fixture coverage
 
 The schema admits only bare `D9 E1` for the FABS slice. The positive literal
