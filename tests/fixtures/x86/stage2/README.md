@@ -1279,6 +1279,20 @@ Interpreter vectors separately cover all TOPs, both signs, Normal range edges,
 double FCHS, all D9 second bytes, prefixes and execution boundaries. Native x87
 admission explicitly denies `D9 E0`.
 
+### S2-30ao signed-zero FCHS
+
+The `s2_30ao_fchs_signed_zero.case.json` Zero-tagged positive-zero fixture and
+the `s2_30ao_fchs_zero_wrong_tag.case.json` no-stop, budget-one fixture with
+canonical zero bytes and a Valid tag exercise `D9 E0` through the interpreter CLI.
+Unit coverage checks
+both zero signs × every TOP × all 16 prior condition-code combinations, full
+state, double-operation restoration, malformed payloads and atomic execution
+boundaries. FLD m32/m64 → FCHS → FST → FNSTSW composition is checked locally;
+the `s2_30ao_fld_fchs_fst_fnstsw.case.json` project fixture runs the same
+sequence from binary32 negative zero and checks its full state and memory.
+these project fixtures are not native or physical evidence. Native/JIT remains
+closed under ISSUE-019.
+
 Normative source: Intel SDM revision 093, Vol.2A, “FCHS—Change Sign,” p.3-318 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=436)).
 
 ### S2-30z x87 schema and fixture coverage

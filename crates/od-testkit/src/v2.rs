@@ -794,6 +794,7 @@ impl Fixture {
                 "db28dfe0" => ("db28dfe0", 4),
                 "d900" => ("d900", 2),
                 "d900dfe0" => ("d900dfe0", 4),
+                "d900d9e0d910dfe0" => ("d900d9e0d910dfe0", 8),
                 "d900dd10" => ("d900dd10", 4),
                 "d900dd18dfe0" => ("d900dd18dfe0", 6),
                 "db2848b80140000000000000df38dfe0dbe2" => {
@@ -1192,6 +1193,7 @@ impl Fixture {
                 "db28d9fcd9fcdfe0dbe2d9fc" => 6,
                 "d9fcdfe0dbe2" => 3,
                 "d910d900dfe0dbe2" | "dd10dd00dfe0dbe2" => 4,
+                "d900d9e0d910dfe0" => 4,
                 _ => match code_bytes.len() {
                     8 => 2,
                     12 => 3,

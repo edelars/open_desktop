@@ -220,6 +220,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30al | Bare `DB E9` FUCOMI ST(0), ST(1), bounded canonical-Normal compare to RFLAGS; native closed | S2-30ak |
 | [x] | S2-30am | Bare `DF E9` FUCOMIP ST(0), ST(1), bounded canonical-Normal compare to RFLAGS and one physical TOP pop; native closed | S2-30al |
 | [x] | S2-30an | Bare indexed DB/DF register FCOMI-family forms for ST(i), bounded canonical-Normal compare and optional physical TOP pop; native closed | S2-30am |
+| [x] | S2-30ao | Admit only canonical Zero-tagged signed zero to bare `D9 E0` FCHS; keep shared Normal-only gate and native/JIT closed | S2-30y, S2-31u, S2-31v |
 | [ ] | S2-31 | x87 conversions, rounding и exceptions | S2-30 |
 | [x] | S2-31dc | Admit canonical binary80 signed zero to bounded D9 FC FRNDINT with unchanged bytes and Zero tag; keep native/JIT closed | S2-31a, S2-31w |
 | [x] | S2-31dd | Admit canonical Normal binary80 exact integers with e=63..16383 to D9 FC; preserve raw bytes/status except C1; native closed | S2-31dc |
@@ -2057,6 +2058,22 @@ with no stop RIP and budget one. Native admission explicitly denies `D9 E0`.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FCHS—Change Sign,” p.3-318
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=436)).
+
+#### S2-30ao. Admit canonical signed zero to bounded `FCHS` (`D9 E0`)
+
+Extend only FCHS's source gate: retain the existing FCW `0x037f`,
+`FSW & 0x80ff == 0` and canonical-Normal Valid source behavior, and additionally
+accept a Zero-tagged ST(0) only when all eight significand bytes are zero and
+the sign/exponent word is exactly `0x0000` or `0x8000`. Flip only raw bit
+`source[9] ^= 0x80`, retain Zero tag/TOP/other payloads, clear C1, retain
+C0/C2/C3 by the existing snapshot policy, set FIP and advance RIP by two, then
+retire once. Do not widen the helper shared by FABS, FTST or FST ST(i).
+
+Cover both signed zeros × all TOP × all 16 prior condition-code combinations,
+full-state and double-operation restoration, malformed payload/tag/environment
+and execution-boundary atomic rejection, Normal regressions, and FLD m32/m64 →
+FCHS → FST → FNSTSW composition. CLI/schema fixtures remain project fixtures;
+native/JIT stay closed. Physical and Mac mini acceptance remain under ISSUE-019.
 
 #### S2-30z. Bare bounded `FABS` (sign-bit-clear local slice)
 

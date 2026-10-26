@@ -33,6 +33,12 @@ const FST_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30x_fst_invalid_source.case.json");
 const FCHS_NORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30y_fchs_normal.case.json");
+const FCHS_SIGNED_ZERO: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ao_fchs_signed_zero.case.json");
+const FCHS_ZERO_WRONG_TAG: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ao_fchs_zero_wrong_tag.case.json");
+const FCHS_ZERO_COMPOSITION: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ao_fld_fchs_fst_fnstsw.case.json");
 const FCHS_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30y_fchs_invalid_source.case.json");
 const FRNDINT_TIE: &[u8] =
@@ -1586,6 +1592,55 @@ fn local_x87_fchs_fixture_cli_flips_only_the_st0_sign_and_clears_c1() {
     expected_x87.status_word = HexU64(0x4500);
     expected_x87.instruction_pointer = input.fixture.initial_state.rip;
     assert_eq!(observed.state, expected);
+}
+
+#[test]
+fn local_x87_fchs_signed_zero_fixture_cli_preserves_zero_tag_and_payload() {
+    let (input, result) = run(FCHS_SIGNED_ZERO, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0002);
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.registers[0] = "00000000000000000080".into();
+    expected_x87.status_word = HexU64(0x4500);
+    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+    assert_eq!(observed.state, expected);
+}
+
+#[test]
+fn local_x87_fchs_zero_wrong_tag_fixture_is_atomic_in_the_cli_runner() {
+    let (input, result) = run(FCHS_ZERO_WRONG_TAG, "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&result), 0);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, input.fixture.initial_state.rip);
+    assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    assert_eq!(observed.state.x87, input.fixture.initial_state.x87);
+}
+
+#[test]
+fn local_x87_fld_fchs_fst_fnstsw_composition_fixture_checks_state_and_memory() {
+    let (input, result) = run(FCHS_ZERO_COMPOSITION, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 4);
+    let observed = snapshot(&result);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0008);
+    expected.gpr[0] = HexU64(0x0000_0000_0030_3800);
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.registers[7] = "00000000000000000000".into();
+    expected_x87.status_word = HexU64(0x3800);
+    expected_x87.tag_word = HexU64(0x7ffc);
+    expected_x87.instruction_pointer = HexU64(0x0010_0004);
+    expected_x87.data_pointer = HexU64(0x0030_0004);
+    assert_eq!(observed.state, expected);
+    assert_eq!(observed.memory.len(), 3);
+    assert_eq!(observed.memory[0].bytes_hex, "d900d9e0d910dfe0");
+    assert_eq!(observed.memory[1].bytes_hex, "00000000");
+    assert_eq!(observed.memory[2].bytes_hex, "a5");
 }
 
 #[test]

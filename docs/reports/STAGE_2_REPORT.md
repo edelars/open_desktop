@@ -8748,3 +8748,30 @@ checks. `cargo fmt --all -- --check`,
 `python3 tools/check_layout.py` passed. Independent gpt-6.1-sol medium review
 found two coverage gaps in the first draft; both were fixed and final review
 was clean. No full test corpus was run. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31du-historical-sticky-oe-for-bounded-m32m64-fld), [plan](../plans/STAGE_2.md#s2-31du-admit-historical-sticky-oe-through-exact-binary32binary64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## S2-30ao — canonical signed zero through bounded FCHS
+
+Bare `D9 E0` now admits Zero-tagged ST(0) only for the exact binary80 signed
+zero encodings (zero significand and exponent word `0x0000` or `0x8000`). It
+toggles only the raw sign bit, preserves the Zero tag, TOP and other state,
+clears C1, and records FIP/RIP with one retirement. The existing Normal FCHS
+path is unchanged; FABS, FTST and FST ST(i) continue to use the shared
+Normal-only gate. Native/JIT remain closed.
+
+The local matrix covers both signs × all eight TOP positions × all 16 prior
+condition-code values and compares full state after each step and after a
+second FCHS. Rejection tests cover malformed Zero payloads, mismatched tag,
+control/status failures, fetch/prefix/truncation/STOP/budget boundaries, and
+confirm no data access. A four-instruction FLD m32/m64 → FCHS → FST → FNSTSW
+composition is checked step by step for both widths. Handwritten project
+fixtures exercise positive Zero admission and canonical-zero/wrong-tag atomic
+Unsupported with no stop RIP and budget one. These are local interpreter and
+fixture checks, not physical x86 or native evidence; broader x87 behavior and
+physical acceptance remain open under ISSUE-019. Focused checks passed:
+`od-isa` FCHS and composition tests, plus all FCHS runner fixture CLI tests.
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, and `graphify update .` passed. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ao-signed-zero-fchs-admission-d9-e0), [plan](../plans/STAGE_2.md#s2-30ao-admit-canonical-signed-zero-to-bounded-fchs-d9-e0), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30ao-signed-zero-fchs).
+
+Independent gpt-6.1-sol high-effort re-review was clean after the first review's
+coverage findings were fixed. No full workspace test suite or physical/native
+execution was performed.

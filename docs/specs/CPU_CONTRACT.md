@@ -2242,7 +2242,8 @@ retires once.
 
 Invalid/missing environment, tag or source class, every other D9 second byte,
 prefix/REX/WAIT, truncation, STOP and exhausted budget do not commit state.
-Zero, subnormal and special values are unsupported. No memory form, CR0/#NM,
+Zero, subnormal and special values are unsupported in the S2-30y Normal-only
+slice; the separate S2-30ao addition admits canonical signed zero. No memory form, CR0/#NM,
 exception delivery, native admission or FPU feature claim is included.
 
 Local coverage enumerates all 256 second bytes with only E0 accepted and checks
@@ -2255,6 +2256,20 @@ admission denies `D9 E0`.
 
 Normative source: Intel SDM revision 093, Vol.2A, “FCHS—Change Sign,” p.3-318
 ([official PDF, Vol.2A p.3-318](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=436)).
+
+## Local S2-30ao: signed-zero `FCHS` admission (`D9 E0`)
+
+FCHS retains the S2-30y Normal behavior and additionally accepts ST(0) only
+when its tag is Zero and its raw ten-byte value is exact signed zero: bytes
+0..7 are zero, and bytes 8..9 are either `00 00` or `00 80`. FCHS toggles only
+byte 9 bit 7. It preserves the Zero tag, TOP and all other state/payload bytes,
+clears C1, retains C0/C2/C3 as a local snapshot policy, records instruction
+start RIP in FIP, advances RIP by two and retires once. This FCHS-only admission
+does not change the shared Normal-only gate used by FABS, FTST and FST ST(i).
+Other tags/classes/payloads, invalid controls/status and execution-boundary
+failures reject atomically. Native/JIT admission stays closed. Evidence is
+local interpreter/unit and project-fixture coverage, not physical x86 evidence;
+physical acceptance remains under ISSUE-019.
 
 ## Local S2-30z: bounded `FABS` (`D9 E1`)
 
