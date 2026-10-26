@@ -235,6 +235,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dp | Admit Special-tagged binary80 pseudo-denormals through bounded D9 FC with subnormal rounding, DE+PE and canonical-Normal equivalence; native/JIT closed | S2-31do |
 | [x] | S2-31dq | Admit Special-tagged binary80 unnormals through bounded D9 FC as masked invalid; native/JIT closed | S2-31dp |
 | [x] | S2-31dr | Admit only Special-tagged binary80 pseudo-infinities through bounded D9 FC as masked invalid; native/JIT closed | S2-31dq |
+| [x] | S2-31ds | Admit Special-tagged binary80 pseudo-NaNs (both Q-bit classes) through bounded D9 FC as masked invalid; native/JIT closed | S2-31dr |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -5279,8 +5280,9 @@ masked-invalid result: fixed negative floating-point indefinite
 new DE/PE/SF/ZE/OE/UE. Preserve prior IE/DE/ZE/OE/UE/PE and SF only with IE.
 Keep the existing FCW/status/prefix/fetch/stop/budget gates, preflight,
 metadata, TOP and physical-register canaries unchanged. Do not alter FLD,
-binary80 classification or JIT/native admission. Pseudo-NaNs (nonzero fraction)
-remain Unsupported; canonical J=1 infinity/QNaN/SNaN keep existing behavior;
+binary80 classification or JIT/native admission. At this substage, pseudo-NaNs
+(nonzero fraction) remained Unsupported; S2-31ds below adds them separately.
+Canonical J=1 infinity/QNaN/SNaN keep existing behavior;
 E=0/J=0/zero-fraction Special remains a zero/tag-mismatch reject.
 
 Add the independent two-sign × four-RC × eight-TOP × three legal IE/SF × 32
@@ -5290,3 +5292,26 @@ seeded `D9 FC DF E0 DB E2` `project_fixture` and observe/clear IE through
 FNSTSW/FNCLEX; it is not hardware evidence. Run only local validation: no Mac
 mini, SSH or physical x86. Keep ISSUE-019 open for remaining x87 and host
 acceptance.
+
+#### S2-31ds. Special-tagged binary80 pseudo-NaN through bounded `FRNDINT`
+
+Extend only exact bare Long64 `D9 FC`: accept physical TOP with Special tag,
+E=`0x7fff`, J=0 and any nonzero fraction, covering Q=0 and Q=1 and either
+sign. Use the same masked-invalid response as S2-31dq/dr: fixed negative
+binary80 indefinite `00 00 00 00 00 00 00 c0 ff ff`, Special tag, sticky IE,
+C1 cleared, and no new DE/PE/SF/ZE/OE/UE. Preserve previously admitted IE,
+DE/ZE/OE/UE/PE and SF only paired with IE. Canonical J=1 infinity/QNaN/SNaN
+retain their existing identity or quieting behavior. Preserve FCW/status gates,
+preflight atomicity, TOP, metadata and physical-register state. Do not widen
+FLD, the classifier or JIT/native admission; tag mismatches and other rejected
+classes remain Unsupported.
+
+Independent literal coverage crosses fractions `1`, `0x3fff_ffff_ffff_ffff`,
+`0x4000_0000_0000_0000`, `0x7fff_ffff_ffff_ffff` (Q=0 and Q=1), sign, all
+four RCs, eight TOPs, three legal IE/SF combinations, 32 DE/ZE/OE/UE/PE sticky
+combinations and prior C1 (49,152 full-state cases). Seeded Q=0 and Q=1
+`project_fixture` cases run `D9 FC DF E0 DB E2`, observing then clearing IE;
+they are project fixture evidence, not native evidence. Keep ISSUE-019 open and
+do not run Mac mini, SSH or physical x86 checks for this task. Normative basis:
+Intel SDM revision 093 Vol.2A FRNDINT p.3-372 and Vol.1 §8.2.2 Tables 8-3/
+8-10 and Table 4-3, as detailed in the CPU contract.

@@ -8636,6 +8636,29 @@ formatting, workspace check and layout checks passed. No Mac mini, SSH or
 physical x86 execution was performed. ISSUE-019 remains open for combined host
 acceptance and broader x87 semantics. See [contract](../specs/CPU_CONTRACT.md#local-s2-31dr-special-pseudo-infinity-frndint-d9-fc), [plan](../plans/STAGE_2.md#s2-31dr-special-tagged-binary80-pseudo-infinity-through-bounded-frndint), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dr-frndint-pseudo-infinity-fixture).
 
+## S2-31ds — Special-tagged binary80 pseudo-NaNs through bounded FRNDINT
+
+Exact bare Long64 `D9 FC` accepts Special-tagged physical TOP with E=`0x7fff`,
+J=0 and nonzero fraction for both signs and both Q-bit classes. It uses the
+same fixed negative binary80 indefinite `00 00 00 00 00 00 00 c0 ff ff` as
+the unsupported-format path, sets sticky IE, clears C1, and creates no current
+DE/PE/SF/ZE/OE/UE. Existing admitted historical flags are retained. Pseudo-NaN
+sign and payload are discarded; canonical J=1 infinity/QNaN/SNaN behavior,
+FLD/classifier scope, gates and JIT/native denial remain unchanged.
+
+The independent literal matrix covers 49,152 complete-state vectors:
+four fractions spanning Q=0/Q=1, both signs, four RCs, eight TOPs, three legal
+IE/SF pairings, all 32 combinations of historical DE/ZE/OE/UE/PE and prior
+C1. Seeded Q=0 and Q=1 `D9 FC DF E0 DB E2` project fixtures observe IE with
+FNSTSW and clear it with FNCLEX; neither is native evidence. Old pseudo-NaN
+rejection expectations were updated while tag-mismatch rejects remain.
+
+Normative basis: Intel SDM revision 093 Vol.2A FRNDINT p.3-372 and Vol.1
+§8.2.2 Tables 8-3/8-10 and Table 4-3. The separate FIST/FISTP #D ambiguity
+under ISSUE-019 is unchanged.
+
+Validation passed: the 49,152-vector S2-31ds matrix, dq/dr regression matrices, FRNDINT canonical neighbor/environment controls, canonical J=1 infinity/QNaN/SNaN behavior, FLD invalid-class rejection, and both Q-class project fixtures. `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, `python3 tools/check_layout.py`, and `git diff --check` passed. Independent gpt-6.1-sol medium review found no code or contract defects, including in the final reject-list and fixture-byte assertions. `graphify update .` completed at 4,782 nodes, 9,620 edges and 211 communities; the pre-existing parser warning for `include/open_desktop/host_abi.h` remains. No Mac mini, SSH or physical x86 execution was performed; ISSUE-019 remains open. See [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31ds-special-pseudo-nan-frndint-d9-fc), [plan](../plans/STAGE_2.md#s2-31ds-special-tagged-binary80-pseudo-nan-through-bounded-frndint), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31ds-frndint-pseudo-nan-fixtures).
+
 ### Open x87 denormal question for integer stores
 
 The current canonical-subnormal integer-store slices (`S2-31cq/cr/cs`) expect

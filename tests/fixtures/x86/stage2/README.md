@@ -3182,3 +3182,19 @@ indefinite. Provenance is `project_fixture`, not native x86 evidence. JIT/native
 admission remains closed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dr-special-pseudo-infinity-frndint-d9-fc),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31dr-special-tagged-binary80-pseudo-infinity-through-bounded-frndint), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dr--special-tagged-binary80-pseudo-infinity-through-bounded-frndint).
+
+## S2-31ds FRNDINT pseudo-NaN fixtures
+
+The literal `s2_31ds_frndint_seeded_pseudo_nan_q0_fnstsw_fnclex.case.json` and
+`s2_31ds_frndint_seeded_pseudo_nan_q1_fnstsw_fnclex.case.json` seed Special-
+tagged E=`0x7fff`, J=0 fractions with Q bit clear/set respectively. Both run
+`D9 FC DF E0 DB E2`: FRNDINT replaces the source with the fixed negative
+indefinite `00000000000000c0ffff`, FNSTSW observes `0x4501`, and FNCLEX clears
+IE while preserving the result. The raw sign/payload are not preserved and
+canonical SNaN quieting is not applied. Provenance is `project_fixture`; these
+fixtures are not native x86 evidence. JIT/native admission remains closed. See
+Intel SDM revision 093 Vol.2A FRNDINT p.3-372 and Vol.1 §8.2.2 Tables 8-3/
+8-10 and Table 4-3 for the normative basis. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31ds-special-pseudo-nan-frndint-d9-fc),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ds-special-tagged-binary80-pseudo-nan-through-bounded-frndint),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31ds--special-tagged-binary80-pseudo-nans-through-bounded-frndint).

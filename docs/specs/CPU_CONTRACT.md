@@ -4318,8 +4318,9 @@ retains Special. It sets sticky IE, clears C1, and raises no new DE/PE/SF/ZE/OE/
 UE. Existing IE/DE/ZE/OE/UE/PE are preserved, as is SF only when IE is already
 set. All existing control/status gates and preflight/commit behavior remain.
 
-Pseudo-NaNs (E=`0x7fff`, J=0, nonzero fraction) remain Unsupported. Canonical
-J=1 infinity, QNaN and SNaN retain their prior FRNDINT behavior. E=0/J=0/
+S2-31dr itself did not admit pseudo-NaNs (E=`0x7fff`, J=0, nonzero fraction);
+S2-31ds below adds that class separately. Canonical J=1 infinity, QNaN and
+SNaN retain their prior FRNDINT behavior. E=0/J=0/
 zero-fraction with Special tag is a canonical-zero/tag mismatch and remains
 Unsupported. FLD, the binary80 classifier, JIT and native admission are
 unchanged. TOP, unrelated physical registers, FCW, data pointer, opcode,
@@ -4333,6 +4334,43 @@ neighbor rejection are covered. The literal seeded `D9 FC DF E0 DB E2`
 `project_fixture` observes IE with FNSTSW and clears it with FNCLEX; it is not
 native evidence. Mac mini, SSH and physical x86 execution are excluded here;
 remaining x87/host acceptance stays open under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31dr-special-tagged-binary80-pseudo-infinity-through-bounded-frndint), [report](../reports/STAGE_2_REPORT.md#s2-31dr--special-tagged-binary80-pseudo-infinity-through-bounded-frndint), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dr-frndint-pseudo-infinity-fixture).
+
+<a id="local-s2-31ds-special-pseudo-nan-frndint-d9-fc"></a>
+
+## Local S2-31ds: Special-tagged binary80 pseudo-NaN `FRNDINT` (`D9 FC`)
+
+Only exact bare Long64 `D9 FC` adds this input: physical TOP is Special-tagged
+and binary80 has E=`0x7fff`, J=0, nonzero fraction and either sign. The fraction
+may have Q=bit 62 clear or set. Under FCW `0x037f`, `0x077f`, `0x0b7f` or
+`0x0f7f`, FRNDINT returns fixed negative floating-point indefinite bytes
+`00 00 00 00 00 00 00 c0 ff ff`, retains Special, sets sticky IE and clears
+C1. It raises no new DE/PE/SF/ZE/OE/UE. Existing IE/DE/ZE/OE/UE/PE survive;
+SF survives only paired with historical IE. This is the same local masked
+unsupported-format path as Special-tagged unnormals and pseudo-infinity.
+
+Do not apply canonical SNaN quieting or preserve the pseudo-NaN sign/payload.
+Canonical J=1 infinity, QNaN and SNaN retain their established behavior.
+Existing FCW/status/prefix/fetch/stop/budget gates, preflight atomicity, TOP,
+metadata and all other physical registers are unchanged. FLD, binary80
+classification and JIT/native admission are unchanged; wrong-tag inputs remain
+Unsupported. The fixed result is a canonical QNaN and remains identical on a
+repeated FRNDINT.
+
+The independent 49,152-case matrix covers four literal fractions
+`1`, `0x3fff_ffff_ffff_ffff`, `0x4000_0000_0000_0000`, and
+`0x7fff_ffff_ffff_ffff`, both signs, all four RC controls, eight TOP values,
+three legal historical IE/SF combinations, all 32 prior DE/ZE/OE/UE/PE
+combinations and both prior C1 values, comparing full state and memory
+canaries. Literal seeded Q=0 and Q=1 `D9 FC DF E0 DB E2` project fixtures
+observe IE through FNSTSW and clear it with FNCLEX. They are not native
+evidence. Mac mini, SSH and physical x86 execution are excluded; ISSUE-019
+remains open.
+
+Normative basis: Intel SDM revision 093 Vol.2A “FRNDINT—Round to Integer,”
+p.3-372, lists unsupported format as #IA; Vol.1 §8.2.2 Table 8-3 and Table
+8-10 define masked invalid handling and its indefinite result; Vol.1 Table
+4-3 defines the binary80 indefinite encoding. The canonical SNaN response in
+Table 8-10 is not used for pseudo-NaNs. See the [plan](../plans/STAGE_2.md#s2-31ds-special-tagged-binary80-pseudo-nan-through-bounded-frndint), [report](../reports/STAGE_2_REPORT.md#s2-31ds--special-tagged-binary80-pseudo-nans-through-bounded-frndint), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31ds-frndint-pseudo-nan-fixtures).
 
 ## Local S2-30al: bounded `FUCOMI ST(0), ST(1)` (`DB E9`)
 
