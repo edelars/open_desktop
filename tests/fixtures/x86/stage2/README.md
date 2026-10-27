@@ -4150,7 +4150,8 @@ zero count and preserved high halves, mismatch under DF, completion, an
 unmapped first access and fault after one successful element, the 1024-read
 limit, zero instruction budget, a width-sized read crossing 4 GiB, CMP→SCAS
 success, TEST→SCAS undefined-AF rejection, a bad zero-count gate, extra-prefix
-rejection, and addr32 `A7` rejection. Snapshots include all GPRs,
+rejection, and duplicate-66 CMPSD rejection (addr32 CMPSD is added by S2-19p).
+Snapshots include all GPRs,
 RFLAGS/definedness, RIP, and complete fixture memory. The generator serializes
 hand-authored input/answer constants; it does not compute instruction results.
 
@@ -4171,8 +4172,9 @@ Thirteen literal schema-v2 fixtures cover both exact encodings (`F3 67 A6`,
 `67 F3 A6`), zero-count high-half preservation, high-half address zero-extension,
 equal completion, mismatch at comparison two, source and destination unmapped reads,
 the 1024-success limit, zero instruction budget, CMP→REP success,
-TEST→REP undefined-AF rejection, bad entry values at ECX=0, and address-size-32
-`A7` rejection. Expected sidecars contain full GPR/RFLAGS/definedness/RIP/memory
+TEST→REP undefined-AF rejection, bad entry values at ECX=0, and duplicate-66
+CMPSD rejection (S2-19p adds the bounded wide forms). Expected sidecars contain
+full GPR/RFLAGS/definedness/RIP/memory
 snapshots. The generator serializes a fixed input and expected-state table; it
 does not calculate or execute instruction semantics.
 
@@ -4388,6 +4390,33 @@ python3 tests/cpu/generate_stage2_movs_addr32.py --check
 python3 -m unittest tests.cpu.test_stage2_movs_addr32_generator
 cargo test -p od-runner --test fixture_v2 movs_addr32_cli_fixtures_match_literal_snapshots_and_keep_jit_closed --offline
 cargo test -p od-runner --test fixture_v2 movs_addr32_rejects_73_prefix_variants_as_unsupported_end_to_end --offline
+```
+
+## Bounded REPE CMPSW/D/Q address-size-32 fixtures S2-19p
+
+Fourteen literal schema-v2 fixtures cover zero-count high-half preservation,
+legacy prefix order, a dword mismatch with DF=1, a Qword access beginning at
+`0xffffffff`, source and destination mapping failures, zero instruction budget,
+the 1024-success limit, CMP→REP success, TEST→REP undefined-AF rejection,
+bad zero-count gate, duplicate address prefix, and both REX/66 width-order
+cases. Full snapshots include every GPR, RFLAGS, definedness, RIP and memory
+region. The generator serializes authored constants only.
+
+Executor tests independently compare W/D/Q results across operand values and
+both DF values, exercise all normalized addr32 widths, zero-extension,
+modulo-32 pointer wrap, separate source/destination accesses, destination
+failure retry with changed source data, dual-invalid source-first trace, and
+the full 4-GiB-crossing width read. Decoder and executor reject the same
+negative prefix matrix. Source-first/dual-invalid behavior remains local
+ISSUE-020 policy and does not establish hardware priority or MMIO rollback.
+The CLI checks full snapshots and JIT denial. Native/JIT execution, physical
+x86, Mac mini and SSH acceptance were not performed.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_cmps_wdq_addr32.py --check
+python3 -m unittest tests.cpu.test_stage2_rep_cmps_wdq_addr32_generator
+cargo test -p od-testkit --offline rep_cmps_wdq_addr32_literal_fixtures_match_full_expected_answers
+cargo test -p od-runner --test fixture_v2 --offline rep_cmps_wdq_addr32_cli_fixtures_check_full_state_and_jit_denial
 ```
 
 

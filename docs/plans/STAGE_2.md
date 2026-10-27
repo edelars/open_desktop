@@ -1448,6 +1448,50 @@ interpreter notes, fixture README и report. ISSUE-020 остаётся откр
 проверки и 14 полных literal fixture snapshots с CLI JIT denial. Итоговые
 проверки и ограничения зафиксированы в [отчёте S2-19o](../reports/STAGE_2_REPORT.md#s2-19o--bounded-repe-scaswdq-address-size-32).
 
+#### S2-19p — bounded REPE CMPSW/D/Q с address-size 32
+
+Расширить только Long64 REPE CMPS `A7` на W/D/Q с address-size 32. Принимать
+нормализованные F3 и 67: `F3 67 66 A7` — W, `F3 67 A7` — D,
+`F3 67 48 A7` — Q. Prefix order учитывает reset REX последующим legacy
+prefix: `F3 67 48 66 A7` — W, `F3 67 66 48 A7` — Q и `F3 48 67 A7` — D.
+Все effective REX.W `48..4F` допустимы. Оставить без изменений addr64 CMPS
+W/D/Q, addr64 CMPSB `F3 A6` и addr32 CMPSB `F3 67 A6`/`67 F3 A6`. F2, LOCK,
+segments, повторные prefix groups, effective non-W REX и прочие формы остаются
+закрыты. Decoder и executor admission должны совпадать; JIT/native не менять.
+
+Сохранить local gate до чтения ECX и данных, включая ECX=0:
+`RFLAGS & 0x8d5 == 0x44`, definedness содержит `0x8d5`. Count — ECX; ноль
+полностью сохраняет RCX/RSI/RDI/flags и не обращается к памяти. Иначе выполнить
+две отдельные непрерывные width-sized reads: сначала из zero-extended ESI,
+затем из zero-extended EDI. Сравнивать source−destination. Только после обоих
+успешных чтений коммитить flags, ESI/EDI modulo 2^32 по DF и zero-extended
+ECX-1. Read остаётся contiguous при пересечении 4 GiB: truncate только
+начальный адрес, не каждый байт. При source failure destination не читается;
+при destination failure trace сохраняет source read, но текущая итерация
+целиком не коммитится. Replay перечитывает оба операнда. Это source-first и
+dual-invalid winner как local ISSUE-020 policy; hardware priority и MMIO
+rollback не утверждать.
+
+Completion/mismatch предшествует STOP, затем ограничение 1024 успешными
+сравнениями. Fault/STOP/limit оставляют RIP на REP и retire=0; tracked resume
+передаёт definedness mask. Проверить independent CMP model W/D/Q×DF, prefix
+normalization/rejection, high halves и zero count, modulo wrap по обоим DF,
+все width reads через 4-GiB boundary, first/second/dual-invalid source-first,
+retry после destination fault с изменённым source, overlap, STOP/mismatch/limit,
+и CMP→REP success / TEST→REP undefined-AF gate.
+Добавить literal full-state schema-v2 snapshots и serialization-only
+generator, testkit/CLI/JIT denial; обновить contract, interpreter notes,
+fixture README, ISSUE-020 scope и report. Не выполнять native/JIT/physical,
+Mac mini или SSH execution.
+
+**Результат:** bounded decoder/interpreter admission реализован; существующий
+общий `RepCmps` loop уже использует адресный размер для ECX/ESI/EDI и выполняет
+две width-sized reads с commit только после обеих, поэтому его семантика не
+дублировалась. Добавлены independent compare matrix, addr32 gates, prefix
+матрицы, high-half/wrap/fault/replay/STOP проверки и 14 literal fixture-v2
+snapshots с CLI JIT denial. Итоговые проверки и границы зафиксированы в
+[отчёте S2-19p](../reports/STAGE_2_REPORT.md#s2-19p--bounded-repe-cmpswdq-address-size-32).
+
 ### S2-20. Точность исключений и exit state
 
 1. Свести для реализованных форм `#UD`, `#DE`, `#GP`, `#SS`, memory faults и traps только там, где они действительно определены профилем/адаптером.

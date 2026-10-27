@@ -129,7 +129,7 @@ def materialize() -> dict[str, bytes]:
         rcx=1, rdi=0x1000, rax=BASE_GPR[0], flags=2 | PF_ZF,
         data_base=0x1000, data=b"A", final_rcx=1, final_rdi=0x1000,
         final_flags=2 | PF_ZF, outcome="unsupported", final_rip=0x100000)
-    add("s2_19m_cmpsb32_a7_rejected", bytes.fromhex("f367a7"),
+    add("s2_19m_cmpsd32_duplicate_66_rejected", bytes.fromhex("f3676666a7"),
         rcx=1, rdi=0x1000, rax=BASE_GPR[0], flags=2 | PF_ZF,
         data_base=0x1000, data=b"A", final_rcx=1, final_rdi=0x1000,
         final_flags=2 | PF_ZF, outcome="unsupported", final_rip=0x100000)

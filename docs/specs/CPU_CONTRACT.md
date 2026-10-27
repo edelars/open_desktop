@@ -7942,8 +7942,9 @@ The Long64 interpreter additionally admits only the byte SCAS form with exact
 prefix sequences `F3 67 AE` and `67 F3 AE`, each of length three, decoded as
 `Operation::RepScas { size: Byte }`. Existing address-size-64 `F3 AE` remains
 unchanged. This byte-only S2-19m slice does not include `AF`; S2-19o below adds
-bounded address-size-32 W/D/Q `AF`. Addr32 `A7`, REPNE, extra 66/REX/segment/LOCK
-prefixes and repeated prefixes remain outside the combined local profile.
+bounded address-size-32 W/D/Q `AF`, and S2-19p below adds bounded W/D/Q `A7`
+CMPS. REPNE, unsupported extra 66/REX/segment/LOCK prefixes and repeated
+prefixes remain outside the combined local profile.
 Decoder and execution admission enforce the same boundary. JIT/native admission
 remains closed.
 
@@ -8024,6 +8025,48 @@ prior definedness mask. Missing mappings remain harness errors.
 Evidence is recorded in the [S2-19o plan](../plans/STAGE_2.md#s2-19o--bounded-repe-scaswdq-с-address-size-32),
 [interpreter notes](../testing/INTERPRETER.md#repe-scaswdq-address-size-32--s2-19o),
 and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19o--bounded-repe-scaswdq-address-size-32).
+ISSUE-020 remains open.
+
+### Local S2-19p bounded REPE CMPSW/D/Q address-size-32 contract
+
+The Long64 interpreter accepts only address-size-32 `A7` W/D/Q REPE CMPS
+forms: normalized F3+67 with optional 66 and effective REX.W. `F3 67 66 A7`
+is W, `F3 67 A7` is D, and `F3 67 48 A7` is Q. Legacy ordering preserves the
+usual reset rule: `F3 67 48 66 A7` is W, `F3 67 66 48 A7` is Q, and
+`F3 48 67 A7` is D. All effective `48..4F` REX.W bytes are admitted. Existing
+addr64 CMPS B/W/D/Q and addr32 CMPSB remain unchanged. F2, LOCK, segments,
+repeated prefix groups, effective non-W REX and other forms remain outside
+this bounded profile. Decoder and executor admission agree; JIT/native remain
+closed.
+
+The local entry/restart gate precedes count and memory access, even for ECX=0:
+`RFLAGS & 0x8d5 == 0x44`, with `0x8d5` defined. Count uses ECX. Zero count
+preserves the complete RCX/RSI/RDI and flags, performs no data reads, and
+retires once at the full instruction length. A nonzero iteration first reads
+one contiguous width-sized operand from zero-extended ESI, then one from
+zero-extended EDI. It compares source minus destination with existing CMP
+semantics. Only after both reads succeed does it commit flags, DF-directed
+ESI/EDI steps modulo 2^32, and zero-extended ECX-1. The full access is
+contiguous across 4 GiB: only the starting address is truncated. A failed first
+read prevents the second; a failed second read keeps the first trace entry but
+commits no state for that iteration. Replay reloads both operands. Previously
+committed iterations remain. Source-first and dual-invalid winner are local
+ISSUE-020 policy only; no hardware priority or MMIO rollback is claimed.
+
+Completion or mismatch precedes STOP, followed by the 1024-success limit.
+Fault/STOP/limit keep RIP at the REP instruction and retire zero. Tracked
+resume carries the definedness mask. Local tests cover independent W/D/Q CMP
+results, both DF values, prefix admission/rejection, high halves, zero count,
+both 32-bit wrap directions, contiguous boundary tails, source/destination and
+dual-invalid reads, retry with changed source data, STOP/limit, and CMP/TEST
+composition. Fourteen literal schema-v2 fixtures carry full snapshots; their
+generator serializes authored expectations only. JIT remains denied. Native,
+physical x86, Mac mini and SSH execution are not claimed.
+
+See the [S2-19p plan](../plans/STAGE_2.md#s2-19p--bounded-repe-cmpswdq-с-address-size-32),
+[interpreter notes](../testing/INTERPRETER.md#repe-cmpswdq-address-size-32--s2-19p),
+[report](../reports/STAGE_2_REPORT.md#s2-19p--bounded-repe-cmpswdq-address-size-32)
+and [fixtures](../../tests/fixtures/x86/stage2/README.md#bounded-repe-cmpswdq-address-size-32-fixtures-s2-19p).
 ISSUE-020 remains open.
 
 ### Local S2-19d bounded REP MOVSB/W/D/Q contract

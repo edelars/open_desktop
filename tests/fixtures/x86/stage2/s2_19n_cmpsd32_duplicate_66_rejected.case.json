@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_19n_cmpsd32_duplicate_66_rejected",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten bytes and literal complete snapshots; tests/cpu/generate_stage2_rep_cmpsb_addr32.py serializes constants only. No assembler, CPU model, or executor is used.",
+    "specification": "Intel SDM revision 093, Vol.2B CMPS and REP/REPE entries; project S2-19n local address-size-32 profile.",
+    "specification_version": "Intel SDM Vol.2B revision 093 (253667-093US); project S2-19n"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667741",
+      "0x0000000000000001",
+      "0x0000000000000000",
+      "0x0000000000200000",
+      "0x0000000000001000",
+      "0x0000000000002000",
+      "0x0000000000001000",
+      "0x0000000000001001",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000046"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 5,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "f3676666a7",
+      "comparison_mask_hex": "ffffffffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000001000",
+      "length": 2,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "4141",
+      "comparison_mask_hex": "ffff"
+    }
+  ],
+  "stop_rip": null,
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x00000000000008d5",
+  "expected_exit": "unsupported"
+}

@@ -1337,7 +1337,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                                 ..Prefixes::default()
                             }))
             } else {
-                !prefixes.address_override && prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                if prefixes.address_override {
+                    prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                        && match (self.length, prefixes.operand_override, prefixes.rex) {
+                            (3 | 4, false, None) => true,
+                            (4, true, None) | (4, false, Some(0x48..=0x4f)) => true,
+                            (5, true, None) | (5, true, Some(0x48..=0x4f)) => true,
+                            _ => false,
+                        }
+                } else {
+                    prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                }
             };
         if !known
             || (prefixes.group1.is_some()
@@ -6242,10 +6252,31 @@ mod tests {
             (&[0xf3, 0x48, 0xa7][..], OperandSize::Qword),
             (&[0xf3, 0x48, 0x66, 0xa7][..], OperandSize::Word),
             (&[0xf3, 0x66, 0x48, 0xa7][..], OperandSize::Qword),
+            (&[0xf3, 0x67, 0x66, 0xa7][..], OperandSize::Word),
+            (&[0x67, 0xf3, 0x66, 0xa7][..], OperandSize::Word),
+            (&[0xf3, 0x67, 0xa7][..], OperandSize::Dword),
+            (&[0x67, 0xf3, 0xa7][..], OperandSize::Dword),
+            (&[0xf3, 0x67, 0x48, 0xa7][..], OperandSize::Qword),
+            (&[0x67, 0xf3, 0x4f, 0xa7][..], OperandSize::Qword),
+            (&[0xf3, 0x67, 0x48, 0x66, 0xa7][..], OperandSize::Word),
+            (&[0xf3, 0x48, 0x67, 0x66, 0xa7][..], OperandSize::Word),
+            (&[0xf3, 0x67, 0x66, 0x48, 0xa7][..], OperandSize::Qword),
+            (&[0x66, 0xf3, 0x67, 0x48, 0xa7][..], OperandSize::Qword),
+            (&[0xf3, 0x48, 0x67, 0xa7][..], OperandSize::Dword),
         ] {
+            let decoded = Memory::new(bytes).decode().unwrap();
             assert_eq!(
-                Memory::new(bytes).decode().unwrap().operation,
+                decoded.operation,
                 Operation::RepCmps { size },
+                "{bytes:02x?}"
+            );
+            assert_eq!(
+                decoded.address_size,
+                if bytes.contains(&0x67) {
+                    OperandSize::Dword
+                } else {
+                    OperandSize::Qword
+                },
                 "{bytes:02x?}"
             );
         }
@@ -6266,11 +6297,23 @@ mod tests {
             vec![0xf3, 0x67, 0x66, 0xa6],
             vec![0xf3, 0x67, 0x48, 0xa6],
             vec![0xf3, 0x67, 0xf3, 0xa6],
-            vec![0xf3, 0x67, 0xa7],
             vec![0xf2, 0x67, 0xa6],
+            vec![0xf3, 0x67, 0x67, 0xa7],
+            vec![0xf3, 0xf3, 0x67, 0xa7],
+            vec![0xf3, 0xf2, 0x67, 0xa7],
+            vec![0xf3, 0xf0, 0x67, 0xa7],
+            vec![0xf3, 0x26, 0x67, 0xa7],
+            vec![0xf3, 0x67, 0x26, 0xa7],
+            vec![0xf3, 0x67, 0x66, 0x66, 0xa7],
+            vec![0xf3, 0x67, 0x40, 0xa7],
+            vec![0xf3, 0x67, 0x47, 0xa7],
         ]);
         for rex in 0x40..=0x4f {
             rejected.push(vec![0xf3, rex, 0xa6]);
+            if rex & 8 == 0 {
+                rejected.push(vec![0xf3, 0x67, rex, 0xa7]);
+                rejected.push(vec![0xf3, 0x67, 0x66, rex, 0xa7]);
+            }
         }
         rejected.extend([vec![0xf2, 0xa6], vec![0xf3, 0x66, 0xa6], vec![0xf2, 0xa7]]);
         for bytes in rejected {
@@ -6288,7 +6331,7 @@ mod tests {
             vec![0xf3, 0xa7],
             vec![0xf3, 0x48, 0xa7],
         ] {
-            for prefix in [0xf0, 0xf2, 0xf3, 0x67, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
+            for prefix in [0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
                 rejected.push([vec![prefix], form.clone()].concat());
             }
         }
@@ -6298,8 +6341,15 @@ mod tests {
             vec![0xf3, 0x66, 0x66, 0xa7],
             vec![0xf3, 0x66, 0x40, 0xa7],
             vec![0xf3, 0x66, 0x47, 0xa7],
+            vec![0xf3, 0x67, 0x67, 0xa7],
+            vec![0xf3, 0xf3, 0x67, 0xa7],
+            vec![0xf3, 0xf2, 0x67, 0xa7],
+            vec![0xf3, 0xf0, 0x67, 0xa7],
+            vec![0xf3, 0x67, 0x26, 0xa7],
+            vec![0xf3, 0x67, 0x66, 0x66, 0xa7],
+            vec![0xf3, 0x67, 0x40, 0xa7],
+            vec![0xf3, 0x67, 0x47, 0xa7],
         ]);
-        assert_eq!(rejected.len(), 35);
         for bytes in rejected {
             assert!(
                 matches!(
@@ -6361,7 +6411,7 @@ mod tests {
         let mut rejected = Vec::new();
         for form in &forms {
             for prefix in [0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
-                if *form == [0x67, 0xa6] && prefix == 0xf3 {
+                if prefix == 0xf3 && (*form == [0x67, 0xa6] || form.last() == Some(&0xa7)) {
                     continue;
                 }
                 rejected.push([vec![prefix], form.clone()].concat());
@@ -6376,7 +6426,7 @@ mod tests {
             rejected.push(vec![0x67, rex, 0xa7]);
             rejected.push(vec![0x67, 0x66, rex, 0xa7]);
         }
-        assert_eq!(rejected.len(), 72);
+        assert_eq!(rejected.len(), 69);
         for bytes in rejected {
             assert!(
                 matches!(
@@ -6387,13 +6437,14 @@ mod tests {
             );
         }
 
-        for bytes in [vec![0x67, 0xf3, 0x66, 0xa7], vec![0x67, 0xf3, 0xa7]] {
-            assert!(
-                matches!(
-                    Memory::new(&bytes).decode(),
-                    Err(DecodeError::Unsupported { .. })
-                ),
-                "REP address-size32 escaped its bounded profile: {bytes:02x?}"
+        for (bytes, size) in [
+            (&[0x67, 0xf3, 0x66, 0xa7][..], OperandSize::Word),
+            (&[0x67, 0xf3, 0xa7][..], OperandSize::Dword),
+        ] {
+            assert_eq!(
+                Memory::new(bytes).decode().unwrap().operation,
+                Operation::RepCmps { size },
+                "{bytes:02x?}"
             );
         }
     }

@@ -6332,6 +6332,111 @@ fn rep_cmpsb_addr32_cli_fixtures_check_full_state_and_jit_denial() {
 }
 
 #[test]
+fn rep_cmps_wdq_addr32_cli_fixtures_check_full_state_and_jit_denial() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_19p_rep_cmps_wdq_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 14);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let harness_error = case_id.contains("unmapped");
+        let rejected = case_id.contains("rejected")
+            || case_id.contains("bad_gate")
+            || case_id.contains("undefined_af");
+        let expected_code = if harness_error {
+            5
+        } else if rejected {
+            4
+        } else {
+            0
+        };
+        let (input, result) = run(&raw, "interpreter", expected_code);
+        if case_id.contains("limit_1025") {
+            assert!(
+                matches!(result.outcome, Outcome::RepIterationBudgetExhausted {}),
+                "{case_id}"
+            );
+            assert_eq!(count(&result), 0, "{case_id}");
+        } else if case_id.contains("zero_budget") {
+            assert!(
+                matches!(result.outcome, Outcome::InstructionBudgetExhausted {}),
+                "{case_id}"
+            );
+            assert_eq!(count(&result), 0, "{case_id}");
+        } else if harness_error {
+            assert_eq!(
+                input.fixture.expected_exit,
+                ExpectedExit::HarnessError,
+                "{case_id}"
+            );
+            assert!(
+                matches!(result.outcome, Outcome::HarnessError { .. }),
+                "{case_id}"
+            );
+            assert_eq!(count(&result), 0, "{case_id}");
+        } else if rejected {
+            assert!(
+                matches!(result.outcome, Outcome::Unsupported { .. }),
+                "{case_id}"
+            );
+            assert_eq!(
+                count(&result),
+                u64::from(case_id.contains("undefined_af")),
+                "{case_id}"
+            );
+        } else {
+            assert!(
+                matches!(result.outcome, Outcome::StopAddress {}),
+                "{case_id}"
+            );
+            assert_eq!(
+                count(&result),
+                if case_id.starts_with("s2_19p_cmp_to") {
+                    2
+                } else {
+                    1
+                },
+                "{case_id}"
+            );
+        }
+        let observed = snapshot(&result);
+        let expected_gprs: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gprs, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.state.rip, expected_rip, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+        let (_, jit_result) = run(&raw, "jit", 4);
+        assert!(
+            matches!(jit_result.outcome, Outcome::Unsupported { .. }),
+            "{case_id}"
+        );
+        assert!(
+            matches!(jit_result.snapshot, Observation::Unavailable { .. }),
+            "{case_id}"
+        );
+        assert!(matches!(
+            jit_result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
 fn rep_cmps_wdq_cli_fixtures_check_full_state_and_jit_denial() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

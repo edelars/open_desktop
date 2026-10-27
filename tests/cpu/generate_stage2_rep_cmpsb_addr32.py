@@ -135,7 +135,7 @@ def materialize() -> dict[str, bytes]:
         data_base=0x1000, data=b"AA", final_rcx=1, final_rsi=0x1000,
         final_rdi=0x1001, final_flags=2 | PF_ZF,
         outcome="unsupported", final_rip=0x100000)
-    add("s2_19n_cmpsb32_af_rejected", bytes.fromhex("f367a7"),
+    add("s2_19n_cmpsd32_duplicate_66_rejected", bytes.fromhex("f3676666a7"),
         rcx=1, rsi=0x1000, rdi=0x1001, flags=2 | PF_ZF,
         data_base=0x1000, data=b"AA", final_rcx=1, final_rsi=0x1000,
         final_rdi=0x1001, final_flags=2 | PF_ZF,

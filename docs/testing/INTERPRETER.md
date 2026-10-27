@@ -601,9 +601,10 @@ Physical, Mac mini, and SSH checks remain deferred to shared final acceptance.
 
 Only exact `F3 67 AE` and `67 F3 AE` (three bytes) are admitted in Long64, and
 both decode to byte `RepScas`. Existing exact address-size-64 `F3 AE` remains
-unchanged. S2-19m did not include `AF`; S2-19o adds only bounded W/D/Q
-address-size-32 `AF` forms. Addr32 `A7`, REPNE, additional 66/REX/segment/LOCK
-prefixes and repeated prefixes remain rejected by both decoder and executor.
+unchanged. S2-19m did not include `AF`; S2-19o adds bounded W/D/Q
+address-size-32 `AF` forms, and S2-19p adds bounded `A7` W/D/Q CMPS. REPNE,
+unsupported additional 66/REX/segment/LOCK prefixes and repeated groups remain
+rejected by both decoder and executor.
 
 The full REPE entry/restart gate still runs before checking ECX, including at
 ECX=0: arithmetic values must satisfy `RFLAGS & 0x8d5 == 0x44`, and the carried
@@ -686,6 +687,51 @@ python3 tests/cpu/test_stage2_rep_cmpsb_addr32_generator.py
 cargo test -p od-testkit --offline rep_cmpsb_addr32_literal_fixtures_match_full_expected_answers
 cargo test -p od-runner --test fixture_v2 --offline rep_cmpsb_addr32_cli_fixtures_check_full_state_and_jit_denial
 ```
+
+## REPE CMPSW/D/Q address-size 32 — S2-19p
+
+The Long64 bounded profile admits `A7` only as REPE CMPSW/D/Q with normalized
+F3+67: W=`F3 67 66 A7`, D=`F3 67 A7`, Q=`F3 67 REX.W A7`. Legacy ordering
+supports `F3 67 48 66 A7` as W, `F3 67 66 48 A7` as Q and `F3 48 67 A7` as D.
+All effective REX.W bytes `48..4F` are admitted. Address-size-64 CMPS widths,
+`F3 A6` CMPSB, and address-size-32 CMPSB spellings are unchanged. F2, LOCK,
+segments, repeated prefixes, effective non-W REX and other forms are rejected
+by both decoder and executor. JIT/native admission remains closed.
+
+The local gate runs before ECX or reads, including at ECX=0:
+`RFLAGS & 0x8d5 == 0x44`, with all `0x8d5` defined. Zero count keeps full
+RCX/RSI/RDI/flags and does not touch data. Nonzero iterations perform separate
+contiguous width reads in source-first order from zero-extended ESI then EDI,
+compare source−destination, and only after both reads commit CMP flags, ESI/EDI
+modulo 2^32 by DF and zero-extended ECX-1. Each access can cross 4 GiB as one
+contiguous range. Destination failure preserves the source trace but none of
+the iteration state; replay reads both values again. Source-first and the
+dual-invalid winner remain local ISSUE-020 policy, with no hardware-priority or
+MMIO-rollback claim. Completion/mismatch precedes STOP, then the 1024-success
+limit; partial exits keep RIP at REP and retire zero. Tracked resume carries
+the previous definedness mask.
+
+The independent model checks 12 values per operand, each width and DF across
+the addr64 forms and normalized addr32 forms. Focused executor cases cover
+zero count, full high halves, 32-bit wrap in both directions, W/D/Q accesses
+starting at `0xffffffff`, destination failure and retry after changing source,
+dual-invalid source-first trace, gate rejection, and decoder/executor rejection
+agreement. Fourteen literal schema-v2 fixtures cover zero/high halves, equal
+and mismatch results, width normalization, a full Qword read across 4 GiB,
+source/destination mapping failures, zero budget, 1024-success limit,
+CMP→REP and TEST→REP gate behavior, and invalid prefix/gate cases. Their
+generator serializes authored bytes and complete snapshots only.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_cmps_wdq_addr32.py --check
+python3 -m unittest tests.cpu.test_stage2_rep_cmps_wdq_addr32_generator
+cargo test -p od-testkit --offline rep_cmps_wdq_addr32_literal_fixtures_match_full_expected_answers
+cargo test -p od-runner --test fixture_v2 --offline rep_cmps_wdq_addr32_cli_fixtures_check_full_state_and_jit_denial
+```
+
+See the [S2-19p CPU contract](../specs/CPU_CONTRACT.md#local-s2-19p-bounded-repe-cmpswdq-address-size-32-contract)
+and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19p--bounded-repe-cmpswdq-address-size-32).
+Native/physical, Mac mini and SSH execution were not performed.
 
 ## REPE CMPSB — S2-19f local interpreter coverage
 

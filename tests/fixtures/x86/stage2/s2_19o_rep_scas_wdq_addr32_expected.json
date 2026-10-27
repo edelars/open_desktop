@@ -349,7 +349,7 @@
       "data": "41000000"
     }
   },
-  "s2_19o_cmpsd_addr32_rejected": {
+  "s2_19o_cmpsd_addr32_duplicate_66_rejected": {
     "gpr": [
       "0x0000000000000041",
       "0x0000000000000001",
@@ -372,7 +372,7 @@
     "rflags_defined": "0x0000000000000cd7",
     "rip": "0x0000000000100000",
     "memory": {
-      "code": "f367a7",
+      "code": "f3676666a7",
       "data": "41000000"
     }
   }

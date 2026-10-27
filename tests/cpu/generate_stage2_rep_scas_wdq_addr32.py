@@ -133,7 +133,7 @@ def materialize() -> dict[str, bytes]:
         rcx=1, rdi=0x1000, rax=0x41, flags=2 | PF_ZF,
         data_base=0x1000, data=bytes.fromhex("41000000"), final_rcx=1,
         final_rdi=0x1000, final_flags=2 | PF_ZF, outcome="unsupported", final_rip=0x100000)
-    add("s2_19o_cmpsd_addr32_rejected", bytes.fromhex("f367a7"),
+    add("s2_19o_cmpsd_addr32_duplicate_66_rejected", bytes.fromhex("f3676666a7"),
         rcx=1, rdi=0x1000, rax=0x41, flags=2 | PF_ZF,
         data_base=0x1000, data=bytes.fromhex("41000000"), final_rcx=1,
         final_rdi=0x1000, final_flags=2 | PF_ZF, outcome="unsupported", final_rip=0x100000)

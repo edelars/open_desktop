@@ -10912,7 +10912,8 @@ The Long64 decoder and executor admission now agree on normalized F3+67 `AF`
 forms for SCASW, SCASD and SCASQ. Legacy-prefix ordering is respected,
 including `F3 67 48 66 AF` as W, `F3 67 66 48 AF` as Q, and `F3 48 67 AF` as
 D because the later legacy prefix resets REX. Existing SCASB address-size-32
-forms remain admitted; address-size-32 CMPS `A7` remains unsupported. The
+forms remain admitted; S2-19p subsequently admits bounded address-size-32 CMPS
+`A7` W/D/Q. The
 generic SCAS loop was sufficient: it already selects ECX/EDI, performs one
 width-sized read, and commits the current iteration only after a successful
 read. This does not claim that a read wraps at 4 GiB; a cross-boundary operand
@@ -10936,3 +10937,41 @@ zero failures; `cargo check --workspace --all-targets --offline`;
 `cargo fmt --all -- --check`; and 125 Python CPU tests with fixture freshness.
 Graphify was refreshed. No native/JIT execution, physical x86, Mac mini, or SSH
 test was run.
+
+# S2-19p — bounded REPE CMPSW/D/Q address-size-32
+
+The Long64 decoder and executor now admit matching normalized F3+67 `A7`
+width forms: W, D and Q, including the legacy-order cases where 66 or 67
+resets an earlier REX. Address-size-64 CMPS and the existing addr32 CMPSB
+forms remain intact. Addr32 W/D/Q uses the existing generic `RepCmps` loop,
+which already selects ECX/ESI/EDI from the decoded address size and performs
+separate source then destination width reads. The current iteration commits
+flags, indices and count only after both reads succeed.
+
+The local entry gate remains `RFLAGS & 0x8d5 == 0x44` with all `0x8d5` bits
+defined, before ECX or reads. Zero ECX preserves full RCX/RSI/RDI and flags
+without data access. Nonzero reads truncate only the starting ESI/EDI address;
+each operand remains one contiguous width access across 4 GiB. The independent
+model covered 3,456 W/D/Q value-pair/direction/form states. Additional checks
+covered 98,280 gate rejects, prefix normalization and matched decoder/executor
+rejection, 32-bit wrap in both DF directions, all three widths starting at
+`0xffffffff`, destination-fault no-commit and retry with changed source,
+dual-invalid source-first trace, and STOP with tracked resume.
+
+Fourteen literal schema-v2 fixtures check full GPR/flags/definedness/RIP/memory
+snapshots, including count zero, mismatch, prefix ordering, a 4-GiB Qword tail,
+mapping errors, zero budget, work limit, CMP→REP success and TEST→REP
+undefined-AF rejection. The generator serializes authored literals only.
+Runner CLI confirms JIT denial. Existing S2-19m/n/o A7-negative fixtures now
+exercise a duplicate-66 rejection, since bounded CMPSD is admitted by S2-19p.
+ISSUE-020 stays open: source-first/dual-invalid behavior remains local policy,
+with no hardware fault-priority or MMIO rollback claim.
+
+Verification passed: `cargo test --workspace --all-targets --offline`,
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+127 CPU Python tests including fixture generator freshness, and Graphify refresh.
+The targeted fixture testkit and runner CLI tests also passed. `git diff --check`
+passed. `tools/check_layout.py` was attempted and reports the managed worktree
+`.git` marker as an unmapped root file plus two pre-existing links to absent
+Stage 1/2 oracle manifest artifacts; no layout change was made. No native/JIT
+execution, physical x86, Mac mini or SSH testing was performed.

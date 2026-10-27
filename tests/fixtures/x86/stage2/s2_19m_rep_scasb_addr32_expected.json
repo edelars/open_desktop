@@ -322,7 +322,7 @@
       "data": "41"
     }
   },
-  "s2_19m_cmpsb32_a7_rejected": {
+  "s2_19m_cmpsd32_duplicate_66_rejected": {
     "gpr": [
       "0x1122334455667741",
       "0x0000000000000001",
@@ -345,7 +345,7 @@
     "rflags_defined": "0x0000000000000cd7",
     "rip": "0x0000000000100000",
     "memory": {
-      "code": "f367a7",
+      "code": "f3676666a7",
       "data": "41"
     }
   }
