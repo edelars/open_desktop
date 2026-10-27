@@ -4034,3 +4034,30 @@ python3 tests/cpu/generate_stage2_rep_movs.py --check
 cargo test -p od-testkit --offline rep_movs
 cargo test -p od-runner --test fixture_v2 --offline rep_movs_cli_fixtures_check_full_state_and_jit_denial
 ```
+
+## Bounded REPE SCASB fixtures S2-19e
+
+Exactly 24 literal schema-v2 fixtures cover exact `F3 AE` progress: zero count
+for DF=0/1; count-one equality and mismatch for each DF; mismatch positions
+1/2/3 for each DF; all-equal count-three for each DF; unmapped read after 0/1/2
+equal elements; noncanonical first access; count 1025 for both DF values;
+zero instruction budget; CMP RAX,RAX→REP success/fault after one equal read;
+and TEST RAX,RAX→REP rejection. The TEST case has concrete PF|ZF but AF is
+undefined, so it fails the local admission-definedness gate before data access.
+The generator serializes only the hand-authored bytes and literal complete
+snapshots; it does not calculate CPU results or invoke an execution engine.
+
+The interpreter matrix separately covers 131,072 AL×memory×DF comparisons
+against an independent CMP model, 160 count/mismatch termination paths, 16,380
+arithmetic value/definedness/count/DF admission rejects, 24 injected memory
+failures, STOP/replay, limit boundaries, mismatch at iteration 1024, and
+termination priority. This entry gate is a local profile restriction and does
+not claim that x86 REPE SCAS requires PF|ZF at instruction entry. JIT/native
+execution remains denied. ISSUE-016/019/020/021 remain open; physical acceptance
+is deferred to the shared final gate.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_scasb.py --check
+cargo test -p od-isa --offline rep_scasb
+cargo test -p od-testkit --offline rep_scasb_literal_fixtures_match_full_expected_answers
+```

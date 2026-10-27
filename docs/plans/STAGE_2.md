@@ -1071,6 +1071,38 @@ fixtures: 44 (11 per width), 8 overlap, 2 normalization и 2 TEST→REP; generat
 зарегистрировать отдельно. ISSUE-016/020 оставить открытыми. Mac mini, SSH,
 native и physical проверки — только в общем финальном acceptance.
 
+#### S2-19e — exact `F3 AE` REPE SCASB (ограниченный локальный контракт)
+
+Добавить только точные `F3 AE` в Long64/address64. До любого data access,
+включая `RCX=0`, admission требует arithmetic values exactly `PF|ZF` (`0x44`)
+и full definedness для шести arithmetic flags (`0x8d5`); DF разрешён в обоих
+значениях. Это узкое требование профиля для entry/restart, не архитектурное
+требование к REPE SCAS. Остальные prefixes, REPNE, widths и CMPS остаются
+Unsupported без доступа, state change или retirement.
+
+Нулевой count завершает одну instruction без проверки RDI, сохраняет flags и
+продвигает RIP на 2. Иначе читать byte из flat `ES:[RDI]`, считать CMP flags
+для `AL-byte`, затем commit flags, wrapping RDI ±1 по DF и decrement RCX.
+RCX=0 или ZF=0 завершает до STOP и лимита; matching continuation проверяет
+STOP, затем предел 1024 successful reads. Faulting read не коммитит свою
+итерацию; предыдущие равные итерации сохраняются в RDI/RCX/flags. Fault, STOP
+и limit оставляют RIP на REP и не retire-ят instruction. Restart снова проходит
+тот же gate: после равных сравнений arithmetic values остаются PF|ZF, а все
+arithmetic flags defined, без скрытого состояния. JIT/native, Mini, SSH и
+physical execution не входят в этот локальный substage.
+
+Покрытие: 131,072 single-comparison states с independent CMP model, 160
+termination paths, 16,380 отказов admission, 24 injected read failures, 4
+STOP/replay checks, 6 limit states (1023/1024/1025 × DF), mismatch на итерации
+1024, priority mismatch/STOP/limit, zero count, invalid RDI, budget zero,
+truncated fetch и wrapping/page edges. Добавить ровно 24 literal schema-v2
+fixtures: zero count × DF; count-one equal/mismatch × DF; mismatch positions
+1/2/3 × DF; all-equal × DF; unmapped after 0/1/2 equal reads; noncanonical
+first access; count1025 × DF; budget-zero; CMP→REP success/fault; TEST→REP
+reject с undefined AF при concrete PF/ZF. Generator только сериализует
+hand-authored bytes и snapshots; schema/profile не меняются. ISSUE-016/019/020/
+021 остаются открытыми до общей финальной acceptance.
+
 ### S2-20. Точность исключений и exit state
 
 1. Свести для реализованных форм `#UD`, `#DE`, `#GP`, `#SS`, memory faults и traps только там, где они действительно определены профилем/адаптером.

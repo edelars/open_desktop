@@ -698,6 +698,10 @@ pub enum Operation {
     RepLods {
         size: OperandSize,
     },
+    /// One bounded invocation of long-mode REPE SCASB.
+    RepScas {
+        size: OperandSize,
+    },
     /// Long-mode 16- or 64-bit PUSH immediate; `value` is extended to the stack width.
     PushImmediate {
         value: u64,
@@ -901,6 +905,10 @@ impl Instruction {
                 undefined: 0,
             },
             Operation::Scas { .. } => FlagEffects {
+                defined: crate::ARITHMETIC_FLAGS,
+                undefined: 0,
+            },
+            Operation::RepScas { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -1250,12 +1258,21 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         ..Prefixes::default()
                     })
                 || opcode.byte == 0xa5 && prefixes.rex.is_none_or(|rex| rex & 8 != 0));
+        let rep_scasb = opcode.map == OpcodeMap::Primary
+            && opcode.byte == 0xae
+            && self.length == 2
+            && prefixes
+                == (Prefixes {
+                    group1: Some(0xf3),
+                    ..Prefixes::default()
+                });
         if !known
             || (prefixes.group1.is_some()
                 && !rep_stosb
                 && !rep_stos
                 && !rep_lods
                 && !rep_movs
+                && !rep_scasb
                 && !locked_qword_memory_xadd_candidate)
         {
             return Err(self.unsupported(opcode));
@@ -1624,11 +1641,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Primary, 0xae) => {
-                if prefixes != Prefixes::default() {
+                if rep_scasb {
+                    size = OperandSize::Byte;
+                    Operation::RepScas { size }
+                } else if prefixes != Prefixes::default() {
                     return Err(self.unsupported(opcode));
+                } else {
+                    size = OperandSize::Byte;
+                    Operation::Scas { size }
                 }
-                size = OperandSize::Byte;
-                Operation::Scas { size }
             }
             (OpcodeMap::Primary, 0xaf) => {
                 if prefixes.group1.is_some()
@@ -5873,6 +5894,36 @@ mod tests {
                 Operation::RepStos {
                     size: OperandSize::Qword
                 }
+            );
+        }
+    }
+
+    #[test]
+    fn rep_scasb_admits_only_exact_f3_ae() {
+        assert_eq!(
+            Memory::new(&[0xf3, 0xae]).decode().unwrap().operation,
+            Operation::RepScas {
+                size: OperandSize::Byte
+            }
+        );
+        let mut rejected = Vec::new();
+        for prefix in [
+            0xf0, 0xf2, 0xf3, 0x66, 0x67, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65,
+        ] {
+            rejected.push(vec![prefix, 0xf3, 0xae]);
+        }
+        for rex in 0x40..=0x4f {
+            rejected.push(vec![0xf3, rex, 0xae]);
+        }
+        rejected.extend([vec![0xf2, 0xae], vec![0xf3, 0xaf], vec![0xf3, 0xa6]]);
+        assert_eq!(rejected.len(), 30);
+        for bytes in rejected {
+            assert!(
+                matches!(
+                    Memory::new(&bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "unexpected admission: {bytes:02x?}"
             );
         }
     }

@@ -553,6 +553,9 @@ fn admission_with_tracee_memory(
 ) -> Result<FlagEffects, String> {
     let instruction = long_decode::decode(decoder, actual.rip, AccessContext::default())
         .map_err(|e| format!("native instruction outside admitted decode slice: {e:?}"))?;
+    if matches!(instruction.operation, Operation::RepScas { .. }) {
+        return Err("REP SCAS is outside the native execution profile".into());
+    }
     if matches!(
         instruction.operation,
         Operation::Fninit
@@ -3844,6 +3847,22 @@ mod tests {
                 "native REP STOS unexpectedly admitted {bytes}"
             );
         }
+    }
+
+    #[test]
+    fn rep_scasb_is_explicitly_rejected_by_native_admission() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2");
+        let loaded = Fixture::from_json(
+            &std::fs::read(directory.join("s2_19e_rep_scasb_one_equal_df0.case.json")).unwrap(),
+        )
+        .unwrap();
+        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "REP SCAS is outside the native execution profile"
+        );
     }
 
     #[test]

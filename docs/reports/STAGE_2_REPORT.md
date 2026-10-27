@@ -10377,3 +10377,41 @@ remain open.
 Focused local checks passed: `cargo test -p od-isa --offline rep_movs`,
 `cargo test -p od-testkit --offline rep_movs`,
 `cargo test -p od-runner --test fixture_v2 --offline rep_movs_cli_fixtures_check_full_state_and_jit_denial`, and all four REP fixture generators passed `--check`. Final validation passed `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, and `cargo test --workspace --offline` (all workspace suites, including 750 od-isa, 225 od-testkit, 101 runner unit tests and 209 runner fixture tests). The 56 CLI fixtures compare full state and memory even on harness errors, check fault details and retirement, and deny JIT execution for every new fixture. Independent review found three test-evidence issues; all were fixed and re-reviewed with no remaining concrete findings. No Mac mini, SSH, native or physical tests were run.
+
+## S2-19e — exact `F3 AE` REPE SCASB (bounded local profile)
+
+The interpreter now admits only exact `F3 AE` in Long64/address64. Before
+data access, even for zero count, it requires arithmetic flag values
+`PF|ZF` (`0x44`) and all six arithmetic flags defined (`0x8d5`); DF=0/1 is
+allowed. This is a local entry/restart restriction, not an x86 architectural
+requirement. Zero count avoids RDI access and preserves flags. For nonzero
+count, each read is followed by the existing byte CMP flag calculation, a
+wrapping DF-directed RDI update, and RCX decrement. Completion and mismatch
+precede STOP and the 1024-success limit; a continuing match checks STOP before
+the limit. Faulting iteration state is not committed; prior equal progress
+stays in RDI/RCX/flags with RIP at the REP instruction, permitting replay
+without hidden state.
+
+The exact reject set, operation semantics and definedness metadata are covered
+by 131,072 single-comparison cases against an independent CMP model, 160
+termination paths, 16,380 admission rejects, 24 injected read failures,
+STOP/replay, six count/limit boundaries, mismatch at iteration 1024, limit/STOP
+priority, zero count, u64::MAX bounded progress, budget-zero, truncated fetch,
+page-edge, wrap and next-pointer boundaries. Twenty-four schema-v2 fixtures
+and complete literal expected snapshots cover the requested composition,
+failure and direction cases. JIT decode and native admission remain closed.
+
+Verification passed: all eight focused `od-isa` REP SCASB tests, the 24-fixture
+literal full-state comparison, all five `od-jit` tests, `cargo fmt --all --
+--check`, `cargo check --workspace --all-targets --offline`, the full
+`cargo test --workspace --offline` suite (758 od-isa, 226 od-testkit, 101
+runner unit, 209 runner fixture and the remaining workspace tests), and all 77
+Stage 2 generator freshness tests. Graphify was updated. Native admission has
+an explicit reject branch, but its Linux-only target is not compiled on this
+macOS host. No native, physical, Mini, SSH or JIT execution was performed.
+Independent gpt-6.1-sol review found three evidence gaps: mismatch-vs-STOP
+observation at iteration 1024, actual #GP linear-address comparison, and a
+TEST fixture whose AF value also failed the concrete value gate. All were
+corrected; re-review found no remaining concrete findings. The eight focused
+ISA tests, 24-fixture test, five JIT denial tests, two new generator tests, and
+the final full workspace checks passed. ISSUE-016/019/020/021 remain open.

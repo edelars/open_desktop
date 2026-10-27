@@ -7871,3 +7871,38 @@ preservation is not claimed. Missing mappings remain harness errors, not
 synthesized `#PF`.
 
 Local evidence is defined by the [S2-19d plan](../plans/STAGE_2.md#s2-19d--f3-a4a5-rep-movsbwdq-ограниченный-локальный-контракт); native and physical acceptance remains deferred to the shared final acceptance.
+
+### Local S2-19e bounded `F3 AE` REPE SCASB contract
+
+The bounded interpreter admits only exact bytes `F3 AE` in Long64 with
+address-size 64. This is a local profile restriction, not a claim that other
+architectural REPE SCAS forms are invalid. Before any data access, including
+when RCX is zero, admission requires
+`RFLAGS & ARITHMETIC_FLAGS == PF|ZF` (`0x44`) and all six arithmetic flags to
+be defined (`rflags_defined & ARITHMETIC_FLAGS == 0x8d5`). Either DF value is
+allowed. A failed gate returns Unsupported without changing state or reading
+data. Prefixes, REPNE, other widths, CMPS, JIT, and native execution remain out
+of scope.
+
+With RCX zero, do not validate or read RDI; preserve flags and advance RIP by
+two. Otherwise each successful iteration reads one byte from flat `ES:[RDI]`,
+computes the low-byte `AL - byte` CMP flags, updates RDI by wrapping ±1 under
+DF, and decrements RCX. RAX, RSI, RAM, and non-arithmetic flags are preserved.
+Terminate after the read/commit when RCX reaches zero or ZF clears; mismatch
+completion precedes STOP and the 1024-successful-read work limit. On a matching
+continuation, check STOP before the work limit. A fault leaves the current
+iteration uncommitted; prior equal iterations remain reflected in RDI/RCX and
+flags, and RIP remains on the REP instruction. STOP or work-limit exhaustion
+also leaves RIP there and retires no instruction. Replay re-enters the same
+definedness/value gate: each committed equal compare preserves exactly `PF|ZF`
+as arithmetic values, with the complete arithmetic definedness mask, so no
+hidden restart state is required. The flag admission is deliberately narrower
+than x86 architectural requirements.
+
+Tests cover 131,072 single-comparison states using an independent CMP flags
+model, 160 count/mismatch termination paths, all 16,380 invalid arithmetic
+value/definedness/count/DF combinations, 24 injected read failures, STOP/replay,
+the 1023/1024/1025 work-limit boundaries, mismatch at iteration 1024, STOP vs
+limit priority, zero count, invalid next pointer, and exactly 24 literal v2
+fixtures. No physical, native, or JIT execution is claimed. ISSUE-016,
+ISSUE-019, ISSUE-020 and ISSUE-021 remain open.

@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_19e_cmp_rax_rax_rep_scasb_fault_after_one",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten F3 AE bytes and literal state, flag, and memory answers; tests/cpu/generate_stage2_rep_scasb.py serializes constants only. No assembler, oracle, or execution engine is used.",
+    "specification": "Intel SDM revision 093, Vol.2B SCAS and REP/REPE entries; SCASB compares AL with ES:[RDI], adjusts RDI by DF, and REPE continues while ZF is set.",
+    "specification_version": "Intel SDM Vol.2B revision 093 (253667-093US); project S2-19e F3 AE REP SCASB"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667741",
+      "0x0000000000000002",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x00000000000008d7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 5,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "4839c0f3ae",
+      "comparison_mask_hex": "ffffffffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000200000",
+      "length": 1,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "41",
+      "comparison_mask_hex": "ff"
+    }
+  ],
+  "stop_rip": null,
+  "instruction_budget": 2,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "harness_error"
+}
