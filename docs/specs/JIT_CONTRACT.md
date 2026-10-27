@@ -1003,6 +1003,33 @@ existing unsafe private-data V2 store API remains unchanged and is not used
 for this executable-code path. See the
 [S3-23c report](../reports/STAGE_3_S3-23c_2026-10-27.md).
 
+### S3-23d: one fixture transaction for interpreter, generated, and control writes
+
+The one-vCPU fixture routes the existing interpreter `GuestMemory::write`,
+tracked V2 generated code store, and between-call control writes through one
+owner transaction. Shared preflight resolves the complete guest range to a
+backing span, checks write permission, optional executable permission, the
+next nonwrapping backing version, and backing-relative overlap with the active
+source lease. The generated V2 path supplies its already verified site plan;
+the interpreter still uses `od_isa::execute::step` and its existing MOV
+semantics, without copying or re-decoding instruction semantics in the owner.
+
+The common commit performs a single all-or-nothing byte copy and stages one
+version notification. Interpreter and generated-call adapters drain and apply
+that notification only after the current call returns, before another snapshot
+or cache lookup. The control adapter does the same synchronously before it
+returns to its caller. Failed preflight or backend writes leave bytes, version,
+CPU state, and cache entries unchanged. Differential fixture tests compare
+interpreter MOV store and native V2 store over independent owners, including
+full CPU state/RAM, version, invalidated target, retained unrelated entry, and
+the next execution of changed target code. Control writes test alias-based
+invalidation and backend-failure preservation.
+
+This is still fixture-only. It does not provide a production MMU/control owner,
+multi-writer synchronization, asynchronous/shared RAM, MMIO, DMA, SMP, REP/RMW,
+compile/publication race protection, or active-code retirement. No Stage 2
+files were changed. See the [S3-23d report](../reports/STAGE_3_S3-23d_2026-10-27.md).
+
 ### S3-19a: invocation-local checked memory helper ABI partial
 
 `od_jit::memory_bridge::CheckedMemoryAdapter` borrows one `&mut dyn

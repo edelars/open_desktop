@@ -1880,6 +1880,7 @@ mod tests {
         mappings: Vec<TrackedMappingFixture>,
         active_source_rip: u64,
         active_source: (usize, usize, usize),
+        current_active_source: Option<(usize, usize, usize)>,
         pending: Option<(usize, usize, od_jit::translation::BackingVersion)>,
         preflight_rejection: Option<TrackedCodeStorePreflightError>,
         write_attempted: bool,
@@ -1981,6 +1982,7 @@ mod tests {
                 ],
                 active_source_rip: 0x1000,
                 active_source: (0, 0, store_code.len()),
+                current_active_source: None,
                 pending: None,
                 preflight_rejection: None,
                 write_attempted: false,
@@ -2039,6 +2041,152 @@ mod tests {
                 identity,
             }]
         }
+
+        fn prepare_write(
+            &self,
+            address: u64,
+            length: usize,
+            require_executable: bool,
+            active_source: Option<(usize, usize, usize)>,
+        ) -> Result<
+            (usize, usize, od_jit::translation::BackingVersion),
+            TrackedCodeStorePreflightError,
+        > {
+            let access_len =
+                u64::try_from(length).map_err(|_| TrackedCodeStorePreflightError::OutOfRange)?;
+            let access_end = address
+                .checked_add(access_len)
+                .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
+            let (backing, offset) = self
+                .mapping_at(address, length)
+                .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
+            let backing_end = offset
+                .checked_add(length)
+                .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
+            if self.backings[backing]
+                .bytes
+                .get(offset..backing_end)
+                .is_none()
+            {
+                return Err(TrackedCodeStorePreflightError::OutOfRange);
+            }
+            let mapping = self
+                .mappings
+                .iter()
+                .find(|mapping| {
+                    let end = mapping.start.checked_add(mapping.len as u64);
+                    end.is_some_and(|end| address >= mapping.start && access_end <= end)
+                })
+                .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
+            if !mapping.writable {
+                return Err(TrackedCodeStorePreflightError::NotWritable);
+            }
+            if require_executable && !mapping.executable {
+                return Err(TrackedCodeStorePreflightError::NotExecutable);
+            }
+            if let Some((active_backing, active_start, active_len)) = active_source {
+                let target_end = offset
+                    .checked_add(length)
+                    .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
+                let active_end = active_start
+                    .checked_add(active_len)
+                    .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                if backing == active_backing && offset < active_end && active_start < target_end {
+                    return Err(TrackedCodeStorePreflightError::ActiveSourceOverlap);
+                }
+            }
+            let next = self.backings[backing]
+                .version
+                .checked_next()
+                .ok_or(TrackedCodeStorePreflightError::VersionExhausted)?;
+            Ok((backing, offset, next))
+        }
+
+        fn write_preflighted(
+            &mut self,
+            address: u64,
+            source: &[u8],
+            plan: (usize, usize, od_jit::translation::BackingVersion),
+        ) -> Result<(), MemoryError> {
+            let (backing, offset, _) = plan;
+            if self.fail_write {
+                self.fail_write = false;
+                return Err(MemoryError::Backend(
+                    "tracked fixture write rejected".into(),
+                ));
+            }
+            if self.mapping_at(address, source.len()) != Some((backing, offset)) {
+                return Err(MemoryError::PermissionDenied {
+                    address,
+                    access: od_isa::memory::AccessKind::Write,
+                });
+            }
+            let Some(destination) = self.backings[backing]
+                .bytes
+                .get_mut(offset..offset + source.len())
+            else {
+                return Err(MemoryError::Unmapped {
+                    address,
+                    access: od_isa::memory::AccessKind::Write,
+                });
+            };
+            destination.copy_from_slice(source);
+            self.pending = Some(plan);
+            self.pending_write_committed = true;
+            self.write_count += 1;
+            if self.request_stop_on_write {
+                if let Some(stop) = &self.stop_byte {
+                    stop.store(1, Ordering::Release);
+                }
+            }
+            Ok(())
+        }
+
+        fn finish_guest_write(&mut self) -> Option<od_jit::dispatch::CodeInvalidation> {
+            let change = self.pending.take().and_then(|(backing, _, next)| {
+                self.pending_write_committed.then(|| {
+                    self.backings[backing].version = next;
+                    od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                        backing: self.backings[backing].id,
+                        current_version: next,
+                    }
+                })
+            });
+            self.pending_write_committed = false;
+            self.write_attempted = false;
+            self.preflight_rejection = None;
+            change
+        }
+
+        fn control_write(
+            &mut self,
+            address: u64,
+            source: &[u8],
+            cache: &mut od_jit::dispatch::MultiEntryBlockCache<PublishedArenaBlock>,
+        ) -> Result<(Option<od_jit::dispatch::CodeInvalidation>, usize), MemoryError> {
+            self.current_active_source = None;
+            let result = <Self as od_isa::memory::GuestMemory>::write(
+                self,
+                address,
+                AccessContext::default(),
+                source,
+            );
+            let change = self.finish_guest_write();
+            result.map(|()| {
+                let invalidated = change.map_or(0, |change| cache.invalidate(change));
+                (change, invalidated)
+            })
+        }
+
+        fn begin_interpreter_write_scope(&mut self, rip: u64, length: usize) {
+            self.current_active_source = self
+                .mapping_at(rip, length)
+                .map(|(backing, offset)| (backing, offset, length));
+        }
+
+        fn end_interpreter_write_scope(&mut self) {
+            self.current_active_source = None;
+        }
     }
 
     fn run_tracked_code_block(
@@ -2069,6 +2217,23 @@ mod tests {
         )
         .unwrap();
         (result, state)
+    }
+
+    fn run_tracked_interpreter_step(
+        owner: &mut TrackedCodeFixture,
+        state: &mut od_isa::LongModeState,
+        cache: &mut od_jit::dispatch::MultiEntryBlockCache<PublishedArenaBlock>,
+    ) -> (
+        Result<od_isa::execute::StepOutcome, MemoryError>,
+        Option<od_jit::dispatch::CodeInvalidation>,
+        usize,
+    ) {
+        owner.begin_interpreter_write_scope(state.rip, 3);
+        let result = od_isa::execute::step(state, owner, AccessContext::default());
+        let change = owner.finish_guest_write();
+        owner.end_interpreter_write_scope();
+        let invalidated = change.map_or(0, |change| cache.invalidate(change));
+        (result, change, invalidated)
     }
 
     // SAFETY: this owner is a single-threaded fixed-RAM fixture. Its preflight
@@ -2107,33 +2272,12 @@ mod tests {
                     .operand()
                     .access_address_48(state, site.next_rip())
                     .map_err(|_| TrackedCodeStorePreflightError::UnsupportedSite)?;
-                let (backing, offset) = self
-                    .mapping_at(address, 8)
-                    .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
-                let mapping = self
-                    .mappings
-                    .iter()
-                    .find(|mapping| {
-                        let end = mapping.start + mapping.len as u64;
-                        address >= mapping.start && address + 8 <= end
-                    })
-                    .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
-                if !mapping.writable {
-                    return Err(TrackedCodeStorePreflightError::NotWritable);
-                }
-                if !mapping.executable {
-                    return Err(TrackedCodeStorePreflightError::NotExecutable);
-                }
-                let next = self.backings[backing]
-                    .version
-                    .checked_next()
-                    .ok_or(TrackedCodeStorePreflightError::VersionExhausted)?;
-                let target_end = offset + 8;
-                let active_end = active_start + active_len;
-                if backing == active_backing && offset < active_end && active_start < target_end {
-                    return Err(TrackedCodeStorePreflightError::ActiveSourceOverlap);
-                }
-                Ok((backing, offset, next))
+                self.prepare_write(
+                    address,
+                    8,
+                    true,
+                    Some((active_backing, active_start, active_len)),
+                )
             })();
             match validation {
                 Ok(pending) => self.pending = Some(pending),
@@ -2152,18 +2296,7 @@ mod tests {
             } else {
                 None
             };
-            let change = self.pending.take().and_then(|(backing, _, next)| {
-                self.pending_write_committed.then(|| {
-                    self.backings[backing].version = next;
-                    od_jit::dispatch::CodeInvalidation::BackingContentChanged {
-                        backing: self.backings[backing].id,
-                        current_version: next,
-                    }
-                })
-            });
-            self.pending_write_committed = false;
-            self.preflight_rejection = None;
-            self.write_attempted = false;
+            let change = self.finish_guest_write();
             (change, preflight_rejection)
         }
     }
@@ -2220,33 +2353,22 @@ mod tests {
                     access: od_isa::memory::AccessKind::Write,
                 });
             }
-            if source.len() != 8 || self.fail_write {
-                self.fail_write = false;
-                return Err(MemoryError::Backend(
-                    "tracked fixture write rejected".into(),
-                ));
-            }
-            let Some((backing, offset, _)) = self.pending else {
-                return Err(MemoryError::PermissionDenied {
-                    address,
-                    access: od_isa::memory::AccessKind::Write,
-                });
+            let plan = match self.pending {
+                Some(plan) => plan,
+                None => self
+                    .prepare_write(address, source.len(), false, self.current_active_source)
+                    .map_err(|error| match error {
+                        TrackedCodeStorePreflightError::OutOfRange => MemoryError::Unmapped {
+                            address,
+                            access: od_isa::memory::AccessKind::Write,
+                        },
+                        _ => MemoryError::PermissionDenied {
+                            address,
+                            access: od_isa::memory::AccessKind::Write,
+                        },
+                    })?,
             };
-            if self.mapping_at(address, source.len()) != Some((backing, offset)) {
-                return Err(MemoryError::PermissionDenied {
-                    address,
-                    access: od_isa::memory::AccessKind::Write,
-                });
-            }
-            self.backings[backing].bytes[offset..offset + source.len()].copy_from_slice(source);
-            self.pending_write_committed = true;
-            self.write_count += 1;
-            if self.request_stop_on_write {
-                if let Some(stop) = &self.stop_byte {
-                    stop.store(1, Ordering::Release);
-                }
-            }
-            Ok(())
+            self.write_preflighted(address, source, plan)
         }
 
         fn atomic_exchange_integer(
@@ -6940,6 +7062,237 @@ mod tests {
         assert_eq!(cache.resident_entries(), 2);
         drop(published_store);
         assert_eq!(arena.cached_block_capacity(), 4);
+    }
+
+    #[test]
+    fn interpreter_and_v2_store_share_tracked_write_commit_and_cache_invalidation() {
+        let _guard = jit_test_lock();
+        let store_source = [0x48, 0x89, 0x18]; // MOV [RAX], RBX
+        let target_code = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let unrelated_code = [0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0];
+        let mut interpreter_owner =
+            TrackedCodeFixture::new(&store_source, &target_code, &unrelated_code);
+        let mut jit_owner = TrackedCodeFixture::new(&store_source, &target_code, &unrelated_code);
+        let mut arena = PublishedArenaBackend::new(5).unwrap();
+        let mut interpreter_cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            3,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        let mut jit_cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            3,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        run_tracked_code_block(
+            &interpreter_owner,
+            0x2000,
+            &mut interpreter_cache,
+            &mut arena,
+        );
+        run_tracked_code_block(
+            &interpreter_owner,
+            0x4000,
+            &mut interpreter_cache,
+            &mut arena,
+        );
+        run_tracked_code_block(&jit_owner, 0x2000, &mut jit_cache, &mut arena);
+        run_tracked_code_block(&jit_owner, 0x4000, &mut jit_cache, &mut arena);
+        assert_eq!(interpreter_cache.resident_entries(), 2);
+        assert_eq!(jit_cache.resident_entries(), 2);
+
+        let value = 0x8877_6655_4433_2211_u64;
+        let mut interpreter_state = od_isa::LongModeState {
+            rip: 0x1000,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        interpreter_state.gpr[0] = 0x2002;
+        interpreter_state.gpr[3] = value;
+        let mut jit_state = interpreter_state.clone();
+
+        let mut active_overlap = interpreter_state.clone();
+        active_overlap.gpr[0] = 0x5001; // alias of active source backing at offset 1
+        let overlap_before = active_overlap.clone();
+        let source_bytes_before = interpreter_owner.backings[0].bytes.clone();
+        let source_version_before = interpreter_owner.backings[0].version;
+        let (overlap_result, overlap_notification, overlap_invalidated) =
+            run_tracked_interpreter_step(
+                &mut interpreter_owner,
+                &mut active_overlap,
+                &mut interpreter_cache,
+            );
+        assert!(matches!(
+            overlap_result,
+            Err(MemoryError::PermissionDenied { .. })
+        ));
+        assert_eq!(active_overlap, overlap_before);
+        assert_eq!(overlap_notification, None);
+        assert_eq!(overlap_invalidated, 0);
+        assert_eq!(interpreter_owner.backings[0].bytes, source_bytes_before);
+        assert_eq!(interpreter_owner.backings[0].version, source_version_before);
+        assert_eq!(interpreter_cache.resident_entries(), 2);
+
+        let target_bytes_before = interpreter_owner.backings[1].bytes.clone();
+        let target_version_before = interpreter_owner.backings[1].version;
+        interpreter_owner.fail_write = true;
+        let backend_fault_before = interpreter_state.clone();
+        let (backend_fault, backend_fault_notification, backend_fault_invalidated) =
+            run_tracked_interpreter_step(
+                &mut interpreter_owner,
+                &mut interpreter_state,
+                &mut interpreter_cache,
+            );
+        assert!(matches!(backend_fault, Err(MemoryError::Backend(_))));
+        assert_eq!(interpreter_state, backend_fault_before);
+        assert_eq!(backend_fault_notification, None);
+        assert_eq!(backend_fault_invalidated, 0);
+        assert_eq!(interpreter_owner.backings[1].bytes, target_bytes_before);
+        assert_eq!(interpreter_owner.backings[1].version, target_version_before);
+        assert_eq!(interpreter_cache.resident_entries(), 2);
+
+        let interpreter_before = interpreter_state.clone();
+        let (interpreter_result, interpreter_notification, interpreter_invalidated) =
+            run_tracked_interpreter_step(
+                &mut interpreter_owner,
+                &mut interpreter_state,
+                &mut interpreter_cache,
+            );
+        assert!(matches!(
+            interpreter_result,
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        ));
+        assert_eq!(interpreter_invalidated, 1);
+        assert_eq!(
+            interpreter_notification,
+            Some(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                backing: TrackedCodeFixture::id(3),
+                current_version: od_jit::translation::BackingVersion::new(TrackedCodeFixture::nz(
+                    2
+                )),
+            })
+        );
+
+        let store_view = CodeView::new(0x1000, &store_source).unwrap();
+        let store =
+            od_jit::memory_load_v2::compile_memory_store_block_v2(store_view, 0x1000).unwrap();
+        let published_store = arena.publish_memory_store_v2(&store).unwrap();
+        let mut jit_invalidated = 0;
+        let mut jit_notifications = Vec::new();
+        let jit_result = published_store
+            .execute_tracked_code_store_v2(
+                &mut jit_state,
+                &mut jit_owner,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+                |change| {
+                    jit_invalidated += jit_cache.invalidate(change);
+                    jit_notifications.push(change);
+                },
+            )
+            .unwrap();
+
+        assert_eq!(jit_invalidated, 1);
+        assert_eq!(jit_notifications, vec![interpreter_notification.unwrap()]);
+        assert_eq!(jit_result.retired_instructions, 1);
+        let mut expected_state = interpreter_before;
+        expected_state.rip = 0x1003;
+        assert_eq!(interpreter_state, expected_state);
+        assert_eq!(jit_state, interpreter_state);
+        assert_eq!(interpreter_owner.write_count, 1);
+        assert_eq!(jit_owner.write_count, 1);
+        for (interpreter_backing, jit_backing) in
+            interpreter_owner.backings.iter().zip(&jit_owner.backings)
+        {
+            assert_eq!(interpreter_backing.id, jit_backing.id);
+            assert_eq!(interpreter_backing.bytes, jit_backing.bytes);
+            assert_eq!(interpreter_backing.version, jit_backing.version);
+        }
+        assert_eq!(interpreter_owner.backings[1].version.get(), 2);
+        assert_eq!(
+            &interpreter_owner.backings[1].bytes[2..10],
+            &value.to_le_bytes()
+        );
+        assert_eq!(interpreter_cache.resident_entries(), 1);
+        assert_eq!(jit_cache.resident_entries(), 1);
+
+        let (interpreter_b, interpreter_b_state) = run_tracked_code_block(
+            &interpreter_owner,
+            0x2000,
+            &mut interpreter_cache,
+            &mut arena,
+        );
+        let (jit_b, jit_b_state) =
+            run_tracked_code_block(&jit_owner, 0x2000, &mut jit_cache, &mut arena);
+        assert_eq!(interpreter_b.retired_instructions, 1);
+        assert_eq!(jit_b.retired_instructions, 1);
+        assert_eq!(interpreter_b_state, jit_b_state);
+        assert_eq!(interpreter_b_state.gpr[0], value);
+        assert_eq!(interpreter_cache.counters().successful_publications, 3);
+        assert_eq!(jit_cache.counters().successful_publications, 3);
+        drop(published_store);
+    }
+
+    #[test]
+    fn tracked_control_write_uses_shared_preflight_commit_and_alias_notification() {
+        let _guard = jit_test_lock();
+        let source = [0x48, 0x89, 0x18];
+        let target = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let unrelated = [0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0];
+        let mut owner = TrackedCodeFixture::new(&source, &target, &unrelated);
+        let mut arena = PublishedArenaBackend::new(4).unwrap();
+        let mut cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            3,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        run_tracked_code_block(&owner, 0x2000, &mut cache, &mut arena);
+        run_tracked_code_block(&owner, 0x4000, &mut cache, &mut arena);
+        let original = owner.backings[1].bytes.clone();
+        let original_version = owner.backings[1].version;
+
+        owner.fail_write = true;
+        assert!(matches!(
+            owner.control_write(0x3002, &0x1234_u64.to_le_bytes(), &mut cache),
+            Err(MemoryError::Backend(_))
+        ));
+        assert_eq!(owner.backings[1].bytes, original);
+        assert_eq!(owner.backings[1].version, original_version);
+        assert_eq!(owner.write_count, 0);
+        assert_eq!(cache.resident_entries(), 2);
+        assert_eq!(cache.counters().successful_publications, 2);
+
+        let (change, invalidated) = owner
+            .control_write(0x3002, &0x1234_u64.to_le_bytes(), &mut cache)
+            .unwrap();
+        assert_eq!(invalidated, 1);
+        assert_eq!(
+            change,
+            Some(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                backing: TrackedCodeFixture::id(3),
+                current_version: od_jit::translation::BackingVersion::new(TrackedCodeFixture::nz(
+                    2
+                )),
+            })
+        );
+        assert_eq!(owner.backings[1].version.get(), 2);
+        assert_eq!(owner.write_count, 1);
+        assert_eq!(&owner.backings[1].bytes[2..10], &0x1234_u64.to_le_bytes());
+        assert_eq!(
+            cache.resident_entries(),
+            1,
+            "unrelated block remains cached"
+        );
+
+        let (updated, state) = run_tracked_code_block(&owner, 0x2000, &mut cache, &mut arena);
+        assert_eq!(updated.retired_instructions, 1);
+        assert_eq!(state.gpr[0], 0x1234);
+        assert_eq!(cache.counters().successful_publications, 3);
     }
 
     #[test]
