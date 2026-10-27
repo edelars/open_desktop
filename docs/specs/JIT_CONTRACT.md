@@ -2158,6 +2158,17 @@ The base and index are read from the instruction's pre-state before any load
 destination commit; stores use the old data register value. See
 [S3-20aq evidence](../reports/STAGE_3_S3-20aq_2026-10-27.md).
 
+#### S3-20ar: indexed SIB with RBP base and stack-register data
+
+Admit only singleton 64-bit-address-size `48 8B/89 /r sib disp8|disp32`
+forms with ModRM `mod=01/10,r/m=100`, SIB base RBP, index RAX..RBX, scale
+1/2/4/8 and data RAX..RBP. Instruction lengths are 5/8 bytes; transfer width
+is Qword. `mod=00,SIB.base=101` decodes as a no-base operand and remains
+unsupported. The existing indexed RSP-base and no-index SIB profiles remain
+distinct. `MemoryOperand` and `access_address_48` remain the sole EA semantics.
+Base, index and store data are read from the instruction pre-state before any
+destination commit. See [S3-20ar evidence](../reports/STAGE_3_S3-20ar_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

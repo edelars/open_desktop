@@ -2574,8 +2574,9 @@ mod tests {
             for bytes in [
                 vec![0x48, opcode, 0x44],                         // truncated before SIB
                 vec![0x48, opcode, 0x44, 0x20, 0],                // no-index SIB
-                vec![0x48, opcode, 0x44, 0x05, 0],                // unsupported RBP base
+                vec![0x48, opcode, 0x44, 0x2d, 0],                // unsupported RBP index
                 vec![0x48, opcode, 0x44, 0x28, 0],                // RSP base
+                vec![0x48, opcode, 0x04, 0x0d, 0, 0, 0, 0],       // mod00 no-base with index
                 vec![0x48, opcode, 0x44, 0x18],                   // missing disp8
                 vec![0x48, opcode, 0x44, 0x18, 0, 0x90],          // tail byte
                 vec![0x48, opcode, 0x84, 0x18, 0, 0, 0],          // partial disp32
@@ -2611,7 +2612,19 @@ mod tests {
             (4, 0),
             (4, i32::MAX),
         ];
-        let base_index_cases = [(0_u8, 1_u8), (1, 1), (2, 3), (4, 0), (4, 1), (4, 2), (4, 3)];
+        let base_index_cases = [
+            (0_u8, 1_u8),
+            (1, 1),
+            (2, 3),
+            (4, 0),
+            (4, 1),
+            (4, 2),
+            (4, 3),
+            (5, 0),
+            (5, 1),
+            (5, 2),
+            (5, 3),
+        ];
         for (opcode, operation) in [
             (0x8b_u8, MemorySiteOperationV2::Load),
             (0x89_u8, MemorySiteOperationV2::Store),
@@ -2623,6 +2636,10 @@ mod tests {
                     }
                     for scale_bits in 0..4_u8 {
                         for &(width, displacement) in displacement_cases {
+                            if base == 5 && width == 0 {
+                                // mod=00/SIB.base=101 is the no-base encoding.
+                                continue;
+                            }
                             let mode = match width {
                                 0 => 0,
                                 1 => 1,
