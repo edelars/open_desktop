@@ -1996,6 +1996,28 @@ and does not repeat the first read. Existing RSP/RBP data profiles and canary
 lifecycle tests remain green. See the
 [S3-20ag report](../reports/STAGE_3_S3-20ag_2026-10-27.md).
 
+#### S3-20ah: RBP data with signed RSP-base SIB displacement
+
+The exact added singleton forms are `48 8B/89 6C 24 ib` (signed disp8,
+length 5) and `48 8B/89 AC 24 id` (signed disp32, length 8). ModRM is
+`mod=01/10`, `reg=5`, `rm=4`; SIB is exactly `0x24`, selecting RSP as base,
+with no index and scale 1. The decoded `MemoryOperand` remains the sole
+effective-address authority. This exact data-register exception does not
+widen generic GPR validation or alter pair/V3 profiles, source storage, frame
+layout or ABI.
+
+Both direct V2 and shared IR are compared with the interpreter for load and
+store. The address uses entry RSP plus signed displacement; store data uses
+all 64 bits of entry RBP; a load updates only RBP after success. Faults retain
+the exact #SS payload and make no data callback, while address overflow and
+backend failures remain host errors. A successful store callback STOP leaves
+the write committed. Bounded dispatch continues by actual RIP, including
+singleton→NOP→pair and a subsequent RBP-relative access through the newly
+loaded RBP, with no replay. A fixture byte-window ending inside an instruction
+returns `BoundaryReached` before publication or memory effects; it is not a
+guest fetch fault. See the
+[S3-20ah report](../reports/STAGE_3_S3-20ah_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

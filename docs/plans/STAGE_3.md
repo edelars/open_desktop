@@ -1452,6 +1452,25 @@ Dispatcher continuation after `MOV RBP,[RSP]` resumes at actual RIP and uses
 the newly loaded RBP for the next instruction without replaying the first read.
 See the [S3-20ag report](../reports/STAGE_3_S3-20ag_2026-10-27.md).
 
+#### S3-20ah. RBP data with RSP-base SIB displacement
+
+Add only exact qword singleton forms `48 8B/89 6C 24 ib` (signed disp8,
+length 5) and `48 8B/89 AC 24 id` (signed disp32, length 8): ModRM
+`mod=01/10`, `reg=5`, `rm=4`, SIB exactly `0x24` (RSP base, no index,
+scale 1). The guest RSP supplies the effective-address base and RBP supplies
+the load destination/store value. Use the decoder's `MemoryOperand` for all
+address semantics; do not widen generic GPR predicates or change pair/V3,
+source storage, frame layout or ABI.
+
+Direct V2/shared IR/interpreter checks cover both widths, signed boundaries,
+complete state/RAM and callback/retirement parity. They also verify #SS on
+noncanonical RSP without a callback, noncanonical RBP as store payload,
+address-overflow/backend error classification, and store+STOP commit. The
+bounded dispatcher checks both widths in singleton→NOP→pair continuation and
+uses a loaded RBP for the next RBP-relative access. Partial windows and
+near-match forms stop before side effects. See the
+[S3-20ah report](../reports/STAGE_3_S3-20ah_2026-10-27.md).
+
 ### S3-21. Подтвердить memory slice на физическом x86
 
 1. Выполнить после локального завершения Stage 3 как финальный gate. Использовать завершённый S2-09 native memory profile. Проверить одинаковые входы, наблюдение всех заявленных GPR, нормализацию guest addresses и сравнение memory effects.
