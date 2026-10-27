@@ -27,3 +27,7 @@ JIT backend для v2 fixtures.
 The bounded S2-30ce `DB D1` FCMOVNBE operation has no v2 JIT lowering; runner
 fixtures must continue to return `unsupported` for this instruction on the JIT
 backend.
+
+The local S2-19g interpreter-only `F3 66 AF`, `F3 AF`, and effective-REX.W
+`F3 AF` REPE SCAS widths also have no v2 JIT lowering. Their literal fixtures
+must remain unsupported on the JIT backend, with no interpreter fallback.

@@ -384,3 +384,11 @@ interpreter policy; JIT/native and physical execution remain unverified. See
 the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-19d-bounded-rep-movsbwdq-contract),
 [plan](../../docs/plans/STAGE_2.md#s2-19d--f3-a4a5-rep-movsbwdq-ограниченный-локальный-контракт),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md#bounded-rep-movs-bwdq-fixtures-s2-19d).
+
+S2-19g extends the existing bounded REPE SCASB interpreter slice to SCASW/D/Q
+with normalized F3/66/REX.W prefix handling. The arithmetic value/definedness
+entry gate, read-then-commit progress, STOP/replay and 1024-iteration cap stay
+local profile conditions; JIT/native and physical execution remain unverified.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-19g-bounded-f3-af-repe-scaswdq-contract),
+[interpreter coverage](../../docs/testing/INTERPRETER.md#repe-scaswdq--s2-19g-local-interpreter-coverage),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md#bounded-repe-scaswdq-fixtures-s2-19g).

@@ -1,9 +1,9 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-19f добавило exact `F3 A6` REPE CMPSB;
-его RSI-first dual-fault policy описана в ISSUE-020 и не устанавливает
-hardware priority. Этот срез не выполняет общий финальный Mac mini/SSH/native/
-physical acceptance.
+Последнее локальное подзадание S2-19g расширяет ограниченный REPE SCASB до
+SCASW/D/Q; это не расширяет общий REP/JIT/native profile и не выполняет
+финальный Mac mini/SSH/native/physical acceptance. RSI-first dual-fault policy
+S2-19f остаётся описана в ISSUE-020 и не устанавливает hardware priority.
 
 **Дата:** 23 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–j add local-only FS/GS-base, selector, descriptor-load, VERW/GDT and exact GS/FS.base composition cases; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 S2-22h load fixtures and two S2-22i/j composition fixtures are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b UD2 fixture are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Stage 2 remains open under broader roadmap criteria. ISSUE-011/012/013/014/015/016/017/018 remain open; acceptance criteria are unchanged.
 
@@ -1143,6 +1143,49 @@ alias positives. Generator сериализует только фиксиров�
 зафиксированы в [отчёте этапа](../reports/STAGE_2_REPORT.md#s2-19f--exact-f3-a6-repe-cmpsb-bounded-local-profile).
 Статус: локальная реализация и проверка завершены; 31 fixture сравнивается по
 полному состоянию, JIT остаётся закрыт. Общая физическая acceptance не выполнялась.
+
+#### S2-19g — ограниченные `F3 AF` REPE SCASW/D/Q
+
+Расширить `RepScas` только на word/dword/qword формы в Long64/address64:
+`F3 66 AF` (word), `F3 AF` (dword), effective `REX.W + F3 AF` (qword).
+Разрешить 66 вместе с effective REX.W; учитывать порядок `F3 48 66 AF`
+(word) и `F3 66 48 AF` (qword). Все `48..4F` REX.W байты допустимы. Для AF
+принимать только normalized group1 F3, без segment/address override и без
+не-W REX. Сохранить точную byte-форму `F3 AE`; `F3 66 AE`, F2, LOCK, 67,
+segment prefixes и остальные перечисленные в задаче формы остаются
+Unsupported. Это локальный profile slice, не общий REPNE или REP decoder.
+
+До любого data read, включая `RCX=0`, entry/restart gate требует concrete
+arithmetic values ровно `PF|ZF` (`0x44`) и все `ARITHMETIC_FLAGS` defined
+(`0x8d5`). DF допускается в обоих значениях; gate является ограничением
+профиля, а не архитектурным требованием. Нулевой count не проверяет RDI,
+сохраняет flags и завершает одну инструкцию. Иначе сравнивать AX/EAX/RAX с
+word/dword/qword `ES:[RDI]` существующей CMP семантикой; полностью сохранить
+RAX (включая верхние 32 бита SCASD), RSI, RAM и non-arithmetic flags. После
+успешного read коммитить flags, wrapping `RDI ± width` и `RCX--`; faulting
+read не коммитит текущую итерацию. Завершение по count или ZF=0 раньше STOP и
+лимита; продолжающее равное сравнение проверяет STOP, затем 1024 успешных
+итерации. Partial RIP остаётся на REP, retirement=0; committed equal state
+сохраняет PF|ZF и definedness, поэтому replay проходит тот же gate. Срез не
+заявляет undefinedness continuation, general REPNE, JIT/native execution,
+Mini/SSH или physical execution.
+
+Покрытие: 864 одиночных сравнения (3 widths ×12 accumulator ×12 memory ×2 DF),
+720 termination paths, 49,140 W/D/Q entry-gate rejects при сохранении
+16,380-byte matrix, 72 injected read failures, 12 STOP/replay paths и 18
+limit paths. Отдельно проверить mismatch на сравнении 1024, STOP-vs-limit,
+initial STOP, budget zero, RCX max, zero count с invalid RDI, page/range,
+alignment, index wrap и noncanonical post-index. Добавить ровно 59 literal
+schema-v2 fixtures: 16 на каждую ширину, два prefix-order normalization и
+три CMP/TEST compositions на ширину. Генератор только сериализует заданные
+fixtures/answers; schema/profile не меняются. Сохранить JIT/native fail-closed.
+ISSUE-016/019/020/021 остаются открытыми.
+
+Локальная реализация и проверка завершены: 59 fixture snapshots, decoder/ISA
+матрицы и CLI JIT-denial прошли. Полный workspace test/check/fmt и все 98 CPU
+Python tests прошли. Graphify обновлён. Linux-only native admission test
+добавлен, но не исполнялся на macOS; native execution и общая physical
+acceptance не выполнялись. Фактические границы и проверки — в [отчёте этапа](../reports/STAGE_2_REPORT.md#s2-19g--bounded-f3-af-repe-scaswdq).
 
 ### S2-20. Точность исключений и exit state
 

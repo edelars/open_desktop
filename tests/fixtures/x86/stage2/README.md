@@ -4088,3 +4088,28 @@ python3 tests/cpu/generate_stage2_rep_cmpsb.py --check
 cargo test -p od-testkit --offline rep_cmpsb_literal_fixtures_match_full_expected_answers
 cargo test -p od-runner --test fixture_v2 rep_cmpsb_cli_fixtures_check_full_state_and_jit_denial
 ```
+
+## Bounded REPE SCASW/D/Q fixtures S2-19g
+
+Exactly 59 literal schema-v2 fixtures extend bounded `F3 AE` SCASB with
+`F3 66 AF` SCASW, `F3 AF` SCASD, and `F3 effective-REX.W AF` SCASQ. Each
+width has 16 cases: zero count, count-one equal/mismatch, middle mismatch and
+all-equal count three for both DF values; first-read and after-one mapping
+errors; noncanonical first read; budget zero; and count 1025 for either DF.
+Two additional cases cover the `F3 48 66 AF` word and `F3 66 48 AF` qword
+prefix orders. Nine compositions cover CMP success/fault-after-one and TEST
+rejection with undefined AF for each width. Full expected snapshots include
+all GPRs, flags and definedness, RIP, and memory.
+
+The generator serializes fixed fixture inputs and expected snapshots; it does
+not invoke an assembler, oracle, or execution engine. All 59 fixtures assert
+that JIT remains Unsupported with no interpreter fallback, and native
+admission has an explicit rejection test for each width and both normalized
+prefix orders. Schema/profile remain unchanged. No native execution, Mini,
+SSH, or physical acceptance is claimed.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_scas_wdq.py --check
+cargo test -p od-testkit --offline rep_scas_wdq_literal_fixtures_match_full_expected_answers
+cargo test -p od-runner --test fixture_v2 rep_scas_wdq_cli_fixtures_check_full_state_and_jit_denial
+```

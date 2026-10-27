@@ -560,6 +560,39 @@ schema-v2 fixtures cover those representative boundaries and compositions;
 the generator serializes predetermined complete answers. JIT/native remain
 denied and there is no physical or Mac mini acceptance claim.
 
+## REPE SCASW/D/Q — S2-19g local interpreter coverage
+
+The existing exact `F3 AE` byte slice remains. This extension admits only
+normalized group1 F3 with AF in word, dword, or effective-REX.W qword width:
+`F3 66 AF`, `F3 AF`, and `F3 REX.W AF`. Prefix order matters: `F3 48 66 AF`
+is SCASW because the later legacy 66 discards the earlier REX; `F3 66 48 AF`
+is SCASQ because its final REX.W is effective and overrides 66. Each `48..4F`
+REX.W byte is accepted when effective. Segment/address overrides and non-W REX
+are rejected. `F3 66 AE`, REPNE, LOCK, and general REP strings remain outside
+this bounded profile.
+
+Before any read, including RCX=0, the entry/restart gate requires concrete
+arithmetic values PF|ZF and all arithmetic flags defined. This is a local
+profile restriction, not an x86 requirement. Zero count does not validate
+RDI. Nonzero iterations compare AX/EAX/RAX with the selected memory width,
+preserve all of RAX (including SCASD's upper half), and commit flags, wrapping
+RDI by operand width, and RCX only after the read succeeds. Earlier equal
+iterations remain committed on a later fault, with RIP at REP and no retirement;
+STOP/limit replay uses the same gate without hidden state. Count completion and
+mismatch take priority over STOP/limit; continuing matches check STOP before
+the 1024 iteration cap. Undefinedness continuation and generic REPNE are not
+claimed.
+
+Coverage includes 864 single comparisons, 720 count/mismatch termination
+paths, 49,140 W/D/Q gate rejects (the byte gate matrix remains separately
+covered), 72 injected read failures, 12 STOP/replay paths and 18 work-limit
+paths. Additional checks cover mismatch at iteration 1024, STOP/limit order,
+initial STOP, budget zero, RCX maximum, zero count with invalid RDI,
+unaligned accesses, range failure, wrapping, and noncanonical post-index
+values. Exactly 59 literal schema-v2 fixtures check width behavior,
+prefix-order normalization, and CMP/TEST compositions. JIT and native remain
+denied; no Mac mini, SSH, or physical execution is claimed.
+
 
 ## Local S2-31aq signed-infinity m32 stores
 

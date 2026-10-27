@@ -7942,3 +7942,43 @@ limit and boundary behavior, and 31 literal schema-v2 fixtures. The generator
 serializes fixed answers only. JIT and native admission remain closed; no
 physical, Mini, or SSH execution is claimed. ISSUE-020 tracks the unknown
 dual-fault winner.
+
+### Local S2-19g bounded `F3 AF` REPE SCASW/D/Q contract
+
+The Long64/address-size-64 interpreter adds only `F3 66 AF` SCASW, `F3 AF`
+SCASD, and `F3 effective-REX.W AF` SCASQ. Prefix order determines whether
+REX.W remains effective: `F3 48 66 AF` decodes as SCASW because the later
+legacy 66 discards the earlier REX, while `F3 66 48 AF` decodes as SCASQ
+because the final REX.W is effective and overrides 66. All `48..4F` bytes are
+admitted when REX.W is effective. These AF forms require normalized group1
+F3, no segment or address-size override, and either no effective REX or
+effective REX.W. Exact `F3 AE` SCASB remains
+available; `F3 66 AE` remains Unsupported. The explicit reject set includes
+LOCK, REPNE, duplicate group1, address/segment overrides, and non-W REX cases.
+No general REPNE or prefix policy is implied.
+
+Before any data read, including RCX zero, the existing local SCAS entry gate
+requires concrete arithmetic values exactly `PF|ZF` (`0x44`) and complete
+arithmetic definedness (`0x8d5`). DF may be either value. This is a bounded
+profile/restart condition, not an x86 architectural requirement. At RCX zero,
+RDI is not checked, flags are preserved, and RIP advances by the decoded
+instruction length.
+
+For each nonzero iteration, compare AX/EAX/RAX with a Word/Dword/Qword read at
+flat `ES:[RDI]` using existing CMP flag semantics. RAX is preserved in full,
+including its upper half for SCASD; RSI, RAM, and non-arithmetic flags are
+preserved. Only after a successful read are arithmetic flags, wrapping
+DF-directed RDI by operand width, and RCX decremented. A failed read leaves
+that iteration uncommitted. Count completion or mismatch finishes before STOP
+and the local 1024-success limit; an equal continuation checks STOP before the
+limit. Fault/STOP/limit keeps RIP at the REP and retires zero. Replay re-enters
+the same gate: equal progress leaves exactly PF|ZF and all arithmetic flags
+defined. JIT and native admission remain explicitly closed for these widths.
+
+Coverage adds 864 independent single-comparison states, 720 termination paths,
+49,140 W/D/Q gate rejects, 72 injected read failures, 12 STOP/replay paths, 18
+limit paths, mismatch/STOP/limit boundary checks, RCX maximum, zero invalid-RDI,
+alignment/range/wrap and noncanonical post-index checks, plus exactly 59 literal
+schema-v2 fixtures. S2-19e retains its byte comparison and gate matrices. The
+generator serializes fixture data; it is not an execution oracle. No native,
+Mini, SSH, or physical execution is claimed.

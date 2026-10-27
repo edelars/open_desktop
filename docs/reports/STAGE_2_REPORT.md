@@ -10459,3 +10459,46 @@ or physical execution was performed. See the [CPU contract](../specs/CPU_CONTRAC
 [plan](../plans/STAGE_2.md#s2-19f--exact-f3-a6-repe-cmpsb-ограниченный-локальный-контракт),
 [interpreter coverage](../testing/INTERPRETER.md#repe-cmpsb--s2-19f-local-interpreter-coverage),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#bounded-repe-cmpsb-fixtures-s2-19f).
+
+## S2-19g — bounded `F3 AF` REPE SCASW/D/Q
+
+The Long64/address64 decoder and interpreter now admit normalized group1 F3
+with AF as SCASW (`F3 66 AF`), SCASD (`F3 AF`), or SCASQ using effective
+REX.W. Prefix order is significant: `F3 48 66 AF` is SCASW because the later
+legacy 66 discards the earlier REX, while `F3 66 48 AF` is SCASQ because the
+final REX.W is effective. Every `48..4F` REX.W byte is accepted when effective.
+Prefix/width admission rejects the exact requested invalid set;
+`F3 AE` remains byte-only and `F3 66 AE` remains Unsupported. The existing
+arithmetic entry/restart gate still runs before all reads, including RCX zero.
+It requires concrete `PF|ZF` values and definedness `ARITHMETIC_FLAGS`; this is
+the local profile restriction, not an architectural REPE requirement.
+
+SCASW/D/Q compare AX/EAX/RAX with a width-sized read at flat `ES:[RDI]`. The
+existing width-aware SCAS loop commits flags, wrapping DF-directed RDI and
+RCX only after a successful read; it preserves complete RAX, RSI, RAM and
+non-arithmetic flags. Completion/mismatch precede STOP and the iteration cap;
+matching continuation checks STOP before the 1024-success cap. Fault, STOP and
+limit preserve REP RIP and do not retire. Replay re-enters the same gate, and
+equal progress retains `PF|ZF` with full arithmetic definedness.
+
+Coverage includes 864 single-comparison states, 720 termination paths,
+49,140 W/D/Q gate rejections plus the retained 16,380 byte gate cases, 72
+injected width read failures, 12 STOP/replay paths, 18 width limit cases,
+mismatch-at-1024/STOP/limit ordering, initial STOP, budget zero, RCX maximum,
+zero count with invalid RDI, unaligned/range/wrap and noncanonical
+post-index cases. Exactly 59 schema-v2 fixtures compare complete state and
+memory. The CLI fixture test requires JIT Unsupported with no interpreter
+fallback for every case; a Linux-only native admission test covers each width
+and both normalized prefix orders. The native test could not execute on this
+macOS host because `native_v2` is gated to Linux x86_64. No Mini, SSH, native
+execution, or physical acceptance was run.
+
+Validation passed: 98 Python CPU tests, including all Stage 2 generator checks;
+`cargo fmt --all -- --check`; `cargo check --workspace --all-targets --offline`;
+and `cargo test --workspace --offline` (1,331 passed, 0 failed; 771 od-isa,
+228 od-testkit, 101 runner unit tests, 211 runner fixture tests, and remaining
+workspace suites). The focused 59-fixture full-state test, CLI/JIT-denial test,
+decoder/width matrices and Graphify update also passed. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-19g-bounded-f3-af-repe-scaswdq-contract),
+[plan](../plans/STAGE_2.md#s2-19g--ограниченные-f3-af-repe-scaswdq),
+[interpreter coverage](../testing/INTERPRETER.md#repe-scaswdq--s2-19g-local-interpreter-coverage),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#bounded-repe-scaswdq-fixtures-s2-19g).

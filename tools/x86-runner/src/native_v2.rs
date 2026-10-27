@@ -3869,6 +3869,29 @@ mod tests {
     }
 
     #[test]
+    fn rep_scas_wdq_widths_and_prefix_orders_are_explicitly_rejected_by_native_admission() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2");
+        for fixture_name in [
+            "s2_19g_rep_scas_word_one_equal_df0.case.json",
+            "s2_19g_rep_scas_dword_one_equal_df0.case.json",
+            "s2_19g_rep_scas_qword_one_equal_df0.case.json",
+            "s2_19g_rep_scas_normalized_word_rex_before_66.case.json",
+            "s2_19g_rep_scas_normalized_qword_rex_after_66.case.json",
+        ] {
+            let loaded =
+                Fixture::from_json(&std::fs::read(directory.join(fixture_name)).unwrap()).unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            assert_eq!(
+                admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+                "REP SCAS is outside the native execution profile",
+                "{fixture_name}"
+            );
+        }
+    }
+
+    #[test]
     fn fs_base_profile_and_memory_mov_fail_closed_before_native_trace() {
         let code = [0x64, 0x48, 0x8b, 0x00];
         let mut input = fixture(&code).fixture;

@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_19g_rep_scas_dword_middle_mismatch_df0",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten literal instruction bytes, state and expected answers; tests/cpu/generate_stage2_rep_scas_wdq.py serializes constants only. No assembler, oracle, or execution engine is used.",
+    "specification": "Intel SDM revision 093, Vol.2B SCAS and REP/REPE entries; SCASW/D/Q compares AX/EAX/RAX with ES:[RDI] and adjusts RDI by DF.",
+    "specification_version": "Intel SDM Vol.2B revision 093 (253667-093US); project S2-19g bounded REPE SCASW/D/Q"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000000041",
+      "0x0000000000000003",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000046"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 2,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "f3af",
+      "comparison_mask_hex": "ffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000200000",
+      "length": 12,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "410000004200000041000000",
+      "comparison_mask_hex": "ffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100002",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}
