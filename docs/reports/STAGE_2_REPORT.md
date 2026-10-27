@@ -10843,3 +10843,35 @@ mini, SSH and native runner acceptance were not run. ISSUE-021 remains open for
 the unverified hardware winner when both MOVS addresses are invalid; the
 source-first rule remains a local policy. ISSUE-016/020 remain open, and this
 slice makes no MMIO rollback or hardware restart-state claim.
+
+## S2-19m — bounded REPE SCASB address-size-32
+
+Extended the bounded Long64 REPE SCASB slice to exactly `F3 67 AE` and
+`67 F3 AE`, both length three and decoded as byte `RepScas`. Address-size-64
+`F3 AE` remains unchanged. Address-size-32 `AF`, REPNE, extra 66/REX/segment/
+LOCK prefixes, and repeated prefixes remain rejected by decoder and executor
+admission. Native/JIT support was not opened.
+
+Execution selects ECX and zero-extended EDI. ECX=0 preserves all of RCX/RDI and
+flags, performs no data validation/read, then retires at RIP+3. A successful
+iteration performs one byte read and commits CMP flags, modulo-32 EDI ±1, and
+zero-extended ECX-1. Read faults leave the current iteration uncommitted while
+prior successes remain. The full entry gate still runs first, including at
+ECX=0: concrete arithmetic flags must satisfy `RFLAGS & 0x8d5 == 0x44`, and
+the definedness mask must include `0x8d5`. Completion/mismatch precedes STOP,
+which precedes the 1024-success cap; fault/STOP/limit leave REP RIP and retire
+zero. Tracked resume carries the prior definedness mask.
+
+Focused `od-isa` REP SCAS tests passed (19/19), including the 131,072-case
+independent AL×memory-byte×DF CMP model, both prefix orders, zero ECX with
+nonzero RCX high half and invalid EDI, high-half zero-extension, partial-fault
+atomicity, a 98,280-case complete gate-rejection matrix across the existing
+and new SCAS forms, and completion/STOP/limit ordering. Thirteen literal
+schema-v2 fixtures record complete CPU/memory answers; the generator serializes
+handwritten rows only. The `od-testkit` fixture test and runner CLI snapshots
+passed, and CLI JIT remained denied without fallback. The Python CPU suite
+passed 121 tests with all generator freshness checks; the complete offline
+workspace suite passed 1,419 tests, and `cargo check --workspace --all-targets
+--offline` plus `cargo fmt --all -- --check` passed. Graphify was refreshed.
+No native, physical x86, Mac mini, or SSH test was run. No unresolved S2-19m
+issue was found; existing ISSUE-016/020/021 remain outside this substage.

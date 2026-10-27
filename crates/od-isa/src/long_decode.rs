@@ -1291,15 +1291,23 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && matches!(opcode.byte, 0xae | 0xaf)
             && prefixes.group1 == Some(0xf3)
             && prefixes.segment.is_none()
-            && !prefixes.address_override
-            && (opcode.byte == 0xae
-                && self.length == 2
-                && prefixes
-                    == (Prefixes {
-                        group1: Some(0xf3),
-                        ..Prefixes::default()
-                    })
-                || opcode.byte == 0xaf && prefixes.rex.is_none_or(|rex| rex & 8 != 0));
+            && if opcode.byte == 0xae {
+                (self.length == 2
+                    && prefixes
+                        == (Prefixes {
+                            group1: Some(0xf3),
+                            ..Prefixes::default()
+                        }))
+                    || (self.length == 3
+                        && prefixes
+                            == (Prefixes {
+                                group1: Some(0xf3),
+                                address_override: true,
+                                ..Prefixes::default()
+                            }))
+            } else {
+                !prefixes.address_override && prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+            };
         let rep_cmps = opcode.map == OpcodeMap::Primary
             && matches!(opcode.byte, 0xa6 | 0xa7)
             && prefixes.group1 == Some(0xf3)
@@ -6019,23 +6027,52 @@ mod tests {
 
     #[test]
     fn rep_scasb_admits_only_exact_f3_ae() {
-        assert_eq!(
-            Memory::new(&[0xf3, 0xae]).decode().unwrap().operation,
-            Operation::RepScas {
-                size: OperandSize::Byte
-            }
-        );
+        for bytes in [&[0xf3, 0xae][..], &[0xf3, 0x67, 0xae], &[0x67, 0xf3, 0xae]] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::RepScas {
+                    size: OperandSize::Byte
+                },
+                "{bytes:02x?}"
+            );
+            assert_eq!(instruction.length as usize, bytes.len(), "{bytes:02x?}");
+            assert_eq!(
+                instruction.address_size,
+                if bytes.len() == 3 {
+                    OperandSize::Dword
+                } else {
+                    OperandSize::Qword
+                },
+                "{bytes:02x?}"
+            );
+        }
         let mut rejected = Vec::new();
-        for prefix in [
-            0xf0, 0xf2, 0xf3, 0x66, 0x67, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65,
-        ] {
-            rejected.push(vec![prefix, 0xf3, 0xae]);
+        for prefix in [0xf0, 0xf2, 0x66, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
+            rejected.extend([
+                vec![prefix, 0xf3, 0x67, 0xae],
+                vec![0xf3, prefix, 0x67, 0xae],
+                vec![0xf3, 0x67, prefix, 0xae],
+                vec![0x67, prefix, 0xf3, 0xae],
+            ]);
         }
         for rex in 0x40..=0x4f {
-            rejected.push(vec![0xf3, rex, 0xae]);
+            rejected.extend([
+                vec![rex, 0xf3, 0x67, 0xae],
+                vec![0xf3, rex, 0x67, 0xae],
+                vec![0xf3, 0x67, rex, 0xae],
+                vec![0x67, rex, 0xf3, 0xae],
+            ]);
         }
-        rejected.extend([vec![0xf2, 0xae], vec![0xf3, 0x66, 0xae]]);
-        assert_eq!(rejected.len(), 29);
+        rejected.extend([
+            vec![0xf2, 0xae],
+            vec![0xf3, 0x66, 0xae],
+            vec![0xf3, 0x67, 0x67, 0xae],
+            vec![0x67, 0x67, 0xf3, 0xae],
+            vec![0xf3, 0xf3, 0x67, 0xae],
+            vec![0xf3, 0x67, 0xf3, 0xae],
+        ]);
+        assert_eq!(rejected.len(), 106);
         for bytes in rejected {
             assert!(
                 matches!(
@@ -6786,6 +6823,7 @@ mod tests {
         for form in forms {
             cases.push([&[0x67][..], form].concat());
         }
+        cases.retain(|bytes| bytes != &[0xf3, 0x67, 0xae]);
         cases.push(vec![0x67, 0x66, 0xae]);
         for rex in 0x40..=0x4f {
             cases.push(vec![0x67, rex, 0xae]);
@@ -6794,7 +6832,7 @@ mod tests {
             cases.push(vec![0x67, rex, 0xaf]);
             cases.push(vec![0x67, 0x66, rex, 0xaf]);
         }
-        assert_eq!(cases.len(), 73);
+        assert_eq!(cases.len(), 72);
         for bytes in cases {
             assert!(
                 matches!(

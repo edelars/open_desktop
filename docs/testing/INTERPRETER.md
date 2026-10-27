@@ -597,6 +597,33 @@ native admission has an explicit pre-tracee rejection. ISSUE-021 keeps the
 source-first policy local; dual-invalid hardware priority is unverified.
 Physical, Mac mini, and SSH checks remain deferred to shared final acceptance.
 
+## REPE SCASB address-size 32 — S2-19m
+
+Only exact `F3 67 AE` and `67 F3 AE` (three bytes) are admitted in Long64, and
+both decode to byte `RepScas`. Existing exact address-size-64 `F3 AE` remains
+unchanged. `AF`, REPNE, additional 66/REX/segment/LOCK prefixes and repeated
+prefixes are rejected by both decoder and executor admission.
+
+The full REPE entry/restart gate still runs before checking ECX, including at
+ECX=0: arithmetic values must satisfy `RFLAGS & 0x8d5 == 0x44`, and the carried
+definedness mask must include `0x8d5`. Count uses ECX. Zero ECX preserves all
+RCX/RDI bits and flags, performs no address check or data read, and retires
+normally at RIP+3. Nonzero iterations read one byte from zero-extended EDI;
+successful AL-byte comparison commits CMP flags, modulo-32 EDI ±1 and
+zero-extended ECX-1. The current read fault does not commit, while prior
+iterations remain. Completion/mismatch precedes STOP and then the 1024-success
+limit; partial outcomes keep REP RIP and retirement zero. Tracked resume carries
+the previous definedness mask.
+
+Coverage includes 131,072 byte comparisons against an independent CMP model,
+the full value/definedness/count/DF gate-rejection matrix for both prefix orders,
+zero count with nonzero RCX high half and invalid EDI, ECX/EDI zero-extension,
+partial read fault, completion/STOP/limit ordering, and CMP→REP success versus
+TEST→REP undefined-AF rejection. Thirteen literal schema-v2 fixtures compare
+complete CPU and memory snapshots; their generator serializes hand-authored
+input and expected tables only. The CLI also checks complete snapshots and
+keeps JIT denied. No native or physical execution is claimed.
+
 ## REPE CMPSB — S2-19f local interpreter coverage
 
 Only exact `F3 A6` is admitted in Long64/address64. Even at RCX zero, entry

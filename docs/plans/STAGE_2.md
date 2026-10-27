@@ -1,7 +1,7 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-19i проверяет явное продолжение REP после
-лимита 1024 итерации с сохранённой definedness; общий REP/JIT/native profile
+Последнее локальное подзадание S2-19m расширяет REPE SCASB на точные
+address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
 устанавливается.
@@ -159,7 +159,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-16 | Условия, переходы, SETcc/CMOVcc | S2-11 |
 | [ ] | S2-17 | Стек, CALL/RET и косвенные переходы | S2-16 |
 | [ ] | S2-18 | Строковые операции без REP; S2-18a–n локально покрывают MOVS/STOS/LODS/SCAS/CMPS bounded формы и CLD/STD; общая приёмка открыта | S2-17 |
-| [ ] | S2-19 | REP и точный частичный прогресс; S2-19a–l покрывают bounded формы и продолжение в локальных границах; остальные формы и общая приёмка открыты | S2-18 |
+| [ ] | S2-19 | REP и точный частичный прогресс; S2-19a–m покрывают bounded формы и продолжение в локальных границах; остальные формы и общая приёмка открыты | S2-18 |
 | [ ] | S2-20 | Исключения, приоритеты и fault state | S2-14, S2-19 |
 | [ ] | S2-21 | Нужные однопроцессорные atomic/fence формы | S2-20 |
 | [ ] | S2-22 | Сегменты и права доступа | S2-20 |
@@ -1352,6 +1352,36 @@ local policy, не аппаратное утверждение приорите�
 полными snapshots. Генератор сериализует предзаданные значения и не вычисляет
 ожидания из семантики инструкции. ISSUE-016/020/021 остаются открытыми; общий
 workspace acceptance и физическая проверка — отдельные критерии.
+
+#### S2-19m — bounded REPE SCASB с address-size 32
+
+Расширить только Long64 byte SCASB на две точные prefix-последовательности:
+`F3 67 AE` и `67 F3 AE` (длина 3), результат —
+`Operation::RepScas { size: Byte }`. Сохранить S2-19e exact `F3 AE`.
+Для нового адрес-размерного профиля не принимать `AF`, REPNE, дополнительные
+`66`/REX/segment/LOCK или повторные prefixes; decoder и interpreter должны
+ограничивать один и тот же набор. Адрес-размер-64 поведение остаётся прежним.
+
+Entry/restart gate остаётся полным и проверяется до count/data path, в том числе
+при ECX=0: `RFLAGS & 0x8d5 == 0x44` и definedness включает весь `0x8d5`.
+Count выбирается из ECX. При ECX=0 полностью сохранить RCX/RDI и flags,
+не проверять и не читать адрес данных, нормально продвинуть RIP на 3 и retire.
+Для ненулевого ECX читать один byte по zero-extended EDI, сравнить AL-byte,
+и только после успешного read коммитить CMP flags, EDI ±1 modulo 2^32 и
+zero-extended ECX-1. Fault текущего чтения не коммитит текущую итерацию;
+предыдущие успешные итерации сохраняются. Завершение по ECX=0 или ZF=0 имеет
+приоритет над STOP, затем проверяется предел 1024 успешных чтений. Fault,
+STOP и предел оставляют RIP на REP и retirement=0; tracked resume передаёт
+предыдущую definedness mask. JIT/native остаются закрытыми.
+
+Покрытие: независимая полная AL×byte×DF CMP-модель; gate negatives для bad и
+undefined arithmetic flags, включая ECX=0; prefix positive/negative matrix;
+zero-count high-half preservation, zero-extension EDI/ECX, partial read fault,
+completion/STOP/1024 ordering, CMP→REP success и TEST→REP reject. Добавить
+literal full-state schema-v2 fixtures с таблицей ожидаемых snapshots и
+serialization-only generator; проверить CLI snapshots/JIT denial. Обновить
+отчёт, CPU contract, interpreter coverage и fixture README. Физическую,
+native/JIT, Mac mini и SSH проверки не выполнять.
 
 ### S2-20. Точность исключений и exit state
 

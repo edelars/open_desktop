@@ -7936,6 +7936,32 @@ Implementation evidence is recorded in the
 [interpreter notes](../testing/INTERPRETER.md#rep-movs-with-address-size-32--s2-19l),
 and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19l--bounded-rep-movs-address-size-32).
 
+### Local S2-19m bounded REPE SCASB address-size-32 contract
+
+The Long64 interpreter additionally admits only the byte SCAS form with exact
+prefix sequences `F3 67 AE` and `67 F3 AE`, each of length three, decoded as
+`Operation::RepScas { size: Byte }`. Existing address-size-64 `F3 AE` remains
+unchanged. Address-size-32 `AF`, REPNE, extra 66/REX/segment/LOCK prefixes and
+repeated prefixes remain outside this local profile. Decoder and execution
+admission enforce the same boundary. JIT/native admission remains closed.
+
+Before count handling, including when ECX is zero, the complete existing gate
+requires `RFLAGS & 0x8d5 == 0x44` and the definedness mask to include `0x8d5`.
+The count is ECX. ECX=0 preserves full RCX/RDI and flags, performs no data
+address validation or read, advances RIP by three, and retires once. Each
+nonzero iteration reads one byte at zero-extended EDI and compares AL with the
+byte using CMP semantics. A successful read commits arithmetic flags, EDI ±1
+modulo 2^32 according to DF, and zero-extended ECX-1. A fault leaves that
+iteration uncommitted while prior iterations remain committed. ECX completion
+or ZF=0 precedes STOP, which precedes the 1024-success limit. Fault, STOP and
+limit preserve REP RIP and retire zero; tracked continuation uses the previous
+definedness mask. Missing mappings remain harness errors.
+
+Local evidence and exclusions are recorded in the
+[S2-19m plan](../plans/STAGE_2.md#s2-19m-bounded-repe-scasb-с-address-size-32),
+[interpreter notes](../testing/INTERPRETER.md#repe-scasb-address-size-32--s2-19m),
+and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19m--bounded-repe-scasb-address-size-32).
+
 ### Local S2-19d bounded REP MOVSB/W/D/Q contract
 
 The interpreter admits exact `F3 A4` MOVSB, `F3 66 A5` MOVSW, `F3 A5` MOVSD,

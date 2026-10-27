@@ -4117,6 +4117,31 @@ cargo test -p od-testkit --offline rep_movs_addr32
 cargo test -p od-runner --test fixture_v2 --offline rep_movs_addr32
 ```
 
+## Bounded REPE SCASB address-size-32 fixtures S2-19m
+
+Thirteen literal schema-v2 fixtures cover both exact three-byte encodings,
+`F3 67 AE` and `67 F3 AE`; zero ECX with nonzero RCX high halves and invalid
+EDI; nonzero ECX/EDI high-half aliases; mismatch under DF; an unmapped first
+read and a fault after one committed equal read; the 1024-success limit; zero
+instruction budget; CMP→REP success; TEST→REP undefined-AF rejection; bad
+entry flags at zero count; and extra-prefix/AF rejects. The expected sidecar
+records complete GPR, RFLAGS, definedness, RIP and memory state. The generator
+serializes a static input/expected table only. Fixture schema/profile are
+unchanged.
+
+Interpreter coverage includes all 131,072 AL×memory-byte×DF combinations
+against an independent CMP model, gate rejection for all invalid value and
+definedness combinations at ECX zero and nonzero, partial-fault atomicity,
+address-size-32 count/index semantics, and completion→STOP→work-limit ordering.
+The CLI compares full snapshots and confirms JIT remains denied.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_scasb_addr32.py --check
+python3 tests/cpu/test_stage2_rep_scasb_addr32_generator.py
+cargo test -p od-testkit --offline rep_scasb_addr32_literal_fixtures_match_full_expected_answers
+cargo test -p od-runner --test fixture_v2 --offline rep_scasb_addr32_cli_fixtures_check_full_state_and_jit_denial
+```
+
 ## Bounded REPE SCASB fixtures S2-19e
 
 Exactly 24 literal schema-v2 fixtures cover exact `F3 AE` progress: zero count
