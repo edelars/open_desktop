@@ -5033,3 +5033,15 @@ u64 lanes add independently modulo 2^64; lane 0 wraps to zero and lane 1
 carries through bit 63. Other XMM registers, x87 state, MXCSR, GPRs, flags, and
 memory are unchanged. JIT and native x86 execution remain unsupported. This is
 local interpreter evidence only.
+
+### S2-35.17 local register PSUBQ diagnostic profile
+
+`s2_35_17_psubq_register.case.json` is a handwritten literal XMM8,XMM9 fixture
+for strict `s2-long-psubq-reg-v1`: `66 45 0F FB C1`. Intel SDM Rev. 093,
+Vol. 2B describes the legacy XMM form as subtracting the source (`ModRM:r/m`)
+from the destination (`ModRM:reg`); the operation is therefore
+`DEST - SRC` independently in each little-endian u64 lane, modulo 2^64. The
+fixture uses asymmetric operands to make the direction observable. Other XMM
+registers, x87 state, MXCSR, GPRs, flags, and memory are unchanged. JIT and
+native x86 execution remain unsupported. This is local interpreter evidence
+only.

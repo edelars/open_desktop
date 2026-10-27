@@ -1273,6 +1273,7 @@ fn step_tracked_with_stop(
         | Operation::PadddRegister { .. }
         | Operation::PsubdRegister { .. }
         | Operation::PaddqRegister { .. }
+        | Operation::PsubqRegister { .. }
         | Operation::PsubwRegister { .. }
         | Operation::PadduswRegister { .. }
         | Operation::PsubuswRegister { .. }
@@ -2798,6 +2799,28 @@ fn step_tracked_with_stop(
                 let lhs = u64::from_le_bytes(dst.try_into().expect("qword lane"));
                 let rhs = u64::from_le_bytes(src.try_into().expect("qword lane"));
                 dst.copy_from_slice(&lhs.wrapping_add(rhs).to_le_bytes());
+            }
+        }
+        Operation::PsubqRegister {
+            destination,
+            source,
+        } => {
+            let source = state
+                .sse
+                .as_ref()
+                .expect("PSUBQ local profile state was prevalidated")
+                .xmm[usize::from(source)];
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("PSUBQ local profile state was prevalidated");
+            for (dst, src) in sse.xmm[usize::from(destination)]
+                .chunks_exact_mut(8)
+                .zip(source.chunks_exact(8))
+            {
+                let lhs = u64::from_le_bytes(dst.try_into().expect("qword lane"));
+                let rhs = u64::from_le_bytes(src.try_into().expect("qword lane"));
+                dst.copy_from_slice(&lhs.wrapping_sub(rhs).to_le_bytes());
             }
         }
         Operation::PsubwRegister {
@@ -72842,6 +72865,125 @@ mod tests {
     }
 
     #[test]
+    fn psubq_register_covers_xmm_matrix_raw_u64_samples_and_lane_boundaries() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let mut code = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    code.push(rex);
+                }
+                code.extend([0x0f, 0xfb, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.rflags = 0x8d7 | crate::DF;
+                state.x87 = Some(X87State::fixture_seed());
+                state.sse = Some(SseState {
+                    xmm: [[0; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+                for register in 0..16usize {
+                    for lane in 0..2 {
+                        let lo = lane * 8;
+                        state.sse.as_mut().unwrap().xmm[register][lo..lo + 8]
+                            .copy_from_slice(&next().to_le_bytes());
+                    }
+                }
+                let before = state.clone();
+                let mut memory = Memory::at(&code, 0x1000);
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                    StepOutcome::Advanced
+                );
+                let mut expected = before.clone();
+                expected.rip += code.len() as u64;
+                for lane in 0..2 {
+                    let lo = lane * 8;
+                    let lhs = u64::from_le_bytes(
+                        before.sse.as_ref().unwrap().xmm[destination as usize][lo..lo + 8]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    let rhs = u64::from_le_bytes(
+                        before.sse.as_ref().unwrap().xmm[source as usize][lo..lo + 8]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    let reference = ((u128::from(lhs) + (1u128 << 64) - u128::from(rhs))
+                        & u128::from(u64::MAX)) as u64;
+                    expected.sse.as_mut().unwrap().xmm[destination as usize][lo..lo + 8]
+                        .copy_from_slice(&reference.to_le_bytes());
+                }
+                assert_eq!(state, expected, "dest={destination} source={source}");
+                assert!(memory.accesses.is_empty(), "PSUBQ invoked data memory");
+            }
+        }
+
+        let code = [0x66, 0x0f, 0xfb, 0xc1];
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.x87 = Some(X87State::fixture_seed());
+        state.sse = Some(SseState {
+            xmm: [[0; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let mut memory = Memory::at(&code, 0x1000);
+        for bit in 0..64 {
+            state.rip = 0x1000;
+            let walking_one = 1u64 << bit;
+            let chain_lhs = if bit == 0 { 0 } else { walking_one };
+            let chain_expected = if bit == 0 { u64::MAX } else { walking_one - 1 };
+            let lhs = [chain_lhs, !walking_one];
+            let rhs = [1u64, walking_one];
+            for lane in 0..2 {
+                let lo = lane * 8;
+                state.sse.as_mut().unwrap().xmm[0][lo..lo + 8]
+                    .copy_from_slice(&lhs[lane].to_le_bytes());
+                state.sse.as_mut().unwrap().xmm[1][lo..lo + 8]
+                    .copy_from_slice(&rhs[lane].to_le_bytes());
+            }
+            step(&mut state, &mut memory, AccessContext::default()).unwrap();
+            for lane in 0..2 {
+                let lo = lane * 8;
+                let reference = ((u128::from(lhs[lane]) + (1u128 << 64) - u128::from(rhs[lane]))
+                    & u128::from(u64::MAX)) as u64;
+                assert_eq!(
+                    &state.sse.as_ref().unwrap().xmm[0][lo..lo + 8],
+                    &reference.to_le_bytes(),
+                    "walking bit={bit} lane={lane}"
+                );
+            }
+            assert_eq!(
+                u64::from_le_bytes(state.sse.as_ref().unwrap().xmm[0][..8].try_into().unwrap()),
+                chain_expected,
+                "borrow chain to bit {bit}"
+            );
+        }
+        for (lhs, rhs, expected) in [
+            (0u64, 1u64, u64::MAX),
+            (0x8000_0000_0000_0000, 1, 0x7fff_ffff_ffff_ffff),
+            (0x0000_0001_0000_0000, 1, 0x0000_0000_ffff_ffff),
+        ] {
+            state.rip = 0x1000;
+            state.sse.as_mut().unwrap().xmm[0][..8].copy_from_slice(&lhs.to_le_bytes());
+            state.sse.as_mut().unwrap().xmm[1][..8].copy_from_slice(&rhs.to_le_bytes());
+            step(&mut state, &mut memory, AccessContext::default()).unwrap();
+            assert_eq!(
+                u64::from_le_bytes(state.sse.as_ref().unwrap().xmm[0][..8].try_into().unwrap()),
+                expected
+            );
+        }
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
     fn paddq_missing_state_truncation_stop_and_budget_are_atomic() {
         let code = [0x66, 0x0f, 0xd4, 0xc1];
         for missing_x87 in [true, false] {
@@ -72862,6 +73004,80 @@ mod tests {
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Unsupported { opcode: 0xd4 })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut before = LongModeState::default();
+        before.rip = 0x1000;
+        before.x87 = Some(X87State::fixture_seed());
+        before.sse = Some(SseState {
+            xmm: [[0xa5; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let mut candidate = before.clone();
+        let mut truncated = Memory::at(&code[..3], 0x1000);
+        assert!(step(&mut candidate, &mut truncated, AccessContext::default()).is_err());
+        assert_eq!(candidate, before);
+        assert!(truncated.accesses.is_empty());
+        for (budget, stop, exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut candidate = before.clone();
+            let mut memory = Memory::at(&code, 0x1000);
+            let result = run(
+                &mut candidate,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip: stop,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(candidate, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut candidate = before.clone();
+        let mut memory = Memory::at(&code, 0x1000);
+        let result = run(
+            &mut candidate,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 2,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || true,
+        );
+        assert_eq!(result.exit, RunExit::StopRequested);
+        assert_eq!(candidate, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn psubq_missing_state_truncation_stop_and_budget_are_atomic() {
+        let code = [0x66, 0x0f, 0xfb, 0xc1];
+        for missing_x87 in [true, false] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            if missing_x87 {
+                state.x87 = None;
+            } else {
+                state.sse = None;
+            }
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x1000);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0xfb })
             );
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());

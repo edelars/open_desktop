@@ -12242,3 +12242,48 @@ local interpreter/profile evidence only; parent S2-34, parent S2-35 and global
 
 See the [S2-35.16 plan](../plans/STAGE_2.md#s2-3516--local-only-bounded-register-paddq)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3516-local-register-paddq-diagnostic-profile).
+
+## S2-35.17 — local PSUBQ XMM register slice
+
+Added exact local profile `s2-long-psubq-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F FB /r`, ModR/M.mod=3, XMM0–15. ModR/M.reg is
+the destination and ModR/M.r/m the source. Intel SDM Rev. 093, Vol. 2B's
+PSUBQ operation specifies independent destination-minus-source subtraction for
+the low and high qwords; each little-endian u64 lane wraps modulo 2^64. This
+follows the operation description and RM operand encoding, resolving the
+reversed wording in one opcode-table description. Both lanes commit together;
+all other CPU state except RIP and the destination XMM is preserved, and the
+instruction makes no data-memory callback.
+
+Coverage includes the complete 16×16 XMM register matrix with optional REX.R/B,
+reproducible u64 samples checked against the independent u128 expression
+`(u128(dest) + (1u128 << 64) - u128(src)) & u64::MAX`, walking-one/zero patterns,
+borrow chains, and literal boundaries `0-1=ffffffffffffffff`,
+`8000000000000000-1=7fffffffffffffff`, and
+`0000000100000000-1=00000000ffffffff`. Strict negatives cover missing/extra
+prefixes, REX.W/X, multiple REX, memory ModRM, VEX/EVEX and truncation. Missing
+x87/SSE state and STOP/budget/fetch errors leave state uncommitted. A handwritten
+`66 45 0F FB C1` XMM8/XMM9 fixture exercises the interpreter and confirms JIT
+rejection. The native runner rejects this local-only profile before tracee
+setup. MMX, memory operands, saturation, other widths/operations, additional
+prefixes, REX.W/X, VEX/EVEX, native/physical execution, feature gating and
+exception delivery remain excluded; SSE2 and CR0.EM=0, CR0.TS=0,
+CR4.OSFXSR=1 are assumptions only.
+
+Verification on 2026-10-27: `cargo test -p od-isa psubq --offline` passed 3;
+`cargo test -p od-runner --test fixture_v2 --offline` passed 271;
+`cargo test -p od-testkit --offline` passed 319. The complete
+`cargo test --workspace --offline` passed 1,695 tests: `od-host` 6, `od-isa`
+982, `od-jit` 5, `od-runner` 374 (103 binary + 271 fixture integration),
+`od-testkit` 319, and `od-x86-runner` 9; `od-machine`, `od-storage`, and doc
+tests had 0. `cargo check --workspace --all-targets --offline` and
+`cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu
+--offline` passed. The Linux-only early native-denial assertion was compiled by
+the cross-target check but not executed on this macOS host. `cargo fmt --all
+-- --check`, `git diff --check`, and `graphify update .` passed. Independent
+`gpt-6.1-sol` medium review and re-review were clean. These results establish
+local interpreter/profile behavior only. S2-34, S2-35, and global
+`S2-35 → S2-34` remain open; Mac mini/SSH acceptance remains deferred.
+
+See the [S2-35.17 plan](../plans/STAGE_2.md#s2-3517--local-only-bounded-register-psubq)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3517-local-register-psubq-diagnostic-profile).

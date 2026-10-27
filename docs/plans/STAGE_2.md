@@ -404,6 +404,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.11 | Local-only bounded register PSUBSB XMM diagnostic slice; prerequisite S2-34.1 + S2-35.1 + reviewed S2-35.3 byte-subtract order infrastructure + S2-35.10 signed saturation coverage | S2-34.1, S2-35.1, S2-35.3 review, S2-35.10 review |
 | [x] | S2-35.12 | Local-only bounded register PADDSW XMM diagnostic slice; prerequisite S2-34.1 raw SSE state, S2-35.1 mandatory-66 decode and reviewed S2-35.6 word-lane representation | S2-34.1, S2-35.1, S2-35.6 review |
 | [x] | S2-35.13 | Local-only bounded register PSUBSW XMM diagnostic slice; prerequisite S2-34.1 raw SSE state, S2-35.1 mandatory-66 decode and reviewed S2-35.6 word-lane representation | S2-34.1, S2-35.1, S2-35.6 review |
+| [x] | S2-35.17 | Local-only bounded register PSUBQ XMM diagnostic slice; destination-minus-source wrapping qword lanes, native/JIT closed | S2-34.1, S2-35.1, S2-35.16 review |
 | [x] | S2-35.1 | Local-only PXOR XMM register diagnostic slice; child prerequisite S2-34.1 raw x87/SSE state only | S2-34.1 |
 | [x] | S2-35.2 | Local-only PADDB XMM register diagnostic slice; requires S2-34.1 state and reviewed S2-35.1 mandatory-66 register decoder | S2-34.1, S2-35.1 review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
@@ -8199,3 +8200,37 @@ the cross-target check but were not executed on this macOS host. The evidence
 is local interpreter/profile coverage only; it does not close S2-34, S2-35,
 global `S2-35 → S2-34`, physical x86 validation, or deferred Mac mini/SSH
 acceptance.
+
+#### S2-35.17 — local-only bounded register `PSUBQ`
+
+Requires S2-34.1 raw x87/SSE state, mandatory-66 XMM decoding from S2-35.1,
+and the reviewed qword lane representation established by S2-35.16. Exact
+profile `s2-long-psubq-reg-v1` admits only legacy `66 [one optional REX.R/B]
+0F FB /r` with ModR/M.mod=3. ModR/M.reg is destination and ModR/M.r/m source,
+extended to XMM0–15. Each of two little-endian u64 lanes computes
+`(DEST-SRC) mod 2^64` independently. The direction follows Intel SDM Rev. 093,
+Vol. 2B's PSUBQ description and RM operand encoding; opcode table wording that
+reverses the operands is not used. Coverage includes all 16×16 register pairs,
+reproducible raw-u64 samples checked against an independent u128 masked
+subtraction reference, walking-one/zero patterns, borrow chains, and explicit
+`0-1`, `8000000000000000-1`, and `0000000100000000-1` cases. State other than
+destination XMM and RIP is preserved, and no guest data-memory callback occurs.
+Missing state, truncation, STOP/budget atomicity, strict schema/decoder
+rejection, a literal XMM8/XMM9 fixture, and JIT/native denial are covered. Bare
+MMX, memory operands, saturation, other widths/operations, extra prefixes,
+REX.W/X, VEX/EVEX, native/physical execution, SSE feature gating, and exception
+delivery remain excluded. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are
+assumptions only. S2-34, S2-35, and global `S2-35 → S2-34` remain open; Mac
+mini/SSH acceptance remains deferred to the final combined substage.
+
+S2-35.17 implementation check (2026-10-27): focused `cargo test -p od-isa psubq --offline` passed (3); the literal `od-runner` fixture test passed (1),
+including strict schema-neighbor rejection and explicit JIT denial. All
+workspace tests passed (1,695 total: `od-host` 6, `od-isa` 982, `od-jit` 5,
+`od-runner` 374, `od-testkit` 319, `od-x86-runner` 9; `od-machine`,
+`od-storage`, and doc tests had 0).
+Workspace all-target offline check and x86_64 Linux all-target cross-check
+passed. The Linux-only native-denial assertion compiled in that cross-check;
+it could not be executed on this macOS host. Formatting, diff whitespace, and
+Graphify update passed. Independent gpt-6.1-sol medium review passed with no findings on 2026-10-27;
+these results establish local interpreter/profile coverage only and do not close S2-34, S2-35, global
+`S2-35 → S2-34`, physical x86 validation, or deferred Mac mini/SSH acceptance.

@@ -11909,6 +11909,44 @@ fn paddq_literal_cli_fixture_executes_and_keeps_jit_denied() {
 }
 
 #[test]
+fn psubq_literal_cli_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_17_psubq_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPsubqRegV1
+    );
+    for rejected in [
+        "0ffbc1",        // missing mandatory 66
+        "6648 0ffbc1",   // REX.W
+        "6642 0ffbc1",   // REX.X
+        "664045 0ffbc1", // multiple REX bytes
+        "660ffb01",      // memory ModRM
+        "c5f9fbc1",      // VEX
+    ] {
+        let mut invalid = loaded.fixture.clone();
+        invalid.memory[0].initial_bytes_hex = rejected.replace(' ', "");
+        invalid.memory[0].length = (invalid.memory[0].initial_bytes_hex.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(invalid.memory[0].length as usize);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + u64::from(invalid.memory[0].length),
+        ));
+        assert!(invalid.to_json().is_err(), "schema admitted {rejected}");
+    }
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PSUBQ interpreter snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[8],
+        "fcfffffffffffffffeffffffffffff7f"
+    );
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
 fn psubd_literal_cli_fixture_executes_and_keeps_jit_denied() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_15_psubd_register.case.json");
