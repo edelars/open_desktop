@@ -184,6 +184,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20aj | RSP/RBP как data через direct disp8/disp32 от RAX..RBX | Только `48 8B/89 /r disp8|disp32`, ModRM `mod=01/10`, `reg=RSP|RBP`, `rm=RAX..RBX`, ровно 4/7 bytes; без SIB |
 | [partial] | S3-20ak | RIP-relative qword MOV с RSP/RBP data через shared IR и bounded dispatch | Только `48 8B/89 25/2D disp32`, ModRM `mod=00,r/m=101`, `reg=RSP|RBP`, ровно 7 bytes; EA от NextRip текущей инструкции |
 | [partial] | S3-20al | RSP/RBP data через indexed SIB qword MOV | Только существующие 64-bit indexed SIB формы с ModRM `reg=RSP|RBP`, base/index RAX..RBX, scale 1/2/4/8; lengths 4/5/8 |
+| [partial] | S3-20am | RSP/RBP data через address32 direct-base qword MOV | Только `67 48 8B/89 /r [disp8|disp32]`, ModRM `mod=00/01/10`, `reg=RSP|RBP`, base RAX..RBX; длины 4/5/8 |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1542,6 +1543,17 @@ semantics. Direct V2, shared IR and the bounded dispatcher must admit the same
 exact profile; no pair, V3, address-size override or special SIB shape is
 included. Evidence and remaining host-owner limits are in the
 [S3-20al report](../reports/STAGE_3_S3-20al_2026-10-27.md).
+
+#### S3-20am. RSP/RBP data through address32 direct-base qword MOV
+
+This slice adds only direct address32 forms with qword data and RSP or RBP in
+the ModRM data field. The memory base is RAX..RBX, there is no SIB or RIP
+relative form, and the exact instruction lengths are 4, 5 and 8 bytes for
+no-displacement, signed disp8 and signed disp32. Decoder metadata remains the
+sole authority for address-size truncation and signed displacement. Tests must
+prove the low-32-bit effective address independently, preserve all 64 data
+bits, and treat a qword access crossing 4 GiB as one contiguous helper call.
+See [S3-20am evidence](../reports/STAGE_3_S3-20am_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

@@ -1551,7 +1551,7 @@ mod tests {
         for invalid in [
             vec![0x48, 0x8b, 0x2c],       // SIB
             vec![0x48, 0x8b, 0x68],       // displacement
-            vec![0x67, 0x48, 0x8b, 0x28], // address-size override
+            vec![0x67, 0x48, 0x8b, 0x38], // unsupported data register
             vec![0x48, 0x8b, 0x30],       // RSI data
         ] {
             let code = CodeView::new(0x5900, &invalid).unwrap();
@@ -2152,7 +2152,7 @@ mod tests {
             }
         }
         for bytes in [
-            vec![0x67, 0x48, 0x8b, 0x60, 0],
+            vec![0x67, 0x48, 0x8b, 0x64, 0], // incomplete SIB
             vec![0x48, 0x67, 0x89, 0xa8, 0, 0, 0, 0],
             vec![0x48, 0x8b, 0x70, 0],
             vec![0x48, 0x89, 0xb0, 0, 0, 0, 0],
@@ -3797,7 +3797,7 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x80, 0, 0, 0],          // truncated disp32
                 vec![0x67, 0x48, opcode, 0x40, 0, 0x90],          // trailing byte
                 vec![0x67, 0x48, opcode, 0x80, 0, 0, 0, 0, 0x90], // trailing byte
-                vec![0x67, 0x48, opcode, 0x40 | (4 << 3), 0],     // unsupported base
+                vec![0x67, 0x48, opcode, 0x40 | (4 << 3) | 4, 0], // truncated SIB
                 vec![0x67, 0x4c, opcode, 0x40, 0],                // extended data/base register
                 vec![0x48, 0x67, opcode, 0x40, 0],                // reordered prefix
             ] {
@@ -3818,6 +3818,71 @@ mod tests {
                     ),
                     "unexpectedly admitted bytes {bytes:02x?}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn address32_direct_rsp_rbp_data_is_exact_and_keeps_qword_width() {
+        for (opcode, access) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in [4_u8, 5] {
+                for base in 0..4_u8 {
+                    let cases = [
+                        (0_u8, 0_i32),
+                        (1, i8::MIN as i32),
+                        (1, -1),
+                        (1, 0),
+                        (1, i8::MAX as i32),
+                        (2, i32::MIN),
+                        (2, -1),
+                        (2, 0),
+                        (2, i32::MAX),
+                    ];
+                    for (mode, displacement) in cases {
+                        let mut bytes = vec![
+                            0x67,
+                            0x48,
+                            opcode,
+                            (mode << 6) | (data_register << 3) | base,
+                        ];
+                        match mode {
+                            0 => {}
+                            1 => bytes.push(displacement as u8),
+                            _ => bytes.extend_from_slice(&displacement.to_le_bytes()),
+                        }
+                        let code = CodeView::new(0x27c0, &bytes).unwrap();
+                        let site = match access {
+                            MemorySiteOperationV2::Load => {
+                                let ir = compile_ir_memory_load_block_v2(code, 0x27c0).unwrap();
+                                let direct = compile_memory_load_block_v2(code, 0x27c0).unwrap();
+                                assert_eq!(ir.site(), direct.site());
+                                ir.site().clone()
+                            }
+                            MemorySiteOperationV2::Store => {
+                                let ir = compile_ir_memory_store_block_v2(code, 0x27c0).unwrap();
+                                let direct = compile_memory_store_block_v2(code, 0x27c0).unwrap();
+                                assert_eq!(ir.site(), direct.site());
+                                ir.site().clone()
+                            }
+                        };
+                        assert!(site.has_supported_profile());
+                        assert!(site.matches_source_bytes(&bytes, access));
+                        assert_eq!(site.operand.address_size, od_isa::OperandSize::Dword);
+                        assert_eq!(site.operand.size, od_isa::OperandSize::Qword);
+                        assert_eq!(site.operand.displacement, i64::from(displacement));
+                        assert_eq!(site.next_rip(), 0x27c0 + bytes.len() as u64);
+                        let mut state = od_isa::LongModeState::default();
+                        state.gpr[usize::from(base)] = 0xfeed_beef_ffff_fffc;
+                        let expected = (0xffff_fffcu32).wrapping_add(displacement as u32) as u64;
+                        assert_eq!(
+                            site.operand.access_address_48(&state, site.next_rip()),
+                            Ok(expected)
+                        );
+                    }
+                }
             }
         }
     }

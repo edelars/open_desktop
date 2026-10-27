@@ -160,124 +160,136 @@ impl MemorySiteV2 {
                 8 => i32::try_from(self.operand.displacement).is_ok(),
                 _ => false,
             };
-        let scoped_data_profile = self.operand.address_size == od_isa::OperandSize::Qword
+        let address32_direct_data_profile = self.operand.address_size == od_isa::OperandSize::Dword
             && self.operand.size == od_isa::OperandSize::Qword
-            && (indexed_sib_data_profile
-                || (self.operand.index.is_none()
-                    && self.operand.scale == 1
-                    && match data_register {
-                        Some(4) => {
-                            (self.operand.displacement == 0
-                                && (length == 3 && base_is_low_gpr
-                                    || length == 4
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && base_is_low_gpr
+            && match length {
+                4 => self.operand.displacement == 0,
+                5 => i8::try_from(self.operand.displacement).is_ok(),
+                8 => i32::try_from(self.operand.displacement).is_ok(),
+                _ => false,
+            };
+        let scoped_data_profile = address32_direct_data_profile
+            || (self.operand.address_size == od_isa::OperandSize::Qword
+                && self.operand.size == od_isa::OperandSize::Qword
+                && (indexed_sib_data_profile
+                    || (self.operand.index.is_none()
+                        && self.operand.scale == 1
+                        && match data_register {
+                            Some(4) => {
+                                (self.operand.displacement == 0
+                                    && (length == 3 && base_is_low_gpr
+                                        || length == 4
+                                            && matches!(
+                                                self.operand.base,
+                                                od_isa::long_decode::AddressBase::Register(
+                                                    od_isa::Register::Rsp
+                                                )
+                                            )))
+                                    || (length == 5
+                                        && i8::try_from(self.operand.displacement).is_ok()
                                         && matches!(
                                             self.operand.base,
                                             od_isa::long_decode::AddressBase::Register(
                                                 od_isa::Register::Rsp
                                             )
-                                        )))
-                                || (length == 5
-                                    && i8::try_from(self.operand.displacement).is_ok()
-                                    && matches!(
-                                        self.operand.base,
-                                        od_isa::long_decode::AddressBase::Register(
-                                            od_isa::Register::Rsp
-                                        )
-                                    ))
-                                || (length == 4
-                                    && i8::try_from(self.operand.displacement).is_ok()
-                                    && matches!(
-                                        self.operand.base,
-                                        od_isa::long_decode::AddressBase::Register(
-                                            od_isa::Register::Rbp
-                                        )
-                                    ))
-                                || (length == 4
-                                    && i8::try_from(self.operand.displacement).is_ok()
-                                    && base_is_low_gpr)
-                                || (length == 8
-                                    && i32::try_from(self.operand.displacement).is_ok()
-                                    && matches!(
-                                        self.operand.base,
-                                        od_isa::long_decode::AddressBase::Register(
-                                            od_isa::Register::Rsp
-                                        )
-                                    ))
-                                || (length == 7
-                                    && i32::try_from(self.operand.displacement).is_ok()
-                                    && matches!(
-                                        self.operand.base,
-                                        od_isa::long_decode::AddressBase::Register(
-                                            od_isa::Register::Rbp
-                                        )
-                                    ))
-                                || (length == 7
-                                    && i32::try_from(self.operand.displacement).is_ok()
-                                    && base_is_low_gpr)
-                                || (length == 7
-                                    && i32::try_from(self.operand.displacement).is_ok()
-                                    && matches!(
-                                        self.operand.base,
-                                        od_isa::long_decode::AddressBase::NextRip
-                                    ))
-                        }
-                        Some(5) => {
-                            (length == 3 && self.operand.displacement == 0 && base_is_low_gpr)
-                                || (length == 4
-                                    && i8::try_from(self.operand.displacement).is_ok()
-                                    && matches!(
-                                        self.operand.base,
-                                        od_isa::long_decode::AddressBase::Register(
-                                            od_isa::Register::Rbp
-                                        )
-                                    ))
-                                || (length == 4
-                                    && i8::try_from(self.operand.displacement).is_ok()
-                                    && base_is_low_gpr)
-                                || (length == 4
-                                    && self.operand.displacement == 0
-                                    && matches!(
-                                        self.operand.base,
-                                        od_isa::long_decode::AddressBase::Register(
-                                            od_isa::Register::Rsp
-                                        )
-                                    ))
-                                || (length == 5
-                                    && i8::try_from(self.operand.displacement).is_ok()
-                                    && matches!(
-                                        self.operand.base,
-                                        od_isa::long_decode::AddressBase::Register(
-                                            od_isa::Register::Rsp
-                                        )
-                                    ))
-                                || (length == 7
-                                    && i32::try_from(self.operand.displacement).is_ok()
-                                    && matches!(
-                                        self.operand.base,
-                                        od_isa::long_decode::AddressBase::Register(
-                                            od_isa::Register::Rbp
-                                        )
-                                    ))
-                                || (length == 7
-                                    && i32::try_from(self.operand.displacement).is_ok()
-                                    && base_is_low_gpr)
-                                || (length == 7
-                                    && i32::try_from(self.operand.displacement).is_ok()
-                                    && matches!(
-                                        self.operand.base,
-                                        od_isa::long_decode::AddressBase::NextRip
-                                    ))
-                                || (length == 8
-                                    && i32::try_from(self.operand.displacement).is_ok()
-                                    && matches!(
-                                        self.operand.base,
-                                        od_isa::long_decode::AddressBase::Register(
-                                            od_isa::Register::Rsp
-                                        )
-                                    ))
-                        }
-                        _ => false,
-                    }));
+                                        ))
+                                    || (length == 4
+                                        && i8::try_from(self.operand.displacement).is_ok()
+                                        && matches!(
+                                            self.operand.base,
+                                            od_isa::long_decode::AddressBase::Register(
+                                                od_isa::Register::Rbp
+                                            )
+                                        ))
+                                    || (length == 4
+                                        && i8::try_from(self.operand.displacement).is_ok()
+                                        && base_is_low_gpr)
+                                    || (length == 8
+                                        && i32::try_from(self.operand.displacement).is_ok()
+                                        && matches!(
+                                            self.operand.base,
+                                            od_isa::long_decode::AddressBase::Register(
+                                                od_isa::Register::Rsp
+                                            )
+                                        ))
+                                    || (length == 7
+                                        && i32::try_from(self.operand.displacement).is_ok()
+                                        && matches!(
+                                            self.operand.base,
+                                            od_isa::long_decode::AddressBase::Register(
+                                                od_isa::Register::Rbp
+                                            )
+                                        ))
+                                    || (length == 7
+                                        && i32::try_from(self.operand.displacement).is_ok()
+                                        && base_is_low_gpr)
+                                    || (length == 7
+                                        && i32::try_from(self.operand.displacement).is_ok()
+                                        && matches!(
+                                            self.operand.base,
+                                            od_isa::long_decode::AddressBase::NextRip
+                                        ))
+                            }
+                            Some(5) => {
+                                (length == 3 && self.operand.displacement == 0 && base_is_low_gpr)
+                                    || (length == 4
+                                        && i8::try_from(self.operand.displacement).is_ok()
+                                        && matches!(
+                                            self.operand.base,
+                                            od_isa::long_decode::AddressBase::Register(
+                                                od_isa::Register::Rbp
+                                            )
+                                        ))
+                                    || (length == 4
+                                        && i8::try_from(self.operand.displacement).is_ok()
+                                        && base_is_low_gpr)
+                                    || (length == 4
+                                        && self.operand.displacement == 0
+                                        && matches!(
+                                            self.operand.base,
+                                            od_isa::long_decode::AddressBase::Register(
+                                                od_isa::Register::Rsp
+                                            )
+                                        ))
+                                    || (length == 5
+                                        && i8::try_from(self.operand.displacement).is_ok()
+                                        && matches!(
+                                            self.operand.base,
+                                            od_isa::long_decode::AddressBase::Register(
+                                                od_isa::Register::Rsp
+                                            )
+                                        ))
+                                    || (length == 7
+                                        && i32::try_from(self.operand.displacement).is_ok()
+                                        && matches!(
+                                            self.operand.base,
+                                            od_isa::long_decode::AddressBase::Register(
+                                                od_isa::Register::Rbp
+                                            )
+                                        ))
+                                    || (length == 7
+                                        && i32::try_from(self.operand.displacement).is_ok()
+                                        && base_is_low_gpr)
+                                    || (length == 7
+                                        && i32::try_from(self.operand.displacement).is_ok()
+                                        && matches!(
+                                            self.operand.base,
+                                            od_isa::long_decode::AddressBase::NextRip
+                                        ))
+                                    || (length == 8
+                                        && i32::try_from(self.operand.displacement).is_ok()
+                                        && matches!(
+                                            self.operand.base,
+                                            od_isa::long_decode::AddressBase::Register(
+                                                od_isa::Register::Rsp
+                                            )
+                                        ))
+                            }
+                            _ => false,
+                        })));
         let register_profile = match self.operation {
             MemorySiteOperationV2::Load => {
                 self.destination.is_some_and(|register| {
@@ -482,7 +494,7 @@ impl MemorySiteV2 {
                 _ => return false,
             };
             return source.len() == expected_length
-                && data_register < 4
+                && data_register <= 5
                 && (base < 4 || mode == 1 && base == 5 && decoded_base == od_isa::Register::Rbp)
                 && site_register == Some(data_register)
                 && self.next_rip.checked_sub(self.guest_rip) == Some(expected_length as u64)

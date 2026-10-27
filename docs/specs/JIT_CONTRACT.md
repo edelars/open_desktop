@@ -2094,6 +2094,19 @@ loads commit only after a successful access; stores consume the old full
 an RSP/RBP memory base faults at that later instruction. See the
 [S3-20al evidence](../reports/STAGE_3_S3-20al_2026-10-27.md).
 
+#### S3-20am: address32 qword MOV with RSP/RBP data
+
+Direct V2, shared IR and bounded dispatch admit exact singleton
+`67 48 8B/89 /r [disp8|disp32]` forms with ModRM `mod=00/01/10`, data
+register RSP or RBP, and direct base RAX..RBX. Address size is Dword while
+operand size remains Qword; lengths are 4/5/8 and displacement is zero, signed
+disp8 or signed disp32 respectively. SIB, RIP-relative and extra-prefix forms
+are excluded. The decoded `MemoryOperand` remains authoritative for low-32-bit
+wrapping EA semantics. Data transfer and stack-register commits remain full
+64-bit. A qword access beginning at `0xffff_fffc` is one contiguous access
+through `0x1_0000_0003`; upper base bits do not participate in effective-address
+calculation. See [S3-20am evidence](../reports/STAGE_3_S3-20am_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,
