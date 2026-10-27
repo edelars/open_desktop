@@ -658,12 +658,24 @@ fn build_block_with_profile(
             instructions.is_empty()
                 && is_checked_qword_store_form(decoded)
                 && (exact_direct_qword_memory_bytes(code, guest_rip, decoded.length, 0x89)
-                    || exact_qword_address32_memory_bytes(code, guest_rip, decoded.length, 0x89))
+                    || exact_qword_address32_memory_bytes(code, guest_rip, decoded.length, 0x89)
+                    || exact_qword_sib_displacement_memory_bytes(
+                        code,
+                        guest_rip,
+                        decoded.length,
+                        0x89,
+                    ))
         } else if profile == BlockBuildProfile::CheckedQwordLoad {
             instructions.is_empty()
                 && is_checked_qword_load_form(decoded)
                 && (exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
-                    || exact_qword_address32_memory_bytes(code, guest_rip, decoded.length, 0x8b))
+                    || exact_qword_address32_memory_bytes(code, guest_rip, decoded.length, 0x8b)
+                    || exact_qword_sib_displacement_memory_bytes(
+                        code,
+                        guest_rip,
+                        decoded.length,
+                        0x8b,
+                    ))
         } else {
             is_s0_09_form(decoded)
         };
@@ -1322,20 +1334,32 @@ fn is_checked_qword_memory_address(
                 && operand.scale == 1
         }
         OperandSize::Qword => {
+            let register_base = matches!(
+                operand.base,
+                od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4
+            );
+            let indexed_displacement_valid = match instruction.length {
+                4 => operand.displacement == 0,
+                5 => (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement),
+                8 => (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement),
+                _ => false,
+            };
+            let indexed_form = operand.index.is_some_and(|index| (index as u8) < 4)
+                && indexed_displacement_valid
+                && matches!(operand.scale, 1 | 2 | 4 | 8);
+            let direct_form = operand.index.is_none()
+                && operand.scale == 1
+                && direct_checked_displacement_matches_length(
+                    instruction.length,
+                    operand.displacement,
+                );
+            let rip_relative = matches!(operand.base, od_isa::long_decode::AddressBase::NextRip)
+                && operand.index.is_none()
+                && operand.scale == 1
+                && instruction.length == 7
+                && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement);
             !instruction.prefixes.address_override
-                && (matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
-                    && (direct_checked_displacement_matches_length(
-                        instruction.length,
-                        operand.displacement,
-                    ) || instruction.length == 4
-                        && operand.index.is_some_and(|index| (index as u8) < 4)
-                        && operand.displacement == 0
-                        && matches!(operand.scale, 1 | 2 | 4 | 8))
-                    || matches!(operand.base, od_isa::long_decode::AddressBase::NextRip)
-                        && instruction.length == 7
-                        && operand.displacement >= i32::MIN as i64
-                        && operand.displacement <= i32::MAX as i64)
-                && (operand.index.is_some() || operand.scale == 1)
+                && (register_base && (direct_form || indexed_form) || rip_relative)
         }
         _ => false,
     }
@@ -1423,6 +1447,37 @@ pub(crate) fn exact_qword_address32_memory_bytes(
         && bytes[3] >> 6 == expected_mode
         && (bytes[3] >> 3) & 7 < 4
         && bytes[3] & 7 < 4
+}
+
+pub(crate) fn exact_qword_sib_displacement_memory_bytes(
+    code: CodeView<'_>,
+    guest_rip: u64,
+    length: u8,
+    opcode: u8,
+) -> bool {
+    let Some(offset) = guest_rip
+        .checked_sub(code.base_rip)
+        .and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    let Some(bytes) = code
+        .bytes
+        .get(offset..offset.saturating_add(usize::from(length)))
+    else {
+        return false;
+    };
+    let expected_mode = match bytes.len() {
+        5 => 1,
+        8 => 2,
+        _ => return false,
+    };
+    bytes[0..2] == [0x48, opcode]
+        && bytes[2] >> 6 == expected_mode
+        && bytes[2] & 7 == 4
+        && (bytes[2] >> 3) & 7 < 4
+        && bytes[3] & 7 < 4
+        && (bytes[3] >> 3) & 7 < 4
 }
 
 fn address32_checked_displacement_matches_length(length: u8, displacement: i64) -> bool {

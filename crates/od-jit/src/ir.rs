@@ -600,8 +600,12 @@ fn is_checked_memory_address(
         Some(index) => {
             matches!(index as u8, 0..=3)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
-                && instruction_length == 4
-                && operand.displacement == 0
+                && match instruction_length {
+                    4 => operand.displacement == 0,
+                    5 => (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement),
+                    8 => (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement),
+                    _ => false,
+                }
                 && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
         }
         None => operand.scale == 1,

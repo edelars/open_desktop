@@ -451,6 +451,33 @@ Bounded dispatch composes the disp8 singleton → bare NOP fallback → existing
 pair and tests partial disp8 and disp32 windows. Pair admissions are unchanged.
 See the [S3-20p report](../reports/STAGE_3_S3-20p_2026-10-27.md).
 
+#### S3-20q: 64-bit SIB signed-displacement qword MOV in shared IR and dispatch
+
+The shared checked singleton additionally admits exactly
+`48 8B/89 /r sib disp8|disp32`: ModRM `mod=01/10,r/m=100`, RAX..RBX
+data/base/index encodings, scale 1/2/4/8, qword data and 64-bit address size,
+with exact lengths five/eight. SIB index 4 (no index), the mod00 base-5
+no-base special form, RBP/RSP and extended registers, `67`, and any extra
+prefix remain unsupported. In the admitted mod01/mod10 forms, base 5 means
+RBP and is rejected by the RAX..RBX limit. Exact
+source validation checks prefix/opcode, ModRM mode and SIB selection, register
+fields, and length against the decoded `MemorySiteV2`; signed displacement
+meaning remains decoder-owned. The existing `MemoryOperand::access_address_48`
+is still the sole EA and qword-range implementation. The descriptor is
+distinct from same-length address32 direct displacement and direct-base
+64-bit forms. Pair profiles are unchanged.
+
+Native direct V2/shared IR/interpreter parity covers both operations across
+all scales and disp8 -128/-1/0/127 and disp32 MIN/-1/0/MAX, including data/base,
+data/index, and base/index aliases. Callback logs confirm one access at the
+decoded target with length eight. Exact architectural fault payloads preserve
+CPU/RAM/budget/retirement; backend failures stay host errors; successful
+store+STOP retains its write. Bounded dispatch composes SIB disp8 → bare NOP
+fallback → existing pair across budgets 0..4, pauses before NOP on STOP and
+resumes from actual RIP, rejects invalid SIB fields without helper access,
+and classifies partial disp8/disp32 windows as `BoundaryReached`. See the
+[S3-20q report](../reports/STAGE_3_S3-20q_2026-10-27.md).
+
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
 alignment, same/different ranges, and safe partial overlaps for load→store;
