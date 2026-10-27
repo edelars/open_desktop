@@ -1768,6 +1768,68 @@ mod tests {
     }
 
     #[test]
+    fn ir_rsp_data_and_base_disp8_is_exact_signed_0x64_sib_form() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for displacement in [i8::MIN, -1, 0, i8::MAX] {
+                let source = [0x48, opcode, 0x64, 0x24, displacement as u8];
+                let code = CodeView::new(0x5730, &source).unwrap();
+                let (ir_site, direct_site, ir_source) = match operation {
+                    MemorySiteOperationV2::Load => {
+                        let ir = compile_ir_memory_load_block_v2(code, 0x5730).unwrap();
+                        let direct = compile_memory_load_block_v2(code, 0x5730).unwrap();
+                        (
+                            ir.site().clone(),
+                            direct.site().clone(),
+                            ir.source_bytes().to_vec(),
+                        )
+                    }
+                    MemorySiteOperationV2::Store => {
+                        let ir = compile_ir_memory_store_block_v2(code, 0x5730).unwrap();
+                        let direct = compile_memory_store_block_v2(code, 0x5730).unwrap();
+                        (
+                            ir.site().clone(),
+                            direct.site().clone(),
+                            ir.source_bytes().to_vec(),
+                        )
+                    }
+                };
+                assert_eq!(ir_site, direct_site);
+                assert_eq!(ir_source, source);
+                assert_eq!(ir_site.destination().or(ir_site.source()), Some(4));
+                assert_eq!(ir_site.next_rip(), 0x5735);
+                assert_eq!(ir_site.operand().base, AddressBase::Register(Register::Rsp));
+                assert_eq!(ir_site.operand().index, None);
+                assert_eq!(ir_site.operand().scale, 1);
+                assert_eq!(ir_site.operand().displacement, i64::from(displacement));
+                assert!(ir_site.matches_source_bytes(&source, operation));
+            }
+
+            for bytes in [
+                vec![0x48, opcode, 0x64, 0x24],             // truncated displacement
+                vec![0x48, opcode, 0x64, 0x25, 0],          // SIB no-base
+                vec![0x48, opcode, 0x64, 0x64, 0],          // scale without index
+                vec![0x48, opcode, 0x64, 0x2c, 0],          // index present
+                vec![0x48, opcode, 0xa4, 0x24, 0, 0, 0, 0], // disp32
+                vec![0x67, 0x48, opcode, 0x64, 0x24, 0],    // address-size override
+                vec![0x48, 0x67, opcode, 0x64, 0x24, 0],    // reordered prefix
+                vec![0x48, opcode, 0x64, 0x24, 0, 0x90],    // trailing instruction
+            ] {
+                let code = CodeView::new(0x5730, &bytes).unwrap();
+                let result = match operation {
+                    MemorySiteOperationV2::Load => compile_ir_memory_load_block_v2(code, 0x5730)
+                        .and_then(|_| compile_memory_load_block_v2(code, 0x5730).map(|_| ())),
+                    MemorySiteOperationV2::Store => compile_ir_memory_store_block_v2(code, 0x5730)
+                        .and_then(|_| compile_memory_store_block_v2(code, 0x5730).map(|_| ())),
+                };
+                assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
+            }
+        }
+    }
+
+    #[test]
     fn ir_rsp_base_no_index_sib_disp8_is_exact_and_signed() {
         for (opcode, operation) in [
             (0x8b, MemorySiteOperationV2::Load),
@@ -1825,7 +1887,6 @@ mod tests {
                 vec![0x48, opcode, 0x44, 0x24],    // truncated before disp8
                 vec![0x48, opcode, 0x44, 0x04, 0], // index present
                 vec![0x48, opcode, 0x44, 0x64, 0], // scale != 1, no index
-                vec![0x48, opcode, 0x64, 0x24, 0], // RSP data
                 vec![0x67, 0x48, opcode, 0x44, 0x24, 0],
                 vec![0x48, 0x67, opcode, 0x44, 0x24, 0],
                 vec![0x48, opcode, 0x44, 0x24, 0, 0x90], // trailing byte

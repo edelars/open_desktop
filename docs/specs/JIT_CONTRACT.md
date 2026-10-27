@@ -1910,6 +1910,25 @@ without replay. The ARM64/macOS x19 canary covers success, guard and fault
 returns. See the
 [S3-20ac report](../reports/STAGE_3_S3-20ac_2026-10-27.md).
 
+#### S3-20ad: RSP as qword MOV data and signed-disp8 SIB base
+
+Admit only exact five-byte singleton `48 8B/89 64 24 ib`: ModRM `mod=01`,
+reg/data RSP, r/m SIB, SIB exactly `0x24`, signed disp8, qword data and 64-bit
+effective address. The decoded `MemoryOperand` and `access_address_48` remain
+the sole address semantics. Generic GPR validation and frame/public ABI remain
+unchanged; no other SIB, displacement width, prefix, pair or V3 form is added.
+
+Address and store payload use entry RSP. Successful load commits RSP only
+after the read succeeds; a later instruction observes the committed value.
+Architectural faults leave the instruction uncommitted, address overflow and
+backend errors retain their existing classification, and a successful store
+remains committed if STOP is requested after its callback. Budget and STOP
+continuation resumes from actual RIP without replay. The bounded dispatcher
+test loads a noncanonical RSP through `[RSP-1]`, commits the first instruction,
+then faults #SS on the next `[RSP]` without repeating the first access. Partial
+source windows and non-profile forms stop before data access. See the
+[S3-20ad report](../reports/STAGE_3_S3-20ad_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

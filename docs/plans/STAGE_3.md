@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-20n/S3-20o/S3-20p/S3-20q/S3-20r/S3-20s/S3-20t/S3-20u/S3-20v/S3-20w/S3-20x/S3-20y/S3-20z/S3-20aa/S3-20ab/S3-20ac/S3-26a/S3-26b/S3-26c/S3-26d/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-20n/S3-20o/S3-20p/S3-20q/S3-20r/S3-20s/S3-20t/S3-20u/S3-20v/S3-20w/S3-20x/S3-20y/S3-20z/S3-20aa/S3-20ab/S3-20ac/S3-20ad/S3-26a/S3-26b/S3-26c/S3-26d/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -176,6 +176,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20aa | RBP как data register в qword MOV через shared IR и bounded dispatcher | Только `48 8B/89 /r`, ModRM `mod=00`, data RBP, base RAX..RBX, ровно 3 bytes; generic GPR admission не расширяется |
 | [partial] | S3-20ab | RBP одновременно data и base для qword MOV с signed disp8 | Только `48 8B/89 6D ib`, ModRM `mod=01/reg=RBP/rm=RBP`, ровно 4 bytes; адрес использует старый RBP |
 | [partial] | S3-20ac | RSP одновременно data и base в qword MOV через exact SIB | Только `48 8B/89 24 24`, ModRM `mod=00/rm=100`, SIB `0x24`, ровно 4 bytes; адрес использует старый RSP |
+| [partial] | S3-20ad | RSP одновременно data и base в qword MOV через exact SIB + signed disp8 | Только `48 8B/89 64 24 ib`, ModRM `mod=01/reg=RSP/rm=100`, SIB `0x24`, ровно 5 bytes; адрес и store payload используют старый RSP |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1373,6 +1374,25 @@ and callback STOP, resumes at the actual next RIP, then faults on a following
 `[RSP]` access without repeating the first read. Invalid SIB and partial forms
 stop before publication/helper calls. See the
 [S3-20ac report](../reports/STAGE_3_S3-20ac_2026-10-27.md).
+
+#### S3-20ad. RSP as both qword MOV data and signed-disp8 SIB base
+
+Admit only exact singleton `48 8B/89 64 24 ib`: ModRM `mod=01/reg=4/rm=4`,
+SIB exactly `0x24` (RSP base, no index, scale 1), signed disp8, qword data,
+64-bit effective address and exact length five. The existing decoded
+`MemoryOperand` and `access_address_48` remain the only address authority.
+Generic GPR validation, frame/ABI, pair/V3 and other prefix/address forms do
+not change.
+
+Direct V2/shared IR/interpreter parity covers disp8 -128, -1, 0 and 127 for
+load/store. Effective address and store payload use entry RSP; successful load
+commits the loaded RSP only after the access succeeds. Fault, address-overflow,
+backend-error, STOP and zero-budget cases preserve their existing
+classification and commit rules. Dispatcher budget split and callback STOP
+commit `MOV RSP,[RSP-1]`, resume at `ENTRY+5`, then fault #SS on the following
+`[RSP]` access without repeating the first read. Partial SIB, disp32, changed
+SIB and prefix variants stop without a data callback. See the
+[S3-20ad report](../reports/STAGE_3_S3-20ad_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 
