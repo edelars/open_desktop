@@ -17,7 +17,7 @@ enum BlockBuildProfile {
     S0_09,
     CheckedQwordLoad,
     CheckedQwordStore,
-    CheckedQwordStoreThenLoad,
+    CheckedQwordMemoryPair,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -485,9 +485,8 @@ pub(crate) fn build_checked_qword_store_block(
     )
 }
 
-/// Build the one reviewed two-instruction checked-memory profile. Admission
-/// requires the exact `MOV [RBX], RAX; MOV RCX, [RBX]` byte sequence.
-pub(crate) fn build_checked_qword_store_then_load_block(
+/// Build one of the two reviewed checked-memory pair profiles.
+pub(crate) fn build_checked_qword_two_site_block(
     code: CodeView<'_>,
     entry_rip: u64,
     context: AccessContext,
@@ -498,7 +497,7 @@ pub(crate) fn build_checked_qword_store_then_load_block(
         entry_rip,
         context,
         limits,
-        BlockBuildProfile::CheckedQwordStoreThenLoad,
+        BlockBuildProfile::CheckedQwordMemoryPair,
     )
 }
 
@@ -625,15 +624,29 @@ fn build_block_with_profile(
             base_rip: code.base_rip,
             code_end: code.code_end,
         })?;
-        let admitted = if profile == BlockBuildProfile::CheckedQwordStoreThenLoad {
-            match instructions.len() {
-                0 => {
+        let admitted = if profile == BlockBuildProfile::CheckedQwordMemoryPair {
+            let bytes = code.bytes.get(entry_offset..entry_offset.saturating_add(6));
+            let load_store = bytes == Some(&[0x48, 0x8b, 0x03, 0x48, 0x89, 0x02][..]);
+            match (instructions.len(), load_store) {
+                (0, true) => {
+                    is_checked_qword_load_form(decoded)
+                        && exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
+                        && code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                            == Some(&[0x48, 0x8b, 0x03][..])
+                }
+                (1, true) => {
+                    is_checked_qword_store_form(decoded)
+                        && exact_direct_qword_memory_bytes(code, guest_rip, decoded.length, 0x89)
+                        && code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                            == Some(&[0x48, 0x89, 0x02][..])
+                }
+                (0, false) => {
                     is_checked_qword_store_form(decoded)
                         && exact_direct_qword_memory_bytes(code, guest_rip, decoded.length, 0x89)
                         && code.bytes.get(guest_offset..guest_offset.saturating_add(3))
                             == Some(&[0x48, 0x89, 0x03][..])
                 }
-                1 => {
+                (1, false) => {
                     is_checked_qword_load_form(decoded)
                         && exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
                         && code.bytes.get(guest_offset..guest_offset.saturating_add(3))
@@ -724,7 +737,7 @@ fn build_block_with_profile(
         });
 
         let complete_bounded_profile = match profile {
-            BlockBuildProfile::CheckedQwordStoreThenLoad => instructions.len() == 2,
+            BlockBuildProfile::CheckedQwordMemoryPair => instructions.len() == 2,
             BlockBuildProfile::CheckedQwordLoad | BlockBuildProfile::CheckedQwordStore => true,
             BlockBuildProfile::S0_09 => false,
         };
@@ -846,7 +859,7 @@ mod tests {
     #[test]
     fn exact_store_then_load_profile_builds_two_instructions_only() {
         let code = CodeView::new(0x4000, &[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b, 0x90]).unwrap();
-        let outcome = build_checked_qword_store_then_load_block(
+        let outcome = build_checked_qword_two_site_block(
             code,
             0x4000,
             AccessContext::default(),
@@ -863,7 +876,7 @@ mod tests {
 
         let bytes = &[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0f][..];
         {
-            let outcome = build_checked_qword_store_then_load_block(
+            let outcome = build_checked_qword_two_site_block(
                 CodeView::new(0x4000, bytes).unwrap(),
                 0x4000,
                 AccessContext::default(),
@@ -875,7 +888,7 @@ mod tests {
             };
             assert_eq!(block.instructions.len(), 1);
         }
-        let outcome = build_checked_qword_store_then_load_block(
+        let outcome = build_checked_qword_two_site_block(
             CodeView::new(
                 0x4000,
                 &[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b, 0x48, 0x89, 0x03],

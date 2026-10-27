@@ -67,6 +67,13 @@ pub enum MemorySiteOperationV2 {
     Store,
 }
 
+/// Exact admitted order for the bounded two-site memory artifacts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryPairSequenceV2 {
+    StoreThenLoad,
+    LoadThenStore,
+}
+
 /// Immutable per-block description for one verifier-approved memory operation.
 /// The pointed-to representation is private to the same linked build; it is
 /// never passed as a C-layout record or retained by the translation key.
@@ -425,19 +432,20 @@ pub unsafe extern "C" fn memory_site_helper_v2(
     unsafe { memory_site_helper_v2_impl(context, site_index, 0) }
 }
 
-/// Helper reserved for the exact S3-20j two-instruction artifact. Table index
-/// and instruction index must both be 0 or 1; the singleton V2 helper retains
-/// its original index-zero contract.
+/// Helper reserved for the two exact bounded two-instruction artifacts. Table
+/// index and instruction index must both be 0 or 1; the singleton V2 helper
+/// retains its original index-zero contract.
 ///
 /// # Safety
 /// `context` must point to a live, aligned, exclusively borrowed
 /// `RuntimeContextV2`. Its state, adapter, and immutable two-entry site table
 /// must all be valid and remain alive for the entire synchronous call. The
-/// adapter must provide exclusive access to private ordinary RAM: accesses
-/// must not be MMIO, delayed, asynchronous, concurrent, DMA-visible, or
-/// executable/code aliases, and it must not re-enter or unwind through this
-/// helper. The context outputs must remain writable and unaliased until return.
-pub unsafe extern "C" fn memory_site_helper_store_load_v2(
+/// adapter must provide exclusive access to private ordinary RAM. Qword writes
+/// must be all-or-nothing. Accesses must not be MMIO, atomic, delayed,
+/// asynchronous, concurrent, DMA-visible, or executable/code aliases. The
+/// adapter must not re-enter or unwind through this helper. Context outputs
+/// must remain writable and unaliased until return.
+pub unsafe extern "C" fn memory_site_helper_two_site_v2(
     context: *mut RuntimeContextV2,
     site_index: u32,
 ) -> u32 {

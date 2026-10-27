@@ -152,8 +152,8 @@ pub enum CompileFlavor {
     S3_26aIrMemoryLoadV2,
     /// Shared typed-IR/allocator V2 checked qword-store entry.
     S3_26bIrMemoryStoreV2,
-    /// Exact checked qword store followed by checked qword load entry.
-    S3_26cIrStoreThenLoadV2,
+    /// One of the two exact checked qword two-site IR entries.
+    S3_26dIrTwoMemoryV2,
     /// Uncached first V2 checked `MOV [mem], r64` compiler profile.
     S3_20bMemoryStoreV2,
     /// Bounded active-code three-instruction fixture block with V3 exits.

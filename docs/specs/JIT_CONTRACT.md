@@ -308,33 +308,29 @@ It does not add MMIO, DMA, concurrency, atomics, executable aliases, active
 SMC, multiblock ordering, or performance claims. See the
 [S3-20i/S3-26b report](../reports/STAGE_3_S3-20i_2026-10-27.md).
 
-#### S3-20j / S3-26c: one generated checked store→load entry
+#### S3-20j / S3-26c / S3-20k / S3-26d: exact two-site checked-memory entries
 
-The opt-in profile accepts exactly six source bytes, `48 89 03 48 8B 0B`:
-`MOV [RBX], RAX` followed by `MOV RCX, [RBX]`. Builder, typed IR, allocator,
+The opt-in profile accepts exactly two six-byte sequences: `48 89 03 48 8B 0B`
+(`MOV [RBX], RAX; MOV RCX, [RBX]`) and `48 8B 03 48 89 02`
+(`MOV RAX, [RBX]; MOV [RDX], RAX`). Builder, typed IR, allocator, shared
 emitter, and host publication produce one entry with two ordered memory sites.
-Site table indices match guest instruction indices 0 and 1. The existing V2
-single-site helper, artifacts, and host entry keep their exact index-zero
-checks; only this bounded artifact uses the separate two-site helper and typed
-context metadata.
+The typed metadata records the selected sequence and validates each real
+operation, operand and instruction boundary. The existing V2 single-site APIs
+retain their exact index-zero checks and reject this artifact family.
 
-The entry accepts canonical RIP at the store or at the load boundary, allowing
-the latter as continuation after a one-instruction budget or a committed
-store followed by load fault. The store helper is non-replayable through its
-commit. A failed store leaves state and RAM unchanged; a failed load preserves
-the committed RAM write and leaves RCX unchanged at the load RIP. Resuming at
-that RIP may fault again before retiring in the continuation invocation; the
-host decoder accepts both this fresh load-boundary state and a fault after the
-store committed in the same invocation. STOP raised by the write callback is
-observed after store commit at the next instruction boundary, in the usual
-stop-RIP → STOP → budget order. The host result decoder validates helper site,
-architectural fault payload, RIP, budget, and retirement for each boundary.
+The entry accepts canonical RIP at the first or second instruction. Store→load
+commits the first store before the load; load→store commits loaded RAX before
+the store. A second-site fault may occur on continuation before retiring in
+that invocation; it does not repeat the first site. STOP and budget are checked
+at the second boundary in stop-RIP → STOP → budget order. The host result
+decoder validates helper site, fault payload, RIP, budget, and retirement for
+both sequences. A store commit/helper PC range remains non-replayable.
 
 This contract applies to one vCPU and caller-guaranteed private synchronous
 ordinary RAM with all-or-nothing qword writes. It excludes branches, executable
-aliases, MMIO, atomic operations, concurrent access, and general multi-site
+aliases, MMIO, atomic operations, concurrent access, and arbitrary multi-site
 blocks. No performance claim is made. Evidence is in the
-[S3-20j/S3-26c report](../reports/STAGE_3_S3-20j_2026-10-27.md).
+[two-sequence report](../reports/STAGE_3_S3-20j_2026-10-27.md).
 
 ## 4. Начальные runtime bounds
 

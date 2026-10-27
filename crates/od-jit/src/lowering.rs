@@ -93,8 +93,8 @@ fn lower_with_admission(
     let single_memory = block.instructions.len() == 1
         && (block::is_checked_qword_load_form(block.instructions[0].decoded)
             || block::is_checked_qword_store_form(block.instructions[0].decoded));
-    let exact_store_then_load = exact_checked_store_then_load(block);
-    if has_memory && !single_memory && !exact_store_then_load {
+    let exact_memory_pair = exact_checked_memory_pair(block);
+    if has_memory && !single_memory && !exact_memory_pair {
         return Err(LoweringError::InvalidDecodedForm {
             guest_rip: block.entry_rip,
         });
@@ -306,21 +306,21 @@ fn lower_with_admission(
     }))
 }
 
-fn exact_checked_store_then_load(block: &crate::block::BasicBlock) -> bool {
+pub(crate) fn exact_checked_memory_pair(block: &crate::block::BasicBlock) -> bool {
     if block.instructions.len() != 2 {
         return false;
     }
-    let [store, load] = block.instructions.as_slice() else {
+    let [first, second] = block.instructions.as_slice() else {
         return false;
     };
-    if store.next_rip.checked_sub(store.guest_rip) != Some(3)
-        || load.next_rip.checked_sub(load.guest_rip) != Some(3)
-        || store.next_rip != load.guest_rip
+    if first.next_rip.checked_sub(first.guest_rip) != Some(3)
+        || second.next_rip.checked_sub(second.guest_rip) != Some(3)
+        || first.next_rip != second.guest_rip
     {
         return false;
     }
-    matches!(
-        store.decoded.operation,
+    let store_to_load = matches!(
+        first.decoded.operation,
         DecodedOperation::Mov {
             dst: Operand::Memory(operand),
             src: Operand::Register(source),
@@ -332,7 +332,7 @@ fn exact_checked_store_then_load(block: &crate::block::BasicBlock) -> bool {
             && operand.address_size == od_isa::OperandSize::Qword
             && operand.size == od_isa::OperandSize::Qword
     ) && matches!(
-        load.decoded.operation,
+        second.decoded.operation,
         DecodedOperation::Mov {
             dst: Operand::Register(destination),
             src: Operand::Memory(operand),
@@ -343,7 +343,33 @@ fn exact_checked_store_then_load(block: &crate::block::BasicBlock) -> bool {
             && operand.displacement == 0
             && operand.address_size == od_isa::OperandSize::Qword
             && operand.size == od_isa::OperandSize::Qword
-    )
+    );
+    let load_to_store = matches!(
+        first.decoded.operation,
+        DecodedOperation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Memory(operand),
+        } if destination.register() == od_isa::Register::Rax
+            && destination.size() == od_isa::OperandSize::Qword
+            && operand.base == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            && operand.index.is_none()
+            && operand.displacement == 0
+            && operand.address_size == od_isa::OperandSize::Qword
+            && operand.size == od_isa::OperandSize::Qword
+    ) && matches!(
+        second.decoded.operation,
+        DecodedOperation::Mov {
+            dst: Operand::Memory(operand),
+            src: Operand::Register(source),
+        } if operand.base == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rdx)
+            && source.register() == od_isa::Register::Rax
+            && source.size() == od_isa::OperandSize::Qword
+            && operand.index.is_none()
+            && operand.displacement == 0
+            && operand.address_size == od_isa::OperandSize::Qword
+            && operand.size == od_isa::OperandSize::Qword
+    );
+    store_to_load || load_to_store
 }
 
 #[derive(Clone)]
@@ -532,7 +558,7 @@ mod tests {
 
     #[test]
     fn lowers_exact_store_then_load_as_two_committed_memory_effects() {
-        let outcome = block::build_checked_qword_store_then_load_block(
+        let outcome = block::build_checked_qword_two_site_block(
             CodeView::new(BASE, &[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]).unwrap(),
             BASE,
             AccessContext::default(),

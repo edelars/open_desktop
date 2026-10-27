@@ -10,7 +10,7 @@ use crate::block::{
 use crate::block_emitter::{
     BlockEmitterError, EmittedCheckedLoadBlockV2, EmittedCheckedStoreBlockV2, EmittedRuntimeBlock,
     emit_checked_load_runtime_block_v2, emit_checked_store_runtime_block_v2, emit_runtime_block,
-    emit_store_then_load_runtime_block_v2,
+    emit_two_memory_runtime_block_v2,
 };
 use crate::ir::Operation;
 use crate::lowering::{self, LoweredProgram, LoweringError, LoweringOutcome};
@@ -159,11 +159,11 @@ pub(crate) fn compile_checked_store_block_v2(
     Ok(emitted)
 }
 
-pub(crate) fn compile_checked_store_then_load_block_v2(
+pub(crate) fn compile_checked_two_memory_block_v2(
     code: CodeView<'_>,
     entry_rip: u64,
-) -> Result<crate::block_emitter::EmittedStoreThenLoadBlockV2, BlockCompileError> {
-    let built = block::build_checked_qword_store_then_load_block(
+) -> Result<crate::block_emitter::EmittedTwoMemoryBlockV2, BlockCompileError> {
+    let built = block::build_checked_qword_two_site_block(
         code,
         entry_rip,
         AccessContext::default(),
@@ -188,7 +188,7 @@ pub(crate) fn compile_checked_store_then_load_block_v2(
         ));
     }
     let allocation = allocate_block(&lowered, CHECKED_STORE_FRAME_PREFIX_BYTES_V2)?;
-    let emitted = emit_store_then_load_runtime_block_v2(&lowered.program, &allocation)
+    let emitted = emit_two_memory_runtime_block_v2(&lowered.program, &allocation)
         .map_err(BlockCompileError::Emitter)?;
     let actual = emitted
         .code()

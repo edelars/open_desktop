@@ -63,15 +63,15 @@ pub struct EmittedCheckedStoreBlockV2 {
     entry_rip: u64,
 }
 
-/// Isolated entry for the exact S3-20j store-then-load profile.
+/// Isolated entry for the two exact bounded checked-memory pair profiles.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EmittedStoreThenLoadBlockV2 {
+pub struct EmittedTwoMemoryBlockV2 {
     code: EncodedCode,
     pc_map: PcMap,
     entry_rip: u64,
 }
 
-impl EmittedStoreThenLoadBlockV2 {
+impl EmittedTwoMemoryBlockV2 {
     pub fn code(&self) -> &EncodedCode {
         &self.code
     }
@@ -744,32 +744,43 @@ pub fn emit_checked_store_runtime_block_v2(
     })
 }
 
-/// Emit one entry for exactly `MOV [RBX], RAX; MOV RCX, [RBX]`. The two
-/// helpers and commits remain in guest order; the second instruction is also
-/// a legal continuation entry when the canonical RIP already names it.
-pub fn emit_store_then_load_runtime_block_v2(
+/// Emit one entry for either exact checked-memory pair. Helpers and commits
+/// remain in guest order; the second instruction is a legal continuation.
+pub fn emit_two_memory_runtime_block_v2(
     program: &Program,
     allocation: &Allocation<'_>,
-) -> Result<EmittedStoreThenLoadBlockV2, BlockEmitterError> {
+) -> Result<EmittedTwoMemoryBlockV2, BlockEmitterError> {
     ir::verify(program).map_err(BlockEmitterError::InvalidProgram)?;
     if !std::ptr::eq(program, allocation.program()) {
         return Err(BlockEmitterError::AllocationProgramMismatch);
     }
-    if program.guest_instructions.len() != 2
-        || !matches!(program.operations.as_slice(), [
-            Operation::BeginInstruction { index: 0 },
-            Operation::CheckedStore { src: GuestGpr(0), operand: store_operand },
-            Operation::CommitInstruction { index: 0 },
-            Operation::BeginInstruction { index: 1 },
-            Operation::CheckedLoad { dst: load_temp, operand: load_operand },
-            Operation::WriteGpr { register: GuestGpr(1), src, width: IntWidth::W64 },
-            Operation::CommitInstruction { index: 1 },
-            Operation::Exit { kind: ExitKind::BlockComplete, target_rip },
-        ] if src == load_temp
-            && *target_rip == program.guest_instructions[1].next_rip
-            && supported_store_then_load_operands(*store_operand, *load_operand)
-        )
-    {
+    let store_then_load = matches!(program.operations.as_slice(), [
+        Operation::BeginInstruction { index: 0 },
+        Operation::CheckedStore { src: GuestGpr(0), operand: store_operand },
+        Operation::CommitInstruction { index: 0 },
+        Operation::BeginInstruction { index: 1 },
+        Operation::CheckedLoad { dst: load_temp, operand: load_operand },
+        Operation::WriteGpr { register: GuestGpr(1), src, width: IntWidth::W64 },
+        Operation::CommitInstruction { index: 1 },
+        Operation::Exit { kind: ExitKind::BlockComplete, target_rip },
+    ] if src == load_temp
+        && *target_rip == program.guest_instructions[1].next_rip
+        && supported_store_then_load_operands(*store_operand, *load_operand)
+    );
+    let load_then_store = matches!(program.operations.as_slice(), [
+        Operation::BeginInstruction { index: 0 },
+        Operation::CheckedLoad { dst: load_temp, operand: load_operand },
+        Operation::WriteGpr { register: GuestGpr(0), src, width: IntWidth::W64 },
+        Operation::CommitInstruction { index: 0 },
+        Operation::BeginInstruction { index: 1 },
+        Operation::CheckedStore { src: GuestGpr(0), operand: store_operand },
+        Operation::CommitInstruction { index: 1 },
+        Operation::Exit { kind: ExitKind::BlockComplete, target_rip },
+    ] if src == load_temp
+        && *target_rip == program.guest_instructions[1].next_rip
+        && supported_load_then_store_operands(*load_operand, *store_operand)
+    );
+    if program.guest_instructions.len() != 2 || (!store_then_load && !load_then_store) {
         return Err(BlockEmitterError::UnsupportedShape {
             instruction_index: 0,
         });
@@ -789,7 +800,7 @@ pub fn emit_store_then_load_runtime_block_v2(
     }
     let pair_count =
         usize::try_from(frame.frame_bytes / 16).map_err(|_| BlockEmitterError::FrameTooLarge)?;
-    let [store, load] = program.guest_instructions.as_slice() else {
+    let [first, second] = program.guest_instructions.as_slice() else {
         return Err(BlockEmitterError::UnsupportedShape {
             instruction_index: 0,
         });
@@ -828,20 +839,20 @@ pub fn emit_store_then_load_runtime_block_v2(
     );
 
     // The same generated entry supports initial execution and continuation at
-    // the load boundary, but rejects every other canonical RIP.
+    // the second boundary, but rejects every other canonical RIP.
     let entry_check = code_offset(&encoder)?;
     emit_state_load(&mut encoder, LONG_MODE_RIP_OFFSET as u32, xreg(15)?)?;
-    emit_u64(&mut encoder, xreg(14)?, store.guest_rip)?;
+    emit_u64(&mut encoder, xreg(14)?, first.guest_rip)?;
     encoder.subs_x(XRegOrZero::Zero, xreg(15)?, XRegOrZero::Reg(xreg(14)?));
     encoder.b_cond(Condition::Equal, run_store)?;
-    emit_u64(&mut encoder, xreg(14)?, load.guest_rip)?;
+    emit_u64(&mut encoder, xreg(14)?, second.guest_rip)?;
     encoder.subs_x(XRegOrZero::Zero, xreg(15)?, XRegOrZero::Reg(xreg(14)?));
     encoder.b_cond(Condition::Equal, run_load)?;
     let bad_entry = new_exit_stub(
         &mut encoder,
         &mut returns,
         RuntimeExitTag::NeedInterpreter as u32,
-        store.guest_rip,
+        first.guest_rip,
         None,
         SnapshotAdmissibility::CanonicalBoundary,
     )?;
@@ -858,12 +869,12 @@ pub fn emit_store_then_load_runtime_block_v2(
 
     encoder.bind(run_store)?;
     let store_guard = code_offset(&encoder)?;
-    emit_instruction_guards(&mut encoder, &mut returns, store.guest_rip, 0)?;
+    emit_instruction_guards(&mut encoder, &mut returns, first.guest_rip, 0)?;
     push_range(
         &mut ranges,
         store_guard,
         code_offset(&encoder)?,
-        store.guest_rip,
+        first.guest_rip,
         Some(0),
         StatePhase::BeforeInstruction,
         SnapshotAdmissibility::CanonicalBoundary,
@@ -874,11 +885,24 @@ pub fn emit_store_then_load_runtime_block_v2(
         allocation,
         1,
         0,
-        store.guest_rip,
+        first.guest_rip,
         store_failed,
     )?;
     let store_commit = code_offset(&encoder)?;
-    emit_u64(&mut encoder, xreg(13)?, store.next_rip)?;
+    if load_then_store {
+        emit_saved_pointer_load(&mut encoder, FRAME_RUNTIME_CONTEXT_POINTER, xreg(16)?)?;
+        encoder.ldr_x(
+            XRegOrZero::Reg(xreg(13)?),
+            AddressBase::Reg(xreg(16)?),
+            RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET as u32,
+        )?;
+        encoder.str_x(
+            XRegOrZero::Reg(xreg(13)?),
+            AddressBase::Sp,
+            FRAME_STAGING_GPRS,
+        )?;
+    }
+    emit_u64(&mut encoder, xreg(13)?, first.next_rip)?;
     emit_saved_pointer_load(&mut encoder, FRAME_STAGING_RIP_POINTER, xreg(16)?)?;
     encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
     emit_commit(&mut encoder, 0, pair_count)?;
@@ -886,14 +910,14 @@ pub fn emit_store_then_load_runtime_block_v2(
         &mut ranges,
         store_commit,
         code_offset(&encoder)?,
-        store.guest_rip,
+        first.guest_rip,
         Some(0),
         StatePhase::CommitInProgress,
         SnapshotAdmissibility::InadmissibleDuringCommit,
     );
     boundaries.push(GuestBoundaryPoint {
         host_offset: code_offset(&encoder)?,
-        rip: GuestRipBoundary::Fixed(store.next_rip),
+        rip: GuestRipBoundary::Fixed(first.next_rip),
         instruction_index: 0,
         committed_instructions: 1,
         phase: StatePhase::Committed,
@@ -904,7 +928,7 @@ pub fn emit_store_then_load_runtime_block_v2(
         &mut ranges,
         after_store,
         code_offset(&encoder)?,
-        store.next_rip,
+        first.next_rip,
         Some(0),
         StatePhase::Committed,
         SnapshotAdmissibility::CanonicalBoundary,
@@ -912,12 +936,12 @@ pub fn emit_store_then_load_runtime_block_v2(
 
     encoder.bind(run_load)?;
     let load_guard = code_offset(&encoder)?;
-    emit_instruction_guards(&mut encoder, &mut returns, load.guest_rip, 1)?;
+    emit_instruction_guards(&mut encoder, &mut returns, second.guest_rip, 1)?;
     push_range(
         &mut ranges,
         load_guard,
         code_offset(&encoder)?,
-        load.guest_rip,
+        second.guest_rip,
         Some(1),
         StatePhase::BeforeInstruction,
         SnapshotAdmissibility::CanonicalBoundary,
@@ -926,24 +950,26 @@ pub fn emit_store_then_load_runtime_block_v2(
         &mut encoder,
         &mut ranges,
         allocation,
-        4,
+        if load_then_store { 5 } else { 4 },
         1,
-        load.guest_rip,
+        second.guest_rip,
         load_failed,
     )?;
     let load_commit = code_offset(&encoder)?;
-    emit_saved_pointer_load(&mut encoder, FRAME_RUNTIME_CONTEXT_POINTER, xreg(16)?)?;
-    encoder.ldr_x(
-        XRegOrZero::Reg(xreg(13)?),
-        AddressBase::Reg(xreg(16)?),
-        RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET as u32,
-    )?;
-    encoder.str_x(
-        XRegOrZero::Reg(xreg(13)?),
-        AddressBase::Sp,
-        FRAME_STAGING_GPRS + 8,
-    )?;
-    emit_u64(&mut encoder, xreg(13)?, load.next_rip)?;
+    if !load_then_store {
+        emit_saved_pointer_load(&mut encoder, FRAME_RUNTIME_CONTEXT_POINTER, xreg(16)?)?;
+        encoder.ldr_x(
+            XRegOrZero::Reg(xreg(13)?),
+            AddressBase::Reg(xreg(16)?),
+            RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET as u32,
+        )?;
+        encoder.str_x(
+            XRegOrZero::Reg(xreg(13)?),
+            AddressBase::Sp,
+            FRAME_STAGING_GPRS + 8,
+        )?;
+    }
+    emit_u64(&mut encoder, xreg(13)?, second.next_rip)?;
     emit_saved_pointer_load(&mut encoder, FRAME_STAGING_RIP_POINTER, xreg(16)?)?;
     encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
     emit_commit(&mut encoder, 1, pair_count)?;
@@ -951,14 +977,14 @@ pub fn emit_store_then_load_runtime_block_v2(
         &mut ranges,
         load_commit,
         code_offset(&encoder)?,
-        load.guest_rip,
+        second.guest_rip,
         Some(1),
         StatePhase::CommitInProgress,
         SnapshotAdmissibility::InadmissibleDuringCommit,
     );
     boundaries.push(GuestBoundaryPoint {
         host_offset: code_offset(&encoder)?,
-        rip: GuestRipBoundary::Fixed(load.next_rip),
+        rip: GuestRipBoundary::Fixed(second.next_rip),
         instruction_index: 1,
         committed_instructions: 2,
         phase: StatePhase::Committed,
@@ -969,7 +995,7 @@ pub fn emit_store_then_load_runtime_block_v2(
         &mut ranges,
         skip_stubs,
         code_offset(&encoder)?,
-        load.next_rip,
+        second.next_rip,
         Some(1),
         StatePhase::Committed,
         SnapshotAdmissibility::CanonicalBoundary,
@@ -979,14 +1005,14 @@ pub fn emit_store_then_load_runtime_block_v2(
         (
             store_failed,
             crate::runtime::RUNTIME_EXIT_V2_MEMORY_OPERATION,
-            GuestRipSource::Fixed(store.guest_rip),
+            GuestRipSource::Fixed(first.guest_rip),
             Some(0),
             SnapshotAdmissibility::ReplayCurrentInstruction,
         ),
         (
             load_failed,
             crate::runtime::RUNTIME_EXIT_V2_MEMORY_OPERATION,
-            GuestRipSource::Fixed(load.guest_rip),
+            GuestRipSource::Fixed(second.guest_rip),
             Some(1),
             SnapshotAdmissibility::ReplayCurrentInstruction,
         ),
@@ -1013,7 +1039,7 @@ pub fn emit_store_then_load_runtime_block_v2(
         &mut ranges,
         success_start,
         code_offset(&encoder)?,
-        load.next_rip,
+        second.next_rip,
         Some(1),
         StatePhase::Exit,
         SnapshotAdmissibility::CanonicalBoundary,
@@ -1059,10 +1085,10 @@ pub fn emit_store_then_load_runtime_block_v2(
     let code = encoder.finish()?;
     let pc_map = PcMap::new(code.to_le_bytes()?.len(), 2, ranges, boundaries)
         .map_err(BlockEmitterError::PcMap)?;
-    Ok(EmittedStoreThenLoadBlockV2 {
+    Ok(EmittedTwoMemoryBlockV2 {
         code,
         pc_map,
-        entry_rip: store.guest_rip,
+        entry_rip: first.guest_rip,
     })
 }
 
@@ -1080,6 +1106,23 @@ fn supported_store_then_load_operands(
             && operand.address_size == OperandSize::Qword
             && operand.size == OperandSize::Qword
     })
+}
+
+fn supported_load_then_store_operands(
+    load: od_isa::long_decode::MemoryOperand,
+    store: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    use od_isa::OperandSize;
+    use od_isa::long_decode::AddressBase;
+    load.base == AddressBase::Register(od_isa::Register::Rbx)
+        && store.base == AddressBase::Register(od_isa::Register::Rdx)
+        && [load, store].into_iter().all(|operand| {
+            operand.index.is_none()
+                && operand.scale == 1
+                && operand.displacement == 0
+                && operand.address_size == OperandSize::Qword
+                && operand.size == OperandSize::Qword
+        })
 }
 
 fn emit_checked_memory_site_call(
@@ -1103,7 +1146,7 @@ fn emit_checked_memory_site_call(
     emit_u64(
         encoder,
         xreg(16)?,
-        crate::runtime::memory_site_helper_store_load_v2 as *const () as usize as u64,
+        crate::runtime::memory_site_helper_two_site_v2 as *const () as usize as u64,
     )?;
     let call = code_offset(encoder)?;
     encoder.blr(xreg(16)?);

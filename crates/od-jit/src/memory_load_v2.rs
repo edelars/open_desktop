@@ -66,15 +66,16 @@ pub struct IrMemoryStoreBlockV2 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IrMemoryStoreThenLoadBlockV2 {
+pub struct IrMemoryTwoSiteBlockV2 {
     code: EncodedCode,
     entry_rip: u64,
     source_bytes: [u8; 6],
     sites: [MemorySiteV2; 2],
+    sequence: crate::runtime::MemoryPairSequenceV2,
     pc_map: crate::statepoints::PcMap,
 }
 
-impl IrMemoryStoreThenLoadBlockV2 {
+impl IrMemoryTwoSiteBlockV2 {
     pub fn code(&self) -> &EncodedCode {
         &self.code
     }
@@ -87,13 +88,19 @@ impl IrMemoryStoreThenLoadBlockV2 {
     pub fn sites(&self) -> &[MemorySiteV2; 2] {
         &self.sites
     }
+    pub const fn sequence(&self) -> crate::runtime::MemoryPairSequenceV2 {
+        self.sequence
+    }
     pub fn pc_map(&self) -> &crate::statepoints::PcMap {
         &self.pc_map
     }
     pub const fn compile_flavor(&self) -> crate::translation::CompileFlavor {
-        crate::translation::CompileFlavor::S3_26cIrStoreThenLoadV2
+        crate::translation::CompileFlavor::S3_26dIrTwoMemoryV2
     }
 }
+
+/// Compatibility type name retained for the original exact store→load entry.
+pub type IrMemoryStoreThenLoadBlockV2 = IrMemoryTwoSiteBlockV2;
 
 impl IrMemoryStoreBlockV2 {
     pub fn code(&self) -> &EncodedCode {
@@ -644,9 +651,23 @@ pub fn compile_ir_memory_store_then_load_block_v2(
     code: CodeView<'_>,
     entry_rip: u64,
 ) -> Result<IrMemoryStoreThenLoadBlockV2, MemoryLoadCompileErrorV2> {
+    if code.bytes() != [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b] {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
+    compile_ir_memory_two_site_block_v2(code, entry_rip)
+}
+
+/// Compile one of the two exact reviewed qword-memory pairs.
+pub fn compile_ir_memory_two_site_block_v2(
+    code: CodeView<'_>,
+    entry_rip: u64,
+) -> Result<IrMemoryTwoSiteBlockV2, MemoryLoadCompileErrorV2> {
     if entry_rip != code.base_rip()
         || code.len() != 6
-        || code.bytes() != [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]
+        || !matches!(
+            code.bytes(),
+            [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b] | [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02]
+        )
     {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
@@ -657,26 +678,49 @@ pub fn compile_ir_memory_store_then_load_block_v2(
         .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
     let load_view = CodeView::new(second_rip, &code.bytes()[3..])
         .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
-    let (mut store, _) =
-        checked_memory_metadata_v2(store_view, entry_rip, MemorySiteOperationV2::Store)?;
-    let (mut load, _) =
-        checked_memory_metadata_v2(load_view, second_rip, MemorySiteOperationV2::Load)?;
-    if store.source() != Some(0)
-        || store.operand().base != od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
-        || load.destination() != Some(1)
-        || load.operand().base != od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
-    {
+    let load_then_store = code.bytes()[..3] == [0x48, 0x8b, 0x03];
+    let (first_operation, second_operation) = if load_then_store {
+        (MemorySiteOperationV2::Load, MemorySiteOperationV2::Store)
+    } else {
+        (MemorySiteOperationV2::Store, MemorySiteOperationV2::Load)
+    };
+    let (mut first, _) = checked_memory_metadata_v2(store_view, entry_rip, first_operation)?;
+    let (mut second, _) = checked_memory_metadata_v2(load_view, second_rip, second_operation)?;
+    let operands_match = if load_then_store {
+        first.destination() == Some(0)
+            && first.operand().base
+                == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            && second.source() == Some(0)
+            && second.operand().base
+                == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rdx)
+    } else {
+        first.source() == Some(0)
+            && first.operand().base
+                == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            && second.destination() == Some(1)
+            && second.operand().base
+                == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+    };
+    if !operands_match {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
-    store.instruction_index = 0;
-    load.instruction_index = 1;
-    let emitted = crate::block_compile::compile_checked_store_then_load_block_v2(code, entry_rip)
+    first.instruction_index = 0;
+    second.instruction_index = 1;
+    let emitted = crate::block_compile::compile_checked_two_memory_block_v2(code, entry_rip)
         .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
-    Ok(IrMemoryStoreThenLoadBlockV2 {
+    Ok(IrMemoryTwoSiteBlockV2 {
         code: emitted.code().clone(),
         entry_rip,
-        source_bytes: [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b],
-        sites: [store, load],
+        source_bytes: code
+            .bytes()
+            .try_into()
+            .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?,
+        sites: [first, second],
+        sequence: if load_then_store {
+            crate::runtime::MemoryPairSequenceV2::LoadThenStore
+        } else {
+            crate::runtime::MemoryPairSequenceV2::StoreThenLoad
+        },
         pc_map: emitted.pc_map().clone(),
     })
 }
@@ -1092,7 +1136,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             block.compile_flavor(),
-            crate::translation::CompileFlavor::S3_26cIrStoreThenLoadV2
+            crate::translation::CompileFlavor::S3_26dIrTwoMemoryV2
         );
         assert_eq!(block.source_bytes(), &bytes);
         assert_eq!(block.sites()[0].instruction_index(), 0);
@@ -1102,6 +1146,21 @@ mod tests {
         assert_eq!(block.sites()[1].operation(), MemorySiteOperationV2::Load);
         assert_eq!(block.sites()[1].guest_rip(), 0x2003);
         assert_eq!(block.pc_map().instruction_count(), 2);
+        assert!(block.pc_map().ranges().iter().any(|range| range.phase
+            == crate::statepoints::StatePhase::HelperCall
+            && range.instruction_index == Some(0)));
+        assert!(block.pc_map().ranges().iter().any(|range| range.phase
+            == crate::statepoints::StatePhase::HelperCall
+            && range.instruction_index == Some(1)));
+        assert!(
+            block
+                .pc_map()
+                .ranges()
+                .iter()
+                .filter(|range| range.phase == crate::statepoints::StatePhase::AfterHelper)
+                .all(|range| range.snapshot
+                    == crate::statepoints::SnapshotAdmissibility::InadmissibleAfterEffect)
+        );
         assert_eq!(block.pc_map().boundaries().len(), 2);
         assert!(block.pc_map().ranges().iter().any(|r| {
             r.phase == crate::statepoints::StatePhase::Service
@@ -1151,6 +1210,38 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn ir_load_then_store_is_one_typed_two_site_entry() {
+        let bytes = [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02];
+        let block =
+            compile_ir_memory_two_site_block_v2(CodeView::new(0x3000, &bytes).unwrap(), 0x3000)
+                .unwrap();
+        assert_eq!(
+            block.sequence(),
+            crate::runtime::MemoryPairSequenceV2::LoadThenStore
+        );
+        assert_eq!(block.source_bytes(), &bytes);
+        assert_eq!(block.sites()[0].instruction_index(), 0);
+        assert_eq!(block.sites()[0].operation(), MemorySiteOperationV2::Load);
+        assert_eq!(block.sites()[0].destination(), Some(0));
+        assert_eq!(
+            block.sites()[0].operand().base,
+            AddressBase::Register(Register::Rbx)
+        );
+        assert_eq!(block.sites()[0].guest_rip(), 0x3000);
+        assert_eq!(block.sites()[0].next_rip(), 0x3003);
+        assert_eq!(block.sites()[1].instruction_index(), 1);
+        assert_eq!(block.sites()[1].operation(), MemorySiteOperationV2::Store);
+        assert_eq!(block.sites()[1].source(), Some(0));
+        assert_eq!(
+            block.sites()[1].operand().base,
+            AddressBase::Register(Register::Rdx)
+        );
+        assert_eq!(block.sites()[1].guest_rip(), 0x3003);
+        assert_eq!(block.sites()[1].next_rip(), 0x3006);
+        assert_eq!(block.pc_map().instruction_count(), 2);
     }
 
     #[test]

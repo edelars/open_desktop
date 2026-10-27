@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-26a/S3-26b/S3-26c/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-26a/S3-26b/S3-26c/S3-26d/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -148,7 +148,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-19 | Checked memory/helper bridge | S3-08, S3-16; S2-04/08 |
 | [partial] | S3-19a | Invocation-local checked helper ABI и native probe | Узкий standalone slice внутри S3-19; production block exits остаются открыты |
 | [partial] | S3-19b | Production V2 block/helper path для одного MOV r64 load | Точный `48 8B /r`, base/dst RAX..RBX; без cache/general IR |
-| [partial] | S3-20 | Memory lowering и partial registers; проверенные MOV qword load/store slices и bounded store→load pair | S3-19; interpreter соответствующих форм |
+| [partial] | S3-20 | Memory lowering и partial registers; проверенные MOV qword load/store slices и два точных bounded two-site pair | S3-19; interpreter соответствующих форм |
 | [partial] | S3-20b | Production V2 MOV qword store с private-RAM unsafe entry | Точный `48 89 /r`, source/base RAX..RBX; остальные stores и executable aliases запрещены |
 | [partial] | S3-20c | Один-byte SIB extension для V2 MOV qword load/store | ModRM `mod=00,r/m=100`; base/index/data RAX..RBX, scale 1/2/4/8, no displacement |
 | [partial] | S3-20d | Signed disp8/disp32 для direct и SIB V2 MOV load/store | ModRM `mod=00/01/10`; source lengths 3/4/7 direct и 4/5/8 SIB; прочие address forms отвергаются |
@@ -157,7 +157,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20g | Signed disp8/disp32 для V2 MOV с address-size override | `67 48 8B/89 /r`, ModRM `mod=01/10`, qword data + dword address, base/data RAX..RBX, exact lengths 5/8; без SIB и других форм |
 | [partial] | S3-20h / S3-26a | Checked qword load через общий BasicBlock → typed IR → allocator → runtime emitter | Только `48 8B /r`, ModRM `mod=00`, data/base RAX..RBX, без SIB/displacement; V1/direct V2 остаются отдельными |
 | [partial] | S3-20i / S3-26b | Checked qword store через общий BasicBlock → typed IR → allocator → runtime emitter | Только `48 89 /r`, ModRM `mod=00`, source/base RAX..RBX; отдельный typed entry, no replay после helper write |
-| [partial] | S3-20j / S3-26c | Один generated entry для `48 89 03; 48 8B 0B` с двумя ordered checked sites | Только private synchronous ordinary RAM; two guest commits; STOP/fault/budget continuation bounded; singleton APIs сохранены |
+| [partial] | S3-20j / S3-26c / S3-20k / S3-26d | Один generated entry для ровно двух exact pairs: `48 89 03; 48 8B 0B` и `48 8B 03; 48 89 02` | Только private synchronous ordinary RAM; two guest commits; STOP/fault/budget continuation bounded; singleton APIs сохранены |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -916,34 +916,31 @@ DMA, concurrency, atomics, executable aliases, active SMC, multiblock поряд
 или performance claim. Факты записаны в
 [S3-20i/S3-26b report](../reports/STAGE_3_S3-20i_2026-10-27.md).
 
-#### S3-20j / S3-26c. Один generated store→load entry с двумя memory sites
+#### S3-20j / S3-26c / S3-20k / S3-26d. Один generated entry для двух точных memory sequences
 
-Отдельный opt-in artifact допускает ровно шесть байт `48 89 03 48 8B 0B`:
-`MOV [RBX], RAX`, затем `MOV RCX, [RBX]`. Builder и lowering сохраняют обе
-instruction records в одном `BasicBlock`/IR; verifier связывает store, load,
-GPR write и каждый commit с активной instruction. Store должен завершиться
-собственным commit до второго helper. Новый emitter и typed host API используют
-отдельный compile flavor, entry и `[store, load]` site table; существующие
-single-site helper/publication/execution APIs сохраняют проверки index 0.
+Отдельный opt-in artifact допускает ровно две sequences: `48 89 03 48 8B 0B`
+(`MOV [RBX], RAX; MOV RCX, [RBX]`) и `48 8B 03 48 89 02`
+(`MOV RAX, [RBX]; MOV [RDX], RAX`). Builder/lowering сохраняют обе instruction
+records в одном `BasicBlock`/IR; verifier связывает каждую memory operation,
+GPR write и commit с активной instruction. Typed artifact хранит выбранную
+sequence и `[site0, site1]`; общий emitter проверяет и исполняет ровно одну из
+этих форм. Single-site helper/publication/execution APIs сохраняют проверки
+index 0 и отвергают двух-site artifacts.
 
 Один native entry запускает оба site последовательно и допускает повторный
-вход только на RIP второй инструкции для продолжения после budget/fault.
-Store callback предшествует load callback. Ошибка store оставляет RAM/CPU и
-retirement без изменений; ошибка load сохраняет committed store и состояние
-на втором RIP, не публикуя RCX. Повторный load fault при continuation на этом
-RIP сохраняет архитектурную или host-error классификацию и не повторяет store.
-После store native entry исполняет обычные guards второго instruction в
-порядке stop-RIP → STOP → budget. Budget 1 возвращает на втором RIP, где
-отдельный вызов выполняет только load. Helper/fault/commit PC map ranges
-сохраняют site и guest instruction; helper/возврат store остаётся
-non-replayable.
+вход только на RIP второй инструкции. Store→load сохраняет первый store при
+ошибке load; load→store сохраняет RAX после load при ошибке store. Второй site
+может fault и на continuation с нулём retired в этом вызове, не повторяя первый
+site. Guards второго instruction имеют порядок stop-RIP → STOP → budget.
+Helper/fault/commit PC map ranges сохраняют site и guest instruction; store
+helper/commit остаётся non-replayable.
 
-Локальная native ARM64 fixture сравнивает успешный результат с двумя
-interpreter steps на независимых CPU/RAM copies и проверяет callback order,
-fault payload/partial commit, STOP, zero/one budget, continuation, guards и
-typed entry. Slice остаётся private synchronous ordinary RAM без branch,
-code aliases, MMIO, atomics, arbitrary multi-site blocks или performance claim.
-См. [S3-20j/S3-26c report](../reports/STAGE_3_S3-20j_2026-10-27.md).
+Локальная native ARM64 fixture сравнивает state/RAM с двумя interpreter steps
+на независимых copies и проверяет callback order, fault payload/partial commit,
+STOP, budget, continuation после изменения source RAM, guards и typed entry.
+Slice остаётся private synchronous ordinary RAM без branch, code aliases, MMIO,
+atomics, произвольных multi-site blocks или performance claim. См.
+[S3-20j/S3-26c/S3-20k/S3-26d report](../reports/STAGE_3_S3-20j_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 
