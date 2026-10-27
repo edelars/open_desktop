@@ -11937,7 +11937,6 @@ mod tests {
         for invalid_source in [
             vec![0x48, 0x8b, 0x04, 0x04],             // index present with RSP base
             vec![0x48, 0x8b, 0x04, 0x64],             // scale without an index
-            vec![0x48, 0x8b, 0x44, 0x24, 0],          // disp8
             vec![0x48, 0x8b, 0x84, 0x24, 0, 0, 0, 0], // disp32
             vec![0x48, 0x8b, 0x24, 0x24],             // RSP as data
             vec![0x67, 0x48, 0x8b, 0x04, 0x24],       // address override
@@ -11976,6 +11975,201 @@ mod tests {
             assert_eq!(result.retired_native + result.retired_interpreter, 0);
             assert_eq!(state, before);
             assert_eq!((ram.reads, ram.writes), (0, 0));
+        }
+
+        // RSP+disp8 extends the exact prior [RSP] profile and keeps its
+        // decoded signed displacement through NOP fallback and native pair.
+        const RSP_DISP8_CODE: [u8; 16] = [
+            0x48, 0x8b, 0x44, 0x24, 0xff, // MOV RAX,[RSP-1]
+            0x90, // explicit interpreter bridge
+            0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b, // existing native pair
+            0, 0, 0, 0,
+        ];
+        let disp8_view = CodeView::new(BASE, &RSP_DISP8_CODE).unwrap();
+        let disp8_boundary = FixtureExecutionBoundary::new(disp8_view, BASE + 12).unwrap();
+        let make_disp8_state = || {
+            let mut state = make_state();
+            state.gpr[4] = 0x21;
+            state
+        };
+        let make_disp8_ram = || {
+            let mut ram = Ram {
+                code: RSP_DISP8_CODE,
+                data: [0; 64],
+                reads: 0,
+                writes: 0,
+                stop_on_read: false,
+            };
+            ram.data[0x20..0x28].copy_from_slice(&0x7766_5544_3322_1100_u64.to_le_bytes());
+            ram
+        };
+        for budget in 0..=4 {
+            let mut actual_state = make_disp8_state();
+            let mut actual_ram = make_disp8_ram();
+            let mut executor = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    disp8_view,
+                    disp8_boundary.clone(),
+                    &mut actual_state,
+                    &mut actual_ram,
+                    AccessContext::default(),
+                    budget,
+                    None,
+                    stop,
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            let mut expected_state = make_disp8_state();
+            let mut expected_ram = make_disp8_ram();
+            for _ in 0..budget {
+                if expected_state.rip >= BASE + 12 {
+                    break;
+                }
+                od_isa::execute::step(
+                    &mut expected_state,
+                    &mut expected_ram,
+                    AccessContext::default(),
+                )
+                .unwrap();
+            }
+            assert_eq!(actual_state, expected_state, "RSP disp8 budget {budget}");
+            assert_eq!(
+                actual_ram.data, expected_ram.data,
+                "RSP disp8 budget {budget}"
+            );
+            assert_eq!(
+                (actual_ram.reads, actual_ram.writes),
+                (expected_ram.reads, expected_ram.writes)
+            );
+            assert_eq!(
+                result.retired_native + result.retired_interpreter,
+                budget.min(4)
+            );
+            assert_eq!(actual_state.gpr[4], 0x21);
+            assert_eq!(actual_state.gpr[5], 0);
+        }
+        let mut resumed_state = make_disp8_state();
+        let mut resumed_ram = make_disp8_ram();
+        let mut executor = PublishedMemoryBlockExecutor;
+        let prefix = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback(
+                disp8_view,
+                disp8_boundary.clone(),
+                &mut resumed_state,
+                &mut resumed_ram,
+                AccessContext::default(),
+                1,
+                None,
+                stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(prefix.retired_native, 1);
+        assert_eq!(resumed_state.rip, BASE + 5);
+        let stop_at_nop = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback(
+                disp8_view,
+                disp8_boundary.clone(),
+                &mut resumed_state,
+                &mut resumed_ram,
+                AccessContext::default(),
+                3,
+                Some(BASE + 5),
+                stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(stop_at_nop.exit, BoundedMemoryExit::StopAddress);
+        assert_eq!((resumed_ram.reads, resumed_ram.writes), (1, 0));
+        let suffix = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback(
+                disp8_view,
+                disp8_boundary,
+                &mut resumed_state,
+                &mut resumed_ram,
+                AccessContext::default(),
+                3,
+                None,
+                stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!((suffix.retired_native, suffix.retired_interpreter), (2, 1));
+        assert_eq!(resumed_state.rip, BASE + 12);
+        assert_eq!((resumed_ram.reads, resumed_ram.writes), (2, 1));
+
+        for window in 1..5 {
+            let partial = CodeView::new(BASE, &RSP_DISP8_CODE[..window]).unwrap();
+            let boundary = FixtureExecutionBoundary::new(partial, partial.code_end()).unwrap();
+            let mut state = make_disp8_state();
+            let before = state.clone();
+            let mut ram = make_disp8_ram();
+            let mut executor = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    partial,
+                    boundary,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    stop,
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                result.exit,
+                BoundedMemoryExit::BoundaryReached { rip: BASE }
+            );
+            assert_eq!(state, before);
+            assert_eq!((ram.reads, ram.writes), (0, 0));
+            assert_eq!(result.retired_native + result.retired_interpreter, 0);
+        }
+        for invalid_source in [
+            vec![0x48, 0x8b, 0x44, 0x04, 0],          // index present
+            vec![0x48, 0x8b, 0x84, 0x24, 0, 0, 0, 0], // disp32
+            vec![0x67, 0x48, 0x8b, 0x44, 0x24, 0],    // address override
+        ] {
+            let mut code_bytes = [0; 16];
+            code_bytes[..invalid_source.len()].copy_from_slice(&invalid_source);
+            let code = CodeView::new(BASE, &code_bytes).unwrap();
+            let boundary =
+                FixtureExecutionBoundary::new(code, BASE + invalid_source.len() as u64).unwrap();
+            let mut state = make_disp8_state();
+            let before = state.clone();
+            let mut ram = Ram {
+                code: code_bytes,
+                data: [0; 64],
+                reads: 0,
+                writes: 0,
+                stop_on_read: false,
+            };
+            let mut executor = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    code,
+                    boundary,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    stop,
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(result.exit, BoundedMemoryExit::Unsupported { rip: BASE });
+            assert_eq!(state, before);
+            assert_eq!((ram.reads, ram.writes), (0, 0));
+            assert_eq!(result.retired_native + result.retired_interpreter, 0);
         }
     }
 
@@ -14049,6 +14243,68 @@ mod tests {
             }
         }
 
+        let rsp_disp_store_source = [0x48, 0x89, 0x44, 0x24, 0xff];
+        let rsp_disp_store_code = CodeView::new(ENTRY, &rsp_disp_store_source).unwrap();
+        let rsp_disp_store =
+            od_jit::memory_load_v2::compile_ir_memory_store_block_v2(rsp_disp_store_code, ENTRY)
+                .unwrap();
+        let mut rsp_disp_stop_state = od_isa::LongModeState {
+            rip: ENTRY,
+            rflags: 0x8d7,
+            ..Default::default()
+        };
+        rsp_disp_stop_state.gpr[0] = 0xfedc_ba98_7654_3210;
+        rsp_disp_stop_state.gpr[4] = 0x0000_7000_0000_5021;
+        let rsp_disp_target = rsp_disp_stop_state.gpr[4] - 1;
+        let mut rsp_disp_stop_ram = SparseRam {
+            code: &rsp_disp_store_source,
+            data: (0..8_u64).map(|n| (rsp_disp_target + n, 0)).collect(),
+            reads: 0,
+            writes: 0,
+            last_read: None,
+            last_write: None,
+            read_error: None,
+            write_error: None,
+            stop_on_write: Some(&stop),
+        };
+        stop.store(0, Ordering::Release);
+        let rsp_disp_committed = unsafe {
+            PublishedCode::publish_ir_memory_store_v2(&rsp_disp_store)
+                .unwrap()
+                .execute_ir_memory_store_v2(
+                    &mut rsp_disp_stop_state,
+                    &mut rsp_disp_stop_ram,
+                    AccessContext::default(),
+                    2,
+                    None,
+                    &stop,
+                )
+        }
+        .unwrap();
+        assert_eq!(
+            rsp_disp_committed.exit,
+            MemoryOperationExecutionExitV2::StopRequested
+        );
+        assert_eq!(
+            (
+                rsp_disp_committed.retired_instructions,
+                rsp_disp_committed.remaining_budget
+            ),
+            (1, 1)
+        );
+        assert_eq!(rsp_disp_stop_state.rip, ENTRY + 5);
+        assert_eq!(rsp_disp_stop_state.gpr[4], 0x0000_7000_0000_5021);
+        assert_eq!(rsp_disp_stop_state.rflags, 0x8d7);
+        assert_eq!((rsp_disp_stop_ram.reads, rsp_disp_stop_ram.writes), (0, 1));
+        assert_eq!(rsp_disp_stop_ram.last_write, Some((rsp_disp_target, 8)));
+        assert_eq!(
+            (0..8_u64)
+                .map(|offset| rsp_disp_stop_ram.data[&(rsp_disp_target + offset)])
+                .collect::<Vec<_>>(),
+            rsp_disp_stop_state.gpr[0].to_le_bytes()
+        );
+        stop.store(0, Ordering::Release);
+
         let rsp_source = [0x48, 0x8b, 0x04, 0x24];
         let rsp_code = CodeView::new(ENTRY, &rsp_source).unwrap();
         let rsp_load =
@@ -14242,6 +14498,428 @@ mod tests {
                 .collect::<Vec<_>>(),
             stop_store_state.gpr[0].to_le_bytes()
         );
+        stop.store(0, Ordering::Release);
+
+        for (opcode, is_load) in [(0x8b_u8, true), (0x89_u8, false)] {
+            for displacement in [i8::MIN, -1, 0, i8::MAX] {
+                let source = [0x48, opcode, 0x44, 0x24, displacement as u8];
+                let code = CodeView::new(ENTRY, &source).unwrap();
+                let direct_site = if is_load {
+                    od_jit::memory_load_v2::compile_memory_load_block_v2(code, ENTRY)
+                        .unwrap()
+                        .site()
+                        .clone()
+                } else {
+                    od_jit::memory_load_v2::compile_memory_store_block_v2(code, ENTRY)
+                        .unwrap()
+                        .site()
+                        .clone()
+                };
+                let mut initial_state = od_isa::LongModeState {
+                    rip: ENTRY,
+                    rflags: 0x8d7,
+                    ..Default::default()
+                };
+                initial_state.gpr[0] = 0x0123_4567_89ab_cdef;
+                initial_state.gpr[4] = 0x0000_7000_0000_5020;
+                initial_state.gpr[5] = 0xfeed_face_cafe_beef;
+                let address = direct_site
+                    .operand()
+                    .access_address_48(&initial_state, direct_site.next_rip())
+                    .unwrap();
+                assert_eq!(
+                    address,
+                    initial_state.gpr[4].wrapping_add(displacement as i64 as u64)
+                );
+                let initial_data = (0..8_u64)
+                    .map(|offset| (address + offset, 0x60 + offset as u8))
+                    .collect::<BTreeMap<_, _>>();
+                let make_ram = || SparseRam {
+                    code: &source,
+                    data: initial_data.clone(),
+                    reads: 0,
+                    writes: 0,
+                    last_read: None,
+                    last_write: None,
+                    read_error: None,
+                    write_error: None,
+                    stop_on_write: None,
+                };
+                let mut direct_state = initial_state.clone();
+                let mut direct_ram = make_ram();
+                let direct = if is_load {
+                    let block =
+                        od_jit::memory_load_v2::compile_memory_load_block_v2(code, ENTRY).unwrap();
+                    PublishedCode::publish_memory_load_v2(&block)
+                        .unwrap()
+                        .execute_memory_load_v2(
+                            &mut direct_state,
+                            &mut direct_ram,
+                            AccessContext::default(),
+                            1,
+                            None,
+                            &stop,
+                        )
+                } else {
+                    let block =
+                        od_jit::memory_load_v2::compile_memory_store_block_v2(code, ENTRY).unwrap();
+                    let published = PublishedCode::publish_memory_store_v2(&block).unwrap();
+                    // SAFETY: immutable source and disjoint private synchronous RAM.
+                    unsafe {
+                        published.execute_memory_store_v2(
+                            &mut direct_state,
+                            &mut direct_ram,
+                            AccessContext::default(),
+                            1,
+                            None,
+                            &stop,
+                        )
+                    }
+                }
+                .unwrap();
+                let mut ir_state = initial_state.clone();
+                let mut ir_ram = make_ram();
+                let ir = if is_load {
+                    let block =
+                        od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY)
+                            .unwrap();
+                    PublishedCode::publish_ir_memory_load_v2(&block)
+                        .unwrap()
+                        .execute_ir_memory_load_v2(
+                            &mut ir_state,
+                            &mut ir_ram,
+                            AccessContext::default(),
+                            1,
+                            None,
+                            &stop,
+                        )
+                } else {
+                    let block =
+                        od_jit::memory_load_v2::compile_ir_memory_store_block_v2(code, ENTRY)
+                            .unwrap();
+                    let published = PublishedCode::publish_ir_memory_store_v2(&block).unwrap();
+                    // SAFETY: immutable source and disjoint private synchronous RAM.
+                    unsafe {
+                        published.execute_ir_memory_store_v2(
+                            &mut ir_state,
+                            &mut ir_ram,
+                            AccessContext::default(),
+                            1,
+                            None,
+                            &stop,
+                        )
+                    }
+                }
+                .unwrap();
+                let mut interpreter_state = initial_state.clone();
+                let mut interpreter_ram = make_ram();
+                od_isa::execute::step(
+                    &mut interpreter_state,
+                    &mut interpreter_ram,
+                    AccessContext::default(),
+                )
+                .unwrap();
+                assert_eq!(direct_state, interpreter_state);
+                assert_eq!(ir_state, interpreter_state);
+                assert_eq!(direct_ram.data, interpreter_ram.data);
+                assert_eq!(ir_ram.data, interpreter_ram.data);
+                assert_eq!(
+                    (direct.retired_instructions, direct.remaining_budget),
+                    (1, 0)
+                );
+                assert_eq!((ir.retired_instructions, ir.remaining_budget), (1, 0));
+                assert_eq!(direct_state.gpr[4], initial_state.gpr[4]);
+                assert_eq!(direct_state.gpr[5], initial_state.gpr[5]);
+                assert_eq!(direct_state.rflags, initial_state.rflags);
+                assert_eq!(direct_ram.last_read, is_load.then_some((address, 8)));
+                assert_eq!(direct_ram.last_write, (!is_load).then_some((address, 8)));
+                assert_eq!(ir_ram.last_read, is_load.then_some((address, 8)));
+                assert_eq!(ir_ram.last_write, (!is_load).then_some((address, 8)));
+            }
+        }
+
+        // Signed disp8 addition wraps modulo u64 before the canonicality
+        // check: RSP=u64::MAX-100 plus +101 yields canonical address zero.
+        let wrap_source = [0x48, 0x8b, 0x44, 0x24, 101];
+        let wrap_code = CodeView::new(ENTRY, &wrap_source).unwrap();
+        let wrap_block =
+            od_jit::memory_load_v2::compile_memory_load_block_v2(wrap_code, ENTRY).unwrap();
+        let wrap_ir_block =
+            od_jit::memory_load_v2::compile_ir_memory_load_block_v2(wrap_code, ENTRY).unwrap();
+        let mut wrap_initial = od_isa::LongModeState {
+            rip: ENTRY,
+            rflags: 0x8d7,
+            ..Default::default()
+        };
+        wrap_initial.gpr[4] = u64::MAX - 100;
+        let wrap_address = wrap_block
+            .site()
+            .operand()
+            .access_address_48(&wrap_initial, wrap_block.site().next_rip())
+            .unwrap();
+        assert_eq!(wrap_address, 0);
+        let wrap_data = (0..8_u64)
+            .map(|offset| (offset, 0x10 + offset as u8))
+            .collect::<BTreeMap<_, _>>();
+        let make_wrap_ram = || SparseRam {
+            code: &wrap_source,
+            data: wrap_data.clone(),
+            reads: 0,
+            writes: 0,
+            last_read: None,
+            last_write: None,
+            read_error: None,
+            write_error: None,
+            stop_on_write: None,
+        };
+        let mut wrap_direct_state = wrap_initial.clone();
+        let mut wrap_direct_ram = make_wrap_ram();
+        let wrap_direct = PublishedCode::publish_memory_load_v2(&wrap_block)
+            .unwrap()
+            .execute_memory_load_v2(
+                &mut wrap_direct_state,
+                &mut wrap_direct_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+            .unwrap();
+        let mut wrap_ir_state = wrap_initial.clone();
+        let mut wrap_ir_ram = make_wrap_ram();
+        let wrap_ir = PublishedCode::publish_ir_memory_load_v2(&wrap_ir_block)
+            .unwrap()
+            .execute_ir_memory_load_v2(
+                &mut wrap_ir_state,
+                &mut wrap_ir_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+            .unwrap();
+        let mut wrap_interpreter_state = wrap_initial;
+        let mut wrap_interpreter_ram = make_wrap_ram();
+        od_isa::execute::step(
+            &mut wrap_interpreter_state,
+            &mut wrap_interpreter_ram,
+            AccessContext::default(),
+        )
+        .unwrap();
+        assert_eq!(wrap_direct_state, wrap_interpreter_state);
+        assert_eq!(wrap_ir_state, wrap_interpreter_state);
+        assert_eq!(wrap_direct_ram.data, wrap_interpreter_ram.data);
+        assert_eq!(wrap_ir_ram.data, wrap_interpreter_ram.data);
+        assert_eq!(
+            (
+                wrap_direct.retired_instructions,
+                wrap_direct.remaining_budget
+            ),
+            (1, 0)
+        );
+        assert_eq!(
+            (wrap_ir.retired_instructions, wrap_ir.remaining_budget),
+            (1, 0)
+        );
+        assert_eq!((wrap_direct_ram.reads, wrap_direct_ram.writes), (1, 0));
+        assert_eq!((wrap_ir_ram.reads, wrap_ir_ram.writes), (1, 0));
+        assert_eq!(wrap_direct_ram.last_read, Some((0, 8)));
+        assert_eq!(wrap_ir_ram.last_read, Some((0, 8)));
+        assert_eq!(wrap_direct_state.gpr[4], u64::MAX - 100);
+
+        let rsp_disp_source = [0x48, 0x8b, 0x44, 0x24, 0];
+        stop.store(0, Ordering::Release);
+        let rsp_disp_code = CodeView::new(ENTRY, &rsp_disp_source).unwrap();
+        let rsp_disp_load =
+            od_jit::memory_load_v2::compile_ir_memory_load_block_v2(rsp_disp_code, ENTRY).unwrap();
+        for (base_register, source, vector) in [
+            (4_usize, &[0x48, 0x8b, 0x44, 0x24, 0][..], 12_u8),
+            (3_usize, &[0x48, 0x8b, 0x43, 0][..], 13_u8),
+        ] {
+            let source_bytes = source;
+            let code = CodeView::new(ENTRY, source_bytes).unwrap();
+            let block =
+                od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY).unwrap();
+            for address in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fffc] {
+                let mut state = od_isa::LongModeState {
+                    rip: ENTRY,
+                    ..Default::default()
+                };
+                state.gpr[base_register] = address;
+                let before = state.clone();
+                let mut ram = SparseRam {
+                    code: source_bytes,
+                    data: BTreeMap::new(),
+                    reads: 0,
+                    writes: 0,
+                    last_read: None,
+                    last_write: None,
+                    read_error: None,
+                    write_error: None,
+                    stop_on_write: None,
+                };
+                let result = PublishedCode::publish_ir_memory_load_v2(&block)
+                    .unwrap()
+                    .execute_ir_memory_load_v2(
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                        2,
+                        None,
+                        &stop,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    result.exit,
+                    MemoryOperationExecutionExitV2::GuestFault(
+                        od_isa::memory::ArchitecturalFault {
+                            vector,
+                            error_code: Some(0),
+                            linear_address: None
+                        }
+                    )
+                );
+                assert_eq!(
+                    (result.retired_instructions, result.remaining_budget),
+                    (0, 2)
+                );
+                assert_eq!(state, before);
+                assert_eq!((ram.reads, ram.writes), (0, 0));
+            }
+        }
+
+        let mut overflow_state = od_isa::LongModeState {
+            rip: ENTRY,
+            ..Default::default()
+        };
+        overflow_state.gpr[4] = u64::MAX - 3;
+        let overflow_before = overflow_state.clone();
+        let mut overflow_ram = SparseRam {
+            code: &rsp_disp_source,
+            data: BTreeMap::new(),
+            reads: 0,
+            writes: 0,
+            last_read: None,
+            last_write: None,
+            read_error: None,
+            write_error: None,
+            stop_on_write: None,
+        };
+        let overflow = PublishedCode::publish_ir_memory_load_v2(&rsp_disp_load)
+            .unwrap()
+            .execute_ir_memory_load_v2(
+                &mut overflow_state,
+                &mut overflow_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+            );
+        assert!(
+            matches!(overflow, Err(MemoryOperationExecutionErrorV2::MemoryError(
+            MemoryOperationMemoryErrorV2 { kind: od_jit::memory_bridge::MEMORY_ERROR_ADDRESS_OVERFLOW, address, length: 8 }
+        )) if address == u64::MAX - 3)
+        );
+        assert_eq!(overflow_state, overflow_before);
+        assert_eq!((overflow_ram.reads, overflow_ram.writes), (0, 0));
+
+        let mut backend_state = od_isa::LongModeState {
+            rip: ENTRY,
+            ..Default::default()
+        };
+        backend_state.gpr[4] = 0x0000_7000_0000_5020;
+        let backend_before = backend_state.clone();
+        let mut backend_ram = SparseRam {
+            code: &rsp_disp_source,
+            data: BTreeMap::new(),
+            reads: 0,
+            writes: 0,
+            last_read: None,
+            last_write: None,
+            read_error: Some(MemoryError::Backend("RSP disp8 backend failure".into())),
+            write_error: None,
+            stop_on_write: None,
+        };
+        let backend = PublishedCode::publish_ir_memory_load_v2(&rsp_disp_load)
+            .unwrap()
+            .execute_ir_memory_load_v2(
+                &mut backend_state,
+                &mut backend_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+            );
+        assert!(matches!(
+            backend,
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_BACKEND,
+                    address: 0,
+                    length: 0
+                }
+            ))
+        ));
+        assert_eq!(backend_state, backend_before);
+        assert_eq!((backend_ram.reads, backend_ram.writes), (1, 0));
+
+        let mut guarded_state = od_isa::LongModeState {
+            rip: ENTRY,
+            ..Default::default()
+        };
+        guarded_state.gpr[4] = 0x0000_7000_0000_5020;
+        let guarded_before = guarded_state.clone();
+        let mut guarded_ram = SparseRam {
+            code: &rsp_disp_source,
+            data: BTreeMap::new(),
+            reads: 0,
+            writes: 0,
+            last_read: None,
+            last_write: None,
+            read_error: None,
+            write_error: None,
+            stop_on_write: None,
+        };
+        stop.store(1, Ordering::Release);
+        let stopped_entry = PublishedCode::publish_ir_memory_load_v2(&rsp_disp_load)
+            .unwrap()
+            .execute_ir_memory_load_v2(
+                &mut guarded_state,
+                &mut guarded_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+            .unwrap();
+        assert_eq!(
+            stopped_entry.exit,
+            MemoryOperationExecutionExitV2::StopRequested
+        );
+        assert_eq!(
+            (
+                stopped_entry.retired_instructions,
+                stopped_entry.remaining_budget
+            ),
+            (0, 1)
+        );
+        assert_eq!(guarded_state, guarded_before);
+        assert_eq!((guarded_ram.reads, guarded_ram.writes), (0, 0));
+        stop.store(0, Ordering::Release);
+        let zero_budget = PublishedCode::publish_ir_memory_load_v2(&rsp_disp_load)
+            .unwrap()
+            .execute_ir_memory_load_v2(
+                &mut guarded_state,
+                &mut guarded_ram,
+                AccessContext::default(),
+                0,
+                None,
+                &stop,
+            )
+            .unwrap();
+        assert_eq!(zero_budget.retired_instructions, 0);
+        assert_eq!(guarded_state, guarded_before);
+        assert_eq!((guarded_ram.reads, guarded_ram.writes), (0, 0));
     }
 
     #[test]

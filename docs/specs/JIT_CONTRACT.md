@@ -596,6 +596,26 @@ displacement, prefix and data-register variants return Unsupported without
 execution. See the
 [S3-20v report](../reports/STAGE_3_S3-20v_2026-10-27.md).
 
+#### S3-20w: RSP-base no-index SIB qword MOV with disp8
+
+Admit exactly the singleton forms `48 8B/89 /r sib disp8`, ModRM
+`mod=01,r/m=100`, SIB `0x24`: RSP base, no index, scale 1, signed disp8,
+data RAX..RBX, qword and 64-bit effective address, exact length five. The
+decoder's `MemoryOperand` and `access_address_48` remain the sole addressing
+semantics. The prior no-displacement `[RSP]` form remains separate. Disp32,
+index/scale variation, `67`, segment/extra prefixes, extended registers and
+pair changes are unsupported.
+
+Direct V2/shared IR/interpreter parity covers load/store and disp8 -128/-1/0/127,
+full state/RAM, callback address/count and retirement, with RSP/RBP/flags
+unchanged. Architectural faults retain RSP #SS versus RBX #GP payloads and no
+commit; AddressOverflow and backend failures remain host errors. Entry guards
+make no access, while successful store+STOP remains committed. Bounded dispatch
+composes the five-byte singleton → bare NOP bridge → existing pair with exact
+budget accounting, STOP-RIP and actual-RIP continuation. Partial windows stop
+as `BoundaryReached`; unsupported variants have no effect. See the
+[S3-20w report](../reports/STAGE_3_S3-20w_2026-10-27.md).
+
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
 alignment, same/different ranges, and safe partial overlaps for load→store;

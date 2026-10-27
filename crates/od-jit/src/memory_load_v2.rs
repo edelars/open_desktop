@@ -1513,7 +1513,6 @@ mod tests {
                 vec![0x48, opcode, 0x24, 0x24],             // RSP as data register
                 vec![0x48, opcode, 0x04, 0x64],             // scale > 1, no index
                 vec![0x48, opcode, 0x04, 0x25],             // no base
-                vec![0x48, opcode, 0x44, 0x24, 0],          // displacement
                 vec![0x48, opcode, 0x84, 0x24, 0, 0, 0, 0], // disp32
                 vec![0x67, 0x48, opcode, 0x04, 0x24],
                 vec![0x48, 0x67, opcode, 0x04, 0x24],
@@ -1525,6 +1524,82 @@ mod tests {
                         .and_then(|_| compile_memory_load_block_v2(code, 0x5710).map(|_| ())),
                     MemorySiteOperationV2::Store => compile_ir_memory_store_block_v2(code, 0x5710)
                         .and_then(|_| compile_memory_store_block_v2(code, 0x5710).map(|_| ())),
+                };
+                assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ir_rsp_base_no_index_sib_disp8_is_exact_and_signed() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data in 0..4_u8 {
+                for displacement in [i8::MIN, -1, 0, i8::MAX] {
+                    let source = [0x48, opcode, 0x44 | (data << 3), 0x24, displacement as u8];
+                    let code = CodeView::new(0x5720, &source).unwrap();
+                    let (site, v2_site, ir_source) = match operation {
+                        MemorySiteOperationV2::Load => {
+                            let direct = compile_memory_load_block_v2(code, 0x5720).unwrap();
+                            let built = crate::block::build_checked_qword_load_block(
+                                code,
+                                0x5720,
+                                od_isa::memory::AccessContext::default(),
+                                crate::block::BlockLimits::default(),
+                            )
+                            .unwrap();
+                            let lowered = crate::lowering::lower(&built);
+                            assert!(
+                                lowered.is_ok(),
+                                "lowering failed for {source:02x?}: {lowered:?}"
+                            );
+                            let ir = compile_ir_memory_load_block_v2(code, 0x5720).unwrap();
+                            (
+                                ir.site().clone(),
+                                direct.site().clone(),
+                                ir.source_bytes().to_vec(),
+                            )
+                        }
+                        MemorySiteOperationV2::Store => {
+                            let ir = compile_ir_memory_store_block_v2(code, 0x5720).unwrap();
+                            let direct = compile_memory_store_block_v2(code, 0x5720).unwrap();
+                            (
+                                ir.site().clone(),
+                                direct.site().clone(),
+                                ir.source_bytes().to_vec(),
+                            )
+                        }
+                    };
+                    assert_eq!(site, v2_site);
+                    assert_eq!(ir_source, source);
+                    assert_eq!(site.guest_rip(), 0x5720);
+                    assert_eq!(site.next_rip(), 0x5725);
+                    assert_eq!(site.operand().base, AddressBase::Register(Register::Rsp));
+                    assert_eq!(site.operand().index, None);
+                    assert_eq!(site.operand().scale, 1);
+                    assert_eq!(site.operand().displacement, i64::from(displacement));
+                    assert!(site.matches_source_bytes(&source, operation));
+                }
+            }
+
+            for bytes in [
+                vec![0x48, opcode, 0x44, 0x24],             // truncated before disp8
+                vec![0x48, opcode, 0x44, 0x04, 0],          // index present
+                vec![0x48, opcode, 0x44, 0x64, 0],          // scale != 1, no index
+                vec![0x48, opcode, 0x84, 0x24, 0, 0, 0, 0], // disp32 excluded
+                vec![0x48, opcode, 0x64, 0x24, 0],          // RSP data
+                vec![0x67, 0x48, opcode, 0x44, 0x24, 0],
+                vec![0x48, 0x67, opcode, 0x44, 0x24, 0],
+                vec![0x48, opcode, 0x44, 0x24, 0, 0x90], // trailing byte
+            ] {
+                let code = CodeView::new(0x5720, &bytes).unwrap();
+                let result = match operation {
+                    MemorySiteOperationV2::Load => compile_ir_memory_load_block_v2(code, 0x5720)
+                        .and_then(|_| compile_memory_load_block_v2(code, 0x5720).map(|_| ())),
+                    MemorySiteOperationV2::Store => compile_ir_memory_store_block_v2(code, 0x5720)
+                        .and_then(|_| compile_memory_store_block_v2(code, 0x5720).map(|_| ())),
                 };
                 assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
             }
@@ -1606,7 +1681,6 @@ mod tests {
                 vec![0x48, opcode, 0x44],                         // truncated before SIB
                 vec![0x48, opcode, 0x44, 0x20, 0],                // no-index SIB
                 vec![0x48, opcode, 0x44, 0x05, 0],                // unsupported RBP base
-                vec![0x48, opcode, 0x44, 0x24, 0],                // RSP index
                 vec![0x48, opcode, 0x44, 0x28, 0],                // RSP base
                 vec![0x48, opcode, 0x44, 0x18],                   // missing disp8
                 vec![0x48, opcode, 0x44, 0x18, 0, 0x90],          // tail byte

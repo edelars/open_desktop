@@ -1266,6 +1266,25 @@ continuation and partial byte windows. Invalid near-matches return Unsupported
 without publishing a block or calling memory. See the
 [S3-20v report](../reports/STAGE_3_S3-20v_2026-10-27.md).
 
+#### S3-20w. RSP-base no-index SIB with signed disp8
+
+Extend only the singleton forms `48 8B/89 /r sib disp8`, ModRM
+`mod=01,r/m=100`, exact SIB `0x24`, data RAX..RBX, qword data and 64-bit EA.
+The decoded `MemoryOperand` and `access_address_48` remain the sole source of
+signed displacement and effective-address semantics. No disp32, indexed RSP,
+address-size/segment/extra prefix, extended register, pair/V3, or emitter change
+is included; the existing `[RSP]` form remains separately admitted.
+
+Evidence covers disp8 -128/-1/0/127 for load/store across direct V2, shared IR
+and interpreter, including callback address/count and full architectural/RAM
+parity. RSP/RBP/flags stay unchanged. The shared fault matrix retains RSP #SS
+versus RBX #GP, AddressOverflow versus backend errors, no-commit faults and
+committed store+STOP. Bounded dispatch composes the five-byte singleton → bare
+NOP interpreter bridge → existing pair across budgets 0..4, STOP-RIP and
+actual-RIP continuation without replay; truncated windows and invalid shapes
+have no memory effects. See the
+[S3-20w report](../reports/STAGE_3_S3-20w_2026-10-27.md).
+
 ### S3-21. Подтвердить memory slice на физическом x86
 
 1. Выполнить после локального завершения Stage 3 как финальный gate. Использовать завершённый S2-09 native memory profile. Проверить одинаковые входы, наблюдение всех заявленных GPR, нормализацию guest addresses и сравнение memory effects.
