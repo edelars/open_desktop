@@ -12373,3 +12373,31 @@ extractor warning for `include/open_desktop/host_abi.h`. Independent
 This is local interpreter/profile evidence only. It does not close S2-34,
 S2-35, global `S2-35 → S2-34`, establish physical x86 behavior, or replace the
 deferred combined Mac mini/SSH acceptance substage.
+
+## S2-35.21 — local PCMPGTB XMM register slice
+
+Added strict `s2-long-pcmpgtb-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 64 /r`, ModR/M.mod=3, with ModR/M.reg as the
+XMM destination and ModR/M.r/m as source. Sixteen lanes compare as signed i8
+and write `FF` only when destination is strictly greater than source; otherwise
+they write `00`. The executor preserves all state except destination XMM and
+RIP and makes no data-memory callback. Tests cover every 65,536 raw byte pair
+with an independent signed mapping, asymmetric and strict/equal boundaries,
+mixed lanes and the full 16×16 XMM/REX matrix. Atomic failures and strict
+profile/decoder rejection include VEX `C5 F9 64 C1`. A handwritten high-XMM
+fixture validates output, profile scope and JIT denial; native admission is
+closed. PCMPGTW/D/Q, memory, other comparisons, feature gates, exceptions, and
+physical/JIT execution remain out of scope; PCMPGTQ requires SSE4.2.
+
+Focused `od-isa` tests passed (3), including exhaustive byte pairs and all XMM
+pairs; the literal `od-runner` fixture test passed (1).
+`cargo test --workspace --offline` passed 1,713 tests. Workspace all-target
+offline checking and the x86_64 Linux all-target compile check passed. The
+Linux-only native-denial test was compile-checked but not run on macOS.
+Formatting, diff whitespace and `graphify update .` passed; Graphify reports
+the pre-existing `include/open_desktop/host_abi.h` extractor warning.
+The cross-target check also emitted existing dead-code warnings in `od-host`
+and `od-runner`. This is local interpreter/profile evidence only and leaves
+S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation, and deferred
+Mac mini/SSH acceptance open. Independent `gpt-6.1-sol` medium review passed
+with no findings.

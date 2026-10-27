@@ -5073,3 +5073,14 @@ four independent little-endian dwords and emits `FFFFFFFF` only for exact
 whole-dword equality, otherwise `00000000`. Interpreter execution is supported;
 JIT/native execution remains denied. SSE2 and CR0/CR4 preconditions are
 assumptions only, with no CPUID or exception-delivery claim.
+
+
+### S2-35.21 local register PCMPGTB diagnostic profile
+
+`s2_35_21_pcmpgtb_register.case.json` is a handwritten literal XMM8,XMM9
+fixture for strict `s2-long-pcmpgtb-reg-v1`: `66 45 0F 64 C1`. Sixteen signed
+byte lanes emit `FF` iff the destination byte is greater than the source byte,
+otherwise `00`; alternating sentinels make operand direction and signedness
+visible. Interpreter execution is supported; JIT/native execution is denied.
+PCMPGTQ needs SSE4.2 and is excluded; there is no feature-gate or
+exception-delivery claim.

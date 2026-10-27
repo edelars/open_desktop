@@ -9367,3 +9367,27 @@ Intel SDM revision 093, Volume 2B. SSE2
 availability and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. No
 CPUID or exception-delivery claim is made. See the
 [S2-35.18 plan](../plans/STAGE_2.md#s2-3518--local-only-bounded-register-pcmpeqb).
+
+
+## Local register-only `PCMPGTB` profile — S2-35.21
+
+The exact diagnostic profile `s2-long-pcmpgtb-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F 64 /r` with ModR/M.mod=3. ModR/M.reg is the
+XMM destination and ModR/M.r/m the source, extended to XMM0–15. Each byte lane
+independently writes `FF` iff the destination interpreted as signed i8 is
+strictly greater than the source interpreted as signed i8; otherwise it writes
+`00`. Only destination XMM and RIP change; flags, MXCSR and other modeled state
+are preserved, and the operation invokes no guest data-memory callback.
+
+Coverage compares all 65,536 raw byte pairs against an independent signed-byte
+mapping, includes asymmetric and strict/equal cases and signed boundaries,
+mixed lanes, the full 16×16 XMM/REX matrix, atomic stop/budget/truncation/missing
+state behavior, exact-profile negatives and a literal XMM8/XMM9 fixture. Bare
+MMX, PCMPGTW/D/Q, other comparisons, memory, extra prefixes, REX.W/X,
+VEX/EVEX, feature gates, exception delivery, JIT/native execution and physical
+acceptance are excluded. PCMPGTQ requires SSE4.2 and is outside this SSE2 slice.
+SSE2 plus CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumptions only; no CPUID
+or exception-delivery claim is made. Encoding and semantics follow PCMPGTB in
+Intel SDM revision 093, Volume 2B. S2-34, S2-35 and global S2-35 → S2-34 remain
+open; Mac mini/SSH acceptance is deferred. See the
+[S2-35.21 plan](../plans/STAGE_2.md#s2-3521--local-only-bounded-register-pcmpgtb).

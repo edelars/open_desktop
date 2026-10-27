@@ -408,6 +408,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.1 | Local-only PXOR XMM register diagnostic slice; child prerequisite S2-34.1 raw x87/SSE state only | S2-34.1 |
 | [x] | S2-35.2 | Local-only PADDB XMM register diagnostic slice; requires S2-34.1 state and reviewed S2-35.1 mandatory-66 register decoder | S2-34.1, S2-35.1 review |
 | [x] | S2-35.20 | Local-only bounded register PCMPEQD XMM diagnostic slice; dword equality masks, native/JIT closed | S2-34.1, S2-35.1 |
+| [x] | S2-35.21 | Local-only bounded register PCMPGTB XMM diagnostic slice; signed byte greater-than masks, native/JIT closed | S2-34.1, S2-35.1 |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
@@ -8317,3 +8318,36 @@ PCMPEQQ, PCMPGT*, MMX, memory, extra prefixes, REX.W/X, VEX/EVEX, gates,
 exceptions and native/JIT/physical execution remain excluded. SSE2 and
 CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. S2-34, S2-35 and global
 `S2-35 → S2-34` remain open; Mac mini/SSH acceptance remains deferred.
+
+#### S2-35.21 — local-only bounded register `PCMPGTB`
+
+Requires S2-34.1 raw x87/SSE state and mandatory-66 XMM decoding from S2-35.1.
+Exact profile `s2-long-pcmpgtb-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F 64 /r` with ModR/M.mod=3. ModR/M.reg is the
+destination and ModR/M.r/m the source, extended to XMM0–15. Each byte lane
+becomes `FF` iff signed_i8(destination) is strictly greater than
+signed_i8(source), otherwise `00`. Coverage includes all 65,536 raw byte pairs
+against an independent signed mapping, strict/equal and asymmetric cases,
+`7f>80`, `80>7f`, `00>ff`, and `ff>00`, mixed lane values, the full 16×16
+XMM/REX matrix, complete state/flags/MXCSR preservation, and zero data-memory
+callbacks. Missing state, truncation, STOP/budget atomicity, exact schema and
+decoder negatives, the literal XMM8/XMM9 fixture, and JIT/native denial are
+covered. Bare MMX, PCMPGTW/D/Q, other comparisons, memory, extra prefixes,
+REX.W/X, VEX/EVEX, feature gates, exception delivery and physical execution
+are excluded. PCMPGTQ requires SSE4.2 and remains outside this SSE2 slice. SSE2
+and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only; there is no CPUID
+or exception-delivery claim. S2-34, S2-35 and global `S2-35 → S2-34` remain
+open; Mac mini/SSH acceptance remains deferred.
+
+S2-35.21 implementation check (2026-10-27): the focused `od-isa` decoder,
+exhaustive byte-pair/register matrix, and atomicity tests passed (3); the
+handwritten literal XMM8/XMM9 runner fixture passed (1), including strict VEX
+rejection and JIT denial. `cargo test --workspace --offline` passed 1,713 tests.
+Workspace all-target offline check and x86_64 Linux all-target compile check
+passed; the Linux-gated native-denial test was compiled but not executed on the
+macOS host. `cargo fmt --all -- --check` and `git diff --check` passed.
+`graphify update .` completed; it reports the existing header extractor warning
+for `include/open_desktop/host_abi.h`. The cross-target check reports existing
+dead-code warnings in `od-host` and `od-runner`. Independent `gpt-6.1-sol`
+medium review passed with no findings. These are local interpreter/profile results only and do not close S2-34, S2-35, global `S2-35 → S2-34`,
+physical x86 validation, or deferred Mac mini/SSH acceptance.
