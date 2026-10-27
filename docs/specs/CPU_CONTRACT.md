@@ -7859,8 +7859,10 @@ Each iteration reads exactly one operand width from flat `DS:[ESI]`, using
 zero-extended ESI as the starting address. After a successful read, the
 interpreter writes AL/AX/EAX/RAX using the existing register alias rules,
 updates ESI by ±width modulo 2^32 and zero-extends the result, then decrements
-RCX. A width-sized read stays contiguous across a 4 GiB boundary. `RCX=0`
-does not validate or access RSI and completes normally. Current-read failure
+ECX and writes the zero-extended result to RCX. A width-sized read stays
+contiguous across a 4 GiB boundary. For address-size 32, `ECX=0` does not
+validate or access RSI, does not decrement, preserves all of RCX, and completes
+normally. Current-read failure
 does not commit that iteration; previous successful elements remain in the
 snapshot. STOP, completion, and the local 1024-success limit preserve the
 existing REP LODS ordering. Full completion retires once; partial outcomes

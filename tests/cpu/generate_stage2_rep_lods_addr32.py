@@ -20,6 +20,8 @@ ROWS = {
     "qword_wrap_up": (bytes.fromhex("f36748ad"), 1, 0x12345678fffffffc, False, DATA[:8], 0x0807060504030201, 0x4, 0),
     "qword_zero": (bytes.fromhex("f36748ad"), 0, 0x0000800000000000, False, DATA, BASE[0], 0x0000800000000000, 0),
     "qword_partial": (bytes.fromhex("f36748ad"), 2, 0x200000, False, DATA[:8], 0x0807060504030201, 0x200008, 1),
+    "qword_zero_budget": (bytes.fromhex("f36748ad"), 0, 0x0000800000000000, False, DATA, BASE[0], 0x0000800000000000, 0),
+    "qword_initial_stop": (bytes.fromhex("f36748ad"), 0, 0x0000800000000000, False, DATA, BASE[0], 0x0000800000000000, 0),
 }
 
 
@@ -38,15 +40,26 @@ def materialize() -> dict[str, bytes]:
         data_base = 0xFFFFFFFC if suffix == "qword_wrap_up" else 0x00200000
         case_id = f"s2_19j_rep_lods_addr32_{suffix}"
         gprs = BASE.copy()
-        gprs[1] = count
+        gprs[1] = 0xFEED_BEEF_0000_0000 | count
         gprs[6] = rsi
         flags = 0x0CD7 if df else 0x08D7
         out = gprs.copy()
         out[0] = rax
         out[1] = remaining
         out[6] = out_rsi
-        outcome = "harness_error" if suffix == "qword_partial" else "stop_address"
-        stop_rip = 0x00100000 + len(code) if outcome == "stop_address" else None
+        if count == 0:
+            out[1] = gprs[1]
+        outcome = (
+            "harness_error" if suffix == "qword_partial" else
+            "instruction_budget_exhausted" if suffix == "qword_zero_budget" else
+            "stop_address"
+        )
+        stop_rip = (
+            0x00100000 if suffix == "qword_initial_stop" else
+            0x00100000 + len(code) if outcome == "stop_address" else
+            None
+        )
+        instruction_budget = 0 if suffix == "qword_zero_budget" else 1
         fixture = {
             "schema_version": 2,
             "case_id": case_id,
@@ -54,7 +67,7 @@ def materialize() -> dict[str, bytes]:
             "provenance": {
                 "kind": "project_fixture",
                 "source": "Handwritten instruction bytes and predetermined complete state answers; tests/cpu/generate_stage2_rep_lods_addr32.py serializes constants only. No assembler or execution engine is used.",
-                "specification": "Intel SDM revision 093, Vol.2B LODS and REP entries: address-size 32 selects ESI, F3 repeats the selected LODS width from DS:[ESI], DF selects element direction, and completed iterations update RCX and ESI.",
+                "specification": "Intel SDM revision 093, Vol.2B LODS and REP entries: address-size 32 selects ECX and ESI, F3 repeats the selected LODS width from DS:[ESI], DF selects element direction, and each completed iteration decrements ECX (zero-extending into RCX). A zero ECX performs no decrement.",
                 "specification_version": "Intel SDM Vol.2B revision 093 (253667-093US); project S2-19j REP LODS address-size-32",
             },
             "seed": None,
@@ -65,7 +78,7 @@ def materialize() -> dict[str, bytes]:
                 {"region_id": "data", "guest_address": hx(data_base), "length": len(data), "permissions": {"read": True, "write": False, "execute": False}, "initial_bytes_hex": data.hex(), "comparison_mask_hex": "ff" * len(data)},
             ],
             "stop_rip": hx(stop_rip) if stop_rip is not None else None,
-            "instruction_budget": 1,
+            "instruction_budget": instruction_budget,
             "wall_timeout_ms": 2000,
             "rflags_mask": hx(0x0CD7),
             "expected_exit": outcome,

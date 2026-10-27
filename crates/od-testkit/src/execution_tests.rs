@@ -6989,7 +6989,7 @@ fn rep_lods_address32_literal_fixtures_match_full_expected_answers() {
         &std::fs::read(dir.join("s2_19j_rep_lods_addr32_expected.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(answers.len(), 7);
+    assert_eq!(answers.len(), 9);
     for (id, answer) in answers {
         let input =
             Fixture::from_json(&std::fs::read(dir.join(format!("{id}.case.json"))).unwrap())
@@ -7003,9 +7003,16 @@ fn rep_lods_address32_literal_fixtures_match_full_expected_answers() {
             config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
             || false,
         );
-        if input.expected_exit == ExpectedExit::StopAddress {
+        if input.expected_exit == ExpectedExit::InstructionBudgetExhausted {
+            assert_eq!(result.exit, RunExit::InstructionBudgetExhausted, "{id}");
+            assert_eq!(result.instructions_executed, 0, "{id}");
+        } else if input.expected_exit == ExpectedExit::StopAddress {
             assert_eq!(result.exit, RunExit::StopAddress, "{id}");
-            assert_eq!(result.instructions_executed, 1, "{id}");
+            assert_eq!(
+                result.instructions_executed,
+                u64::from(input.stop_rip != Some(input.initial_state.rip)),
+                "{id}"
+            );
         } else {
             let fault = &answer["fault"];
             let address: HexU64 = serde_json::from_value(fault["address"].clone()).unwrap();

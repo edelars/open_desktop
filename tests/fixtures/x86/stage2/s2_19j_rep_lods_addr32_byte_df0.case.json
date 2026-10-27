@@ -5,7 +5,7 @@
   "provenance": {
     "kind": "project_fixture",
     "source": "Handwritten instruction bytes and predetermined complete state answers; tests/cpu/generate_stage2_rep_lods_addr32.py serializes constants only. No assembler or execution engine is used.",
-    "specification": "Intel SDM revision 093, Vol.2B LODS and REP entries: address-size 32 selects ESI, F3 repeats the selected LODS width from DS:[ESI], DF selects element direction, and completed iterations update RCX and ESI.",
+    "specification": "Intel SDM revision 093, Vol.2B LODS and REP entries: address-size 32 selects ECX and ESI, F3 repeats the selected LODS width from DS:[ESI], DF selects element direction, and each completed iteration decrements ECX (zero-extending into RCX). A zero ECX performs no decrement.",
     "specification_version": "Intel SDM Vol.2B revision 093 (253667-093US); project S2-19j REP LODS address-size-32"
   },
   "seed": null,
@@ -14,7 +14,7 @@
     "mode": "long64",
     "gpr": [
       "0x1122334455667788",
-      "0x0000000000000001",
+      "0xfeedbeef00000001",
       "0xdeadbeeffedcba98",
       "0x0000000000200000",
       "0x0000000000300080",

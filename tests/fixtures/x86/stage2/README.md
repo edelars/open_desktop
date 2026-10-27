@@ -4029,11 +4029,13 @@ cargo test -p od-runner --test fixture_v2 --offline rep_lods
 
 ## Bounded REP LODS address-size-32 fixtures S2-19j
 
-Seven literal schema-v2 cases cover address-size-32 REP LODS: byte/word/dword/
+Nine literal schema-v2 cases cover address-size-32 REP LODS: byte/word/dword/
 qword successes, a qword read at `ESI=0xfffffffc` whose post-read pointer wraps
-to 4, zero count with a noncanonical RSI, and a qword read failure after one
-completed element. The full-state sidecar records zero-extended ESI,
-RCX/RAX progress, RIP, definedness, and unchanged data memory. The generator
+to 4, zero ECX with high-half RCX and a noncanonical RSI, a zero instruction
+budget, an initial STOP, and a qword read failure after one completed element.
+The full-state sidecar records ECX decrement/zero-extension into RCX, preserved
+high-half RCX when ECX is initially zero, zero-extended ESI, RAX progress, RIP,
+definedness, and unchanged data memory. The generator
 serializes hand-authored inputs and expected values; it does not execute or
 derive instruction results. The fixtures use the existing profile and schema.
 

@@ -1268,11 +1268,13 @@ qword. Для byte разрешён только F3 и необязательн�
 законных кодировок. Не расширять JIT/native.
 
 При каждой итерации брать начальный адрес из ESI, выполняя одну width-sized
-читающую операцию из flat `DS:[ESI]`. Только после её успеха записать
-AL/AX/EAX/RAX через существующий `RegisterView`, изменить ESI на ±width modulo
-2^32 с zero-extension и уменьшить RCX. Нулевой count не читает и не
-валидирует RSI; fault сохраняет текущую итерацию без commit, а ранее
-успешный прогресс остаётся продолжимым через существующий tracked-entry API.
+читающую операцию из flat `DS:[ESI]`. Address-size 32 выбирает ECX для REP
+count: нулевой ECX не читает и не валидирует RSI и сохраняет исходный RCX
+целиком; после успешной итерации decrement записывает zero-extended ECX в RCX.
+Только после успешного read записать AL/AX/EAX/RAX через существующий
+`RegisterView`, изменить ESI на ±width modulo 2^32 с zero-extension и уменьшить
+ECX. Fault сохраняет текущую итерацию без commit, а ранее успешный прогресс
+остаётся продолжимым через существующий tracked-entry API.
 Сохранить общие STOP/completion/1024-limit ordering, один retirement на полное
 выполнение, ноль на частичное, неизменность flags/DF/RDI/RAM, и ошибку
 отсутствующего mapping как harness error.
@@ -1280,11 +1282,21 @@ AL/AX/EAX/RAX через существующий `RegisterView`, изменит
 Покрыть четыре ширины, обе DF, нулевой/ненулевой count, high-half RSI,
 частичный read failure, normalized prefix order, pointer wrap modulo 2^32,
 work-limit/restart composition, регрессии S2-19c и address-size-64 LODS.
-Добавить буквальные schema-v2 fixtures для всех widths, zero-count с
-неканоническим RSI и продолжения после одного успешного элемента; генератор
-сериализует предзаданные ожидания. Fixture schema/profile не менять. ISSUE-016,
+Добавить буквальные schema-v2 fixtures для всех widths, RCX high-half при
+нулевом ECX, zero-budget и initial STOP без мутаций, и memory fault после
+успешной итерации; генератор сериализует предзаданные ожидания. Fixture
+schema/profile не менять. ISSUE-016,
 ISSUE-020 и ISSUE-021 не закрывать по этому локальному результату; physical
 acceptance остаётся в едином финальном Mac mini substage.
+
+Исправление S2-19j от 2026-10-27: count selection/decrement теперь используют
+ECX по Intel SDM REP pseudocode; ECX=0 сохраняет исходный RCX целиком. Целевые
+проверки `od-isa` прошли 4/4, literal `od-testkit` fixture test — 1/1, полный
+workspace test suite, all-target offline check, formatting, fixture freshness,
+diff check и Graphify update прошли. См. [отчёт коррекции](../reports/STAGE_2_REPORT.md#s2-19j-correction--address-size-32-count-uses-ecx). Physical,
+Mac mini, SSH и JIT/native проверки не выполнялись. Независимое gpt-6.1-sol high
+ревью завершено без замечаний по коду и fixtures; найденное устаревшее описание
+в `docs/testing/INTERPRETER.md` исправлено перед закрытием ревью.
 
 ### S2-20. Точность исключений и exit state
 

@@ -10727,15 +10727,18 @@ Extended the existing bounded REP LODS operation to the four Long64
 address-size-32 widths: `F3 67 AC`, `F3 67 66 AD`, `F3 67 AD`, and effective
 REX.W `F3 67 48 AD`. The executor reads from zero-extended ESI, and after each
 successful read commits the width-specific accumulator alias, advances ESI
-modulo 2^32, and decrements RCX. Existing REP completion, STOP, 1024-success
+modulo 2^32, and decrements ECX with zero-extension to RCX. With initial ECX=0,
+the full RCX value is preserved and no memory read or decrement occurs.
+Existing REP completion, STOP, 1024-success
 limit, fault/replay and tracked-definedness behavior is shared. No JIT/native
 or physical acceptance is claimed.
 
-Local tests cover all widths, DF=0/1, high RSI halves, zero count, partial
+Local tests cover all widths, DF=0/1, high RSI/RCX halves, zero count, partial
 unmapped read, qword DF subtraction, ESI wrap at 2^32, effective prefix
-normalization, and continuation after the 1024-iteration limit. Seven
+normalization, and continuation after the 1024-iteration limit. Nine
 schema-v2 fixtures record a success for each width, qword ESI wrap, zero count
-with noncanonical RSI, and a qword mapping failure after one completed
+with noncanonical RSI, zero-budget and initial-STOP no-mutation boundaries, and
+a qword mapping failure after one completed
 iteration. Their generator serializes fixed answers only.
 
 Focused `od-isa` checks passed (5/5): decoder acceptance and legacy prefix
@@ -10750,3 +10753,33 @@ passed. Graphify was refreshed after the code change. No JIT/native, Mac mini,
 SSH, or physical x86 check was run; those remain in the shared final acceptance.
 ISSUE-016/020/021 remain open and no hardware restart-state or fault-priority
 result is claimed.
+
+### S2-19j correction — address-size-32 count uses ECX
+
+Review found that the original executor and report incorrectly used the full
+RCX for S2-19j count checks and decrements. Intel SDM Vol. 1 REP pseudocode
+selects ECX when address-size is 32 and performs the decrement inside
+`WHILE CountReg != 0`: ECX=0 therefore performs no iteration and leaves the
+entire RCX unchanged. After a successful iteration, the 32-bit ECX decrement
+zero-extends into RCX. The implementation, contract, plan, interpreter test
+guide, fixture provenance, and the original “decrements RCX” claim are corrected
+to state these effects.
+
+Two new literal schema-v2 fixtures cover zero instruction budget and STOP at
+the initial RIP with nonzero RCX high-half and ECX=0; all nine S2-19j fixture
+cases now carry nonzero RCX high-half where appropriate. Unit coverage checks
+successful ECX=1→0, ECX>1 partial progress and resumed completion, no mutation
+for zero count/budget/initial STOP, and a read fault after a committed element.
+The address-size-64 REP LODS and existing REP LODS matrices continue to pass.
+No opcode forms or fixture schema/profile were added.
+
+Verification: targeted `od-isa` address-size-32 tests passed 4/4 and the
+`od-testkit` literal fixture test passed 1/1; `cargo test --workspace --offline`
+passed; `cargo check --workspace --all-targets --offline`, `cargo fmt --all
+-- --check`, S2-19j generator freshness and `git diff --check` passed. Graphify
+was updated. No native/JIT, Mac mini, SSH or physical x86 validation was run.
+ISSUE-022 records this corrected semantic defect as resolved; ISSUE-016/020/021
+remain open and outside this change. Independent gpt-6.1-sol high review found
+no code or fixture defects; it identified one stale paragraph in
+`docs/testing/INTERPRETER.md`, which was corrected to the same ECX semantics and
+nine-fixture count before review closed.

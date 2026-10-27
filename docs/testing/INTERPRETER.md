@@ -543,17 +543,18 @@ ISSUE-016 and ISSUE-020 remain open.
 S2-19j admits only `F3 67 AC`, `F3 67 66 AD`, `F3 67 AD`, and effective
 REX.W `F3 67 48 AD`, with the existing normalized 66/REX ordering for AD.
 Each successful read uses zero-extended ESI, commits the width-specific RAX
-alias, advances ESI modulo 2^32 according to DF, and decrements RCX. Zero
-count avoids data access; a failed next read preserves earlier elements and
-leaves the current iteration uncommitted. REP completion, STOP, tracked
+alias, advances ESI modulo 2^32 according to DF, and decrements ECX, which
+zero-extends into RCX. When ECX starts at zero, the instruction preserves the
+full RCX and avoids data access. A failed next read preserves earlier elements
+and leaves the current iteration uncommitted. REP completion, STOP, tracked
 continuation and the 1024-read work limit use the existing S2-19c behavior.
 
-Local checks cover all four widths, DF=0/1, high RSI halves, zero count,
+Local checks cover all four widths, DF=0/1, high RSI/RCX halves, zero count,
 post-read faults, qword DF subtraction on ESI, ESI wrap at 2^32, REP work-limit
-continuation, and normalized prefix acceptance. Seven literal schema-v2
+continuation, and normalized prefix acceptance. Nine literal schema-v2
 fixtures include one success per width, a qword ESI wrap, zero count with a
-noncanonical RSI, and a partial qword read failure; their generator serializes
-fixed answers. Address-size-64 REP
+noncanonical RSI, zero instruction budget, initial STOP, and a partial qword
+read failure; their generator serializes fixed answers. Address-size-64 REP
 LODS remains covered by S2-19c. JIT/native and physical execution remain
 deferred; no hardware restart-state claim is made.
 

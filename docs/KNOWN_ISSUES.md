@@ -12,6 +12,16 @@
 
 ## Записи
 
+### ISSUE-022 — S2-19j address-size-32 REP LODS использовал RCX вместо ECX
+
+- **Дата обнаружения:** 2026-10-27.
+- **Компонент:** `od-isa` bounded Long64 `REP LODS` с address-size 32 (S2-19j).
+- **Статус:** решена 27 октября 2026 года.
+- **Суть и последствия:** цикл использовал полный RCX для проверки count и decrement. При `67` архитектурный count register — ECX: высокие 32 бита не должны запускать повторение; zero ECX выполняет ноль итераций и сохраняет RCX, а decrement после успешной итерации записывает zero-extended ECX в RCX. Старое поведение могло читать память при ECX=0, ошибочно продолжать цикл из-за высоких битов и оставлять неверный остаток после итерации.
+- **Основание:** Intel SDM REP pseudocode выбирает ECX для address-size 32 и исполняет decrement только внутри `WHILE CountReg != 0`; локальные unit и literal schema-v2 cases проверяют zero count, успешный decrement, resume и no-commit memory fault. См. [CPU contract](specs/CPU_CONTRACT.md#local-s2-19j-bounded-rep-lods-address-size-32-contract), [plan](plans/STAGE_2.md#s2-19j-bounded-rep-lods-с-address-size-32), [report](reports/STAGE_2_REPORT.md#s2-19j--bounded-rep-lods-address-size-32) и [fixture notes](../tests/fixtures/x86/stage2/README.md#bounded-rep-lods-address-size-32-fixtures-s2-19j).
+- **Результат:** исправлен только `Operation::RepLods`; address-size-64 и legacy REP LODS семантика не менялась. Целевые и workspace проверки, offline all-target check, formatting, fixture freshness, diff check и Graphify update подтверждены в S2-19j correction report. Hardware, native/JIT, Mac mini и SSH проверки не выполнялись.
+- **Следующий шаг:** отсутствует для локальной семантической ошибки; физическая/native acceptance остаётся в общем финальном substage и не является доказательством, полученным этой правкой.
+
 ### ISSUE-018 — Специальные значения и исключения indexed FCOMI-family вне bounded профиля
 
 - **Дата обнаружения:** 2026-10-24.

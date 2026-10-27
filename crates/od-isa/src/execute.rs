@@ -2749,8 +2749,15 @@ fn step_tracked_with_stop(
         }
         Operation::RepLods { size } => {
             let mut completed = 0;
-            while state.gpr[Register::Rcx as usize] != 0 {
-                let address_size = instruction.address_size;
+            let address_size = instruction.address_size;
+            let count = |state: &LongModeState| {
+                if address_size == OperandSize::Dword {
+                    state.gpr[Register::Rcx as usize] as u32 as u64
+                } else {
+                    state.gpr[Register::Rcx as usize]
+                }
+            };
+            while count(state) != 0 {
                 let source = Operand::Memory(MemoryOperand {
                     base: AddressBase::Register(Register::Rsi),
                     index: None,
@@ -2783,9 +2790,10 @@ fn step_tracked_with_stop(
                     state.gpr[Register::Rsi as usize] =
                         state.gpr[Register::Rsi as usize].wrapping_add(step);
                 }
-                state.gpr[Register::Rcx as usize] -= 1;
+                let remaining = count(state).wrapping_sub(1);
+                state.gpr[Register::Rcx as usize] = remaining;
                 completed += 1;
-                if state.gpr[Register::Rcx as usize] == 0 {
+                if remaining == 0 {
                     break;
                 }
                 if stop_requested() {
@@ -6026,7 +6034,7 @@ mod tests {
                     };
                     state.gpr[Register::Rsi as usize] =
                         (u64::from(u32::MAX) << 32) | u64::from(initial_index);
-                    state.gpr[Register::Rcx as usize] = count;
+                    state.gpr[Register::Rcx as usize] = (0xfeed_beef_u64 << 32) | count;
                     state.rflags = 2 | if direction { 1 << 10 } else { 0 };
                     let mut expected = state.clone();
                     let mut expected_accesses = Vec::new();
@@ -6048,7 +6056,8 @@ mod tests {
                             index.wrapping_add(step)
                         };
                         expected.gpr[Register::Rsi as usize] = u64::from(index);
-                        expected.gpr[Register::Rcx as usize] -= 1;
+                        expected.gpr[Register::Rcx as usize] =
+                            count - expected_accesses.len() as u64;
                     }
                     expected.rip = code.len() as u64;
                     let before_ram = memory.bytes.clone();
@@ -6121,7 +6130,8 @@ mod tests {
         memory.bytes = vec![0x5a; REP_ITERATION_WORK_LIMIT as usize + 1];
         let mut state = LongModeState::default();
         state.gpr[Register::Rsi as usize] = 0x1234_5678_0000_1000;
-        state.gpr[Register::Rcx as usize] = REP_ITERATION_WORK_LIMIT + 1;
+        state.gpr[Register::Rcx as usize] =
+            (0xfeed_beef_u64 << 32) | (REP_ITERATION_WORK_LIMIT + 1);
         let first = run(
             &mut state,
             &mut memory,
@@ -6154,6 +6164,120 @@ mod tests {
         assert_eq!(state.gpr[Register::Rsi as usize], 0x1401);
         assert_eq!(state.gpr[Register::Rcx as usize], 0);
         assert_eq!(state.rip, code.len() as u64);
+    }
+
+    #[test]
+    fn rep_lods_address32_uses_ecx_without_zero_count_mutation() {
+        let code = [0xf3, 0x67, 0xac];
+        let mut memory = Memory::new(&code);
+        memory.bytes = vec![0x5a; 4];
+        let original_rcx = 0xfeed_beef_0000_0000;
+        let mut state = LongModeState::default();
+        state.gpr[Register::Rcx as usize] = original_rcx;
+        state.gpr[Register::Rsi as usize] = 0x0000_8000_0000_1000;
+        state.gpr[Register::Rax as usize] = 0x1122_3344_5566_7788;
+        let initial = state.clone();
+
+        let completed = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(code.len() as u64),
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(completed.exit, RunExit::StopAddress);
+        assert_eq!(completed.instructions_executed, 1);
+        assert_eq!(state.gpr[Register::Rcx as usize], original_rcx);
+        assert_eq!(
+            state.gpr[Register::Rsi as usize],
+            initial.gpr[Register::Rsi as usize]
+        );
+        assert_eq!(
+            state.gpr[Register::Rax as usize],
+            initial.gpr[Register::Rax as usize]
+        );
+        assert!(memory.accesses.is_empty());
+
+        for (config, expected_exit) in [
+            (
+                RunConfig {
+                    instruction_budget: 0,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                RunExit::InstructionBudgetExhausted,
+            ),
+            (
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0),
+                    context: AccessContext::default(),
+                },
+                RunExit::StopAddress,
+            ),
+        ] {
+            let mut stopped_state = initial.clone();
+            let result = run(&mut stopped_state, &mut memory, config, || false);
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(stopped_state, initial);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn rep_lods_address32_decrements_ecx_and_resumes_from_partial_progress() {
+        let code = [0xf3, 0x67, 0xac];
+        let mut memory = Memory::new(&code);
+        memory.bytes = vec![0x11, 0x22, 0x33, 0x44];
+        let mut state = LongModeState::default();
+        state.gpr[Register::Rcx as usize] = 0xfeed_beef_0000_0002;
+        state.gpr[Register::Rsi as usize] = 0xaaaa_bbbb_0000_1000;
+        state.gpr[Register::Rax as usize] = 0x1122_3344_5566_7788;
+
+        let mut stop_checks = 0;
+        let partial = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || {
+                stop_checks += 1;
+                stop_checks >= 2
+            },
+        );
+        assert_eq!(partial.exit, RunExit::StopRequested);
+        assert_eq!(partial.instructions_executed, 0);
+        assert_eq!(state.gpr[Register::Rcx as usize], 1);
+        assert_eq!(state.gpr[Register::Rsi as usize], 0x1001);
+        assert_eq!(state.gpr[Register::Rax as usize], 0x1122_3344_5566_7711);
+        assert_eq!(state.rip, 0);
+
+        let resumed = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(code.len() as u64),
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(resumed.exit, RunExit::StopAddress);
+        assert_eq!(resumed.instructions_executed, 1);
+        assert_eq!(state.gpr[Register::Rcx as usize], 0);
+        assert_eq!(state.gpr[Register::Rsi as usize], 0x1002);
+        assert_eq!(state.gpr[Register::Rax as usize], 0x1122_3344_5566_7722);
+        assert_eq!(
+            memory.accesses,
+            [(AccessKind::Read, 0x1000, 1), (AccessKind::Read, 0x1001, 1)]
+        );
     }
 
     #[test]
