@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-22a/S3-23a/S3-23c/S3-23d/S3-25a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22/S3-23/S3-25 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-25a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22/S3-23/S3-25 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -160,6 +160,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-23a | Fixture owner notifications для изменения backing/mapping и cache invalidation между sync dispatch calls | Только неактивные entries; production owner, writer integration и publication race остаются открытыми |
 | [partial] | S3-23c | Fixture-only V2 generated store to a different tracked executable backing | One vCPU/fixed RAM; active-source overlap rejected; no active-code retirement or production MMU |
 | [partial] | S3-23d | Shared fixture write transaction for interpreter MOV, V2 store, and control writes | Interpreter and control adapters commit between calls; production MMU/DMA/MMIO/SMP remain open |
+| [partial] | S3-23e | Region-scoped executable-write notification and redispatch | Separate store entry invalidates cached prefix/tail and aliases before next lookup; no active native tail or S3-24 claim |
 | [ ] | S3-23 | Инвалидация code dependencies | S3-18, S3-21, S3-22; полный writer/MMU integration |
 | [ ] | S3-24 | Self-modifying code в текущем блоке | S3-23 |
 | [ ] | S3-25 | Eviction, retirement и освобождение | S3-18, S3-24 |
@@ -949,6 +950,21 @@ interpreter также отвергается до commit. Это только t
 MMU/control owner, shared/asynchronous RAM, MMIO, DMA, SMP, REP/RMW,
 compile-publication races и active-code retirement не реализуются. Stage 2
 файлы не менялись. См. [S3-23d report](../reports/STAGE_3_S3-23d_2026-10-27.md).
+
+#### S3-23e. Region-scoped executable-write notification and redispatch — partial
+
+Generated V2 store entry принимает отдельную bounded code-region stamp. Owner
+требует, чтобы регион заканчивался ровно на `next_rip` store, отдельно
+запрещает target overlap с source bytes store artifact (включая guest aliases),
+затем сверяет регион с backing. После committed store/result decoding применяет
+`CodeInvalidated` ко всем зависимым cache entries, включая оба guest aliases,
+и возвращает этот exit для redispatch до следующего lookup. Тест кеширует prefix и
+tail в двух aliases, выполняет отдельный store entry, проверяет exact-once
+commit и interpreter state/RAM parity, затем заново dispatch-ит tail и source
+по новым bytes. Компилируемый artifact store содержит только сам store; tail
+не исполняется native во время этой записи. Следовательно, это prerequisite
+между calls для coherence, а не S3-24 retirement активного native tail.
+См. [S3-23e report](../reports/STAGE_3_S3-23e_2026-10-27.md).
 
 1. Ввести единый путь уведомления committed memory writes и смены backing/mapping. Подключить interpreter, JIT и управляющие writes доступного среза.
 2. Изменить generation/identity нужных code regions, удалить зависимые entries из lookup и сделать невозможным stale entry по старой ссылке.

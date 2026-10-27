@@ -632,6 +632,9 @@ fn decode_block_result(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MemoryOperationExecutionExitV2 {
     Complete,
+    /// The completed store changed bytes in a tracked executable region. The
+    /// caller must redispatch from the committed guest RIP after invalidation.
+    CodeInvalidated,
     BudgetExhausted,
     StopRequested,
     StopAddress,
@@ -1076,6 +1079,15 @@ pub enum TrackedCodeStorePreflightError {
     ActiveSourceOverlap,
 }
 
+/// Immutable executable source region tracked separately from a V2 store
+/// site's own instruction bytes/provenance. This is a coherence boundary,
+/// not evidence that the region is one active compiled block.
+#[derive(Clone, Copy, Debug)]
+pub struct TrackedCodeRegionV2<'a> {
+    pub guest_rip: u64,
+    pub source_bytes: &'a [u8],
+}
+
 /// Owner contract for the fixture-only executable-code store path.
 ///
 /// This is deliberately not implemented for ordinary GuestMemory backends.
@@ -1096,6 +1108,7 @@ pub unsafe trait TrackedExecutableCodeOwner: od_isa::memory::GuestMemory {
         &mut self,
         site: &od_jit::runtime::MemorySiteV2,
         source_bytes: &[u8],
+        tracked_region: Option<TrackedCodeRegionV2<'_>>,
         state: &od_isa::LongModeState,
         context: od_isa::memory::AccessContext,
     );
@@ -1106,6 +1119,7 @@ pub unsafe trait TrackedExecutableCodeOwner: od_isa::memory::GuestMemory {
     ) -> (
         Option<od_jit::dispatch::CodeInvalidation>,
         Option<TrackedCodeStorePreflightError>,
+        bool,
     );
 }
 
@@ -1129,6 +1143,55 @@ impl PublishedArenaMemoryStore {
         initial_budget: u64,
         stop_rip: Option<u64>,
         stop_requested: &std::sync::atomic::AtomicU8,
+        notify: impl FnMut(od_jit::dispatch::CodeInvalidation),
+    ) -> Result<MemoryOperationExecutionResultV2, TrackedCodeStoreExecutionErrorV2> {
+        self.execute_tracked_code_store_with_code_region_v2(
+            state,
+            owner,
+            access_context,
+            initial_budget,
+            stop_rip,
+            stop_requested,
+            None,
+            notify,
+        )
+    }
+
+    /// Execute a generated store while tracking an executable guest-code
+    /// region. If a successful store overlaps it, return `CodeInvalidated`
+    /// after committing state and consuming invalidation, before redispatch.
+    pub fn execute_tracked_code_store_in_code_region_v2(
+        &self,
+        state: &mut od_isa::LongModeState,
+        owner: &mut dyn TrackedExecutableCodeOwner,
+        access_context: od_isa::memory::AccessContext,
+        initial_budget: u64,
+        stop_rip: Option<u64>,
+        stop_requested: &std::sync::atomic::AtomicU8,
+        tracked_region: TrackedCodeRegionV2<'_>,
+        notify: impl FnMut(od_jit::dispatch::CodeInvalidation),
+    ) -> Result<MemoryOperationExecutionResultV2, TrackedCodeStoreExecutionErrorV2> {
+        self.execute_tracked_code_store_with_code_region_v2(
+            state,
+            owner,
+            access_context,
+            initial_budget,
+            stop_rip,
+            stop_requested,
+            Some(tracked_region),
+            notify,
+        )
+    }
+
+    fn execute_tracked_code_store_with_code_region_v2(
+        &self,
+        state: &mut od_isa::LongModeState,
+        owner: &mut dyn TrackedExecutableCodeOwner,
+        access_context: od_isa::memory::AccessContext,
+        initial_budget: u64,
+        stop_rip: Option<u64>,
+        stop_requested: &std::sync::atomic::AtomicU8,
+        tracked_region: Option<TrackedCodeRegionV2<'_>>,
         mut notify: impl FnMut(od_jit::dispatch::CodeInvalidation),
     ) -> Result<MemoryOperationExecutionResultV2, TrackedCodeStoreExecutionErrorV2> {
         let arena = self._block.arena.borrow();
@@ -1181,6 +1244,7 @@ impl PublishedArenaMemoryStore {
         owner.preflight_code_store(
             &metadata.site,
             &metadata.source_bytes[..source_len],
+            tracked_region,
             state,
             access_context,
         );
@@ -1206,7 +1270,10 @@ impl PublishedArenaMemoryStore {
             .unwrap_or(Err(MemoryOperationExecutionErrorV2::InvalidMetadata));
 
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let result = {
+        let result: Result<
+            MemoryOperationExecutionResultV2,
+            MemoryOperationExecutionErrorV2,
+        > = {
             let _ = (
                 metadata,
                 state,
@@ -1221,14 +1288,20 @@ impl PublishedArenaMemoryStore {
         // A successful backend write is already committed even if host
         // result decoding fails, so always drain its notification after return.
         drop(arena);
-        let (change, preflight_rejection) = owner.finish_code_store();
+        let (change, preflight_rejection, intersects_tracked_code_region) =
+            owner.finish_code_store();
         if let Some(change) = change {
             notify(change);
         }
         if let Some(rejection) = preflight_rejection {
             return Err(TrackedCodeStoreExecutionErrorV2::Preflight(rejection));
         }
-        result.map_err(TrackedCodeStoreExecutionErrorV2::Execution)
+        let mut result = result.map_err(TrackedCodeStoreExecutionErrorV2::Execution)?;
+        if intersects_tracked_code_region && result.exit == MemoryOperationExecutionExitV2::Complete
+        {
+            result.exit = MemoryOperationExecutionExitV2::CodeInvalidated;
+        }
+        Ok(result)
     }
 }
 
@@ -1874,6 +1947,14 @@ mod tests {
         writable: bool,
     }
 
+    #[derive(Clone, Copy)]
+    struct TrackedWritePlan {
+        backing: usize,
+        offset: usize,
+        next_version: od_jit::translation::BackingVersion,
+        intersects_code_region: bool,
+    }
+
     struct TrackedCodeFixture {
         address_space: od_jit::translation::AddressSpaceId,
         backings: Vec<TrackedBackingFixture>,
@@ -1881,7 +1962,7 @@ mod tests {
         active_source_rip: u64,
         active_source: (usize, usize, usize),
         current_active_source: Option<(usize, usize, usize)>,
-        pending: Option<(usize, usize, od_jit::translation::BackingVersion)>,
+        pending: Option<TrackedWritePlan>,
         preflight_rejection: Option<TrackedCodeStorePreflightError>,
         write_attempted: bool,
         pending_write_committed: bool,
@@ -2013,7 +2094,14 @@ mod tests {
             let mapping = self
                 .mappings
                 .iter()
-                .find(|map| map.start == address && map.backing == backing_index)
+                .find(|map| {
+                    let end = map.start.checked_add(map.len as u64);
+                    end.is_some_and(|end| {
+                        map.backing == backing_index
+                            && address >= map.start
+                            && address + len as u64 <= end
+                    })
+                })
                 .unwrap();
             let backing = &self.backings[backing_index];
             (
@@ -2048,10 +2136,8 @@ mod tests {
             length: usize,
             require_executable: bool,
             active_source: Option<(usize, usize, usize)>,
-        ) -> Result<
-            (usize, usize, od_jit::translation::BackingVersion),
-            TrackedCodeStorePreflightError,
-        > {
+            allow_code_region_overlap: bool,
+        ) -> Result<TrackedWritePlan, TrackedCodeStorePreflightError> {
             let access_len =
                 u64::try_from(length).map_err(|_| TrackedCodeStorePreflightError::OutOfRange)?;
             let access_end = address
@@ -2084,6 +2170,7 @@ mod tests {
             if require_executable && !mapping.executable {
                 return Err(TrackedCodeStorePreflightError::NotExecutable);
             }
+            let mut intersects_code_region = false;
             if let Some((active_backing, active_start, active_len)) = active_source {
                 let target_end = offset
                     .checked_add(length)
@@ -2091,7 +2178,9 @@ mod tests {
                 let active_end = active_start
                     .checked_add(active_len)
                     .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
-                if backing == active_backing && offset < active_end && active_start < target_end {
+                intersects_code_region =
+                    backing == active_backing && offset < active_end && active_start < target_end;
+                if intersects_code_region && !allow_code_region_overlap {
                     return Err(TrackedCodeStorePreflightError::ActiveSourceOverlap);
                 }
             }
@@ -2099,16 +2188,22 @@ mod tests {
                 .version
                 .checked_next()
                 .ok_or(TrackedCodeStorePreflightError::VersionExhausted)?;
-            Ok((backing, offset, next))
+            Ok(TrackedWritePlan {
+                backing,
+                offset,
+                next_version: next,
+                intersects_code_region,
+            })
         }
 
         fn write_preflighted(
             &mut self,
             address: u64,
             source: &[u8],
-            plan: (usize, usize, od_jit::translation::BackingVersion),
+            plan: TrackedWritePlan,
         ) -> Result<(), MemoryError> {
-            let (backing, offset, _) = plan;
+            let backing = plan.backing;
+            let offset = plan.offset;
             if self.fail_write {
                 self.fail_write = false;
                 return Err(MemoryError::Backend(
@@ -2142,20 +2237,25 @@ mod tests {
             Ok(())
         }
 
-        fn finish_guest_write(&mut self) -> Option<od_jit::dispatch::CodeInvalidation> {
-            let change = self.pending.take().and_then(|(backing, _, next)| {
-                self.pending_write_committed.then(|| {
-                    self.backings[backing].version = next;
-                    od_jit::dispatch::CodeInvalidation::BackingContentChanged {
-                        backing: self.backings[backing].id,
-                        current_version: next,
-                    }
-                })
-            });
+        fn finish_guest_write(&mut self) -> (Option<od_jit::dispatch::CodeInvalidation>, bool) {
+            let (change, intersects_code_region) =
+                self.pending.take().map_or((None, false), |plan| {
+                    self.pending_write_committed
+                        .then(|| {
+                            self.backings[plan.backing].version = plan.next_version;
+                            od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                                backing: self.backings[plan.backing].id,
+                                current_version: plan.next_version,
+                            }
+                        })
+                        .map_or((None, false), |change| {
+                            (Some(change), plan.intersects_code_region)
+                        })
+                });
             self.pending_write_committed = false;
             self.write_attempted = false;
             self.preflight_rejection = None;
-            change
+            (change, intersects_code_region)
         }
 
         fn control_write(
@@ -2171,7 +2271,7 @@ mod tests {
                 AccessContext::default(),
                 source,
             );
-            let change = self.finish_guest_write();
+            let (change, _) = self.finish_guest_write();
             result.map(|()| {
                 let invalidated = change.map_or(0, |change| cache.invalidate(change));
                 (change, invalidated)
@@ -2195,16 +2295,28 @@ mod tests {
         cache: &mut od_jit::dispatch::MultiEntryBlockCache<PublishedArenaBlock>,
         backend: &mut PublishedArenaBackend,
     ) -> (od_jit::dispatch::DispatchResult, od_isa::LongModeState) {
+        let state = od_isa::LongModeState {
+            rip,
+            ..od_isa::LongModeState::default()
+        };
+        let result = run_tracked_code_block_with_state(owner, rip, state, cache, backend);
+        result
+    }
+
+    fn run_tracked_code_block_with_state(
+        owner: &TrackedCodeFixture,
+        rip: u64,
+        mut state: od_isa::LongModeState,
+        cache: &mut od_jit::dispatch::MultiEntryBlockCache<PublishedArenaBlock>,
+        backend: &mut PublishedArenaBackend,
+    ) -> (od_jit::dispatch::DispatchResult, od_isa::LongModeState) {
         let (bytes, identity) = owner.view(rip, 10);
         let code = CodeView::new(rip, bytes).unwrap();
         let decoded = od_isa::decode(bytes).unwrap();
         let admission = AdmittedInstructionBoundaries::from_fixture_decode(code, &decoded).unwrap();
         let dependencies = owner.dependencies(rip, bytes.len());
         assert_eq!(dependencies[0].identity, identity);
-        let mut state = od_isa::LongModeState {
-            rip,
-            ..od_isa::LongModeState::default()
-        };
+        assert_eq!(state.rip, rip);
         let result = od_jit::dispatch::run_multi_cached(
             code,
             &admission,
@@ -2223,14 +2335,19 @@ mod tests {
         owner: &mut TrackedCodeFixture,
         state: &mut od_isa::LongModeState,
         cache: &mut od_jit::dispatch::MultiEntryBlockCache<PublishedArenaBlock>,
+        active_source: Option<(u64, usize)>,
     ) -> (
         Result<od_isa::execute::StepOutcome, MemoryError>,
         Option<od_jit::dispatch::CodeInvalidation>,
         usize,
     ) {
-        owner.begin_interpreter_write_scope(state.rip, 3);
+        if let Some((rip, length)) = active_source {
+            owner.begin_interpreter_write_scope(rip, length);
+        } else {
+            owner.current_active_source = None;
+        }
         let result = od_isa::execute::step(state, owner, AccessContext::default());
-        let change = owner.finish_guest_write();
+        let (change, _) = owner.finish_guest_write();
         owner.end_interpreter_write_scope();
         let invalidated = change.map_or(0, |change| cache.invalidate(change));
         (result, change, invalidated)
@@ -2245,6 +2362,7 @@ mod tests {
             &mut self,
             site: &od_jit::runtime::MemorySiteV2,
             source_bytes: &[u8],
+            tracked_region: Option<TrackedCodeRegionV2<'_>>,
             state: &od_isa::LongModeState,
             _: AccessContext,
         ) {
@@ -2268,16 +2386,63 @@ mod tests {
                 {
                     return Err(TrackedCodeStorePreflightError::ActiveSourceMismatch);
                 }
+                let active_span = if let Some(tracked_region) = tracked_region {
+                    let region_end = tracked_region
+                        .guest_rip
+                        .checked_add(tracked_region.source_bytes.len() as u64)
+                        .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                    if tracked_region.source_bytes.is_empty()
+                        || site.guest_rip() < tracked_region.guest_rip
+                        || site.next_rip() != region_end
+                    {
+                        return Err(TrackedCodeStorePreflightError::ActiveSourceMismatch);
+                    }
+                    let (prefix_backing, prefix_offset) = self
+                        .mapping_at(tracked_region.guest_rip, tracked_region.source_bytes.len())
+                        .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                    let site_offset = usize::try_from(site.guest_rip() - tracked_region.guest_rip)
+                        .map_err(|_| TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                    let site_end = site_offset
+                        .checked_add(source_bytes.len())
+                        .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                    if source_backing != prefix_backing
+                        || self.backings[prefix_backing]
+                            .bytes
+                            .get(prefix_offset..prefix_offset + tracked_region.source_bytes.len())
+                            != Some(tracked_region.source_bytes)
+                        || tracked_region.source_bytes.get(site_offset..site_end)
+                            != Some(source_bytes)
+                    {
+                        return Err(TrackedCodeStorePreflightError::ActiveSourceMismatch);
+                    }
+                    Some((
+                        prefix_backing,
+                        prefix_offset,
+                        tracked_region.source_bytes.len(),
+                    ))
+                } else {
+                    Some((active_backing, active_start, active_len))
+                };
                 let address = site
                     .operand()
                     .access_address_48(state, site.next_rip())
                     .map_err(|_| TrackedCodeStorePreflightError::UnsupportedSite)?;
-                self.prepare_write(
-                    address,
-                    8,
-                    true,
-                    Some((active_backing, active_start, active_len)),
-                )
+                let (destination_backing, destination_offset) = self
+                    .mapping_at(address, 8)
+                    .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
+                let destination_end = destination_offset
+                    .checked_add(8)
+                    .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
+                let source_end = active_start
+                    .checked_add(active_len)
+                    .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                if destination_backing == active_backing
+                    && destination_offset < source_end
+                    && active_start < destination_end
+                {
+                    return Err(TrackedCodeStorePreflightError::ActiveSourceOverlap);
+                }
+                self.prepare_write(address, 8, true, active_span, tracked_region.is_some())
             })();
             match validation {
                 Ok(pending) => self.pending = Some(pending),
@@ -2290,14 +2455,15 @@ mod tests {
         ) -> (
             Option<od_jit::dispatch::CodeInvalidation>,
             Option<TrackedCodeStorePreflightError>,
+            bool,
         ) {
             let preflight_rejection = if self.write_attempted {
                 self.preflight_rejection.take()
             } else {
                 None
             };
-            let change = self.finish_guest_write();
-            (change, preflight_rejection)
+            let (change, intersects_code_region) = self.finish_guest_write();
+            (change, preflight_rejection, intersects_code_region)
         }
     }
 
@@ -2356,7 +2522,13 @@ mod tests {
             let plan = match self.pending {
                 Some(plan) => plan,
                 None => self
-                    .prepare_write(address, source.len(), false, self.current_active_source)
+                    .prepare_write(
+                        address,
+                        source.len(),
+                        false,
+                        self.current_active_source,
+                        false,
+                    )
                     .map_err(|error| match error {
                         TrackedCodeStorePreflightError::OutOfRange => MemoryError::Unmapped {
                             address,
@@ -7118,11 +7290,13 @@ mod tests {
         let overlap_before = active_overlap.clone();
         let source_bytes_before = interpreter_owner.backings[0].bytes.clone();
         let source_version_before = interpreter_owner.backings[0].version;
+        let overlap_rip = active_overlap.rip;
         let (overlap_result, overlap_notification, overlap_invalidated) =
             run_tracked_interpreter_step(
                 &mut interpreter_owner,
                 &mut active_overlap,
                 &mut interpreter_cache,
+                Some((overlap_rip, 3)),
             );
         assert!(matches!(
             overlap_result,
@@ -7139,11 +7313,13 @@ mod tests {
         let target_version_before = interpreter_owner.backings[1].version;
         interpreter_owner.fail_write = true;
         let backend_fault_before = interpreter_state.clone();
+        let interpreter_rip = interpreter_state.rip;
         let (backend_fault, backend_fault_notification, backend_fault_invalidated) =
             run_tracked_interpreter_step(
                 &mut interpreter_owner,
                 &mut interpreter_state,
                 &mut interpreter_cache,
+                Some((interpreter_rip, 3)),
             );
         assert!(matches!(backend_fault, Err(MemoryError::Backend(_))));
         assert_eq!(interpreter_state, backend_fault_before);
@@ -7159,6 +7335,7 @@ mod tests {
                 &mut interpreter_owner,
                 &mut interpreter_state,
                 &mut interpreter_cache,
+                Some((interpreter_rip, 3)),
             );
         assert!(matches!(
             interpreter_result,
@@ -7296,6 +7473,233 @@ mod tests {
     }
 
     #[test]
+    fn code_region_store_invalidates_cached_prefix_and_tail_before_redispatch() {
+        let _guard = jit_test_lock();
+        let entry = 0x1000_u64;
+        let old = 0x1122_3344_5566_7788_u64;
+        let new = 0x8877_6655_4433_2211_u64;
+        let sentinel = 0xCAFE_BABE_1234_5678_u64;
+        let old_rcx = 0xA5A5_5A5A_F0F0_0F0F_u64;
+        let mut program = vec![0x48, 0xBA]; // MOV RDX, OLD
+        program.extend_from_slice(&old.to_le_bytes());
+        program.extend_from_slice(&[0x48, 0x89, 0x03]); // MOV [RBX], RAX
+        program.extend_from_slice(&[0x48, 0xB9]); // MOV RCX, SENTINEL (tail)
+        program.extend_from_slice(&sentinel.to_le_bytes());
+        program.push(0x90); // terminator after the observable tail
+        let prefix_end = 13;
+        let store_bytes = &program[10..13];
+        let target_code = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let unrelated_code = [0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0];
+        let mut jit_owner = TrackedCodeFixture::new(store_bytes, &target_code, &unrelated_code);
+        let mut interpreter_owner =
+            TrackedCodeFixture::new(store_bytes, &target_code, &unrelated_code);
+        jit_owner.backings[0].bytes[..program.len()].copy_from_slice(&program);
+        interpreter_owner.backings[0].bytes[..program.len()].copy_from_slice(&program);
+        for owner in [&mut jit_owner, &mut interpreter_owner] {
+            owner.active_source_rip = entry + 10;
+            owner.active_source = (0, 10, store_bytes.len());
+        }
+
+        let mut arena = PublishedArenaBackend::new(6).unwrap();
+        let mut jit_cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            5,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        let mut interpreter_cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            3,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+
+        // Publish both artifacts before the store, but discard warmup states.
+        run_tracked_code_block(&jit_owner, entry, &mut jit_cache, &mut arena);
+        run_tracked_code_block(
+            &jit_owner,
+            entry + prefix_end as u64,
+            &mut jit_cache,
+            &mut arena,
+        );
+        run_tracked_code_block(&jit_owner, 0x5000, &mut jit_cache, &mut arena);
+        run_tracked_code_block(
+            &jit_owner,
+            0x5000 + prefix_end as u64,
+            &mut jit_cache,
+            &mut arena,
+        );
+        assert_eq!(jit_cache.resident_entries(), 4);
+
+        let initial = od_isa::LongModeState {
+            rip: entry,
+            rflags: 0xA55,
+            gpr: {
+                let mut gpr = [0_u64; 16];
+                gpr[0] = new;
+                gpr[1] = old_rcx;
+                gpr[3] = entry + 2; // RBX points into the already executed immediate.
+                gpr
+            },
+            ..od_isa::LongModeState::default()
+        };
+
+        // Interpreter checkpoint: completed prefix and store, before tail.
+        let mut interpreter_state = initial.clone();
+        let (prefix_step, _, _) = run_tracked_interpreter_step(
+            &mut interpreter_owner,
+            &mut interpreter_state,
+            &mut interpreter_cache,
+            Some((entry, 10)),
+        );
+        assert!(matches!(
+            prefix_step,
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        ));
+        assert_eq!(interpreter_state.gpr[2], old);
+        assert_eq!(interpreter_state.rip, entry + 10);
+        let (store_step, interpreter_notification, _) = run_tracked_interpreter_step(
+            &mut interpreter_owner,
+            &mut interpreter_state,
+            &mut interpreter_cache,
+            None,
+        );
+        assert!(matches!(
+            store_step,
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        ));
+        assert_eq!(interpreter_state.rip, entry + 13);
+        assert_eq!(interpreter_state.gpr[2], old);
+        assert_eq!(interpreter_state.gpr[3], entry + 2);
+        assert_eq!(interpreter_state.gpr[1], old_rcx);
+        assert_eq!(interpreter_owner.write_count, 1);
+        assert_eq!(
+            interpreter_notification,
+            Some(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                backing: TrackedCodeFixture::id(2),
+                current_version: od_jit::translation::BackingVersion::new(TrackedCodeFixture::nz(
+                    2
+                )),
+            })
+        );
+        assert_eq!(
+            &interpreter_owner.backings[0].bytes[2..10],
+            &new.to_le_bytes()
+        );
+
+        // Native cached prefix, followed by the separate verified V2 store.
+        let (prefix_result, mut jit_state) = run_tracked_code_block_with_state(
+            &jit_owner,
+            entry,
+            initial,
+            &mut jit_cache,
+            &mut arena,
+        );
+        assert_eq!(prefix_result.retired_instructions, 1);
+        assert_eq!(jit_state.rip, entry + 10);
+        assert_eq!(jit_state.gpr[2], old);
+        let store_view = CodeView::new(entry + 10, store_bytes).unwrap();
+        let artifact =
+            od_jit::memory_load_v2::compile_memory_store_block_v2(store_view, entry + 10).unwrap();
+        let store = arena.publish_memory_store_v2(&artifact).unwrap();
+        let region = TrackedCodeRegionV2 {
+            guest_rip: entry,
+            source_bytes: &program[..prefix_end],
+        };
+        let mut invalidated = 0;
+        let store_result = store
+            .execute_tracked_code_store_in_code_region_v2(
+                &mut jit_state,
+                &mut jit_owner,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+                region,
+                |change| invalidated += jit_cache.invalidate(change),
+            )
+            .unwrap();
+        assert_eq!(
+            store_result.exit,
+            MemoryOperationExecutionExitV2::CodeInvalidated
+        );
+        assert_eq!(store_result.retired_instructions, 1);
+        assert_eq!(store_result.remaining_budget, 0);
+        assert_eq!(
+            invalidated, 4,
+            "prefix and tail artifacts were removed through both guest aliases"
+        );
+        assert_eq!(jit_cache.resident_entries(), 0);
+        assert_eq!(jit_state.rip, entry + 13);
+        assert_eq!(jit_state.gpr[2], old);
+        assert_eq!(
+            jit_state.gpr[1], old_rcx,
+            "tail did not execute in store entry"
+        );
+        assert_eq!(jit_owner.write_count, 1);
+        assert_eq!(jit_owner.backings[0].version.get(), 2);
+        assert_eq!(&jit_owner.backings[0].bytes[2..10], &new.to_le_bytes());
+        assert_eq!(jit_state, interpreter_state);
+        assert_eq!(
+            jit_owner.backings[0].bytes,
+            interpreter_owner.backings[0].bytes
+        );
+
+        // The store entry returns to host before the tail can run. Cache
+        // invalidation precedes this fresh dispatch at the committed RIP.
+        let (fresh_tail, after_tail) = run_tracked_code_block_with_state(
+            &jit_owner,
+            entry + 13,
+            jit_state.clone(),
+            &mut jit_cache,
+            &mut arena,
+        );
+        assert_eq!(fresh_tail.retired_instructions, 1);
+        assert_eq!(after_tail.gpr[1], sentinel);
+        assert_eq!(jit_cache.counters().successful_publications, 5);
+
+        let mut interpreter_after_tail = interpreter_state.clone();
+        let (interpreter_tail, _, _) = run_tracked_interpreter_step(
+            &mut interpreter_owner,
+            &mut interpreter_after_tail,
+            &mut interpreter_cache,
+            None,
+        );
+        assert!(matches!(
+            interpreter_tail,
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        ));
+        assert_eq!(after_tail, interpreter_after_tail);
+
+        // Re-entering the source address recompiles the changed immediate.
+        let mut reentry = after_tail;
+        reentry.rip = entry;
+        let (reentry_result, reentry_state) = run_tracked_code_block_with_state(
+            &jit_owner,
+            entry,
+            reentry,
+            &mut jit_cache,
+            &mut arena,
+        );
+        assert_eq!(reentry_result.retired_instructions, 1);
+        assert_eq!(reentry_state.gpr[2], new);
+        assert_eq!(jit_cache.counters().successful_publications, 6);
+        let mut alias_reentry = reentry_state.clone();
+        alias_reentry.rip = 0x5000;
+        let (alias_result, alias_state) = run_tracked_code_block_with_state(
+            &jit_owner,
+            0x5000,
+            alias_reentry,
+            &mut jit_cache,
+            &mut arena,
+        );
+        assert_eq!(alias_result.retired_instructions, 1);
+        assert_eq!(alias_state.gpr[2], new);
+        assert_eq!(jit_cache.counters().successful_publications, 7);
+        drop(store);
+    }
+
+    #[test]
     fn tracked_v2_store_preflight_overlap_and_backend_failure_are_atomic() {
         let _guard = jit_test_lock();
         let store_source = [0x48, 0x89, 0x18];
@@ -7318,6 +7722,43 @@ mod tests {
         let original_bytes = owner.backings[1].bytes.clone();
         let original_version = owner.backings[1].version;
         let mut notifications = Vec::new();
+
+        let code_region = TrackedCodeRegionV2 {
+            guest_rip: 0x1000,
+            source_bytes: &store_source,
+        };
+        for source_alias in [0x1000_u64, 0x5000] {
+            let before_bytes = owner.backings[0].bytes.clone();
+            let before_version = owner.backings[0].version;
+            let mut source_overlap = od_isa::LongModeState {
+                rip: 0x1000,
+                rflags: 0xA55,
+                ..od_isa::LongModeState::default()
+            };
+            source_overlap.gpr[0] = source_alias;
+            source_overlap.gpr[3] = 0x0123_4567_89AB_CDEF;
+            let before_state = source_overlap.clone();
+            assert_eq!(
+                published_store.execute_tracked_code_store_in_code_region_v2(
+                    &mut source_overlap,
+                    &mut owner,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &AtomicU8::new(0),
+                    code_region,
+                    |change| notifications.push(change),
+                ),
+                Err(TrackedCodeStoreExecutionErrorV2::Preflight(
+                    TrackedCodeStorePreflightError::ActiveSourceOverlap
+                )),
+                "store must not overwrite its own instruction through address {source_alias:#x}"
+            );
+            assert_eq!(source_overlap, before_state);
+            assert_eq!(owner.backings[0].bytes, before_bytes);
+            assert_eq!(owner.backings[0].version, before_version);
+            assert_eq!(owner.write_count, 0);
+        }
 
         let mut guarded = od_isa::LongModeState {
             rip: 0x1000,
@@ -7378,7 +7819,10 @@ mod tests {
             })
         );
         assert_eq!(guarded, guarded_before);
-        assert_eq!(owner.preflight_calls, 0);
+        assert_eq!(
+            owner.preflight_calls, 2,
+            "only the direct/alias overlap cases preflighted"
+        );
         assert_eq!(owner.write_count, 0);
 
         let mut out_of_range = od_isa::LongModeState {

@@ -1030,6 +1030,35 @@ multi-writer synchronization, asynchronous/shared RAM, MMIO, DMA, SMP, REP/RMW,
 compile/publication race protection, or active-code retirement. No Stage 2
 files were changed. See the [S3-23d report](../reports/STAGE_3_S3-23d_2026-10-27.md).
 
+### S3-23e: region-scoped executable-write notification and redispatch
+
+The fixture may separately identify a guest code region while a standalone
+verified V2 store entry writes executable backing. The store artifact still
+contains only its own instruction; the region stamp is owner metadata used to
+detect that the committed write changed bytes covered by cached entries. After
+the generated store call returns and its result is decoded, the owner advances
+the backing version, applies `CodeInvalidated` to dependent entries (including
+guest aliases), and returns the distinct `CodeInvalidated` exit. The dispatch
+owner treats that as `RedispatchRequired` before another cached lookup. The
+committed store is not replayed.
+
+The supplied region must end exactly at the store's `next_rip`, so it covers
+only the already executed prefix and the committing store, never a future
+tail. Before allowing a write to overlap that region, the owner separately
+rejects overlap with the store artifact's own source bytes using backing-relative
+ranges, including through guest aliases.
+
+The bounded test runs cached prefix and tail entries at two aliases, then a
+separate V2 store entry changes bytes in the already completed prefix. It checks
+that all four dependent entries are removed, the store result matches the
+interpreter checkpoint, and redispatch at the tail and source observes fresh
+bytes. These are separate compiled entries: no native tail is active during
+the store, and this does not implement S3-24 current-block retirement. Intel
+SDM Vol. 3A (Order No. 253668-082US, December 2023) §9.1.3 describes store, transfer of control, then execution as the
+defined self-modifying-code sequence; the fixture demonstrates the bounded
+notification/redispatch prerequisite only. See the
+[S3-23e report](../reports/STAGE_3_S3-23e_2026-10-27.md).
+
 ### S3-19a: invocation-local checked memory helper ABI partial
 
 `od_jit::memory_bridge::CheckedMemoryAdapter` borrows one `&mut dyn
