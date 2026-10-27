@@ -2135,6 +2135,17 @@ Full qword values, including RSP data, are preserved independently of the
 low-32-bit address calculation. See
 [S3-20ao evidence](../reports/STAGE_3_S3-20ao_2026-10-27.md).
 
+#### S3-20ap: address32 direct EBP-base qword MOV with stack data
+
+Admit only singleton `67 48 8B/89 /r disp8|disp32` forms with ModRM
+`mod=01/10,r/m=101`, data RAX..RBP, Dword address size and Qword transfer
+size. Lengths are 5/8 bytes; the old guest RBP low 32 bits supply the base.
+`mod=00/rm=101` is not part of this form, and no SIB, extra prefix, pair or V3
+profile is added. Existing decoded `MemoryOperand` and `access_address_48`
+remain the sole EA semantics. Data remains full-width even when the data and
+base register alias. See
+[S3-20ap evidence](../reports/STAGE_3_S3-20ap_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

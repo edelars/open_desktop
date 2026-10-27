@@ -187,6 +187,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20am | RSP/RBP data через address32 direct-base qword MOV | Только `67 48 8B/89 /r [disp8|disp32]`, ModRM `mod=00/01/10`, `reg=RSP|RBP`, base RAX..RBX; длины 4/5/8 |
 | [partial] | S3-20an | RSP/RBP data через address32 indexed-SIB qword MOV | Только `67 48 8B/89 /r sib [disp8|disp32]`, ModRM `mod=00/01/10,r/m=100`, data RSP/RBP, base/index RAX..RBX, scale 1/2/4/8; длины 5/6/9 |
 | [partial] | S3-20ao | RSP/RBP data через address32 no-index SIB qword MOV | Только `67 48 8B/89 /r 24 [disp8|disp32]`, ModRM `mod=00/01/10,r/m=100`, SIB `0x24`, старый RSP как низко-32-битная база, data RAX..RBP; длины 5/6/9 |
+| [partial] | S3-20ap | RSP/RBP data через address32 direct EBP-base qword MOV | Только `67 48 8B/89 /r disp8|disp32`, ModRM `mod=01/10,r/m=101`, старый EBP/RBP low32 base, data RAX..RBP; длины 5/8, `mod=00/rm=101` исключён |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1586,6 +1587,22 @@ contiguous qword access crossing 4 GiB, signed displacement boundaries,
 register aliases including RSP data, callback commit/fault behavior, guard
 ordering, and continuation without repeating effects. See the
 [S3-20ao report](../reports/STAGE_3_S3-20ao_2026-10-27.md).
+
+#### S3-20ap. RSP/RBP data through address32 direct EBP-base
+
+Admit only `67 48 8B/89 /r disp8|disp32` singleton forms with ModRM
+`mod=01/10,r/m=101`. The effective-address base is old guest RBP's low 32
+bits, data may be any register RAX..RBP, address size is Dword, and transfer
+size remains Qword. Exact lengths are 5 and 8 bytes. `mod=00/rm=101` remains
+excluded and is not reclassified as this EBP-based form; SIB, extra prefixes,
+pairs and V3 remain outside scope. `MemoryOperand` and
+`access_address_48` continue to supply the only EA semantics.
+
+Direct V2, shared IR and dispatch must agree on signed displacement, low-32-bit
+wrap, full-width data, and old-RBP alias behavior. Verify the qword crossing
+4 GiB is one access, faults do not commit, and a loaded noncanonical RBP can
+retire before a later 64-bit RBP-based access faults. See the
+[S3-20ap report](../reports/STAGE_3_S3-20ap_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

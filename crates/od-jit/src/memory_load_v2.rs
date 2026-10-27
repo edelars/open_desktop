@@ -2037,7 +2037,7 @@ mod tests {
                 }
                 let mut wrong_modrm = valid.clone();
                 wrong_modrm[2] = if length == 4 { 0x75 } else { 0xb5 };
-                let mut wrong_prefix = vec![0x67];
+                let mut wrong_prefix = vec![0x64, 0x67];
                 wrong_prefix.extend_from_slice(&valid);
                 let mut reordered_prefix = vec![0x48, 0x67, opcode];
                 reordered_prefix.extend_from_slice(&valid[2..]);
@@ -2956,7 +2956,7 @@ mod tests {
             vec![0x67, 0x48, 0x8b, 0xc0], // address-size override mod11
             vec![0x67, 0x48, 0x8b, 0x04], // address-size override SIB
             vec![0x67, 0x48, 0x8b, 0x05, 0, 0, 0, 0], // no-base disp32
-            vec![0x67, 0x48, 0x8b, 0x45, 0], // RBP with displacement
+            vec![0x67, 0x48, 0x8b, 0x75, 0], // unsupported data register
             vec![0x67, 0x49, 0x8b, 0x00], // extended base
             vec![0x48, 0x67, 0x8b, 0x00], // non-profile prefix order
             vec![0x66, 0x67, 0x48, 0x8b, 0x00], // extra operand-size prefix
@@ -3192,7 +3192,7 @@ mod tests {
             for bytes in [
                 vec![0x48, opcode, 0x45],          // missing disp8
                 vec![0x48, opcode, 0x44, 0],       // SIB form
-                vec![0x67, 0x48, opcode, 0x45, 0], // addr32
+                vec![0x67, 0x48, opcode, 0x75, 0], // unsupported data register
                 vec![0x4c, opcode, 0x45, 0],       // extended data register
                 vec![0x48, opcode, 0x45, 0, 0x90], // trailing byte
             ] {
@@ -3254,7 +3254,7 @@ mod tests {
                 vec![0x48, opcode, 0x6d],          // missing displacement
                 vec![0x48, opcode, 0x75, 0],       // unsupported data register
                 vec![0x48, opcode, 0x6c, 0x2c, 0], // indexed SIB form
-                vec![0x67, 0x48, opcode, 0x6d, 0], // addr32
+                vec![0x67, 0x48, opcode, 0x75, 0], // unsupported data register
                 vec![0x48, opcode, 0x6d, 0, 0x90], // trailing byte
             ] {
                 let code = CodeView::new(0x2820, &bytes).unwrap();
@@ -4063,6 +4063,107 @@ mod tests {
                     compile_ir_memory_store_block_v2(code, 0x2a40).map(|_| ())
                 };
                 assert!(result.is_err(), "unexpectedly admitted {source:02x?}");
+            }
+        }
+    }
+
+    #[test]
+    fn address32_rbp_direct_base_has_exact_qword_profile() {
+        let cases = [
+            (1_u8, 5_usize, i8::MIN as i32),
+            (1, 5, -1),
+            (1, 5, 0),
+            (1, 5, i8::MAX as i32),
+            (2, 8, i32::MIN),
+            (2, 8, -1),
+            (2, 8, 0),
+            (2, 8, i32::MAX),
+        ];
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in 0..6_u8 {
+                for &(mode, expected_len, displacement) in &cases {
+                    let modrm = (mode << 6) | (data_register << 3) | 5;
+                    let mut source = vec![0x67, 0x48, opcode, modrm];
+                    if mode == 1 {
+                        source.push(displacement as u8);
+                    } else {
+                        source.extend_from_slice(&displacement.to_le_bytes());
+                    }
+                    assert_eq!(source.len(), expected_len);
+                    let code = CodeView::new(0x2b20, &source).unwrap();
+                    let (ir_site, direct_site, ir_source) = match operation {
+                        MemorySiteOperationV2::Load => {
+                            let ir = compile_ir_memory_load_block_v2(code, 0x2b20)
+                                .unwrap_or_else(|error| panic!("{source:02x?}: {error:?}"));
+                            let direct = compile_memory_load_block_v2(code, 0x2b20)
+                                .unwrap_or_else(|error| panic!("{source:02x?}: {error:?}"));
+                            (
+                                ir.site().clone(),
+                                direct.site().clone(),
+                                ir.source_bytes().to_vec(),
+                            )
+                        }
+                        MemorySiteOperationV2::Store => {
+                            let ir = compile_ir_memory_store_block_v2(code, 0x2b20)
+                                .unwrap_or_else(|error| panic!("{source:02x?}: {error:?}"));
+                            let direct = compile_memory_store_block_v2(code, 0x2b20)
+                                .unwrap_or_else(|error| panic!("{source:02x?}: {error:?}"));
+                            (
+                                ir.site().clone(),
+                                direct.site().clone(),
+                                ir.source_bytes().to_vec(),
+                            )
+                        }
+                    };
+                    assert_eq!(ir_site, direct_site);
+                    assert_eq!(ir_source, source);
+                    assert!(ir_site.has_supported_profile());
+                    assert!(ir_site.matches_source_bytes(&source, operation));
+                    assert_eq!(ir_site.operand().address_size, od_isa::OperandSize::Dword);
+                    assert_eq!(ir_site.operand().size, od_isa::OperandSize::Qword);
+                    assert_eq!(ir_site.operand().base, AddressBase::Register(Register::Rbp));
+                    assert_eq!(ir_site.operand().index, None);
+                    assert_eq!(ir_site.operand().scale, 1);
+                    assert_eq!(ir_site.operand().displacement, i64::from(displacement));
+                    assert_eq!(ir_site.next_rip(), 0x2b20 + expected_len as u64);
+                }
+            }
+        }
+
+        for opcode in [0x8b, 0x89] {
+            let complete = [
+                vec![0x67, 0x48, opcode, 0x4d, 0],
+                vec![0x67, 0x48, opcode, 0x8d, 0, 0, 0, 0],
+            ];
+            for source in &complete {
+                for partial in 1..source.len() {
+                    let code = CodeView::new(0x2b20, &source[..partial]).unwrap();
+                    let result = if opcode == 0x8b {
+                        compile_ir_memory_load_block_v2(code, 0x2b20).map(|_| ())
+                    } else {
+                        compile_ir_memory_store_block_v2(code, 0x2b20).map(|_| ())
+                    };
+                    assert!(result.is_err(), "admitted partial {partial}: {source:02x?}");
+                }
+            }
+            for invalid in [
+                vec![0x67, 0x48, opcode, 0x05, 0, 0, 0, 0], // mod00/rm101 absolute/RIP-like
+                vec![0x67, 0x48, opcode, 0x4c, 0x2c, 0],    // indexed RBP SIB
+                vec![0x64, 0x67, 0x48, opcode, 0x4d, 0],    // extra segment prefix
+                vec![0x48, 0x67, opcode, 0x4d, 0],          // reordered prefixes
+                vec![0x67, 0x48, opcode, 0x75, 0],          // unsupported data register
+                vec![0x67, 0x48, opcode, 0x4d, 0, 0x90],    // trailing byte
+            ] {
+                let code = CodeView::new(0x2b20, &invalid).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x2b20).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x2b20).map(|_| ())
+                };
+                assert!(result.is_err(), "admitted invalid {invalid:02x?}");
             }
         }
     }

@@ -1412,6 +1412,27 @@ fn is_address32_rsp_sib_stack_base_operand(
         && displacement_valid
 }
 
+fn is_address32_rbp_direct_stack_base_operand(
+    instruction: Instruction,
+    operand: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    let displacement_valid = match instruction.length {
+        5 => i8::try_from(operand.displacement).is_ok(),
+        8 => i32::try_from(operand.displacement).is_ok(),
+        _ => false,
+    };
+    instruction.address_size == OperandSize::Dword
+        && operand.address_size == OperandSize::Dword
+        && operand.size == OperandSize::Qword
+        && matches!(
+            operand.base,
+            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
+        )
+        && operand.index.is_none()
+        && operand.scale == 1
+        && displacement_valid
+}
+
 fn is_rsp_memory_data_operand(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
@@ -1426,6 +1447,9 @@ fn is_rsp_memory_data_operand(
         return true;
     }
     if is_address32_rsp_sib_stack_base_operand(instruction, operand) {
+        return true;
+    }
+    if is_address32_rbp_direct_stack_base_operand(instruction, operand) {
         return true;
     }
     instruction.address_size == OperandSize::Qword
@@ -1502,6 +1526,9 @@ fn is_rbp_memory_data_operand(
         return true;
     }
     if is_address32_rsp_sib_stack_base_operand(instruction, operand) {
+        return true;
+    }
+    if is_address32_rbp_direct_stack_base_operand(instruction, operand) {
         return true;
     }
     instruction.address_size == OperandSize::Qword
@@ -1601,8 +1628,20 @@ fn is_checked_qword_memory_address(
                 } else {
                     i32::try_from(operand.displacement).is_ok()
                 };
+            let rbp_direct = matches!(instruction.length, 5 | 8)
+                && matches!(
+                    operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
+                )
+                && operand.index.is_none()
+                && operand.scale == 1
+                && if instruction.length == 5 {
+                    i8::try_from(operand.displacement).is_ok()
+                } else {
+                    i32::try_from(operand.displacement).is_ok()
+                };
             instruction.prefixes.address_override
-                && (base_supported && (direct || sib) || rsp_no_index_sib)
+                && (base_supported && (direct || sib) || rsp_no_index_sib || rbp_direct)
         }
         OperandSize::Qword => {
             let register_base = matches!(
@@ -1822,7 +1861,7 @@ pub(crate) fn exact_qword_address32_memory_bytes(
     bytes[0..3] == [0x67, 0x48, opcode]
         && bytes[3] >> 6 == expected_mode
         && (bytes[3] >> 3) & 7 <= 5
-        && bytes[3] & 7 < 4
+        && (bytes[3] & 7 < 4 || expected_mode != 0 && bytes[3] & 7 == 5)
 }
 
 pub(crate) fn exact_qword_address32_sib_memory_bytes(
