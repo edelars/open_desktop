@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-25a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22/S3-23/S3-25 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-24a/S3-25a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22/S3-23/S3-24/S3-25 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -161,6 +161,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-23c | Fixture-only V2 generated store to a different tracked executable backing | One vCPU/fixed RAM; active-source overlap rejected; no active-code retirement or production MMU |
 | [partial] | S3-23d | Shared fixture write transaction for interpreter MOV, V2 store, and control writes | Interpreter and control adapters commit between calls; production MMU/DMA/MMIO/SMP remain open |
 | [partial] | S3-23e | Region-scoped executable-write notification and redispatch | Separate store entry invalidates cached prefix/tail and aliases before next lookup; no active native tail or S3-24 claim |
+| [partial] | S3-23f | Fixture qword store across two adjacent mappings of one backing | At most two contiguous same-backing mappings; all-or-nothing single-slice copy and one version/notification |
 | [ ] | S3-23 | Инвалидация code dependencies | S3-18, S3-21, S3-22; полный writer/MMU integration |
 | [ ] | S3-24 | Self-modifying code в текущем блоке | S3-23 |
 | [partial] | S3-24a | Active native three-instruction artifact exits after committed store changes already executed prefix | One typed V3 slot/call; future-tail writes rejected; future-instruction SMC oracle and general blocks remain open |
@@ -966,6 +967,31 @@ commit и interpreter state/RAM parity, затем заново dispatch-ит ta
 не исполняется native во время этой записи. Следовательно, это prerequisite
 между calls для coherence, а не S3-24 retirement активного native tail.
 См. [S3-23e report](../reports/STAGE_3_S3-23e_2026-10-27.md).
+
+#### S3-23f. Cross-mapping qword write within one backing — partial
+
+`TrackedCodeFixture` resolves a range covered by one mapping or by exactly two
+guest-adjacent mappings. A crossing range is accepted only when both mappings
+refer to the same backing ID and the second backing offset immediately follows
+the first; preflight validates the complete backing range and write/execute
+permissions on every mapping before it reserves one next backing version. The
+commit remains one all-or-nothing slice copy and emits one backing notification.
+The target does not require the write bytes or the decoder-backed code view to
+stop at the page boundary; cache dependencies retain each mapping identity in a
+separate span even though the code view reads a contiguous backing slice.
+
+The native test warms B (`MOV RDX,imm64`) at page-end−6 and an alias, plus C on
+another backing. A separate checked V2 qword store writes the immediate at
+page-end−4 across two adjacent mappings. It verifies exact little-endian bytes,
+one version increment/notification, eviction of B and its alias, a C cache hit,
+and fresh native B/alias results from the new immediate. Negative cases cover a
+missing, read-only, or non-executable second mapping, exhausted version, backend error,
+different/noncontiguous backing, and arithmetic overflow; failures preserve CPU,
+both backing halves, versions, and cache entries. Writes ending exactly at or
+starting exactly on the boundary remain valid single-mapping cases. Resolver is
+bounded to two mappings and fixed fixture RAM; no production MMU, more-than-two
+mapping operation, MMIO/DMA, or concurrent writer support is implied. See
+[S3-23f report](../reports/STAGE_3_S3-23f_2026-10-27.md).
 
 1. Ввести единый путь уведомления committed memory writes и смены backing/mapping. Подключить interpreter, JIT и управляющие writes доступного среза.
 2. Изменить generation/identity нужных code regions, удалить зависимые entries из lookup и сделать невозможным stale entry по старой ссылке.

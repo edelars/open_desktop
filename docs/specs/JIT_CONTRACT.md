@@ -1059,6 +1059,35 @@ defined self-modifying-code sequence; the fixture demonstrates the bounded
 notification/redispatch prerequisite only. See the
 [S3-23e report](../reports/STAGE_3_S3-23e_2026-10-27.md).
 
+### S3-23f: qword writes across adjacent fixture mappings
+
+The fixed-RAM `TrackedCodeFixture` resolves ranges through one mapping or at
+most two guest-adjacent mappings. A range crossing the boundary is valid only
+when both mappings refer to the same backing ID and the second mapping's
+backing offset equals the first offset plus its length. Preflight validates
+checked guest/backing ranges and write/required execute permission on both
+segments before it reserves one next backing version. The commit performs one
+all-or-nothing slice copy into the contiguous backing and emits one content
+notification/version change. A range ending exactly at or starting exactly on
+the boundary uses its single covering mapping. A decoder-backed `CodeView` may
+borrow the contiguous backing bytes across the boundary, but its cache
+dependency spans still carry each guest mapping's independent identity and
+version.
+
+The native fixture maps B's `48 BA imm64` across two adjacent 4096-byte guest
+pages: instruction RIP is page-end−6, immediate begins at page-end−4. A
+separate checked V2 qword store replaces all eight immediate bytes across the
+boundary. The test warms B, its alias, and unrelated C; it checks exact
+little-endian bytes, one version increment and notification, invalidates B and
+the alias, retains C as a hit, then dispatches fresh B and alias and observes
+the new immediate. Failure cases (missing, read-only, or non-executable second
+mapping; version exhaustion; backend failure; different backing; noncontiguous
+offset; and checked arithmetic overflow) preserve CPU state, both byte ranges,
+version, and cache residents. This resolver is fixture-only and capped at two
+mappings; it does not implement production MMU, arbitrarily segmented accesses,
+MMIO, DMA, or concurrent writers. See the
+[S3-23f report](../reports/STAGE_3_S3-23f_2026-10-27.md).
+
 ### S3-24a: active native block prefix invalidation partial
 
 `ActiveCodeBlockV3` is a separate compiler-issued artifact, compile flavor,

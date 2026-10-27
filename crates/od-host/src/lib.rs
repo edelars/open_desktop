@@ -2395,6 +2395,14 @@ mod tests {
         intersects_code_region: bool,
     }
 
+    #[derive(Clone, Copy)]
+    struct TrackedMappingRange {
+        backing: usize,
+        offset: usize,
+        first_mapping: usize,
+        second_mapping: Option<usize>,
+    }
+
     struct TrackedCodeFixture {
         address_space: od_jit::translation::AddressSpaceId,
         backings: Vec<TrackedBackingFixture>,
@@ -2518,33 +2526,100 @@ mod tests {
             }
         }
 
+        fn new_cross_page_store_fixture(store_code: &[u8], initial_immediate: u64) -> Self {
+            let unrelated = [0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0];
+            let mut fixture = Self::new(store_code, &[], &unrelated);
+            fixture.backings[1].bytes.resize(8192, 0);
+            let mut code = [0_u8; 10];
+            code[..2].copy_from_slice(&[0x48, 0xBA]); // MOV RDX, imm64
+            code[2..].copy_from_slice(&initial_immediate.to_le_bytes());
+            fixture.backings[1].bytes[4090..4100].copy_from_slice(&code);
+            for (start, backing_offset, mapping_id) in [
+                (0x6000, 0, 20),
+                (0x7000, 4096, 21),
+                (0x8000, 0, 22),
+                (0x9000, 4096, 23),
+            ] {
+                fixture.mappings.push(TrackedMappingFixture {
+                    start,
+                    len: 4096,
+                    backing: 1,
+                    backing_offset,
+                    mapping: od_jit::translation::MappingId::new(Self::nz(mapping_id)),
+                    mapping_version: od_jit::translation::MappingVersion::new(Self::nz(1)),
+                    executable: true,
+                    writable: true,
+                });
+            }
+            fixture
+        }
+
         fn mapping_at(&self, address: u64, length: usize) -> Option<(usize, usize)> {
+            self.resolve_mapping_range(address, length)
+                .map(|range| (range.backing, range.offset))
+        }
+
+        /// Resolve a range covered by one mapping or by two adjacent mappings
+        /// that expose neighboring offsets of the same backing.
+        fn resolve_mapping_range(
+            &self,
+            address: u64,
+            length: usize,
+        ) -> Option<TrackedMappingRange> {
             let end = address.checked_add(u64::try_from(length).ok()?)?;
-            self.mappings.iter().find_map(|mapping| {
-                let map_end = mapping.start.checked_add(mapping.len as u64)?;
-                (address >= mapping.start && end <= map_end).then(|| {
-                    (
-                        mapping.backing,
-                        mapping.backing_offset + (address - mapping.start) as usize,
-                    )
-                })
+            let (first_index, first) =
+                self.mappings
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, mapping)| {
+                        let map_len = u64::try_from(mapping.len).ok()?;
+                        let map_end = mapping.start.checked_add(map_len)?;
+                        (address >= mapping.start && address < map_end).then_some((index, mapping))
+                    })?;
+            let first_end = first.start.checked_add(u64::try_from(first.len).ok()?)?;
+            let offset_in_first = usize::try_from(address.checked_sub(first.start)?).ok()?;
+            let first_offset = first.backing_offset.checked_add(offset_in_first)?;
+            let second_index = if end <= first_end {
+                None
+            } else {
+                let (second_index, second) =
+                    self.mappings
+                        .iter()
+                        .enumerate()
+                        .find_map(|(index, mapping)| {
+                            let map_len = u64::try_from(mapping.len).ok()?;
+                            let map_end = mapping.start.checked_add(map_len)?;
+                            (mapping.start == first_end && end <= map_end)
+                                .then_some((index, mapping))
+                        })?;
+                if second.backing != first.backing
+                    || self.backings.get(second.backing)?.id != self.backings.get(first.backing)?.id
+                    || first.backing_offset.checked_add(first.len) != Some(second.backing_offset)
+                {
+                    return None;
+                }
+                Some(second_index)
+            };
+            let backing_end = first_offset.checked_add(length)?;
+            self.backings
+                .get(first.backing)?
+                .bytes
+                .get(first_offset..backing_end)?;
+            Some(TrackedMappingRange {
+                backing: first.backing,
+                offset: first_offset,
+                first_mapping: first_index,
+                second_mapping: second_index,
             })
         }
 
         fn view(&self, address: u64, len: usize) -> (&[u8], od_jit::translation::CodeIdentity) {
-            let (backing_index, offset) = self.mapping_at(address, len).unwrap();
-            let mapping = self
-                .mappings
-                .iter()
-                .find(|map| {
-                    let end = map.start.checked_add(map.len as u64);
-                    end.is_some_and(|end| {
-                        map.backing == backing_index
-                            && address >= map.start
-                            && address + len as u64 <= end
-                    })
-                })
-                .unwrap();
+            let range = self
+                .resolve_mapping_range(address, len)
+                .expect("view has a mapped range");
+            let backing_index = range.backing;
+            let offset = range.offset;
+            let mapping = self.mappings.iter().nth(range.first_mapping).unwrap();
             let backing = &self.backings[backing_index];
             (
                 &backing.bytes[offset..offset + len],
@@ -2563,13 +2638,49 @@ mod tests {
             &self,
             address: u64,
             len: usize,
-        ) -> [od_jit::translation::CodeDependencySpan; 1] {
-            let (_, identity) = self.view(address, len);
-            [od_jit::translation::CodeDependencySpan {
+        ) -> Vec<od_jit::translation::CodeDependencySpan> {
+            let range = self
+                .resolve_mapping_range(address, len)
+                .expect("dependencies have a mapped range");
+            let first = &self.mappings[range.first_mapping];
+            let first_end = first
+                .start
+                .checked_add(u64::try_from(first.len).expect("fixture mapping length fits u64"))
+                .expect("fixture mapping end does not overflow");
+            let full_end = address
+                .checked_add(u64::try_from(len).expect("fixture code length fits u64"))
+                .expect("fixture code end does not overflow");
+            let first_end_rip = full_end.min(first_end);
+            let first_len = usize::try_from(first_end_rip - address)
+                .expect("fixture mapping span length fits usize");
+            let identity_for =
+                |mapping: &TrackedMappingFixture| od_jit::translation::CodeIdentity {
+                    address_space: self.address_space,
+                    mapping: mapping.mapping,
+                    mapping_version: mapping.mapping_version,
+                    backing: self.backings[mapping.backing].id,
+                    backing_version: self.backings[mapping.backing].version,
+                    executable: mapping.executable,
+                };
+            let mut dependencies =
+                Vec::with_capacity(usize::from(range.second_mapping.is_some()) + 1);
+            dependencies.push(od_jit::translation::CodeDependencySpan {
                 start_rip: address,
-                end_rip: address + len as u64,
-                identity,
-            }]
+                end_rip: first_end_rip,
+                identity: identity_for(first),
+            });
+            if let Some(second_index) = range.second_mapping {
+                let second = &self.mappings[second_index];
+                let second_start = address
+                    .checked_add(u64::try_from(first_len).expect("fixture span fits u64"))
+                    .expect("fixture span end does not overflow");
+                dependencies.push(od_jit::translation::CodeDependencySpan {
+                    start_rip: second_start,
+                    end_rip: full_end,
+                    identity: identity_for(second),
+                });
+            }
+            dependencies
         }
 
         fn prepare_write(
@@ -2580,14 +2691,11 @@ mod tests {
             active_source: Option<(usize, usize, usize)>,
             allow_code_region_overlap: bool,
         ) -> Result<TrackedWritePlan, TrackedCodeStorePreflightError> {
-            let access_len =
-                u64::try_from(length).map_err(|_| TrackedCodeStorePreflightError::OutOfRange)?;
-            let access_end = address
-                .checked_add(access_len)
+            let range = self
+                .resolve_mapping_range(address, length)
                 .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
-            let (backing, offset) = self
-                .mapping_at(address, length)
-                .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
+            let backing = range.backing;
+            let offset = range.offset;
             let backing_end = offset
                 .checked_add(length)
                 .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
@@ -2598,19 +2706,20 @@ mod tests {
             {
                 return Err(TrackedCodeStorePreflightError::OutOfRange);
             }
-            let mapping = self
-                .mappings
-                .iter()
-                .find(|mapping| {
-                    let end = mapping.start.checked_add(mapping.len as u64);
-                    end.is_some_and(|end| address >= mapping.start && access_end <= end)
-                })
-                .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
-            if !mapping.writable {
-                return Err(TrackedCodeStorePreflightError::NotWritable);
-            }
-            if require_executable && !mapping.executable {
-                return Err(TrackedCodeStorePreflightError::NotExecutable);
+            for mapping_index in [Some(range.first_mapping), range.second_mapping]
+                .into_iter()
+                .flatten()
+            {
+                let mapping = self
+                    .mappings
+                    .get(mapping_index)
+                    .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
+                if !mapping.writable {
+                    return Err(TrackedCodeStorePreflightError::NotWritable);
+                }
+                if require_executable && !mapping.executable {
+                    return Err(TrackedCodeStorePreflightError::NotExecutable);
+                }
             }
             let mut intersects_code_region = false;
             if let Some((active_backing, active_start, active_len)) = active_source {
@@ -7753,6 +7862,345 @@ mod tests {
         assert_eq!(cache.resident_entries(), 2);
         drop(published_store);
         assert_eq!(arena.cached_block_capacity(), 4);
+    }
+
+    #[test]
+    fn tracked_v2_store_crosses_adjacent_mappings_of_one_backing_atomically() {
+        let _guard = jit_test_lock();
+        let store_source = [0x48, 0x89, 0x03]; // MOV [RBX], RAX
+        let old_immediate = 0x1122_3344_5566_7788_u64;
+        let new_immediate = 0x8877_6655_4433_2211_u64;
+        let entry = 0x6FFA_u64; // page end - 6; immediate starts at page end - 4
+        let alias_entry = 0x8FFA_u64;
+        let target = entry + 2;
+        let mut owner =
+            TrackedCodeFixture::new_cross_page_store_fixture(&store_source, old_immediate);
+        owner.active_source_rip = 0x1000;
+        owner.active_source = (0, 0, store_source.len());
+        let b_dependencies = owner.dependencies(entry, 10);
+        assert_eq!(b_dependencies.len(), 2);
+        assert_eq!(b_dependencies[0].start_rip, entry);
+        assert_eq!(b_dependencies[0].end_rip, 0x7000);
+        assert_eq!(b_dependencies[1].start_rip, 0x7000);
+        assert_eq!(b_dependencies[1].end_rip, entry + 10);
+        assert_eq!(
+            b_dependencies[0].identity.mapping,
+            owner.mappings[5].mapping
+        );
+        assert_eq!(
+            b_dependencies[1].identity.mapping,
+            owner.mappings[6].mapping
+        );
+        let alias_dependencies = owner.dependencies(alias_entry, 10);
+        assert_eq!(alias_dependencies.len(), 2);
+        assert_eq!(
+            alias_dependencies[0].identity.mapping,
+            owner.mappings[7].mapping
+        );
+        assert_eq!(
+            alias_dependencies[1].identity.mapping,
+            owner.mappings[8].mapping
+        );
+        let mut arena = PublishedArenaBackend::new(8).unwrap();
+        let mut cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            4,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        let (first_b, first_b_state) =
+            run_tracked_code_block(&owner, entry, &mut cache, &mut arena);
+        let (first_alias, first_alias_state) =
+            run_tracked_code_block(&owner, alias_entry, &mut cache, &mut arena);
+        let (first_c, _) = run_tracked_code_block(&owner, 0x4000, &mut cache, &mut arena);
+        assert_eq!(first_b.retired_instructions, 1);
+        assert_eq!(first_alias.retired_instructions, 1);
+        assert_eq!(first_c.retired_instructions, 1);
+        assert_eq!(first_b_state.gpr[2], old_immediate);
+        assert_eq!(first_alias_state.gpr[2], old_immediate);
+        assert_eq!(cache.resident_entries(), 3);
+
+        let store = od_jit::memory_load_v2::compile_memory_store_block_v2(
+            CodeView::new(0x1000, &store_source).unwrap(),
+            0x1000,
+        )
+        .unwrap();
+        let published_store = arena.publish_memory_store_v2(&store).unwrap();
+        let before_version = owner.backings[1].version;
+        let mut store_state = od_isa::LongModeState {
+            rip: 0x1000,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        store_state.gpr[0] = new_immediate;
+        store_state.gpr[3] = target;
+        let stop = AtomicU8::new(0);
+        let mut notifications = Vec::new();
+        let mut invalidated = 0;
+        let result = published_store
+            .execute_tracked_code_store_v2(
+                &mut store_state,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                |change| {
+                    notifications.push(change);
+                    invalidated += cache.invalidate(change);
+                },
+            )
+            .unwrap();
+        assert_eq!(result.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(result.retired_instructions, 1);
+        assert_eq!(store_state.rip, 0x1003);
+        assert_eq!(owner.write_count, 1);
+        assert_eq!(owner.backings[1].version.get(), before_version.get() + 1);
+        assert_eq!(
+            &owner.backings[1].bytes[4092..4100],
+            &new_immediate.to_le_bytes(),
+            "the qword write is one little-endian contiguous copy"
+        );
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(
+            invalidated, 2,
+            "direct B and its guest alias are invalidated"
+        );
+        assert_eq!(cache.resident_entries(), 1, "unrelated C remains resident");
+
+        let mut interpreter_owner =
+            TrackedCodeFixture::new_cross_page_store_fixture(&store_source, old_immediate);
+        interpreter_owner.active_source_rip = 0x1000;
+        interpreter_owner.active_source = (0, 0, store_source.len());
+        let mut interpreter_cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            1,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        let mut interpreter_state = od_isa::LongModeState {
+            rip: 0x1000,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        interpreter_state.gpr[0] = new_immediate;
+        interpreter_state.gpr[3] = target;
+        let (interpreter_result, interpreter_change, interpreter_invalidated) =
+            run_tracked_interpreter_step(
+                &mut interpreter_owner,
+                &mut interpreter_state,
+                &mut interpreter_cache,
+                Some((0x1000, store_source.len())),
+            );
+        assert!(matches!(
+            interpreter_result,
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        ));
+        assert_eq!(interpreter_state, store_state);
+        assert_eq!(interpreter_owner.write_count, owner.write_count);
+        for (interpreted, native) in interpreter_owner.backings.iter().zip(&owner.backings) {
+            assert_eq!(interpreted.bytes, native.bytes);
+            assert_eq!(interpreted.version, native.version);
+        }
+        assert_eq!(interpreter_invalidated, 0);
+        assert_eq!(
+            interpreter_change,
+            Some(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                backing: TrackedCodeFixture::id(3),
+                current_version: owner.backings[1].version,
+            })
+        );
+
+        let hits_before = cache.counters().hits;
+        let (second_c, _) = run_tracked_code_block(&owner, 0x4000, &mut cache, &mut arena);
+        assert_eq!(second_c.retired_instructions, 1);
+        assert_eq!(
+            cache.counters().hits,
+            hits_before + 1,
+            "C remains a cache hit"
+        );
+
+        let (fresh_b, fresh_b_state) =
+            run_tracked_code_block(&owner, entry, &mut cache, &mut arena);
+        let (fresh_alias, fresh_alias_state) =
+            run_tracked_code_block(&owner, alias_entry, &mut cache, &mut arena);
+        assert_eq!(fresh_b.retired_instructions, 1);
+        assert_eq!(fresh_alias.retired_instructions, 1);
+        assert_eq!(fresh_b_state.gpr[2], new_immediate);
+        assert_eq!(fresh_alias_state.gpr[2], new_immediate);
+    }
+
+    #[test]
+    fn tracked_cross_mapping_store_preflight_failures_preserve_cpu_ram_and_cache() {
+        let _guard = jit_test_lock();
+        let store_source = [0x48, 0x89, 0x03];
+        let old_immediate = 0x1122_3344_5566_7788_u64;
+        let replacement = 0x8877_6655_4433_2211_u64;
+        let cases = [
+            "missing second mapping",
+            "read-only second mapping",
+            "non-executable second mapping",
+            "backing version exhausted",
+            "backend write failure",
+            "different second backing",
+            "noncontiguous second backing offset",
+        ];
+        for case in cases {
+            let mut owner =
+                TrackedCodeFixture::new_cross_page_store_fixture(&store_source, old_immediate);
+            owner.active_source_rip = 0x1000;
+            owner.active_source = (0, 0, store_source.len());
+            let mut arena = PublishedArenaBackend::new(8).unwrap();
+            let mut cache = od_jit::dispatch::MultiEntryBlockCache::new(
+                4,
+                od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            )
+            .unwrap();
+            run_tracked_code_block(&owner, 0x6FFA, &mut cache, &mut arena);
+            run_tracked_code_block(&owner, 0x8FFA, &mut cache, &mut arena);
+            run_tracked_code_block(&owner, 0x4000, &mut cache, &mut arena);
+            let store = od_jit::memory_load_v2::compile_memory_store_block_v2(
+                CodeView::new(0x1000, &store_source).unwrap(),
+                0x1000,
+            )
+            .unwrap();
+            let published_store = arena.publish_memory_store_v2(&store).unwrap();
+
+            match case {
+                "missing second mapping" => {
+                    owner.mappings.remove(6);
+                }
+                "read-only second mapping" => owner.mappings[6].writable = false,
+                "non-executable second mapping" => owner.mappings[6].executable = false,
+                "backing version exhausted" => {
+                    owner.backings[1].version = od_jit::translation::BackingVersion::new(
+                        std::num::NonZeroU64::new(u64::MAX).unwrap(),
+                    );
+                }
+                "backend write failure" => owner.fail_write = true,
+                "different second backing" => owner.mappings[6].backing = 2,
+                "noncontiguous second backing offset" => {
+                    owner.mappings[6].backing_offset = 5000;
+                }
+                _ => unreachable!(),
+            }
+
+            let before_bytes: Vec<_> = owner
+                .backings
+                .iter()
+                .map(|backing| backing.bytes.clone())
+                .collect();
+            let before_versions: Vec<_> = owner
+                .backings
+                .iter()
+                .map(|backing| backing.version)
+                .collect();
+            let mut state = od_isa::LongModeState {
+                rip: 0x1000,
+                rflags: 0xA55,
+                ..od_isa::LongModeState::default()
+            };
+            state.gpr[0] = replacement;
+            state.gpr[3] = 0x6FFC;
+            let before_state = state.clone();
+            let before_entries = cache.resident_entries();
+            let mut notifications = 0;
+            let result = published_store.execute_tracked_code_store_v2(
+                &mut state,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+                |_| notifications += 1,
+            );
+
+            match case {
+                "missing second mapping"
+                | "different second backing"
+                | "noncontiguous second backing offset" => assert!(
+                    matches!(
+                        result,
+                        Err(TrackedCodeStoreExecutionErrorV2::Preflight(
+                            TrackedCodeStorePreflightError::OutOfRange
+                        ))
+                    ),
+                    "case: {case}"
+                ),
+                "read-only second mapping" => assert!(
+                    matches!(
+                        result,
+                        Err(TrackedCodeStoreExecutionErrorV2::Preflight(
+                            TrackedCodeStorePreflightError::NotWritable
+                        ))
+                    ),
+                    "case: {case}"
+                ),
+                "non-executable second mapping" => assert!(
+                    matches!(
+                        result,
+                        Err(TrackedCodeStoreExecutionErrorV2::Preflight(
+                            TrackedCodeStorePreflightError::NotExecutable
+                        ))
+                    ),
+                    "case: {case}"
+                ),
+                "backing version exhausted" => assert!(
+                    matches!(
+                        result,
+                        Err(TrackedCodeStoreExecutionErrorV2::Preflight(
+                            TrackedCodeStorePreflightError::VersionExhausted
+                        ))
+                    ),
+                    "case: {case}"
+                ),
+                "backend write failure" => assert!(
+                    matches!(
+                        result,
+                        Err(TrackedCodeStoreExecutionErrorV2::Execution(
+                            MemoryOperationExecutionErrorV2::MemoryError(_)
+                        ))
+                    ),
+                    "case: {case}"
+                ),
+                _ => unreachable!(),
+            }
+            assert_eq!(state, before_state, "CPU state for {case}");
+            assert_eq!(
+                owner
+                    .backings
+                    .iter()
+                    .map(|backing| &backing.bytes)
+                    .collect::<Vec<_>>(),
+                before_bytes.iter().collect::<Vec<_>>(),
+                "all RAM bytes for {case}"
+            );
+            assert_eq!(
+                owner
+                    .backings
+                    .iter()
+                    .map(|backing| backing.version)
+                    .collect::<Vec<_>>(),
+                before_versions,
+                "backing versions for {case}"
+            );
+            assert_eq!(owner.write_count, 0, "write count for {case}");
+            assert_eq!(notifications, 0, "notifications for {case}");
+            assert_eq!(cache.resident_entries(), before_entries, "cache for {case}");
+        }
+
+        let owner = TrackedCodeFixture::new_cross_page_store_fixture(&store_source, old_immediate);
+        assert!(owner.prepare_write(0x6FF8, 8, true, None, false).is_ok());
+        assert!(owner.prepare_write(0x7000, 8, true, None, false).is_ok());
+        assert!(owner.prepare_write(0x6FFC, 8, true, None, false).is_ok());
+        assert!(
+            matches!(
+                owner.prepare_write(u64::MAX - 3, 8, true, None, false),
+                Err(TrackedCodeStorePreflightError::OutOfRange)
+            ),
+            "checked guest/backing range arithmetic rejects endpoint overflow"
+        );
     }
 
     #[test]
