@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests/fixtures/x86/stage2"
 CASE_ID = "s2_20b_ud2"
+SPLIT_CASE_ID = "s2_20d_ud2_split_regions"
 RIP = 0x00100000
 FLAGS = 0x08D7
 CODE = "0f0b"
@@ -100,9 +101,43 @@ def materialize() -> dict[str, bytes]:
         },
         "instructions_executed": 0,
     }
+    split_fixture = dict(fixture)
+    split_fixture["case_id"] = SPLIT_CASE_ID
+    split_fixture["provenance"] = {
+        **provenance,
+        "source": (
+            "Handwritten complete UD2 bytes split across two adjacent executable "
+            "fixture regions; this checks the local FlatMemory callback boundary."
+        ),
+        "specification_version": "project S2-20d; local fixture memory contract",
+    }
+    split_fixture["memory"] = [
+        {
+            "region_id": "code",
+            "guest_address": hx(RIP),
+            "length": 1,
+            "permissions": {"read": False, "write": False, "execute": True},
+            "initial_bytes_hex": "0f",
+            "comparison_mask_hex": "ff",
+        },
+        {
+            "region_id": "tail",
+            "guest_address": hx(RIP + 1),
+            "length": 1,
+            "permissions": {"read": False, "write": False, "execute": True},
+            "initial_bytes_hex": "0b",
+            "comparison_mask_hex": "ff",
+        },
+    ]
+    split_expected = {
+        **expected,
+        "memory": {"code": "0f", "tail": "0b"},
+    }
     return {
         f"{CASE_ID}.case.json": json_bytes(fixture),
         f"{CASE_ID}_expected.json": json_bytes(expected),
+        f"{SPLIT_CASE_ID}.case.json": json_bytes(split_fixture),
+        f"{SPLIT_CASE_ID}_expected.json": json_bytes(split_expected),
     }
 
 
@@ -122,7 +157,7 @@ def main() -> int:
     if mismatches:
         print("stale generated files: " + ", ".join(mismatches))
         return 1
-    print("S2-20b UD2 fixture is fresh" if args.check else f"wrote {len(generated)} S2-20b UD2 files")
+    print("S2-20b/S2-20d UD2 fixtures are fresh" if args.check else f"wrote {len(generated)} UD2 fixture files")
     return 0
 
 

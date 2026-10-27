@@ -840,6 +840,35 @@ independent manual verification is claimed. Fixture bytes/state/data are
 handwritten inputs; Rust tests keep expected post-state and memory answers as
 literals. S2-22 and ISSUE-017/018 remain open.
 
+### S2-22k — Long64/CPL0 null DS and ES loads
+
+The separate local-only `s2-long-null-ds-es-v1` profile admits bare `8E D8`
+(`MOV DS, AX`) and `8E C0` (`MOV ES, AX`) only when AX is zero. Its exact
+allowlist also includes a repeated DS load and the two-instruction DS→ES
+composition fixture. Only each visible 16-bit selector and its modeled
+unusable bit change; GPRs, RFLAGS and other segment state are preserved, and
+RIP/retirement advance after each successful instruction. The low AX is read,
+so nonzero high RAX bits do not make a null selector nonzero.
+
+No GDTR is required or read. The null load does not read GDT[0], create a
+descriptor cache, or perform accessed-bit writes. DS/ES base and effective
+segmentation rules remain outside this profile; it adds no memory forms. The
+profile implies CPL0 and rejects nonzero AX and prefixed/neighboring forms
+without commit. The schema requires non-null boolean unusable-state fields for
+this profile and rejects those fields, including explicit `null`, in older
+profiles. Native and JIT execution remain unsupported. Four literal fixtures
+check DS, ES, repeated DS, and DS→ES; unit tests also check complete
+modeled state, flags-definedness, no descriptor/data callback, high RAX,
+rejected forms, CPL3 and truncated fetch. This local slice does not establish
+an executable Ubuntu startup prefix or close S2-22.
+
+Source: Intel SDM revision 093 (253667-093US), Vol.2B `MOV` pp.4-28–4-31,
+[official Vol.2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241); Vol.3A
+(325384-093US), §§3.4.3–3.5.1,
+[official combined PDF](https://cdrdv2.intel.com/v1/dl/getContent/671447).
+These exact revision links were consulted for MOV null-selector rules and
+Long64 segment behavior; S2-22k claims no broader exception or memory rules.
+
 
 ### Арифметика и eager flags — S2-11
 
@@ -1023,6 +1052,23 @@ fault priority, invalid prefixes, native exception delivery, or physical
 hardware behavior. Literal bytes and answers are serialized by
 [`generate_stage2_ud2.py`](../../tests/cpu/generate_stage2_ud2.py), based on
 Intel SDM revision 093 Vol.2A UD2.
+
+### Local UD2 fetch boundary — S2-20d
+
+For bare `0F 0B`, this local contract reports `#UD` only after successful
+fetch callbacks for both opcode bytes. A complete instruction at the end of
+an executable `FlatMemory` region performs exactly two fetches; two adjacent
+executable regions produce the same result. A missing byte or an injected
+second-fetch error remains the original backend/architectural memory error,
+including its class and payload. A first-fetch failure does not decode or
+commit CPU state. All these exits retire zero instructions and preserve the
+full state and RAM; the instruction performs no data accesses.
+
+These statements describe only the local FlatMemory/callback boundary. They
+make no claim about physical instruction fetch, hardware `#UD` priority,
+general fault priority, other invalid encodings, trap delivery, MMU behavior,
+or Native/JIT execution. The complete and split-region CLI fixtures remain
+local-only. See the [S2-20d report](../reports/STAGE_2_REPORT.md#s2-20d--complete-ud2-fetch-boundary-in-local-memory-callbacks).
 
 ### Integer bit operations — S2-15 local slices
 
@@ -8538,3 +8584,41 @@ JIT/native and physical x86 acceptance remain unverified. See the [plan](../plan
 [interpreter notes](../testing/INTERPRETER.md#repne-scaswdq-address-size-32--s2-19s),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#bounded-repne-scaswdq-address-size-32-fixtures-s2-19s),
 and [report](../reports/STAGE_2_REPORT.md#s2-19s--bounded-repne-scaswdq-addr32).
+
+### Local S2-19t bounded REPNE CMPSW/D/Q address-size-32 contract
+
+The decoder admits only Long64 `F2`+`67` `A7` width forms normalized by the
+S2-19s wide SCAS prefix allowlist: D is `F2 67 A7` or `67 F2 A7`; W is
+`F2 67 66 A7` or `67 F2 66 A7`; Q is `F2 67 REX.W A7` or
+`67 F2 REX.W A7`, where effective REX.W is any `48..4F`. Legacy ordering
+also admits `F2 REX.W 67 A7` as D, `F2 67 REX.W 66 A7` as W, and
+`F2 67 66 REX.W A7` as Q because the later legacy prefix resets REX. Existing
+REPNE CMPSB and F3 profiles remain unchanged. Other prefixes/repeats,
+address-size-64 F2, segments, LOCK, effective non-W REX and other F2 CMPS
+forms remain unsupported. The explicit continuation API is the only runner;
+older entry APIs fail closed and JIT/native admission stays closed.
+
+All arithmetic flag bits must be defined before ECX or data reads; their
+concrete values are unrestricted. ECX=0 preserves full RCX/RSI/RDI/RFLAGS and
+definedness and performs no data access. Otherwise each iteration reads one
+width-sized contiguous operand at zero-extended ESI, then one at zero-extended
+EDI, compares source−destination, and commits CMP flags, both modulo-32 indices
+adjusted by ±width according to DF, and zero-extended ECX−1 only after both
+reads succeed. Neither operand wraps at 4 GiB. Completion on ECX=0 or ZF=1
+precedes STOP and the 1024-success work limit.
+
+The caller-owned opaque token records CMPS kind, width, address size, decoded
+instruction length, RSI checkpoint and shared RCX/RDI/RFLAGS/definedness/context
+plus original flags/mask. State is checked before callbacks/fetch; decoded
+identity is checked before data. Same-length equivalent prefix reorder is
+accepted; cross-kind/width/address/length is rejected. Architectural read
+faults restore entry flags/mask while retaining prior completed progress and
+clear the token. Backend errors preserve checkpoint/token and retry rereads
+both operands. Source-first and dual-invalid behavior are local ISSUE-020
+policy only; no hardware-priority or MMIO rollback claim is made. Schema v2
+does not serialize the token. Literal W/D/Q fixture snapshots are generated
+from handwritten bytes and expected state by serialization only. See the
+[S2-19t plan](../plans/STAGE_2.md#s2-19t--bounded-repne-cmpswdq-addr32),
+[interpreter notes](../testing/INTERPRETER.md#repne-cmpswdq-address-size-32--s2-19t),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#bounded-repne-cmpswdq-address-size-32-fixtures-s2-19t),
+and [report](../reports/STAGE_2_REPORT.md#s2-19t--bounded-repne-cmpswdq-addr32).

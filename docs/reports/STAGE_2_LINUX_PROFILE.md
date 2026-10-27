@@ -145,3 +145,24 @@ source package и фактическим выполнением выбранно
 прочитать поля header по v7.0 protocol offsets. Никакой kernel boot для
 этой проверки не требуется. Ссылки и структуру проверяет
 `python3 tools/check_layout.py`; CPU tests этот отчёт не подтверждают.
+
+## Дополнительная проверка Ubuntu source delta — 27 октября 2026
+
+Для выбранного `linux` source version `7.0.0-38.38` дополнительно проверен
+опубликованный Ubuntu source diff. Страница
+[packages.ubuntu.com: linux-source-7.0.0](https://packages.ubuntu.com/resolute/linux-source-7.0.0)
+ссылается на архивный
+[linux_7.0.0-38.38.diff.gz](https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux_7.0.0-38.38.diff.gz).
+Полученный diff имеет 5769 path entries и совпадает с опубликованным MD5
+`130cb6bcf60f97cbe11c2a8b3fb0dadc`. Среди затронутых x86 paths только
+`tools/arch/x86/include/asm/msr-index.h` и
+`tools/perf/arch/x86/tests/amd-ibs-period.c`; файлы `head_64.S`,
+`pgtable_64.c` и `header.S` source delta не меняет.
+
+Это сужает вопрос о расхождении Ubuntu source patches для указанных путей,
+но не связывает каждый собранный byte с исходником и не доказывает порядок
+инструкций или выполнение конкретного kernel image. Disassembly package
+binary `startup_64` пока не проверен. Поэтому локальные S2-22k fixtures
+`MOV DS/ES, AX` не называются исполняемым startup prefix и не доказывают
+фактический вход в Ubuntu artifact. Linux boot, machine handoff и C/D
+inventory остаются открытыми.

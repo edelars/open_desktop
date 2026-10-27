@@ -1,12 +1,12 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-19s расширяет REPNE SCASB на широкие AF forms с addr32; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-19t добавляет REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
 устанавливается.
 
-**Дата:** 23 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–j add local-only FS/GS-base, selector, descriptor-load, VERW/GDT and exact GS/FS.base composition cases; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 S2-22h load fixtures and two S2-22i/j composition fixtures are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b UD2 fixture are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Stage 2 remains open under broader roadmap criteria. ISSUE-011/012/013/014/015/016/017/018 remain open; acceptance criteria are unchanged.
+**Дата:** 23 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–k add local-only FS/GS-base, selector, descriptor-load, VERW/GDT, exact FS/GS.base composition and null DS/ES selector cases; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 S2-22h load fixtures, two S2-22i/j composition fixtures and four S2-22k null DS/ES fixtures are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b/S2-20d UD2 fixtures are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Stage 2 remains open under broader roadmap criteria. ISSUE-011/012/013/014/015/016/017/018 remain open; acceptance criteria are unchanged.
 
 План рассчитан на модель, которой нужны небольшие последовательные задания, явные ограничения и проверяемый результат. Выполнять одну задачу `S2-NN` за раз. Большую группу внутри задачи делить на перечисленные подшаги; не реализовывать весь этап одним изменением.
 
@@ -173,6 +173,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-22h | Только bare `8E E8` (`MOV GS, AX`) в отдельном `s2-long-gs-load-v1`: Long64/CPL3, non-null GDT selector, тот же упорядоченный GDT validation/A-write контракт, наблюдаемый GS cache; S2-22 остаётся открытым | S2-22g |
 | [x] | S2-22i | Один literal local-only composition case: exact `8E E8 65 48 8B 00`, loaded GS.base consumed by an already-supported GS qword load; bounded profile admits only existing `8E E8` and this exact two-instruction program | S2-22h |
 | [x] | S2-22j | Один literal local-only composition case: exact `8E E0 64 48 8B 00`, loaded FS.base consumed by an already-supported FS qword load; bounded profile admits only existing `8E E0` and this exact two-instruction program | S2-22i |
+| [x] | S2-22k | Exact bare `8E D8` (`MOV DS, AX`) and `8E C0` (`MOV ES, AX`) with AX=0 at Long64/CPL0; selector/unusable state only, no descriptor lookup, separate local-only profile; S2-22 remains open | S2-22j |
 | [ ] | S2-23 | Real mode 16-bit, если нужен пути загрузки | S2-22 |
 | [ ] | S2-24 | Protected/compatibility mode | S2-22; S2-23 при необходимости |
 | [ ] | S2-25 | CR/MSR и переходы режима | S2-24 |
@@ -1626,6 +1627,31 @@ provenance на Intel SDM revision 093 Vol.2A IDIV. Физическая про�
 generator test — 2/2; все 44 Stage 2 generators свежие; Stage 2 harness —
 11/11; workspace offline check, formatting, layout и diff checks прошли.
 Graphify и независимое gpt-6.1-sol medium review указаны в отчёте.
+
+#### S2-20d — bounded UD2 fetch boundary
+
+Закрепить только локальный `0F 0B` boundary: после доступного executable
+первого и второго байта полный UD2 сообщает `#UD` после ровно двух fetch;
+смежные executable `FlatMemory` regions дают тот же результат без третьего
+fetch. Отсутствующий или injected ошибочный второй fetch остаётся
+`MemoryError`/`HarnessError` либо сохраняет исходный architectural fault
+payload; первый fetch failure не декодирует инструкцию. Все fault paths
+оставляют retirement равным нулю и сохраняют полное CPU состояние и RAM;
+data access не выполняется. Это контракт `FlatMemory` и callback, без вывода
+о физическом fetch или приоритете hardware `#UD`.
+
+Сохранить existing complete-UD2 literal CLI fixture и добавить adjacent
+split-region fixture-v2 snapshot. Truncated/backend-error сценарии проверить в
+`od-testkit`: fixture-v2 не имеет `HarnessError` в `expected_exit`, поэтому не
+подменять их `#UD` и не расширять fixture schema только для этой проверки.
+Не добавлять другие illegal opcodes, trap delivery, MMU, generic priority,
+ISA scope или Native/JIT admission. Final Mac mini/SSH/physical acceptance
+остаётся отдельным общим подэтапом.
+
+**Результат S2-20d:** выполнено в локальном FlatMemory/callback contract;
+полные проверки и ограничения зафиксированы в [отчёте](../reports/STAGE_2_REPORT.md#s2-20d--complete-ud2-fetch-boundary-in-local-memory-callbacks).
+Независимое `gpt-6.1-sol` medium review не нашло замечаний P0–P2 по fetch
+trace, границам, переносу ошибок, faulting RIP и отсутствию commit CPU/RAM.
 
 ### S2-21. Однопроцессорные atomic/fence формы
 
@@ -7290,3 +7316,42 @@ checkpoint, STOP/limit resume and changed-length rejection. Literal fixtures
 содержат serialization-only W/D/Q complete snapshots. ISSUE-020 остаётся
 CMPS-only открытой политикой; этот SCAS профиль не расширяет её. Native/JIT,
 physical x86, Mac mini и SSH проверки не выполнять.
+
+#### S2-19t — bounded REPNE CMPSW/D/Q с address-size 32
+
+Добавить только Long64 `A7` с normalized F2, address override 67 и widths
+W/D/Q по той же exact prefix allowlist, что addr32 REPNE SCASW/D/Q:
+`F2 67 66 A7` / `67 F2 66 A7` — W; `F2 67 A7` / `67 F2 A7` — D;
+`F2 67 REX.W A7` / `67 F2 REX.W A7` — Q для REX `48..4F`. Сохранить
+REX reset: `F2 REX 67 A7` — D, `F2 67 REX 66 A7` — W и
+`F2 67 66 REX A7` — Q. Другие префиксы, repeat/segment/LOCK,
+effective non-W REX, addr64 F2 и прочие CMPS формы остаются закрыты;
+byte/F3 профили неизменны. Добавить `Operation::RepneCmpsWdqAddr32{size}`;
+старые APIs остаются fail-closed, explicit continuation API — единственная
+точка исполнения.
+
+Continuation token сохраняет CMPS kind и width, address size, instruction
+length, RSI и общее REP checkpoint state. До доступа проверять kind/width/
+address/length; equivalent same-length prefix reorder допустим. Чтения за один
+шаг: width bytes из zero-extended ESI, затем width bytes из EDI; arithmetic —
+source−destination. Оба индекса обновляются modulo 32 на ±width по DF, без
+wrap внутри операнда. До обоих успешных чтений не менять flags/index/count.
+Архитектурный fault восстанавливает entry flags/definedness, оставляя прошлый
+прогресс; backend error сохраняет checkpoint/token, retry повторяет оба
+чтения. Source-first и dual-invalid остаются local ISSUE-020 policy, без
+hardware-priority/MMIO rollback утверждения. Завершение ZF=1 или ECX=0
+предшествует STOP и лимиту 1024 успешных сравнений.
+
+Coverage includes exact prefix tests, independent W/D/Q CMP modeling, token
+identity and reordered-prefix resume, architectural source/destination faults
+after progress, changed-operand backend retry, source-first dual-invalid trace,
+overlap, contiguous 4-GiB accesses and width-exact tail failures, three literal
+schema-v2 fixtures with a serialization-only generator, testkit STOP/1024/
+multiple-resume sidecar, and CLI/JIT denial. `cargo test --workspace
+--all-targets --offline`, `cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, all 131 CPU Python tests, generator freshness,
+targeted runner snapshot/JIT denial, `git diff --check`, and Graphify update
+passed. Independent `gpt-6.1-sol` medium code review found no actionable
+defects in decoder admission, continuation identity, index/count wrap, operand
+ordering, fault/retry handling, fixtures or documentation. ISSUE-020 remains open. See [CPU
+contract](../specs/CPU_CONTRACT.md#local-s2-19t-bounded-repne-cmpswdq-address-size-32-contract), [interpreter notes](../testing/INTERPRETER.md#repne-cmpswdq-address-size-32--s2-19t), [fixture README](../../tests/fixtures/x86/stage2/README.md#bounded-repne-cmpswdq-address-size-32-fixtures-s2-19t), and [report](../reports/STAGE_2_REPORT.md#s2-19t--bounded-repne-cmpswdq-addr32).

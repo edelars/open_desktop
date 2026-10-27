@@ -3591,6 +3591,74 @@ fn gs_load_profile_has_an_isolated_wire_shape_and_observes_hidden_cache_state() 
 }
 
 #[test]
+fn null_ds_es_profile_roundtrips_only_its_selector_and_unusable_state() {
+    let loaded = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_22k_null_ds_then_es.case.json"
+    ))
+    .unwrap();
+    assert_eq!(loaded.fixture.profile, Profile::LongNullDsEsV1);
+    let wire: serde_json::Value =
+        serde_json::from_slice(&loaded.fixture.to_json().unwrap()).unwrap();
+    for field in ["ds_selector", "es_selector", "ds_unusable", "es_unusable"] {
+        assert!(wire["initial_state"].get(field).is_some(), "{field}");
+    }
+    for field in [
+        "fs_base",
+        "gs_base",
+        "gdtr_base",
+        "gdtr_limit",
+        "fs_cache_limit",
+    ] {
+        assert!(wire["initial_state"].get(field).is_none(), "{field}");
+    }
+    let cpu = loaded
+        .fixture
+        .initial_state
+        .to_cpu_for(Profile::LongNullDsEsV1)
+        .unwrap();
+    assert_eq!(cpu.ds_selector, 0x2b);
+    assert_eq!(cpu.es_selector, 0x30);
+    assert!(!cpu.ds_unusable && !cpu.es_unusable);
+    let output = IntegerState::from_cpu_for(&cpu, Profile::LongNullDsEsV1);
+    assert_eq!(output.ds_selector, Some(HexU64(0x2b)));
+    assert_eq!(output.es_selector, Some(HexU64(0x30)));
+    assert_eq!(output.ds_unusable, Some(false));
+    assert_eq!(output.es_unusable, Some(false));
+
+    for field in ["ds_selector", "es_selector", "ds_unusable", "es_unusable"] {
+        let mut malformed: serde_json::Value =
+            serde_json::from_slice(&loaded.fixture.to_json().unwrap()).unwrap();
+        malformed["initial_state"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err(),
+            "{field}"
+        );
+        malformed["initial_state"][field] = serde_json::Value::Null;
+        assert!(
+            Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err(),
+            "null {field}"
+        );
+    }
+    let mut too_wide: serde_json::Value =
+        serde_json::from_slice(&loaded.fixture.to_json().unwrap()).unwrap();
+    too_wide["initial_state"]["ds_selector"] = serde_json::json!("0x0000000000010000");
+    assert!(Fixture::from_json(&serde_json::to_vec(&too_wide).unwrap()).is_err());
+
+    let mut out_of_profile = loaded.fixture.clone();
+    out_of_profile.memory[0].initial_bytes_hex = "8ed8".into();
+    assert!(out_of_profile.validate().is_err());
+    out_of_profile = loaded.fixture.clone();
+    out_of_profile.memory[0].initial_bytes_hex = "8ed880".into();
+    out_of_profile.memory[0].length = 3;
+    out_of_profile.memory[0].comparison_mask_hex = "ffffff".into();
+    out_of_profile.stop_rip = Some(HexU64(0x0010_0003));
+    assert!(out_of_profile.validate().is_err());
+}
+
+#[test]
 fn fs_load_state_change_is_allowed_after_retirement_independent_of_terminal_outcome() {
     let loaded = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_22f_fs_load_writable_g0.case.json"

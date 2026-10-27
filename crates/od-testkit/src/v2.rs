@@ -22,6 +22,7 @@ pub const PROFILE_GS_SELECTOR: &str = "s2-long-gs-selector-v1";
 pub const PROFILE_VERW_GDT: &str = "s2-long-verw-gdt-v1";
 pub const PROFILE_FS_LOAD: &str = "s2-long-fs-load-v1";
 pub const PROFILE_GS_LOAD: &str = "s2-long-gs-load-v1";
+pub const PROFILE_NULL_DS_ES: &str = "s2-long-null-ds-es-v1";
 pub const PROFILE_X87_STATE: &str = "s2-long-x87-state-v1";
 /// Integer arithmetic flags, reserved bit 1 and DF. System flags are not yet modeled.
 pub const INTEGER_FLAGS: u64 = 0x8d7 | (1 << 10);
@@ -44,6 +45,8 @@ pub enum Profile {
     LongFsLoadV1,
     #[serde(rename = "s2-long-gs-load-v1")]
     LongGsLoadV1,
+    #[serde(rename = "s2-long-null-ds-es-v1")]
+    LongNullDsEsV1,
     #[serde(rename = "s2-long-x87-state-v1")]
     LongX87StateV1,
 }
@@ -90,6 +93,31 @@ pub struct IntegerState {
         skip_serializing_if = "Option::is_none"
     )]
     pub gs_selector: Option<HexU64>,
+    /// Present only in `s2-long-null-ds-es-v1`.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ds_selector: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub es_selector: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ds_unusable: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub es_unusable: Option<bool>,
     /// Present only in the GDT-only VERW profile.
     #[serde(
         default,
@@ -237,6 +265,13 @@ where
     HexU64::deserialize(deserializer).map(Some)
 }
 
+fn deserialize_present_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    bool::deserialize(deserializer).map(Some)
+}
+
 impl From<&LongModeState> for IntegerState {
     fn from(state: &LongModeState) -> Self {
         Self {
@@ -248,6 +283,10 @@ impl From<&LongModeState> for IntegerState {
             gs_base: None,
             fs_selector: None,
             gs_selector: None,
+            ds_selector: None,
+            es_selector: None,
+            ds_unusable: None,
+            es_unusable: None,
             gdtr_base: None,
             gdtr_limit: None,
             fs_cache_limit: None,
@@ -276,6 +315,10 @@ impl IntegerState {
             gs_base: self.gs_base.map_or(0, HexU64::get),
             fs_selector: self.fs_selector.map_or(0, |selector| selector.get() as u16),
             gs_selector: self.gs_selector.map_or(0, |selector| selector.get() as u16),
+            ds_selector: self.ds_selector.map_or(0, |selector| selector.get() as u16),
+            es_selector: self.es_selector.map_or(0, |selector| selector.get() as u16),
+            ds_unusable: self.ds_unusable.unwrap_or(false),
+            es_unusable: self.es_unusable.unwrap_or(false),
             gdtr: match (self.gdtr_base, self.gdtr_limit) {
                 (Some(base), Some(limit)) => Some(od_isa::state::Gdtr {
                     base: base.get(),
@@ -364,6 +407,11 @@ impl IntegerState {
                 result.gs_cache_access = Some(HexU64(u64::from(cache.access)));
                 result.gs_cache_flags = Some(HexU64(u64::from(cache.flags)));
             }
+        } else if profile == Profile::LongNullDsEsV1 {
+            result.ds_selector = Some(HexU64(u64::from(state.ds_selector)));
+            result.es_selector = Some(HexU64(u64::from(state.es_selector)));
+            result.ds_unusable = Some(state.ds_unusable);
+            result.es_unusable = Some(state.es_unusable);
         }
         result
     }
@@ -380,7 +428,8 @@ impl IntegerState {
                 | Profile::LongGsBaseV1
                 | Profile::LongGsSelectorV1
                 | Profile::LongVerwGdtV1
-                | Profile::LongGsLoadV1,
+                | Profile::LongGsLoadV1
+                | Profile::LongNullDsEsV1,
                 None,
             )
             | (Profile::LongFsBaseV1 | Profile::LongFsLoadV1, Some(_)) => {}
@@ -391,7 +440,8 @@ impl IntegerState {
                 | Profile::LongGsBaseV1
                 | Profile::LongGsSelectorV1
                 | Profile::LongVerwGdtV1
-                | Profile::LongGsLoadV1,
+                | Profile::LongGsLoadV1
+                | Profile::LongNullDsEsV1,
                 Some(_),
             ) => {
                 return Err(invalid("state.fs_base", "not part of this profile"));
@@ -407,7 +457,8 @@ impl IntegerState {
                 | Profile::LongFsBaseV1
                 | Profile::LongFsSelectorV1
                 | Profile::LongVerwGdtV1
-                | Profile::LongFsLoadV1,
+                | Profile::LongFsLoadV1
+                | Profile::LongNullDsEsV1,
                 None,
             )
             | (
@@ -426,7 +477,8 @@ impl IntegerState {
                 | Profile::LongFsBaseV1
                 | Profile::LongGsBaseV1
                 | Profile::LongVerwGdtV1
-                | Profile::LongGsLoadV1,
+                | Profile::LongGsLoadV1
+                | Profile::LongNullDsEsV1,
                 None,
             )
             | (Profile::LongFsSelectorV1 | Profile::LongFsLoadV1, Some(_)) => {}
@@ -457,6 +509,30 @@ impl IntegerState {
             .is_some_and(|selector| selector.get() > u16::MAX as u64)
         {
             return Err(invalid("state.gs_selector", "must fit in 16 bits"));
+        }
+        match (
+            state_profile,
+            self.ds_selector,
+            self.es_selector,
+            self.ds_unusable,
+            self.es_unusable,
+        ) {
+            (Profile::LongNullDsEsV1, Some(ds), Some(es), Some(_), Some(_)) => {
+                if ds.get() > u16::MAX as u64 {
+                    return Err(invalid("state.ds_selector", "must fit in 16 bits"));
+                }
+                if es.get() > u16::MAX as u64 {
+                    return Err(invalid("state.es_selector", "must fit in 16 bits"));
+                }
+            }
+            (Profile::LongNullDsEsV1, _, _, _, _) => {
+                return Err(invalid(
+                    "state.ds_es",
+                    "selectors and unusable state are required by this profile",
+                ));
+            }
+            (_, None, None, None, None) => {}
+            _ => return Err(invalid("state.ds_es", "not part of this profile")),
         }
         match (state_profile, self.gdtr_base, self.gdtr_limit) {
             (
@@ -670,7 +746,10 @@ impl Fixture {
         if self.expected_exit == ExpectedExit::StopAddress && self.stop_rip.is_none() {
             return Err(invalid("stop_rip", "required for stop_address"));
         }
-        if matches!(self.profile, Profile::LongFsLoadV1 | Profile::LongGsLoadV1) {
+        if matches!(
+            self.profile,
+            Profile::LongFsLoadV1 | Profile::LongGsLoadV1 | Profile::LongNullDsEsV1
+        ) {
             let code = self.memory.iter().find(|region| region.region_id == "code");
             let Some(code) = code else {
                 return Err(invalid("memory.code", "required by this profile"));
@@ -682,10 +761,12 @@ impl Fixture {
                 (Profile::LongFsLoadV1, "8ee064488b00") => (2, 6),
                 (Profile::LongGsLoadV1, "8ee8") => (1, 2),
                 (Profile::LongGsLoadV1, "8ee865488b00") => (2, 6),
+                (Profile::LongNullDsEsV1, "8ed8" | "8ec0") => (1, 2),
+                (Profile::LongNullDsEsV1, "8ed88ed8" | "8ed88ec0") => (2, 4),
                 _ => {
                     return Err(invalid(
                         "memory.code",
-                        "outside the bounded FS/GS-load profile",
+                        "outside the bounded segment-load profile",
                     ));
                 }
             };
@@ -2184,6 +2265,42 @@ impl RunResult {
                     || value.state.gs_cache_flags != loaded.fixture.initial_state.gs_cache_flags)
             {
                 return Err(FormatError::CaseMismatch("state.gs_cache"));
+            }
+            if loaded.fixture.profile == Profile::LongNullDsEsV1 {
+                let code = loaded
+                    .fixture
+                    .memory
+                    .iter()
+                    .find(|region| region.region_id == "code")
+                    .ok_or(FormatError::CaseMismatch("memory.code"))?;
+                let code = decode_bytes(&code.initial_bytes_hex)
+                    .map_err(|_| FormatError::CaseMismatch("memory.code"))?;
+                let retired = match self.instructions_executed {
+                    Observation::Available { value } => value.get() as usize,
+                    _ => 0,
+                };
+                let mut ds = (
+                    loaded.fixture.initial_state.ds_selector.unwrap(),
+                    loaded.fixture.initial_state.ds_unusable.unwrap(),
+                );
+                let mut es = (
+                    loaded.fixture.initial_state.es_selector.unwrap(),
+                    loaded.fixture.initial_state.es_unusable.unwrap(),
+                );
+                for instruction in code.chunks_exact(2).take(retired) {
+                    match instruction {
+                        [0x8e, 0xd8] => ds = (HexU64(0), true),
+                        [0x8e, 0xc0] => es = (HexU64(0), true),
+                        _ => break,
+                    }
+                }
+                if value.state.ds_selector != Some(ds.0)
+                    || value.state.ds_unusable != Some(ds.1)
+                    || value.state.es_selector != Some(es.0)
+                    || value.state.es_unusable != Some(es.1)
+                {
+                    return Err(FormatError::CaseMismatch("state.ds_es"));
+                }
             }
             if value.memory.len() != loaded.fixture.memory.len() {
                 return Err(FormatError::CaseMismatch("memory"));

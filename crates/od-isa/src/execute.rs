@@ -60,7 +60,7 @@ pub enum RunInputError {
     InvalidRflagsDefined { value: u64 },
 }
 
-/// Explicit in-memory restart state for the bounded address-size-32 REPNE SCASB slice.
+/// Explicit in-memory restart state for bounded address-size-32 REPNE strings.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepContinuation {
     rip: u64,
@@ -80,7 +80,7 @@ pub struct RepContinuation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RepContinuationOperand {
     Scas { rax: u64, size: OperandSize },
-    Cmpsb { rsi: u64 },
+    Cmps { rsi: u64, size: OperandSize },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -90,7 +90,7 @@ pub enum RepRunInputError {
     ContinuationInstructionMismatch,
 }
 
-/// Execute with explicit restart metadata for bounded addr32 REPNE SCASB/CMPSB.
+/// Execute with explicit restart metadata for bounded addr32 REPNE SCAS/CMPS.
 /// Passing `None` starts a new execution boundary; a partial snapshot alone is
 /// not enough to reconstruct an in-progress token.
 pub fn run_with_rep_continuation(
@@ -154,7 +154,7 @@ pub fn run_with_rep_continuation(
                 Err(_) => return Err(RepRunInputError::ContinuationInstructionMismatch),
             };
             let token = continuation.as_ref().expect("validated continuation");
-            if !matches!(instruction.opcode.byte, 0xae | 0xaf | 0xa6)
+            if !matches!(instruction.opcode.byte, 0xae | 0xaf | 0xa6 | 0xa7)
                 || instruction.address_size != OperandSize::Dword
                 || token_instruction_identity(token, &instruction).is_err()
             {
@@ -186,7 +186,9 @@ pub fn run_with_rep_continuation(
                 Ok(StepOutcome::StopRequested) => {
                     return Ok(rep_run_result(RunExit::StopRequested, retired, defined));
                 }
-                Ok(StepOutcome::Unsupported { opcode }) if matches!(opcode, 0xae | 0xaf | 0xa6) => {
+                Ok(StepOutcome::Unsupported { opcode })
+                    if matches!(opcode, 0xae | 0xaf | 0xa6 | 0xa7) =>
+                {
                     match long_decode::decode(memory, state.rip, config.context) {
                         Ok(instruction)
                             if matches!(
@@ -194,6 +196,7 @@ pub fn run_with_rep_continuation(
                                 Operation::RepneScasbAddr32
                                     | Operation::RepneScasWdqAddr32 { .. }
                                     | Operation::RepneCmpsbAddr32
+                                    | Operation::RepneCmpsWdqAddr32 { .. }
                             ) && instruction.address_size == OperandSize::Dword =>
                         {
                             target_instruction = Some(instruction);
@@ -323,7 +326,7 @@ pub fn run_with_rep_continuation(
 fn rep_continuation_operand_matches(token: &RepContinuation, state: &LongModeState) -> bool {
     match token.operand {
         RepContinuationOperand::Scas { rax, .. } => rax == state.gpr[Register::Rax as usize],
-        RepContinuationOperand::Cmpsb { rsi } => rsi == state.gpr[Register::Rsi as usize],
+        RepContinuationOperand::Cmps { rsi, .. } => rsi == state.gpr[Register::Rsi as usize],
     }
 }
 
@@ -333,7 +336,7 @@ fn token_instruction_identity(
 ) -> Result<(), ()> {
     let expected_size = match token.operand {
         RepContinuationOperand::Scas { size, .. } => size,
-        RepContinuationOperand::Cmpsb { .. } => OperandSize::Byte,
+        RepContinuationOperand::Cmps { size, .. } => size,
     };
     let matches_kind = match (&token.operand, &instruction.operation) {
         (
@@ -347,7 +350,13 @@ fn token_instruction_identity(
             },
             Operation::RepneScasbAddr32,
         ) => true,
-        (RepContinuationOperand::Cmpsb { .. }, Operation::RepneCmpsbAddr32) => true,
+        (RepContinuationOperand::Cmps { size, .. }, Operation::RepneCmpsbAddr32) => {
+            *size == OperandSize::Byte
+        }
+        (
+            RepContinuationOperand::Cmps { size, .. },
+            Operation::RepneCmpsWdqAddr32 { size: decoded },
+        ) => size == decoded,
         _ => false,
     };
     if matches_kind
@@ -388,9 +397,12 @@ fn execute_repne_addr32(
     continuation: &mut Option<RepContinuation>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<RepSpecialExit, MemoryError> {
-    let cmps = instruction.operation == Operation::RepneCmpsbAddr32;
+    let cmps = matches!(
+        instruction.operation,
+        Operation::RepneCmpsbAddr32 | Operation::RepneCmpsWdqAddr32 { .. }
+    );
     let size = match instruction.operation {
-        Operation::RepneScasWdqAddr32 { size } => size,
+        Operation::RepneScasWdqAddr32 { size } | Operation::RepneCmpsWdqAddr32 { size } => size,
         Operation::RepneScasbAddr32 | Operation::RepneCmpsbAddr32 => OperandSize::Byte,
         _ => unreachable!("bounded REPNE executor receives an admitted operation"),
     };
@@ -412,8 +424,9 @@ fn execute_repne_addr32(
             entry_rflags: state.rflags,
             entry_defined: *defined,
             operand: if cmps {
-                RepContinuationOperand::Cmpsb {
+                RepContinuationOperand::Cmps {
                     rsi: state.gpr[Register::Rsi as usize],
+                    size,
                 }
             } else {
                 RepContinuationOperand::Scas {
@@ -436,7 +449,7 @@ fn execute_repne_addr32(
                 scale: 1,
                 displacement: 0,
                 address_size: OperandSize::Dword,
-                size: OperandSize::Byte,
+                size,
             });
             let source_value = match read_operand(state, memory, context, next_rip, source) {
                 Ok(value) => value,
@@ -452,7 +465,7 @@ fn execute_repne_addr32(
                 scale: 1,
                 displacement: 0,
                 address_size: OperandSize::Dword,
-                size: OperandSize::Byte,
+                size,
             });
             let destination_value =
                 match read_operand(state, memory, context, next_rip, destination) {
@@ -502,9 +515,9 @@ fn execute_repne_addr32(
         if cmps {
             let index = state.gpr[Register::Rsi as usize] as u32;
             let index = if state.rflags & crate::DF == 0 {
-                index.wrapping_add(1)
+                index.wrapping_add(size.bytes() as u32)
             } else {
-                index.wrapping_sub(1)
+                index.wrapping_sub(size.bytes() as u32)
             };
             state.gpr[Register::Rsi as usize] = u64::from(index);
         }
@@ -528,7 +541,7 @@ fn checkpoint_rep(state: &LongModeState, defined: u64, continuation: &mut Option
     if let Some(token) = continuation {
         match &mut token.operand {
             RepContinuationOperand::Scas { rax, .. } => *rax = state.gpr[Register::Rax as usize],
-            RepContinuationOperand::Cmpsb { rsi } => *rsi = state.gpr[Register::Rsi as usize],
+            RepContinuationOperand::Cmps { rsi, .. } => *rsi = state.gpr[Register::Rsi as usize],
         }
         token.expected_rcx = state.gpr[Register::Rcx as usize];
         token.expected_rdi = state.gpr[Register::Rdi as usize];
@@ -728,6 +741,19 @@ fn step_tracked_with_stop(
                 let selector = state.gpr[Register::Rax as usize] as u16;
                 selector & 0xfffc == 0 || selector & 4 != 0
             })
+    {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
+    if matches!(
+        instruction.operation,
+        Operation::LoadNullDsSelector | Operation::LoadNullEsSelector
+    ) && context.privilege != PrivilegeLevel::Ring0
+        || matches!(
+            instruction.operation,
+            Operation::LoadNullDsSelector | Operation::LoadNullEsSelector
+        ) && state.gpr[Register::Rax as usize] as u16 != 0
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
@@ -1355,6 +1381,12 @@ fn step_tracked_with_stop(
                 && instruction.length == 2
                 && instruction.prefixes == Prefixes::default()
         }
+        Operation::LoadNullDsSelector | Operation::LoadNullEsSelector => {
+            instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0x8e
+                && instruction.length == 2
+                && instruction.prefixes == Prefixes::default()
+        }
         Operation::XchgMemory { memory, .. } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0x87
@@ -1928,7 +1960,7 @@ fn step_tracked_with_stop(
         }
         Operation::RepneScasbAddr32 => false,
         Operation::RepneScasWdqAddr32 { .. } => false,
-        Operation::RepneCmpsbAddr32 => false,
+        Operation::RepneCmpsbAddr32 | Operation::RepneCmpsWdqAddr32 { .. } => false,
     };
     if !executable {
         return Ok(StepOutcome::Unsupported {
@@ -3035,6 +3067,14 @@ fn step_tracked_with_stop(
                 Err(error) => return Err(error),
             }
         }
+        Operation::LoadNullDsSelector => {
+            state.ds_selector = 0;
+            state.ds_unusable = true;
+        }
+        Operation::LoadNullEsSelector => {
+            state.es_selector = 0;
+            state.es_unusable = true;
+        }
         Operation::VerwGdt => {
             let selector = state.gpr[Register::Rax as usize] as u16;
             match verify_writable_gdt_selector(state, memory, context, selector) {
@@ -3565,7 +3605,7 @@ fn step_tracked_with_stop(
                 opcode: instruction.opcode.byte,
             });
         }
-        Operation::RepneCmpsbAddr32 => {
+        Operation::RepneCmpsbAddr32 | Operation::RepneCmpsWdqAddr32 { .. } => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -8477,6 +8517,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -8538,6 +8582,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -8569,6 +8617,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -8608,6 +8660,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -8633,6 +8689,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -8682,6 +8742,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -8740,6 +8804,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -8768,6 +8836,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -8801,6 +8873,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -8843,6 +8919,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -8941,6 +9021,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -8974,6 +9058,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9010,6 +9098,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9040,6 +9132,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9077,6 +9173,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -9107,6 +9207,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9169,6 +9273,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9191,6 +9299,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9232,6 +9344,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -9255,6 +9371,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9319,6 +9439,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -9359,6 +9483,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9440,6 +9568,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9468,6 +9600,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -9496,6 +9632,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9530,6 +9670,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9560,6 +9704,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9621,6 +9769,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9651,6 +9803,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -9704,6 +9860,10 @@ mod tests {
                         gs_base: 0,
                         fs_selector: 0,
                         gs_selector: 0,
+                        ds_selector: 0,
+                        es_selector: 0,
+                        ds_unusable: false,
+                        es_unusable: false,
                         gdtr: None,
                         fs_cache: None,
                         gs_cache: None,
@@ -9771,6 +9931,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -9826,6 +9990,10 @@ mod tests {
                     gs_base: 0,
                     fs_selector: 0,
                     gs_selector: 0,
+                    ds_selector: 0,
+                    es_selector: 0,
+                    ds_unusable: false,
+                    es_unusable: false,
                     gdtr: None,
                     fs_cache: None,
                     gs_cache: None,
@@ -9886,6 +10054,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -10010,6 +10182,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -10137,6 +10313,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -10165,6 +10345,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -10192,6 +10376,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -10229,6 +10417,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -10256,6 +10448,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -10312,6 +10508,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -10391,6 +10591,10 @@ mod tests {
                     gs_base: 0,
                     fs_selector: 0,
                     gs_selector: 0,
+                    ds_selector: 0,
+                    es_selector: 0,
+                    ds_unusable: false,
+                    es_unusable: false,
                     gdtr: None,
                     fs_cache: None,
                     gs_cache: None,
@@ -10520,6 +10724,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -10596,6 +10804,10 @@ mod tests {
                         gs_base: 0,
                         fs_selector: 0,
                         gs_selector: 0,
+                        ds_selector: 0,
+                        es_selector: 0,
+                        ds_unusable: false,
+                        es_unusable: false,
                         gdtr: None,
                         fs_cache: None,
                         gs_cache: None,
@@ -10670,6 +10882,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -10729,6 +10945,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -10762,6 +10982,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -10806,6 +11030,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -10836,6 +11064,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -10889,6 +11121,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -10938,6 +11174,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -10988,6 +11228,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -11038,6 +11282,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -11088,6 +11336,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -11138,6 +11390,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -11188,6 +11444,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -11238,6 +11498,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -11277,6 +11541,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -11315,6 +11583,10 @@ mod tests {
                         gs_base: 0,
                         fs_selector: 0,
                         gs_selector: 0,
+                        ds_selector: 0,
+                        es_selector: 0,
+                        ds_unusable: false,
+                        es_unusable: false,
                         gdtr: None,
                         fs_cache: None,
                         gs_cache: None,
@@ -11369,6 +11641,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -11570,6 +11846,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -11645,6 +11925,10 @@ mod tests {
                         gs_base: 0,
                         fs_selector: 0,
                         gs_selector: 0,
+                        ds_selector: 0,
+                        es_selector: 0,
+                        ds_unusable: false,
+                        es_unusable: false,
                         gdtr: None,
                         fs_cache: None,
                         gs_cache: None,
@@ -11699,6 +11983,10 @@ mod tests {
                         gs_base: 0,
                         fs_selector: 0,
                         gs_selector: 0,
+                        ds_selector: 0,
+                        es_selector: 0,
+                        ds_unusable: false,
+                        es_unusable: false,
                         gdtr: None,
                         fs_cache: None,
                         gs_cache: None,
@@ -11856,6 +12144,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -11881,6 +12173,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -11917,6 +12213,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -11958,6 +12258,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -11999,6 +12303,10 @@ mod tests {
                     gs_base: 0,
                     fs_selector: 0,
                     gs_selector: 0,
+                    ds_selector: 0,
+                    es_selector: 0,
+                    ds_unusable: false,
+                    es_unusable: false,
                     gdtr: None,
                     fs_cache: None,
                     gs_cache: None,
@@ -12033,6 +12341,10 @@ mod tests {
                     gs_base: 0,
                     fs_selector: 0,
                     gs_selector: 0,
+                    ds_selector: 0,
+                    es_selector: 0,
+                    ds_unusable: false,
+                    es_unusable: false,
                     gdtr: None,
                     fs_cache: None,
                     gs_cache: None,
@@ -12089,6 +12401,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -12107,7 +12423,7 @@ mod tests {
                 || false,
             );
             assert_eq!(result.rflags_defined, expected, "{code:02x?}");
-            assert_eq!(result.instructions_executed, retired);
+            assert_eq!(result.instructions_executed, retired, "{:?}", result.exit);
         }
     }
 
@@ -12147,6 +12463,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -12184,6 +12504,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -12217,6 +12541,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -12250,6 +12578,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -12283,6 +12615,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -12307,6 +12643,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -12340,6 +12680,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -12367,6 +12711,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -12401,6 +12749,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -12435,6 +12787,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -12467,6 +12823,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -12540,6 +12900,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -12564,6 +12928,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -12707,6 +13075,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -12747,6 +13119,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -12784,6 +13160,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -12816,6 +13196,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -12860,6 +13244,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -12895,6 +13283,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -12953,6 +13345,10 @@ mod tests {
                     gs_base: 0,
                     fs_selector: 0,
                     gs_selector: 0,
+                    ds_selector: 0,
+                    es_selector: 0,
+                    ds_unusable: false,
+                    es_unusable: false,
                     gdtr: None,
                     fs_cache: None,
                     gs_cache: None,
@@ -13018,6 +13414,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -13067,6 +13467,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -13146,6 +13550,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -13183,6 +13591,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -13223,6 +13635,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -13253,6 +13669,10 @@ mod tests {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -13375,6 +13795,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,
@@ -13426,6 +13850,10 @@ mod tests {
             gs_base: 0x1234,
             fs_selector: 0xf123,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -13454,6 +13882,10 @@ mod tests {
             gs_base: 0xffff_8000_0000_1000,
             fs_selector: 0xabcd,
             gs_selector: 0xf123,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -14246,6 +14678,10 @@ mod tests {
             gs_base: 0x1000,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -14268,6 +14704,10 @@ mod tests {
             gs_base: 0x1000,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -14292,6 +14732,10 @@ mod tests {
             gs_base: 0x1000,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -14317,6 +14761,10 @@ mod tests {
             }),
             gs_base: 0xffff_8000_1234_5678,
             gs_selector: 0x33,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             fs_base: 0xffff_8000_1122_3344,
             fs_selector: 0x5678,
             fs_cache: Some(FsDescriptorCache {
@@ -66026,6 +66474,711 @@ mod tests {
         assert_eq!(state.rflags & crate::ZF, crate::ZF);
         assert!(continuation.is_none());
     }
+
+    #[test]
+    fn repne_cmps_wdq_addr32_matches_independent_cmp_model_for_df_zf_count_and_width() {
+        let forms = [
+            (OperandSize::Word, vec![0xf2, 0x67, 0x66, 0xa7]),
+            (OperandSize::Dword, vec![0x67, 0xf2, 0xa7]),
+            (OperandSize::Qword, vec![0xf2, 0x67, 0x48, 0xa7]),
+        ];
+        for (size, code) in forms {
+            let width = size.bytes() as usize;
+            for df in [false, true] {
+                for initial_zf in [false, true] {
+                    for count in [0u32, 1, 3] {
+                        let start = if df {
+                            0x1100 + 2 * width as u32
+                        } else {
+                            0x1100
+                        };
+                        let destination = if df {
+                            0x2100 + 2 * width as u32
+                        } else {
+                            0x2100
+                        };
+                        let mut state = LongModeState::default();
+                        state.rip = 0x2000;
+                        state.gpr[Register::Rcx as usize] =
+                            0xfeed_beef_0000_0000 | u64::from(count);
+                        state.gpr[Register::Rsi as usize] =
+                            0xaabb_ccdd_0000_0000 | u64::from(start);
+                        state.gpr[Register::Rdi as usize] =
+                            0x9988_7766_0000_0000 | u64::from(destination);
+                        state.rflags = 2
+                            | crate::CF
+                            | if df { crate::DF } else { 0 }
+                            | if initial_zf { crate::ZF } else { 0 };
+                        let before = state.clone();
+                        let mut memory = Memory::at(&code, 0x2000);
+                        memory.data_base = 0x1000;
+                        memory.bytes = vec![0; 0x3000];
+                        let source_values = [0x8000_0000_0000_0001u64, 0x1234, 0x5678];
+                        let destination_values = [0x7fff_ffff_ffff_ffffu64, 0x1234, 0x9999];
+                        for index in 0..3 {
+                            let source_base = start as usize - 0x1000;
+                            let destination_base = destination as usize - 0x1000;
+                            let source_at = if df {
+                                source_base - index * width
+                            } else {
+                                source_base + index * width
+                            };
+                            let destination_at = if df {
+                                destination_base - index * width
+                            } else {
+                                destination_base + index * width
+                            };
+                            memory.bytes[source_at..source_at + width]
+                                .copy_from_slice(&source_values[index].to_le_bytes()[..width]);
+                            memory.bytes[destination_at..destination_at + width]
+                                .copy_from_slice(&destination_values[index].to_le_bytes()[..width]);
+                        }
+                        let mut continuation = None;
+                        let result = run_with_rep_continuation(
+                            &mut state,
+                            &mut memory,
+                            RunConfig {
+                                instruction_budget: 1,
+                                stop_rip: Some(0x2000 + code.len() as u64),
+                                context: AccessContext::default(),
+                            },
+                            crate::INTEGER_FLAGS,
+                            &mut continuation,
+                            || false,
+                        )
+                        .unwrap();
+                        assert_eq!(result.exit, RunExit::StopAddress);
+                        assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS);
+                        assert!(continuation.is_none());
+
+                        let mut expected_count = count;
+                        let mut esi = start;
+                        let mut edi = destination;
+                        let mut expected_flags = before.rflags;
+                        let mut expected_reads = Vec::new();
+                        while expected_count != 0 {
+                            let source = if df {
+                                source_values[((start - esi) / width as u32) as usize]
+                            } else {
+                                source_values[((esi - start) / width as u32) as usize]
+                            };
+                            let observed = if df {
+                                destination_values[((destination - edi) / width as u32) as usize]
+                            } else {
+                                destination_values[((edi - destination) / width as u32) as usize]
+                            };
+                            expected_reads.push((AccessKind::Read, u64::from(esi), width));
+                            expected_reads.push((AccessKind::Read, u64::from(edi), width));
+                            expected_flags =
+                                rep_scas_width_expected_flags(source, observed, size, df);
+                            let delta = width as u32;
+                            esi = if df {
+                                esi.wrapping_sub(delta)
+                            } else {
+                                esi.wrapping_add(delta)
+                            };
+                            edi = if df {
+                                edi.wrapping_sub(delta)
+                            } else {
+                                edi.wrapping_add(delta)
+                            };
+                            expected_count -= 1;
+                            if expected_count == 0 || expected_flags & crate::ZF != 0 {
+                                break;
+                            }
+                        }
+                        assert_eq!(
+                            state.rflags, expected_flags,
+                            "{size:?} DF={df} ZF={initial_zf} count={count}"
+                        );
+                        assert_eq!(
+                            state.gpr[Register::Rcx as usize],
+                            if count == 0 {
+                                before.gpr[Register::Rcx as usize]
+                            } else {
+                                u64::from(expected_count)
+                            }
+                        );
+                        assert_eq!(
+                            state.gpr[Register::Rsi as usize],
+                            if count == 0 {
+                                before.gpr[Register::Rsi as usize]
+                            } else {
+                                u64::from(esi)
+                            }
+                        );
+                        assert_eq!(
+                            state.gpr[Register::Rdi as usize],
+                            if count == 0 {
+                                before.gpr[Register::Rdi as usize]
+                            } else {
+                                u64::from(edi)
+                            }
+                        );
+                        assert_eq!(
+                            state.gpr[Register::Rax as usize],
+                            before.gpr[Register::Rax as usize]
+                        );
+                        assert_eq!(memory.accesses, expected_reads);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn repne_cmps_wdq_addr32_tokens_check_width_address_and_length_before_data() {
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.gpr[Register::Rcx as usize] = 3;
+        state.gpr[Register::Rsi as usize] = 0x1000;
+        state.gpr[Register::Rdi as usize] = 0x2000;
+        state.rflags = 2;
+        let mut memory = Memory::at(&[0xf2, 0x67, 0xa7], 0x2000);
+        memory.data_base = 0x1000;
+        memory.bytes = vec![0x41; 0x2000];
+        memory.bytes[0..16].fill(0x42);
+        memory.bytes[0x1000..0x1010].fill(0x41);
+        let mut continuation = None;
+        let mut callbacks = 0;
+        let partial = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            crate::INTEGER_FLAGS,
+            &mut continuation,
+            || {
+                callbacks += 1;
+                callbacks == 2
+            },
+        )
+        .unwrap();
+        assert_eq!(partial.exit, RunExit::StopRequested);
+        memory.accesses.clear();
+        memory.code = vec![0x67, 0xf2, 0xa7];
+        let reordered = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            partial.rflags_defined,
+            &mut continuation,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(reordered.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(state.gpr[Register::Rcx as usize], 0);
+        assert!(continuation.is_none());
+        assert_eq!(
+            memory
+                .accesses
+                .iter()
+                .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                .count(),
+            4
+        );
+
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.gpr[Register::Rcx as usize] = 3;
+        state.gpr[Register::Rsi as usize] = 0x1000;
+        state.gpr[Register::Rdi as usize] = 0x2000;
+        state.rflags = 2;
+        let mut memory = Memory::at(&[0xf2, 0x67, 0x66, 0xa7], 0x2000);
+        memory.data_base = 0x1000;
+        memory.bytes = vec![0x41; 0x2000];
+        memory.bytes[0..16].fill(0x42);
+        memory.bytes[0x1000..0x1010].fill(0x41);
+        let mut continuation = None;
+        let mut callbacks = 0;
+        let partial = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            crate::INTEGER_FLAGS,
+            &mut continuation,
+            || {
+                callbacks += 1;
+                callbacks == 2
+            },
+        )
+        .unwrap();
+        assert_eq!(partial.exit, RunExit::StopRequested);
+        let saved_state = state.clone();
+        let saved_token = continuation.clone();
+        for changed in [
+            vec![0xf2, 0x67, 0x48, 0xa7], // same length, changed W to Q
+            vec![0xf2, 0x67, 0xa7],       // changed instruction length
+            vec![0xf2, 0x67, 0x66, 0xaf], // cross-kind, same width and length
+            vec![0xf2, 0x66, 0xa7],       // address-size 64
+        ] {
+            memory.code = changed;
+            memory.accesses.clear();
+            let mut callback_calls = 0;
+            assert_eq!(
+                run_with_rep_continuation(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default()
+                    },
+                    partial.rflags_defined,
+                    &mut continuation,
+                    || {
+                        callback_calls += 1;
+                        false
+                    },
+                ),
+                Err(RepRunInputError::ContinuationInstructionMismatch),
+            );
+            assert_eq!(callback_calls, 1);
+            assert_eq!(state, saved_state);
+            assert_eq!(continuation, saved_token);
+            assert!(
+                !memory
+                    .accesses
+                    .iter()
+                    .any(|(kind, _, _)| *kind == AccessKind::Read)
+            );
+        }
+    }
+
+    #[test]
+    fn repne_cmps_wdq_addr32_requires_defined_arithmetic_flags_but_not_values() {
+        let forms = [
+            vec![0xf2, 0x67, 0x66, 0xa7],
+            vec![0x67, 0xf2, 0xa7],
+            vec![0xf2, 0x67, 0x48, 0xa7],
+        ];
+        for code in forms {
+            for count in [0u64, 1] {
+                for flag in [
+                    crate::CF,
+                    crate::PF,
+                    crate::AF,
+                    crate::ZF,
+                    crate::SF,
+                    crate::OF,
+                ] {
+                    let mut state = LongModeState::default();
+                    state.rip = 0x2000;
+                    state.gpr[Register::Rcx as usize] = count;
+                    state.gpr[Register::Rsi as usize] = 0x1000;
+                    state.gpr[Register::Rdi as usize] = 0x2000;
+                    state.rflags = 2 | crate::ARITHMETIC_FLAGS;
+                    let mut memory = Memory::at(&code, 0x2000);
+                    let result = run_with_rep_continuation(
+                        &mut state,
+                        &mut memory,
+                        RunConfig {
+                            instruction_budget: 1,
+                            stop_rip: None,
+                            context: AccessContext::default(),
+                        },
+                        crate::INTEGER_FLAGS & !flag,
+                        &mut None,
+                        || false,
+                    )
+                    .unwrap();
+                    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xa7 });
+                    assert_eq!(state.rip, 0x2000);
+                    assert!(memory.accesses.is_empty());
+                }
+            }
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rcx as usize] = 1;
+            state.gpr[Register::Rsi as usize] = 0x1000;
+            state.gpr[Register::Rdi as usize] = 0x2000;
+            state.rflags = 2 | crate::DF | crate::AF;
+            let mut memory = Memory::at(&code, 0x2000);
+            memory.data_base = 0x1000;
+            memory.bytes = vec![0x41; 0x2000];
+            let result = run_with_rep_continuation(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2000 + code.len() as u64),
+                    context: AccessContext::default(),
+                },
+                crate::INTEGER_FLAGS,
+                &mut None,
+                || false,
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(
+                memory
+                    .accesses
+                    .iter()
+                    .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                    .count(),
+                2
+            );
+
+            let mut legacy_state = LongModeState::default();
+            legacy_state.rip = 0x2000;
+            legacy_state.gpr[Register::Rcx as usize] = 1;
+            legacy_state.gpr[Register::Rsi as usize] = 0x1000;
+            legacy_state.gpr[Register::Rdi as usize] = 0x2000;
+            let mut legacy_memory = Memory::at(&code, 0x2000);
+            assert_eq!(
+                run(
+                    &mut legacy_state,
+                    &mut legacy_memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default()
+                    },
+                    || false
+                )
+                .exit,
+                RunExit::Unsupported { opcode: 0xa7 }
+            );
+            assert!(
+                !legacy_memory
+                    .accesses
+                    .iter()
+                    .any(|(kind, _, _)| *kind == AccessKind::Read)
+            );
+
+            let mut tracked_state = LongModeState::default();
+            tracked_state.rip = 0x2000;
+            let mut tracked_memory = Memory::at(&code, 0x2000);
+            assert_eq!(
+                run_with_rflags_defined(
+                    &mut tracked_state,
+                    &mut tracked_memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default()
+                    },
+                    crate::INTEGER_FLAGS,
+                    || false,
+                )
+                .unwrap()
+                .exit,
+                RunExit::Unsupported { opcode: 0xa7 }
+            );
+            assert!(
+                !tracked_memory
+                    .accesses
+                    .iter()
+                    .any(|(kind, _, _)| *kind == AccessKind::Read)
+            );
+
+            let mut single_state = LongModeState::default();
+            single_state.rip = 0x2000;
+            let mut single_memory = Memory::at(&code, 0x2000);
+            assert_eq!(
+                step(
+                    &mut single_state,
+                    &mut single_memory,
+                    AccessContext::default()
+                ),
+                Ok(StepOutcome::Unsupported { opcode: 0xa7 })
+            );
+            assert!(
+                !single_memory
+                    .accesses
+                    .iter()
+                    .any(|(kind, _, _)| *kind == AccessKind::Read)
+            );
+        }
+    }
+
+    #[test]
+    fn repne_cmps_wdq_addr32_overlap_reads_both_operands_from_prestate() {
+        for (size, code) in [
+            (OperandSize::Word, vec![0xf2, 0x67, 0x66, 0xa7]),
+            (OperandSize::Dword, vec![0x67, 0xf2, 0xa7]),
+            (OperandSize::Qword, vec![0xf2, 0x67, 0x48, 0xa7]),
+        ] {
+            let width = size.bytes() as usize;
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rcx as usize] = 1;
+            state.gpr[Register::Rsi as usize] = 0x1000;
+            state.gpr[Register::Rdi as usize] = 0x1000 + (width / 2) as u64;
+            state.rflags = 2;
+            let mut memory = Memory::at(&code, 0x2000);
+            memory.data_base = 0x1000;
+            memory.bytes = vec![0x5a; 64];
+            memory.bytes[..width].copy_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes()[..width]);
+            let mut source_bytes = [0; 8];
+            source_bytes[..width].copy_from_slice(&memory.bytes[..width]);
+            let source = u64::from_le_bytes(source_bytes);
+            let mut destination_bytes = [0; 8];
+            destination_bytes[..width].copy_from_slice(&memory.bytes[width / 2..width / 2 + width]);
+            let destination = u64::from_le_bytes(destination_bytes);
+            let result = run_with_rep_continuation(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2000 + code.len() as u64),
+                    context: AccessContext::default(),
+                },
+                crate::INTEGER_FLAGS,
+                &mut None,
+                || false,
+            )
+            .unwrap();
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(
+                memory.accesses,
+                [
+                    (AccessKind::Read, 0x1000, width),
+                    (AccessKind::Read, 0x1000 + (width / 2) as u64, width),
+                ]
+            );
+            assert_eq!(
+                state.rflags,
+                rep_scas_width_expected_flags(source, destination, size, false)
+            );
+            assert_eq!(state.gpr[Register::Rcx as usize], 0);
+            assert_eq!(state.gpr[Register::Rsi as usize], 0x1000 + width as u64);
+            assert_eq!(
+                state.gpr[Register::Rdi as usize],
+                0x1000 + (width / 2 + width) as u64
+            );
+        }
+    }
+
+    #[test]
+    fn repne_cmps_wdq_addr32_faults_after_progress_restore_entry_flags_and_keep_progress() {
+        for (size, code) in [
+            (OperandSize::Word, vec![0xf2, 0x67, 0x66, 0xa7]),
+            (OperandSize::Dword, vec![0x67, 0xf2, 0xa7]),
+            (OperandSize::Qword, vec![0xf2, 0x67, 0x48, 0xa7]),
+        ] {
+            let width = size.bytes() as usize;
+            for failed_read in [0usize, 1] {
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rcx as usize] = 3;
+                state.gpr[Register::Rsi as usize] = 0x1000;
+                state.gpr[Register::Rdi as usize] = 0x2000;
+                state.rflags = 2 | crate::CF | crate::PF | crate::ZF | crate::DF;
+                let entry_flags = state.rflags;
+                let mut memory = Memory::at(&code, 0x2000);
+                memory.data_base = 0x0ff0;
+                memory.bytes = vec![0; 0x3010];
+                memory.bytes[0x0010] = 0x40;
+                memory.bytes[0x1010] = 0x41;
+                let mut continuation = None;
+                let mut stop_checks = 0;
+                let partial = run_with_rep_continuation(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    crate::INTEGER_FLAGS,
+                    &mut continuation,
+                    || {
+                        stop_checks += 1;
+                        stop_checks == 2
+                    },
+                )
+                .unwrap();
+                assert_eq!(partial.exit, RunExit::StopRequested);
+                assert_eq!(state.gpr[Register::Rcx as usize], 2);
+                assert_eq!(state.gpr[Register::Rsi as usize], 0x1000 - width as u64);
+                assert_eq!(state.gpr[Register::Rdi as usize], 0x2000 - width as u64);
+                assert!(continuation.is_some());
+
+                memory.accesses.clear();
+                memory.error = Some(MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(0),
+                    linear_address: Some(if failed_read == 0 {
+                        0x1000 - width as u64
+                    } else {
+                        0x2000 - width as u64
+                    }),
+                }));
+                memory.error_kind = Some(AccessKind::Read);
+                memory.fail_after_reads = Some(failed_read);
+                let fault = run_with_rep_continuation(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    partial.rflags_defined,
+                    &mut continuation,
+                    || false,
+                )
+                .unwrap();
+                assert!(matches!(
+                    fault.exit,
+                    RunExit::Fault(ArchitecturalFault { vector: 14, .. })
+                ));
+                assert_eq!(state.rflags, entry_flags);
+                assert_eq!(fault.rflags_defined, crate::INTEGER_FLAGS);
+                assert_eq!(state.gpr[Register::Rcx as usize], 2);
+                assert_eq!(state.gpr[Register::Rsi as usize], 0x1000 - width as u64);
+                assert_eq!(state.gpr[Register::Rdi as usize], 0x2000 - width as u64);
+                assert_eq!(state.rip, 0x2000);
+                assert!(continuation.is_none());
+                let reads: Vec<_> = memory
+                    .accesses
+                    .iter()
+                    .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                    .map(|(_, address, length)| (*address, *length))
+                    .collect();
+                assert_eq!(
+                    reads,
+                    if failed_read == 0 {
+                        vec![(0x1000 - width as u64, width)]
+                    } else {
+                        vec![
+                            (0x1000 - width as u64, width),
+                            (0x2000 - width as u64, width),
+                        ]
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn repne_cmps_wdq_addr32_backend_destination_error_retries_both_changed_operands() {
+        for (size, code) in [
+            (OperandSize::Word, vec![0xf2, 0x67, 0x66, 0xa7]),
+            (OperandSize::Dword, vec![0x67, 0xf2, 0xa7]),
+            (OperandSize::Qword, vec![0xf2, 0x67, 0x48, 0xa7]),
+        ] {
+            let width = size.bytes() as usize;
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rcx as usize] = 2;
+            state.gpr[Register::Rsi as usize] = 0x1000;
+            state.gpr[Register::Rdi as usize] = 0x2000;
+            state.rflags = 2;
+            let mut memory = Memory::at(&code, 0x2000);
+            memory.data_base = 0x0ff0;
+            memory.bytes = vec![0; 0x3010];
+            memory.bytes[0x10] = 0x40;
+            memory.bytes[0x1010] = 0x41;
+            let mut continuation = None;
+            let mut stop_checks = 0;
+            let partial = run_with_rep_continuation(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                crate::INTEGER_FLAGS,
+                &mut continuation,
+                || {
+                    stop_checks += 1;
+                    stop_checks == 2
+                },
+            )
+            .unwrap();
+            assert_eq!(partial.exit, RunExit::StopRequested);
+            let checkpoint = state.clone();
+            memory.accesses.clear();
+            memory.error = Some(MemoryError::Backend("destination read failed".into()));
+            memory.error_kind = Some(AccessKind::Read);
+            memory.fail_after_reads = Some(1);
+            let backend_error = run_with_rep_continuation(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                partial.rflags_defined,
+                &mut continuation,
+                || false,
+            )
+            .unwrap();
+            assert!(matches!(
+                backend_error.exit,
+                RunExit::MemoryError(MemoryError::Backend(_))
+            ));
+            assert_eq!(state, checkpoint);
+            assert!(continuation.is_some());
+            assert_eq!(
+                memory
+                    .accesses
+                    .iter()
+                    .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                    .map(|(_, address, length)| (*address, *length))
+                    .collect::<Vec<_>>(),
+                [
+                    (0x1000 + width as u64, width),
+                    (0x2000 + width as u64, width)
+                ]
+            );
+
+            memory.bytes[0x10 + width..0x10 + 2 * width].fill(0);
+            memory.bytes[0x1010 + width..0x1010 + 2 * width].fill(0);
+            memory.bytes[0x10 + width] = 0x42;
+            memory.bytes[0x1010 + width] = 0x42;
+            memory.error = None;
+            memory.error_kind = None;
+            memory.fail_after_reads = None;
+            memory.accesses.clear();
+            let retried = run_with_rep_continuation(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2000 + code.len() as u64),
+                    context: AccessContext::default(),
+                },
+                partial.rflags_defined,
+                &mut continuation,
+                || false,
+            )
+            .unwrap();
+            assert_eq!(retried.exit, RunExit::StopAddress);
+            assert_eq!(state.gpr[Register::Rcx as usize], 0);
+            assert_eq!(state.gpr[Register::Rsi as usize], 0x1000 + 2 * width as u64);
+            assert_eq!(state.gpr[Register::Rdi as usize], 0x2000 + 2 * width as u64);
+            assert_eq!(state.rflags & crate::ZF, crate::ZF);
+            assert!(continuation.is_none());
+            assert_eq!(
+                memory
+                    .accesses
+                    .iter()
+                    .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                    .map(|(_, address, length)| (*address, *length))
+                    .collect::<Vec<_>>(),
+                [
+                    (0x1000 + width as u64, width),
+                    (0x2000 + width as u64, width)
+                ]
+            );
+        }
+    }
     #[test]
     fn repne_scas_wdq_addr32_matches_width_model_and_truncates_only_start_address() {
         let forms = [
@@ -66673,6 +67826,121 @@ mod tests {
         );
         assert_eq!(state, before);
         assert_eq!(continuation, saved);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn null_ds_es_loads_change_only_the_selected_visible_state() {
+        for (code, change_ds, change_es) in [
+            (&[0x8e, 0xd8][..], true, false),
+            (&[0x8e, 0xc0][..], false, true),
+            (&[0x8e, 0xd8, 0x8e, 0xc0][..], true, true),
+            (&[0x8e, 0xd8, 0x8e, 0xd8][..], true, false),
+        ] {
+            let mut state = LongModeState {
+                ds_selector: 0x2b,
+                es_selector: 0x30,
+                ..LongModeState::default()
+            };
+            state.gpr[Register::Rax as usize] = 0xfeed_beef_0000_0000;
+            state.rflags = 0x0cd7;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let retired = (code.len() / 2) as u64;
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: retired,
+                    stop_rip: None,
+                    context: AccessContext {
+                        privilege: PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                },
+                || false,
+            );
+            assert_eq!(result.instructions_executed, retired, "{:?}", result.exit);
+            assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS);
+            assert_eq!(state.rip, retired * 2);
+            assert_eq!(state.gpr, before.gpr);
+            assert_eq!(state.rflags, before.rflags);
+            assert_eq!(state.fs_base, before.fs_base);
+            assert_eq!(state.gs_base, before.gs_base);
+            assert_eq!(state.fs_selector, before.fs_selector);
+            assert_eq!(state.gs_selector, before.gs_selector);
+            assert_eq!(state.ds_selector, if change_ds { 0 } else { 0x2b });
+            assert_eq!(state.ds_unusable, change_ds);
+            assert_eq!(state.es_selector, if change_es { 0 } else { 0x30 });
+            assert_eq!(state.es_unusable, change_es);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn null_ds_es_loads_reject_neighbors_nonzero_ax_cpl_and_truncation() {
+        for code in [
+            &[0x66, 0x8e, 0xd8][..],
+            &[0x48, 0x8e, 0xd8][..],
+            &[0x8e, 0xd0][..],
+            &[0x8e, 0xc8][..],
+        ] {
+            let mut state = LongModeState::default();
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0x8e })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut nonzero = LongModeState::default();
+        nonzero.gpr[Register::Rax as usize] = 0x10001;
+        let before = nonzero.clone();
+        let mut memory = Memory::new(&[0x8e, 0xd8]);
+        assert_eq!(
+            step(
+                &mut nonzero,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                }
+            ),
+            Ok(StepOutcome::Unsupported { opcode: 0x8e })
+        );
+        assert_eq!(nonzero, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut user = LongModeState::default();
+        let before = user.clone();
+        let mut memory = Memory::new(&[0x8e, 0xd8]);
+        assert_eq!(
+            step(
+                &mut user,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring3,
+                    ..AccessContext::default()
+                }
+            ),
+            Ok(StepOutcome::Unsupported { opcode: 0x8e })
+        );
+        assert_eq!(user, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut truncated = LongModeState::default();
+        let before = truncated.clone();
+        let mut memory = Memory::new(&[0x8e]);
+        assert_eq!(
+            step(&mut truncated, &mut memory, AccessContext::default()),
+            Err(MemoryError::Unmapped {
+                address: 1,
+                access: AccessKind::Fetch
+            })
+        );
+        assert_eq!(truncated, before);
         assert!(memory.accesses.is_empty());
     }
 }

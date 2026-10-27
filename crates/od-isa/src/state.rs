@@ -205,6 +205,11 @@ pub struct LongModeState {
     pub fs_selector: u16,
     /// GS selector in the local selector-read profile; hidden descriptor state is not modeled.
     pub gs_selector: u16,
+    /// Visible DS/ES selectors and unusable state for the bounded null-load profile.
+    pub ds_selector: u16,
+    pub es_selector: u16,
+    pub ds_unusable: bool,
+    pub es_unusable: bool,
     /// Present only for the local GDT-only VERW profile; no LDTR is modeled.
     pub gdtr: Option<Gdtr>,
     /// Hidden FS descriptor cache only in the local MOV-FS-load profile.
@@ -241,6 +246,10 @@ impl Default for LongModeState {
             gs_base: 0,
             fs_selector: 0,
             gs_selector: 0,
+            ds_selector: 0,
+            es_selector: 0,
+            ds_unusable: false,
+            es_unusable: false,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -441,6 +450,10 @@ mod tests {
                         gs_base: 0,
                         fs_selector: 0,
                         gs_selector: 0,
+                        ds_selector: 0,
+                        es_selector: 0,
+                        ds_unusable: false,
+                        es_unusable: false,
                         gdtr: None,
                         fs_cache: None,
                         gs_cache: None,

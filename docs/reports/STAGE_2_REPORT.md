@@ -2015,6 +2015,42 @@ review found no concrete defects. Native and physical execution remain deferred
 to the shared final acceptance stage. Result: S2-20c is complete within this
 local-only boundary.
 
+## S2-20d — complete UD2 fetch boundary in local memory callbacks
+
+The existing bare `0F 0B` decode reports vector 6 only after both executable
+bytes have been fetched. `od-isa` decoder coverage asserts the exact two
+addresses and that a truncated instruction attempts the second byte before
+returning the original fetch error. `od-testkit` callback tracing covers a
+single executable region, two adjacent executable regions, a missing second
+byte, injected architectural and backend errors on the second fetch, and an
+injected first-fetch failure. The architectural and backend failure classes
+and payloads are preserved; every error exits with zero retirement and leaves
+complete CPU state and fixture RAM unchanged. No data access occurs.
+
+The public CLI keeps the complete UD2 fixture and adds one literal adjacent
+split-region fixture. Fixture-v2 `expected_exit` does not admit `HarnessError`,
+so truncated and injected backend cases remain in testkit coverage rather than
+being represented as CLI fixtures. This is only the local `FlatMemory` and
+callback contract; no hardware fetch behavior, `#UD` priority, trap delivery,
+MMU, or native/JIT claim is made. The split fixture is excluded from native
+acceptance; deferred S2-15-onward pool grows from 593 to 594 and native
+selection remains unchanged.
+
+The focused decoder test, all three new `od-testkit` tests, and the complete
+and split-region CLI tests passed. Full `cargo test --workspace --all-targets
+--offline`, `cargo check --workspace --all-targets --offline`, and
+`cargo fmt --all -- --check` passed. All 87 Stage 2 generator `--check`
+commands passed; 115 Python generator tests and the Stage 2 harness (11/11)
+passed. `git diff --check` passed. `tools/check_layout.py` was attempted but
+reported the expected linked-worktree `.git` file as an unmapped root entry
+and two pre-existing report links to absent worktree-local manifests; those
+environment/artifact references were present in HEAD and were not changed.
+Graphify updated the code graph (6086 nodes, 12169 edges, 255 communities).
+The common final Mac mini/physical acceptance was not run. Independent
+`gpt-6.1-sol` medium review found no P0–P2 findings in fetch trace, boundaries,
+error preservation, faulting RIP or no-commit behavior. Result: S2-20d is
+complete within this local-only boundary.
+
 ## S2-21a — bare qword memory XCHG
 
 Added only bare REX.W + `87 /r` memory qword XCHG. The required
@@ -11066,3 +11102,82 @@ adjacent executable regions), `git diff --check`, and Graphify update. The graph
 execution, physical x86, Mac mini and SSH execution were not performed. ISSUE-020
 remains open for the existing CMPS local dual-invalid policy; no SCAS
 hardware-priority claim is made.
+
+## S2-19t — bounded REPNE CMPSW/D/Q addr32
+
+The local decoder/interpreter adds the bounded Long64 `F2` `67` `A7`
+word/dword/qword profile using the same normalized prefix allowlist as
+S2-19s wide REPNE SCAS, including legacy REX reset cases. The explicit
+continuation token distinguishes CMPS width and RSI checkpoint. Each iteration
+reads the contiguous width-sized ESI operand before EDI, computes
+source-minus-destination, and commits flags, both modulo-32 indices and ECX
+only after both reads succeed. Architectural fault rollback, backend retry,
+STOP/iteration limits and old-entry fail-closed behavior follow the existing
+bounded REPNE continuation contract. ISSUE-020 remains open; source-first and
+dual-invalid behavior are local policy only.
+
+Added W/D/Q prefix and independent compare-model tests, token identity tests,
+architectural faults at either read after progress, changed-operand backend
+retry, overlapping operands, contiguous 4-GiB reads and width-exact tail
+failures, source-first dual-invalid traces, three serialization-only schema-v2
+snapshots, a testkit STOP/1024/multiple-resume sidecar, and runner CLI
+snapshot/JIT-denial coverage. Documentation and ISSUE-020 scope now include
+S2-19t.
+
+Verification passed: `cargo test --workspace --all-targets --offline`,
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+all 131 `tests/cpu` Python tests, the S2-19t generator freshness check, targeted
+runner CLI snapshot/JIT-denial test, and `git diff --check`. Graphify update
+completed; it reported the pre-existing syntax issue in
+`include/open_desktop/host_abi.h` at line 68, while successfully rebuilding the
+graph. Independent `gpt-6.1-sol` medium review found no actionable defects
+in decoder admission, continuation identity, index/count wrap, operand ordering,
+fault/retry handling, fixtures or documentation. No native/JIT/physical, Mac mini or
+SSH execution is claimed.
+
+## S2-22k — Long64/CPL0 null DS/ES loads (local-only)
+
+Added the separate schema-v2 profile `s2-long-null-ds-es-v1` for exactly bare
+`8E D8` (`MOV DS, AX`) and `8E C0` (`MOV ES, AX`) with AX=0 at Long64/CPL0.
+The profile also admits only the exact repeated-DS and DS→ES two-instruction
+fixtures. It carries visible DS/ES selectors and explicit unusable bits while
+preserving every other modeled CPU field. High RAX bits do not affect the AX
+check. Null loads do not require or read GDTR/GDT, do not treat GDT[0] as a
+descriptor, and do not populate descriptor-cache fields. Prefixes, neighboring
+Sreg encodings, nonzero AX, CPL3 and truncated fetch leave the current
+instruction uncommitted. The profile is interpreter-only; JIT/native admission
+remain unsupported.
+
+Four handwritten literal fixtures exercise DS, ES, DS→ES and repeated DS.
+Focused interpreter tests verify full state, flags-definedness, RIP and
+retirement, high RAX, replacement of nonzero selectors, no descriptor/data
+callback, unsupported neighbors and no-commit rejection cases. Verification
+passed: `cargo test --workspace --all-targets --offline`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`, `cargo fmt --all -- --check`, all 134 `tests/cpu` Python tests,
+`python3 tests/cpu/generate_stage2_null_ds_es.py --check`, and `git diff
+--check`. The schema roundtrip, CLI literal full-snapshot/JIT-denial and native
+fail-closed tests also passed. `graphify update .` completed with the existing
+parser warning for `include/open_desktop/host_abi.h`. No physical x86, Mac mini,
+SSH, native or JIT execution was performed.
+
+Follow-up schema hardening rejects explicit JSON `null` for the DS/ES unusable
+boolean fields, including in legacy profiles where the fields are forbidden.
+The new profile continues to require actual JSON booleans. The regression
+checks passed in `od-testkit` and through the runner CLI; the full workspace
+test suite, formatter, workspace check, S2-22k fixture freshness and diff check
+also passed.
+
+Independent `gpt-6.1-sol` medium review initially found a P2 schema issue:
+explicit `null` was accepted for optional DS/ES unusable booleans in legacy
+profiles. A present-only boolean deserializer and parser/CLI regressions now
+reject `null` for both fields while retaining absence in old profiles and
+required booleans in the new profile. Follow-up review found no remaining
+P0–P2 issues.
+
+The local forms are not claimed as an executable Ubuntu `startup_64` prefix.
+The Ubuntu source diff review in the [Linux profile report](STAGE_2_LINUX_PROFILE.md)
+only establishes the published source patch delta; package-binary disassembly
+and actual artifact execution remain unverified. S2-22 and ISSUE-018 remain
+open.

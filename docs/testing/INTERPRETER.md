@@ -22,6 +22,12 @@ load and one local-only composition program `8E E8 65 48 8B 00`; its bounded
 fixture validator rejects other byte sequences and budgets. The composition
 proves that the loaded GS.base feeds the existing GS qword load form. It does
 not expand native admission or claim Linux readiness; S2-22 remains open.
+The separate local-only `s2-long-null-ds-es-v1` profile admits only bare
+`8E D8`/`8E C0` null-selector loads at Long64/CPL0 with AX=0, repeated DS,
+and DS→ES composition. It observes the 16-bit DS/ES selectors and explicit
+unusable bits; it performs no GDT/GDTR access and adds no memory form. Native
+and JIT execution stay unsupported, and this local slice does not establish
+an executable Ubuntu startup prefix or close S2-22.
 Сначала A (integer/memory/stack), затем B (strings/REP/exits), C (system/modes),
 D (x87/MMX/SSE/SSE2). CPUID не рекламирует незавершённые группы.
 
@@ -364,6 +370,19 @@ fixture mapping/permissions, переполнение адреса или вну
 regions, границы 4096/16384, overflow и отсутствие частичной записи при ошибке.
 Отдельные regressions проверяют отказ permission во втором смежном region
 без изменения RAM/read destination и срабатывание injected error ровно один раз.
+
+Локальный S2-20d boundary для bare `0F 0B` проверяет две fetch callbacks и
+`#UD` только после доступности обоих байтов, включая opcode split across
+adjacent executable regions. Truncated/missing second byte остаётся
+`RunExit::MemoryError`; injected architectural errors становятся исходным
+fault payload, а injected backend errors сохраняют свой backend error class.
+Отказ первого fetch прекращает decode. Все paths оставляют retirement равным
+нулю и сохраняют полное CPU state и RAM; tracing подтверждает отсутствие
+data accesses. Это тестирует `FlatMemory`/callback API и не утверждает
+аппаратный fetch или приоритет `#UD`. Fixture-v2 не может задать
+`expected_exit: HarnessError`, поэтому truncated/injected failures проверяются
+только в testkit, а полный и split-region UD2 проходят CLI snapshots. См.
+[S2-20d contract](../specs/CPU_CONTRACT.md#local-ud2-fetch-boundary--s2-20d).
 
 ## Local S2-31j x87 conversion slice
 
@@ -1498,3 +1517,39 @@ old API rejection. Three literal schema-v2 full snapshots are generated from
 handwritten state by serialization only. JIT/native and physical execution were
 not performed. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-19s-bounded-repne-scaswdq-address-size-32-contract)
 and [report](../reports/STAGE_2_REPORT.md#s2-19s--bounded-repne-scaswdq-addr32).
+
+## REPNE CMPSW/D/Q address-size 32 — S2-19t
+
+The bounded profile admits only the exact normalized Long64 `F2`+`67 A7`
+W/D/Q prefix forms documented in the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-19t-bounded-repne-cmpswdq-address-size-32-contract).
+Existing REPNE CMPSB and F3 profiles are unchanged; other prefix groups,
+address-size-64 F2 and legacy runner APIs remain closed. All arithmetic flags
+must be defined before the count/data gate, but concrete flag values do not
+gate execution. Each iteration reads width bytes at ESI then EDI as two
+contiguous accesses, compares source−destination, and commits both modulo-32
+indices, flags, and zero-extended ECX only after both reads succeed.
+
+The continuation token records CMPS width and source index with shared REP
+checkpoint, address size, instruction length, context, and entry flags/mask.
+Architectural faults restore the entry flags/mask and preserve completed prior
+progress; backend errors retain the token so retry rereads both operands.
+Dual-invalid ESI-first behavior remains the local ISSUE-020 policy. Three
+literal schema-v2 W/D/Q snapshots use a serialization-only generator; the
+token remains caller-side. The focused tests added for this slice include a
+W/D/Q independent CMP model, token identity rejection/reordered-prefix resume,
+faults at either read after progress, source-first dual-invalid traces,
+changed-source/destination backend retry, overlapping operands, contiguous
+4-GiB reads and width-exact tail failures, testkit STOP/1024/multiple resume,
+and CLI snapshot/JIT denial. The full workspace tests/check, formatter,
+131-test Python suite and fixture freshness checks passed before independent
+review. No native/JIT/physical, Mac mini or SSH execution is claimed.
+
+```sh
+python3 tests/cpu/generate_stage2_repne_cmps_wdq_addr32.py --check
+python3 -m unittest tests.cpu.test_stage2_repne_cmps_wdq_addr32_generator
+cargo test -p od-testkit --offline repne_cmps_wdq_addr32
+cargo test -p od-runner --test fixture_v2 repne_cmps_wdq_addr32 --offline
+```
+
+See the [plan](../plans/STAGE_2.md#s2-19t--bounded-repne-cmpswdq-addr32)
+and [report](../reports/STAGE_2_REPORT.md#s2-19t--bounded-repne-cmpswdq-addr32).

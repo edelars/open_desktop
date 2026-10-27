@@ -401,6 +401,9 @@ pub enum Operation {
     LoadFsSelector,
     /// The sole S2-22h selector load: bare `8E E8` (MOV GS, AX).
     LoadGsSelector,
+    /// S2-22k null selector loads: bare `8E D8` / `8E C0` at CPL0.
+    LoadNullDsSelector,
+    LoadNullEsSelector,
     Extend {
         dst: RegisterView,
         src: Operand,
@@ -714,6 +717,10 @@ pub enum Operation {
     },
     /// Bounded Long64 REPNE CMPSB with address-size 32; continuation is explicit.
     RepneCmpsbAddr32,
+    /// Bounded Long64 REPNE CMPSW/D/Q with address-size 32; continuation is explicit.
+    RepneCmpsWdqAddr32 {
+        size: OperandSize,
+    },
     /// One bounded invocation of long-mode REPE CMPSB.
     RepCmps {
         size: OperandSize,
@@ -937,6 +944,10 @@ impl Instruction {
                 undefined: 0,
             },
             Operation::RepneCmpsbAddr32 => FlagEffects {
+                defined: crate::ARITHMETIC_FLAGS,
+                undefined: 0,
+            },
+            Operation::RepneCmpsWdqAddr32 { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -1358,6 +1369,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && self.length == 3
             && prefixes.rex.is_none()
             && !prefixes.operand_override;
+        let repne_cmps_wdq_addr32 = opcode.map == OpcodeMap::Primary
+            && opcode.byte == 0xa7
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.address_override
+            && prefixes.segment.is_none()
+            && repne_scas_wdq_addr32_prefixes(&prefix_bytes[..prefix_count]);
         let rep_cmps = opcode.map == OpcodeMap::Primary
             && matches!(opcode.byte, 0xa6 | 0xa7)
             && prefixes.group1 == Some(0xf3)
@@ -1399,6 +1416,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !repne_scasb_addr32
                 && !repne_scas_wdq_addr32
                 && !repne_cmpsb_addr32
+                && !repne_cmps_wdq_addr32
                 && !rep_cmps
                 && !locked_qword_memory_xadd_candidate)
         {
@@ -1837,6 +1855,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 if repne_cmpsb_addr32 {
                     size = OperandSize::Byte;
                     Operation::RepneCmpsbAddr32
+                } else if repne_cmps_wdq_addr32 {
+                    size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                        OperandSize::Qword
+                    } else if prefixes.operand_override {
+                        OperandSize::Word
+                    } else {
+                        OperandSize::Dword
+                    };
+                    Operation::RepneCmpsWdqAddr32 { size }
                 } else if rep_cmps && opcode.byte == 0xa6 {
                     size = OperandSize::Byte;
                     Operation::RepCmps { size }
@@ -2467,14 +2494,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 let modrm = self.byte()?;
                 if self.length != 2
                     || prefixes != Prefixes::default()
-                    || !matches!(modrm, 0xe0 | 0xe8)
+                    || !matches!(modrm, 0xe0 | 0xe8 | 0xd8 | 0xc0)
                 {
                     return Err(self.unsupported(opcode));
                 }
-                if modrm == 0xe0 {
-                    Operation::LoadFsSelector
-                } else {
-                    Operation::LoadGsSelector
+                match modrm {
+                    0xe0 => Operation::LoadFsSelector,
+                    0xe8 => Operation::LoadGsSelector,
+                    0xd8 => Operation::LoadNullDsSelector,
+                    0xc0 => Operation::LoadNullEsSelector,
+                    _ => unreachable!("ModR/M was checked above"),
                 }
             }
             (OpcodeMap::Primary, byte @ 0x70..=0x7f) => {
@@ -2639,6 +2668,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::MovGsSelectorToRax => false,
                 Operation::LoadFsSelector => false,
                 Operation::LoadGsSelector => false,
+                Operation::LoadNullDsSelector => false,
+                Operation::LoadNullEsSelector => false,
                 Operation::Extend { src, .. } => {
                     matches!(src, Operand::Memory(_))
                 }
@@ -6237,8 +6268,6 @@ mod tests {
         }
         for bytes in [
             &[0xf2, 0xaf][..],
-            &[0xf2, 0x67, 0xa7][..],
-            &[0xf2, 0x67, 0x66, 0xa7][..],
             &[0xf2, 0xf2, 0x67, 0xaf][..],
             &[0xf2, 0x67, 0xf2, 0xaf][..],
             &[0xf2, 0x67, 0x67, 0xaf][..],
@@ -6275,8 +6304,48 @@ mod tests {
             &[0xf2, 0x48, 0x67, 0xa6][..],
             &[0xf2, 0x67, 0xf2, 0xa6][..],
             &[0xf2, 0xa7][..],
-            &[0xf2, 0x67, 0xa7][..],
-            &[0xf2, 0x67, 0x66, 0xa7][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "unexpectedly admitted {bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn repne_cmps_wdq_addr32_matches_wide_scas_prefix_allowlist() {
+        for (bytes, size) in [
+            (&[0xf2, 0x67, 0xa7][..], OperandSize::Dword),
+            (&[0x67, 0xf2, 0xa7][..], OperandSize::Dword),
+            (&[0xf2, 0x67, 0x66, 0xa7][..], OperandSize::Word),
+            (&[0x67, 0xf2, 0x66, 0xa7][..], OperandSize::Word),
+            (&[0xf2, 0x67, 0x48, 0xa7][..], OperandSize::Qword),
+            (&[0x67, 0xf2, 0x4f, 0xa7][..], OperandSize::Qword),
+            (&[0xf2, 0x48, 0x67, 0xa7][..], OperandSize::Dword),
+            (&[0xf2, 0x67, 0x4f, 0x66, 0xa7][..], OperandSize::Word),
+            (&[0xf2, 0x67, 0x66, 0x48, 0xa7][..], OperandSize::Qword),
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::RepneCmpsWdqAddr32 { size }
+            );
+            assert_eq!(instruction.operand_size, size);
+            assert_eq!(instruction.address_size, OperandSize::Dword);
+            assert_eq!(usize::from(instruction.length), bytes.len());
+        }
+        for bytes in [
+            &[0xf2, 0xa7][..],
+            &[0xf2, 0x67, 0x67, 0xa7][..],
+            &[0xf2, 0x66, 0x67, 0xa7][..],
+            &[0xf2, 0x67, 0x66, 0x66, 0xa7][..],
+            &[0xf2, 0x40, 0x67, 0xa7][..],
+            &[0xf2, 0x67, 0x40, 0xa7][..],
+            &[0x26, 0xf2, 0x67, 0xa7][..],
+            &[0xf0, 0xf2, 0x67, 0xa7][..],
         ] {
             assert!(
                 matches!(
@@ -6587,7 +6656,7 @@ mod tests {
         let mut rejected = Vec::new();
         for form in &forms {
             for prefix in [0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
-                if prefix == 0xf2 && *form == [0x67, 0xa6] {
+                if prefix == 0xf2 && (*form == [0x67, 0xa6] || form.last() == Some(&0xa7)) {
                     continue;
                 }
                 if prefix == 0xf3 && (*form == [0x67, 0xa6] || form.last() == Some(&0xa7)) {
@@ -6605,7 +6674,7 @@ mod tests {
             rejected.push(vec![0x67, rex, 0xa7]);
             rejected.push(vec![0x67, 0x66, rex, 0xa7]);
         }
-        assert_eq!(rejected.len(), 68);
+        assert_eq!(rejected.len(), 65);
         for bytes in rejected {
             assert!(
                 matches!(
@@ -8092,7 +8161,42 @@ mod tests {
         for bytes in [&[0x0f, 0x0b][..]] {
             let mut memory = Memory::new(bytes);
             assert!(matches!(memory.decode(), Err(DecodeError::Invalid { .. })));
+            assert_eq!(memory.fetched, [memory.base, memory.base + 1]);
         }
+        let mut truncated = Memory::new(&[0x0f]);
+        assert!(matches!(
+            truncated.decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            })) if address == truncated.base + 1
+        ));
+        assert_eq!(truncated.fetched, [truncated.base, truncated.base + 1]);
+
+        let mut second_fetch_fault = Memory::new(&[0x0f, 0x0b]);
+        second_fetch_fault.fault_at = Some(1);
+        assert_eq!(
+            second_fetch_fault.decode(),
+            Err(DecodeError::Memory(MemoryError::Architectural(
+                ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(20),
+                    linear_address: Some(second_fetch_fault.base + 1),
+                }
+            )))
+        );
+        assert_eq!(
+            second_fetch_fault.fetched,
+            [second_fetch_fault.base, second_fetch_fault.base + 1]
+        );
+
+        let mut first_fetch_fault = Memory::new(&[0x0f, 0x0b]);
+        first_fetch_fault.fault_at = Some(0);
+        assert!(matches!(
+            first_fetch_fault.decode(),
+            Err(DecodeError::Memory(MemoryError::Architectural(_)))
+        ));
+        assert_eq!(first_fetch_fault.fetched, [first_fetch_fault.base]);
     }
 
     #[test]
@@ -8211,9 +8315,7 @@ mod tests {
         assert!(matches!(decoded.operation, Operation::LoadFsSelector));
         for bytes in [
             &[0x8e, 0xd0][..], // SS
-            &[0x8e, 0xc0][..], // ES
             &[0x8e, 0xc8][..], // CS is not a MOV destination
-            &[0x8e, 0xd8][..], // DS
             &[0x8e, 0x20][..], // memory source
             &[0x8e, 0xe1][..], // another GPR
             &[0x48, 0x8e, 0xe0][..],
@@ -8246,9 +8348,7 @@ mod tests {
         assert!(matches!(decoded.operation, Operation::LoadGsSelector));
         for bytes in [
             &[0x8e, 0xd0][..],
-            &[0x8e, 0xc0][..],
             &[0x8e, 0xc8][..],
-            &[0x8e, 0xd8][..],
             &[0x8e, 0x28][..],
             &[0x8e, 0xe9][..],
             &[0x48, 0x8e, 0xe8][..],
@@ -8266,6 +8366,34 @@ mod tests {
         let mut truncated = Memory::new(&[0x8e]);
         assert!(matches!(truncated.decode(), Err(DecodeError::Memory(_))));
         assert_eq!(truncated.fetched, vec![0x0fff, 0x1000]);
+    }
+
+    #[test]
+    fn null_ds_es_selector_loads_decode_only_exact_bare_forms() {
+        for (bytes, operation) in [
+            (&[0x8e, 0xd8][..], Operation::LoadNullDsSelector),
+            (&[0x8e, 0xc0][..], Operation::LoadNullEsSelector),
+        ] {
+            let mut memory = Memory::new(bytes);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(decoded.length, 2);
+            assert_eq!(decoded.operation, operation);
+        }
+        for bytes in [
+            &[0x8e, 0xd0][..],
+            &[0x8e, 0xc8][..],
+            &[0x8e, 0x20][..],
+            &[0x8e, 0xd9][..],
+            &[0x48, 0x8e, 0xd8][..],
+            &[0x66, 0x8e, 0xc0][..],
+            &[0xf3, 0x8e, 0xd8][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(matches!(
+                memory.decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+        }
     }
 
     #[test]
@@ -8292,6 +8420,10 @@ mod tests {
                 gs_base: 0,
                 fs_selector: 0,
                 gs_selector: 0,
+                ds_selector: 0,
+                es_selector: 0,
+                ds_unusable: false,
+                es_unusable: false,
                 gdtr: None,
                 fs_cache: None,
                 gs_cache: None,

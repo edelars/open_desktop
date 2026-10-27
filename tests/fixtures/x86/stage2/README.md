@@ -804,6 +804,31 @@ python3 tests/cpu/test_stage2_ud2_generator.py
 cargo test -p od-runner --test fixture_v2 complete_ud2_cli_fixture_reports_ud_without_state_commit --offline
 ```
 
+## UD2 split-region fetch fixture S2-20d
+
+The existing complete `0F 0B` fixture is supplemented by a literal schema-v2
+case that puts `0F` and `0B` in adjacent executable regions. The CLI snapshot
+checks vector 6, unavailable error code/address, faulting RIP, zero
+retirements, full GPR/RFLAGS/definedness and unchanged bytes in both regions.
+Callback tracing in `od-testkit` separately proves that only those two bytes
+are fetched, that no data access occurs, and that truncated or injected fetch
+errors preserve their original class/payload without committing CPU or RAM.
+Fixture-v2 has no `HarnessError` expected-exit value, so these error cases are
+not serialized as CLI fixtures. This records only the local FlatMemory and
+callback contract and does not claim physical fetch or fault priority.
+
+The split fixture is excluded from native acceptance. It increases the
+deferred S2-15-onward pool from 593 to 594; native-selected membership is
+unchanged. The complete and split literals are serialized by
+[`generate_stage2_ud2.py`](../../../cpu/generate_stage2_ud2.py).
+
+```sh
+python3 tests/cpu/generate_stage2_ud2.py --check
+python3 tests/cpu/test_stage2_ud2_generator.py
+cargo test -p od-testkit --lib ud2_ --offline
+cargo test -p od-runner --test fixture_v2 split_region_ud2_cli_fixture_reports_ud_without_state_or_ram_commit --offline
+```
+
 ## Qword IDIV divide-error exit fixture S2-20c
 
 One local-only schema v2 fixture contains literal `48 F7 F9` (`IDIV RCX`)
@@ -1190,6 +1215,31 @@ python3 tests/cpu/generate_stage2_gs_load.py --check
 python3 tests/cpu/test_stage2_gs_load_generator.py
 cargo test -p od-testkit --offline s2_22j
 cargo test -p od-runner --test fixture_v2 --offline s2_22j_fs_base_composition_runs_the_literal_two_instruction_profile
+```
+
+## Null DS/ES loads S2-22k
+
+The separate local-only `s2-long-null-ds-es-v1` profile admits bare `8E D8`
+(`MOV DS, AX`) and `8E C0` (`MOV ES, AX`) at Long64/CPL0 only when AX is
+zero. Four literal inputs cover each instruction, DS→ES composition and a
+repeated DS load. Initial RAX has nonzero high bits and AX=0; DS/ES selectors
+start nonzero and usable. The runner checks all GPRs, RFLAGS and their
+definedness, both selectors/unusable bits, code bytes, RIP and retirement.
+Unit traces also check that no descriptor/data callback occurs, and that
+prefix neighbors, another Sreg, nonzero AX, CPL3 and truncated fetch leave
+state uncommitted.
+
+This profile does not require or read GDTR/GDT and does not infer a usable
+descriptor cache from GDT[0]. It models no DS/ES base or memory access. The
+bytes are local semantic fixtures only: they do not prove the order or
+execution of an Ubuntu kernel startup prefix. Native/JIT acceptance and the
+rest of S2-22 remain open.
+
+```sh
+python3 tests/cpu/generate_stage2_null_ds_es.py --check
+python3 tests/cpu/test_stage2_null_ds_es_generator.py
+cargo test -p od-isa --offline null_ds_es_loads
+cargo test -p od-runner --test fixture_v2 --offline s2_22k_null_ds_es_fixtures_check_literal_full_state_and_retirement
 ```
 
 ### S2-30k x87 schema coverage
@@ -4492,3 +4542,12 @@ bytes and complete expected states only. One-shot fixtures start with a fresh
 `None` continuation; callers retain tokens outside schema v2 when execution
 needs a resume. Runner/native/JIT support is not implied by these interpreter
 fixtures.
+
+### Bounded REPNE CMPSW/D/Q address-size-32 fixtures S2-19t
+
+Three schema-v2 snapshots cover W equality, D mismatch and Q zero count. Their
+bytes and complete expected states are handwritten; the generator only
+serializes them. Each fixture starts a fresh explicit continuation, which is
+not serialized in schema v2. A separate testkit sidecar carries a caller-owned
+token through STOP and multiple resumes. JIT/native admission remains closed;
+dual-invalid source-first behavior remains local ISSUE-020 policy.

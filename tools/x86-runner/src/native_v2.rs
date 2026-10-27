@@ -425,6 +425,10 @@ fn state(regs: &libc::user_regs_struct) -> LongModeState {
         gs_base: 0,
         fs_selector: 0,
         gs_selector: 0,
+        ds_selector: 0,
+        es_selector: 0,
+        ds_unusable: false,
+        es_unusable: false,
         gdtr: None,
         fs_cache: None,
         gs_cache: None,
@@ -1392,6 +1396,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongVerwGdtV1
             | v2::Profile::LongFsLoadV1
             | v2::Profile::LongGsLoadV1
+            | v2::Profile::LongNullDsEsV1
             | v2::Profile::LongX87StateV1
     ) {
         return empty_result(
@@ -4133,6 +4138,26 @@ mod tests {
         let mut decoder = FlatMemory::from_fixture(&old_profile.fixture).unwrap();
         let error = admission(&old_profile.fixture, &mut decoder, &actual).unwrap_err();
         assert!(error.contains("FS/GS segment form is not admitted"));
+    }
+
+    #[test]
+    fn null_ds_es_profile_fails_closed_before_tracee_and_legacy_decode_is_rejected() {
+        let code = [0x8e, 0xd8];
+        let mut input = fixture(&code).fixture;
+        input.profile = v2::Profile::LongNullDsEsV1;
+        input.initial_state.ds_selector = Some(HexU64(0x2b));
+        input.initial_state.es_selector = Some(HexU64(0x30));
+        input.initial_state.ds_unusable = Some(false);
+        input.initial_state.es_unusable = Some(false);
+        let loaded = Fixture::from_json(&input.to_json().unwrap()).unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+
+        let old_profile = fixture(&code);
+        let actual = old_profile.fixture.initial_state.to_cpu().unwrap();
+        let mut decoder = FlatMemory::from_fixture(&old_profile.fixture).unwrap();
+        assert!(admission(&old_profile.fixture, &mut decoder, &actual).is_err());
     }
 
     #[test]

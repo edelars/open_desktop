@@ -319,7 +319,7 @@ fn is_repne_addr32_string(bytes: &[u8]) -> bool {
         let Some((&opcode, prefixes)) = candidate.split_last() else {
             return false;
         };
-        if !matches!(opcode, 0xae | 0xa6 | 0xaf) {
+        if !matches!(opcode, 0xae | 0xa6 | 0xaf | 0xa7) {
             return false;
         }
         if matches!(opcode, 0xae | 0xa6) {
@@ -358,10 +358,18 @@ fn execute_fixture_v2(
     let mut timed_out = false;
     // A cooperative deadline is checked at the same instruction boundaries as
     // STOP, before budget/fetch. It cannot interrupt a stalled backend call.
+    let context = if loaded.fixture.profile == v2::Profile::LongNullDsEsV1 {
+        od_isa::memory::AccessContext {
+            privilege: od_isa::memory::PrivilegeLevel::Ring0,
+            ..od_isa::memory::AccessContext::default()
+        }
+    } else {
+        od_isa::memory::AccessContext::default()
+    };
     let config = RunConfig {
         instruction_budget: loaded.fixture.instruction_budget,
         stop_rip: loaded.fixture.stop_rip.map(HexU64::get),
-        context: od_isa::memory::AccessContext::default(),
+        context,
     };
     let timeout = || {
         timed_out = start.elapsed() >= limit;

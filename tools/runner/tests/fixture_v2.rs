@@ -2016,6 +2016,83 @@ fn s2_22j_fs_base_composition_runs_the_literal_two_instruction_profile() {
 }
 
 #[test]
+fn s2_22k_null_ds_es_fixtures_check_literal_full_state_and_retirement() {
+    for (name, bytes, code, retired, ds_changed, es_changed) in [
+        (
+            "s2_22k_null_ds",
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_22k_null_ds.case.json")
+                .as_slice(),
+            "8ed8",
+            1,
+            true,
+            false,
+        ),
+        (
+            "s2_22k_null_es",
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_22k_null_es.case.json")
+                .as_slice(),
+            "8ec0",
+            1,
+            false,
+            true,
+        ),
+        (
+            "s2_22k_null_ds_then_es",
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_22k_null_ds_then_es.case.json")
+                .as_slice(),
+            "8ed88ec0",
+            2,
+            true,
+            true,
+        ),
+        (
+            "s2_22k_null_ds_repeated",
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_22k_null_ds_repeated.case.json")
+                .as_slice(),
+            "8ed88ed8",
+            2,
+            true,
+            false,
+        ),
+    ] {
+        let (input, result) = run(&bytes, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, name);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongNullDsEsV1
+        );
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), retired);
+        let observed = snapshot(&result);
+        assert_eq!(
+            observed.state.rip,
+            HexU64(0x0010_0000 + u64::from(retired) * 2)
+        );
+        assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+        assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+        assert_eq!(observed.rflags_defined, HexU64(od_isa::INTEGER_FLAGS));
+        assert_eq!(
+            observed.state.ds_selector,
+            Some(HexU64(if ds_changed { 0 } else { 0x2b }))
+        );
+        assert_eq!(observed.state.ds_unusable, Some(ds_changed));
+        assert_eq!(
+            observed.state.es_selector,
+            Some(HexU64(if es_changed { 0 } else { 0x30 }))
+        );
+        assert_eq!(observed.state.es_unusable, Some(es_changed));
+        assert_eq!(observed.memory.len(), 1);
+        assert_eq!(observed.memory[0].bytes_hex, code);
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+
+        let mut widened = input.fixture.clone();
+        widened.instruction_budget += 1;
+        assert!(widened.validate().is_err());
+    }
+}
+
+#[test]
 fn local_x87_state_profile_preserves_all_raw_state_across_one_nop() {
     let mut fixture = Fixture::from_json(MFENCE_STORE_FENCE_LOAD).unwrap().fixture;
     fixture.case_id = "local_x87_state_nop".into();
@@ -6536,6 +6613,55 @@ fn repne_scas_wdq_addr32_cli_fixtures_check_literal_snapshots_and_keep_jit_close
 }
 
 #[test]
+fn repne_cmps_wdq_addr32_cli_fixtures_check_literal_snapshots_and_keep_jit_closed() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_19t_repne_cmps_wdq_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 3);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (_, result) = run(&raw, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let Observation::Available { value } = result.snapshot else {
+            panic!("full snapshot: {case_id}");
+        };
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(value.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(value.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(value.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(value.state.rip, expected_rip, "{case_id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &value.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+        let (_, jit_result) = run(&raw, "jit", 4);
+        assert!(
+            matches!(jit_result.outcome, Outcome::Unsupported { .. }),
+            "{case_id}"
+        );
+        assert!(matches!(
+            jit_result.snapshot,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
 fn repne_scas_wdq_cli_detects_instruction_split_across_adjacent_regions() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
@@ -8427,6 +8553,23 @@ fn fixture_schema_dispatch_rejects_unknown_versions_and_keeps_legacy_execution()
 }
 
 #[test]
+fn legacy_profile_rejects_null_ds_es_unusable_fields() {
+    for field in ["ds_unusable", "es_unusable"] {
+        let mut malformed: serde_json::Value = serde_json::from_slice(LOAD_ADD_STORE).unwrap();
+        malformed["initial_state"][field] = serde_json::Value::Null;
+        let input = serde_json::to_vec(&malformed).unwrap();
+
+        assert!(
+            Fixture::from_json(&input).is_err(),
+            "legacy profile must reject explicit null for {field}"
+        );
+        let output = cli(&input, "interpreter");
+        assert_eq!(output.status.code(), Some(3), "field {field}");
+        assert!(output.stdout.is_empty(), "field {field}");
+    }
+}
+
+#[test]
 fn logic_cli_fixtures_emit_exact_observations_and_semantic_definedness() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
@@ -8707,6 +8850,58 @@ fn complete_ud2_cli_fixture_reports_ud_without_state_commit() {
         exception.fault_address,
         Observation::Unavailable { .. }
     ));
+}
+
+#[test]
+fn split_region_ud2_cli_fixture_reports_ud_without_state_or_ram_commit() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let case_id = "s2_20d_ud2_split_regions";
+    let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+    let answer: serde_json::Value = serde_json::from_slice(
+        &fs::read(directory.join(format!("{case_id}_expected.json"))).unwrap(),
+    )
+    .unwrap();
+    let (input, result) = run(&raw, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, case_id);
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    assert_eq!(count(&result), answer["instructions_executed"]);
+    let observed = snapshot(&result);
+    let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+    let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+    let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+    let expected_defined: HexU64 =
+        serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+    assert_eq!(observed.state.gpr, expected_gpr);
+    assert_eq!(observed.state.rip, expected_rip);
+    assert_eq!(observed.state.rip, input.fixture.initial_state.rip);
+    assert_eq!(observed.state.rflags, expected_flags);
+    assert_eq!(observed.rflags_defined, expected_defined);
+    let expected_memory: std::collections::BTreeMap<String, String> =
+        serde_json::from_value(answer["memory"].clone()).unwrap();
+    for region in &observed.memory {
+        assert_eq!(region.bytes_hex, expected_memory[&region.region_id]);
+    }
+    let Observation::Available {
+        value: Some(exception),
+    } = &observed.exception
+    else {
+        panic!("split-region complete UD2 must report an architectural #UD snapshot");
+    };
+    assert_eq!(exception.vector, answer["exception"]["vector"]);
+    assert_eq!(
+        exception.error_code,
+        Observation::Unavailable {
+            reason: "exception has no architectural error code".into(),
+        }
+    );
+    assert_eq!(exception.faulting_rip, expected_rip);
+    assert_eq!(
+        exception.fault_address,
+        Observation::Unavailable {
+            reason: "exception has no reported linear address".into(),
+        }
+    );
 }
 
 #[test]
