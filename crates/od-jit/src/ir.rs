@@ -328,8 +328,7 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                     || operand.address_size != od_isa::OperandSize::Qword
                     || operand.index.is_some()
                     || operand.scale != 1
-                    || operand.displacement != 0
-                    || !matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+                    || !is_checked_memory_address(operand)
                 {
                     return Err(VerifyError::InvalidCheckedLoadDescriptor {
                         operation: operation_index,
@@ -345,8 +344,7 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                     || operand.address_size != od_isa::OperandSize::Qword
                     || operand.index.is_some()
                     || operand.scale != 1
-                    || operand.displacement != 0
-                    || !matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+                    || !is_checked_memory_address(operand)
                 {
                     return Err(VerifyError::InvalidCheckedStoreDescriptor {
                         operation: operation_index,
@@ -570,6 +568,13 @@ fn validate_terminal_position(
         return Err(VerifyError::MissingCommit { index: committed });
     }
     Ok(())
+}
+
+fn is_checked_memory_address(operand: &od_isa::long_decode::MemoryOperand) -> bool {
+    matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+        && operand.displacement == 0
+        || matches!(operand.base, AddressBase::NextRip)
+            && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
 }
 
 fn validate_gpr(register: GuestGpr, operation: usize) -> Result<(), VerifyError> {

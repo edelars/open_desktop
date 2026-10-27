@@ -332,6 +332,30 @@ aliases, MMIO, atomic operations, concurrent access, and arbitrary multi-site
 blocks. No performance claim is made. Evidence is in the
 [two-sequence report](../reports/STAGE_3_S3-20j_2026-10-27.md).
 
+#### S3-20l: RIP-relative qword MOV through shared IR and bounded dispatch
+
+The admitted singleton is exactly seven bytes: `48 8B /r disp32` or
+`48 89 /r disp32`, ModRM `mod=00,r/m=101`, qword data register RAX..RBX. No
+SIB, address override, extra prefix, trailing byte, or multi-instruction
+extension is admitted. Decode supplies the `MemoryOperand`; execution uses
+`access_address_48` with that instruction's `next_rip`. IR verification,
+typed host publication/execution, and bounded dispatcher compile admission
+must preserve this same profile. Existing direct-base and two-pair profiles
+retain their prior checks.
+
+The bounded dispatcher treats an explicit fixture byte-window end separately
+from guest termination: a 1..6-byte truncated RIP-relative source returns
+`BoundaryReached` without publishing or touching data memory. It may continue
+from any actual RIP produced by a completed singleton or NOP interpreter step.
+Native ARM64 tests cover negative/zero/positive displacement, interior
+CodeView entry, parity with direct V2 and the interpreter, exact architectural
+fault versus host-error behavior, and STOP after a committed IR store. The
+dispatcher tests both RIP-relative singleton → bare NOP → existing pair and
+bare NOP → RIP-relative singleton → pair, verifying `next_rip` from the latter
+entry. This remains a fixture profile and does not provide `od-machine`
+ownership, MMU translation, or a performance result. See the
+[S3-20l report](../reports/STAGE_3_S3-20l_2026-10-27.md).
+
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
 alignment, same/different ranges, and safe partial overlaps for load→store;

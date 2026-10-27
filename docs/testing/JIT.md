@@ -153,3 +153,7 @@ Performance checks описаны отдельно в S3-35/S3-36: cold path в�
 Сравнивать одинаковые входы и требования к корректности, делать повторные
 прогоны, показывать распределение и ресурсы. Пилот Stage 0 не является
 baseline block JIT; не утверждать ускорение без новых измерений.
+
+### S3-20l RIP-relative shared-IR and dispatcher extension
+
+Run `cargo test -p od-jit --lib ir_checked_rip_relative_load_store_keep_decoded_next_rip_and_displacement`, `cargo test -p od-jit --lib ir_rip_relative_singletons_reject_wrong_register_prefix_and_trailing_bytes`, and `cargo test -p od-host bounded_dispatch_composes_rip_relative_nop_and_pair_with_actual_rip_continuation`. The bounded dispatcher test exercises both RIP-relative singleton → NOP → pair and NOP → RIP-relative singleton → pair. Distinct adjacent data sentinels verify the second order uses the singleton's instruction-local `next_rip`; budgets 0..4 compare full CPU state and data RAM against interpreter steps, and continuation resumes from the actual returned RIP. Partial byte windows 1..6 return `BoundaryReached` with zero retirement, publication, or data callbacks. The RIP-relative native host test compares direct V2 and shared IR against interpreter for negative, zero and positive disp32 at an entry inside CodeView. Shared-IR load/store additionally check architectural fault payload and atomic CPU/RAM/budget state, backend errors as host errors, and STOP after successful store commit. These tests are local macOS ARM64 fixture evidence; owner/MMU integration, physical x86, and performance remain open.

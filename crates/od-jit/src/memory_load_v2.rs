@@ -617,15 +617,15 @@ pub fn compile_ir_memory_store_block_v2(
     entry_rip: u64,
 ) -> Result<IrMemoryStoreBlockV2, MemoryLoadCompileErrorV2> {
     let (site, bytes) = checked_memory_metadata_v2(code, entry_rip, MemorySiteOperationV2::Store)?;
-    if bytes.len() != 3
-        || bytes[0..2] != [0x48, 0x89]
-        || bytes[2] >> 6 != 0
-        || bytes[2] & 7 > 3
-        || (bytes[2] >> 3) & 7 > 3
-        || !matches!(site.operand().base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+    if !crate::block::exact_direct_qword_memory_bytes(code, entry_rip, bytes.len() as u8, 0x89)
         || site.operand().index.is_some()
-        || site.operand().displacement != 0
         || site.operand().address_size != od_isa::OperandSize::Qword
+        || !(matches!(site.operand().base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+            && site.operand().displacement == 0
+            || matches!(
+                site.operand().base,
+                od_isa::long_decode::AddressBase::NextRip
+            ) && (i32::MIN as i64..=i32::MAX as i64).contains(&site.operand().displacement))
     {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
@@ -746,11 +746,7 @@ fn checked_load_metadata_v2(
         .map_err(|_| MemoryLoadCompileErrorV2::Decode)?;
     if decoded.length as usize != bytes.len()
         || !crate::block::is_checked_qword_load_form(decoded)
-        || bytes.len() != 3
-        || bytes[..2] != [0x48, 0x8b]
-        || bytes[2] >> 6 != 0
-        || bytes[2] & 0b111 > 3
-        || (bytes[2] >> 3) & 0b111 > 3
+        || !crate::block::exact_direct_qword_memory_bytes(code, entry_rip, decoded.length, 0x8b)
     {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
@@ -1268,6 +1264,53 @@ mod tests {
     }
 
     #[test]
+    fn ir_checked_rip_relative_load_store_keep_decoded_next_rip_and_displacement() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for displacement in [i32::MIN, -1, 0, 1, i32::MAX] {
+                let mut source = vec![0x48, opcode, 0x05];
+                source.extend_from_slice(&displacement.to_le_bytes());
+                let mut code_bytes = vec![0x90, 0x90];
+                code_bytes.extend_from_slice(&source);
+                let code = CodeView::new(0x5100, &code_bytes).unwrap();
+                let entry = 0x5102;
+                if operation == MemorySiteOperationV2::Load {
+                    let (s, _) = checked_load_metadata_v2(code, entry)
+                        .unwrap_or_else(|e| panic!("metadata {displacement}: {e:?}"));
+                    assert_eq!(s.operand().displacement, i64::from(displacement));
+                }
+                let (site, got_source, pc_map) = match operation {
+                    MemorySiteOperationV2::Load => {
+                        let artifact = compile_ir_memory_load_block_v2(code, entry)
+                            .unwrap_or_else(|e| panic!("{operation:?} disp={displacement}: {e:?}"));
+                        (
+                            artifact.site().clone(),
+                            artifact.source_bytes().to_vec(),
+                            artifact.pc_map().clone(),
+                        )
+                    }
+                    MemorySiteOperationV2::Store => {
+                        let artifact = compile_ir_memory_store_block_v2(code, entry).unwrap();
+                        (
+                            artifact.site().clone(),
+                            artifact.source_bytes().to_vec(),
+                            artifact.pc_map().clone(),
+                        )
+                    }
+                };
+                assert_eq!(got_source, source);
+                assert_eq!(site.guest_rip(), entry);
+                assert_eq!(site.next_rip(), entry + 7);
+                assert_eq!(site.operand().base, AddressBase::NextRip);
+                assert_eq!(site.operand().displacement, i64::from(displacement));
+                assert_eq!(pc_map.instruction_count(), 1);
+            }
+        }
+    }
+
+    #[test]
     fn ir_checked_store_has_non_replayable_write_to_commit_map() {
         let code = CodeView::new(0x1100, &[0x48, 0x89, 0x03]).unwrap();
         let ir_block = compile_ir_memory_store_block_v2(code, 0x1100).unwrap();
@@ -1341,6 +1384,25 @@ mod tests {
                 compile_ir_memory_store_block_v2(code, 0x1200),
                 Err(MemoryLoadCompileErrorV2::UnsupportedForm)
             ));
+        }
+    }
+
+    #[test]
+    fn ir_rip_relative_singletons_reject_wrong_register_prefix_and_trailing_bytes() {
+        for opcode in [0x8b, 0x89] {
+            for bytes in [
+                vec![0x48, opcode, 0x25, 0, 0, 0, 0], // data register RSP
+                vec![0x67, 0x48, opcode, 0x05, 0, 0, 0, 0],
+                vec![0x48, opcode, 0x05, 0, 0, 0, 0, 0x90],
+            ] {
+                let code = CodeView::new(0x5300, &bytes).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x5300).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x5300).map(|_| ())
+                };
+                assert!(result.is_err(), "bytes={bytes:02x?}");
+            }
         }
     }
 

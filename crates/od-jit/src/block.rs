@@ -1273,15 +1273,20 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && instruction.opcode.byte == 0x8b
         && instruction.operand_size == OperandSize::Qword
         && instruction.address_size == OperandSize::Qword
-        && instruction.length == 3
+        && (instruction.length == 3 || instruction.length == 7)
         && (destination.register() as u8) < 4
         && destination.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
         && operand.address_size == OperandSize::Qword
-        && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+        && (matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+            && instruction.length == 3
+            && operand.displacement == 0
+            || matches!(operand.base, od_isa::long_decode::AddressBase::NextRip)
+                && instruction.length == 7
+                && operand.displacement >= i32::MIN as i64
+                && operand.displacement <= i32::MAX as i64)
         && operand.index.is_none()
         && operand.scale == 1
-        && operand.displacement == 0
 }
 
 pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
@@ -1302,22 +1307,27 @@ pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
         && instruction.opcode.byte == 0x89
         && instruction.operand_size == OperandSize::Qword
         && instruction.address_size == OperandSize::Qword
-        && instruction.length == 3
+        && (instruction.length == 3 || instruction.length == 7)
         && (source.register() as u8) < 4
         && source.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
         && operand.address_size == OperandSize::Qword
-        && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+        && (matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+            && instruction.length == 3
+            && operand.displacement == 0
+            || matches!(operand.base, od_isa::long_decode::AddressBase::NextRip)
+                && instruction.length == 7
+                && operand.displacement >= i32::MIN as i64
+                && operand.displacement <= i32::MAX as i64)
         && operand.index.is_none()
         && operand.scale == 1
-        && operand.displacement == 0
 }
 
 fn exact_direct_qword_load_bytes(code: CodeView<'_>, guest_rip: u64, length: u8) -> bool {
     exact_direct_qword_memory_bytes(code, guest_rip, length, 0x8b)
 }
 
-fn exact_direct_qword_memory_bytes(
+pub(crate) fn exact_direct_qword_memory_bytes(
     code: CodeView<'_>,
     guest_rip: u64,
     length: u8,
@@ -1335,11 +1345,16 @@ fn exact_direct_qword_memory_bytes(
     else {
         return false;
     };
-    bytes.len() == 3
+    (bytes.len() == 3
         && bytes[0..2] == [0x48, opcode]
         && bytes[2] >> 6 == 0
         && bytes[2] & 0b111 <= 3
-        && (bytes[2] >> 3) & 0b111 <= 3
+        && (bytes[2] >> 3) & 0b111 <= 3)
+        || (bytes.len() == 7
+            && bytes[0..2] == [0x48, opcode]
+            && bytes[2] >> 6 == 0
+            && bytes[2] & 0b111 == 5
+            && (bytes[2] >> 3) & 0b111 <= 3)
 }
 
 enum TargetClassification {
