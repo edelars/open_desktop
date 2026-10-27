@@ -14014,7 +14014,8 @@ mod tests {
         const BASE: u64 = 0x4a00;
         static CALLBACK_STOP: AtomicU8 = AtomicU8::new(0);
         const CODE: [u8; 16] = [
-            0x67, 0x48, 0x8b, 0xa4, 0x08, 0, 0, 0, 0,    // addr32 SIB disp32 load to RSP
+            0x67, 0x48, 0x8b, 0xa4, 0x0c, 0, 0, 0,
+            0,    // addr32 RSP-base indexed SIB load to RSP
             0x90, // explicit interpreter bridge
             0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b, // existing native pair
         ];
@@ -14128,7 +14129,7 @@ mod tests {
         let boundary = FixtureExecutionBoundary::new(view, view.code_end()).unwrap();
         let make_state = || od_isa::LongModeState {
             rip: BASE,
-            gpr: [0x20, 0, 0, 0x30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            gpr: [0x20, 0, 0, 0x30, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             rflags: 0x8d7,
             ..Default::default()
         };
@@ -14211,7 +14212,7 @@ mod tests {
         // A successful stack-data load commits before a following [RSP]
         // access raises #SS for the loaded noncanonical address.
         const STACK_FAULT_CODE: [u8; 16] = [
-            0x67, 0x48, 0x8b, 0xa4, 0x08, 0, 0, 0, 0, // addr32 indexed-SIB load RSP
+            0x67, 0x48, 0x8b, 0xa4, 0x0c, 0, 0, 0, 0, // addr32 RSP-base indexed-SIB load RSP
             0x48, 0x8b, 0x0c, 0x24, // MOV RCX, [RSP]
             0, 0, 0,
         ];
@@ -14445,6 +14446,7 @@ mod tests {
         let make_rbp_state = || {
             let mut state = make_state();
             state.gpr[3] = 0x30;
+            state.gpr[4] = 0;
             state.gpr[5] = 0x20;
             state
         };
@@ -14553,6 +14555,7 @@ mod tests {
             let mut state = make_state();
             state.gpr[5] = 0x30;
             state.gpr[3] = 0x38;
+            state.gpr[4] = 0;
             state
         };
         let make_rbp_disp32_ram = || {
@@ -16430,7 +16433,7 @@ mod tests {
         let stop = AtomicU8::new(0);
         for (opcode, is_load) in [(0x8b_u8, true), (0x89_u8, false)] {
             for data_register in 0..6_u8 {
-                for base_register in 0..4_u8 {
+                for base_register in 0..=4_u8 {
                     for index_register in 0..4_u8 {
                         for scale_shift in 0..4_u8 {
                             let source = vec![
@@ -16472,10 +16475,23 @@ mod tests {
                                 };
                             }
                             initial_state.gpr[..4].copy_from_slice(&initial_gprs);
+                            initial_state.gpr[4] = 0xdead_beef_ffff_fffc;
+                            if base_register == 4 && index_register == 0 {
+                                initial_state.gpr[0] = 0;
+                            }
+                            let expected_target = (initial_state.gpr[base_register as usize] as u32)
+                                .wrapping_add(
+                                    (initial_state.gpr[index_register as usize] as u32)
+                                        .wrapping_mul(1_u32 << scale_shift),
+                                ) as u64;
                             let target = site
                                 .operand()
                                 .access_address_48(&initial_state, site.next_rip())
                                 .unwrap();
+                            assert_eq!(target, expected_target);
+                            if base_register == 4 && index_register == 0 {
+                                assert_eq!(target, 0xffff_fffc);
+                            }
                             let mut initial_data = BTreeMap::new();
                             for offset in 0..8_u64 {
                                 initial_data.insert(target + offset, 0x90 + offset as u8);
@@ -16601,7 +16617,16 @@ mod tests {
         }
 
         for (opcode, is_load) in [(0x8b_u8, true), (0x89_u8, false)] {
-            for displacement in [i8::MIN, -1, 0, i8::MAX] {
+            for (mode, displacement) in [
+                (1_u8, i8::MIN as i32),
+                (1, -1),
+                (1, 0),
+                (1, i8::MAX as i32),
+                (2, i32::MIN),
+                (2, -1),
+                (2, 0),
+                (2, i32::MAX),
+            ] {
                 for scale_shift in 0..4_u8 {
                     for (data_register, base_register, index_register) in [
                         (0, 0, 1),
@@ -16612,19 +16637,29 @@ mod tests {
                         (4, 1, 1),
                         (5, 2, 2),
                         (5, 3, 2),
+                        (0, 4, 1),
+                        (1, 4, 1),
+                        (2, 4, 0),
+                        (3, 4, 2),
+                        (4, 4, 1),
+                        (5, 4, 2),
                     ] {
-                        let source = vec![
+                        let mut source = vec![
                             0x67,
                             0x48,
                             opcode,
-                            0x40 | (data_register << 3) | 4,
+                            (mode << 6) | (data_register << 3) | 4,
                             (scale_shift << 6) | (index_register << 3) | base_register,
-                            displacement as u8,
                         ];
+                        if mode == 1 {
+                            source.push(displacement as u8);
+                        } else {
+                            source.extend_from_slice(&displacement.to_le_bytes());
+                        }
                         let code = CodeView::new(ENTRY, &source).unwrap();
                         let site = if is_load {
                             od_jit::memory_load_v2::compile_memory_load_block_v2(code, ENTRY)
-                                .unwrap()
+                                .unwrap_or_else(|error| panic!("{source:02x?}: {error:?}"))
                                 .site()
                                 .clone()
                         } else {
@@ -16644,7 +16679,11 @@ mod tests {
                             0x0000_8000_0000_1107,
                             0xffff_0000_0000_1189,
                         ];
-                        if base_register == 0 && index_register == 1 && scale_shift == 0 {
+                        if base_register == 0
+                            && index_register == 1
+                            && scale_shift == 0
+                            && mode == 1
+                        {
                             match displacement {
                                 -1 => {
                                     gprs[0] = 0x0000_8000_0000_0000;
@@ -16665,16 +16704,30 @@ mod tests {
                             && index_register == 1
                             && scale_shift == 3
                             && displacement == 127
+                            && mode == 1
                         {
                             gprs[0] = 0x0000_8000_ffff_ffff;
                             gprs[1] = 0xffff_0000_0000_0001;
                         }
                         initial_state.gpr[..4].copy_from_slice(&gprs);
+                        initial_state.gpr[4] = 0xdead_beef_ffff_fffc;
+                        let expected_target = (initial_state.gpr[base_register as usize] as u32)
+                            .wrapping_add(
+                                (initial_state.gpr[index_register as usize] as u32)
+                                    .wrapping_mul(1_u32 << scale_shift),
+                            )
+                            .wrapping_add(displacement as u32)
+                            as u64;
                         let target = site
                             .operand()
                             .access_address_48(&initial_state, site.next_rip())
                             .unwrap();
-                        if base_register == 0 && index_register == 1 && scale_shift == 0 {
+                        assert_eq!(target, expected_target);
+                        if base_register == 0
+                            && index_register == 1
+                            && scale_shift == 0
+                            && mode == 1
+                        {
                             match displacement {
                                 -1 => assert_eq!(target, 0xffff_ffff),
                                 0 => assert_eq!(target, 0xffff_fffc),
@@ -16686,6 +16739,7 @@ mod tests {
                             && index_register == 1
                             && scale_shift == 3
                             && displacement == 127
+                            && mode == 1
                         {
                             assert_eq!(target, 0x86);
                         }
@@ -16802,7 +16856,7 @@ mod tests {
         }
 
         for (opcode, is_load) in [(0x8b_u8, true), (0x89_u8, false)] {
-            let source = [0x67, 0x48, opcode, 0x44, 0x18, 0];
+            let source = [0x67, 0x48, opcode, 0x44, 0x1c, 0];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let site = if is_load {
                 od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY)
@@ -16822,7 +16876,7 @@ mod tests {
                     0,
                     0,
                     0,
-                    0,
+                    0xdead_beef_0000_1000,
                     0,
                     0,
                     0,
@@ -16842,6 +16896,7 @@ mod tests {
                 .operand()
                 .access_address_48(&initial_state, site.next_rip())
                 .unwrap();
+            assert_eq!(target, 0x1000);
             let fault = od_isa::memory::ArchitecturalFault {
                 vector: 14,
                 error_code: Some(if is_load { 1 } else { 3 }),
@@ -17401,8 +17456,70 @@ mod tests {
             }
         }
 
-        let source_low = [0x67, 0x48, 0x8b, 0xa4, 0x08, 0, 0, 0, 0];
-        let source_high = [0x67, 0x48, 0x8b, 0xa4, 0x08, 0, 0, 0, 1];
+        // RSP-base SIB uses the original guest RSP for the EA and store data;
+        // STOP after the successful helper preserves all eight payload bytes.
+        let store_source = [0x67, 0x48, 0x89, 0x24, 0x0c];
+        let store_code = CodeView::new(ENTRY, &store_source).unwrap();
+        let old_rsp = 0xdead_beef_ffff_fffc;
+        let store_target = 0xffff_fffc_u64;
+        let mut store_state = od_isa::LongModeState {
+            rip: ENTRY,
+            rflags: 0x8d7,
+            ..Default::default()
+        };
+        store_state.gpr[4] = old_rsp;
+        store_state.gpr[1] = 0;
+        let mut store_ram = SparseRam {
+            code: &store_source,
+            data: (0..8_u64).map(|n| (store_target + n, 0)).collect(),
+            reads: 0,
+            writes: 0,
+            last_read: None,
+            last_write: None,
+            read_error: None,
+            write_error: None,
+            stop_on_write: Some(&stop),
+        };
+        stop.store(0, Ordering::Release);
+        let store_block =
+            od_jit::memory_load_v2::compile_ir_memory_store_block_v2(store_code, ENTRY).unwrap();
+        let store_result = unsafe {
+            PublishedCode::publish_ir_memory_store_v2(&store_block)
+                .unwrap()
+                .execute_ir_memory_store_v2(
+                    &mut store_state,
+                    &mut store_ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                )
+        }
+        .unwrap();
+        assert_eq!(
+            store_result.exit,
+            MemoryOperationExecutionExitV2::StopRequested
+        );
+        assert_eq!(
+            (
+                store_result.retired_instructions,
+                store_result.remaining_budget
+            ),
+            (1, 0)
+        );
+        assert_eq!(store_state.rip, ENTRY + store_source.len() as u64);
+        assert_eq!(store_ram.writes, 1);
+        assert_eq!(store_ram.last_write, Some((store_target, 8)));
+        assert_eq!(
+            (0..8_u64)
+                .map(|n| store_ram.data[&(store_target + n)])
+                .collect::<Vec<_>>(),
+            old_rsp.to_le_bytes()
+        );
+        stop.store(0, Ordering::Release);
+
+        let source_low = [0x67, 0x48, 0x8b, 0xa4, 0x0c, 0, 0, 0, 0];
+        let source_high = [0x67, 0x48, 0x8b, 0xa4, 0x0c, 0, 0, 0, 1];
         let low = od_jit::memory_load_v2::compile_memory_load_block_v2(
             CodeView::new(ENTRY, &source_low).unwrap(),
             ENTRY,
@@ -17438,7 +17555,7 @@ mod tests {
                     0,
                     0,
                     0,
-                    0x55,
+                    0xdead_beef_0000_0020,
                     0x66,
                     0,
                     0,

@@ -2081,7 +2081,7 @@ mod tests {
             (0x8b, MemorySiteOperationV2::Load),
             (0x89, MemorySiteOperationV2::Store),
         ] {
-            for data_register in [4_u8, 5] {
+            for data_register in 0_u8..6 {
                 for (mode, length, values) in [
                     (1_u8, 4_usize, vec![i8::MIN as i32, -1, 0, i8::MAX as i32]),
                     (2_u8, 7_usize, vec![i32::MIN, -1, 0, i32::MAX, 128]),
@@ -3925,7 +3925,7 @@ mod tests {
             (0x89, MemorySiteOperationV2::Store),
         ] {
             for data_register in [4_u8, 5] {
-                for (base, index) in [(0_u8, 1_u8), (1, 1), (2, 0), (3, 2)] {
+                for (base, index) in [(0_u8, 1_u8), (1, 1), (2, 0), (3, 2), (4, 0), (4, 3)] {
                     for scale_shift in 0..4_u8 {
                         for (mode, displacement) in displacement_cases {
                             let mut bytes = vec![
@@ -3974,7 +3974,7 @@ mod tests {
             for bytes in [
                 vec![0x67, 0x48, opcode, 0x24, 0x20],             // no-index SIB
                 vec![0x67, 0x48, opcode, 0x24, 0x25],             // no-base SIB
-                vec![0x67, 0x48, opcode, 0x24, 0x04],             // RSP index
+                vec![0x67, 0x48, opcode, 0x24, 0x23],             // no-index SIB with RSP data
                 vec![0x67, 0x48, opcode, 0x24, 0x2c],             // indexed RBP
                 vec![0x67, 0x48, opcode, 0x24, 0x2c],             // RBP index
                 vec![0x67, 0x48, opcode, 0x24, 0x25],             // RBP base special form

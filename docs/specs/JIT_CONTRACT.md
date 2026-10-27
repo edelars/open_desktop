@@ -2169,6 +2169,22 @@ distinct. `MemoryOperand` and `access_address_48` remain the sole EA semantics.
 Base, index and store data are read from the instruction pre-state before any
 destination commit. See [S3-20ar evidence](../reports/STAGE_3_S3-20ar_2026-10-27.md).
 
+#### S3-20as: address32 indexed SIB with RSP base
+
+Admit singleton `67 48 8B/89 /r sib [disp8|disp32]` forms with ModRM
+`mod=00/01/10,r/m=100`, SIB base RSP, index RAX..RBX, scale 1/2/4/8 and data
+RAX..RBP. Address size is Dword while transfer size remains Qword; lengths are
+5/6/9 bytes. The existing `SIB=0x24` no-index profile remains separate. No
+no-base, RSP/RBP index, extra-prefix, pair or V3 form is admitted.
+
+The decoded `MemoryOperand` and `access_address_48` remain the only source of
+effective-address semantics: truncate RSP/index inputs to 32 bits, scale/add
+with address-size wrapping, then perform one contiguous qword access. The
+load/store source and address inputs use the pre-instruction state. Publication
+and the borrowed bounded dispatcher validate exact source bytes and decoded
+metadata before execution. See
+[S3-20as evidence](../reports/STAGE_3_S3-20as_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

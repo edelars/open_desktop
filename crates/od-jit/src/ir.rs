@@ -655,7 +655,13 @@ fn is_checked_memory_address(
         let indexed = indexed
             && operand.index.is_some_and(|index| (index as u8) < 4)
             && matches!(operand.scale, 1 | 2 | 4 | 8);
-        return (base_supported && (direct || indexed)) || rsp_no_index_sib || rbp_direct;
+        let indexed_base_supported = base_supported
+            || operand.index.is_some_and(|index| (index as u8) < 4)
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp));
+        return (base_supported && direct)
+            || (indexed_base_supported && indexed)
+            || rsp_no_index_sib
+            || rbp_direct;
     }
     if operand.address_size != od_isa::OperandSize::Qword {
         return false;
@@ -871,7 +877,8 @@ fn is_address32_indexed_sib_stack_data_operand(
     };
     operand.address_size == od_isa::OperandSize::Dword
         && operand.index.is_some_and(|register| (register as u8) < 4)
-        && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+        && (matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+            || matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp)))
         && matches!(operand.scale, 1 | 2 | 4 | 8)
         && displacement_valid
 }

@@ -184,7 +184,11 @@ impl MemorySiteV2 {
         let address32_indexed_sib_data_profile = self.operand.address_size
             == od_isa::OperandSize::Dword
             && self.operand.size == od_isa::OperandSize::Qword
-            && base_is_low_gpr
+            && (base_is_low_gpr
+                || matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                ))
             && self
                 .operand
                 .index
@@ -398,6 +402,14 @@ impl MemorySiteV2 {
                             || length == 6 && i8::try_from(self.operand.displacement).is_ok()
                             || length == 9 && i32::try_from(self.operand.displacement).is_ok())
                     || self.operand.address_size == od_isa::OperandSize::Dword
+                        && register == od_isa::Register::Rsp
+                        && matches!(length, 5 | 6 | 9)
+                        && self.operand.index.is_some_and(|index| (index as u8) < 4)
+                        && matches!(self.operand.scale, 1 | 2 | 4 | 8)
+                        && (length == 5 && self.operand.displacement == 0
+                            || length == 6 && i8::try_from(self.operand.displacement).is_ok()
+                            || length == 9 && i32::try_from(self.operand.displacement).is_ok())
+                    || self.operand.address_size == od_isa::OperandSize::Dword
                         && register == od_isa::Register::Rbp
                         && matches!(length, 5 | 8)
                         && self.operand.index.is_none()
@@ -476,6 +488,24 @@ impl MemorySiteV2 {
                 && (length == 5 && self.operand.displacement == 0
                     || length == 6 && i8::try_from(self.operand.displacement).is_ok()
                     || length == 9 && i32::try_from(self.operand.displacement).is_ok());
+            let rsp_indexed_sib = matches!(length, 5 | 6 | 9)
+                && matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                )
+                && self.operand.index.is_some_and(|index| {
+                    matches!(
+                        index,
+                        od_isa::Register::Rax
+                            | od_isa::Register::Rcx
+                            | od_isa::Register::Rdx
+                            | od_isa::Register::Rbx
+                    )
+                })
+                && matches!(self.operand.scale, 1 | 2 | 4 | 8)
+                && (length == 5 && self.operand.displacement == 0
+                    || length == 6 && i8::try_from(self.operand.displacement).is_ok()
+                    || length == 9 && i32::try_from(self.operand.displacement).is_ok());
             let rbp_direct = matches!(length, 5 | 8)
                 && matches!(
                     self.operand.base,
@@ -485,8 +515,8 @@ impl MemorySiteV2 {
                 && self.operand.scale == 1
                 && (length == 5 && i8::try_from(self.operand.displacement).is_ok()
                     || length == 8 && i32::try_from(self.operand.displacement).is_ok());
-            return (supported_base || rsp_no_index_sib || rbp_direct)
-                && (direct || indexed || rsp_no_index_sib || rbp_direct);
+            return (supported_base || rsp_no_index_sib || rsp_indexed_sib || rbp_direct)
+                && (direct || indexed || rsp_no_index_sib || rsp_indexed_sib || rbp_direct);
         }
 
         let displacement_is_valid = match (self.operand.base, self.operand.index, length) {
@@ -595,9 +625,10 @@ impl MemorySiteV2 {
                 let Some(decoded_sib_index) = od_isa::Register::from_encoding(sib_index) else {
                     return false;
                 };
+                let rsp_indexed_sib = sib_base == 4;
                 return matches!((source.len(), mode), (5, 0) | (6, 1) | (9, 2))
                     && data_register <= 5
-                    && sib_base < 4
+                    && (sib_base < 4 || rsp_indexed_sib)
                     && sib_index < 4
                     && site_register == Some(data_register)
                     && self.next_rip.checked_sub(self.guest_rip) == Some(source.len() as u64)

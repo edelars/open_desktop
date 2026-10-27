@@ -1393,7 +1393,11 @@ fn is_address32_indexed_sib_stack_data_operand(
     instruction.address_size == OperandSize::Dword
         && operand.address_size == OperandSize::Dword
         && operand.size == OperandSize::Qword
-        && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+        && (matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+            || matches!(
+                operand.base,
+                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+            ))
         && operand.index.is_some_and(|register| (register as u8) < 4)
         && matches!(operand.scale, 1 | 2 | 4 | 8)
         && displacement_valid
@@ -1615,6 +1619,11 @@ fn is_checked_qword_memory_address(
                 );
             let sib = matches!(instruction.length, 5 | 6 | 9)
                 && operand.index.is_some_and(|index| (index as u8) < 4)
+                && (base_supported
+                    || matches!(
+                        operand.base,
+                        od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                    ))
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && if instruction.length == 5 {
                     operand.displacement == 0
@@ -1650,7 +1659,7 @@ fn is_checked_qword_memory_address(
                     i32::try_from(operand.displacement).is_ok()
                 };
             instruction.prefixes.address_override
-                && (base_supported && (direct || sib) || rsp_no_index_sib || rbp_direct)
+                && (base_supported && direct || sib || rsp_no_index_sib || rbp_direct)
         }
         OperandSize::Qword => {
             let register_base = matches!(
@@ -1912,7 +1921,9 @@ pub(crate) fn exact_qword_address32_sib_memory_bytes(
         && bytes[3] >> 6 == expected_mode
         && bytes[3] & 7 == 4
         && (bytes[3] >> 3) & 7 <= 5
-        && (bytes[4] == 0x24 || bytes[4] & 7 < 4 && (bytes[4] >> 3) & 7 < 4)
+        && (bytes[4] == 0x24
+            || bytes[4] & 7 < 4 && (bytes[4] >> 3) & 7 < 4
+            || bytes[4] & 7 == 4 && (bytes[4] >> 3) & 7 < 4)
 }
 
 pub(crate) fn exact_qword_sib_displacement_memory_bytes(
