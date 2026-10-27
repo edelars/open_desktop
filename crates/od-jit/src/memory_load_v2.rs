@@ -938,8 +938,6 @@ mod tests {
         }
         for (opcode, is_load) in [(0x8b, true), (0x89, false)] {
             for bytes in [
-                vec![0x67, 0x48, opcode, 0x40],
-                vec![0x67, 0x48, opcode, 0x80, 0, 0, 0, 0],
                 vec![0x67, 0x48, opcode, 0xc0],
                 vec![0x67, 0x48, opcode, 0x04],
                 vec![0x67, 0x48, opcode, 0x05, 0, 0, 0, 0],
@@ -1005,6 +1003,96 @@ mod tests {
                 .site()
                 .matches_source_bytes(&[0x67, 0x48, 0x89, 0x00], MemorySiteOperationV2::Store)
         );
+    }
+
+    #[test]
+    fn address_size_override_signed_displacements_are_admitted_by_decoded_shape() {
+        let displacement_cases: &[(u8, i32)] = &[
+            (1, i8::MIN as i32),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+            (1, i8::MAX as i32),
+            (4, i32::MIN),
+            (4, i32::MIN + 1),
+            (4, -1),
+            (4, 0),
+            (4, 1),
+            (4, i32::MAX - 1),
+            (4, i32::MAX),
+        ];
+        for (opcode, access) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in 0..4_u8 {
+                for base in 0..4_u8 {
+                    for &(width, displacement) in displacement_cases {
+                        let mode = if width == 1 { 1 } else { 2 };
+                        let modrm = (mode << 6) | (data_register << 3) | base;
+                        let mut bytes = vec![0x67, 0x48, opcode, modrm];
+                        if width == 1 {
+                            bytes.push(displacement as u8);
+                        } else {
+                            bytes.extend_from_slice(&displacement.to_le_bytes());
+                        }
+                        let code = CodeView::new(0x27a0, &bytes).unwrap();
+                        let artifact = match access {
+                            MemorySiteOperationV2::Load => {
+                                compile_memory_load_block_v2(code, 0x27a0).unwrap().artifact
+                            }
+                            MemorySiteOperationV2::Store => {
+                                compile_memory_store_block_v2(code, 0x27a0)
+                                    .unwrap()
+                                    .artifact
+                            }
+                        };
+                        assert_eq!(artifact.source_len, bytes.len() as u8);
+                        assert_eq!(
+                            artifact.site.operand.address_size,
+                            od_isa::OperandSize::Dword
+                        );
+                        assert_eq!(artifact.site.operand.displacement, i64::from(displacement));
+                        assert_eq!(artifact.site.next_rip(), 0x27a0 + bytes.len() as u64);
+                        assert!(artifact.site.matches_source_bytes(&bytes, access));
+                    }
+                }
+            }
+        }
+
+        for (opcode, access) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for bytes in [
+                vec![0x67, 0x48, opcode, 0x40],                   // truncated disp8
+                vec![0x67, 0x48, opcode, 0x80, 0, 0, 0],          // truncated disp32
+                vec![0x67, 0x48, opcode, 0x40, 0, 0x90],          // trailing byte
+                vec![0x67, 0x48, opcode, 0x80, 0, 0, 0, 0, 0x90], // trailing byte
+                vec![0x67, 0x48, opcode, 0x04, 0],                // SIB form
+                vec![0x67, 0x48, opcode, 0x40 | (4 << 3), 0],     // unsupported base
+                vec![0x67, 0x4c, opcode, 0x40, 0],                // extended data/base register
+                vec![0x48, 0x67, opcode, 0x40, 0],                // reordered prefix
+            ] {
+                let code = CodeView::new(0x27b0, &bytes).unwrap();
+                let result = match access {
+                    MemorySiteOperationV2::Load => {
+                        compile_memory_load_block_v2(code, 0x27b0).map(|_| ())
+                    }
+                    MemorySiteOperationV2::Store => {
+                        compile_memory_store_block_v2(code, 0x27b0).map(|_| ())
+                    }
+                };
+                assert!(
+                    matches!(
+                        result,
+                        Err(MemoryLoadCompileErrorV2::UnsupportedForm
+                            | MemoryLoadCompileErrorV2::Decode)
+                    ),
+                    "unexpectedly admitted bytes {bytes:02x?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -63,7 +63,7 @@ RAX/RCX/RDX/RBX, без high-byte registers и памяти. Для ModR/M `mod`
 
 | Класс | Путь на текущем шаге | Условие дальнейшего включения |
 |---|---|---|
-| Любые memory operands, кроме точных `48 8B /r` load и `48 89 /r` store V2-срезов ниже | Runner и V1 block/cache path не выбирают memory code. Для этих форм доступны отдельные compiler-issued V2 artifacts и host entries; прямой host pointer access запрещён | Каждая новая форма отдельно проходит S2 semantic confirmation, checked access/commit implementation и собственную проверку |
+| Любые memory operands вне точно перечисленных V2 load/store профилей ниже | Runner и V1 block/cache path не выбирают memory code. Для перечисленных форм доступны отдельные compiler-issued V2 artifacts и host entries; прямой host pointer access запрещён | Каждая новая форма отдельно проходит S2 semantic confirmation, checked access/commit implementation и собственную проверку |
 | Остальные формы, уже принятые interpreter этапа 2 | Runner не допускает их к текущему legacy JIT. Interpreter fallback запланирован в S3-16 и не реализован текущим contract | Завершённая interpreter semantics конкретной формы и fallback с точным progress/state |
 | x87, SIMD, privilege/system, interrupts, unsupported/invalid decode | Runner не допускает эти формы к текущему legacy JIT; interpreter путь разрешён только если соответствующая форма уже реализована и запрошен явный fallback после S3-16 | Отдельные S2 contracts, CPU state mapping и сопоставимые внешние evidence для каждой формы |
 
@@ -218,6 +218,31 @@ unmapped cases verify fault atomicity. Other prefixes,
 ModRM modes, SIB, displacement, truncation, and trailing bytes remain rejected.
 Physical Mac mini execution remains reserved for the final S3-21 gate; see the
 [S3-20f report](../reports/STAGE_3_S3-20f_2026-10-27.md).
+
+#### S3-20g: bounded signed displacement with address-size override
+
+The existing V2 qword MOV profile additionally admits only
+`67 48 8B/89 /r disp8|disp32`: ModRM `mod=01` or `mod=10`, data/base register
+encodings RAX..RBX, no SIB, no RIP-relative/base-less form, and exact total
+lengths of five or eight bytes. The existing `mod=00` four-byte form remains
+admitted. The decoder supplies the dword-address `MemoryOperand`, signed
+displacement, and `next_rip`; raw-byte validation checks the prefix/opcode,
+ModRM mode/registers, source length, and agreement with that metadata without
+re-decoding displacement bytes. Runtime validates the selected displacement
+width and obtains the start address and complete qword range only through
+`MemoryOperand::access_address_48`.
+
+Local native/interpreter differential cases cover disp8 `-128/-1/0/1/127`,
+disp32 minimum/maximum and adjacent/zero values, upper base bits ignored,
+32-bit effective-address wrap, aliasing load destination/store source with the
+base, and a qword beginning at `0xffff_fffc` whose later bytes continue through
+`0x1_0000_0003` without 32-bit wrap. The boundary fault preserves CPU and RAM
+for both operations. STOP, stop-RIP, and zero-budget guards return before
+memory access for both directions. Truncated and trailing bytes, unsupported
+registers, SIB, extra/reordered prefixes, and other ModRM modes remain
+rejected. Other address-size-override forms stay outside this slice. Physical Mac mini
+execution remains reserved for the final S3-21 gate; see the
+[S3-20g report](../reports/STAGE_3_S3-20g_2026-10-27.md).
 
 ## 4. Начальные runtime bounds
 

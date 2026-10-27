@@ -162,10 +162,15 @@ impl MemorySiteV2 {
         }
 
         if self.operand.address_size == od_isa::OperandSize::Dword {
-            return length == 4
+            let displacement_is_valid = match length {
+                4 => self.operand.displacement == 0,
+                5 => i8::try_from(self.operand.displacement).is_ok(),
+                8 => i32::try_from(self.operand.displacement).is_ok(),
+                _ => false,
+            };
+            return displacement_is_valid
                 && self.operand.index.is_none()
                 && self.operand.scale == 1
-                && self.operand.displacement == 0
                 && matches!(
                     self.operand.base,
                     od_isa::long_decode::AddressBase::Register(
@@ -219,7 +224,7 @@ impl MemorySiteV2 {
             MemorySiteOperationV2::Store => 0x89,
         };
         if source.first() == Some(&0x67) {
-            if source.len() != 4 || source[1] != 0x48 || source[2] != opcode {
+            if source.len() < 4 || source[1] != 0x48 || source[2] != opcode {
                 return false;
             }
             let modrm = source[3];
@@ -233,17 +238,23 @@ impl MemorySiteV2 {
             let od_isa::long_decode::AddressBase::Register(decoded_base) = self.operand.base else {
                 return false;
             };
-            return mode == 0
+            let (expected_length, displacement_valid) = match mode {
+                0 => (4, self.operand.displacement == 0),
+                1 => (5, i8::try_from(self.operand.displacement).is_ok()),
+                2 => (8, i32::try_from(self.operand.displacement).is_ok()),
+                _ => return false,
+            };
+            return source.len() == expected_length
                 && data_register < 4
                 && base < 4
                 && site_register == Some(data_register)
-                && self.next_rip.checked_sub(self.guest_rip) == Some(4)
+                && self.next_rip.checked_sub(self.guest_rip) == Some(expected_length as u64)
                 && self.operand.address_size == od_isa::OperandSize::Dword
                 && self.operand.size == od_isa::OperandSize::Qword
                 && od_isa::Register::from_encoding(base) == Some(decoded_base)
                 && self.operand.index.is_none()
                 && self.operand.scale == 1
-                && self.operand.displacement == 0;
+                && displacement_valid;
         }
         // Every legacy source shape below uses the original 64-bit address
         // size. Keep it explicit now that the separate 67 profile is admitted.

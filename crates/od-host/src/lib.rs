@@ -6110,20 +6110,21 @@ mod tests {
     }
 
     #[test]
-    fn v2_address32_qword_crosses_ffffffff_without_wrapping_operand_bytes() {
+    fn v2_address32_signed_displacements_match_interpreter_and_cross_32bit_boundary_linearly() {
         use std::collections::BTreeMap;
 
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
 
         struct SparseRam<'a> {
             bytes: BTreeMap<u64, u8>,
-            code: &'a [u8; 4],
+            code: &'a [u8; 8],
+            code_len: usize,
             code_rip: u64,
             writes: usize,
         }
         impl GuestMemory for SparseRam<'_> {
             fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
-                if (self.code_rip..self.code_rip + 4).contains(&address) {
+                if (self.code_rip..self.code_rip + self.code_len as u64).contains(&address) {
                     return Ok(self.code[(address - self.code_rip) as usize]);
                 }
                 self.bytes
@@ -6235,68 +6236,131 @@ mod tests {
         }
 
         let _guard = jit_test_lock();
-        let mut initial_bytes = BTreeMap::new();
-        for address in 0..7_u64 {
-            initial_bytes.insert(address, 0x10 + address as u8);
-        }
-        for offset in 0..8_u64 {
-            initial_bytes.insert(0xffff_ffff + offset, 0x80 + offset as u8);
-        }
-
-        for (code, is_load) in [
-            (&[0x67, 0x48, 0x8b, 0x09][..], true),
-            (&[0x67, 0x48, 0x89, 0x01][..], false),
-        ] {
-            let source: &[u8; 4] = code.try_into().unwrap();
-            let code_view = CodeView::new(0xb200, source).unwrap();
-            let published = if is_load {
-                let compiled =
-                    od_jit::memory_load_v2::compile_memory_load_block_v2(code_view, 0xb200)
+        let displacement_cases: &[(u8, i32, u32)] = &[
+            (1, i8::MIN as i32, 0x1000),
+            (1, -1, 0x1000),
+            (1, 0, 0x1000),
+            (1, 1, 0x1000),
+            (1, i8::MAX as i32, 0x1000),
+            (4, i32::MIN, 0x1000),
+            (4, i32::MIN + 1, 0x1000),
+            (4, -1, 0x1000),
+            (4, 0, 0x1000),
+            (4, 1, 0x1000),
+            (4, i32::MAX - 1, 0x1000),
+            (4, i32::MAX, 0x1000),
+            (4, -4, 0xffff_fffc),
+        ];
+        for &(displacement_width, displacement, target) in displacement_cases {
+            for (opcode, is_load) in [(0x8b_u8, true), (0x89_u8, false)] {
+                let instruction_len = 4 + usize::from(displacement_width);
+                let mut source = [0_u8; 8];
+                let modrm = if displacement_width == 1 { 0x40 } else { 0x80 };
+                source[..4].copy_from_slice(&[0x67, 0x48, opcode, modrm]);
+                if displacement_width == 1 {
+                    source[4] = displacement as u8;
+                } else {
+                    source[4..8].copy_from_slice(&displacement.to_le_bytes());
+                }
+                let code_view = CodeView::new(0xb200, &source[..instruction_len]).unwrap();
+                let published = if is_load {
+                    let compiled =
+                        od_jit::memory_load_v2::compile_memory_load_block_v2(code_view, 0xb200)
+                            .unwrap();
+                    PublishedCode::publish_memory_load_v2(&compiled).unwrap()
+                } else {
+                    let compiled =
+                        od_jit::memory_load_v2::compile_memory_store_block_v2(code_view, 0xb200)
+                            .unwrap();
+                    PublishedCode::publish_memory_store_v2(&compiled).unwrap()
+                };
+                let base = target.wrapping_sub(displacement as u32);
+                let mut state = od_isa::LongModeState {
+                    rip: 0xb200,
+                    rflags: 0x8d7,
+                    ..od_isa::LongModeState::default()
+                };
+                // Load destination and store source both alias the address base;
+                // this checks that the helper snapshots the old register value.
+                state.gpr[0] = 0x1234_5678_0000_0000 | u64::from(base);
+                let mut initial_bytes = BTreeMap::new();
+                for address in 0..8_u64 {
+                    initial_bytes.insert(address, 0x10 + address as u8);
+                }
+                for offset in 0..8_u64 {
+                    initial_bytes.insert(u64::from(target) + offset, 0x80 + offset as u8);
+                }
+                let initial_state = state.clone();
+                let mut native_ram = SparseRam {
+                    bytes: initial_bytes.clone(),
+                    code: &source,
+                    code_len: instruction_len,
+                    code_rip: 0xb200,
+                    writes: 0,
+                };
+                let mut interpreter_ram = SparseRam {
+                    bytes: initial_bytes.clone(),
+                    code: &source,
+                    code_len: instruction_len,
+                    code_rip: 0xb200,
+                    writes: 0,
+                };
+                let before_bytes = native_ram.bytes.clone();
+                let mut interpreter_state = initial_state.clone();
+                let stop = AtomicU8::new(0);
+                if displacement == i8::MIN as i32 && target == 0x1000 {
+                    for (budget, stop_rip, stop_value, expected_exit) in [
+                        (0, None, 0, MemoryOperationExecutionExitV2::BudgetExhausted),
+                        (
+                            1,
+                            Some(0xb200),
+                            0,
+                            MemoryOperationExecutionExitV2::StopAddress,
+                        ),
+                        (1, None, 1, MemoryOperationExecutionExitV2::StopRequested),
+                    ] {
+                        let mut guarded_state = initial_state.clone();
+                        let mut guarded_ram = SparseRam {
+                            bytes: initial_bytes.clone(),
+                            code: &source,
+                            code_len: instruction_len,
+                            code_rip: 0xb200,
+                            writes: 0,
+                        };
+                        let stop_request = AtomicU8::new(stop_value);
+                        let guarded = if is_load {
+                            published.execute_memory_load_v2(
+                                &mut guarded_state,
+                                &mut guarded_ram,
+                                AccessContext::default(),
+                                budget,
+                                stop_rip,
+                                &stop_request,
+                            )
+                        } else {
+                            // SAFETY: test RAM is private, synchronous, and
+                            // disjoint from the immutable code snapshot.
+                            unsafe {
+                                published.execute_memory_store_v2(
+                                    &mut guarded_state,
+                                    &mut guarded_ram,
+                                    AccessContext::default(),
+                                    budget,
+                                    stop_rip,
+                                    &stop_request,
+                                )
+                            }
+                        }
                         .unwrap();
-                PublishedCode::publish_memory_load_v2(&compiled).unwrap()
-            } else {
-                let compiled =
-                    od_jit::memory_load_v2::compile_memory_store_block_v2(code_view, 0xb200)
-                        .unwrap();
-                PublishedCode::publish_memory_store_v2(&compiled).unwrap()
-            };
-            let mut state = od_isa::LongModeState {
-                rip: 0xb200,
-                rflags: 0x8d7,
-                ..od_isa::LongModeState::default()
-            };
-            state.gpr[1] = 0x1234_5678_ffff_ffff;
-            state.gpr[0] = 0x8877_6655_4433_2211;
-            let initial_state = state.clone();
-            let mut native_ram = SparseRam {
-                bytes: initial_bytes.clone(),
-                code: source,
-                code_rip: 0xb200,
-                writes: 0,
-            };
-            let mut interpreter_ram = SparseRam {
-                bytes: initial_bytes.clone(),
-                code: source,
-                code_rip: 0xb200,
-                writes: 0,
-            };
-            let before_bytes = native_ram.bytes.clone();
-            let mut interpreter_state = initial_state.clone();
-            let stop = AtomicU8::new(0);
-            let native = if is_load {
-                published.execute_memory_load_v2(
-                    &mut state,
-                    &mut native_ram,
-                    AccessContext::default(),
-                    1,
-                    None,
-                    &stop,
-                )
-            } else {
-                // SAFETY: the immutable code snapshot is outside the separate
-                // private synchronous sparse data backing; no code alias exists.
-                unsafe {
-                    published.execute_memory_store_v2(
+                        assert_eq!(guarded.exit, expected_exit);
+                        assert_eq!(guarded.retired_instructions, 0);
+                        assert_eq!(guarded_state, initial_state);
+                        assert_eq!(guarded_ram.bytes, initial_bytes);
+                        assert_eq!(guarded_ram.writes, 0);
+                    }
+                }
+                let native = if is_load {
+                    published.execute_memory_load_v2(
                         &mut state,
                         &mut native_ram,
                         AccessContext::default(),
@@ -6304,46 +6368,130 @@ mod tests {
                         None,
                         &stop,
                     )
+                } else {
+                    // SAFETY: the immutable code snapshot is outside the separate
+                    // private synchronous sparse data backing; no code alias exists.
+                    unsafe {
+                        published.execute_memory_store_v2(
+                            &mut state,
+                            &mut native_ram,
+                            AccessContext::default(),
+                            1,
+                            None,
+                            &stop,
+                        )
+                    }
                 }
+                .unwrap();
+                let interpreted = od_isa::execute::step(
+                    &mut interpreter_state,
+                    &mut interpreter_ram,
+                    AccessContext::default(),
+                )
+                .unwrap();
+                assert_eq!(native.exit, MemoryOperationExecutionExitV2::Complete);
+                assert_eq!(interpreted, od_isa::execute::StepOutcome::Advanced);
+                assert_eq!(state, interpreter_state);
+                assert_eq!(native_ram.bytes, interpreter_ram.bytes);
+                assert_eq!(state.rip, 0xb200 + instruction_len as u64);
+                assert_eq!(native.retired_instructions, 1);
+                if is_load {
+                    assert_eq!(
+                        state.gpr[0],
+                        u64::from_le_bytes([0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87])
+                    );
+                    for address in 0..8_u64 {
+                        assert_eq!(native_ram.bytes[&address], 0x10 + address as u8);
+                    }
+                    assert_eq!(native_ram.writes, 0);
+                    assert_eq!(native_ram.bytes, before_bytes);
+                } else {
+                    assert_eq!(native_ram.writes, 1);
+                    assert_eq!(
+                        (0..8_u64)
+                            .map(|offset| native_ram.bytes[&(u64::from(target) + offset)])
+                            .collect::<Vec<_>>(),
+                        initial_state.gpr[0].to_le_bytes()
+                    );
+                    for address in 0..8_u64 {
+                        assert_eq!(native_ram.bytes[&address], 0x10 + address as u8);
+                    }
+                    assert_eq!(state.gpr, initial_state.gpr);
+                    assert_eq!(state.rflags, initial_state.rflags);
+                }
+                if target == 0xffff_fffc {
+                    let mut fault_state = initial_state.clone();
+                    let mut interpreter_fault_state = initial_state.clone();
+                    let mut fault_bytes = initial_bytes.clone();
+                    fault_bytes.remove(&(u64::from(target) + 7));
+                    let mut fault_ram = SparseRam {
+                        bytes: fault_bytes.clone(),
+                        code: &source,
+                        code_len: instruction_len,
+                        code_rip: 0xb200,
+                        writes: 0,
+                    };
+                    let mut interpreter_fault_ram = SparseRam {
+                        bytes: fault_bytes.clone(),
+                        code: &source,
+                        code_len: instruction_len,
+                        code_rip: 0xb200,
+                        writes: 0,
+                    };
+                    let native_error = if is_load {
+                        published.execute_memory_load_v2(
+                            &mut fault_state,
+                            &mut fault_ram,
+                            AccessContext::default(),
+                            1,
+                            None,
+                            &stop,
+                        )
+                    } else {
+                        // SAFETY: the mapped data backing is private ordinary RAM
+                        // and is disjoint from the immutable instruction snapshot.
+                        unsafe {
+                            published.execute_memory_store_v2(
+                                &mut fault_state,
+                                &mut fault_ram,
+                                AccessContext::default(),
+                                1,
+                                None,
+                                &stop,
+                            )
+                        }
+                    }
+                    .unwrap_err();
+                    let interpreter_error = od_isa::execute::step(
+                        &mut interpreter_fault_state,
+                        &mut interpreter_fault_ram,
+                        AccessContext::default(),
+                    )
+                    .unwrap_err();
+                    assert_eq!(fault_state, initial_state);
+                    assert_eq!(interpreter_fault_state, initial_state);
+                    assert_eq!(fault_ram.bytes, interpreter_fault_ram.bytes);
+                    assert_eq!(fault_ram.bytes, fault_bytes);
+                    assert_eq!(fault_ram.writes, 0);
+                    assert_eq!(interpreter_fault_ram.writes, 0);
+                    assert!(
+                        matches!(
+                            &native_error,
+                                MemoryOperationExecutionErrorV2::MemoryError(error)
+                                if error.address == u64::from(target) + 7
+                                    && error.kind
+                                        == od_jit::memory_bridge::MEMORY_ERROR_UNMAPPED
+                        ),
+                        "unexpected native error: {native_error:?}"
+                    );
+                    assert!(matches!(
+                        interpreter_error,
+                        MemoryError::Unmapped { address, .. }
+                            if address == u64::from(target) + 7
+                    ));
+                }
+                drop(published);
             }
-            .unwrap();
-            let interpreted = od_isa::execute::step(
-                &mut interpreter_state,
-                &mut interpreter_ram,
-                AccessContext::default(),
-            )
-            .unwrap();
-            assert_eq!(native.exit, MemoryOperationExecutionExitV2::Complete);
-            assert_eq!(interpreted, od_isa::execute::StepOutcome::Advanced);
-            assert_eq!(state, interpreter_state);
-            assert_eq!(native_ram.bytes, interpreter_ram.bytes);
-            assert_eq!(state.rip, 0xb204);
-            assert_eq!(native.retired_instructions, 1);
-            if is_load {
-                assert_eq!(
-                    state.gpr[1],
-                    u64::from_le_bytes([0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87])
-                );
-                for address in 0..7_u64 {
-                    assert_eq!(native_ram.bytes[&address], 0x10 + address as u8);
-                }
-                assert_eq!(native_ram.writes, 0);
-                assert_eq!(native_ram.bytes, before_bytes);
-            } else {
-                assert_eq!(native_ram.writes, 1);
-                assert_eq!(
-                    (0..8_u64)
-                        .map(|offset| native_ram.bytes[&(0xffff_ffff + offset)])
-                        .collect::<Vec<_>>(),
-                    0x8877_6655_4433_2211_u64.to_le_bytes()
-                );
-                for address in 0..7_u64 {
-                    assert_eq!(native_ram.bytes[&address], 0x10 + address as u8);
-                }
-                assert_eq!(state.gpr, initial_state.gpr);
-                assert_eq!(state.rflags, initial_state.rflags);
-            }
-            drop(published);
         }
     }
 
