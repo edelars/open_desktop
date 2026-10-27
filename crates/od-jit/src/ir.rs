@@ -340,8 +340,8 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
             Operation::CheckedStore { src, operand } => {
                 require_active(active_instruction, operation_index)?;
                 let active = active_instruction.expect("require_active checked above");
-                if src.0 == 4 {
-                    if !is_rsp_memory_data_operand(
+                if src.0 == 4 || src.0 == 5 {
+                    if !is_scoped_memory_data_operand(
                         *operand,
                         instruction_length(program, active_instruction),
                     ) {
@@ -403,7 +403,7 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                 width,
             } => {
                 require_active(active_instruction, operation_index)?;
-                if register.0 == 4 {
+                if register.0 == 4 || register.0 == 5 {
                     let valid_rsp_load = matches!(
                         program.operations.get(operation_index.wrapping_sub(1)),
                         Some(Operation::CheckedLoad {
@@ -411,7 +411,7 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                             operand,
                         })
                             if *loaded_value == *src
-                                && is_rsp_memory_data_operand(
+                                && is_scoped_memory_data_operand(
                                 *operand,
                                 instruction_length(program, active_instruction)
                             )
@@ -689,7 +689,7 @@ fn validate_gpr(register: GuestGpr, operation: usize) -> Result<(), VerifyError>
     }
 }
 
-fn is_rsp_memory_data_operand(operand: MemoryOperand, instruction_length: u64) -> bool {
+fn is_scoped_memory_data_operand(operand: MemoryOperand, instruction_length: u64) -> bool {
     instruction_length == 3
         && operand.address_size == od_isa::OperandSize::Qword
         && operand.size == od_isa::OperandSize::Qword

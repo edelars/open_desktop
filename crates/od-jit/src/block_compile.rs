@@ -16,9 +16,9 @@ use crate::ir::Operation;
 use crate::lowering::{self, LoweredProgram, LoweringError, LoweringOutcome};
 
 pub const MAX_EMITTED_BLOCK_BYTES: usize = 4096;
-const RUNTIME_FRAME_PREFIX_BYTES: u32 = 144;
-const CHECKED_LOAD_FRAME_PREFIX_BYTES_V2: u32 = 144;
-const CHECKED_STORE_FRAME_PREFIX_BYTES_V2: u32 = 144;
+const RUNTIME_FRAME_PREFIX_BYTES: u32 = 160;
+const CHECKED_LOAD_FRAME_PREFIX_BYTES_V2: u32 = 160;
+const CHECKED_STORE_FRAME_PREFIX_BYTES_V2: u32 = 160;
 const REGISTER_HOME_BUDGET: u8 = 4;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -557,6 +557,61 @@ mod tests {
 
         let compiled = compile_block(view, 0).unwrap();
         assert!(matches!(compiled, BlockCompileOutcome::Compiled(_)));
+    }
+
+    #[test]
+    fn rbp_memory_data_spill_stays_after_six_gpr_runtime_prefix() {
+        let source = [0x48, 0x8b, 0x28]; // MOV RBP,[RAX]
+        let code = CodeView::new(0x5a00, &source).unwrap();
+        let built = block::build_checked_qword_load_block(
+            code,
+            0x5a00,
+            AccessContext::default(),
+            crate::block::BlockLimits::default(),
+        )
+        .unwrap();
+        assert!(matches!(built, BuildOutcome::Block(_)), "built={built:?}");
+        let LoweringOutcome::Program(lowered) = lowering::lower(&built).unwrap() else {
+            panic!("RBP memory-data singleton should lower");
+        };
+        let loaded = lowered
+            .program
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                Operation::CheckedLoad { dst, .. } => Some(*dst),
+                _ => None,
+            })
+            .unwrap();
+        let helper_boundaries = lowered
+            .program
+            .operations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, operation)| {
+                matches!(operation, Operation::CheckedLoad { .. })
+                    .then_some(HelperBoundaryPosition::BeforeOperation(index))
+            })
+            .collect::<Vec<_>>();
+        let allocation = Allocation::build(
+            &lowered.program,
+            AllocatorConfig {
+                register_homes: 0,
+                reserved_prefix_bytes: 160,
+            },
+            &helper_boundaries,
+        )
+        .unwrap();
+        let crate::allocator::ValueLocation::Spill(slot) = allocation.location(loaded).unwrap()
+        else {
+            panic!("zero register homes must spill the checked-load value");
+        };
+        assert!(slot.byte_offset() >= 160);
+        assert_eq!(allocation.frame().reserved_prefix_bytes, 160);
+        let emitted = emit_checked_load_runtime_block_v2(&lowered.program, &allocation).unwrap();
+        assert_eq!(emitted.entry_rip(), 0x5a00);
+        assert_eq!(emitted.pc_map().instruction_count(), 1);
+        assert!(!emitted.code().words().is_empty());
     }
 
     #[test]

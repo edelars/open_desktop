@@ -1300,7 +1300,9 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && matches!(instruction.length, 3 | 4 | 5 | 6 | 7 | 8 | 9)
         && ((destination.register() as u8) < 4
             || destination.register() as u8 == 4
-                && is_rsp_memory_data_operand(instruction, operand))
+                && is_rsp_memory_data_operand(instruction, operand)
+            || destination.register() as u8 == 5
+                && is_rbp_memory_data_operand(instruction, operand))
         && destination.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
         && is_checked_qword_memory_address(instruction, operand)
@@ -1324,13 +1326,31 @@ pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
         && instruction.operand_size == OperandSize::Qword
         && matches!(instruction.length, 3 | 4 | 5 | 6 | 7 | 8 | 9)
         && ((source.register() as u8) < 4
-            || source.register() as u8 == 4 && is_rsp_memory_data_operand(instruction, operand))
+            || source.register() as u8 == 4 && is_rsp_memory_data_operand(instruction, operand)
+            || source.register() as u8 == 5 && is_rbp_memory_data_operand(instruction, operand))
         && source.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
         && is_checked_qword_memory_address(instruction, operand)
 }
 
 fn is_rsp_memory_data_operand(
+    instruction: Instruction,
+    operand: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    instruction.length == 3
+        && instruction.address_size == OperandSize::Qword
+        && operand.address_size == OperandSize::Qword
+        && operand.size == OperandSize::Qword
+        && operand.index.is_none()
+        && operand.scale == 1
+        && operand.displacement == 0
+        && matches!(
+            operand.base,
+            od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4
+        )
+}
+
+fn is_rbp_memory_data_operand(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
 ) -> bool {
@@ -1481,7 +1501,7 @@ pub(crate) fn exact_direct_qword_memory_bytes(
         && bytes[0..2] == [0x48, opcode]
         && bytes[2] >> 6 == 0
         && bytes[2] & 7 < 4
-        && (bytes[2] >> 3) & 7 == 4)
+        && matches!((bytes[2] >> 3) & 7, 4 | 5))
         || (bytes.len() == 4
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] >> 6 == 1

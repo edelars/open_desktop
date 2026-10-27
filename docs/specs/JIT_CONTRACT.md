@@ -1843,15 +1843,30 @@ load. No SIB, displacement, address-size override, prefix, other base or pair
 profile is included. Decoded `MemoryOperand` remains the sole address
 semantics; full-width noncanonical data is not itself an address fault.
 
-The IR runtime frame stages guest GPRs at `SP+56..95`, flags at `SP+96` and
-RIP at `SP+104`; saved X19/X20 and X21/X22 pairs follow at `SP+112` and
-`SP+128`, respectively. The minimum reserved prefix is 144 bytes. This is
-private generated-code frame layout; it does not change the host SP or public
-runtime/C ABI. A sequential
+At this slice the private IR frame staged the five admitted data-state GPRs
+at `SP+56..95`, flags at `SP+96`, RIP at `SP+104`, and saved X19/X20 and
+X21/X22 at `SP+112` and `SP+128`; its minimum prefix was 144 bytes. S3-20aa
+extends this private staging area uniformly to all six GPRs; see below. This
+frame is not the host SP and does not change the public runtime/C ABI. A sequential
 load to guest RSP commits only on successful memory read; a following use of
 that RSP as an address then receives the normal architectural fault at its own
 RIP without replaying the prior effect. See the
 [S3-20z report](../reports/STAGE_3_S3-20z_2026-10-27.md).
+
+#### S3-20aa: guest RBP as an exact qword MOV data operand
+
+Admit only three-byte `48 8B/89 /r`, ModRM `mod=00`, data RBP (`reg=5`) and
+direct base RAX..RBX (`r/m=0..3`). RBP is allowed only as this exact checked
+memory data register; generic GPR read/write admission, pairs, and V3 remain
+unchanged. A successful load commits RBP only after the read succeeds. Stores
+transmit the full 64-bit RBP payload even when that value is noncanonical;
+address canonicality continues to come from the decoder's memory helper.
+
+The private frame uniformly stages six GPRs RAX..RBP at `SP+56..103`, flags at
+`SP+104`, RIP at `SP+112`, and X19/X20 and X21/X22 save pairs at `SP+128` and
+`SP+144`. The minimum reserved prefix is 160 bytes; allocator spills remain
+beyond it. RuntimeContext and C ABI layouts are unchanged. See the
+[S3-20aa report](../reports/STAGE_3_S3-20aa_2026-10-27.md).
 
 ## 6. Host и этапная приёмка
 

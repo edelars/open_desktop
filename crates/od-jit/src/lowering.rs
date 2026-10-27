@@ -530,6 +530,9 @@ fn guest_memory_data_gpr(register: RegisterView, instruction: Instruction) -> Op
         && (number < 4
             || number == 4
                 && (block::is_checked_qword_load_form(instruction)
+                    || block::is_checked_qword_store_form(instruction))
+            || number == 5
+                && (block::is_checked_qword_load_form(instruction)
                     || block::is_checked_qword_store_form(instruction))))
     .then_some(GuestGpr(number))
 }

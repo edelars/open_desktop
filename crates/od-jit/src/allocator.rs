@@ -671,7 +671,7 @@ mod tests {
             &program,
             AllocatorConfig {
                 register_homes: 4,
-                reserved_prefix_bytes: 144,
+                reserved_prefix_bytes: 160,
             },
             &[HelperBoundaryPosition::BeforeOperation(1)],
         )
