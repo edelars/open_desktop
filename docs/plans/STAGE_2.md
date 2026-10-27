@@ -8234,3 +8234,31 @@ it could not be executed on this macOS host. Formatting, diff whitespace, and
 Graphify update passed. Independent gpt-6.1-sol medium review passed with no findings on 2026-10-27;
 these results establish local interpreter/profile coverage only and do not close S2-34, S2-35, global
 `S2-35 → S2-34`, physical x86 validation, or deferred Mac mini/SSH acceptance.
+#### S2-35.18 — local-only bounded register `PCMPEQB`
+
+Requires S2-34.1 raw x87/SSE state and mandatory-66 XMM decoding from S2-35.1.
+Exact profile `s2-long-pcmpeqb-reg-v1` admits legacy
+`66 [one optional REX.R/B] 0F 74 /r` with ModR/M.mod=3 only. ModR/M.reg is the
+destination and ModR/M.r/m is the source, extended through XMM15. Each byte
+lane independently becomes `FF` for exact equality and `00` for inequality.
+Coverage includes all 65,536 byte pairs, all 16×16 XMM register pairs and REX
+axes, mixed lanes, one mismatch at every lane position, all-FF self-compare,
+signed-byte boundaries (`7F`, `80`, `FF`) and lane permutations. State outside destination
+XMM/RIP is preserved and no guest data-memory callback occurs. Missing state,
+truncation, STOP/budget atomicity, strict schema/decode negatives, a handwritten
+literal high-XMM fixture, and JIT/native denial are covered. PCMPEQW/D/Q,
+PCMPGT*, and PCMPEQQ (a separate SSE4.1 instruction) are excluded, as are MMX,
+memory, extra prefixes, REX.W/X, VEX/EVEX, feature gates,
+exceptions and physical execution remain excluded. SSE2 and CR0/CR4 requirements
+are assumptions only. S2-34, S2-35 and global `S2-35 → S2-34` remain open; Mac
+mini/SSH acceptance remains deferred.
+
+S2-35.18 implementation check (2026-10-27): focused PCMPEQB tests passed (4);
+the handwritten fixture test passed (1), and all 319 `od-testkit` tests passed.
+The full workspace suite passed 1,700 tests. Workspace and x86_64 Linux
+all-target offline checks passed. The Linux-gated native-denial assertion was
+compile-checked only on macOS. Formatting and diff whitespace checks passed;
+layout validation reports the pre-existing ISSUE-023 checkout/link findings.
+Graphify update completed. Independent gpt-6.1-sol medium review passed with
+no remaining findings after correcting the test total. This remains local
+interpreter/profile evidence.

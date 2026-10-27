@@ -9349,3 +9349,21 @@ native/JIT, and physical execution. SSE2 availability, CR0.EM=0, CR0.TS=0, and
 CR4.OSFXSR=1 are assumptions; there is no CPUID or exception-delivery claim.
 S2-34, S2-35 and global S2-35 → S2-34 remain open. See the
 [S2-35.15 plan](../plans/STAGE_2.md#s2-3515--local-only-bounded-register-psubd).
+## Local register-only `PCMPEQB` profile — S2-35.18
+
+The diagnostic profile `s2-long-pcmpeqb-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F 74 /r` with ModR/M.mod=3. Mandatory `66`
+selects XMM/SSE2 rather than the bare MMX form. ModR/M.reg is the destination
+and ModR/M.r/m the source, extended through XMM15 by REX.R/B. Each byte lane
+independently becomes `FF` when the destination byte equals the source byte,
+and `00` otherwise. Only destination XMM and RIP change; all other modeled
+state, including RFLAGS and MXCSR, remains unchanged, and no data-memory
+callback occurs.
+
+Bare MMX, PCMPEQW/D/Q, PCMPGT*, and PCMPEQQ (a separate SSE4.1 instruction),
+memory operands, additional prefixes, REX.W/X, VEX/EVEX, JIT/native execution
+and physical acceptance are excluded. Encoding and semantics follow PCMPEQB in
+Intel SDM revision 093, Volume 2B. SSE2
+availability and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. No
+CPUID or exception-delivery claim is made. See the
+[S2-35.18 plan](../plans/STAGE_2.md#s2-3518--local-only-bounded-register-pcmpeqb).

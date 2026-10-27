@@ -12287,3 +12287,30 @@ local interpreter/profile behavior only. S2-34, S2-35, and global
 
 See the [S2-35.17 plan](../plans/STAGE_2.md#s2-3517--local-only-bounded-register-psubq)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3517-local-register-psubq-diagnostic-profile).
+## S2-35.18 — local PCMPEQB XMM register slice
+
+Added exact profile `s2-long-pcmpeqb-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 74 /r`, ModR/M.mod=3, XMM0–15. All sixteen
+independent byte lanes produce `FF` for equality and `00` for inequality.
+Coverage comprises all 65,536 byte pairs, the complete 16×16 XMM matrix,
+all-FF self-compare, every single-mismatch lane, boundaries including
+`00/7f/80/ff`, full state preservation except destination XMM/RIP, and no data
+callbacks. Strict schema/decode rejection, failure atomicity, literal XMM8/XMM9
+fixture, JIT denial, and native early denial are included.
+
+This establishes local interpreter/profile behavior only. PCMPEQW/D/Q, PCMPGT*,
+and PCMPEQQ (a separate SSE4.1 instruction), MMX, memory forms, extra prefixes,
+REX.W/X, VEX/EVEX, feature gates, exception delivery and physical execution
+are excluded. S2-34, S2-35 and global
+`S2-35 → S2-34` remain open; Mac mini/SSH acceptance is deferred. Verification
+on 2026-10-27: four focused `od-isa` PCMPEQB tests passed; the literal
+`od-runner` fixture check passed (1); all 319 `od-testkit` tests passed. The
+full workspace suite passed 1,700 tests. Workspace all-target offline check and
+x86_64 Linux all-target compile check passed; the Linux-gated native-denial
+assertion is compile-checked only on this macOS host. Formatting and diff
+whitespace checks passed. `python3 tools/check_layout.py` remains blocked by
+the pre-existing ISSUE-023 findings (`.git` worktree pointer and two missing
+historical oracle manifests); Graphify update completed. Independent
+gpt-6.1-sol medium review passed with no remaining findings. These results are
+local interpreter/profile evidence only and do not close S2-34, S2-35, global
+`S2-35 → S2-34`, physical x86 validation, or deferred Mac mini/SSH acceptance.

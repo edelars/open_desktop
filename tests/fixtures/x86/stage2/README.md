@@ -5045,3 +5045,11 @@ fixture uses asymmetric operands to make the direction observable. Other XMM
 registers, x87 state, MXCSR, GPRs, flags, and memory are unchanged. JIT and
 native x86 execution remain unsupported. This is local interpreter evidence
 only.
+
+### S2-35.18 local register PCMPEQB diagnostic profile
+
+`s2_35_18_pcmpeqb_register.case.json` is a handwritten literal XMM8,XMM9
+fixture for strict `s2-long-pcmpeqb-reg-v1`: `66 45 0F 74 C1`. Each of the
+sixteen byte lanes compares destination against source and writes `FF` for
+equality or `00` otherwise. This remains the local interpreter profile only;
+JIT and native x86 execution are denied.

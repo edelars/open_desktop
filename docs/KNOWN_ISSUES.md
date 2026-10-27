@@ -1199,7 +1199,7 @@
 
 - **Дата обнаружения:** 2026-10-27.
 - **Компонент:** `tools/check_layout.py`, current Git worktree metadata and archived Stage 1/2 oracle report links.
-- **Статус:** открыта; unrelated to MOVUPS implementation.
+- **Статус:** открыта; инфраструктурная проблема checkout, воспроизведена также при проверке S2-35.18.
 - **Суть и последствия:** Layout validation reports the root `.git` worktree pointer as an unmapped file and two missing historical oracle manifests referenced by `docs/reports/STAGE_2_REPORT.md`. This prevents a clean layout-check result in this checkout; it does not affect interpreter or fixture execution.
 - **Воспроизведение:** `python3 tools/check_layout.py` from the repository root in the linked Stage 2 worktree reports `Unmapped root file: .git` and broken local links to `work/stage2-oracle/stage2-20261022-230853-3684f650/manifest.json` and `work/stage1-oracle/stage1-20261022-230241-3b73e810/manifest.json`.
 - **Следующий шаг:** update the layout checker to recognize Git worktree pointer files and restore the referenced manifests or correct their archived references in the report. Do not hide the failures by moving the checkout metadata or fabricating evidence.
