@@ -174,3 +174,13 @@ Jcc и возвращает выбранный RIP как `DispatchCandidate` (t
 counters и требованием положительного retirement до продолжения. Host callback
 держит lifecycle одного publish/execute/drop на блок. Cache, fallback и CLI
 multi-block execution в этом срезе не добавлены; S3-15 остаётся открытой.
+
+Локальный S3-17 partial добавляет `translation::TranslationKey`: полный
+immutable `CodeView` content/base/end, entry, compile flavor, terminal class,
+guest instruction fetch ranges и caller-provided mapping/backing identities
+with versions. Dependency spans обязаны покрыть весь CodeView без gaps и
+overlaps, иметь executable permission и согласованные версии. Stable IDs и
+generation принадлежат caller; `CodeView` пока не подключён к MMU и не
+подтверждает production invalidation. Это только typed metadata/equality,
+без cache lookup/reuse/eviction и без замеров структуры поиска; S3-17 остаётся
+открытой.

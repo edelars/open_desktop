@@ -346,7 +346,7 @@ impl AdmittedInstructionBoundaries {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct GuestByteRange {
     pub start_rip: u64,
     /// Exclusive end. An instruction crossing a page remains one exact range.
@@ -360,7 +360,7 @@ pub struct DecodedInstruction {
     pub decoded: Instruction,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum BranchTargetResolution {
     CodeEnd,
     KnownInstructionStart,
@@ -1163,10 +1163,21 @@ impl<'a> CodeMemory<'a> {
 
     pub(crate) fn one_instruction(code: CodeView<'a>, rip: u64) -> Option<Self> {
         let read_end_rip = rip.checked_add(1)?;
-        if rip < code.base_rip() || read_end_rip > code.code_end() {
+        Self::bounded_range(code, rip, read_end_rip)
+    }
+
+    pub(crate) fn bounded_range(
+        code: CodeView<'a>,
+        read_start_rip: u64,
+        read_end_rip: u64,
+    ) -> Option<Self> {
+        if read_start_rip >= read_end_rip
+            || read_start_rip < code.base_rip()
+            || read_end_rip > code.code_end()
+        {
             return None;
         }
-        Some(Self::limited(code, rip, read_end_rip))
+        Some(Self::limited(code, read_start_rip, read_end_rip))
     }
 
     fn unavailable(address: u64, access: AccessKind) -> MemoryError {

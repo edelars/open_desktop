@@ -18,6 +18,7 @@ pub mod ir;
 pub mod lowering;
 pub mod runtime;
 pub mod statepoints;
+pub mod translation;
 
 const RIP_OFFSET: u32 = std::mem::offset_of!(CpuState, rip) as u32;
 const RFLAGS_OFFSET: u32 = std::mem::offset_of!(CpuState, rflags) as u32;

@@ -516,6 +516,19 @@ fallback не расширены. S3-16 остаётся открытой; эт�
 
 **Готово:** stale или несовместимый block не считается hit. Выбор структуры поиска предварительно сравнен на representative key/workload; простой вариант допустим как измеренный baseline.
 
+**Локальная partial реализация:** `od_jit::translation::TranslationKey`
+требует typed compile flavor, entry RIP, полные bytes/base/end `CodeView`,
+terminal classification, actual block instruction ranges и caller-provided
+mapping/backing identity/version spans. Spans обязаны без дыр и overlap
+покрывать весь CodeView; каждый span должен иметь execute permission, а версии
+одной mapping/backing identity внутри snapshot должны совпадать. Разные mapping
+identities могут alias один backing ID/generation. IDs и ненулевые версии
+предоставляет владелец памяти; текущий `CodeView` не связан с реальным MMU и не
+получает generation или identity из host pointer. Key использует полное
+сравнение content при hash collisions. Production cache/invalidation и выбор
+структуры поиска не добавлены; S3-17 остаётся открытой до измерения и
+оставшихся acceptance checks.
+
 ### S3-18. Реализовать ограниченный cache
 
 1. Добавить lookup, compile miss, publish и reuse; проверить версии до вставки и входа в block.

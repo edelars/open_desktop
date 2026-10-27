@@ -607,6 +607,31 @@ other decoded operations, memory instructions, general Stage 2 fallback,
 dispatcher CLI changes, faults on writable/mapped guest memory and generic
 fallback are outside this partial API.
 
+### S3-17: typed translation identity partial
+
+`od_jit::translation::TranslationKey::for_block` builds an immutable,
+fully comparable compile identity from the complete `CodeView` bytes and
+base/end, entry RIP, typed compile flavor, terminal classification, the
+block's exact instruction fetch ranges, and caller-supplied dependency spans.
+Dependency spans must exactly and contiguously cover the complete code view,
+including unread tail bytes that can affect admission or terminal behavior.
+Because `BasicBlock` is public data, the constructor re-decodes each claimed
+instruction against the same bytes, with fetch bounded to that record's exact
+range, before accepting it as a source dependency.
+Each span carries a nonzero address-space ID, mapping ID/version, backing
+ID/version, and executable permission. Multiple mapping IDs may share one
+backing ID/version to represent aliases; inconsistent versions for one
+identity are rejected. `TranslationKey` equality compares all fields and all
+code bytes after hashing.
+
+The caller owns the meaning and lifetime of these stable IDs and versions and
+must advance versions without wrap when mappings or backing contents change.
+The current `CodeView` has no MMU owner, so this module does not invent
+generations or pointer-derived identities and does not establish production
+invalidation. Runtime budget, STOP, GPRs, and RFLAGS are not key inputs. No
+lookup container, cache, eviction, or reuse is implemented. Benchmarking key
+lookup structures is a separate S3-17 task; S3-17 remains open.
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,
