@@ -10692,5 +10692,7 @@ MOVS64/REP regressions. The focused runner checks were
 and
 `cargo test -p od-runner --test fixture_v2 movs_addr32_rejects_73_prefix_variants_as_unsupported_end_to_end --offline`.
 No Mac mini/physical checks were run; those remain in the single shared final
-acceptance substage. Independent review and the full workspace checks are
-pending.
+acceptance substage. Independent Sol review completed with no remaining
+findings. `cargo test --workspace --offline` passed all 1,391 tests;
+`cargo check --workspace --all-targets --offline`, formatting, and diff checks
+also passed.
