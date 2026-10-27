@@ -551,6 +551,27 @@ pair, with budget, stop-RIP, callback STOP, and continuation coverage. Partial
 windows 1..8 and malformed profiles reject before data callbacks. See the
 [S3-20t report](../reports/STAGE_3_S3-20t_2026-10-27.md).
 
+#### S3-20u: RBP-base signed disp8 qword MOV in shared IR and dispatch
+
+The checked singleton admits exactly `48 8B/89 /r disp8`, ModRM
+`mod=01,r/m=101`, RBP base, data register RAX..RBX, qword operand and exact
+length four. The decoder's `MemoryOperand` and `access_address_48` remain the
+only displacement, effective-address and qword canonical-range semantics.
+No SIB, RSP, address-size override, disp32, segment/extra prefix, extended
+register or pair form is admitted.
+
+Descriptor and direct V2/shared IR/interpreter evidence covers both operations
+at disp8 -128/-1/0/127, callback address/count, full state/RAM and unchanged
+RBP/RSP. Noncanonical RBP start and last-byte ranges produce #SS
+(vector 12/error 0/no linear address); equivalent RBX checks produce #GP
+(vector 13/error 0/no linear address), before a memory callback or commit.
+AddressOverflow remains the explicit host diagnostic; ordinary backend errors
+remain host errors. Entry STOP and zero budget do not access memory, and a
+successful store+STOP remains committed. Bounded dispatch composes the
+singleton → bare NOP interpreter bridge → existing pair across budgets 0..4,
+and resumes from the actual RIP without replay. See the
+[S3-20u report](../reports/STAGE_3_S3-20u_2026-10-27.md).
+
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
 alignment, same/different ranges, and safe partial overlaps for load→store;

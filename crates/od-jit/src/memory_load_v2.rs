@@ -1717,7 +1717,6 @@ mod tests {
             vec![0x48, 0x8b, 0x80, 0, 0, 0], // truncated disp32
             vec![0x48, 0x8b, 0x05],       // truncated RIP-relative disp32
             vec![0x48, 0x8b, 0x05, 0, 0, 0, 0, 0x90], // RIP-relative tail
-            vec![0x48, 0x8b, 0x45, 0],    // mod01 RBP base is unsupported
             vec![0x48, 0x8b, 0x85, 0, 0, 0, 0], // mod10 RBP base is unsupported
             vec![0x4a, 0x8b, 0x04, 0x00], // REX.X extended index
             vec![0x49, 0x8b, 0x04, 0x00], // REX.B extended base
@@ -1917,6 +1916,65 @@ mod tests {
                     }
                     MemorySiteOperationV2::Store => {
                         compile_ir_memory_store_block_v2(code, 0x27d0).map(|_| ())
+                    }
+                };
+                assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ir_rbp_disp8_has_exact_qword_descriptor_and_rejects_other_rbp_forms() {
+        for (opcode, access) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data in 0..4_u8 {
+                for displacement in [i8::MIN, -1, 0, i8::MAX] {
+                    let bytes = [0x48, opcode, 0x40 | (data << 3) | 5, displacement as u8];
+                    let code = CodeView::new(0x2810, &bytes).unwrap();
+                    let (site, source) = match access {
+                        MemorySiteOperationV2::Load => {
+                            let ir = compile_ir_memory_load_block_v2(code, 0x2810).unwrap();
+                            let direct = compile_memory_load_block_v2(code, 0x2810).unwrap();
+                            assert_eq!(ir.site(), direct.site());
+                            (ir.site().clone(), ir.source_bytes().to_vec())
+                        }
+                        MemorySiteOperationV2::Store => {
+                            let ir = compile_ir_memory_store_block_v2(code, 0x2810).unwrap();
+                            let direct = compile_memory_store_block_v2(code, 0x2810).unwrap();
+                            assert_eq!(ir.site(), direct.site());
+                            (ir.site().clone(), ir.source_bytes().to_vec())
+                        }
+                    };
+                    assert_eq!(source, bytes);
+                    assert_eq!(site.guest_rip(), 0x2810);
+                    assert_eq!(site.next_rip(), 0x2814);
+                    assert_eq!(site.operand().address_size, od_isa::OperandSize::Qword);
+                    assert_eq!(site.operand().size, od_isa::OperandSize::Qword);
+                    assert_eq!(site.operand().base, AddressBase::Register(Register::Rbp));
+                    assert_eq!(site.operand().index, None);
+                    assert_eq!(site.operand().scale, 1);
+                    assert_eq!(site.operand().displacement, i64::from(displacement));
+                    assert!(site.matches_source_bytes(&bytes, access));
+                }
+            }
+
+            for bytes in [
+                vec![0x48, opcode, 0x45],             // missing disp8
+                vec![0x48, opcode, 0x85, 0, 0, 0, 0], // disp32 is excluded
+                vec![0x48, opcode, 0x44, 0],          // SIB form
+                vec![0x67, 0x48, opcode, 0x45, 0],    // addr32
+                vec![0x4c, opcode, 0x45, 0],          // extended data register
+                vec![0x48, opcode, 0x45, 0, 0x90],    // trailing byte
+            ] {
+                let code = CodeView::new(0x2810, &bytes).unwrap();
+                let result = match access {
+                    MemorySiteOperationV2::Load => {
+                        compile_ir_memory_load_block_v2(code, 0x2810).map(|_| ())
+                    }
+                    MemorySiteOperationV2::Store => {
+                        compile_ir_memory_store_block_v2(code, 0x2810).map(|_| ())
                     }
                 };
                 assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");

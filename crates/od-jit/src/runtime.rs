@@ -143,13 +143,15 @@ impl MemorySiteV2 {
             }
         };
         let base_is_supported = match self.operand.base {
-            od_isa::long_decode::AddressBase::Register(register) => matches!(
-                register,
-                od_isa::Register::Rax
-                    | od_isa::Register::Rcx
-                    | od_isa::Register::Rdx
-                    | od_isa::Register::Rbx
-            ),
+            od_isa::long_decode::AddressBase::Register(register) => {
+                matches!(
+                    register,
+                    od_isa::Register::Rax
+                        | od_isa::Register::Rcx
+                        | od_isa::Register::Rdx
+                        | od_isa::Register::Rbx
+                ) || register == od_isa::Register::Rbp && length == 4
+            }
             od_isa::long_decode::AddressBase::NextRip => {
                 self.operand.index.is_none() && length == 7
             }
@@ -320,7 +322,7 @@ impl MemorySiteV2 {
             };
             return source.len() == expected_length
                 && data_register < 4
-                && base < 4
+                && (base < 4 || mode == 1 && base == 5 && decoded_base == od_isa::Register::Rbp)
                 && site_register == Some(data_register)
                 && self.next_rip.checked_sub(self.guest_rip) == Some(expected_length as u64)
                 && self.operand.address_size == od_isa::OperandSize::Dword
@@ -389,6 +391,11 @@ impl MemorySiteV2 {
                     od_isa::Register::from_encoding(base) == Some(decoded_base)
                         && self.operand.index.is_none()
                         && self.operand.scale == 1
+                }
+                (1, 5, od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)) => {
+                    self.operand.index.is_none()
+                        && self.operand.scale == 1
+                        && i8::try_from(self.operand.displacement).is_ok()
                 }
                 _ => false,
             }

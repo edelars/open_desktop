@@ -621,7 +621,10 @@ fn is_checked_memory_address(
     };
     supported_index
         && (matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
-            && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+            || instruction_length == 4
+                && operand.index.is_none()
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
+                && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
             || matches!(operand.base, AddressBase::NextRip)
                 && operand.index.is_none()
                 && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement))
