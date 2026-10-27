@@ -640,6 +640,50 @@ mod tests {
     }
 
     #[test]
+    fn checked_store_declares_an_empty_helper_boundary() {
+        let program = Program {
+            guest_instructions: vec![GuestInstruction {
+                guest_rip: 0x2000,
+                next_rip: 0x2003,
+            }],
+            operations: vec![
+                Operation::BeginInstruction { index: 0 },
+                Operation::CheckedStore {
+                    src: GuestGpr(0),
+                    operand: od_isa::long_decode::MemoryOperand {
+                        base: od_isa::long_decode::AddressBase::Register(od_isa::Register::Rax),
+                        index: None,
+                        scale: 1,
+                        displacement: 0,
+                        address_size: od_isa::OperandSize::Qword,
+                        size: od_isa::OperandSize::Qword,
+                    },
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::Exit {
+                    kind: ExitKind::BlockComplete,
+                    target_rip: 0x2003,
+                },
+            ],
+            code_end: 0x2003,
+        };
+        let allocation = Allocation::build(
+            &program,
+            AllocatorConfig {
+                register_homes: 4,
+                reserved_prefix_bytes: 144,
+            },
+            &[HelperBoundaryPosition::BeforeOperation(1)],
+        )
+        .unwrap();
+        let boundary = allocation
+            .helper_boundary(HelperBoundaryPosition::BeforeOperation(1))
+            .unwrap();
+        assert!(boundary.live_through.is_empty());
+        assert!(boundary.captures.is_empty());
+    }
+
+    #[test]
     fn budgets_spill_in_definition_order_and_sparse_ids_are_not_indices() {
         let program = program(&[0xFFFF_FF00, 3, 900], IntWidth::W64);
         let zero = Allocation::build(

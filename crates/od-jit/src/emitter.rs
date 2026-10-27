@@ -236,6 +236,11 @@ pub fn emit_data_effects(
                     operation: operation_index,
                 });
             }
+            Operation::CheckedStore { .. } => {
+                return Err(EmitterError::InvalidOperation {
+                    operation: operation_index,
+                });
+            }
             Operation::Integer {
                 kind,
                 result,
@@ -434,6 +439,11 @@ pub fn emit_data_effects(
                 )?;
             }
             Operation::CheckedLoad { .. } => {
+                return Err(EmitterError::InvalidOperation {
+                    operation: operation_index,
+                });
+            }
+            Operation::CheckedStore { .. } => {
                 return Err(EmitterError::InvalidOperation {
                     operation: operation_index,
                 });

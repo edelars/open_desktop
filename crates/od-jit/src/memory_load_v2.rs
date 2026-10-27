@@ -58,6 +58,34 @@ pub struct IrMemoryLoadBlockV2 {
     pc_map: crate::statepoints::PcMap,
 }
 
+/// Compiler-issued checked store lowered through shared typed IR and allocator.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IrMemoryStoreBlockV2 {
+    artifact: MemoryArtifactV2,
+    pc_map: crate::statepoints::PcMap,
+}
+
+impl IrMemoryStoreBlockV2 {
+    pub fn code(&self) -> &EncodedCode {
+        &self.artifact.code
+    }
+    pub fn site(&self) -> &MemorySiteV2 {
+        &self.artifact.site
+    }
+    pub const fn entry_rip(&self) -> u64 {
+        self.artifact.entry_rip
+    }
+    pub fn source_bytes(&self) -> &[u8] {
+        &self.artifact.source_bytes[..usize::from(self.artifact.source_len)]
+    }
+    pub const fn compile_flavor(&self) -> crate::translation::CompileFlavor {
+        self.artifact.compile_flavor
+    }
+    pub fn pc_map(&self) -> &crate::statepoints::PcMap {
+        &self.pc_map
+    }
+}
+
 impl IrMemoryLoadBlockV2 {
     pub fn code(&self) -> &EncodedCode {
         &self.artifact.code
@@ -545,6 +573,42 @@ pub fn compile_ir_memory_load_block_v2(
     })
 }
 
+/// Compile exactly one checked qword store through BasicBlock → typed IR →
+/// allocator → runtime emitter. The artifact has its own entry/API type.
+pub fn compile_ir_memory_store_block_v2(
+    code: CodeView<'_>,
+    entry_rip: u64,
+) -> Result<IrMemoryStoreBlockV2, MemoryLoadCompileErrorV2> {
+    let (site, bytes) = checked_memory_metadata_v2(code, entry_rip, MemorySiteOperationV2::Store)?;
+    if bytes.len() != 3
+        || bytes[0..2] != [0x48, 0x89]
+        || bytes[2] >> 6 != 0
+        || bytes[2] & 7 > 3
+        || (bytes[2] >> 3) & 7 > 3
+        || !matches!(site.operand().base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+        || site.operand().index.is_some()
+        || site.operand().displacement != 0
+        || site.operand().address_size != od_isa::OperandSize::Qword
+    {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
+    let emitted = crate::block_compile::compile_checked_store_block_v2(code, entry_rip)
+        .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    let mut source_bytes = [0; 8];
+    source_bytes[..bytes.len()].copy_from_slice(bytes);
+    Ok(IrMemoryStoreBlockV2 {
+        artifact: MemoryArtifactV2 {
+            code: emitted.code().clone(),
+            site,
+            entry_rip,
+            source_bytes,
+            source_len: bytes.len() as u8,
+            compile_flavor: crate::translation::CompileFlavor::S3_26bIrMemoryStoreV2,
+        },
+        pc_map: emitted.pc_map().clone(),
+    })
+}
+
 fn checked_load_metadata_v2(
     code: CodeView<'_>,
     entry_rip: u64,
@@ -614,6 +678,31 @@ fn compile_memory_operation_v2(
     entry_rip: u64,
     access: MemorySiteOperationV2,
 ) -> Result<MemoryArtifactV2, MemoryLoadCompileErrorV2> {
+    let (site, bytes) = checked_memory_metadata_v2(code, entry_rip, access)?;
+    let code = emit_memory_operation_v2(&site).map_err(MemoryLoadCompileErrorV2::Encoding)?;
+    let compile_flavor = match access {
+        MemorySiteOperationV2::Load => crate::translation::CompileFlavor::S3_19bMemoryLoadV2,
+        MemorySiteOperationV2::Store => crate::translation::CompileFlavor::S3_20bMemoryStoreV2,
+    };
+    let mut source_bytes = [0; 8];
+    source_bytes[..bytes.len()].copy_from_slice(bytes);
+    Ok(MemoryArtifactV2 {
+        code,
+        site,
+        entry_rip,
+        source_bytes,
+        source_len: bytes.len() as u8,
+        compile_flavor,
+    })
+}
+
+/// Decode and validate one checked MOV memory site without emitting native
+/// code. Both standalone V2 and shared-IR compilers use this metadata source.
+fn checked_memory_metadata_v2(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    access: MemorySiteOperationV2,
+) -> Result<(MemorySiteV2, &[u8]), MemoryLoadCompileErrorV2> {
     let offset = entry_rip
         .checked_sub(code.base_rip())
         .and_then(|offset| usize::try_from(offset).ok())
@@ -665,21 +754,7 @@ fn compile_memory_operation_v2(
     if !site.matches_source_bytes(bytes, access) {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
-    let code = emit_memory_operation_v2(&site).map_err(MemoryLoadCompileErrorV2::Encoding)?;
-    let compile_flavor = match access {
-        MemorySiteOperationV2::Load => crate::translation::CompileFlavor::S3_19bMemoryLoadV2,
-        MemorySiteOperationV2::Store => crate::translation::CompileFlavor::S3_20bMemoryStoreV2,
-    };
-    let mut source_bytes = [0; 8];
-    source_bytes[..bytes.len()].copy_from_slice(bytes);
-    Ok(MemoryArtifactV2 {
-        code,
-        site,
-        entry_rip,
-        source_bytes,
-        source_len: bytes.len() as u8,
-        compile_flavor,
-    })
+    Ok((site, bytes))
 }
 
 fn emit_memory_operation_v2(site: &MemorySiteV2) -> Result<EncodedCode, EncodeError> {
@@ -956,6 +1031,83 @@ mod tests {
         );
         assert_eq!(ir_block.pc_map().boundaries().len(), 1);
         assert_ne!(ir_block.code().words(), direct.code().words());
+    }
+
+    #[test]
+    fn ir_checked_store_has_non_replayable_write_to_commit_map() {
+        let code = CodeView::new(0x1100, &[0x48, 0x89, 0x03]).unwrap();
+        let ir_block = compile_ir_memory_store_block_v2(code, 0x1100).unwrap();
+        let direct = compile_memory_store_block_v2(code, 0x1100).unwrap();
+        assert_eq!(
+            ir_block.compile_flavor(),
+            crate::translation::CompileFlavor::S3_26bIrMemoryStoreV2
+        );
+        assert_eq!(ir_block.site(), direct.site());
+        assert_eq!(ir_block.source_bytes(), &[0x48, 0x89, 0x03]);
+        assert_eq!(ir_block.pc_map().instruction_count(), 1);
+        assert!(ir_block.pc_map().ranges().iter().any(|r| r.phase
+            == crate::statepoints::StatePhase::HelperCall
+            && r.snapshot == crate::statepoints::SnapshotAdmissibility::InadmissibleAfterEffect));
+        assert!(ir_block.pc_map().ranges().iter().any(|r| r.phase
+            == crate::statepoints::StatePhase::AfterHelper
+            && r.snapshot == crate::statepoints::SnapshotAdmissibility::InadmissibleAfterEffect));
+        let helper = ir_block
+            .pc_map()
+            .ranges()
+            .iter()
+            .find(|r| r.phase == crate::statepoints::StatePhase::HelperCall)
+            .unwrap();
+        let after = ir_block
+            .pc_map()
+            .ranges()
+            .iter()
+            .find(|r| r.phase == crate::statepoints::StatePhase::AfterHelper)
+            .unwrap();
+        assert_ne!(
+            ir_block
+                .pc_map()
+                .snapshot_admissibility_at(helper.range.start()),
+            Some(crate::statepoints::SnapshotAdmissibility::ReplayCurrentInstruction)
+        );
+        assert_ne!(
+            ir_block
+                .pc_map()
+                .snapshot_admissibility_at(after.range.start()),
+            Some(crate::statepoints::SnapshotAdmissibility::ReplayCurrentInstruction)
+        );
+        let commit = ir_block
+            .pc_map()
+            .ranges()
+            .iter()
+            .find(|r| r.phase == crate::statepoints::StatePhase::CommitInProgress)
+            .unwrap();
+        assert!(
+            ir_block
+                .pc_map()
+                .ranges()
+                .iter()
+                .filter(|r| r.range.start() >= helper.range.start()
+                    && r.range.end() <= commit.range.end())
+                .all(|r| r.snapshot
+                    != crate::statepoints::SnapshotAdmissibility::ReplayCurrentInstruction)
+        );
+        assert_eq!(ir_block.pc_map().boundaries().len(), 1);
+        assert_ne!(ir_block.code().words(), direct.code().words());
+    }
+
+    #[test]
+    fn ir_checked_store_builder_rejects_sib_displacement_and_trailing_bytes() {
+        for bytes in [
+            &[0x48, 0x89, 0x04, 0x18][..],
+            &[0x48, 0x89, 0x40, 0x01][..],
+            &[0x48, 0x89, 0x03, 0x90][..],
+        ] {
+            let code = CodeView::new(0x1200, bytes).unwrap();
+            assert!(matches!(
+                compile_ir_memory_store_block_v2(code, 0x1200),
+                Err(MemoryLoadCompileErrorV2::UnsupportedForm)
+            ));
+        }
     }
 
     #[test]

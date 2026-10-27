@@ -274,6 +274,40 @@ memory lowering, multiblock execution, MMIO, stores, atomics, or automatic host
 fault recovery. Results are recorded in the
 [S3-20h/S3-26a report](../reports/STAGE_3_S3-20h_2026-10-27.md).
 
+#### S3-20i / S3-26b: one checked qword store through shared typed IR
+
+The separate opt-in profile accepts exactly one `48 89 /r` instruction with
+ModRM `mod=00`, source and base RAX..RBX, and no SIB or displacement.
+`CheckedStore` records the canonical source GPR and decoder-provided qword
+`MemoryOperand`; it does not invent a temporary that the emitter would ignore.
+The verifier requires one store and its immediately following instruction
+commit. It rejects duplicate stores, missing/early commit, or an intervening
+effect. The artifact has a distinct compile flavor and typed publication and
+execution path. V1, direct V2 load, shared-IR load, and direct V2 store entries
+reject it before native entry.
+
+The generated entry performs the existing STOP-RIP, STOP, and budget guards,
+calls the checked helper once, then commits RIP, budget, and retirement before
+checking STOP again. A successful write followed by STOP is retained and
+reported as `StopRequested`. Architectural or backend write errors leave CPU
+state and RAM unchanged and retire nothing. The typed host entry carries the
+same unsafe private synchronous ordinary-RAM ownership preconditions as the
+direct V2 store: no MMIO, DMA, concurrent/shared or executable/code backing,
+and all-or-nothing writes.
+
+PC-map ranges for the helper call and generated return-to-commit interval are
+`InadmissibleAfterEffect`; an unknown host fault there cannot be recovered by
+replaying the guest store. Only the planned helper error branch remains
+replay-admissible because the helper guarantees no write on error. Local native
+ARM64 tests compare IR store, direct V2 store, and interpreter on independent
+CPU/RAM snapshots for `MOV [RAX], RAX`; they also cover the callback count,
+successful retirement, STOP raised during write, architectural/backend errors,
+pre-entry guards, verifier negatives, PC-map admissibility, and foreign-entry
+rejection. This is one instruction over private synchronous ordinary data RAM.
+It does not add MMIO, DMA, concurrency, atomics, executable aliases, active
+SMC, multiblock ordering, or performance claims. See the
+[S3-20i/S3-26b report](../reports/STAGE_3_S3-20i_2026-10-27.md).
+
 ## 4. Начальные runtime bounds
 
 - Один гостевой vCPU; компиляция блоков последовательная.

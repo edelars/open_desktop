@@ -86,12 +86,12 @@ fn lower_with_admission(
     };
 
     let deferred = deferred_error(&block.stop_reason);
-    if block
-        .instructions
-        .iter()
-        .any(|instruction| block::is_checked_qword_load_form(instruction.decoded))
-        && (block.instructions.len() != 1
-            || !block::is_checked_qword_load_form(block.instructions[0].decoded))
+    if block.instructions.iter().any(|instruction| {
+        block::is_checked_qword_load_form(instruction.decoded)
+            || block::is_checked_qword_store_form(instruction.decoded)
+    }) && (block.instructions.len() != 1
+        || !(block::is_checked_qword_load_form(block.instructions[0].decoded)
+            || block::is_checked_qword_store_form(block.instructions[0].decoded)))
     {
         return Err(LoweringError::InvalidDecodedForm {
             guest_rip: block.entry_rip,
@@ -219,6 +219,7 @@ fn lower_with_admission(
     for (index, instruction) in instructions.iter().enumerate() {
         if !block::is_s0_09_form(instruction.decoded)
             && !block::is_checked_qword_load_form(instruction.decoded)
+            && !block::is_checked_qword_store_form(instruction.decoded)
         {
             return Err(LoweringError::InvalidDecodedForm {
                 guest_rip: instruction.guest_rip,
@@ -360,6 +361,15 @@ fn lower_instruction(
                 register: destination,
                 src: value,
                 width: IntWidth::W64,
+            });
+        }
+        DecodedOperation::Mov {
+            dst: Operand::Memory(operand),
+            src: Operand::Register(source),
+        } if block::is_checked_qword_store_form(instruction.decoded) => {
+            operations.push(Operation::CheckedStore {
+                src: guest_gpr(source).ok_or_else(invalid)?,
+                operand,
             });
         }
         DecodedOperation::MovImmediate {

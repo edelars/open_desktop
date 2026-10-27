@@ -46,6 +46,9 @@ pub enum SnapshotAdmissibility {
     ReplayCurrentInstruction,
     /// Canonical fields may be partially written by the commit sequence.
     InadmissibleDuringCommit,
+    /// A checked write may already have reached guest memory; replaying this
+    /// instruction from the snapshot could duplicate a side effect.
+    InadmissibleAfterEffect,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,6 +153,14 @@ pub struct PcMap {
 }
 
 impl PcMap {
+    /// Return the mapping classification for a host byte offset. This is used
+    /// by recovery code to establish whether instruction replay is permitted.
+    pub fn snapshot_admissibility_at(&self, offset: u32) -> Option<SnapshotAdmissibility> {
+        self.ranges
+            .iter()
+            .find(|point| point.range.contains(offset))
+            .map(|point| point.snapshot)
+    }
     pub(crate) fn new(
         code_len: usize,
         instruction_count: usize,

@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-26a/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-26a/S3-26b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -156,6 +156,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20f | Address-size override `67 48 8B/89` для V2 MOV | Только ModRM `mod=00`, qword data + dword address, RAX..RBX base/data, ровно 4 bytes |
 | [partial] | S3-20g | Signed disp8/disp32 для V2 MOV с address-size override | `67 48 8B/89 /r`, ModRM `mod=01/10`, qword data + dword address, base/data RAX..RBX, exact lengths 5/8; без SIB и других форм |
 | [partial] | S3-20h / S3-26a | Checked qword load через общий BasicBlock → typed IR → allocator → runtime emitter | Только `48 8B /r`, ModRM `mod=00`, data/base RAX..RBX, без SIB/displacement; V1/direct V2 остаются отдельными |
+| [partial] | S3-20i / S3-26b | Checked qword store через общий BasicBlock → typed IR → allocator → runtime emitter | Только `48 89 /r`, ModRM `mod=00`, source/base RAX..RBX; отдельный typed entry, no replay после helper write |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -884,6 +885,35 @@ backend error, STOP, stop-RIP, zero budget, verifier negatives, и границ�
 helper/commit в PC map. Это один bounded fixture slice: нет общего multiblock
 memory lowering, stores, MMIO, atomic операций или автоматического host fault
 recovery. См. [S3-20h/S3-26a report](../reports/STAGE_3_S3-20h_2026-10-27.md).
+
+#### S3-20i / S3-26b. Один checked qword store через общий IR runtime path
+
+Отдельный opt-in builder допускает ровно `48 89 /r`, ModRM `mod=00`,
+source/base RAX..RBX, без SIB/displacement. `CheckedStore` явно хранит guest
+source GPR и decoder `MemoryOperand`; verifier требует единственный store и
+следующий непосредственно за ним commit, отвергая дублирование и эффекты до
+commit. У store отдельные compile flavor, artifact, публикация и invocation
+entry. V1, direct V2 load, IR load и direct V2 store APIs отвергают этот
+artifact до native entry.
+
+Generated entry исполняет stop-RIP → STOP → budget guards, один checked helper
+call, затем сразу фиксирует RIP/budget/retirement; лишь после полного commit
+читает STOP. Store, завершённый при поднятии STOP внутри callback, сохраняется
+и возвращает `StopRequested`. Helper errors сохраняют CPU/RAM и не retire-ят.
+Host entry сохраняет те же unsafe private synchronous ordinary-RAM
+предпосылки, что direct V2 store.
+
+PC map помечает helper call и путь успешного возврата к commit как
+`InadmissibleAfterEffect`, поэтому неизвестный host fault не может быть
+превращён в replay guest store. Ошибка helper остаётся planned/replayable,
+поскольку helper не меняет RAM при ошибке. Native ARM64 fixture сравнивает IR,
+direct V2 и interpreter на независимых snapshots `MOV [RAX], RAX`, проверяет
+ровно один callback/write, commit/retirement, STOP после write, architectural и
+backend errors, pre-entry guards, verifier negatives, PC-map и typed-entry
+rejection. Ограничения: одна инструкция, private ordinary data RAM; без MMIO,
+DMA, concurrency, atomics, executable aliases, active SMC, multiblock порядка
+или performance claim. Факты записаны в
+[S3-20i/S3-26b report](../reports/STAGE_3_S3-20i_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

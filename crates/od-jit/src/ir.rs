@@ -96,6 +96,12 @@ pub enum Operation {
         dst: TempId,
         operand: MemoryOperand,
     },
+    /// One checked qword write from the canonical guest GPR. The store has
+    /// no temporary result and must be followed immediately by its commit.
+    CheckedStore {
+        src: GuestGpr,
+        operand: MemoryOperand,
+    },
     Integer {
         kind: IntegerKind,
         lhs: TempId,
@@ -198,6 +204,15 @@ pub enum VerifyError {
         operation: usize,
     },
     CheckedLoadWithoutWrite {
+        operation: usize,
+    },
+    InvalidCheckedStoreDescriptor {
+        operation: usize,
+    },
+    CheckedStoreInstructionMismatch {
+        operation: usize,
+    },
+    CheckedStoreCommitOrder {
         operation: usize,
     },
     InvalidIntegerResult {
@@ -327,6 +342,34 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                 }
                 define(&mut definitions, *dst, IntWidth::W64, operation_index)?;
             }
+            Operation::CheckedStore { src, operand } => {
+                require_active(active_instruction, operation_index)?;
+                if program.guest_instructions.len() != 1 || active_instruction != Some(0) {
+                    return Err(VerifyError::CheckedStoreInstructionMismatch {
+                        operation: operation_index,
+                    });
+                }
+                validate_gpr(*src, operation_index)?;
+                if operand.size != od_isa::OperandSize::Qword
+                    || operand.address_size != od_isa::OperandSize::Qword
+                    || operand.index.is_some()
+                    || operand.scale != 1
+                    || operand.displacement != 0
+                    || !matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+                {
+                    return Err(VerifyError::InvalidCheckedStoreDescriptor {
+                        operation: operation_index,
+                    });
+                }
+                if !matches!(
+                    program.operations.get(operation_index + 1),
+                    Some(Operation::CommitInstruction { index: 0 })
+                ) {
+                    return Err(VerifyError::CheckedStoreCommitOrder {
+                        operation: operation_index,
+                    });
+                }
+            }
             Operation::Integer {
                 kind,
                 lhs,
@@ -372,6 +415,14 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                         operation: operation_index,
                         expected: active,
                         actual: *index,
+                    });
+                }
+                let store_position = program.operations[..operation_index]
+                    .iter()
+                    .rposition(|operation| matches!(operation, Operation::CheckedStore { .. }));
+                if store_position.is_some_and(|position| position + 1 != operation_index) {
+                    return Err(VerifyError::CheckedStoreCommitOrder {
+                        operation: store_position.unwrap_or(operation_index),
                     });
                 }
                 let has_checked_load = program.operations[..operation_index]
@@ -653,6 +704,72 @@ mod tests {
         assert!(matches!(
             verify(&early_commit),
             Err(VerifyError::CheckedLoadWithoutWrite { .. })
+        ));
+    }
+
+    fn checked_store_program() -> Program {
+        let operand = MemoryOperand {
+            base: AddressBase::Register(od_isa::Register::Rax),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: od_isa::OperandSize::Qword,
+            size: od_isa::OperandSize::Qword,
+        };
+        Program {
+            guest_instructions: vec![GuestInstruction {
+                guest_rip: 0x3000,
+                next_rip: 0x3003,
+            }],
+            operations: vec![
+                Operation::BeginInstruction { index: 0 },
+                Operation::CheckedStore {
+                    src: GuestGpr(0),
+                    operand,
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::Exit {
+                    kind: ExitKind::BlockComplete,
+                    target_rip: 0x3003,
+                },
+            ],
+            code_end: 0x3003,
+        }
+    }
+
+    #[test]
+    fn checked_store_is_unique_and_commits_immediately_after_write() {
+        let program = checked_store_program();
+        assert_eq!(verify(&program), Ok(()));
+        let mut duplicate = program.clone();
+        duplicate
+            .operations
+            .insert(2, duplicate.operations[1].clone());
+        assert!(matches!(
+            verify(&duplicate),
+            Err(VerifyError::CheckedStoreCommitOrder { .. })
+        ));
+        let mut missing_commit = program.clone();
+        missing_commit.operations.remove(2);
+        assert!(matches!(
+            verify(&missing_commit),
+            Err(VerifyError::CheckedStoreCommitOrder { .. })
+        ));
+        let mut early_commit = program.clone();
+        early_commit.operations.swap(1, 2);
+        assert!(verify(&early_commit).is_err());
+        let mut effect_after_store = program;
+        effect_after_store.operations.insert(
+            2,
+            Operation::ReadGpr {
+                dst: TempId(4),
+                register: GuestGpr(1),
+                width: IntWidth::W64,
+            },
+        );
+        assert!(matches!(
+            verify(&effect_after_store),
+            Err(VerifyError::CheckedStoreCommitOrder { .. })
         ));
     }
 

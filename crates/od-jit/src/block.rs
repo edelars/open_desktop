@@ -13,6 +13,13 @@ pub const MAX_BLOCK_INSTRUCTIONS: usize = 32;
 pub const MAX_BLOCK_BYTES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BlockBuildProfile {
+    S0_09,
+    CheckedQwordLoad,
+    CheckedQwordStore,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlockLimits {
     pub instructions: usize,
     pub bytes: usize,
@@ -440,7 +447,7 @@ pub fn build_block(
     context: AccessContext,
     limits: BlockLimits,
 ) -> Result<BuildOutcome, BuildError> {
-    build_block_with_load_profile(code, entry_rip, context, limits, false)
+    build_block_with_profile(code, entry_rip, context, limits, BlockBuildProfile::S0_09)
 }
 
 /// Build one exact checked-qword-load candidate. This profile is opt-in and
@@ -451,15 +458,38 @@ pub(crate) fn build_checked_qword_load_block(
     context: AccessContext,
     limits: BlockLimits,
 ) -> Result<BuildOutcome, BuildError> {
-    build_block_with_load_profile(code, entry_rip, context, limits, true)
+    build_block_with_profile(
+        code,
+        entry_rip,
+        context,
+        limits,
+        BlockBuildProfile::CheckedQwordLoad,
+    )
 }
 
-fn build_block_with_load_profile(
+/// Build exactly one checked qword store candidate. This remains opt-in and
+/// separate from the ordinary block profile.
+pub(crate) fn build_checked_qword_store_block(
     code: CodeView<'_>,
     entry_rip: u64,
     context: AccessContext,
     limits: BlockLimits,
-    checked_load_only: bool,
+) -> Result<BuildOutcome, BuildError> {
+    build_block_with_profile(
+        code,
+        entry_rip,
+        context,
+        limits,
+        BlockBuildProfile::CheckedQwordStore,
+    )
+}
+
+fn build_block_with_profile(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    context: AccessContext,
+    limits: BlockLimits,
+    profile: BlockBuildProfile,
 ) -> Result<BuildOutcome, BuildError> {
     validate_limits(limits)?;
     let entry_offset = code.offset(entry_rip).ok_or(BuildError::EntryOutsideCode {
@@ -572,7 +602,11 @@ fn build_block_with_load_profile(
             });
         }
 
-        let admitted = if checked_load_only {
+        let admitted = if profile == BlockBuildProfile::CheckedQwordStore {
+            instructions.is_empty()
+                && is_checked_qword_store_form(decoded)
+                && exact_direct_qword_memory_bytes(code, guest_rip, decoded.length, 0x89)
+        } else if profile == BlockBuildProfile::CheckedQwordLoad {
             instructions.is_empty()
                 && is_checked_qword_load_form(decoded)
                 && exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
@@ -650,7 +684,7 @@ fn build_block_with_load_profile(
             end_rip: next_rip,
         });
 
-        if checked_load_only {
+        if profile != BlockBuildProfile::S0_09 {
             return Ok(finish(
                 entry_rip,
                 code.code_end,
@@ -1147,7 +1181,45 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && operand.displacement == 0
 }
 
+pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
+    let exact_prefix = instruction.prefixes.group1.is_none()
+        && instruction.prefixes.segment.is_none()
+        && !instruction.prefixes.operand_override
+        && !instruction.prefixes.address_override
+        && instruction.prefixes.rex == Some(0x48);
+    let Operation::Mov {
+        dst: Operand::Memory(operand),
+        src: Operand::Register(source),
+    } = instruction.operation
+    else {
+        return false;
+    };
+    exact_prefix
+        && instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0x89
+        && instruction.operand_size == OperandSize::Qword
+        && instruction.address_size == OperandSize::Qword
+        && instruction.length == 3
+        && (source.register() as u8) < 4
+        && source.size() == OperandSize::Qword
+        && operand.size == OperandSize::Qword
+        && operand.address_size == OperandSize::Qword
+        && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+        && operand.index.is_none()
+        && operand.scale == 1
+        && operand.displacement == 0
+}
+
 fn exact_direct_qword_load_bytes(code: CodeView<'_>, guest_rip: u64, length: u8) -> bool {
+    exact_direct_qword_memory_bytes(code, guest_rip, length, 0x8b)
+}
+
+fn exact_direct_qword_memory_bytes(
+    code: CodeView<'_>,
+    guest_rip: u64,
+    length: u8,
+    opcode: u8,
+) -> bool {
     let Some(offset) = guest_rip
         .checked_sub(code.base_rip)
         .and_then(|value| usize::try_from(value).ok())
@@ -1161,7 +1233,7 @@ fn exact_direct_qword_load_bytes(code: CodeView<'_>, guest_rip: u64, length: u8)
         return false;
     };
     bytes.len() == 3
-        && bytes[0..2] == [0x48, 0x8b]
+        && bytes[0..2] == [0x48, opcode]
         && bytes[2] >> 6 == 0
         && bytes[2] & 0b111 <= 3
         && (bytes[2] >> 3) & 0b111 <= 3

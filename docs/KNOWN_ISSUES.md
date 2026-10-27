@@ -12,6 +12,24 @@
 
 ## Записи
 
+### ISSUE-025 — layout checker rejects Git worktree metadata pointer
+
+- **Дата обнаружения:** 2026-10-27.
+- **Компонент:** `tools/check_layout.py`, Git worktree root.
+- **Статус:** открыта.
+- **Суть и последствия:** в linked worktree `.git` является обычным текстовым pointer-файлом на основную Git directory, а не каталогом или исходным файлом проекта. `python3 tools/check_layout.py` сообщает `ERROR: Unmapped root file: .git`, поэтому корректный worktree не проходит структуру.
+- **Основание:** проверка выполнена в `/Users/senya/.codex/worktrees/stage3-baseline/open_desktop`; `ls -ld .git` показывает regular file. Это не относится к изменённым S3-20i файлам.
+- **Следующий шаг:** обновить layout checker, чтобы он распознавал Git metadata file/directory и продолжал проверять рабочие файлы.
+
+### ISSUE-026 — Stage 2 report ссылается на отсутствующие ignored oracle manifests
+
+- **Дата обнаружения:** 2026-10-27.
+- **Компонент:** `docs/reports/STAGE_2_REPORT.md` и локальные evidence paths под `work/`.
+- **Статус:** открыта.
+- **Суть и последствия:** два исторических manifest URL в отчёте Stage 2 указывают на отсутствующие `work/stage2-oracle/stage2-20261022-230853-3684f650/manifest.json` и `work/stage1-oracle/stage1-20261022-230241-3b73e810/manifest.json`; `work/**` игнорируется Git. Локально доступны Stage 1 runs с другими IDs. Эти ссылки не работают и не позволяют независимо открыть указанные сырые evidence.
+- **Основание:** `python3 tools/check_layout.py` сообщил обе ссылки как broken; прямой поиск под `work/` не нашёл указанные пути, а `.gitignore` содержит `/work/**`.
+- **Следующий шаг:** восстановить соответствующие архивные manifests с сохранением provenance либо обновить Stage 2 report на имеющиеся воспроизводимые evidence paths. Stage 2 файлы не менялись в текущей задаче.
+
 ### ISSUE-024 — checked memory lowering ограничен узкими V2 MOV slices
 
 - **Дата обнаружения:** 2026-10-27.
