@@ -5,7 +5,7 @@ use od_isa::memory::AccessContext;
 use crate::allocator::{Allocation, AllocatorConfig, AllocatorError, HelperBoundaryPosition};
 use crate::block::{
     self, AdmittedInstructionBoundaries, BlockLimits, BlockStopReason, BuildError, BuildOutcome,
-    CodeView, DecodeBoundary,
+    CodeView, DecodeBoundary, S0_09NopAdmission,
 };
 use crate::block_emitter::{BlockEmitterError, EmittedRuntimeBlock, emit_runtime_block};
 use crate::ir::Operation;
@@ -56,6 +56,8 @@ pub enum BlockCompileError {
     DispatchAdmissionDoesNotMatchCode,
     DispatchEntryNotAdmitted { entry_rip: u64 },
     DispatchBlockBoundaryNotAdmitted { rip: u64 },
+    NopAdmissionDoesNotMatchCode,
+    NopEntryNotAdmitted { entry_rip: u64 },
 }
 
 /// Build and compile a single bounded block with the current runtime profile.
@@ -65,7 +67,7 @@ pub fn compile_block(
     code: CodeView<'_>,
     entry_rip: u64,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
-    compile_block_inner(code, entry_rip, None)
+    compile_block_inner(code, entry_rip, None, None)
 }
 
 /// Compile one block with a typed Jcc dispatch handoff, using boundaries from
@@ -82,13 +84,36 @@ pub fn compile_block_for_dispatch(
     if !admission.contains(entry_rip) {
         return Err(BlockCompileError::DispatchEntryNotAdmitted { entry_rip });
     }
-    compile_block_inner(code, entry_rip, Some(admission))
+    compile_block_inner(code, entry_rip, Some(admission), None)
+}
+
+/// Compile one native prefix for the separately admitted S0-09-plus-NOP
+/// interpreter fallback path. Fixture-v1 dispatcher callers keep their own
+/// admission API and are not widened by this helper.
+pub fn compile_block_for_nop_fallback(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::NopAdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) {
+        return Err(BlockCompileError::NopEntryNotAdmitted { entry_rip });
+    }
+    compile_block_inner(
+        code,
+        entry_rip,
+        Some(admission.boundaries()),
+        Some(admission),
+    )
 }
 
 fn compile_block_inner(
     code: CodeView<'_>,
     entry_rip: u64,
     admission: Option<&AdmittedInstructionBoundaries>,
+    nop_admission: Option<&S0_09NopAdmission>,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
     let built = block::build_block(
         code,
@@ -108,9 +133,12 @@ fn compile_block_inner(
             }
         }
     }
-    let lowered_outcome = match admission {
-        Some(admission) => lowering::lower_for_dispatch(&built, admission),
-        None => lowering::lower(&built),
+    let lowered_outcome = match nop_admission {
+        Some(admission) => lowering::lower_for_nop_fallback(&built, admission),
+        None => match admission {
+            Some(admission) => lowering::lower_for_dispatch(&built, admission),
+            None => lowering::lower(&built),
+        },
     }
     .map_err(BlockCompileError::Lowering)?;
     let lowered = match lowered_outcome {
@@ -336,5 +364,45 @@ mod tests {
 
         let compiled = compile_block(view, 0).unwrap();
         assert!(matches!(compiled, BlockCompileOutcome::Compiled(_)));
+    }
+
+    #[test]
+    fn nop_fallback_compiler_retains_only_native_prefix_and_legacy_stays_unsupported() {
+        let mut code = vec![0x48, 0xB8];
+        code.extend_from_slice(&7_u64.to_le_bytes());
+        code.push(0x90);
+        code.extend_from_slice(&[0x48, 0x03, 0xC1]);
+        let view = CodeView::new(0x6000, &code).unwrap();
+        let admission = block::S0_09NopAdmission::from_code(view).unwrap();
+
+        let compiled = compile_block_for_nop_fallback(view, 0x6000, &admission).unwrap();
+        let BlockCompileOutcome::Compiled(compiled) = compiled else {
+            panic!("the supported MOV prefix should compile before NOP");
+        };
+        assert_eq!(compiled.emitted().pc_map().instruction_count(), 1);
+
+        let nop_only = [0x90];
+        let nop_view = CodeView::new(0x7000, &nop_only).unwrap();
+        let nop_admission = block::S0_09NopAdmission::from_code(nop_view).unwrap();
+        assert!(matches!(
+            compile_block_for_nop_fallback(nop_view, 0x7000, &nop_admission).unwrap(),
+            BlockCompileOutcome::NoNativePrefix {
+                reason: BlockStopReason::UnsupportedDecoded {
+                    guest_rip: 0x7000,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            compile_block(nop_view, 0x7000).unwrap(),
+            BlockCompileOutcome::NoNativePrefix {
+                reason: BlockStopReason::UnsupportedDecoded {
+                    guest_rip: 0x7000,
+                    ..
+                },
+                ..
+            }
+        ));
     }
 }

@@ -118,6 +118,132 @@ pub struct AdmittedInstructionBoundaries {
     boundaries: Vec<u64>,
 }
 
+/// Full-code admission for S0-09 plus exact bare `0x90` NOP fallback.
+/// Unlike fixture-v1 admission, this is a separate opt-in profile witness.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct S0_09NopAdmission {
+    boundaries: AdmittedInstructionBoundaries,
+    nop_rips: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum S0_09NopAdmissionError {
+    Decode {
+        rip: u64,
+        error: long_decode::DecodeError,
+    },
+    InvalidLength {
+        rip: u64,
+        length: u8,
+    },
+    RangeOverflow {
+        rip: u64,
+        length: u8,
+    },
+    UnsupportedInstruction {
+        rip: u64,
+    },
+    BranchTargetNotBoundary {
+        rip: u64,
+        target: u64,
+    },
+}
+
+impl S0_09NopAdmission {
+    /// Decode the complete immutable code view and admit only S0-09 forms plus
+    /// unprefixed one-byte NOP. Every branch target must be a decoded start or
+    /// the exclusive code end.
+    pub fn from_code(code: CodeView<'_>) -> Result<Self, S0_09NopAdmissionError> {
+        let mut rip = code.base_rip();
+        let mut boundaries = Vec::new();
+        let mut instructions = Vec::new();
+        let mut nop_rips = Vec::new();
+
+        while rip < code.code_end() {
+            let offset = usize::try_from(rip - code.base_rip())
+                .map_err(|_| S0_09NopAdmissionError::RangeOverflow { rip, length: 0 })?;
+            let mut memory = CodeMemory::full_code(code);
+            let instruction = long_decode::decode(&mut memory, rip, AccessContext::default())
+                .map_err(|error| S0_09NopAdmissionError::Decode { rip, error })?;
+            if !(1..=15).contains(&instruction.length) {
+                return Err(S0_09NopAdmissionError::InvalidLength {
+                    rip,
+                    length: instruction.length,
+                });
+            }
+            let next_rip = rip.checked_add(u64::from(instruction.length)).ok_or(
+                S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: instruction.length,
+                },
+            )?;
+            if next_rip > code.code_end() {
+                return Err(S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: instruction.length,
+                });
+            }
+            if is_exact_bare_nop(instruction, code.bytes()[offset]) {
+                nop_rips.push(rip);
+            } else if !is_s0_09_form(instruction) {
+                return Err(S0_09NopAdmissionError::UnsupportedInstruction { rip });
+            }
+            boundaries.push(rip);
+            instructions.push((rip, next_rip, instruction));
+            rip = next_rip;
+        }
+        boundaries.push(code.code_end());
+
+        for (branch_rip, next_rip, instruction) in &instructions {
+            let Operation::Branch { displacement, .. } = instruction.operation else {
+                continue;
+            };
+            let target = next_rip.wrapping_add_signed(i64::from(displacement));
+            if !boundaries.contains(&target) {
+                return Err(S0_09NopAdmissionError::BranchTargetNotBoundary {
+                    rip: *branch_rip,
+                    target,
+                });
+            }
+        }
+
+        Ok(Self {
+            boundaries: AdmittedInstructionBoundaries {
+                code_base: code.base_rip(),
+                code_end: code.code_end(),
+                code_bytes: code.bytes().to_vec(),
+                boundaries,
+            },
+            nop_rips,
+        })
+    }
+
+    pub(crate) fn boundaries(&self) -> &AdmittedInstructionBoundaries {
+        &self.boundaries
+    }
+
+    pub(crate) fn matches_code(&self, code: CodeView<'_>) -> bool {
+        self.boundaries.matches_code(code)
+    }
+
+    pub(crate) fn contains(&self, rip: u64) -> bool {
+        self.boundaries.contains(rip)
+    }
+
+    pub(crate) fn admits_nop(&self, rip: u64) -> bool {
+        self.nop_rips.contains(&rip)
+    }
+}
+
+fn is_exact_bare_nop(instruction: Instruction, first_byte: u8) -> bool {
+    matches!(instruction.operation, Operation::Nop)
+        && instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0x90
+        && instruction.prefixes == Default::default()
+        && instruction.length == 1
+        && first_byte == 0x90
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdmissionError {
     FixtureDecodeRejected(od_isa::DecodeError),
@@ -390,7 +516,7 @@ pub fn build_block(
             ));
         }
 
-        let mut memory = CodeMemory { code, read_end_rip };
+        let mut memory = CodeMemory::limited(code, guest_rip, read_end_rip);
         let decoded = match long_decode::decode(&mut memory, guest_rip, context) {
             Ok(instruction) => instruction,
             Err(error) => {
@@ -1016,12 +1142,33 @@ fn is_byte_limit_fetch(error: &DecodeError, read_end_rip: u64, code_end: u64) ->
         )
 }
 
-struct CodeMemory<'a> {
+pub(crate) struct CodeMemory<'a> {
     code: CodeView<'a>,
+    read_start_rip: u64,
     read_end_rip: u64,
 }
 
-impl CodeMemory<'_> {
+impl<'a> CodeMemory<'a> {
+    fn limited(code: CodeView<'a>, read_start_rip: u64, read_end_rip: u64) -> Self {
+        Self {
+            code,
+            read_start_rip,
+            read_end_rip,
+        }
+    }
+
+    pub(crate) fn full_code(code: CodeView<'a>) -> Self {
+        Self::limited(code, code.base_rip(), code.code_end())
+    }
+
+    pub(crate) fn one_instruction(code: CodeView<'a>, rip: u64) -> Option<Self> {
+        let read_end_rip = rip.checked_add(1)?;
+        if rip < code.base_rip() || read_end_rip > code.code_end() {
+            return None;
+        }
+        Some(Self::limited(code, rip, read_end_rip))
+    }
+
     fn unavailable(address: u64, access: AccessKind) -> MemoryError {
         MemoryError::Unmapped { address, access }
     }
@@ -1033,7 +1180,7 @@ impl CodeMemory<'_> {
 
 impl GuestMemory for CodeMemory<'_> {
     fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
-        if address < self.code.base_rip || address >= self.read_end_rip {
+        if address < self.read_start_rip || address >= self.read_end_rip {
             return Err(Self::unavailable(address, AccessKind::Fetch));
         }
         let offset = self

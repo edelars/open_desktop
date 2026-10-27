@@ -585,6 +585,28 @@ for 10 manual plus 1000 generated inputs, seed `0x5eedcafe`, and two repeats
 manifest marks `physical_x86=not_run`. Physical triple comparison remains
 pending.
 
+### S3-16: exact bare NOP fallback partial
+
+The local Rust API `S0_09NopAdmission` / `run_with_nop_fallback` admits only a
+complete immutable decode of existing S0-09 forms plus unprefixed one-byte
+`0x90`. It derives sequential and branch-target boundaries from the long-mode
+decoder; it is not fixture-v1 admission and does not widen `jit-dispatch`.
+At an admitted NOP, native code has already returned and its mapping has been
+dropped. The dispatcher calls the existing `od_isa::execute::step` once using a
+read-only fetch adapter limited to that one byte. Only `StepOutcome::Advanced`
+at `rip + 1` retires the interpreter instruction; decode, step, executor and
+counter errors are terminal and are never retried or converted to guest
+fallback success.
+
+One `DispatchControl` shares `stop_rip` and the same `AtomicU8 STOP` reference
+with generated block guards and interpreter pre-step checks. Boundary checks
+sample stop address, then STOP, then code end, then budget. Native and
+interpreter retirements are reported separately and must sum to initial budget
+minus remaining budget. The current implementation covers only exact NOP;
+other decoded operations, memory instructions, general Stage 2 fallback,
+dispatcher CLI changes, faults on writable/mapped guest memory and generic
+fallback are outside this partial API.
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

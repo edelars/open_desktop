@@ -493,6 +493,21 @@ machine-readable summary записаны в
 
 **Готово:** смесь native blocks и interpreter instructions совпадает с чистым interpreter. Новые S2 формы используются только после их проверки; all-fallback workload не называется JIT-ускорением.
 
+**Локальная partial реализация (S3-16):** добавлены отдельные
+`S0_09NopAdmission` и `run_with_nop_fallback`. Admission строит полные
+instruction boundaries по immutable `CodeView`, допускает S0-09 и только exact
+bare `0x90`, проверяет branch targets по этим boundaries и отклоняет прочие
+формы. Для NOP используется существующий `od_isa::execute::step` с fetch-only
+memory, ограниченной одним байтом; x86 effects в JIT не повторяются.
+`ControlledBlockExecutor` передаёт один `stop_rip` и тот же `AtomicU8 STOP` в
+native runtime и pre-step guards. Native mapping освобождается до fallback.
+Пер-часть native/interpreter retirement проверяется общей budget-инвариантой.
+Tests покрывают all-fallback NOP, native prefix → NOP → native CMP/Jcc, flags,
+budgets, stop order, отказ admission и terminal executor errors. Это отдельный
+Rust API: fixture `jit-dispatch`, schema v1, legacy JIT и generic Stage 2
+fallback не расширены. S3-16 остаётся открытой; эта узкая NOP проверка не
+подтверждает общий fallback contract.
+
 ### S3-17. Определить cache key и зависимости
 
 1. Записать minimum relevant context key по разделу 4.3; включить все реальные compile-time assumptions и версии code/mappings.

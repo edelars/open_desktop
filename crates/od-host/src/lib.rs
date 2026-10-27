@@ -385,6 +385,35 @@ impl od_jit::dispatch::BlockExecutor for PublishedBlockExecutor {
     }
 }
 
+impl od_jit::dispatch::ControlledBlockExecutor for PublishedBlockExecutor {
+    type Error = PublishedBlockExecutionError;
+
+    fn execute_one_block_controlled(
+        &mut self,
+        block: &od_jit::block_compile::CompiledBlock,
+        state: &mut od_isa::LongModeState,
+        incoming_budget: u64,
+        control: od_jit::dispatch::DispatchControl<'_>,
+    ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+        let published = PublishedCode::publish_block(block.emitted())
+            .map_err(PublishedBlockExecutionError::Publish)?;
+        let result = published.execute_block(
+            state,
+            incoming_budget,
+            control.stop_rip,
+            control.stop_requested,
+        );
+        // Drop the mapping before the dispatcher reaches an interpreter step.
+        drop(published);
+        let result = result.map_err(PublishedBlockExecutionError::Execute)?;
+        Ok(od_jit::dispatch::BlockExecutionReport {
+            exit: result.exit,
+            remaining_budget: result.remaining_budget,
+            retired_instructions: result.retired_instructions,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublishedBlockExecutionError {
     Publish(ExecutableMemoryError),
@@ -2164,6 +2193,171 @@ mod tests {
         assert_eq!(loop_result.remaining_budget, 0);
         assert_eq!(loop_result.blocks_executed, 3);
         assert_eq!(loop_state.rip, base_rip);
+    }
+
+    #[test]
+    fn native_nop_fallback_resumes_at_exact_rip_and_continues_to_jcc() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x7B80;
+        let mut code = vec![0x48, 0xB8];
+        code.extend_from_slice(&7_u64.to_le_bytes()); // MOV RAX,7
+        code.extend_from_slice(&[0x48, 0x03, 0xC1]); // ADD RAX,RCX
+        code.push(0x90); // exact bare NOP, interpreted once
+        code.extend_from_slice(&[0x48, 0x3B, 0xC3]); // CMP RAX,RBX
+        code.extend_from_slice(&[0x74, 0x00]); // JZ code_end
+        let view = CodeView::new(base_rip, &code).unwrap();
+        let admission = od_jit::dispatch::InterpreterFallbackAdmission::from_code(view).unwrap();
+        let mut state = od_isa::LongModeState::default();
+        state.rip = base_rip;
+        state.rflags = 0x202;
+        state.gpr[1] = 5;
+        state.gpr[3] = 12;
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+        };
+        let mut executor = PublishedBlockExecutor;
+
+        let result = od_jit::dispatch::run_with_nop_fallback(
+            view,
+            &admission,
+            &mut state,
+            10,
+            control,
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(
+            result.exit,
+            od_jit::dispatch::DispatchExit::CodeEnd,
+            "{result:?} {state:?}"
+        );
+        assert_eq!(result.retired_native, 4); // MOV, ADD, CMP, JZ
+        assert_eq!(result.retired_interpreter, 1); // NOP
+        assert_eq!(result.remaining_budget, 5);
+        assert_eq!(result.blocks_executed, 2);
+        assert_eq!(state.rip, view.code_end());
+        assert_eq!(state.gpr[0], 12);
+        assert_ne!(state.rflags & (1 << 6), 0); // CMP equality drives JZ.
+    }
+
+    #[test]
+    fn native_fallback_nop_preserves_preceding_arithmetic_flags() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x7BC0;
+        let add = [0x48, 0x03, 0xC1];
+        let mut state_before = od_isa::LongModeState::default();
+        state_before.rip = base_rip;
+        state_before.rflags = 0x202;
+        state_before.gpr[0] = u64::MAX;
+        state_before.gpr[1] = 1;
+
+        let add_view = CodeView::new(base_rip, &add).unwrap();
+        let add_admission =
+            od_jit::dispatch::InterpreterFallbackAdmission::from_code(add_view).unwrap();
+        let stop = AtomicU8::new(0);
+        let mut executor = PublishedBlockExecutor;
+        let mut expected = state_before.clone();
+        let expected_result = od_jit::dispatch::run_with_nop_fallback(
+            add_view,
+            &add_admission,
+            &mut expected,
+            2,
+            od_jit::dispatch::DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+            },
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(expected_result.retired_native, 1);
+        assert_eq!(expected_result.retired_interpreter, 0);
+
+        let mut add_then_nop = add.to_vec();
+        add_then_nop.push(0x90);
+        let view = CodeView::new(base_rip, &add_then_nop).unwrap();
+        let admission = od_jit::dispatch::InterpreterFallbackAdmission::from_code(view).unwrap();
+        let mut actual = state_before;
+        let result = od_jit::dispatch::run_with_nop_fallback(
+            view,
+            &admission,
+            &mut actual,
+            2,
+            od_jit::dispatch::DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+            },
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(result.retired_native, 1);
+        assert_eq!(result.retired_interpreter, 1);
+        assert_eq!(actual.rip, view.code_end());
+        assert_eq!(actual.rflags, expected.rflags);
+        assert_eq!(actual.gpr, expected.gpr);
+    }
+
+    #[test]
+    fn native_prefix_stop_is_observed_before_interpreter_nop() {
+        let _guard = jit_test_lock();
+        struct StopAfterBlock(PublishedBlockExecutor);
+        impl od_jit::dispatch::ControlledBlockExecutor for StopAfterBlock {
+            type Error = PublishedBlockExecutionError;
+
+            fn execute_one_block_controlled(
+                &mut self,
+                block: &od_jit::block_compile::CompiledBlock,
+                state: &mut od_isa::LongModeState,
+                budget: u64,
+                control: od_jit::dispatch::DispatchControl<'_>,
+            ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+                let report =
+                    od_jit::dispatch::ControlledBlockExecutor::execute_one_block_controlled(
+                        &mut self.0,
+                        block,
+                        state,
+                        budget,
+                        control,
+                    )?;
+                control.stop_requested.store(1, Ordering::Release);
+                Ok(report)
+            }
+        }
+
+        let base_rip = 0x7C20;
+        let mut code = vec![0x48, 0xB8];
+        code.extend_from_slice(&9_u64.to_le_bytes());
+        code.push(0x90);
+        let view = CodeView::new(base_rip, &code).unwrap();
+        let admission = od_jit::dispatch::InterpreterFallbackAdmission::from_code(view).unwrap();
+        let mut state = od_isa::LongModeState::default();
+        state.rip = base_rip;
+        let stop = AtomicU8::new(0);
+        let mut executor = StopAfterBlock(PublishedBlockExecutor);
+
+        let result = od_jit::dispatch::run_with_nop_fallback(
+            view,
+            &admission,
+            &mut state,
+            3,
+            od_jit::dispatch::DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+            },
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(
+            result.exit,
+            od_jit::dispatch::DispatchExit::Runtime(RuntimeExitTag::StopRequested)
+        );
+        assert_eq!(result.retired_native, 1);
+        assert_eq!(result.retired_interpreter, 0);
+        assert_eq!(result.remaining_budget, 2);
+        assert_eq!(state.rip, base_rip + 10);
+        assert_eq!(state.gpr[0], 9);
+        assert_eq!(stop.load(Ordering::Acquire), 1);
     }
 
     #[test]

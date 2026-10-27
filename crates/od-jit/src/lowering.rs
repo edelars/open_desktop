@@ -11,7 +11,7 @@ use od_isa::long_decode::{ArithmeticKind, ConditionCode, Operand, Operation as D
 
 use crate::block::{
     self, AdmittedInstructionBoundaries, BlockStopReason, BranchTargetResolution, BuildOutcome,
-    DecodeBoundary, DecodedInstruction,
+    DecodeBoundary, DecodedInstruction, S0_09NopAdmission,
 };
 use crate::ir::{
     self, BranchCondition, ExitKind, FlagEffect, GuestGpr, GuestInstruction, IntWidth, IntegerKind,
@@ -45,7 +45,7 @@ pub enum LoweringError {
 
 /// Lower one bounded block-builder result and verify every emitted Program.
 pub fn lower(outcome: &BuildOutcome) -> Result<LoweringOutcome, LoweringError> {
-    lower_with_admission(outcome, None)
+    lower_with_admission(outcome, None, None)
 }
 
 /// Lower a block for a future dispatcher using complete fixture-v1 decode
@@ -56,12 +56,22 @@ pub(crate) fn lower_for_dispatch(
     outcome: &BuildOutcome,
     admission: &AdmittedInstructionBoundaries,
 ) -> Result<LoweringOutcome, LoweringError> {
-    lower_with_admission(outcome, Some(admission))
+    lower_with_admission(outcome, Some(admission), None)
+}
+
+/// Lower a bounded block for the separately admitted S0-09-plus-bare-NOP
+/// profile. Only an admitted exact NOP becomes a `NeedInterpreter` exit.
+pub(crate) fn lower_for_nop_fallback(
+    outcome: &BuildOutcome,
+    admission: &S0_09NopAdmission,
+) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission(outcome, Some(admission.boundaries()), Some(admission))
 }
 
 fn lower_with_admission(
     outcome: &BuildOutcome,
     admission: Option<&AdmittedInstructionBoundaries>,
+    nop_admission: Option<&S0_09NopAdmission>,
 ) -> Result<LoweringOutcome, LoweringError> {
     let block = match outcome {
         BuildOutcome::NoBlock(no_block) => {
@@ -133,6 +143,20 @@ fn lower_with_admission(
                 target_rip: *branch_rip,
             },
         ),
+        BlockStopReason::UnsupportedDecoded { guest_rip, decoded }
+            if nop_admission.is_some_and(|admission| {
+                admission.admits_nop(*guest_rip)
+                    && matches!(decoded.operation, DecodedOperation::Nop)
+            }) =>
+        {
+            (
+                block.instructions.len(),
+                Terminal::Exit {
+                    kind: ExitKind::NeedInterpreter,
+                    target_rip: *guest_rip,
+                },
+            )
+        }
         BlockStopReason::UnsupportedDecoded { guest_rip, .. }
         | BlockStopReason::UnsupportedEncoding { guest_rip, .. } => (
             block.instructions.len(),
