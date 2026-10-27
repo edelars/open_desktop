@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-22a/S3-23a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22/S3-23 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-22a/S3-23a/S3-25a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22/S3-23/S3-25 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -161,6 +161,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-23 | Инвалидация code dependencies | S3-18, S3-21, S3-22; полный writer/MMU integration |
 | [ ] | S3-24 | Self-modifying code в текущем блоке | S3-23 |
 | [ ] | S3-25 | Eviction, retirement и освобождение | S3-18, S3-24 |
+| [partial] | S3-25a | One-vCPU synchronous cache/arena handle lifetime and safe-point checks | Inactive entries only; active-code retirement, SMP, deferred queue not included |
 | [ ] | S3-26 | Порядок side effects и memory classes | S3-19, S3-24 |
 | [ ] | S3-27 | Точные fault exits и восстановление state | S3-12, S3-21, S3-26 |
 | [ ] | S3-28 | STOP/events и безопасные точки | S3-15, S3-16, S3-27 |
@@ -918,6 +919,27 @@ active self-modifying code остаются вне среза и требуют 
 **Готово:** результат совпадает с определённой для теста x86 семантикой и interpreter; native fixture соблюдает необходимые архитектурные правила синхронизации изменённого кода. Undefined self-modifying sequence не используется как oracle. Само удаление cache entry без остановки активного stale tail тест не проходит.
 
 ### S3-25. Реализовать eviction и безопасное освобождение
+
+#### S3-25a. Synchronous published-handle lifetime partial
+
+Для текущего одного vCPU `run_cached` удерживает borrowed cache entry,
+compiled metadata и published handle от вызова backend до проверки его
+decoded result/counters. `PublishedArenaBackend` держит borrow arena и slot
+metadata на всём протяжении generated call и host result decoding. Безопасная
+точка для eviction/clear/slot reuse — после возврата backend и обработки его
+результата, до следующего lookup; cache API и borrow checker не допускают
+сброса/замены текущего entry изнутри этого синхронного вызова.
+
+Проверки capacity 1/2 выполняют A→B→A churn, включая соседний живой слот,
+STOP до entry, STOP после backend возврата, injected backend/executor error,
+clear и освобождение code/metadata accounting. Existing arena lease test
+проверяет, что уничтожение backend не снимает MAP_JIT mapping пока live handles
+его удерживают, а drop последнего handle позволяет открыть arena заново.
+Ошибка выполнения удаляет entry только после возврата backend; STOP сохраняет
+resident mapping. Результат: [S3-25a report](../reports/STAGE_3_S3-25a_2026-10-27.md).
+
+Это не active invalidation/SMC, SMP reclamation, deferred retirement queue или
+полный S3-25. Эти механизмы требуют отдельного протокола и остаются открытыми.
 
 1. Развести недоступность для новых входов, active execution, references и физическое освобождение code/metadata.
 2. Для одного vCPU использовать простой проверяемый retirement path на безопасных точках; не внедрять SMP reclamation framework.

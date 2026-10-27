@@ -1111,6 +1111,9 @@ impl od_jit::dispatch::CachedBlockBackend for PublishedArenaBackend {
 
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
+            // Keep the arena borrow (and its slot metadata) alive through the
+            // generated call and raw-result decoding. This prevents safe slot
+            // drop/reuse while the active call or its metadata is in use.
             let arena = published.arena.borrow();
             let slot = arena
                 .slots
@@ -5949,6 +5952,129 @@ mod tests {
         assert_eq!(arena.available_slots(), 0);
         cache.clear();
         assert_eq!(arena.available_slots(), 2);
+    }
+
+    #[test]
+    fn arena_cache_a_b_a_churn_reuses_only_safe_slots_at_capacity_one_and_two() {
+        let _guard = jit_test_lock();
+        use od_jit::translation::{
+            AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity, MappingId,
+            MappingVersion,
+        };
+        use std::num::NonZeroU64;
+
+        let base_rip = 0x7C00;
+        for capacity in [1, 2] {
+            let mut arena = PublishedArenaBackend::new(capacity).unwrap();
+            let mut cache = od_jit::dispatch::MultiEntryBlockCache::new(
+                capacity,
+                od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            )
+            .unwrap();
+            for (index, value) in [41_u8, 42, 41].into_iter().enumerate() {
+                let code = [0x48, 0xb8, value, 0, 0, 0, 0, 0, 0, 0];
+                let view = CodeView::new(base_rip, &code).unwrap();
+                let decoded = od_isa::decode(&code).unwrap();
+                let admission =
+                    AdmittedInstructionBoundaries::from_fixture_decode(view, &decoded).unwrap();
+                let nz = |number| NonZeroU64::new(number).unwrap();
+                let dependencies = [CodeDependencySpan {
+                    start_rip: view.base_rip(),
+                    end_rip: view.code_end(),
+                    identity: CodeIdentity {
+                        address_space: AddressSpaceId::new(nz(1)),
+                        mapping: MappingId::new(nz(2)),
+                        mapping_version: MappingVersion::new(nz(1)),
+                        backing: BackingId::new(nz(3)),
+                        backing_version: BackingVersion::new(nz(1)),
+                        executable: true,
+                    },
+                }];
+                let mut state = od_isa::LongModeState {
+                    rip: base_rip,
+                    rflags: 0xA55,
+                    ..od_isa::LongModeState::default()
+                };
+                let result = od_jit::dispatch::run_multi_cached(
+                    view,
+                    &admission,
+                    cached_test_context(),
+                    &dependencies,
+                    &mut state,
+                    2,
+                    &mut cache,
+                    &mut arena,
+                )
+                .unwrap();
+                assert_eq!(result.exit, od_jit::dispatch::DispatchExit::CodeEnd);
+                assert_eq!(result.retired_instructions, 1);
+                assert_eq!(state.gpr[0], u64::from(value));
+                assert_eq!(
+                    arena.available_slots(),
+                    capacity - (index + 1).min(capacity)
+                );
+            }
+            assert_eq!(
+                cache.counters().successful_publications,
+                if capacity == 1 { 3 } else { 2 }
+            );
+            assert_eq!(cache.resident_entries(), capacity);
+
+            // A stop before entry leaves resident mappings owned and reusable.
+            let code = [0x48, 0xb8, 41, 0, 0, 0, 0, 0, 0, 0];
+            let view = CodeView::new(base_rip, &code).unwrap();
+            let decoded = od_isa::decode(&code).unwrap();
+            let admission =
+                AdmittedInstructionBoundaries::from_fixture_decode(view, &decoded).unwrap();
+            let nz = |number| NonZeroU64::new(number).unwrap();
+            let dependencies = [CodeDependencySpan {
+                start_rip: view.base_rip(),
+                end_rip: view.code_end(),
+                identity: CodeIdentity {
+                    address_space: AddressSpaceId::new(nz(1)),
+                    mapping: MappingId::new(nz(2)),
+                    mapping_version: MappingVersion::new(nz(1)),
+                    backing: BackingId::new(nz(3)),
+                    backing_version: BackingVersion::new(nz(1)),
+                    executable: true,
+                },
+            }];
+            let mut state = od_isa::LongModeState {
+                rip: base_rip,
+                ..od_isa::LongModeState::default()
+            };
+            let before = state.clone();
+            let stop = AtomicU8::new(1);
+            let stopped = od_jit::dispatch::run_multi_cached_controlled(
+                view,
+                &admission,
+                cached_test_context(),
+                &dependencies,
+                &mut state,
+                1,
+                od_jit::dispatch::DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &stop,
+                },
+                &mut cache,
+                &mut arena,
+            )
+            .unwrap();
+            assert_eq!(
+                stopped.exit,
+                od_jit::dispatch::DispatchExit::Runtime(RuntimeExitTag::StopRequested)
+            );
+            assert_eq!(state, before);
+            assert_eq!(cache.resident_entries(), capacity);
+            assert_eq!(arena.available_slots(), 0);
+
+            cache.clear();
+            assert_eq!(cache.resident_entries(), 0);
+            assert_eq!(cache.counters().resident_code_bytes, 0);
+            assert_eq!(cache.counters().resident_logical_metadata_bytes, 0);
+            assert_eq!(arena.available_slots(), capacity);
+        }
     }
 
     #[test]

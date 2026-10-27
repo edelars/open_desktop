@@ -1112,6 +1112,11 @@ where
         let cached = cache.entry(cached_index).expect("cache index valid");
         let cached_block = &cached.block;
         let published = &cached.published;
+        // Keep both the verified block metadata and published handle borrowed
+        // across generated execution and host result validation. Cache clear,
+        // eviction, or slot reuse requires `&mut cache` and therefore cannot
+        // occur until this call has returned; an executor error is removed
+        // only below, after its call has returned.
         let execution =
             backend.execute_cached_block(published, cached_block, state, remaining, control);
         let report = match execution {
@@ -1871,12 +1876,14 @@ mod tests {
     struct PublishedTracker {
         publishes: usize,
         executions: usize,
+        live_during_execute: Vec<usize>,
         published_ids: Vec<usize>,
         executed_ids: Vec<usize>,
         live: usize,
         max_live: usize,
         drops: usize,
         fail_publish: bool,
+        fail_execute_once: bool,
         loop_to_entry: bool,
         request_stop_once: bool,
         allow_multiple_live: bool,
@@ -1928,16 +1935,23 @@ mod tests {
             incoming_budget: u64,
             control: DispatchControl<'_>,
         ) -> Result<BlockExecutionReport, Self::Error> {
-            let (loop_to_entry, request_stop_once) = {
+            let (loop_to_entry, request_stop_once, fail_execute_once) = {
                 let mut tracker = self.0.borrow_mut();
                 tracker.executions += 1;
                 tracker.executed_ids.push(published.1);
+                let live_during_execute = tracker.live;
+                tracker.live_during_execute.push(live_during_execute);
                 let request_stop = tracker.request_stop_once;
                 tracker.request_stop_once = false;
-                (tracker.loop_to_entry, request_stop)
+                let fail_execute = tracker.fail_execute_once;
+                tracker.fail_execute_once = false;
+                (tracker.loop_to_entry, request_stop, fail_execute)
             };
             if request_stop_once {
                 control.stop_requested.store(1, Ordering::Release);
+            }
+            if fail_execute_once {
+                return Err("execution failed");
             }
             state.rip = if loop_to_entry {
                 block.emitted().entry_rip()
@@ -3495,6 +3509,168 @@ mod tests {
         assert_eq!(result.retired_instructions, 3);
         assert_eq!(loop_cache.counters().successful_publications, 1);
         assert_eq!(loop_cache.counters().hits, 2);
+    }
+
+    #[test]
+    fn multi_cache_a_b_a_churn_reclaims_handles_at_capacity_one_and_two() {
+        let a = [0x48, 0xb8, 0x41, 0, 0, 0, 0, 0, 0, 0];
+        let b = [0x48, 0xb8, 0x42, 0, 0, 0, 0, 0, 0, 0];
+        for capacity in [1, 2] {
+            let tracker = Rc::new(RefCell::new(PublishedTracker {
+                allow_multiple_live: true,
+                capacity,
+                ..PublishedTracker::default()
+            }));
+            let mut backend = MockCachedBackend(tracker.clone());
+            let mut cache =
+                MultiEntryBlockCache::new(capacity, 4096, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES)
+                    .unwrap();
+            run_multi_fixture(&a, 0x7250, &mut cache, &mut backend).unwrap();
+            assert_eq!(cache.resident_entries(), 1);
+            assert_eq!(tracker.borrow().live, 1);
+            run_multi_fixture(&b, 0x7250, &mut cache, &mut backend).unwrap();
+            assert_eq!(cache.resident_entries(), capacity.min(2));
+            assert_eq!(tracker.borrow().live, capacity.min(2));
+            run_multi_fixture(&a, 0x7250, &mut cache, &mut backend).unwrap();
+            let expected_publications = if capacity == 1 { 3 } else { 2 };
+            assert_eq!(tracker.borrow().publishes, expected_publications);
+            assert_eq!(tracker.borrow().live, capacity.min(2));
+            if capacity == 1 {
+                assert_eq!(cache.counters().hits, 0);
+                assert_eq!(tracker.borrow().drops, 2);
+            } else {
+                assert_eq!(cache.counters().hits, 1);
+                assert_eq!(tracker.borrow().drops, 0);
+            }
+            cache.clear();
+            assert_eq!(cache.resident_entries(), 0);
+            assert_eq!(cache.counters().resident_code_bytes, 0);
+            assert_eq!(cache.counters().resident_logical_metadata_bytes, 0);
+            assert_eq!(tracker.borrow().live, 0);
+            assert_eq!(tracker.borrow().drops, expected_publications);
+        }
+    }
+
+    #[test]
+    fn cached_stop_and_executor_error_release_only_at_safe_return_boundaries() {
+        let code = [0x48, 0xb8, 0x51, 0, 0, 0, 0, 0, 0, 0];
+        let (view, admission) = cached_fixture(&code, 0x7260);
+        let dependencies = dependency(view, 1);
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        let stop = AtomicU8::new(0);
+
+        // STOP before dispatch entry makes no backend call and retains any
+        // already published entry. First compile it, then stop a hit.
+        run_cached(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut state,
+            1,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        let executions_before_stop = tracker.borrow().executions;
+        stop.store(1, Ordering::Release);
+        state.rip = view.base_rip();
+        let stopped_before = run_cached_controlled(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut state,
+            1,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+            },
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(
+            stopped_before.exit,
+            DispatchExit::Runtime(RuntimeExitTag::StopRequested)
+        );
+        assert_eq!(tracker.borrow().executions, executions_before_stop);
+        assert_eq!(tracker.borrow().live, 1);
+        assert_eq!(cache.resident_entries(), 1);
+
+        // STOP raised by the backend after successful generated execution is
+        // observed after result decode; the resident handle remains reusable.
+        stop.store(0, Ordering::Release);
+        tracker.borrow_mut().request_stop_once = true;
+        state.rip = view.base_rip();
+        let stopped_after = run_cached_controlled(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut state,
+            1,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+            },
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(
+            stopped_after.exit,
+            DispatchExit::Runtime(RuntimeExitTag::StopRequested)
+        );
+        assert_eq!(tracker.borrow().live_during_execute, [1, 1]);
+        assert_eq!(tracker.borrow().live, 1);
+        assert_eq!(tracker.borrow().drops, 0);
+        assert_eq!(cache.resident_entries(), 1);
+
+        // Injected backend/executor failure drops the entry only after the
+        // executor has returned its error to dispatch, then a later call may
+        // republish. This test does not inject a native helper failure.
+        stop.store(0, Ordering::Release);
+        tracker.borrow_mut().fail_execute_once = true;
+        state.rip = view.base_rip();
+        assert_eq!(
+            run_cached(
+                view,
+                &admission,
+                test_context(),
+                &dependencies,
+                &mut state,
+                1,
+                &mut cache,
+                &mut backend,
+            ),
+            Err(DispatchError::CacheExecutor("execution failed"))
+        );
+        assert_eq!(tracker.borrow().live_during_execute, [1, 1, 1]);
+        assert_eq!(tracker.borrow().live, 0);
+        assert_eq!(tracker.borrow().drops, 1);
+        assert_eq!(cache.resident_entries(), 0);
+        state.rip = view.base_rip();
+        run_cached(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut state,
+            1,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(tracker.borrow().publishes, 2);
+        cache.clear();
+        assert_eq!(tracker.borrow().live, 0);
     }
 
     #[test]

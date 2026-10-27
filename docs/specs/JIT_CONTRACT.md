@@ -521,6 +521,26 @@ end-to-end repeat measurement must compare FIFO with LRU for 16-key and full
 execution workloads before selecting a final policy/capacity. S3-18 remains
 open; S3-22/23/25 and physical S3-14/15 acceptance remain separate work.
 
+### S3-25a: synchronous published-entry lifetime partial
+
+For the bounded single-vCPU fixture path, the cache entry's compiled metadata
+and published handle remain borrowed for the complete synchronous backend call
+and result/counter validation. `PublishedArenaBackend` holds the arena slot
+metadata borrow while generated code runs and while the host decodes its raw
+result. Safe points for cache eviction, clear, or slot reuse occur after the
+backend has returned and the dispatch result has been checked, before the next
+lookup. On execution error, the dispatcher removes the entry only after the
+backend returns the error. STOP before entry does not execute or release a
+resident entry; STOP returned after execution keeps its cache mapping resident.
+
+Local tests exercise capacity-one and capacity-two A→B→A churn, neighbor-slot
+isolation, STOP before/after execution, execution-error drop ordering, clear
+accounting, and the existing backend-before-handle / last-handle-reopens-arena
+lifecycle. This proves only synchronous inactive-entry reuse/drop behavior. It
+does not add active invalidation, self-modifying-code handling, SMP
+reclamation, a deferred retirement queue, or full S3-25. See the
+[S3-25a report](../reports/STAGE_3_S3-25a_2026-10-27.md).
+
 An S3-18d1 benchmark-only partial adds `od-bench dispatch-cache` on native
 Apple Silicon. It compares the uncached publisher, one-entry cache over a
 16-slot arena, FIFO(16), and opt-in LRU(16); the existing multi-entry
