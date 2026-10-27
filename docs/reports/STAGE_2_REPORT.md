@@ -12343,3 +12343,33 @@ historical oracle manifests); Graphify update completed. Independent
 to `C5 F9 75 C1`, the PCMPEQB neighbor remains `C5 F9 74 C1`, and final
 review/re-review passed with no findings. These results establish local interpreter/profile
 behavior only.
+
+## S2-35.20 — local PCMPEQD XMM register slice
+
+Added strict profile `s2-long-pcmpeqd-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 76 /r`, ModR/M.mod=3, with ModR/M.reg as
+destination and ModR/M.r/m as source. Four independent little-endian dword
+lanes become all ones only on exact whole-dword equality; other state is
+preserved. Coverage includes dword boundaries, all 32 single-bit mismatches,
+walking-one/zero inputs, deterministic raw values, one mismatch at each lane,
+all 16×16 XMM/REX combinations, no data callbacks, and atomic failures.
+Strict schema/decoder rejects include MMX, memory, extra prefixes, REX.W/X,
+multiple REX, VEX/EVEX, including VEX `C5 F9 76 C1`. The literal XMM8/XMM9
+fixture has mixed equality masks and demonstrates whole-dword comparison.
+JIT and native admission remain closed.
+
+Focused PCMPEQD `od-isa` tests passed (3); PCMPEQD and neighboring PCMPEQB
+literal fixture tests each passed (1). `cargo test --workspace --offline`
+passed 1,709 tests. `cargo check --workspace --all-targets --offline` and
+`cargo check --workspace --all-targets --offline --target
+x86_64-unknown-linux-gnu` passed. The Linux-only native-denial test was
+compile-checked on macOS but not executed. `cargo fmt --all -- --check` and
+`git diff --check` passed. Layout validation still reports the pre-existing
+ISSUE-023 worktree `.git` pointer and two missing historical oracle manifests.
+`graphify update .` completed (6,701 nodes); it reported the existing header
+extractor warning for `include/open_desktop/host_abi.h`. Independent
+`gpt-6.1-sol` medium review passed with no remaining findings.
+
+This is local interpreter/profile evidence only. It does not close S2-34,
+S2-35, global `S2-35 → S2-34`, establish physical x86 behavior, or replace the
+deferred combined Mac mini/SSH acceptance substage.

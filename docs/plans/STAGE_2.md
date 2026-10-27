@@ -407,6 +407,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.17 | Local-only bounded register PSUBQ XMM diagnostic slice; destination-minus-source wrapping qword lanes, native/JIT closed | S2-34.1, S2-35.1, S2-35.16 review |
 | [x] | S2-35.1 | Local-only PXOR XMM register diagnostic slice; child prerequisite S2-34.1 raw x87/SSE state only | S2-34.1 |
 | [x] | S2-35.2 | Local-only PADDB XMM register diagnostic slice; requires S2-34.1 state and reviewed S2-35.1 mandatory-66 register decoder | S2-34.1, S2-35.1 review |
+| [x] | S2-35.20 | Local-only bounded register PCMPEQD XMM diagnostic slice; dword equality masks, native/JIT closed | S2-34.1, S2-35.1 |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
@@ -8283,3 +8284,36 @@ CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. S2-34, S2-35 and global
 `S2-35 → S2-34` remain open; Mac mini/SSH acceptance remains deferred.
 
 S2-35.19 implementation check (2026-10-27): focused PCMPEQW interpreter and strict decoder tests passed (4); the handwritten XMM8/XMM9 fixture CLI test passed (1), including strict schema-neighbor rejection and JIT denial. `cargo test --workspace --offline` passed 1,705 tests. Workspace all-target offline check, x86_64 Linux all-target compile check, formatting, and diff whitespace checks passed. The Linux-gated native-denial assertion compiled in the cross-target check but was not executed on this macOS host. `python3 tools/check_layout.py` reports the pre-existing ISSUE-023 checkout pointer and stale oracle links. `graphify update .` completed. Independent `gpt-6.1-sol` medium review found a schema-negative opcode typo; it was corrected to PCMPEQW's `C5 F9 75 C1`, the neighboring PCMPEQB case was preserved as `C5 F9 74 C1`, and final review/re-review passed with no findings. The results are local interpreter/profile evidence only; S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation, and deferred Mac mini/SSH acceptance remain open.
+
+S2-35.20 implementation check (2026-10-27): three focused `od-isa` PCMPEQD
+tests passed (decode/negative matrix, dword boundary/bit/register semantics,
+and atomicity); the handwritten XMM8/XMM9 CLI fixture passed (1), including
+mixed equal/unequal lane masks, strict VEX rejection, and JIT denial. The
+neighboring PCMPEQB fixture test passed after independent review caught and
+corrected an accidental expected-output edit. `cargo test --workspace --offline`
+passed 1,709 tests. Workspace all-target offline check and x86_64 Linux
+all-target compile check passed; the Linux-only native-denial test is compile-
+checked but not run on this macOS host. Formatting and diff whitespace checks
+passed. Layout validation failed on the pre-existing ISSUE-023 checkout
+pointer and two missing historical oracle manifests. Graphify update
+completed. Review by `gpt-6.1-sol` medium
+found no remaining findings. These are local interpreter/profile results;
+S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation, and deferred
+Mac mini/SSH acceptance remain open.
+
+#### S2-35.20 — local-only bounded register `PCMPEQD`
+
+Requires S2-34.1 raw x87/SSE state and mandatory-66 XMM decoding from S2-35.1.
+Exact profile `s2-long-pcmpeqd-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F 76 /r` with ModR/M.mod=3. ModR/M.reg is the
+destination and ModR/M.r/m the source, extended to XMM0–15. Each of four
+little-endian u32 lanes independently becomes `FFFFFFFF` for exact whole-dword
+equality and `00000000` otherwise. Coverage includes 0, 1, 7fffffff, 80000000,
+ffffffff boundaries; all 32 single-bit mismatches; walking patterns; deterministic
+mixed raw dwords; one mismatch at each lane; distinctions from word/byte equality;
+self compare, full state, all 16×16 register/REX combinations, no data callbacks,
+atomic failure paths, strict negative encodings and a literal XMM8/XMM9 fixture.
+PCMPEQQ, PCMPGT*, MMX, memory, extra prefixes, REX.W/X, VEX/EVEX, gates,
+exceptions and native/JIT/physical execution remain excluded. SSE2 and
+CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. S2-34, S2-35 and global
+`S2-35 → S2-34` remain open; Mac mini/SSH acceptance remains deferred.

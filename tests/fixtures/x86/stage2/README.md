@@ -5064,3 +5064,12 @@ eight independent little-endian words and emits `FFFF` for equal words and
 equality masks; interpreter execution is supported while JIT/native execution
 is denied. SSE2 and CR0/CR4 preconditions are assumptions; there is no CPUID or
 exception-delivery claim.
+
+### S2-35.20 local register PCMPEQD diagnostic profile
+
+`s2_35_20_pcmpeqd_register.case.json` is a handwritten literal XMM8,XMM9
+fixture for strict `s2-long-pcmpeqd-reg-v1`: `66 45 0F 76 C1`. It compares
+four independent little-endian dwords and emits `FFFFFFFF` only for exact
+whole-dword equality, otherwise `00000000`. Interpreter execution is supported;
+JIT/native execution remains denied. SSE2 and CR0/CR4 preconditions are
+assumptions only, with no CPUID or exception-delivery claim.

@@ -1420,6 +1420,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongPsubqRegV1
             | v2::Profile::LongPcmpeqbRegV1
             | v2::Profile::LongPcmpeqwRegV1
+            | v2::Profile::LongPcmpeqdRegV1
             | v2::Profile::LongPsubusbRegV1
             | v2::Profile::LongAndpsRegV1
             | v2::Profile::LongOrpsRegV1
@@ -5499,6 +5500,31 @@ mod tests {
     fn s2_35_19_pcmpeqw_fixture_is_denied_before_native_execution() {
         let loaded = Fixture::from_json(include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_35_19_pcmpeqw_register.case.json"
+        ))
+        .unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(
+            result.outcome,
+            Outcome::Unsupported { ref reason }
+                if reason == "this profile is local-only; native state does not observe every profile field"
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_20_pcmpeqd_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_20_pcmpeqd_register.case.json"
         ))
         .unwrap();
         let result = execute(&loaded);
