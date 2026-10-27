@@ -7843,6 +7843,39 @@ rejections and exactly 36 literal schema-v2 fixtures are documented in the
 ISSUE-016 and ISSUE-020 remain open; physical/native execution is deferred to
 the shared final acceptance.
 
+### Local S2-19j bounded REP LODS address-size-32 contract
+
+The existing REP LODS operation additionally admits Long64 address-size-32
+forms `F3 67 AC` (byte), `F3 67 66 AD` (word), `F3 67 AD` (dword), and
+`F3 67 48 AD` (qword). For AD, normalized prefix ordering retains the existing
+operand-size rule: effective REX.W overrides 66, and a later legacy prefix
+clears an earlier REX. The bounded decoder also accepts the exercised
+normalizations `F3 66 67 AD` and `F3 67 48 66 AD` as word and `F3 67 66 48 AD`
+as qword. REP byte LODS remains byte-only apart from the address override.
+Other segment, LOCK, REP/REPNE, and unsupported prefix combinations remain
+outside admission. JIT/native admission stays closed.
+
+Each iteration reads exactly one operand width from flat `DS:[ESI]`, using
+zero-extended ESI as the starting address. After a successful read, the
+interpreter writes AL/AX/EAX/RAX using the existing register alias rules,
+updates ESI by ±width modulo 2^32 and zero-extends the result, then decrements
+RCX. A width-sized read stays contiguous across a 4 GiB boundary. `RCX=0`
+does not validate or access RSI and completes normally. Current-read failure
+does not commit that iteration; previous successful elements remain in the
+snapshot. STOP, completion, and the local 1024-success limit preserve the
+existing REP LODS ordering. Full completion retires once; partial outcomes
+leave RIP at the REP instruction and retire zero. Flags, DF, RDI and RAM are
+unchanged. Missing mappings remain harness errors, and no MMIO rollback,
+hardware restart-state, or dual-fault priority claim is made. The explicit
+tracked-entry API can carry RFLAGS definedness across partial resume; ordinary
+`run()` remains a fresh entry.
+
+Local evidence and limitations are recorded in the
+[S2-19j plan](../plans/STAGE_2.md#s2-19j-bounded-rep-lods-с-address-size-32) and
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19j-bounded-rep-lods-address-size-32).
+ISSUE-016/020/021 remain open; native/JIT and physical execution are deferred
+to shared final acceptance.
+
 ### Local S2-19d bounded REP MOVSB/W/D/Q contract
 
 The interpreter admits exact `F3 A4` MOVSB, `F3 66 A5` MOVSW, `F3 A5` MOVSD,

@@ -4027,6 +4027,21 @@ cargo test -p od-testkit --offline rep_lods_
 cargo test -p od-runner --test fixture_v2 --offline rep_lods
 ```
 
+## Bounded REP LODS address-size-32 fixtures S2-19j
+
+Seven literal schema-v2 cases cover address-size-32 REP LODS: byte/word/dword/
+qword successes, a qword read at `ESI=0xfffffffc` whose post-read pointer wraps
+to 4, zero count with a noncanonical RSI, and a qword read failure after one
+completed element. The full-state sidecar records zero-extended ESI,
+RCX/RAX progress, RIP, definedness, and unchanged data memory. The generator
+serializes hand-authored inputs and expected values; it does not execute or
+derive instruction results. The fixtures use the existing profile and schema.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_lods_addr32.py --check
+cargo test -p od-testkit --offline rep_lods_address32
+```
+
 ## Bounded REP MOVSB/W/D/Q fixtures S2-19d
 
 Fifty-six literal schema-v2 fixtures cover exact REP MOVSB/W/D/Q admission and

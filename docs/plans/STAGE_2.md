@@ -1257,6 +1257,35 @@ snapshots после второго запуска, передавшего defin
 hardware restart state или fault priority. ISSUE-016/020/021 остаются открыты;
 native/JIT/physical acceptance не выполнялась.
 
+#### S2-19j — bounded REP LODS с address-size 32
+
+Расширить только `Operation::RepLods` на Long64 с address-size 32: `F3 67 AC`
+byte, `F3 67 66 AD` word, `F3 67 AD` dword и `F3 67 48 AD` qword. Для `AD`
+сохранить существующий выбор ширины: effective REX.W выше 66; нормализованные
+формы `F3 66 67 AD` и `F3 67 48 66 AD` остаются word, `F3 67 66 48 AD` —
+qword. Для byte разрешён только F3 и необязательный 67. Другие REP-prefix
+комбинации остаются вне локального admission; отказ не утверждает #UD для всех
+законных кодировок. Не расширять JIT/native.
+
+При каждой итерации брать начальный адрес из ESI, выполняя одну width-sized
+читающую операцию из flat `DS:[ESI]`. Только после её успеха записать
+AL/AX/EAX/RAX через существующий `RegisterView`, изменить ESI на ±width modulo
+2^32 с zero-extension и уменьшить RCX. Нулевой count не читает и не
+валидирует RSI; fault сохраняет текущую итерацию без commit, а ранее
+успешный прогресс остаётся продолжимым через существующий tracked-entry API.
+Сохранить общие STOP/completion/1024-limit ordering, один retirement на полное
+выполнение, ноль на частичное, неизменность flags/DF/RDI/RAM, и ошибку
+отсутствующего mapping как harness error.
+
+Покрыть четыре ширины, обе DF, нулевой/ненулевой count, high-half RSI,
+частичный read failure, normalized prefix order, pointer wrap modulo 2^32,
+work-limit/restart composition, регрессии S2-19c и address-size-64 LODS.
+Добавить буквальные schema-v2 fixtures для всех widths, zero-count с
+неканоническим RSI и продолжения после одного успешного элемента; генератор
+сериализует предзаданные ожидания. Fixture schema/profile не менять. ISSUE-016,
+ISSUE-020 и ISSUE-021 не закрывать по этому локальному результату; physical
+acceptance остаётся в едином финальном Mac mini substage.
+
 ### S2-20. Точность исключений и exit state
 
 1. Свести для реализованных форм `#UD`, `#DE`, `#GP`, `#SS`, memory faults и traps только там, где они действительно определены профилем/адаптером.

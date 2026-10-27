@@ -538,6 +538,25 @@ native and physical execution are deferred. Source-first ordering remains a
 local policy under [ISSUE-021](../KNOWN_ISSUES.md#issue-021--не-подтверждён-приоритет-dual-invalid-для-movs-rsirdi).
 ISSUE-016 and ISSUE-020 remain open.
 
+## REP LODSB/W/D/Q with address-size 32 — S2-19j
+
+S2-19j admits only `F3 67 AC`, `F3 67 66 AD`, `F3 67 AD`, and effective
+REX.W `F3 67 48 AD`, with the existing normalized 66/REX ordering for AD.
+Each successful read uses zero-extended ESI, commits the width-specific RAX
+alias, advances ESI modulo 2^32 according to DF, and decrements RCX. Zero
+count avoids data access; a failed next read preserves earlier elements and
+leaves the current iteration uncommitted. REP completion, STOP, tracked
+continuation and the 1024-read work limit use the existing S2-19c behavior.
+
+Local checks cover all four widths, DF=0/1, high RSI halves, zero count,
+post-read faults, qword DF subtraction on ESI, ESI wrap at 2^32, REP work-limit
+continuation, and normalized prefix acceptance. Seven literal schema-v2
+fixtures include one success per width, a qword ESI wrap, zero count with a
+noncanonical RSI, and a partial qword read failure; their generator serializes
+fixed answers. Address-size-64 REP
+LODS remains covered by S2-19c. JIT/native and physical execution remain
+deferred; no hardware restart-state claim is made.
+
 ## REPE CMPSB — S2-19f local interpreter coverage
 
 Only exact `F3 A6` is admitted in Long64/address64. Even at RCX zero, entry

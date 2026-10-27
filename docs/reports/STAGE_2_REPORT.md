@@ -10720,3 +10720,33 @@ remain open.
 `python3 tools/check_layout.py` was also run and reports the pre-existing
 managed-worktree `.git` marker plus two absent oracle manifests linked by this
 report; no layout changes were made.
+
+## S2-19j — bounded REP LODS address-size-32
+
+Extended the existing bounded REP LODS operation to the four Long64
+address-size-32 widths: `F3 67 AC`, `F3 67 66 AD`, `F3 67 AD`, and effective
+REX.W `F3 67 48 AD`. The executor reads from zero-extended ESI, and after each
+successful read commits the width-specific accumulator alias, advances ESI
+modulo 2^32, and decrements RCX. Existing REP completion, STOP, 1024-success
+limit, fault/replay and tracked-definedness behavior is shared. No JIT/native
+or physical acceptance is claimed.
+
+Local tests cover all widths, DF=0/1, high RSI halves, zero count, partial
+unmapped read, qword DF subtraction, ESI wrap at 2^32, effective prefix
+normalization, and continuation after the 1024-iteration limit. Seven
+schema-v2 fixtures record a success for each width, qword ESI wrap, zero count
+with noncanonical RSI, and a qword mapping failure after one completed
+iteration. Their generator serializes fixed answers only.
+
+Focused `od-isa` checks passed (5/5): decoder acceptance and legacy prefix
+rejection (2/2), plus address-size-32 progress, legacy execution rejection,
+and tracked `TEST` definedness through limit/resume (3/3). REP LODS testkit
+cases passed 7/7, including all seven literal address-size-32 snapshots. The
+updated non-REP LODS reject matrices retain their remaining 69 prefix cases.
+The full `cargo test --workspace --offline` run passed. The affected crates
+also passed `cargo check -p od-isa -p od-testkit --all-targets --offline`;
+workspace formatting, fixture-generator freshness and `git diff --check` also
+passed. Graphify was refreshed after the code change. No JIT/native, Mac mini,
+SSH, or physical x86 check was run; those remain in the shared final acceptance.
+ISSUE-016/020/021 remain open and no hardware restart-state or fault-priority
+result is claimed.

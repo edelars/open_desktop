@@ -6180,11 +6180,10 @@ fn rep_lods_prefix_rejects_without_data_access_or_mutation() {
         &[0xf3, 0xad],
         &[0xf3, 0x48, 0xad],
     ];
-    let prefixes: [&[u8]; 10] = [
+    let prefixes: [&[u8]; 9] = [
         &[0xf0],
         &[0xf2],
         &[0xf3],
-        &[0x67],
         &[0x26],
         &[0x2e],
         &[0x36],
@@ -6208,7 +6207,7 @@ fn rep_lods_prefix_rejects_without_data_access_or_mutation() {
         vec![0xf3, 0x66, 0x40, 0xad],
         vec![0xf3, 0x66, 0x47, 0xad],
     ]);
-    assert_eq!(cases.len(), 48);
+    assert_eq!(cases.len(), 44);
     for bytes in cases.into_iter().chain([vec![0x48, 0xf3, 0xac]]) {
         let mut input = template.clone();
         input.memory[0].length = bytes.len() as u32;
@@ -6980,6 +6979,57 @@ fn rep_lods_literal_fixtures_match_full_expected_answers() {
             u64::from(input.expected_exit == ExpectedExit::StopAddress)
         };
         assert_eq!(result.instructions_executed, expected_retired, "{id}");
+    }
+}
+
+#[test]
+fn rep_lods_address32_literal_fixtures_match_full_expected_answers() {
+    let dir = arithmetic_fixture_directory();
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(dir.join("s2_19j_rep_lods_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 7);
+    for (id, answer) in answers {
+        let input =
+            Fixture::from_json(&std::fs::read(dir.join(format!("{id}.case.json"))).unwrap())
+                .unwrap()
+                .fixture;
+        let mut state = input.initial_state.to_cpu().unwrap();
+        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            || false,
+        );
+        if input.expected_exit == ExpectedExit::StopAddress {
+            assert_eq!(result.exit, RunExit::StopAddress, "{id}");
+            assert_eq!(result.instructions_executed, 1, "{id}");
+        } else {
+            let fault = &answer["fault"];
+            let address: HexU64 = serde_json::from_value(fault["address"].clone()).unwrap();
+            assert!(
+                matches!(result.exit, RunExit::MemoryError(MemoryError::Unmapped { address: actual, access: AccessKind::Read }) if actual == address.get()),
+                "{id}: {:?}",
+                result.exit
+            );
+            assert_eq!(result.instructions_executed, 0, "{id}");
+        }
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(state.gpr, expected_gpr.map(HexU64::get), "{id}");
+        assert_eq!(state.rflags, expected_flags.get(), "{id}");
+        assert_eq!(result.rflags_defined, expected_defined.get(), "{id}");
+        assert_eq!(state.rip, expected_rip.get(), "{id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in memory.snapshot() {
+            assert_eq!(region.bytes_hex, expected_memory[&region.region_id], "{id}");
+        }
     }
 }
 
