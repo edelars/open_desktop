@@ -1088,6 +1088,33 @@ mappings; it does not implement production MMU, arbitrarily segmented accesses,
 MMIO, DMA, or concurrent writers. See the
 [S3-23f report](../reports/STAGE_3_S3-23f_2026-10-27.md).
 
+### S3-23g: bounded qword writes across two different backings
+
+The fixed-RAM fixture write owner also accepts one qword spanning at most two
+guest-adjacent writable mappings backed by distinct ordinary RAM identities.
+Before copying any byte it builds a fixed two-segment plan with backing index,
+offset, segment length, source offset and precomputed next version. Both guest
+and backing ranges, mapping permissions, backing versions, aliases and active
+source overlap are checked before commit. A fixed notification batch is
+prepared without allocation; the exclusive fixture transaction then copies
+both segments without callbacks or re-entry (coalescing them into one slice
+copy when they are contiguous in the same backing) and advances each distinct
+backing version once. The generated instruction retires once. Result decoding completes
+before the host applies every notification and permits another lookup.
+
+Native, interpreter and control-write fixtures cover the split qword. The
+native case warms code entries for both backing IDs and their aliases plus
+unrelated C; one store changes both backing versions, invalidates all dependent
+entries, retains C as a hit, and fresh dispatch observes the new MOV immediate
+in the second backing. Missing, read-only, or non-executable second mapping,
+version exhaustion on either backing, backend failure, active-source alias
+overlap, canonical endpoint overflow, and a range that would require three
+mappings preserve CPU state, RAM, versions, cache contents and retirement. This
+is a single-vCPU fixture transaction; it does not claim
+hardware atomicity, SMP synchronization, production MMU behavior, or support
+for arbitrary segmentation. See the
+[S3-23g report](../reports/STAGE_3_S3-23g_2026-10-27.md).
+
 ### S3-24a: active native block prefix invalidation partial
 
 `ActiveCodeBlockV3` is a separate compiler-issued artifact, compile flavor,
