@@ -12699,3 +12699,37 @@ worktree `.git` marker and two missing historical oracle-manifest links.
 found no code defects. This remains a local interpreter/profile result only;
 S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation, and combined
 Mac mini/SSH acceptance remain open.
+
+## S2-35.30 — local PUNPCKLQDQ XMM register slice
+
+Added the local-only profile `s2-long-punpcklqdq-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 6C /r`, ModR/M.mod=3 and XMM0–15. ModR/M.reg
+selects the destination and ModR/M.r/m selects the source. The full destination
+becomes `[old_DEST[0], SRC[0]]` in little-endian u64 lane order; input high
+qwords are ignored. PUNPCKLQDQ has no MMX form, so missing mandatory `66` is
+rejected.
+
+The sentinel DEST low qword `0706050403020100` and SRC low qword
+`8786858483828180` produce bytes `00010203040506078081828384858687`.
+Self-aliasing produces the original low qword in both halves. Tests cover all
+256 byte values at each consumed position, all 128 walking input bits, upper
+qword independence, distinct qwords, the full 16×16 XMM/REX.R/B matrix, full
+architectural state and source preservation, and zero guest data callbacks.
+Missing state, truncation, STOP/budget atomicity, strict decoder negatives
+including bare `0F 6C /r` and VEX `C5 F9 6C C1` are covered. The handwritten
+literal XMM8/XMM9 fixture runs in the interpreter with destination snapshot
+`00010203040506078081828384858687` and unchanged source snapshot
+`808182838485868788898a8b8c8d8e8f`; the runner test confirms JIT denial.
+Native admission is explicitly denied; its Linux-gated check is compile-tested
+but not executed on this Darwin host.
+
+`cargo test -p od-isa punpcklqdq --offline` passed (4 tests), and
+`cargo test -p od-runner punpcklqdq_literal_cli_fixture_executes_and_keeps_jit_denied --offline`
+passed (1). `cargo test --workspace --all-targets --offline --quiet` passed all
+1,754 tests.
+Host and `x86_64-unknown-linux-gnu` workspace all-target offline checks,
+`cargo fmt --all -- --check`, and `git diff --check` passed. `graphify update .`
+completed; it reported the existing `include/open_desktop/host_abi.h` extractor
+warning. These results establish only the local interpreter/profile behavior;
+S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation, and the deferred
+combined Mac mini/SSH acceptance remain open.

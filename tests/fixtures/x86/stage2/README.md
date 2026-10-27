@@ -5114,3 +5114,13 @@ fixture for `s2-long-punpckhdq-reg-v1`: `66 45 0F 6A C1`. The four dwords
 become `[old_DEST[2], SRC[2], old_DEST[3], SRC[3]]` in little-endian order.
 Interpreter execution is supported while JIT/native execution remains denied;
 SSE2 and CR0/CR4 preconditions are assumptions only.
+
+### S2-35.30 local register PUNPCKLQDQ diagnostic profile
+
+`s2_35_30_punpcklqdq_register.case.json` is a handwritten literal XMM8,XMM9
+fixture for `s2-long-punpcklqdq-reg-v1`: `66 45 0F 6C C1`. The two little-endian
+qwords become `[old_DEST[0], SRC[0]]`; the original high qwords are ignored and
+all 128 destination bits are replaced. PUNPCKLQDQ has no MMX form, so bare
+`0F 6C /r` without mandatory `66` is rejected. Interpreter execution is
+supported while JIT/native execution remains denied; SSE2 and CR0/CR4
+preconditions are assumptions only.

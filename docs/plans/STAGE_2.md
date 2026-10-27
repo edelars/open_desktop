@@ -8609,3 +8609,27 @@ delivery and physical execution remain excluded. SSE2 and CR0.EM=0, CR0.TS=0,
 CR4.OSFXSR=1 are assumptions only. S2-34, S2-35, global `S2-35 → S2-34`, and
 combined Mac mini/SSH acceptance remain open. Evidence is in
 [STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).
+
+#### S2-35.30 — local-only bounded register `PUNPCKLQDQ`
+
+Requires S2-34.1 raw x87/SSE state and mandatory-66 XMM decoding from S2-35.1.
+The bounded profile `s2-long-punpcklqdq-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F 6C /r` with ModR/M.mod=3 and XMM0–15.
+ModR/M.reg is the destination and ModR/M.r/m the source. The destination is
+fully overwritten with the two little-endian qwords `[old_DEST[0], SRC[0]]`;
+the original upper qwords are ignored. PUNPCKLQDQ has no MMX form, so missing
+mandatory `66` is rejected.
+
+Coverage includes the sentinel DEST low qword `0706050403020100` and SRC low
+qword `8786858483828180`, self-aliasing, all 256 byte values in each consumed
+position, walking bits, distinct qwords, ignored-upper-half independence, all
+16×16 XMM/REX.R/B combinations, full-state preservation, and zero data-memory
+callbacks. Missing state, truncation, STOP/budget atomicity, strict schema and
+decoder negatives including missing `66` and VEX `C5 F9 6C C1`, and a literal
+XMM8/XMM9 fixture cover the boundaries. JIT and native execution remain denied.
+PUNPCKHQDQ, other widths, packing, shuffles, shifts, memory, extra prefixes,
+REX.W/X, VEX/EVEX execution, feature gates, exception delivery and physical
+execution remain excluded. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are
+assumptions only. S2-34, S2-35, global `S2-35 → S2-34`, and combined Mac
+mini/SSH acceptance remain open. Evidence is recorded in
+[STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).
