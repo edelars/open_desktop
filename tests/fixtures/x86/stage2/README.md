@@ -5095,3 +5095,14 @@ comparison from byte comparison and show operand direction. Interpreter
 execution is supported; JIT/native execution is denied. SSE2 and CR0/CR4
 preconditions are assumptions only; no feature-gate or exception-delivery
 claim is made.
+
+### S2-35.23 local register PCMPGTD diagnostic profile
+
+`s2_35_23_pcmpgtd_register.case.json` is a handwritten literal XMM8,XMM9
+fixture for strict `s2-long-pcmpgtd-reg-v1`: `66 45 0F 66 C1`. The first
+`66` is the mandatory prefix; the final `66` is PCMPGTD's opcode byte. Four
+signed little-endian dword lanes emit `FFFFFFFF` iff destination is greater than
+source, otherwise `00000000`; sentinels expose operand direction, signedness,
+and dword lane width. Interpreter execution is supported;
+JIT/native execution is denied. SSE2 and CR0/CR4 preconditions are assumptions
+only; no feature-gate or exception-delivery claim is made.

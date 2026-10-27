@@ -12440,3 +12440,39 @@ no remaining findings.
 This is local interpreter/profile evidence only. S2-34, S2-35, global
 `S2-35 → S2-34`, physical x86 validation, and deferred combined Mac mini/SSH
 acceptance remain open.
+
+## S2-35.23 — local PCMPGTD XMM register slice
+
+Added strict `s2-long-pcmpgtd-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 66 /r`, with ModR/M.mod=3 and XMM0–15
+registers. The first `66` is the mandatory prefix; the byte after `0F` is the
+opcode `66`. Four little-endian dword lanes produce all ones only for strict
+signed destination-greater-than-source. Only destination XMM and RIP change.
+No data callback is made. SSE2/CR0/CR4 preconditions remain assumptions; no
+feature-gate or exception-delivery claim is made. Other compares, PCMPGTQ,
+MMX, memory, additional prefixes, REX.W/X, VEX/EVEX, JIT/native and physical
+execution are excluded.
+
+Coverage includes walking-bit and complement raw-u32 patterns, i32 extrema and
+adjacent values, an independent i64 signed oracle, operand direction and
+strict/equal cases, dword-vs-word/byte sentinels, mixed masks, all 16×16 XMM/REX
+pairs, full-state/flags/MXCSR preservation, and zero data callbacks. Atomic
+missing-state, truncation and STOP/budget failures are covered. Strict profile
+and decoder negatives include VEX `C5 F9 66 C1`. A handwritten literal
+XMM8/XMM9 fixture checks mixed output and JIT/native denial.
+
+Focused `od-isa` PCMPGTD tests passed (3), including signed-boundary/walking-bit
+coverage, decode boundaries, matrix and atomicity. The literal runner
+fixture/schema/JIT-denial test passed (1). `cargo test --workspace --offline
+--quiet` passed 1,721 workspace tests. Workspace all-target offline checking and
+the x86_64 Linux all-target compile check passed; Linux native-denial remains
+compile-checked only on this Darwin host. Formatting and diff whitespace
+checks passed. Layout validation still reports the linked worktree `.git`
+pointer and two missing historical oracle manifests. `graphify update .`
+completed with the existing `include/open_desktop/host_abi.h` extractor
+warning. Independent `gpt-6.1-sol` medium review and re-review passed with no remaining
+findings.
+
+This is local interpreter/profile evidence only and leaves S2-34, S2-35,
+global `S2-35 → S2-34`, physical x86 validation, and deferred combined
+Mac mini/SSH acceptance open.

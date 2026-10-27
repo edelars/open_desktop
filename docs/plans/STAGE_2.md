@@ -8388,3 +8388,44 @@ passed. `graphify update .` completed and reported the existing
 These are local interpreter/profile results only; they do not close S2-34,
 S2-35, global `S2-35 → S2-34`, physical x86 validation, or deferred combined
 Mac mini/SSH acceptance.
+
+#### S2-35.23 — local-only bounded register `PCMPGTD`
+
+Requires S2-34.1 raw x87/SSE state and mandatory-66 XMM decoding from S2-35.1.
+Exact profile `s2-long-pcmpgtd-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F 66 /r` with ModR/M.mod=3. The opcode byte is
+the second `66`, after `0F`; the first is the mandatory prefix. ModR/M.reg is
+the destination and ModR/M.r/m the source, extended to XMM0–15. Each of four
+little-endian dword lanes becomes `FFFFFFFF` iff signed_i32(destination) is
+strictly greater than signed_i32(source), otherwise `00000000`.
+
+Coverage includes a raw-u32 domain built from every walking bit and complement,
+signed boundary values and in-range neighbors, compared through an independent
+i64 signed oracle around i32 boundaries. Explicit cases test direction,
+strictness/equality, dword-vs-word/byte sentinels (`00010000>0000ffff`,
+`00008000>00007fff`), signed extrema, mixed masks, the full 16×16 XMM/REX
+matrix, complete state/flags/MXCSR preservation, and zero data callbacks.
+Missing state, truncation, STOP/budget atomicity, strict schema/decoder
+negatives including VEX `C5 F9 66 C1`, and a literal XMM8/XMM9 fixture with
+JIT/native denial are covered. PCMPGTQ/other compares, MMX, memory, other
+prefixes, REX.W/X, VEX/EVEX execution, feature gates, exception delivery, and
+native/JIT/physical execution remain excluded. SSE2 and CR0/CR4 preconditions
+are assumptions only. S2-34, S2-35 and global `S2-35 → S2-34` remain open;
+Mac mini/SSH acceptance remains deferred.
+
+S2-35.23 implementation check (2026-10-27): focused `od-isa` PCMPGTD
+coverage passed (3 tests), including decoder boundaries, signed-i32 boundary
+and walking-bit oracles, mixed lanes, all 16×16 XMM pairs, preservation and
+atomic failures. The handwritten XMM8/XMM9 runner fixture/schema/JIT-denial
+test passed (1). `cargo test --workspace --offline --quiet` passed 1,721
+workspace tests. Workspace all-target offline check and the
+`x86_64-unknown-linux-gnu` all-target compile check passed; the Linux-gated
+native-denial test was compile-checked but not executed on the Darwin host.
+`cargo fmt --all -- --check` and `git diff --check` passed. Layout validation
+still fails on the linked worktree `.git` pointer and two missing historical
+oracle manifests. `graphify update .` completed and reported the existing
+`include/open_desktop/host_abi.h` extractor warning. Independent `gpt-6.1-sol`
+medium review and re-review passed with no remaining findings. These are local
+interpreter/profile results only and
+do not close S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation, or
+deferred combined Mac mini/SSH acceptance.
