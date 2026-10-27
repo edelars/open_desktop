@@ -6834,3 +6834,21 @@ DF и сохраняет остальные definedness bits. Все одино�
 как вне профиля; это admission boundary, не утверждение о #UD или precedence.
 `D9 FC` остаётся FRNDINT. Native/JIT/physical acceptance не входят; S2-18
 остаётся открытой.
+
+#### S2-18l — non-REP STOS с address-size 32
+
+Добавить только Long64 non-REP `67 AA`, `67 66 AB`, `67 AB`, `67 48 AB`.
+Стартовый адрес — zero-extend(EDI), запись выполняется одной непрерывной
+width-sized операцией без побайтного wrap на 4 GiB; после успеха RDI получает
+zero-extended `(EDI ± width) mod 2^32` согласно DF. RAX целиком сохраняется,
+как и остальные GPR/flags/definedness/segment/x87. Ошибки записи атомарны в
+локальной модели: полный CPU/RAM pre-state сохраняется, retirement равен 0;
+архитектурный fault остаётся гостевым, backend error остаётся HarnessError.
+Это bounded local policy под ISSUE-016, не hardware restart claim.
+
+Покрытие: полная матрица core состояний, границы, store failures, prefix
+admission и ровно 43 literal schema-v2 fixtures с полными expected snapshots;
+runner проверяет snapshots/RAM, retirements и закрытый JIT, Linux-only native
+test отвергает четыре формы до tracee. Mac mini/native физическая проверка
+остаётся объединённой в общем финальном substage. ISSUE-016/020/021 остаются
+открытыми; S2-18 и Stage 2 в целом остаются открытыми.

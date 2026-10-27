@@ -10576,3 +10576,25 @@ was not run on this macOS host. Workspace-wide verification remains part of
 the integrated check. No native execution, Mac mini, SSH, or physical
 acceptance is claimed; those checks are deferred to the shared final
 acceptance stage.
+
+## S2-18l — non-REP address-size-32 STOS fixtures (local)
+
+Added 43 literal schema-v2 fixtures for `67 AA`, `67 66 AB`, `67 AB`, and
+`67 48 AB`: eight positive width/direction cases, write errors, zero-budget
+cases, pointer wrap in both directions, continuous writes across 4 GiB,
+prefix normalization, TEST compositions, and CLD/STD compositions. Every
+expected final RDI and memory byte string is recorded as fixture data; the
+generator serializes constants and does not use the interpreter as an oracle.
+The runner compares complete GPR/flags/definedness/RIP snapshots, memory,
+retirement, error outcomes, and JIT fail-closed behavior. Ordered write-log
+assertions belong to the od-isa core tests because the CLI snapshot schema
+does not expose an access log.
+
+The bounded local policy starts from zero-extended EDI, performs one
+contiguous width-sized store without per-byte 32-bit wrap, and zero-extends
+the DF-directed modulo-32-bit post-index. Full RAX is preserved. Store
+failures preserve CPU and RAM and retire zero; this policy is tracked by
+ISSUE-016 and is not a hardware post-fault claim. A Linux-only native admission
+test rejects all four forms before tracee execution. JIT/native execution and
+physical acceptance remain closed/deferred. S2-18, ISSUE-016, ISSUE-020, and
+ISSUE-021 remain open.

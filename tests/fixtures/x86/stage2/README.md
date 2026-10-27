@@ -4167,6 +4167,24 @@ python3 -m unittest tests/cpu/test_stage2_lods_addr32_generator.py
 cargo test -p od-runner --test fixture_v2 addr32_lods_fixtures_match_literal_full_state_answers_and_fail_closed --offline
 ```
 
+### S2-18l non-REP STOS B/W/D/Q, address-size 32
+
+The 43 literal schema-v2 fixtures cover the four `67` STOS widths, both DF
+directions, write failures, zero budget, 32-bit RDI wrap, continuous stores
+across the 4-GiB boundary, prefix normalization, TEST composition and CLD/STD
+composition. Each expected final RDI and each complete expected data byte
+string is fixed fixture data; the generator only serializes those constants.
+The start address is zero-extended EDI, while the successful store itself is
+contiguous and does not wrap byte-by-byte at 4 GiB. The full RAX source is
+preserved. Error cases encode the local ISSUE-016 no-commit policy, not a
+hardware post-fault guarantee.
+
+```sh
+python3 tests/cpu/generate_stage2_stos_addr32.py --check
+python3 -m unittest tests.cpu.test_stage2_stos_addr32_generator
+cargo test -p od-runner --test fixture_v2 stos_addr32_cli_fixtures_match_literal_full_state_and_keep_jit_closed --offline
+```
+
 
 ### S2-18j bare CLD/STD
 

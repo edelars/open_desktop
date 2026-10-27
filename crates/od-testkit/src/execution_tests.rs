@@ -3489,7 +3489,7 @@ fn stosb_rejects_prefixes_without_committing() {
         Fixture::from_json(&std::fs::read(directory.join("s2_18e_stosb_df0.case.json")).unwrap())
             .unwrap()
             .fixture;
-    for bytes in ["40aa", "66aa", "67aa", "2eaa", "64aa", "f2aa"] {
+    for bytes in ["40aa", "66aa", "2eaa", "64aa", "f2aa"] {
         fixture.memory[0].length = (bytes.len() / 2) as u32;
         fixture.memory[0].initial_bytes_hex = bytes.into();
         fixture.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
@@ -5302,11 +5302,10 @@ fn stos_rex_order_all_encodings_and_ignored_rsi_values_execute_without_reads() {
 #[test]
 fn stos_prefix_rejects_are_unsupported_before_any_data_access() {
     let forms: [&[u8]; 3] = [&[0x66, 0xab], &[0xab], &[0x48, 0xab]];
-    let prefixes: [&[u8]; 10] = [
+    let prefixes: [&[u8]; 9] = [
         &[0xf0],
         &[0xf2],
         &[0xf3],
-        &[0x67],
         &[0x26],
         &[0x2e],
         &[0x36],
@@ -5330,7 +5329,7 @@ fn stos_prefix_rejects_are_unsupported_before_any_data_access() {
         vec![0xf2, 0xf3, 0xab],
         vec![0x64, 0x65, 0xab],
     ]);
-    assert_eq!(cases.len(), 32);
+    assert_eq!(cases.len(), 29);
     for code in cases {
         let mut state = LongModeState::default();
         state.rip = 0x1000;

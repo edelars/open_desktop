@@ -1103,3 +1103,27 @@ and the CLI full-state check confirms JIT denial without fallback. Validation
 passed: 102 Python CPU tests, workspace check and 1,345 workspace tests. Native
 admission denial is covered by a Linux-only unit test not run on this macOS host;
 no physical support is claimed and S2-18 remains open.
+
+## Non-REP STOS address-size 32 — S2-18l
+
+The local Long64 interpreter fixture profile covers `67 AA`, `67 66 AB`,
+`67 AB`, and `67 48 AB`. It uses zero-extended EDI as the starting address,
+one continuous width-sized write, and a zero-extended DF-directed modulo-32
+RDI update after success. Full RAX is preserved. Write errors preserve CPU
+and RAM and retire zero under the local ISSUE-016 policy; this is not a
+hardware restart-state assertion.
+
+Exactly 43 literal cases cover width/direction successes, unmapped and
+read-only writes, zero budget, pointer wrap, continuous 4-GiB crossing,
+prefix normalization, TEST and CLD/STD compositions. Expected RDI and memory
+are literal fixture values. CLI checks full CPU/definedness/RAM snapshots,
+retirement and error outcomes, and confirms JIT is fail-closed. Ordered write
+accesses are asserted by od-isa core tests. A Linux-only native-admission
+check rejects all four forms before tracee execution; no native, Mac mini,
+SSH or physical acceptance is claimed, and S2-18 remains open.
+
+```sh
+python3 tests/cpu/generate_stage2_stos_addr32.py --check
+python3 -m unittest tests.cpu.test_stage2_stos_addr32_generator
+cargo test -p od-runner --test fixture_v2 stos_addr32_cli_fixtures_match_literal_full_state_and_keep_jit_closed --offline
+```

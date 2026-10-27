@@ -4867,4 +4867,28 @@ mod tests {
             );
         }
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_18l_addr32_stos_forms_fail_native_admission_before_tracee_or_snapshot() {
+        for code in [
+            &[0x67, 0xaa][..],       // STOSB, address-size 32
+            &[0x67, 0x66, 0xab][..], // STOSW, address-size 32
+            &[0x67, 0xab][..],       // STOSD, address-size 32
+            &[0x67, 0x48, 0xab][..], // STOSQ, address-size 32
+        ] {
+            let loaded = fixture(code);
+            let mut actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            actual.gpr[7] = 0xffff_ffff_0020_0000;
+            let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            // Admission has no tracee PID at this boundary, so the rejected
+            // forms cannot begin native execution or produce a snapshot.
+            let error = admission(&loaded.fixture, &mut decoder, &actual)
+                .expect_err("address-size-32 STOS must remain outside native execution");
+            assert!(
+                error.contains("native STOS admission requires a bare STOSB form"),
+                "unexpected admission error for {code:02x?}: {error}"
+            );
+        }
+    }
 }

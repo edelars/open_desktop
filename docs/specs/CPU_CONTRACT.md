@@ -8051,3 +8051,31 @@ as before and retirement is zero. High RSI bits discarded by address-size
 truncation alone do not fault. RDI, RCX, flags and their definedness, segments,
 x87 state, and RAM are otherwise preserved. JIT/native/physical support is not
 enabled by this local interpreter contract.
+
+### Local S2-18l non-REP address-size-32 STOS contract
+
+The bounded Long64 profile accepts non-REP `67 AA` STOSB, `67 66 AB`
+STOSW, `67 AB` STOSD, and `67 48 AB` STOSQ. Prefix normalization uses the
+effective decoded address-size and REX state: effective REX.W wins over 66,
+and a legacy prefix after REX discards that earlier REX. Thus `67 48 66 AB`
+is word, `67 66 48 AB` is qword, and `48 67 AB` is dword. REP/REPNE,
+segment overrides, and other address-size-32 string instructions remain
+outside this bounded STOS profile, except the already-admitted non-REP LODS
+forms in S2-18k. These boundaries do not assert a universal #UD or
+prefix-precedence rule.
+
+The starting linear destination is zero-extended EDI with flat ES. One
+width-sized write spans continuously from that address; byte accesses do not
+individually wrap at 4 GiB, so a qword at EDI=`ffffffff` reaches
+`1_0000_0006`. After a successful write, RDI becomes the zero-extended
+`(EDI +/- width) mod 2^32`, selected by DF. The complete RAX is the source and
+is preserved, including after STOSD. RSI, RCX, flags and their definedness,
+segments, x87 state, and all other registers are preserved. Successful
+execution advances RIP and retires once.
+
+Any store error leaves the complete CPU snapshot and RAM unchanged and retires
+zero. Architectural store faults remain guest faults; unmapped, permission,
+and injected backend failures remain HarnessError. This no-commit rule is a
+bounded local memory-model policy tracked by ISSUE-016, not a claim about
+hardware restart state or fault precedence. JIT/native admission remains
+closed pending shared final acceptance.

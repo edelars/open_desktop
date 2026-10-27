@@ -5368,6 +5368,132 @@ fn stos_width_cli_fixtures_match_literal_full_state_and_fail_atomically() {
 }
 
 #[test]
+fn stos_addr32_cli_fixtures_match_literal_full_state_and_keep_jit_closed() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_18l_stos_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 43);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let harness_error = case_id.contains("unmapped") || case_id.contains("readonly");
+        let (input, result) = run(&raw, "interpreter", if harness_error { 5 } else { 0 });
+        let budget = case_id.contains("budget0");
+        if harness_error {
+            assert_eq!(
+                input.fixture.expected_exit,
+                ExpectedExit::HarnessError,
+                "{case_id}"
+            );
+            let reason = match &result.outcome {
+                Outcome::HarnessError { reason } => reason,
+                _ => panic!("{case_id}: expected HarnessError, got {:?}", result.outcome),
+            };
+            let error = &answer["harness_error"];
+            let kind = error["kind"].as_str().unwrap();
+            let access = error["access"].as_str().unwrap();
+            let address = error["address"].as_str().unwrap();
+            let address_value = u64::from_str_radix(address.trim_start_matches("0x"), 16).unwrap();
+            assert!(
+                matches!(kind, "Unmapped" | "PermissionDenied"),
+                "{case_id}: invalid literal error kind {kind}"
+            );
+            assert_eq!(access, "Write", "{case_id}");
+            assert_eq!(
+                reason,
+                &format!(
+                    "fixture memory backend: {kind} {{ address: {address_value}, access: {access} }}"
+                ),
+                "{case_id}"
+            );
+        } else if budget {
+            assert!(
+                matches!(result.outcome, Outcome::InstructionBudgetExhausted {}),
+                "{case_id}"
+            );
+        } else {
+            assert!(
+                matches!(result.outcome, Outcome::StopAddress {}),
+                "{case_id}"
+            );
+        }
+        assert_eq!(
+            count(&result),
+            answer["retired"].as_u64().unwrap(),
+            "{case_id}"
+        );
+
+        let observed = snapshot(&result);
+        let expected_gprs: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gprs, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.state.rip, expected_rip, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        assert_eq!(observed.memory.len(), expected_memory.len(), "{case_id}");
+        for (index, region) in observed.memory.iter().enumerate() {
+            assert_eq!(
+                region.region_id,
+                if index == 0 { "code" } else { "data" },
+                "{case_id}"
+            );
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+        if harness_error || budget {
+            assert_eq!(
+                observed.state.gpr, input.fixture.initial_state.gpr,
+                "{case_id}"
+            );
+            assert_eq!(
+                observed.state.rip, input.fixture.initial_state.rip,
+                "{case_id}"
+            );
+            for region in &observed.memory {
+                assert_eq!(
+                    region.bytes_hex,
+                    input
+                        .fixture
+                        .memory
+                        .iter()
+                        .find(|spec| spec.region_id == region.region_id)
+                        .unwrap()
+                        .initial_bytes_hex,
+                    "{case_id}: {}",
+                    region.region_id
+                );
+            }
+        }
+
+        let (_, jit_result) = run(&raw, "jit", 4);
+        assert!(
+            matches!(jit_result.outcome, Outcome::Unsupported { .. }),
+            "{case_id}"
+        );
+        assert!(
+            matches!(jit_result.snapshot, Observation::Unavailable { .. }),
+            "{case_id}"
+        );
+        assert!(
+            matches!(
+                jit_result.instructions_executed,
+                Observation::Unavailable { .. }
+            ),
+            "{case_id}"
+        );
+    }
+}
+
+#[test]
 fn scas_cli_fixtures_match_literal_full_state_and_status() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
