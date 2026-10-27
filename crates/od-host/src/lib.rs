@@ -13319,6 +13319,9 @@ mod tests {
         #[derive(Clone)]
         struct Ram {
             code: [u8; 6],
+            fetch_tail: u8,
+            fetch_fault: Option<MemoryError>,
+            fetch_boundary_calls: usize,
             bytes: [u8; 64],
             calls: Vec<&'static str>,
             fail_write: Option<MemoryError>,
@@ -13328,6 +13331,13 @@ mod tests {
         }
         impl GuestMemory for Ram {
             fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                if address == 0x9e06 {
+                    self.fetch_boundary_calls += 1;
+                    if let Some(error) = &self.fetch_fault {
+                        return Err(error.clone());
+                    }
+                    return Ok(self.fetch_tail);
+                }
                 if (0x9e00..0x9e06).contains(&address) {
                     return Ok(self.code[(address - 0x9e00) as usize]);
                 }
@@ -13424,6 +13434,9 @@ mod tests {
             bytes[16..24].copy_from_slice(&0x1111_2222_3333_4444u64.to_le_bytes());
             Ram {
                 code: [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b],
+                fetch_tail: 0x90,
+                fetch_fault: None,
+                fetch_boundary_calls: 0,
                 bytes,
                 calls: Vec::new(),
                 fail_write: None,
@@ -14162,5 +14175,289 @@ mod tests {
         assert_eq!(priority.exit, MemoryOperationExecutionExitV2::StopAddress);
         assert_eq!(priority.retired_instructions, 1);
         assert_eq!(read_stop_rip_ram.calls, ["read"]);
+
+        drop(load_store_published);
+        let fetch_fault = od_isa::memory::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(5),
+            linear_address: Some(0x9e06),
+        };
+        for (bytes, expected_calls) in [
+            ([0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b], ["write", "read"]),
+            ([0x48, 0x8b, 0x03, 0x48, 0x89, 0x02], ["read", "write"]),
+        ] {
+            let block = od_jit::memory_load_v2::compile_ir_memory_two_site_block_v2(
+                od_jit::block::CodeView::new(0x9e00, &bytes).unwrap(),
+                0x9e00,
+            )
+            .unwrap();
+            let published = PublishedCode::publish_ir_memory_two_site_v2(&block).unwrap();
+            let mut native_state = state();
+            let mut native_ram = ram();
+            native_ram.code = bytes;
+            let native_result = unsafe {
+                published.execute_ir_memory_two_site_v2(
+                    &mut native_state,
+                    &mut native_ram,
+                    AccessContext::default(),
+                    3,
+                    None,
+                    &stop,
+                )
+            }
+            .unwrap();
+            assert_eq!(native_result.retired_instructions, 2);
+            assert_eq!(native_result.remaining_budget, 1);
+            assert_eq!(native_state.rip, 0x9e06);
+            assert_eq!(native_ram.calls, expected_calls);
+            // The guest address is mapped and readable in this fixture; the later
+            // injected architectural fault is independent of compile-buffer end.
+            let mut mapped_boundary = ram();
+            assert_eq!(
+                mapped_boundary.fetch(0x9e06, AccessContext::default()),
+                Ok(0x90)
+            );
+
+            let mut interpreter_state = state();
+            let mut interpreter_ram = ram();
+            interpreter_ram.code = bytes;
+            interpreter_ram.fetch_fault = Some(MemoryError::Architectural(fetch_fault.clone()));
+            let reference = od_isa::execute::run(
+                &mut interpreter_state,
+                &mut interpreter_ram,
+                od_isa::execute::RunConfig {
+                    instruction_budget: 3,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                reference.exit,
+                od_isa::execute::RunExit::Fault(fetch_fault.clone())
+            );
+            assert_eq!(reference.instructions_executed, 2);
+            assert_eq!(interpreter_ram.fetch_boundary_calls, 1);
+            assert_eq!(interpreter_state, native_state);
+            assert_eq!(interpreter_ram.bytes, native_ram.bytes);
+            assert_eq!(interpreter_ram.calls, expected_calls);
+
+            native_ram.fetch_fault = Some(MemoryError::Architectural(fetch_fault.clone()));
+            let native_data_calls = native_ram.calls.clone();
+            let native_fetch_fault = od_isa::execute::run(
+                &mut native_state,
+                &mut native_ram,
+                od_isa::execute::RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                native_fetch_fault.exit,
+                od_isa::execute::RunExit::Fault(fetch_fault.clone())
+            );
+            assert_eq!(native_fetch_fault.instructions_executed, 0);
+            assert_eq!(native_state, interpreter_state);
+            assert_eq!(native_ram.bytes, interpreter_ram.bytes);
+            assert_eq!(native_state.rip, 0x9e06);
+            assert_eq!(native_ram.calls, native_data_calls);
+            assert_eq!(native_ram.fetch_boundary_calls, 1);
+            let retry_state = native_state.clone();
+            let retry = od_isa::execute::run(
+                &mut native_state,
+                &mut native_ram,
+                od_isa::execute::RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(
+                retry.exit,
+                od_isa::execute::RunExit::Fault(fetch_fault.clone())
+            );
+            assert_eq!(retry.instructions_executed, 0);
+            assert_eq!(native_state, retry_state);
+            assert_eq!(native_ram.calls, native_data_calls);
+            assert_eq!(native_ram.fetch_boundary_calls, 2);
+            drop(published);
+        }
+
+        // Unmapped and backend fetch failures remain host errors and do not
+        // repeat either native memory effect.
+        for bytes in [
+            [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b],
+            [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02],
+        ] {
+            for fetch_error in [
+                MemoryError::Unmapped {
+                    address: 0x9e06,
+                    access: AccessKind::Fetch,
+                },
+                MemoryError::Backend("injected next-fetch backend error".into()),
+            ] {
+                let block = od_jit::memory_load_v2::compile_ir_memory_two_site_block_v2(
+                    od_jit::block::CodeView::new(0x9e00, &bytes).unwrap(),
+                    0x9e00,
+                )
+                .unwrap();
+                let published = PublishedCode::publish_ir_memory_two_site_v2(&block).unwrap();
+                let mut s = state();
+                let mut m = ram();
+                m.code = bytes;
+                let result = unsafe {
+                    published.execute_ir_memory_two_site_v2(
+                        &mut s,
+                        &mut m,
+                        AccessContext::default(),
+                        3,
+                        None,
+                        &stop,
+                    )
+                }
+                .unwrap();
+                assert_eq!(result.retired_instructions, 2);
+                let before = s.clone();
+                let calls = m.calls.clone();
+                m.fetch_fault = Some(fetch_error.clone());
+                let run = od_isa::execute::run(
+                    &mut s,
+                    &mut m,
+                    od_isa::execute::RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(run.exit, od_isa::execute::RunExit::MemoryError(fetch_error));
+                assert_eq!(run.instructions_executed, 0);
+                assert_eq!(s, before);
+                assert_eq!(m.calls, calls);
+                assert_eq!(m.fetch_boundary_calls, 1);
+                drop(published);
+            }
+        }
+
+        // RunConfig itself gates fetch at exhausted budget and requested STOP;
+        // relaxing each control then exposes the same architectural fetch fault.
+        let bytes = [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b];
+        let block = od_jit::memory_load_v2::compile_ir_memory_two_site_block_v2(
+            od_jit::block::CodeView::new(0x9e00, &bytes).unwrap(),
+            0x9e00,
+        )
+        .unwrap();
+        let published = PublishedCode::publish_ir_memory_two_site_v2(&block).unwrap();
+        let mut exhausted_state = state();
+        let mut exhausted_ram = ram();
+        exhausted_ram.fetch_fault = Some(MemoryError::Architectural(fetch_fault.clone()));
+        let result = unsafe {
+            published.execute_ir_memory_two_site_v2(
+                &mut exhausted_state,
+                &mut exhausted_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(result.remaining_budget, 0);
+        assert_eq!(exhausted_state.rip, 0x9e06);
+        let calls_after_pair = exhausted_ram.calls.clone();
+        let gated = od_isa::execute::run(
+            &mut exhausted_state,
+            &mut exhausted_ram,
+            od_isa::execute::RunConfig {
+                instruction_budget: result.remaining_budget,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(
+            gated.exit,
+            od_isa::execute::RunExit::InstructionBudgetExhausted
+        );
+        assert_eq!(gated.instructions_executed, 0);
+        assert_eq!(exhausted_ram.fetch_boundary_calls, 0);
+        let resumed = od_isa::execute::run(
+            &mut exhausted_state,
+            &mut exhausted_ram,
+            od_isa::execute::RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(
+            resumed.exit,
+            od_isa::execute::RunExit::Fault(fetch_fault.clone())
+        );
+        assert_eq!(resumed.instructions_executed, 0);
+        assert_eq!(exhausted_ram.fetch_boundary_calls, 1);
+        assert_eq!(exhausted_ram.calls, calls_after_pair);
+
+        let raised_at_boundary = AtomicU8::new(0);
+        let mut stopped_state = state();
+        let mut stopped_ram = ram();
+        stopped_ram.stop_on_read = Some(&raised_at_boundary as *const AtomicU8 as usize);
+        let stopped_fetch_fault = od_isa::memory::ArchitecturalFault {
+            vector: 14,
+            error_code: None,
+            linear_address: Some(0x9e06),
+        };
+        stopped_ram.fetch_fault = Some(MemoryError::Architectural(stopped_fetch_fault.clone()));
+        let result = unsafe {
+            published.execute_ir_memory_two_site_v2(
+                &mut stopped_state,
+                &mut stopped_ram,
+                AccessContext::default(),
+                3,
+                None,
+                &raised_at_boundary,
+            )
+        }
+        .unwrap();
+        assert_eq!(result.retired_instructions, 2);
+        assert_eq!(stopped_state.rip, 0x9e06);
+        assert_eq!(raised_at_boundary.load(Ordering::Acquire), 1);
+        let calls_after_pair = stopped_ram.calls.clone();
+        let gated = od_isa::execute::run(
+            &mut stopped_state,
+            &mut stopped_ram,
+            od_isa::execute::RunConfig {
+                instruction_budget: result.remaining_budget,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || raised_at_boundary.load(Ordering::Acquire) != 0,
+        );
+        assert_eq!(gated.exit, od_isa::execute::RunExit::StopRequested);
+        assert_eq!(gated.instructions_executed, 0);
+        assert_eq!(stopped_ram.fetch_boundary_calls, 0);
+        raised_at_boundary.store(0, Ordering::Release);
+        let resumed = od_isa::execute::run(
+            &mut stopped_state,
+            &mut stopped_ram,
+            od_isa::execute::RunConfig {
+                instruction_budget: result.remaining_budget,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || raised_at_boundary.load(Ordering::Acquire) != 0,
+        );
+        assert_eq!(
+            resumed.exit,
+            od_isa::execute::RunExit::Fault(stopped_fetch_fault)
+        );
+        assert_eq!(resumed.instructions_executed, 0);
+        assert_eq!(stopped_ram.fetch_boundary_calls, 1);
+        assert_eq!(stopped_ram.calls, calls_after_pair);
+        drop(published);
     }
 }

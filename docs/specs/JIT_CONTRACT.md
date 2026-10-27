@@ -1331,6 +1331,28 @@ bounded checked-store regression, not full S3-27 fault/PC-map coverage or a
 physical exception-delivery claim. Mac mini execution remains reserved for
 the final S3-21 gate. See the [S3-27a report](../reports/STAGE_3_S3-27a_2026-10-27.md).
 
+### S3-27b: next-instruction fetch fault after a two-site memory pair — fixture partial
+
+After either exact two-site artifact retires both guest instructions, its
+returned CPU state is at `A+6` and its memory effects are complete. A subsequent
+interpreter step uses that returned state and RAM directly. A fixture supplies
+a valid fetch mapping at `A+6` whose `GuestMemory::fetch` returns a chosen
+architectural fault. Interpreter-only `execute::run` over the pair plus the
+faulting third fetch reports that fault with `instructions_executed == 2`; the
+run from native-returned state reports the same payload with zero additional
+instructions. Full CPU state/RAM match and retries do not repeat either pair
+memory callback. Unmapped/backend fetch errors for both pair sequences remain
+host `MemoryError`s with zero continuation instructions. `RunConfig` with zero
+budget and a raised STOP closure suppresses the fetch; replenishing budget or
+clearing STOP then exposes the architectural fault with zero continuation
+instructions. Compiler `CodeView` exhaustion is not reclassified as a guest
+fetch fault.
+
+This is bounded fixture-boundary evidence, not a production dispatcher or
+owner-backed MMU integration. Production cross-block fetch/fault delivery and
+S3-27's general PC-map coverage remain open. See the
+[S3-27b report](../reports/STAGE_3_S3-27b_2026-10-27.md).
+
 ### S3-19a: invocation-local checked memory helper ABI partial
 
 `od_jit::memory_bridge::CheckedMemoryAdapter` borrows one `&mut dyn

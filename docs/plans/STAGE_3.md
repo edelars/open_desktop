@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-26a/S3-26b/S3-26c/S3-26d/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-26a/S3-26b/S3-26c/S3-26d/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -171,6 +171,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-24 | Self-modifying code в текущем блоке | S3-23 |
 | [partial] | S3-24a | Active native three-instruction artifact exits after committed store changes already executed prefix | One typed V3 slot/call; future-tail writes rejected; future-instruction SMC oracle and general blocks remain open |
 | [partial] | S3-27a | Exact V3 store architectural fault payload and precise prefix state | Fixture-injected #PF after checked write entry; host decoder negatives; full S3-27 fault/fetch/PC-map coverage remains open |
+| [partial] | S3-27b | Fault on interpreter fetch at `A+6` after one exact two-site pair | Native pair commits are compared against interpreter-only steps; fixture-only boundary evidence, production MMU/dispatcher remains open |
 | [ ] | S3-25 | Eviction, retirement и освобождение | S3-18, S3-24 |
 | [partial] | S3-25a | One-vCPU synchronous cache/arena handle lifetime and safe-point checks | Inactive entries only; active-code retirement, SMP, deferred queue not included |
 | [partial] | S3-25b | Capacity-two arena lifetime for one V3 artifact and one cached prefix | V3 slot survives cache clear/invalidation; stale source rejected; full retirement/SMP/deferred queue remain open |
@@ -1164,6 +1165,22 @@ resident mapping. Результат: [S3-25a report](../reports/STAGE_3_S3-25a_
 4. Если планируется direct-memory fast path, сначала отдельно доказать fault classification/recovery и ownership. До этого сохранять checked helper path.
 
 **Готово:** все предусмотренные guest faults имеют тот же определённый snapshot, что interpreter и доступный physical oracle; runtime failures однозначно отделены.
+
+#### S3-27b. Faulting next fetch after a committed two-site memory pair — partial
+
+Native execution of either exact pair returns its canonical `A+6` CPU/RAM
+snapshot. A separate interpreter step then fetches at this valid guest address
+and receives a controlled architectural fault. The fixture compares against
+two successful interpreter steps followed by the same faulting fetch, checks
+full payload/state/RAM and confirms the faulting fetch is not retired or a
+reason to repeat either pair memory effect. Unmapped/backend fetch failures
+remain host errors. Exhausted budget and STOP gate continuation before fetch;
+source `CodeView` exhaustion remains compile/decode metadata, not a guest fault.
+This is fixture-boundary evidence only: the production owner-backed MMU and
+multi-block dispatcher remain open.
+
+См. [S3-27b report](../reports/STAGE_3_S3-27b_2026-10-27.md) and
+[JIT testing protocol](../testing/JIT.md#bounded-s3-27b-next-fetch-after-memory-pair).
 
 ### S3-28. Реализовать STOP и event safepoints
 

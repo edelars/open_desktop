@@ -43,6 +43,25 @@
 
 ## Протокол и доказательства
 
+### Bounded S3-27b next fetch after memory pair
+
+The native fixture runs either exact two-site pair through the generated entry,
+then applies a controlled `GuestMemory::fetch` architectural fault at valid
+guest RIP `A+6` by calling the interpreter on the returned state and RAM. A
+separate `od_isa::execute::run` runs the same pair and faulting third fetch,
+reporting the fault with two `instructions_executed`. Run the interpreter
+again from the native-returned state/RAM; it reports the same fault with zero
+additional instructions. Compare the complete CPU state including flags/RIP
+and all RAM; check the full fault payload and no repeated pair data callbacks
+on fault or retry. Inject unmapped/backend fetch errors for both pair forms and
+require host-error classification with zero continuation instructions. Real
+`RunConfig` zero-budget and STOP closure exits suppress the next fetch; after
+replenishing budget or clearing STOP, continuation reports the architectural
+fault with zero instructions. The six-byte
+compiler `CodeView` ending at `A+6` is independent of the guest mapping/fetch
+result. This test proves a fixture boundary only; production dispatcher and
+owner-backed MMU behavior remain untested.
+
 ### Bounded S3-34a two-site memory corpus
 
 For the two exact V2 memory sequences in the JIT contract, run
