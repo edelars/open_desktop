@@ -195,6 +195,30 @@ eight displacement boundaries, and identical source bytes at two guest RIPs.
 Physical Mac mini execution remains reserved for the final S3-21 gate; see the
 [S3-20e report](../reports/STAGE_3_S3-20e_2026-10-27.md).
 
+#### S3-20f: bounded address-size override MOV forms
+
+The V2 compiler separately admits only `67 48 8B/89 /r` with ModRM `mod=00`,
+data and base register encodings RAX..RBX, and exactly four instruction bytes.
+The decoder must report qword data width, dword address size, register base,
+no index, scale 1, and displacement 0. The byte admission branch is kept
+separate from the existing direct/SIB/displacement/RIP-relative shapes. The
+compiler does not apply its own masks or zero extension: the runtime uses the
+decoded `MemoryOperand::access_address_48` behavior for the starting address,
+full qword access range, and fault checks. Source identity is exactly four
+bytes and `next_rip` is decoder-derived as entry RIP plus four.
+
+Local native/interpreter differential cases cover all 16 data/base register
+pairs for load and store, full-qword data, high address-register bits ignored
+by the decoded dword address size, and `MOV RAX,[EAX]` using the old base
+before destination commit. Address-size truncation applies only to the starting
+effective address; the qword's subsequent byte addresses advance linearly and
+do not wrap at 32 bits. A sparse mapping test proves this by successfully
+reading and writing bytes at `0xffffffff` through `0x100000006`, while separate
+unmapped cases verify fault atomicity. Other prefixes,
+ModRM modes, SIB, displacement, truncation, and trailing bytes remain rejected.
+Physical Mac mini execution remains reserved for the final S3-21 gate; see the
+[S3-20f report](../reports/STAGE_3_S3-20f_2026-10-27.md).
+
 ## 4. Начальные runtime bounds
 
 - Один гостевой vCPU; компиляция блоков последовательная.

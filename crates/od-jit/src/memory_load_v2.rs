@@ -460,7 +460,17 @@ mod tests {
             vec![0x48, 0x8b, 0x85, 0, 0, 0, 0], // mod10 RBP base is unsupported
             vec![0x4a, 0x8b, 0x04, 0x00], // REX.X extended index
             vec![0x49, 0x8b, 0x04, 0x00], // REX.B extended base
-            vec![0x67, 0x48, 0x8b, 0x00], // address-size override
+            vec![0x67, 0x48, 0x8b, 0x00, 0x90], // address-size override tail
+            vec![0x67, 0x48, 0x8b],       // truncated address-size override form
+            vec![0x67, 0x48, 0x8b, 0x40], // address-size override mod01
+            vec![0x67, 0x48, 0x8b, 0x80], // address-size override mod10
+            vec![0x67, 0x48, 0x8b, 0xc0], // address-size override mod11
+            vec![0x67, 0x48, 0x8b, 0x04], // address-size override SIB
+            vec![0x67, 0x48, 0x8b, 0x05, 0, 0, 0, 0], // no-base disp32
+            vec![0x67, 0x48, 0x8b, 0x45, 0], // RBP with displacement
+            vec![0x67, 0x49, 0x8b, 0x00], // extended base
+            vec![0x48, 0x67, 0x8b, 0x00], // non-profile prefix order
+            vec![0x66, 0x67, 0x48, 0x8b, 0x00], // extra operand-size prefix
             vec![0x48, 0x8b, 0x04, 0x00, 0x90], // ignored tail
             vec![0x48, 0x8b, 0x40, 0x00, 0x90], // disp8 form with tail
         ] {
@@ -474,6 +484,119 @@ mod tests {
                 "unexpectedly admitted bytes {bytes:02x?}"
             );
         }
+    }
+
+    #[test]
+    fn admits_only_address_size_override_qword_mov_register_pairs() {
+        for (opcode, is_load) in [(0x8b, true), (0x89, false)] {
+            for data_register in 0..4_u8 {
+                for base in 0..4_u8 {
+                    let bytes = [0x67, 0x48, opcode, (data_register << 3) | base];
+                    let code = CodeView::new(0x2700, &bytes).unwrap();
+                    let artifact = if is_load {
+                        compile_memory_load_block_v2(code, 0x2700).unwrap().artifact
+                    } else {
+                        compile_memory_store_block_v2(code, 0x2700)
+                            .unwrap()
+                            .artifact
+                    };
+                    assert_eq!(&artifact.source_bytes[..4], &bytes);
+                    assert_eq!(artifact.source_len, 4);
+                    assert_eq!(artifact.site.guest_rip(), 0x2700);
+                    assert_eq!(artifact.site.next_rip(), 0x2704);
+                    assert_eq!(
+                        artifact.site.operand.address_size,
+                        od_isa::OperandSize::Dword
+                    );
+                    assert_eq!(artifact.site.operand.size, od_isa::OperandSize::Qword);
+                    assert_eq!(
+                        artifact.site.operand.base,
+                        AddressBase::Register(Register::from_encoding(base).unwrap())
+                    );
+                    assert_eq!(artifact.site.operand.index, None);
+                    assert_eq!(artifact.site.operand.scale, 1);
+                    assert_eq!(artifact.site.operand.displacement, 0);
+                    assert!(artifact.site.has_supported_profile());
+                    assert!(artifact.site.matches_source_bytes(
+                        &artifact.source_bytes[..4],
+                        if is_load {
+                            MemorySiteOperationV2::Load
+                        } else {
+                            MemorySiteOperationV2::Store
+                        }
+                    ));
+                }
+            }
+        }
+        for (opcode, is_load) in [(0x8b, true), (0x89, false)] {
+            for bytes in [
+                vec![0x67, 0x48, opcode, 0x40],
+                vec![0x67, 0x48, opcode, 0x80, 0, 0, 0, 0],
+                vec![0x67, 0x48, opcode, 0xc0],
+                vec![0x67, 0x48, opcode, 0x04],
+                vec![0x67, 0x48, opcode, 0x05, 0, 0, 0, 0],
+                vec![0x67, 0x49, opcode, 0x00],
+                vec![0x48, 0x67, opcode, 0x00],
+                vec![0x67, 0x48, opcode],
+                vec![0x67, 0x48, opcode, 0x00, 0x90],
+            ] {
+                let code = CodeView::new(0x2780, &bytes).unwrap();
+                let result = if is_load {
+                    compile_memory_load_block_v2(code, 0x2780).map(|_| ())
+                } else {
+                    compile_memory_store_block_v2(code, 0x2780).map(|_| ())
+                };
+                assert!(
+                    matches!(
+                        result,
+                        Err(MemoryLoadCompileErrorV2::UnsupportedForm
+                            | MemoryLoadCompileErrorV2::Decode)
+                    ),
+                    "unexpectedly admitted bytes {bytes:02x?}"
+                );
+            }
+        }
+
+        let address32_load = compile_memory_load_block_v2(
+            CodeView::new(0x2790, &[0x67, 0x48, 0x8b, 0x00]).unwrap(),
+            0x2790,
+        )
+        .unwrap();
+        let address32_store = compile_memory_store_block_v2(
+            CodeView::new(0x2790, &[0x67, 0x48, 0x89, 0x00]).unwrap(),
+            0x2790,
+        )
+        .unwrap();
+        assert!(
+            !address32_load
+                .site()
+                .matches_source_bytes(&[0x48, 0x8b, 0x40, 0x00], MemorySiteOperationV2::Load)
+        );
+        assert!(
+            !address32_store
+                .site()
+                .matches_source_bytes(&[0x48, 0x89, 0x40, 0x00], MemorySiteOperationV2::Store)
+        );
+        let legacy_load = compile_memory_load_block_v2(
+            CodeView::new(0x2790, &[0x48, 0x8b, 0x00]).unwrap(),
+            0x2790,
+        )
+        .unwrap();
+        let legacy_store = compile_memory_store_block_v2(
+            CodeView::new(0x2790, &[0x48, 0x89, 0x00]).unwrap(),
+            0x2790,
+        )
+        .unwrap();
+        assert!(
+            !legacy_load
+                .site()
+                .matches_source_bytes(&[0x67, 0x48, 0x8b, 0x00], MemorySiteOperationV2::Load)
+        );
+        assert!(
+            !legacy_store
+                .site()
+                .matches_source_bytes(&[0x67, 0x48, 0x89, 0x00], MemorySiteOperationV2::Store)
+        );
     }
 
     #[test]

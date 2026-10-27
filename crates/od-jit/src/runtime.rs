@@ -152,10 +152,29 @@ impl MemorySiteV2 {
                         | od_isa::Register::Rbx
                 )
             })
-            || self.operand.address_size != od_isa::OperandSize::Qword
+            || !matches!(
+                self.operand.address_size,
+                od_isa::OperandSize::Qword | od_isa::OperandSize::Dword
+            )
             || self.operand.size != od_isa::OperandSize::Qword
         {
             return false;
+        }
+
+        if self.operand.address_size == od_isa::OperandSize::Dword {
+            return length == 4
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && self.operand.displacement == 0
+                && matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(
+                        od_isa::Register::Rax
+                            | od_isa::Register::Rcx
+                            | od_isa::Register::Rdx
+                            | od_isa::Register::Rbx
+                    )
+                );
         }
 
         let displacement_is_valid = match (self.operand.base, self.operand.index, length) {
@@ -199,6 +218,38 @@ impl MemorySiteV2 {
             MemorySiteOperationV2::Load => 0x8b,
             MemorySiteOperationV2::Store => 0x89,
         };
+        if source.first() == Some(&0x67) {
+            if source.len() != 4 || source[1] != 0x48 || source[2] != opcode {
+                return false;
+            }
+            let modrm = source[3];
+            let mode = modrm >> 6;
+            let data_register = (modrm >> 3) & 7;
+            let base = modrm & 7;
+            let site_register = match expected_operation {
+                MemorySiteOperationV2::Load => self.destination,
+                MemorySiteOperationV2::Store => self.source,
+            };
+            let od_isa::long_decode::AddressBase::Register(decoded_base) = self.operand.base else {
+                return false;
+            };
+            return mode == 0
+                && data_register < 4
+                && base < 4
+                && site_register == Some(data_register)
+                && self.next_rip.checked_sub(self.guest_rip) == Some(4)
+                && self.operand.address_size == od_isa::OperandSize::Dword
+                && self.operand.size == od_isa::OperandSize::Qword
+                && od_isa::Register::from_encoding(base) == Some(decoded_base)
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && self.operand.displacement == 0;
+        }
+        // Every legacy source shape below uses the original 64-bit address
+        // size. Keep it explicit now that the separate 67 profile is admitted.
+        if self.operand.address_size != od_isa::OperandSize::Qword {
+            return false;
+        }
         if source.len() < 3 || source[0] != 0x48 || source[1] != opcode {
             return false;
         }
