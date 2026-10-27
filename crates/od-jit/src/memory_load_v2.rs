@@ -3603,7 +3603,7 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x44, 0x20, 0], // no index
                 vec![0x67, 0x48, opcode, 0x44, 0x25, 0], // no base special
                 vec![0x67, 0x48, opcode, 0x44, 0x28, 0], // unsupported index
-                vec![0x67, 0x48, opcode, 0x44, 0x1d, 0], // unsupported base
+                vec![0x67, 0x48, opcode, 0x44, 0x25, 0], // no index
                 vec![0x67, 0x4c, opcode, 0x44, 0x18, 0], // extended data
                 vec![0x48, 0x67, opcode, 0x44, 0x18, 0], // wrong prefix order
                 vec![0x67, 0x48, opcode, 0x44, 0x18, 0, 0x90], // trailing byte
@@ -3704,7 +3704,7 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x84, 0x20, 0, 0, 0, 0], // no index
                 vec![0x67, 0x48, opcode, 0x84, 0x25, 0, 0, 0, 0], // no base
                 vec![0x67, 0x48, opcode, 0x84, 0x28, 0, 0, 0, 0], // unsupported index
-                vec![0x67, 0x48, opcode, 0x84, 0x1d, 0, 0, 0, 0], // unsupported base
+                vec![0x67, 0x48, opcode, 0x84, 0x25, 0, 0, 0, 0], // no index
                 vec![0x67, 0x4c, opcode, 0x84, 0x18, 0, 0, 0, 0], // extended data
                 vec![0x48, 0x67, opcode, 0x84, 0x18, 0, 0, 0, 0], // wrong prefix order
                 vec![0x67, 0x48, opcode, 0x84, 0x18, 0, 0, 0, 0, 0x90], // trailing byte
@@ -3978,8 +3978,8 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x24, 0x2c],             // indexed RBP
                 vec![0x67, 0x48, opcode, 0x24, 0x2c],             // RBP index
                 vec![0x67, 0x48, opcode, 0x24, 0x25],             // RBP base special form
-                vec![0x67, 0x48, opcode, 0x64, 0x05, 0],          // disp8 with RBP base
-                vec![0x67, 0x48, opcode, 0xa4, 0x28, 0, 0, 0, 0], // disp32 with RBP index
+                vec![0x67, 0x48, opcode, 0x64, 0x2d, 0],          // RBP index
+                vec![0x67, 0x48, opcode, 0xa4, 0x2d, 0, 0, 0, 0], // disp32 with RBP index
                 vec![0x67, 0x48, opcode, 0x64, 0x08],             // missing disp8
                 vec![0x67, 0x48, opcode, 0xa4, 0x08, 0, 0, 0],    // missing disp32
                 vec![0x48, 0x67, opcode, 0x24, 0x08],             // reordered prefix
@@ -3993,6 +3993,99 @@ mod tests {
                 assert!(
                     result.is_err(),
                     "invalid indexed stack-data form admitted {bytes:02x?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn address32_indexed_sib_rbp_base_disp_has_exact_qword_profile() {
+        let displacement_cases = [
+            (1_u8, i8::MIN as i32),
+            (1, -1),
+            (1, 0),
+            (1, i8::MAX as i32),
+            (2, i32::MIN),
+            (2, -1),
+            (2, 0),
+            (2, i32::MAX),
+        ];
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in 0..6_u8 {
+                for index in 0..4_u8 {
+                    for scale_shift in 0..4_u8 {
+                        for &(mode, displacement) in &displacement_cases {
+                            let mut bytes = vec![
+                                0x67,
+                                0x48,
+                                opcode,
+                                (mode << 6) | (data_register << 3) | 4,
+                                (scale_shift << 6) | (index << 3) | 5,
+                            ];
+                            if mode == 1 {
+                                bytes.push(displacement as u8);
+                            } else {
+                                bytes.extend_from_slice(&displacement.to_le_bytes());
+                            }
+                            let code = CodeView::new(0x27d0, &bytes).unwrap();
+                            let site = match operation {
+                                MemorySiteOperationV2::Load => {
+                                    let ir = compile_ir_memory_load_block_v2(code, 0x27d0).unwrap();
+                                    let direct =
+                                        compile_memory_load_block_v2(code, 0x27d0).unwrap();
+                                    assert_eq!(ir.site(), direct.site());
+                                    ir.site().clone()
+                                }
+                                MemorySiteOperationV2::Store => {
+                                    let ir =
+                                        compile_ir_memory_store_block_v2(code, 0x27d0).unwrap();
+                                    let direct =
+                                        compile_memory_store_block_v2(code, 0x27d0).unwrap();
+                                    assert_eq!(ir.site(), direct.site());
+                                    ir.site().clone()
+                                }
+                            };
+                            assert!(site.has_supported_profile());
+                            assert!(site.matches_source_bytes(&bytes, operation));
+                            assert_eq!(site.operand.address_size, od_isa::OperandSize::Dword);
+                            assert_eq!(site.operand.size, od_isa::OperandSize::Qword);
+                            assert_eq!(
+                                site.operand.base,
+                                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
+                            );
+                            assert_eq!(
+                                site.operand.index,
+                                Some(od_isa::Register::from_encoding(index).unwrap())
+                            );
+                            assert_eq!(site.operand.displacement, i64::from(displacement));
+                            assert_eq!(site.operand.scale, 1 << scale_shift);
+                            assert_eq!(site.next_rip(), 0x27d0 + bytes.len() as u64);
+                        }
+                    }
+                }
+            }
+        }
+        for opcode in [0x8b, 0x89] {
+            for bytes in [
+                vec![0x67, 0x48, opcode, 0x04, 0x0d, 0, 0, 0, 0], // mod00 no-base, valid index field
+                vec![0x67, 0x48, opcode, 0x44, 0x25, 0],          // no-index
+                vec![0x67, 0x48, opcode, 0x44, 0x2d, 0],          // RBP index
+                vec![0x67, 0x48, opcode, 0x44, 0x0d],             // missing disp8
+                vec![0x67, 0x48, opcode, 0x84, 0x0d, 0, 0, 0],    // missing disp32
+                vec![0x48, 0x67, opcode, 0x44, 0x0d, 0],          // reordered prefix
+            ] {
+                let code = CodeView::new(0x27d0, &bytes).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x27d0).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x27d0).map(|_| ())
+                };
+                assert!(
+                    result.is_err(),
+                    "invalid RBP-indexed SIB admitted {bytes:02x?}"
                 );
             }
         }

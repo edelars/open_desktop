@@ -2185,6 +2185,12 @@ and the borrowed bounded dispatcher validate exact source bytes and decoded
 metadata before execution. See
 [S3-20as evidence](../reports/STAGE_3_S3-20as_2026-10-27.md).
 
+#### S3-20at: address32 indexed SIB with RBP base
+
+The bounded singleton profile admits exactly `67 48 8B/89 /r sib disp8|disp32`, with ModRM `mod=01/10,r/m=100`, SIB base RBP, index RAX..RBX, scale 1/2/4/8, and data register RAX..RBP. Address size is Dword and memory data size is Qword; the exact instruction lengths are 6 and 9 bytes. The decoder-owned `MemoryOperand` and `access_address_48` define signed displacement, scaling, truncation, wrapping, and the final contiguous qword range. Host/source validation binds all bytes, decoded base/index/scale, operation, size, and instruction length. ModRM `mod=00` with SIB base field 5 remains the no-base encoding and is rejected. No-index, additional-prefix, pair, and V3 admission is unchanged.
+
+Descriptor and host tests cover all six data registers, all low index registers and scale values, both directions, signed disp8/disp32 edges, data=RBP/index and data=RBP/base aliases from pre-instruction state, high-half truncation, ninth-byte displacement identity, contiguous access across 4 GiB, fault/backend classification and no guest commit, store+STOP commit, dispatcher budgets and resume without replay, partial windows, and no-base rejection. See the [S3-20at evidence](../reports/STAGE_3_S3-20at_2026-10-27.md). The evidence remains borrowed-fixture coverage; production memory-owner/MMU integration, physical x86, Mini, and performance are open.
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,
