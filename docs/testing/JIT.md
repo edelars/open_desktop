@@ -62,6 +62,18 @@ compiler `CodeView` ending at `A+6` is independent of the guest mapping/fetch
 result. This test proves a fixture boundary only; production dispatcher and
 owner-backed MMU behavior remain untested.
 
+Production acceptance additionally needs the `od-machine` owner contract:
+private synchronous RAM capability, code lease across compile/publication/
+execution, MMU-aware fetch with deferred next-RIP fault delivery, and
+committed-write batches from every writer with alias-aware code invalidation.
+The dispatcher must check stop-RIP → STOP → budget before fetch, treat fixture
+window end as distinct from guest termination, and release both owner lease
+and published mapping at their documented safe points. See the [S3-15n
+contract](../specs/JIT_CONTRACT.md#production-memory-owner-integration-prerequisites-s3-15n).
+These are prerequisites to owner-backed end-to-end testing, not claims made by
+the fixture cases above; physical Mac mini comparison and performance
+measurements remain separate final gates.
+
 ### Bounded S3-34a two-site memory corpus
 
 For the two exact V2 memory sequences in the JIT contract, run

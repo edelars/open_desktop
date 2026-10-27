@@ -75,6 +75,7 @@ S2-13 shifts/rotates добавил 144 physical fixture inputs (142 register,
 - Гостевое устройство: модель и guest-visible registers — в `od-machine`; системный backend — в host-слое; guest driver — в `guest/`; wire contract — в `protocols/guest/`.
 - Снимок: остановка CPU/I/O и сбор согласованного состояния — в `od-machine`; запись контейнера/дисковых данных — в `od-storage`.
 - JIT: блоки и dispatcher — в `od-jit`; отображение исполняемой памяти через macOS — в `od-host`, предоставляемое через узкий интерфейс.
+- Production memory/JIT boundary: `od-machine` owns RAM backing, guest mappings and MMU translation/permissions; `od-jit` owns fetch/decode-to-artifact policy, cache/dispatch and code-dependency tracking; `od-host` publishes and releases executable mappings. Writer notification is delivered to the JIT before the next lookup. This is the target dependency map, not a claim that production owner integration exists today; current borrowed memory dispatch is fixture-bounded.
 - `docs/specs/HOST_ABI_V0.md` объясняет владение и поведение, а `include/open_desktop/` содержит общий C header. Документация не создаёт второй независимый набор объявлений.
 - `docs/specs/CONTROL_PROTOCOL_V0.md` — обзор/границы; конкретные байты wire format нормативно описываются в `protocols/control/`. Связывать документы ссылками.
 - Unit tests рядом с реализацией; общие сценарии — в `tests/`. Cargo сам не запускает произвольные файлы из корневого `tests/`: будущий harness подключается явно.

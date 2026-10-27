@@ -1046,6 +1046,64 @@ general S3-15, interpreter fallback,
 physical x86 comparison, cache/invalidation, or performance acceptance. See
 the [bounded memory dispatcher report](../reports/STAGE_3_S3-15_2026-10-27.md#bounded-checked-memory-dispatcher-partial).
 
+#### Production memory-owner integration prerequisites (S3-15n)
+
+The borrowed dispatcher above is a bounded API, not production VMHost memory
+integration. `od-machine` currently has no production RAM/MMU owner. The target
+one-vCPU dependency boundary is:
+
+| Existing API/evidence | Missing guarantee | Owner component | Acceptance evidence required |
+|---|---|---|---|
+| `GuestMemory` fetch/read/write and fixture `CodeView` | Private synchronous ordinary RAM capability, backing identity, aliases, mapping/permission identity, revocation | `od-machine` | Owner-issued access capability; reject MMIO/shared/DMA/concurrent or revocable views for this path; test permission and mapping revocation |
+| Borrowed immutable `CodeView`; caller holds frozen bytes | Owner-backed code snapshot/lease binding guest byte ranges to code/backing identity, mapping identity/generation, execute permission and bytes for the full compile/publish/execute interval; explicit release before conflicting publication | `od-machine` supplies lease; `od-jit` consumes it | Change/remap/revoke cannot race an active lease; lease released on every normal/error exit before next publication |
+| Fixture byte-window and `BoundaryReached` | Incremental guest fetch/decode with MMU permissions and precise deferred fault at the first reached RIP; byte-window end is not guest termination | `od-machine` fetch; `od-jit` continuation policy | Fetch across pages; prefix commits before later fetch fault; fault payload appears only when RIP is reached; stop-RIP → STOP → budget precedes fetch |
+| Fixture tracked writes and region-version invalidation | Notifications from every committed writer path, including interpreter, JIT, loader/debugger/control and future device/DMA writers; alias-aware target version updates and active-code dirty signal | `od-machine` central writer/mapping owner; `od-jit` dependency invalidation | Each transaction emits one committed batch with backing/mapping identities and changed ranges/versions; test aliases, remap/protection change, failure without notification, invalidation before next lookup |
+| `PublishedMemoryBlockExecutor` and one-artifact-at-a-time fixture test | Production owner lease and JIT dirty/invalidation safe point composed with executable mapping lifetime | `od-host` publication; `od-jit` dispatch; `od-machine` owner | Native end-to-end test proves mapping dropped after return/result decode, owner lease released, notifications applied before lookup/publication, and no stale code executes |
+
+The owner contract needs observable operations and lifetime guarantees; it does
+not prescribe a new trait hierarchy. A code lease identifies guest source
+ranges and their backing/mapping identities and generations, keeps source bytes
+immutable with execute permission for its lifetime, and is explicitly released
+before the owner revokes or mutates those mappings. If writers may run during
+compilation, the candidate must be revalidated against the same identities and
+versions before publication; otherwise the owner keeps the lease frozen through
+native return and result decode.
+
+Fetch is owner-mediated and instruction-sized: the decoder may request the
+remaining architectural prefix across mapping boundaries, while the owner
+reports fetch permission/fault at the exact guest address. A fetch/decode error
+after a valid prefix is deferred until continuation reaches that RIP. A host
+compile/publication error remains a host error. Dispatcher checks are ordered
+stop-RIP → cooperative STOP → remaining budget → fetch/decode. Reaching a
+fixture source window is only `BoundaryReached`; only an owner-supplied guest
+execution boundary or architectural fetch result can establish guest progress
+or termination.
+
+Committed-write notifications describe the validated write batch after commit,
+including each affected backing identity/range and its new version. All paths
+that can write guest code use this owner path. The owner marks overlapping
+active code dirty, and dispatch observes that signal at a safe point before its
+next cache lookup or artifact publication. Alias mappings resolve to the same
+backing dependency even when guest virtual ranges differ. Permission changes,
+unmap/remap, and backing replacement also advance the relevant mapping/code
+identity and invalidate affected dependencies. Notification does not replace
+the write transaction or all-or-nothing validation.
+
+Generic `GuestMemory` alone is insufficient evidence for the unsafe private
+synchronous RAM contract: it does not establish exclusive ordinary-RAM
+ownership, exclude MMIO/DMA/concurrent aliases, or prove revocation and mapping
+lifetime. The future production path must receive a verifiable owner-issued
+capability/lease or retain equivalent explicit caller obligations at its unsafe
+boundary; it must not silently treat arbitrary `GuestMemory` as private RAM.
+
+Prerequisites are ordered: implement `od-machine` backing/mapping/MMU ownership
+and permission/revocation tests; connect all committed writers and fetch to
+owner identities, versions and notifications; then connect `od-jit` dispatch/
+cache invalidation and `od-host` publication lifetime and run the end-to-end
+matrix above. Final Mac mini physical-oracle acceptance and representative
+cold/warm performance measurements remain later Stage 3 gates; fixture
+differential tests do not satisfy them. See [ISSUE-021](../KNOWN_ISSUES.md).
+
 ### S3-16: exact bare NOP fallback partial
 
 The local Rust API `S0_09NopAdmission` / `run_with_nop_fallback` admits only a

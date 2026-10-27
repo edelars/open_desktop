@@ -485,6 +485,37 @@ cooperative STOP before entry/inside both pairs/after the final callback with
 resume from actual RIP, unsupported tail и host error после первого committed
 block. См. [memory-dispatch report](../reports/STAGE_3_S3-15_2026-10-27.md#bounded-checked-memory-dispatcher-partial).
 
+#### S3-15n. Production memory-owner integration prerequisites
+
+The borrowed dispatcher remains a bounded fixture/API slice. Production
+`od-machine` RAM/MMU ownership is a prerequisite and is not implemented by
+S3-15n. Keep component responsibility explicit: `od-machine` owns RAM backing,
+guest mappings, translation/permissions, code-source leases and committed-write
+notifications; `od-jit` owns fetch/decode continuation policy, compile/cache/
+dispatch and dependency invalidation; `od-host` owns executable publication
+and mapping release. The dependency table and lifetime/fault contract are in
+[JIT_CONTRACT](../specs/JIT_CONTRACT.md#production-memory-owner-integration-prerequisites-s3-15n).
+
+The production path requires: (1) a synchronous private-RAM capability and
+owner-backed code lease identifying byte ranges, backing/mapping identity and
+generation, permissions and immutable lifetime; (2) owner-supplied incremental
+fetch/decode so a later guest fetch fault is deferred until continuation
+reaches its RIP, while compile errors remain host errors and fixture-window
+end is not guest termination; (3) stop-RIP → STOP → budget → fetch ordering;
+(4) one committed-write notification batch from every writer, including
+aliases, mapping/protection changes and active-code dirty state, observed
+before the next lookup/publication; (5) safe revocation and lease/mapping
+release on all exits. Generic `GuestMemory` is not proof of private RAM or
+revocation. Avoid adding trait layers until the concrete `od-machine` owner
+exists and its required operations are known.
+
+Acceptance must exercise permission and revocation, cross-page fetch, deferred
+next-instruction faults after committed prefixes, all writer notifications and
+aliases, stale-code suppression at the next safe point, plus publication and
+lease release before another artifact. This prerequisite does not complete
+S3-15: the full Stage 1 corpus, physical Mac mini comparison, and measured
+cold/warm performance gates remain separate dependencies.
+
 Следующий локальный CLI partial добавляет opt-in fixture-v1 engine
 `jit-dispatch` и отдельный сериализуемый backend `jit_ir_dispatch`. Runner
 повторно связывает полный decode с immutable fixture bytes, проверяет entry
