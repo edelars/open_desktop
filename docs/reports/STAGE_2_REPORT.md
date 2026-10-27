@@ -12314,3 +12314,32 @@ historical oracle manifests); Graphify update completed. Independent
 gpt-6.1-sol medium review passed with no remaining findings. These results are
 local interpreter/profile evidence only and do not close S2-34, S2-35, global
 `S2-35 → S2-34`, physical x86 validation, or deferred Mac mini/SSH acceptance.
+
+## S2-35.19 — local PCMPEQW XMM register slice
+
+Added exact profile `s2-long-pcmpeqw-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 75 /r`, ModR/M.mod=3, XMM0–15. Eight
+independent little-endian word lanes produce `FFFF` for exact equality and
+`0000` otherwise. Coverage includes every lhs word against itself, each of its
+16 single-bit toggles and boundary rhs values, all 16×16 XMM/REX pairs, mixed
+lanes with one mismatch at each word position, byte-swapped sentinels, full
+state preservation except destination XMM/RIP, and no data callbacks. Strict
+schema/decode rejection, failure atomicity, a literal XMM8/XMM9 fixture, JIT
+denial, and native early denial are included.
+
+PCMPEQD/Q, PCMPGT*, PCMPEQQ (a separate SSE4.1 instruction), MMX, memory,
+extra prefixes, REX.W/X, VEX/EVEX, feature gates, exception delivery and
+physical execution remain excluded. S2-34, S2-35, and global
+`S2-35 → S2-34` remain open; Mac mini/SSH acceptance is deferred. Verification
+on 2026-10-27: four focused `od-isa` PCMPEQW tests passed; the literal
+`od-runner` fixture check passed (1); all 319 `od-testkit` tests passed. The
+full workspace suite passed 1,705 tests. Workspace all-target offline check and
+x86_64 Linux all-target compile check passed; the Linux-gated native-denial
+assertion was compile-checked only on this macOS host. Formatting and diff
+whitespace checks passed. `python3 tools/check_layout.py` retains the
+pre-existing ISSUE-023 findings (`.git` worktree pointer and two missing
+historical oracle manifests); Graphify update completed. Independent
+`gpt-6.1-sol` medium review found a schema-negative opcode typo; it was corrected
+to `C5 F9 75 C1`, the PCMPEQB neighbor remains `C5 F9 74 C1`, and final
+review/re-review passed with no findings. These results establish local interpreter/profile
+behavior only.

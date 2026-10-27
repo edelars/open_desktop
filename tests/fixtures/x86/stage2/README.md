@@ -5053,3 +5053,14 @@ fixture for strict `s2-long-pcmpeqb-reg-v1`: `66 45 0F 74 C1`. Each of the
 sixteen byte lanes compares destination against source and writes `FF` for
 equality or `00` otherwise. This remains the local interpreter profile only;
 JIT and native x86 execution are denied.
+
+
+### S2-35.19 local register PCMPEQW diagnostic profile
+
+`s2_35_19_pcmpeqw_register.case.json` is a handwritten literal XMM8,XMM9
+fixture for strict `s2-long-pcmpeqw-reg-v1`: `66 45 0F 75 C1`. It compares
+eight independent little-endian words and emits `FFFF` for equal words and
+`0000` otherwise. This local-only fixture demonstrates byte order and mixed
+equality masks; interpreter execution is supported while JIT/native execution
+is denied. SSE2 and CR0/CR4 preconditions are assumptions; there is no CPUID or
+exception-delivery claim.

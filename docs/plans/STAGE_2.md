@@ -8262,3 +8262,24 @@ layout validation reports the pre-existing ISSUE-023 checkout/link findings.
 Graphify update completed. Independent gpt-6.1-sol medium review passed with
 no remaining findings after correcting the test total. This remains local
 interpreter/profile evidence.
+
+
+#### S2-35.19 — local-only bounded register `PCMPEQW`
+
+Requires S2-34.1 raw x87/SSE state and mandatory-66 XMM decoding from S2-35.1.
+Exact profile `s2-long-pcmpeqw-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F 75 /r` with ModR/M.mod=3. ModR/M.reg is the
+destination and ModR/M.r/m the source, extended to XMM0–15. Each of eight
+little-endian u16 lanes independently becomes `FFFF` for exact equality and
+`0000` otherwise. Coverage requires all 65,536 lhs values against self, each of
+16 single-bit toggles, and boundary rhs values; all 16×16 XMM/REX pairs; mixed
+lanes, one mismatch per word, byte-swapped sentinels, all-FF self compare, full
+state preservation and zero data callbacks. Missing state, truncation, STOP/
+budget atomicity, strict schema/decode negatives, handwritten literal high-XMM
+fixture execution, and JIT/native denial are covered. PCMPEQD/Q, PCMPGT*,
+PCMPEQQ (separate SSE4.1), MMX, memory, extra prefixes, REX.W/X, VEX/EVEX,
+gates, exception delivery and physical execution remain excluded. SSE2 and
+CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. S2-34, S2-35 and global
+`S2-35 → S2-34` remain open; Mac mini/SSH acceptance remains deferred.
+
+S2-35.19 implementation check (2026-10-27): focused PCMPEQW interpreter and strict decoder tests passed (4); the handwritten XMM8/XMM9 fixture CLI test passed (1), including strict schema-neighbor rejection and JIT denial. `cargo test --workspace --offline` passed 1,705 tests. Workspace all-target offline check, x86_64 Linux all-target compile check, formatting, and diff whitespace checks passed. The Linux-gated native-denial assertion compiled in the cross-target check but was not executed on this macOS host. `python3 tools/check_layout.py` reports the pre-existing ISSUE-023 checkout pointer and stale oracle links. `graphify update .` completed. Independent `gpt-6.1-sol` medium review found a schema-negative opcode typo; it was corrected to PCMPEQW's `C5 F9 75 C1`, the neighboring PCMPEQB case was preserved as `C5 F9 74 C1`, and final review/re-review passed with no findings. The results are local interpreter/profile evidence only; S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation, and deferred Mac mini/SSH acceptance remain open.
