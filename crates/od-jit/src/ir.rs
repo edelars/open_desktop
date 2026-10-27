@@ -812,7 +812,8 @@ fn is_scoped_memory_data_operand(
                         }
                         _ => false,
                     })))
-            || is_address32_direct_stack_data_operand(operand, instruction_length))
+            || is_address32_direct_stack_data_operand(operand, instruction_length)
+            || is_address32_indexed_sib_stack_data_operand(operand, instruction_length))
 }
 
 fn is_address32_direct_stack_data_operand(operand: MemoryOperand, instruction_length: u64) -> bool {
@@ -826,6 +827,23 @@ fn is_address32_direct_stack_data_operand(operand: MemoryOperand, instruction_le
         && operand.index.is_none()
         && operand.scale == 1
         && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+        && displacement_valid
+}
+
+fn is_address32_indexed_sib_stack_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    let displacement_valid = match instruction_length {
+        5 => operand.displacement == 0,
+        6 => i8::try_from(operand.displacement).is_ok(),
+        9 => i32::try_from(operand.displacement).is_ok(),
+        _ => false,
+    };
+    operand.address_size == od_isa::OperandSize::Dword
+        && operand.index.is_some_and(|register| (register as u8) < 4)
+        && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
         && displacement_valid
 }
 

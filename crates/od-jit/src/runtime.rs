@@ -171,7 +171,23 @@ impl MemorySiteV2 {
                 8 => i32::try_from(self.operand.displacement).is_ok(),
                 _ => false,
             };
+        let address32_indexed_sib_data_profile = self.operand.address_size
+            == od_isa::OperandSize::Dword
+            && self.operand.size == od_isa::OperandSize::Qword
+            && base_is_low_gpr
+            && self
+                .operand
+                .index
+                .is_some_and(|register| (register as u8) < 4)
+            && matches!(self.operand.scale, 1 | 2 | 4 | 8)
+            && match length {
+                5 => self.operand.displacement == 0,
+                6 => i8::try_from(self.operand.displacement).is_ok(),
+                9 => i32::try_from(self.operand.displacement).is_ok(),
+                _ => false,
+            };
         let scoped_data_profile = address32_direct_data_profile
+            || address32_indexed_sib_data_profile
             || (self.operand.address_size == od_isa::OperandSize::Qword
                 && self.operand.size == od_isa::OperandSize::Qword
                 && (indexed_sib_data_profile
@@ -470,7 +486,7 @@ impl MemorySiteV2 {
                     return false;
                 };
                 return matches!((source.len(), mode), (5, 0) | (6, 1) | (9, 2))
-                    && data_register < 4
+                    && data_register <= 5
                     && sib_base < 4
                     && sib_index < 4
                     && site_register == Some(data_register)

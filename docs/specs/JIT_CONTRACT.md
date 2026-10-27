@@ -2107,6 +2107,20 @@ wrapping EA semantics. Data transfer and stack-register commits remain full
 through `0x1_0000_0003`; upper base bits do not participate in effective-address
 calculation. See [S3-20am evidence](../reports/STAGE_3_S3-20am_2026-10-27.md).
 
+#### S3-20an: address32 indexed-SIB qword MOV with RSP/RBP data
+
+The added singleton forms are exactly `67 48 8B/89 /r sib` with optional
+disp8 or disp32: ModRM `mod=00/01/10,r/m=100`, data RSP or RBP, SIB base and
+index RAX..RBX, scale 1/2/4/8. Address size is Dword, data size Qword, and
+instruction lengths are 5/6/9 bytes. No-index/no-base SIB specials, RSP/RBP
+base or index, additional prefixes, pair and V3 forms remain unsupported.
+Decoder `MemoryOperand` plus `access_address_48` remain the only EA semantics;
+low-32-bit base/index/displacement arithmetic does not truncate the qword data.
+Direct V2, shared IR and bounded dispatch use the same profile. A stack-data
+load commits only on success; later noncanonical RSP/RBP stack-base uses raise
+#SS after that first retirement. The [S3-20an report](../reports/STAGE_3_S3-20an_2026-10-27.md)
+records the current fixture evidence and remaining owner/MMU limitation.
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

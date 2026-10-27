@@ -1371,6 +1371,25 @@ fn is_address32_direct_stack_data_operand(
         && displacement_valid
 }
 
+fn is_address32_indexed_sib_stack_data_operand(
+    instruction: Instruction,
+    operand: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    let displacement_valid = match instruction.length {
+        5 => operand.displacement == 0,
+        6 => i8::try_from(operand.displacement).is_ok(),
+        9 => i32::try_from(operand.displacement).is_ok(),
+        _ => false,
+    };
+    instruction.address_size == OperandSize::Dword
+        && operand.address_size == OperandSize::Dword
+        && operand.size == OperandSize::Qword
+        && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+        && operand.index.is_some_and(|register| (register as u8) < 4)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && displacement_valid
+}
+
 fn is_rsp_memory_data_operand(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
@@ -1379,6 +1398,9 @@ fn is_rsp_memory_data_operand(
         return true;
     }
     if is_address32_direct_stack_data_operand(instruction, operand) {
+        return true;
+    }
+    if is_address32_indexed_sib_stack_data_operand(instruction, operand) {
         return true;
     }
     instruction.address_size == OperandSize::Qword
@@ -1449,6 +1471,9 @@ fn is_rbp_memory_data_operand(
         return true;
     }
     if is_address32_direct_stack_data_operand(instruction, operand) {
+        return true;
+    }
+    if is_address32_indexed_sib_stack_data_operand(instruction, operand) {
         return true;
     }
     instruction.address_size == OperandSize::Qword
@@ -1784,7 +1809,7 @@ pub(crate) fn exact_qword_address32_sib_memory_bytes(
     bytes[0..3] == [0x67, 0x48, opcode]
         && bytes[3] >> 6 == expected_mode
         && bytes[3] & 7 == 4
-        && (bytes[3] >> 3) & 7 < 4
+        && (bytes[3] >> 3) & 7 <= 5
         && bytes[4] & 7 < 4
         && (bytes[4] >> 3) & 7 < 4
 }

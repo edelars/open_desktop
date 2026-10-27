@@ -185,6 +185,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20ak | RIP-relative qword MOV с RSP/RBP data через shared IR и bounded dispatch | Только `48 8B/89 25/2D disp32`, ModRM `mod=00,r/m=101`, `reg=RSP|RBP`, ровно 7 bytes; EA от NextRip текущей инструкции |
 | [partial] | S3-20al | RSP/RBP data через indexed SIB qword MOV | Только существующие 64-bit indexed SIB формы с ModRM `reg=RSP|RBP`, base/index RAX..RBX, scale 1/2/4/8; lengths 4/5/8 |
 | [partial] | S3-20am | RSP/RBP data через address32 direct-base qword MOV | Только `67 48 8B/89 /r [disp8|disp32]`, ModRM `mod=00/01/10`, `reg=RSP|RBP`, base RAX..RBX; длины 4/5/8 |
+| [partial] | S3-20an | RSP/RBP data через address32 indexed-SIB qword MOV | Только `67 48 8B/89 /r sib [disp8|disp32]`, ModRM `mod=00/01/10,r/m=100`, data RSP/RBP, base/index RAX..RBX, scale 1/2/4/8; длины 5/6/9 |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1554,6 +1555,19 @@ sole authority for address-size truncation and signed displacement. Tests must
 prove the low-32-bit effective address independently, preserve all 64 data
 bits, and treat a qword access crossing 4 GiB as one contiguous helper call.
 See [S3-20am evidence](../reports/STAGE_3_S3-20am_2026-10-27.md).
+
+#### S3-20an. RSP/RBP data through address32 indexed-SIB qword MOV
+
+Admit only singleton `67 48 8B/89 /r sib [disp8|disp32]` forms with ModRM
+`mod=00/01/10,r/m=100`, data RSP or RBP, and low-GPR base/index RAX..RBX.
+SIB scales remain 1/2/4/8; special no-index/no-base SIB encodings and RSP/RBP
+base/index are excluded. Exact lengths are 5/6/9 bytes for no displacement,
+signed disp8 and signed disp32. Address size is Dword and operand size Qword;
+the existing decoded `MemoryOperand` remains the only authority for EA
+calculation. Keep direct V2, shared IR and dispatch admission aligned without
+changing pairs or V3. Tests cover address32 wrapping, contiguous qword access,
+stack-data commit/fault semantics, the ninth displacement byte, and dispatch
+continuation. See [S3-20an evidence](../reports/STAGE_3_S3-20an_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 
