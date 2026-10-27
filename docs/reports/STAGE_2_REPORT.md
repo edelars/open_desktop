@@ -10656,3 +10656,41 @@ cover budget zero, STOP, `stop_rip`, truncated fetch, `RCX=0`, and existing
 passed (1/1), as did `cargo fmt --all -- --check` and
 `cargo check --workspace --all-targets --offline`. Physical/Mac mini acceptance
 was not performed.
+
+## S2-18o — non-REP address-size-32 MOVS
+
+Added 73 literal schema-v2 fixtures for the bounded `67 A4`, `67 66 A5`,
+`67 A5`, and `67 48 A5` forms: 8 successes, 8 unmapped errors, 4 read-only
+destination errors, 4 zero-budget cases, 16 pointer wraps, 6 continuous spans
+across 4 GiB, 2 prefix normalizations, 3 TEST compositions, 8 CLD/STD
+compositions, 4 aliases, 4 dual-invalid cases, and 6 partial overlaps. One
+positive case pairs a read-only source with a write-only destination. Literal
+full-state answers are in `s2_18o_movs_addr32_expected.json`; the committed
+`s2_18o_movs_addr32_manifest.json` is authoritative for hashes and exact
+inventory.
+
+The local executor reads the complete source before writing the destination;
+overlap therefore uses pre-write source bytes. Address-size-32 truncates only
+each start address and updates both index registers modulo 2^32 on success.
+Destination failure keeps the source read in the trace but commits no CPU
+state or RAM under the all-or-error GuestMemory contract. These are local
+policies under ISSUE-016/021 and do not claim hardware restart state, dual-fault
+priority, MMIO rollback, or LOCK/SMP atomicity. Native remains addr64-only; JIT
+is closed.
+
+The generator serializes a committed literal `EXPECTED` table without
+calculating final-state transitions. Local checks passed: the generator and
+its two freshness/shape tests; CLI
+snapshot/JIT denial across all 73 fixtures; and end-to-end `Unsupported` for
+73 enumerated out-of-profile prefix encodings. Core tests passed 55,296 success
+states, 512 definedness states, 192 pointer boundaries, 576 access failures,
+72 aliases, 36 overlaps, and 32 dual-invalid combinations. Additional core
+cases cover write-only destinations, partial destination-write failure,
+retry after source mutation, fetch truncation, budget zero, STOP/stop-RIP, and
+MOVS64/REP regressions. The focused runner checks were
+`cargo test -p od-runner --test fixture_v2 movs_addr32_cli_fixtures_match_literal_snapshots_and_keep_jit_closed --offline`
+and
+`cargo test -p od-runner --test fixture_v2 movs_addr32_rejects_73_prefix_variants_as_unsupported_end_to_end --offline`.
+No Mac mini/physical checks were run; those remain in the single shared final
+acceptance substage. Independent review and the full workspace checks are
+pending.

@@ -1,0 +1,79 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_18o_pos_q_df0",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten MOVS encodings, addresses, memory contents, permissions, and expected state; tests/cpu/generate_stage2_movs_addr32.py serializes these constants only.",
+    "specification": "Intel SDM revision 093, Vol.2B MOVS; address-size 32 zero-extends ESI/EDI. Local execution reads source then writes destination.",
+    "specification_version": "Intel SDM revision 093; project S2-18o bounded local profile"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0xa5a5a5a500200020",
+      "0x5a5a5a5a00300040",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x00000000000008d7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 3,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "6748a5",
+      "comparison_mask_hex": "ffffff"
+    },
+    {
+      "region_id": "source_ro",
+      "guest_address": "0x0000000000200020",
+      "length": 8,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "5051525354555657",
+      "comparison_mask_hex": "ffffffffffffffff"
+    },
+    {
+      "region_id": "destination_wo",
+      "guest_address": "0x0000000000300040",
+      "length": 8,
+      "permissions": {
+        "read": false,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "cccccccccccccccc",
+      "comparison_mask_hex": "ffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100003",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

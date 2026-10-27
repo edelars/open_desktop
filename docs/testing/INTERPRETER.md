@@ -534,7 +534,7 @@ read/write logs, 192 injected read/write failures across four error classes,
 16 STOP/replay cases, 24 work-limit cases, 36 sequential overlap cases, 48
 prefix rejects, and 56 literal schema-v2 fixtures. JIT remains fail-closed;
 native and physical execution are deferred. Source-first ordering remains a
-local policy under [ISSUE-021](../KNOWN_ISSUES.md#issue-021--не-подтверждён-победитель-dual-fault-для-rep-movs-rsirdi).
+local policy under [ISSUE-021](../KNOWN_ISSUES.md#issue-021--не-подтверждён-приоритет-dual-invalid-для-movs-rsirdi).
 ISSUE-016 and ISSUE-020 remain open.
 
 ## REPE CMPSB — S2-19f local interpreter coverage
@@ -1161,4 +1161,36 @@ but not run on this macOS host; no physical compatibility is claimed.
 python3 tests/cpu/generate_stage2_scas_addr32.py --check
 python3 -m unittest tests/cpu/test_stage2_scas_addr32_generator.py
 cargo test -p od-runner --test fixture_v2 scas_addr32_cli_fixtures_match_literal_full_state_and_keep_jit_closed --offline
+```
+
+## Non-REP MOVS address-size 32 — S2-18o
+
+The bounded profile accepts `67 A4`, `67 66 A5`, `67 A5`, and `67 48 A5`;
+the decoder-normalized REX order cases are `48 67 A5`, `67 48 66 A5`, and
+`67 66 48 A5`. The interpreter zero-extends ESI/EDI for one full source read
+and one full destination write, then updates both indices modulo 2^32. Ranges
+crossing 4 GiB are contiguous. Source bytes are captured before a possibly
+overlapping write. Source failure stops before destination; destination
+failure leaves the source read in trace and commits no CPU state. The bounded
+memory backend has all-or-error writes, so no RAM prefix is committed. These
+are local policies under ISSUE-016/021, not hardware restart or dual-invalid
+priority claims.
+
+The 73 literal fixtures cover 8 successes, 8 unmapped source/destination
+errors, 4 read-only destination errors, 4 budget-zero cases, 16 pointer wraps,
+6 continuous cross-4-GiB spans, 2 prefix normalizations, 3 TEST compositions,
+8 CLD/STD compositions, 4 aliases, 4 dual-invalid cases, and 6 overlaps. One
+success uses a read-only source and write-only destination. Core tests cover
+stop-RIP and other fetch/stop boundaries independently. They also cover
+55,296 complete states, 512 definedness masks, 192 pointer boundaries, 576
+access failures, 72 aliases, 36 overlaps, 32 dual-invalid combinations, and
+the requested retry/fetch/fault paths. Runner CLI verifies complete literal
+snapshots and JIT denial. Native remains address-size-64 only; no native, JIT,
+Mac mini, or physical acceptance is claimed here.
+
+```sh
+python3 tests/cpu/generate_stage2_movs_addr32.py --check
+python3 -m unittest tests.cpu.test_stage2_movs_addr32_generator
+cargo test -p od-runner --test fixture_v2 movs_addr32_cli_fixtures_match_literal_snapshots_and_keep_jit_closed --offline
+cargo test -p od-runner --test fixture_v2 movs_addr32_rejects_73_prefix_variants_as_unsupported_end_to_end --offline
 ```

@@ -6899,3 +6899,30 @@ Missing mapping и backend errors остаются HarnessError. ESI-first — �
 failure. JIT/native admission остаётся закрытой.
 Physical/Mac mini acceptance не выполняется здесь; ISSUE-016/020/021 и S2-18
 остаются открытыми.
+
+#### S2-18o — non-REP MOVS с address-size 32
+
+Добавить только bounded Long64 non-REP `67 A4`, `67 66 A5`, `67 A5` и
+`67 48 A5` MOVSB/W/D/Q, с принятыми нормализациями `48 67 A5` (dword),
+`67 48 66 A5` (word) и `67 66 48 A5` (qword). Начальные адреса независимо
+zero-extend ESI/EDI. Выполнить source read, затем ровно одну width-sized
+destination write; диапазоны остаются непрерывными через 4 GiB, а overlap
+использует исходные source bytes. Только после успешной записи обновить оба
+индекса по DF modulo 2^32. Сохранить RAX, RCX, flags/definedness и unrelated
+state; RCX=0 не подавляет non-REP MOVS.
+
+Source fault запрещает destination access. Destination fault сохраняет source
+read в trace, но не коммитит CPU/RAM/retirement согласно локальной
+all-or-error модели; это не hardware restart, MMIO rollback или SMP atomicity
+утверждение (ISSUE-016). Источник имеет локальный приоритет при dual-invalid
+(ISSUE-021), без hardware exception-priority утверждения.
+
+Покрытие: 73 literal schema-v2 fixtures; core matrices — 55,296 success,
+512 definedness, 192 pointer boundaries, 576 failures, 72 aliases, 36 overlaps
+и 32 dual-invalid. End-to-end `Unsupported` проверяет 73 непокрытых prefix
+варианта, включая REP и сегментные/repeated-address формы. Также проверить
+fetch truncation, budget 0, STOP/stop_rip, TEST/CLD/STD compositions, readonly
+source/write-only destination, destination partial-fault no-prefix-mutation,
+retry after source mutation, MOVS64/REP regressions. Native admission остаётся
+addr64-only, JIT closed. Перегенерацию и runner snapshots проверить локально;
+физические/Mac mini прогоны выполнять только в общем финальном substage.

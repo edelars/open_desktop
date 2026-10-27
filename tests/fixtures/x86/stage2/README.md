@@ -4206,6 +4206,33 @@ python3 -m unittest tests.cpu.test_stage2_scas_addr32_generator
 cargo test -p od-runner --test fixture_v2 scas_addr32_cli_fixtures_match_literal_full_state_and_keep_jit_closed --offline
 ```
 
+### S2-18o non-REP MOVS with address-size 32
+
+Exactly 73 literal schema-v2 fixtures cover non-REP `67 A4` MOVSB,
+`67 66 A5` MOVSW, `67 A5` MOVSD, and `67 48 A5` MOVSQ. The category split is
+8 successes, 8 unmapped source/destination errors, 4 read-only destination
+errors, 4 zero-budget cases, 16 pointer wraps, 6 continuous cross-4-GiB spans,
+2 prefix normalizations, 3 TEST compositions, 8 CLD/STD compositions,
+4 aliases, 4 dual-invalid cases, and 6 partial overlaps. One success uses a
+read-only source with a write-only destination.
+
+Full register, RFLAGS/definedness, RIP, memory, retirement, and local
+HarnessError snapshots are in `s2_18o_movs_addr32_expected.json`; the committed
+`s2_18o_movs_addr32_manifest.json` is authoritative for hashes and exact file
+inventory. `generate_stage2_movs_addr32.py` serializes fixed input constants
+and its literal `EXPECTED` table; it does not compute expected transitions or
+run the interpreter to produce answers. The source-first dual-invalid cases
+record local policy only and establish neither hardware exception priority nor
+MMIO rollback. Native/JIT and physical acceptance remain deferred to the
+shared final acceptance substage.
+
+```sh
+python3 tests/cpu/generate_stage2_movs_addr32.py --check
+python3 -m unittest tests.cpu.test_stage2_movs_addr32_generator
+cargo test -p od-runner --test fixture_v2 movs_addr32_cli_fixtures_match_literal_snapshots_and_keep_jit_closed --offline
+cargo test -p od-runner --test fixture_v2 movs_addr32_rejects_73_prefix_variants_as_unsupported_end_to_end --offline
+```
+
 
 ### S2-18j bare CLD/STD
 

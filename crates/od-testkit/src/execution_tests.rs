@@ -9207,7 +9207,7 @@ fn rep_stos_wdq_zero_budget_fetch_alignment_page_and_wrap_edges() {
 }
 
 #[test]
-fn movsd_rejects_non_w_rex_rep_segment_and_address_prefixes_at_execution_boundary() {
+fn movsd_rejects_non_w_rex_rep_and_segment_prefixes_at_execution_boundary() {
     let directory = arithmetic_fixture_directory();
     let mut fixture =
         Fixture::from_json(&std::fs::read(directory.join("s2_18c_movsd_df0.case.json")).unwrap())
@@ -9215,8 +9215,6 @@ fn movsd_rejects_non_w_rex_rep_segment_and_address_prefixes_at_execution_boundar
             .fixture;
     for (bytes, rip) in [
         ("40a5", 0x0010_0002),
-        ("67a5", 0x0010_0002),
-        ("6748a5", 0x0010_0003),
         ("26a5", 0x0010_0002),
         ("2e48a5", 0x0010_0003),
         ("2ea5", 0x0010_0002),
@@ -9297,12 +9295,10 @@ fn movsw_accepts_ignored_misplaced_rex_after_normalization() {
 #[test]
 fn movsb_rejects_prefixes_and_other_string_widths_without_commit() {
     for code in [
-        &[0x67, 0xa4][..],
         &[0x2e, 0xa4][..],
         &[0x66, 0xa4][..],
         &[0x48, 0xa4][..],
         &[0x66, 0xa4][..],
-        &[0x67, 0x66, 0xa5][..],
         &[0x2e, 0x66, 0xa5][..],
         &[0xf3, 0x66, 0xa4][..],
     ] {
