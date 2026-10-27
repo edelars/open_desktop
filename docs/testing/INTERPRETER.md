@@ -1467,3 +1467,34 @@ python3 -m unittest tests.cpu.test_stage2_movs_addr32_generator
 cargo test -p od-runner --test fixture_v2 movs_addr32_cli_fixtures_match_literal_snapshots_and_keep_jit_closed --offline
 cargo test -p od-runner --test fixture_v2 movs_addr32_rejects_73_prefix_variants_as_unsupported_end_to_end --offline
 ```
+
+
+## REPNE SCASW/D/Q address-size 32 — S2-19s
+
+The bounded form is normalized Long64 F2+67 AF at W/D/Q width, including the
+REX reset and effective REX.W permutations specified in the CPU contract. Other
+F2 AF/A7, LOCK, segment and duplicate-prefix forms remain closed. Existing F2
+addr32 SCASB and F3 behavior are unchanged. `run_with_rep_continuation` is the
+only admitted runner API. Its opaque token carries operation kind, operand and
+address width, instruction length, full accumulator checkpoint, shared REP state,
+context and original flags/mask. Equivalent same-length prefix order may resume;
+changed instruction identity is rejected before data access.
+
+All arithmetic flags must be defined before count/data access, while concrete
+flag values are arbitrary. Zero ECX preserves full RCX/RDI/RAX/flags/mask and
+performs no read. A successful iteration makes one width-sized read at
+zero-extended EDI, applies width-specific accumulator-minus-memory CMP flags,
+then commits EDI ± width modulo 32 and zero-extended ECX-1. A single access may
+cross 4 GiB. Count-zero or ZF=1 completes before STOP; the 1024-success limit is
+checked afterward. Architectural faults restore entry flags/mask while retaining
+prior count/index progress and clear the token. Backend errors keep checkpoint
+and token for retry. Old entry APIs reject W/D/Q.
+
+Focused local coverage includes an independent subtraction model across all
+widths, DF, starting ZF, equality/mismatch and counts; zero-count and high-half
+state; contiguous Qword boundary/tail behavior; backend and architectural errors
+after progress; STOP/1024 continuation; changed-length identity rejection; and
+old API rejection. Three literal schema-v2 full snapshots are generated from
+handwritten state by serialization only. JIT/native and physical execution were
+not performed. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-19s-bounded-repne-scaswdq-address-size-32-contract)
+and [report](../reports/STAGE_2_REPORT.md#s2-19s--bounded-repne-scaswdq-addr32).

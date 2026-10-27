@@ -6486,6 +6486,94 @@ fn repne_scasb_addr32_cli_fixtures_check_literal_snapshots_and_keep_jit_closed()
 }
 
 #[test]
+fn repne_scas_wdq_addr32_cli_fixtures_check_literal_snapshots_and_keep_jit_closed() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_19s_repne_scas_wdq_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 3);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (_, result) = run(&raw, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}: {:?}",
+            result.outcome
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let Observation::Available { value } = result.snapshot else {
+            panic!("full snapshot: {case_id}");
+        };
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        assert_eq!(value.state.gpr, expected_gpr, "{case_id}");
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(value.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(value.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(value.state.rip, expected_rip, "{case_id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &value.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+        let (_, jit_result) = run(&raw, "jit", 4);
+        assert!(
+            matches!(jit_result.outcome, Outcome::Unsupported { .. }),
+            "{case_id}"
+        );
+        assert!(matches!(
+            jit_result.snapshot,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
+fn repne_scas_wdq_cli_detects_instruction_split_across_adjacent_regions() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let mut fixture: serde_json::Value = serde_json::from_slice(
+        &fs::read(directory.join("s2_19s_repne_scasw_equal.case.json")).unwrap(),
+    )
+    .unwrap();
+    let regions = fixture["memory"].as_array_mut().unwrap();
+    regions.remove(0);
+    regions.insert(
+        0,
+        serde_json::json!({
+            "region_id": "code_tail", "guest_address": "0x0000000000100003", "length": 1,
+            "permissions": {"read": false, "write": false, "execute": true},
+            "initial_bytes_hex": "af", "comparison_mask_hex": "ff"
+        }),
+    );
+    regions.insert(
+        0,
+        serde_json::json!({
+            "region_id": "code", "guest_address": "0x0000000000100000", "length": 3,
+            "permissions": {"read": false, "write": false, "execute": true},
+            "initial_bytes_hex": "f26766", "comparison_mask_hex": "ffffff"
+        }),
+    );
+    let raw = serde_json::to_vec(&fixture).unwrap();
+    let (_, result) = run(&raw, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let Observation::Available { value } = result.snapshot else {
+        panic!("full snapshot");
+    };
+    assert_eq!(value.state.rip, HexU64(0x0010_0004));
+    assert_eq!(value.state.gpr[1], HexU64(0));
+    assert_eq!(value.state.gpr[7], HexU64(0x3002));
+}
+
+#[test]
 fn repne_cmpsb_addr32_cli_fixtures_check_literal_snapshots_and_keep_jit_closed() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

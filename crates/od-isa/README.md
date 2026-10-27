@@ -392,3 +392,13 @@ local profile conditions; JIT/native and physical execution remain unverified.
 See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-19g-bounded-f3-af-repe-scaswdq-contract),
 [interpreter coverage](../../docs/testing/INTERPRETER.md#repe-scaswdq--s2-19g-local-interpreter-coverage),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md#bounded-repe-scaswdq-fixtures-s2-19g).
+
+
+S2-19s adds a bounded Long64 REPNE SCASW/D/Q addr32 slice through the explicit
+`run_with_rep_continuation` API. It performs one contiguous width read from
+zero-extended EDI, computes accumulator-minus-memory CMP, and commits flags,
+32-bit EDI and ECX only after successful reads. The opaque token validates kind,
+width, address size and instruction length across resumes. Existing F2 SCASB and
+F3 behavior remain unchanged; old entry APIs and JIT/native admission stay
+closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md), [interpreter
+notes](../../docs/testing/INTERPRETER.md), and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).

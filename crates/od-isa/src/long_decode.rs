@@ -708,6 +708,10 @@ pub enum Operation {
     },
     /// Bounded Long64 REPNE SCASB with address-size 32; continuation is explicit.
     RepneScasbAddr32,
+    /// Bounded Long64 REPNE SCASW/D/Q with address-size 32.
+    RepneScasWdqAddr32 {
+        size: OperandSize,
+    },
     /// Bounded Long64 REPNE CMPSB with address-size 32; continuation is explicit.
     RepneCmpsbAddr32,
     /// One bounded invocation of long-mode REPE CMPSB.
@@ -1168,6 +1172,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let mut prefixes = Prefixes::default();
         let mut groups = 0u8;
         let mut duplicate = false;
+        let mut prefix_bytes = [0u8; 15];
+        let mut prefix_count = 0usize;
         let first = loop {
             let byte = self.byte()?;
             let group = match byte {
@@ -1188,11 +1194,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     8
                 }
                 0x40..=0x4f => {
+                    prefix_bytes[prefix_count] = byte;
+                    prefix_count += 1;
                     prefixes.rex = Some(byte);
                     continue;
                 }
                 _ => break byte,
             };
+            prefix_bytes[prefix_count] = byte;
+            prefix_count += 1;
             duplicate |= groups & group != 0;
             groups |= group;
             prefixes.rex = None;
@@ -1334,6 +1344,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && self.length == 3
             && prefixes.rex.is_none()
             && !prefixes.operand_override;
+        let repne_scas_wdq_addr32 = opcode.map == OpcodeMap::Primary
+            && opcode.byte == 0xaf
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.address_override
+            && prefixes.segment.is_none()
+            && repne_scas_wdq_addr32_prefixes(&prefix_bytes[..prefix_count]);
         let repne_cmpsb_addr32 = opcode.map == OpcodeMap::Primary
             && opcode.byte == 0xa6
             && prefixes.group1 == Some(0xf2)
@@ -1381,6 +1397,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !rep_movs
                 && !rep_scas
                 && !repne_scasb_addr32
+                && !repne_scas_wdq_addr32
                 && !repne_cmpsb_addr32
                 && !rep_cmps
                 && !locked_qword_memory_xadd_candidate)
@@ -1781,7 +1798,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Primary, 0xaf) => {
-                if rep_scas {
+                if repne_scas_wdq_addr32 {
+                    size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                        OperandSize::Qword
+                    } else if prefixes.operand_override {
+                        OperandSize::Word
+                    } else {
+                        OperandSize::Dword
+                    };
+                    Operation::RepneScasWdqAddr32 { size }
+                } else if rep_scas {
                     size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
                         OperandSize::Qword
                     } else if prefixes.operand_override {
@@ -2683,6 +2709,17 @@ pub fn decode(
 
 pub(crate) fn canonical(address: u64) -> bool {
     (address as i64) >> 47 == 0 || (address as i64) >> 47 == -1
+}
+
+fn repne_scas_wdq_addr32_prefixes(prefixes: &[u8]) -> bool {
+    matches!(
+        prefixes,
+        [0xf2, 0x67] | [0x67, 0xf2] | [0xf2, 0x67, 0x66] | [0x67, 0xf2, 0x66]
+    ) || matches!(prefixes, [0xf2, 0x48..=0x4f, 0x67])
+        || matches!(prefixes, [0xf2, 0x67, 0x48..=0x4f])
+        || matches!(prefixes, [0x67, 0xf2, 0x48..=0x4f])
+        || matches!(prefixes, [0xf2, 0x67, 0x48..=0x4f, 0x66])
+        || matches!(prefixes, [0xf2, 0x67, 0x66, 0x48..=0x4f])
 }
 
 pub(crate) fn general_protection() -> MemoryError {
@@ -6168,6 +6205,62 @@ mod tests {
     }
 
     #[test]
+    fn repne_scas_wdq_addr32_accepts_exact_normalized_width_prefixes() {
+        for (bytes, size) in [
+            (&[0xf2, 0x67, 0x66, 0xaf][..], OperandSize::Word),
+            (&[0x67, 0xf2, 0x66, 0xaf][..], OperandSize::Word),
+            (&[0xf2, 0x67, 0xaf][..], OperandSize::Dword),
+            (&[0x67, 0xf2, 0xaf][..], OperandSize::Dword),
+            (&[0xf2, 0x48, 0x67, 0xaf][..], OperandSize::Dword),
+            (&[0xf2, 0x67, 0x48, 0xaf][..], OperandSize::Qword),
+            (&[0xf2, 0x67, 0x48, 0x66, 0xaf][..], OperandSize::Word),
+            (&[0xf2, 0x67, 0x66, 0x48, 0xaf][..], OperandSize::Qword),
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::RepneScasWdqAddr32 { size },
+                "{bytes:02x?}"
+            );
+            assert_eq!(instruction.operand_size, size);
+            assert_eq!(instruction.address_size, OperandSize::Dword);
+            assert_eq!(instruction.length as usize, bytes.len());
+        }
+        for rex in 0x48..=0x4f {
+            let instruction = Memory::new(&[0xf2, 0x67, rex, 0xaf]).decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::RepneScasWdqAddr32 {
+                    size: OperandSize::Qword
+                }
+            );
+        }
+        for bytes in [
+            &[0xf2, 0xaf][..],
+            &[0xf2, 0x67, 0xa7][..],
+            &[0xf2, 0x67, 0x66, 0xa7][..],
+            &[0xf2, 0xf2, 0x67, 0xaf][..],
+            &[0xf2, 0x67, 0xf2, 0xaf][..],
+            &[0xf2, 0x67, 0x67, 0xaf][..],
+            &[0xf2, 0x67, 0x66, 0x66, 0xaf][..],
+            &[0xf2, 0x67, 0x40, 0xaf][..],
+            &[0xf2, 0x67, 0x47, 0xaf][..],
+            &[0xf2, 0x40, 0x67, 0xaf][..],
+            &[0xf2, 0x47, 0x67, 0xaf][..],
+            &[0xf0, 0xf2, 0x67, 0xaf][..],
+            &[0x26, 0xf2, 0x67, 0xaf][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "unexpectedly admitted {bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn repne_cmpsb_addr32_admits_only_two_normalized_prefix_orders() {
         for bytes in [&[0xf2, 0x67, 0xa6][..], &[0x67, 0xf2, 0xa6][..]] {
             let instruction = Memory::new(bytes).decode().unwrap();
@@ -6230,7 +6323,6 @@ mod tests {
         }
 
         let rejected: &[&[u8]] = &[
-            &[0xf2, 0x67, 0xaf],
             &[0xf0, 0xf3, 0x67, 0xaf],
             &[0xf3, 0x67, 0xf2, 0xaf],
             &[0x26, 0xf3, 0x67, 0xaf],
@@ -7056,6 +7148,9 @@ mod tests {
             bytes != &[0xf3, 0x67, 0xae]
                 && bytes != &[0xf2, 0x67, 0xae]
                 && bytes != &[0x67, 0xf2, 0xae]
+                && bytes != &[0xf2, 0x67, 0x66, 0xaf]
+                && bytes != &[0xf2, 0x67, 0xaf]
+                && bytes != &[0xf2, 0x67, 0x48, 0xaf]
         });
         cases.push(vec![0x67, 0x66, 0xae]);
         for rex in 0x40..=0x4f {
@@ -7065,7 +7160,7 @@ mod tests {
             cases.push(vec![0x67, rex, 0xaf]);
             cases.push(vec![0x67, 0x66, rex, 0xaf]);
         }
-        assert_eq!(cases.len(), 68);
+        assert_eq!(cases.len(), 65);
         for bytes in cases {
             assert!(
                 matches!(

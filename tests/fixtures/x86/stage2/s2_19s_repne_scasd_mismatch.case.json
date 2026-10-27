@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_19s_repne_scasd_mismatch",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten instruction bytes and complete states; serialization only.",
+    "specification": "Intel SDM revision 093, Vol. 2B REPNE SCAS; project S2-19s.",
+    "specification_version": "Intel SDM Vol. 2B revision 093; project S2-19s"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0xdeadbeef12345678",
+      "0x0000000000000001",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0xfeedface00003000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000002"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 3,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "67f2af",
+      "comparison_mask_hex": "ffffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000003000",
+      "length": 4,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "79563412",
+      "comparison_mask_hex": "ffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100003",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x00000000000008d5",
+  "expected_exit": "stop_address"
+}

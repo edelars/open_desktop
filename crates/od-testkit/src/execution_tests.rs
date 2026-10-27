@@ -7567,6 +7567,50 @@ fn repne_scasb_addr32_literal_fixtures_use_fresh_continuation_tokens() {
 }
 
 #[test]
+fn repne_scas_wdq_addr32_literal_fixtures_use_fresh_continuation_tokens() {
+    let dir = arithmetic_fixture_directory();
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(dir.join("s2_19s_repne_scas_wdq_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 3);
+    for (id, answer) in answers {
+        let input =
+            Fixture::from_json(&std::fs::read(dir.join(format!("{id}.case.json"))).unwrap())
+                .unwrap()
+                .fixture;
+        let mut state = input.initial_state.to_cpu().unwrap();
+        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+        let mut continuation = None;
+        let result = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            od_isa::INTEGER_FLAGS,
+            &mut continuation,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(result.exit, RunExit::StopAddress, "{id}");
+        assert_eq!(result.instructions_executed, 1, "{id}");
+        assert!(continuation.is_none(), "one-shot fixture completed: {id}");
+        let gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        assert_eq!(state.gpr, gpr.map(HexU64::get), "{id}");
+        let flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let defined: HexU64 = serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(state.rflags, flags.get(), "{id}");
+        assert_eq!(result.rflags_defined, defined.get(), "{id}");
+        assert_eq!(state.rip, rip.get(), "{id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in memory.snapshot() {
+            assert_eq!(region.bytes_hex, expected_memory[&region.region_id], "{id}");
+        }
+    }
+}
+
+#[test]
 fn repne_cmpsb_addr32_continuation_sidecar_and_literal_fixtures() {
     let directory = arithmetic_fixture_directory();
     let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(

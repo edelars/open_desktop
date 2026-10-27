@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-19m расширяет REPE SCASB на точные
+Последнее локальное подзадание S2-19s расширяет REPNE SCASB на широкие AF forms с addr32; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -7252,3 +7252,41 @@ source/write-only destination, destination partial-fault no-prefix-mutation,
 retry after source mutation, MOVS64/REP regressions. Native admission остаётся
 addr64-only, JIT closed. Перегенерацию и runner snapshots проверить локально;
 физические/Mac mini прогоны выполнять только в общем финальном substage.
+
+
+#### S2-19s — bounded REPNE SCASW/D/Q с address-size 32
+
+Добавить только Long64 `AF` с normalized group1 F2, address override 67 и
+шириной W/D/Q: `F2 67 66 AF` — W, `F2 67 AF` и `67 F2 AF` — D,
+`F2 67 48 AF` — Q. Сохранять legacy REX reset: `F2 67 48 66 AF` — W,
+`F2 67 66 48 AF` — Q, `F2 48 67 AF` — D. Допускается каждый effective
+REX.W `48..4F`. Addr32 F2 AE и существующий F3 профиль остаются неизменны;
+F2 A7, addr64 F2, byte F2 для AF, LOCK, segment, duplicate prefix groups
+и effective non-W REX остаются unsupported. Старые `run`,
+`run_with_rflags_defined` и single-step entry points остаются fail-closed.
+
+До ECX/data read требовать definedness всех arithmetic flags, не ограничивая
+их concrete values. ECX=0 не читает и сохраняет полные RCX/RDI/RAX/flags/mask,
+затем продвигает RIP и retires once. Иначе выполнить один contiguous width
+read из zero-extended EDI; после success сравнить accumulator width minus data,
+зафиксировать CMP flags, modulo-32 EDI ± width и zero-extended ECX-1.
+Операнд не делится на два чтения на границе 4 GiB. REPNE завершается при
+ECX=0 или ZF=1 до STOP, затем применяется лимит 1024 успешных сравнений.
+Архитектурный fetch/data fault восстанавливает entry RFLAGS/mask, оставляет
+счётчик/индекс после предыдущих успешных сравнений и очищает token; backend
+ошибка оставляет checkpoint/token для retry.
+
+Оpaque `RepContinuation` расширить kind, operand size, address size и
+instruction length плюс существующие semantic checkpoint/context/original flags.
+Проверять полное состояние до callback; после decode сверять kind/width/address/
+length до data read. Equivalent prefix order той же длины допустим; другая
+длина и cross-kind/width/address tokens отклоняются. Token остаётся caller-side
+only и не сериализуется schema v2.
+
+Покрытие этого среза включает exact prefix matrix, независимую W/D/Q CMP
+модель по DF/начальному ZF/равенству/count, high halves, zero count, zero-extended
+starting EDI, 4-GiB contiguous Qword/tail behavior, fault after progress, retry
+checkpoint, STOP/limit resume and changed-length rejection. Literal fixtures
+содержат serialization-only W/D/Q complete snapshots. ISSUE-020 остаётся
+CMPS-only открытой политикой; этот SCAS профиль не расширяет её. Native/JIT,
+physical x86, Mac mini и SSH проверки не выполнять.

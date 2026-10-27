@@ -8498,3 +8498,43 @@ destination. Core tests cover stop-RIP separately. Core matrices cover
 55,296 full-state successes, 512 definedness masks, 192 pointer boundaries,
 576 access failures, 72 aliases, 36 overlaps and 32 dual-invalid combinations.
 JIT/native and physical support remain closed pending shared final acceptance.
+
+
+### Local S2-19s bounded REPNE SCASW/D/Q address-size-32 contract
+
+The decoder admits only Long64 `F2`+`67` `AF` width forms. W is
+`F2 67 66 AF`; D is `F2 67 AF` or `67 F2 AF`; Q is `F2 67 48 AF` with
+effective REX.W `48..4F`. Legacy ordering also normalizes
+`F2 67 48 66 AF` to W, `F2 67 66 48 AF` to Q, and `F2 48 67 AF` to D
+because the later legacy prefix clears REX. F2 A7, addr64 F2, other byte F2 AF,
+LOCK, segment, duplicate groups and effective non-W REX remain unsupported.
+Existing F2 addr32 SCASB and F3 SCAS profiles remain unchanged. The legacy
+entry APIs fail closed; callers use `run_with_rep_continuation`.
+
+Before ECX or memory access, all six arithmetic flags must be defined; concrete
+RFLAGS are unrestricted. ECX=0 performs no data access, preserves full
+RCX/RDI/RAX/RFLAGS/definedness, advances RIP and retires once. Each nonzero
+iteration performs one width-sized contiguous read at zero-extended EDI, computes
+accumulator-width minus memory CMP flags, then commits flags, EDI ± width modulo
+2^32, and zero-extended ECX-1. A crossing operand remains one contiguous access
+across 4 GiB. REPNE completes at ECX=0 or ZF=1 before STOP and then the 1024
+successful-read cap.
+
+The opaque token records SCAS/CMPS kind, operand/address size, decoded instruction
+length, full SCAS RAX or CMPS RSI checkpoint, shared RCX/RDI/RFLAGS/definedness/
+context and original flags/mask. Equivalent prefix encodings of equal semantics
+and length can resume. Cross-kind/width/address/length mismatches fail before
+data access. Architectural fetch/data faults restore entry flags/mask, retain
+previously committed count/index progress and clear the token; backend errors
+preserve checkpoint/token. The token is caller-owned only; schema v2 does not
+serialize it. No hardware fault priority or backend side-effect rollback is
+claimed.
+
+Local tests include independent CMP calculations across W/D/Q, DF, starting ZF,
+equality/mismatch/count; high halves and EDI truncation; 4-GiB contiguous/tail
+behavior; fault rollback/retry; STOP and 1024-limit resume; token identity; and
+old API rejection. Literal fixture snapshots use a serialization-only generator.
+JIT/native and physical x86 acceptance remain unverified. See the [plan](../plans/STAGE_2.md#s2-19s--bounded-repne-scaswdq-с-address-size-32),
+[interpreter notes](../testing/INTERPRETER.md#repne-scaswdq-address-size-32--s2-19s),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#bounded-repne-scaswdq-address-size-32-fixtures-s2-19s),
+and [report](../reports/STAGE_2_REPORT.md#s2-19s--bounded-repne-scaswdq-addr32).

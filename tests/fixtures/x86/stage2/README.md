@@ -4482,3 +4482,13 @@ through a STOP/resume sidecar. Runner CLI checks the complete snapshots and
 keeps JIT denied. ISSUE-020 remains open for the local ESI-first dual-fault
 policy; no hardware priority, MMIO rollback, native, physical, Mac mini or SSH
 claim is made.
+
+
+### Bounded REPNE SCASW/D/Q address-size-32 fixtures S2-19s
+
+Three schema-v2 snapshots cover W equality, D mismatch and Q zero count for
+the bounded Long64 F2+67 AF profile. The generator serializes handwritten
+bytes and complete expected states only. One-shot fixtures start with a fresh
+`None` continuation; callers retain tokens outside schema v2 when execution
+needs a resume. Runner/native/JIT support is not implied by these interpreter
+fixtures.

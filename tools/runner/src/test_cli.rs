@@ -313,6 +313,33 @@ fn run_fixture_v2(bytes: &[u8], backend: Backend) -> ExitCode {
     }
 }
 
+fn is_repne_addr32_string(bytes: &[u8]) -> bool {
+    (3..=bytes.len().min(5)).any(|length| {
+        let candidate = &bytes[..length];
+        let Some((&opcode, prefixes)) = candidate.split_last() else {
+            return false;
+        };
+        if !matches!(opcode, 0xae | 0xa6 | 0xaf) {
+            return false;
+        }
+        if matches!(opcode, 0xae | 0xa6) {
+            return matches!(prefixes, [0xf2, 0x67] | [0x67, 0xf2]);
+        }
+        matches!(
+            prefixes,
+            [0xf2, 0x67]
+                | [0x67, 0xf2]
+                | [0xf2, 0x67, 0x66]
+                | [0x67, 0xf2, 0x66]
+                | [0xf2, 0x48..=0x4f, 0x67]
+                | [0xf2, 0x67, 0x48..=0x4f]
+                | [0x67, 0xf2, 0x48..=0x4f]
+                | [0xf2, 0x67, 0x48..=0x4f, 0x66]
+                | [0xf2, 0x67, 0x66, 0x48..=0x4f]
+        )
+    })
+}
+
 fn execute_fixture_v2(
     loaded: &od_testkit::v2::LoadedFixture,
     memory: &mut od_testkit::memory::FlatMemory,
@@ -340,19 +367,32 @@ fn execute_fixture_v2(
         timed_out = start.elapsed() >= limit;
         timed_out
     };
-    let entry_bytes = loaded.fixture.memory.iter().find_map(|region| {
-        let base = region.guest_address.get();
-        let offset = usize::try_from(state.rip.checked_sub(base)?).ok()?;
-        let bytes = od_testkit::v2::decode_bytes(&region.initial_bytes_hex).ok()?;
-        let end = offset.checked_add(3)?;
-        bytes.get(offset..end).map(<[u8]>::to_vec)
-    });
-    let execution = if entry_bytes.as_deref().is_some_and(|bytes| {
-        bytes == [0xf2, 0x67, 0xae]
-            || bytes == [0x67, 0xf2, 0xae]
-            || bytes == [0xf2, 0x67, 0xa6]
-            || bytes == [0x67, 0xf2, 0xa6]
-    }) {
+    let entry_bytes = {
+        let mut bytes = Vec::with_capacity(5);
+        for offset in 0..5u64 {
+            let Some(address) = state.rip.checked_add(offset) else {
+                break;
+            };
+            let Some(region) = loaded.fixture.memory.iter().find(|region| {
+                let base = region.guest_address.get();
+                region.permissions.execute
+                    && address >= base
+                    && address - base < u64::from(region.length)
+            }) else {
+                break;
+            };
+            let Ok(region_bytes) = od_testkit::v2::decode_bytes(&region.initial_bytes_hex) else {
+                break;
+            };
+            let offset = usize::try_from(address - region.guest_address.get()).ok();
+            let Some(byte) = offset.and_then(|index| region_bytes.get(index)) else {
+                break;
+            };
+            bytes.push(*byte);
+        }
+        (!bytes.is_empty()).then_some(bytes)
+    };
+    let execution = if entry_bytes.as_deref().is_some_and(is_repne_addr32_string) {
         let mut continuation = None;
         run_with_rep_continuation(
             &mut state,

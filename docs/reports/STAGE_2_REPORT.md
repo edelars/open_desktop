@@ -11027,3 +11027,42 @@ change was required. Native/JIT execution, physical x86, Mac mini and SSH
 checks were not performed. Independent `gpt-6.1-sol` medium review found no
 actionable defects in token validation, operand ordering/commit, fault/error
 handling, decoder bounds, fixtures or CLI/JIT denial.
+
+
+## S2-19s — bounded REPNE SCASW/D/Q addr32
+
+The Long64 decoder and explicit REP continuation runner now admit normalized
+F2+67 `AF` W/D/Q forms. Prefix normalization includes the effective REX.W
+forms and legacy REX reset permutations. Existing F2 SCASB and F3 forms remain
+unchanged; F2 addr64, F2 A7, LOCK/segment/duplicate-group and non-W REX forms
+remain denied. `step`, `run` and `run_with_rflags_defined` still fail closed.
+
+The executor reuses width-aware operand reads and CMP flag calculation. It gates
+all arithmetic-flag definedness before ECX/read but accepts arbitrary concrete
+flag values. Zero ECX preserves complete RCX/RDI/RAX/flags/mask and reads no data.
+Successful iterations perform one contiguous width read from zero-extended EDI,
+then commit arithmetic flags, modulo-32 EDI ± width and zero-extended ECX-1.
+Completion at zero count or ZF=1 precedes STOP and the 1024-read cap. The opaque
+token now records kind, operand/address width and instruction length in addition
+to the existing checkpoint/context/original flags. Same-length equivalent prefix
+forms resume; changed width or length is rejected before data access.
+
+Focused tests passed for prefix acceptance/rejection; an independent CMP model
+across widths, DF, initial ZF, equal/mismatch and counts; high RAX/RDI/RCX
+behavior; zero count and undefined-flag rejection; contiguous Qword read across
+4 GiB and truncated tail; backend retry token and architectural fault rollback
+after prior progress; STOP and 1024-limit token resume; same-width changed-length
+rejection; and old API rejection. Three schema-v2 complete-state fixtures cover
+SCASW equality, SCASD mismatch and SCASQ zero count. Their generator serializes
+handwritten input/answers only, and od-testkit checks full snapshots with fresh
+continuation tokens.
+
+Verification passed: `cargo test --workspace --all-targets --offline`,
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+130 `tests/cpu` Python tests including generator freshness, focused od-testkit
+full-snapshot and runner CLI/JIT-denial fixture tests (including an instruction split across
+adjacent executable regions), `git diff --check`, and Graphify update. The graph update noted one pre-existing syntax issue in
+`include/open_desktop/host_abi.h`; it did not block the graph rebuild. JIT/native
+execution, physical x86, Mac mini and SSH execution were not performed. ISSUE-020
+remains open for the existing CMPS local dual-invalid policy; no SCAS
+hardware-priority claim is made.
