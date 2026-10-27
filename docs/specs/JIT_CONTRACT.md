@@ -926,6 +926,31 @@ key. Physical Mac mini execution remains reserved for final S3-21 after local
 Stage 3 is complete. Local evidence is recorded in
 [the S3-22a report](../reports/STAGE_3_S3-22a_2026-10-27.md).
 
+### S3-23a: bounded fixture cache invalidation
+
+Fixture owners may report `CodeInvalidation` only between completed
+synchronous dispatch calls. Backing-content notifications identify the backing
+and current version, so entries using an older version are removed across all
+mapping aliases. Mapping replacement, removal, and execute-permission changes
+identify the address-space/mapping pair; affected entries are removed from
+lookup and their published handles are dropped before the owner supplies its
+next snapshot. The invalidation APIs exist for both single-entry and bounded
+multi-entry caches.
+
+The fixture owner validates a write range and the next nonwrapping version
+before mutation. A successful all-or-nothing code-byte write is followed by a
+version advance and cache notification before any subsequent snapshot is
+issued. A failed write leaves bytes, version, and cache untouched. This path
+assumes mutation occurs only after dispatch returns; cache borrowing prevents
+the fixture caller from invalidating an active entry through the safe API.
+
+This is not complete S3-23 integration. It does not connect the interpreter,
+V2 memory stores, control-plane writers, production MMU, DMA, or device
+callbacks. It does not serialize a writer against compile/publication after a
+snapshot has been captured, and it does not retire active/self-modifying code.
+Those remain separate owner/publication and S3-24 lifecycle work. No physical
+Mac mini check was run; see [S3-23a report](../reports/STAGE_3_S3-23a_2026-10-27.md).
+
 ### S3-19a: invocation-local checked memory helper ABI partial
 
 `od_jit::memory_bridge::CheckedMemoryAdapter` borrows one `&mut dyn

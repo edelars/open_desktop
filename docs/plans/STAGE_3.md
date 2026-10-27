@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-22a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-22a/S3-23a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22/S3-23 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -157,7 +157,8 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Caller-owned frozen snapshot; production mode/MMU lease and compile/publication race remain open |
-| [ ] | S3-23 | Инвалидация code dependencies | S3-18, S3-21, S3-22 |
+| [partial] | S3-23a | Fixture owner notifications для изменения backing/mapping и cache invalidation между sync dispatch calls | Только неактивные entries; production owner, writer integration и publication race остаются открытыми |
+| [ ] | S3-23 | Инвалидация code dependencies | S3-18, S3-21, S3-22; полный writer/MMU integration |
 | [ ] | S3-24 | Self-modifying code в текущем блоке | S3-23 |
 | [ ] | S3-25 | Eviction, retirement и освобождение | S3-18, S3-24 |
 | [ ] | S3-26 | Порядок side effects и memory classes | S3-19, S3-24 |
@@ -874,6 +875,32 @@ until final S3-21 after local Stage 3 work. Results are recorded in the
 [S3-22a report](../reports/STAGE_3_S3-22a_2026-10-27.md).
 
 ### S3-23. Инвалидировать зависимости изменённого кода
+
+#### S3-23a. Bounded fixture invalidation between dispatch calls
+
+Реализован owner-to-cache notification path для bounded fixture cache между
+завершёнными synchronous dispatch calls. `CodeInvalidation` покрывает
+committed backing-content version change, mapping replacement/removal и
+execute-permission change. `SingleEntryBlockCache` и `MultiEntryBlockCache`
+снимают зависимые entries из lookup и сразу drop-ают опубликованные handles;
+multi-entry counters освобождают resident code/metadata accounting. Поиск
+backing ID учитывает aliases, а mapping events сопоставляют address-space и
+mapping IDs.
+
+Fixture owner сначала проверяет range/version increment, выполняет write,
+продвигает backing version и передаёт notification до следующего snapshot.
+Неуспешная запись не меняет bytes/version/cache. Cache borrow и API допускают
+invalidation только между завершёнными calls, поэтому в этом срезе нет active
+entry retirement protocol. Срез покрывает code owner fixture и register-only
+S0_09 dispatch; unsafe V2 store для code writes не используется.
+
+Локальные tests подтверждают changed bytes → old handle drop → новый compiled
+code, alias-wide invalidation, failed-write preservation, remap на тот же guest
+address, execute-permission revoke до повторного entry, unrelated backing hit и
+reclamation resident handles/code/metadata. Owner mutation, racing publication,
+interpreter/JIT/control writes, production MMU, DMA/device notifications и
+active self-modifying code остаются вне среза и требуют последующей интеграции.
+Результат: [S3-23a report](../reports/STAGE_3_S3-23a_2026-10-27.md).
 
 1. Ввести единый путь уведомления committed memory writes и смены backing/mapping. Подключить interpreter, JIT и управляющие writes доступного среза.
 2. Изменить generation/identity нужных code regions, удалить зависимые entries из lookup и сделать невозможным stale entry по старой ссылке.

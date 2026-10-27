@@ -16,9 +16,66 @@ use crate::block_compile::{
 };
 use crate::runtime::RuntimeExitTag;
 use crate::translation::{
-    CodeDependencySpan, CompileFlavor, ExecutionContextSnapshot, ExecutionProfile, TranslationKey,
+    AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CompileFlavor,
+    ExecutionContextSnapshot, ExecutionProfile, MappingId, MappingVersion, TranslationKey,
     TranslationKeyError,
 };
+
+/// Owner notification that makes cached code unreachable before the next
+/// synchronous dispatch invocation. Call only between dispatch calls, when
+/// every cached entry is inactive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodeInvalidation {
+    BackingContentChanged {
+        backing: BackingId,
+        current_version: BackingVersion,
+    },
+    MappingReplaced {
+        address_space: AddressSpaceId,
+        mapping: MappingId,
+        current_version: MappingVersion,
+    },
+    MappingRemoved {
+        address_space: AddressSpaceId,
+        mapping: MappingId,
+    },
+    ExecutePermissionChanged {
+        address_space: AddressSpaceId,
+        mapping: MappingId,
+        executable: bool,
+    },
+}
+
+fn entry_matches_invalidation<H>(entry: &CachedEntry<H>, change: CodeInvalidation) -> bool {
+    entry.key.dependencies().iter().any(|span| match change {
+        CodeInvalidation::BackingContentChanged {
+            backing,
+            current_version,
+        } => span.identity.backing == backing && span.identity.backing_version != current_version,
+        CodeInvalidation::MappingReplaced {
+            address_space,
+            mapping,
+            current_version,
+        } => {
+            span.identity.address_space == address_space
+                && span.identity.mapping == mapping
+                && span.identity.mapping_version != current_version
+        }
+        CodeInvalidation::MappingRemoved {
+            address_space,
+            mapping,
+        } => span.identity.address_space == address_space && span.identity.mapping == mapping,
+        CodeInvalidation::ExecutePermissionChanged {
+            address_space,
+            mapping,
+            executable,
+        } => {
+            span.identity.address_space == address_space
+                && span.identity.mapping == mapping
+                && span.identity.executable != executable
+        }
+    })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlockExecutionReport {
@@ -260,6 +317,22 @@ impl<H> SingleEntryBlockCache<H> {
 
     pub fn clear(&mut self) {
         self.entry = None;
+    }
+
+    /// Drop this entry when an owner reports a committed dependency change.
+    /// Invoke only between dispatch calls; `&mut self` prevents a caller from
+    /// invalidating while the cached entry is executing.
+    pub fn invalidate(&mut self, change: CodeInvalidation) -> usize {
+        if self
+            .entry
+            .as_ref()
+            .is_some_and(|entry| entry_matches_invalidation(entry, change))
+        {
+            self.clear();
+            1
+        } else {
+            0
+        }
     }
 
     /// Flush entries and bind the cache to a new context generation. Reusing
@@ -504,6 +577,28 @@ impl<H> MultiEntryBlockCache<H> {
         self.entries.clear();
         self.counters.resident_code_bytes = 0;
         self.counters.resident_logical_metadata_bytes = 0;
+    }
+
+    /// Remove every inactive entry depending on the changed backing or mapping.
+    /// Call only between synchronous dispatch invocations. Removed published
+    /// handles are dropped immediately and their accounted resident bytes are
+    /// reclaimed.
+    pub fn invalidate(&mut self, change: CodeInvalidation) -> usize {
+        let mut removed = 0;
+        let mut index = self.entries.len();
+        while index != 0 {
+            index -= 1;
+            if self
+                .entries
+                .get(index)
+                .is_some_and(|entry| entry_matches_invalidation(entry, change))
+            {
+                self.remove(index)
+                    .expect("cache accounting remains consistent while invalidating entries");
+                removed += 1;
+            }
+        }
+        removed
     }
 
     /// Flush entries and bind the cache to a new context generation. Reusing
@@ -1889,6 +1984,154 @@ mod tests {
         }]
     }
 
+    struct FixtureCodeOwner {
+        bytes: Vec<u8>,
+        base: u64,
+        address_space: AddressSpaceId,
+        mapping: MappingId,
+        mapping_version: MappingVersion,
+        backing: BackingId,
+        backing_version: BackingVersion,
+        executable: bool,
+        mapped: bool,
+        fail_next_write: bool,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum FixtureOwnerError {
+        InjectedWriteFailure,
+        OutOfRange,
+        VersionExhausted,
+    }
+
+    impl FixtureCodeOwner {
+        fn new(bytes: &[u8], base: u64, mapping: u64, backing: u64) -> Self {
+            let nz = |value| NonZeroU64::new(value).unwrap();
+            Self {
+                bytes: bytes.to_vec(),
+                base,
+                address_space: AddressSpaceId::new(nz(1)),
+                mapping: MappingId::new(nz(mapping)),
+                mapping_version: MappingVersion::new(nz(1)),
+                backing: BackingId::new(nz(backing)),
+                backing_version: BackingVersion::new(nz(1)),
+                executable: true,
+                mapped: true,
+                fail_next_write: false,
+            }
+        }
+
+        fn snapshot(&self) -> Option<(CodeView<'_>, [CodeDependencySpan; 1])> {
+            if !self.mapped {
+                return None;
+            }
+            let view = CodeView::new(self.base, &self.bytes).ok()?;
+            let dependency = [CodeDependencySpan {
+                start_rip: view.base_rip(),
+                end_rip: view.code_end(),
+                identity: CodeIdentity {
+                    address_space: self.address_space,
+                    mapping: self.mapping,
+                    mapping_version: self.mapping_version,
+                    backing: self.backing,
+                    backing_version: self.backing_version,
+                    executable: self.executable,
+                },
+            }];
+            Some((view, dependency))
+        }
+
+        fn commit_write<H>(
+            &mut self,
+            offset: usize,
+            bytes: &[u8],
+            cache: &mut MultiEntryBlockCache<H>,
+        ) -> Result<(), FixtureOwnerError> {
+            let end = offset
+                .checked_add(bytes.len())
+                .filter(|end| *end <= self.bytes.len())
+                .ok_or(FixtureOwnerError::OutOfRange)?;
+            let next_version = self
+                .backing_version
+                .checked_next()
+                .ok_or(FixtureOwnerError::VersionExhausted)?;
+            if std::mem::take(&mut self.fail_next_write) {
+                return Err(FixtureOwnerError::InjectedWriteFailure);
+            }
+            self.bytes[offset..end].copy_from_slice(bytes);
+            self.backing_version = next_version;
+            cache.invalidate(CodeInvalidation::BackingContentChanged {
+                backing: self.backing,
+                current_version: next_version,
+            });
+            Ok(())
+        }
+
+        fn replace_mapping<H>(
+            &mut self,
+            new_mapping: MappingId,
+            new_backing: BackingId,
+            cache: &mut MultiEntryBlockCache<H>,
+        ) -> Result<(), FixtureOwnerError> {
+            let old_mapping = self.mapping;
+            let next_version = self
+                .mapping_version
+                .checked_next()
+                .ok_or(FixtureOwnerError::VersionExhausted)?;
+            self.mapping = new_mapping;
+            self.backing = new_backing;
+            self.mapping_version = next_version;
+            self.backing_version = BackingVersion::new(NonZeroU64::new(1).unwrap());
+            self.mapped = true;
+            cache.invalidate(CodeInvalidation::MappingReplaced {
+                address_space: self.address_space,
+                mapping: old_mapping,
+                current_version: next_version,
+            });
+            Ok(())
+        }
+
+        fn remove_mapping<H>(&mut self, cache: &mut MultiEntryBlockCache<H>) {
+            self.mapped = false;
+            cache.invalidate(CodeInvalidation::MappingRemoved {
+                address_space: self.address_space,
+                mapping: self.mapping,
+            });
+        }
+
+        fn set_executable<H>(&mut self, executable: bool, cache: &mut MultiEntryBlockCache<H>) {
+            self.executable = executable;
+            cache.invalidate(CodeInvalidation::ExecutePermissionChanged {
+                address_space: self.address_space,
+                mapping: self.mapping,
+                executable,
+            });
+        }
+    }
+
+    fn run_owner_fixture(
+        owner: &FixtureCodeOwner,
+        cache: &mut MultiEntryBlockCache<MockPublished>,
+        backend: &mut MockCachedBackend,
+    ) -> Result<DispatchResult, DispatchError<&'static str>> {
+        let (view, dependencies) = owner.snapshot().expect("fixture mapping exists");
+        let (_, admission) = admitted(view.bytes(), view.base_rip());
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        run_multi_cached(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut state,
+            1,
+            cache,
+            backend,
+        )
+    }
+
     fn cached_fixture<'a>(
         bytes: &'a [u8],
         base: u64,
@@ -1918,6 +2161,162 @@ mod tests {
             cache,
             backend,
         )
+    }
+
+    fn new_fixture_multi_cache() -> MultiEntryBlockCache<MockPublished> {
+        MultiEntryBlockCache::new(
+            4,
+            MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap()
+    }
+
+    fn new_fixture_backend() -> (MockCachedBackend, Rc<RefCell<PublishedTracker>>) {
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            allow_multiple_live: true,
+            capacity: MAX_MULTI_ENTRY_CACHE_BLOCKS,
+            ..PublishedTracker::default()
+        }));
+        (MockCachedBackend(tracker.clone()), tracker)
+    }
+
+    #[test]
+    fn committed_fixture_write_invalidates_old_code_before_next_snapshot() {
+        let initial = [0x48, 0xb8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let mut owner = FixtureCodeOwner::new(&initial, 0x9100, 2, 3);
+        let mut cache = new_fixture_multi_cache();
+        let (mut backend, tracker) = new_fixture_backend();
+        run_owner_fixture(&owner, &mut cache, &mut backend).unwrap();
+        let original_emitted = cache.entries[0].block.emitted().code().words().to_vec();
+        assert_eq!(cache.resident_entries(), 1);
+        assert_eq!(tracker.borrow().live, 1);
+
+        owner
+            .commit_write(2, &[2], &mut cache)
+            .expect("fixture write commits and notifies cache");
+        assert_eq!(owner.backing_version.get(), 2);
+        assert_eq!(cache.resident_entries(), 0);
+        assert_eq!(tracker.borrow().live, 0);
+        assert_eq!(tracker.borrow().drops, 1);
+
+        run_owner_fixture(&owner, &mut cache, &mut backend).unwrap();
+        assert_eq!(cache.counters().successful_compiles, 2);
+        assert_eq!(cache.counters().successful_publications, 2);
+        assert_ne!(
+            cache.entries[0].block.emitted().code().words(),
+            original_emitted
+        );
+        assert_eq!(tracker.borrow().executed_ids, [1, 2]);
+    }
+
+    #[test]
+    fn backing_write_notification_invalidates_aliases_but_not_unrelated_backings() {
+        let code = [0x48, 0xb8, 7, 0, 0, 0, 0, 0, 0, 0];
+        let mut owner_a = FixtureCodeOwner::new(&code, 0x9200, 2, 3);
+        let owner_b = FixtureCodeOwner::new(&code, 0x9300, 4, 3);
+        let mut cache = new_fixture_multi_cache();
+        let (mut backend, tracker) = new_fixture_backend();
+        run_owner_fixture(&owner_a, &mut cache, &mut backend).unwrap();
+        run_owner_fixture(&owner_b, &mut cache, &mut backend).unwrap();
+        assert_eq!(cache.resident_entries(), 2);
+        assert_eq!(tracker.borrow().live, 2);
+
+        owner_a
+            .commit_write(2, &[8], &mut cache)
+            .expect("backing change notifies every alias dependency");
+        assert_eq!(cache.resident_entries(), 0);
+        assert_eq!(tracker.borrow().live, 0);
+        assert_eq!(tracker.borrow().drops, 2);
+
+        run_owner_fixture(&owner_a, &mut cache, &mut backend).unwrap();
+        let unrelated = CodeInvalidation::BackingContentChanged {
+            backing: BackingId::new(NonZeroU64::new(99).unwrap()),
+            current_version: BackingVersion::new(NonZeroU64::new(2).unwrap()),
+        };
+        assert_eq!(cache.invalidate(unrelated), 0);
+        assert_eq!(cache.resident_entries(), 1);
+        let publishes = tracker.borrow().publishes;
+        run_owner_fixture(&owner_a, &mut cache, &mut backend).unwrap();
+        assert_eq!(tracker.borrow().publishes, publishes);
+        assert_eq!(cache.counters().hits, 1);
+    }
+
+    #[test]
+    fn failed_fixture_write_preserves_bytes_version_and_cached_handle() {
+        let code = [0x48, 0xb8, 9, 0, 0, 0, 0, 0, 0, 0];
+        let mut owner = FixtureCodeOwner::new(&code, 0x9400, 2, 3);
+        let mut cache = new_fixture_multi_cache();
+        let (mut backend, tracker) = new_fixture_backend();
+        run_owner_fixture(&owner, &mut cache, &mut backend).unwrap();
+        let bytes_before = owner.bytes.clone();
+        owner.fail_next_write = true;
+        assert_eq!(
+            owner.commit_write(2, &[10], &mut cache),
+            Err(FixtureOwnerError::InjectedWriteFailure)
+        );
+        assert_eq!(owner.bytes, bytes_before);
+        assert_eq!(owner.backing_version.get(), 1);
+        assert_eq!(cache.resident_entries(), 1);
+        assert_eq!(tracker.borrow().live, 1);
+        let publications = tracker.borrow().publishes;
+        run_owner_fixture(&owner, &mut cache, &mut backend).unwrap();
+        assert_eq!(tracker.borrow().publishes, publications);
+        assert_eq!(cache.counters().hits, 1);
+    }
+
+    #[test]
+    fn remap_and_execute_revocation_drop_cached_entries_before_reentry() {
+        let old_code = [0x48, 0xb8, 11, 0, 0, 0, 0, 0, 0, 0];
+        let new_code = [0x48, 0xb8, 12, 0, 0, 0, 0, 0, 0, 0];
+        let mut owner = FixtureCodeOwner::new(&old_code, 0x9500, 2, 3);
+        let mut cache = new_fixture_multi_cache();
+        let (mut backend, tracker) = new_fixture_backend();
+        run_owner_fixture(&owner, &mut cache, &mut backend).unwrap();
+        owner.bytes.copy_from_slice(&new_code);
+        owner
+            .replace_mapping(
+                MappingId::new(NonZeroU64::new(5).unwrap()),
+                BackingId::new(NonZeroU64::new(6).unwrap()),
+                &mut cache,
+            )
+            .unwrap();
+        assert_eq!(cache.resident_entries(), 0);
+        assert_eq!(tracker.borrow().live, 0);
+        run_owner_fixture(&owner, &mut cache, &mut backend).unwrap();
+        assert_eq!(tracker.borrow().publishes, 2);
+        assert_eq!(cache.counters().successful_compiles, 2);
+
+        owner.set_executable(false, &mut cache);
+        assert_eq!(cache.resident_entries(), 0);
+        assert_eq!(tracker.borrow().live, 0);
+        let executions = tracker.borrow().executions;
+        assert!(matches!(
+            run_owner_fixture(&owner, &mut cache, &mut backend),
+            Err(DispatchError::TranslationKey(
+                TranslationKeyError::NonExecutableDependency { .. }
+            ))
+        ));
+        assert_eq!(tracker.borrow().executions, executions);
+        assert_eq!(cache.resident_entries(), 0);
+    }
+
+    #[test]
+    fn mapping_removal_notification_reclaims_multi_entry_resources() {
+        let code = [0x48, 0xb8, 13, 0, 0, 0, 0, 0, 0, 0];
+        let mut owner = FixtureCodeOwner::new(&code, 0x9600, 2, 3);
+        let mut cache = new_fixture_multi_cache();
+        let (mut backend, tracker) = new_fixture_backend();
+        run_owner_fixture(&owner, &mut cache, &mut backend).unwrap();
+        assert!(cache.counters().resident_code_bytes > 0);
+        assert!(cache.counters().resident_logical_metadata_bytes > 0);
+        owner.remove_mapping(&mut cache);
+        assert_eq!(cache.resident_entries(), 0);
+        assert_eq!(cache.counters().resident_code_bytes, 0);
+        assert_eq!(cache.counters().resident_logical_metadata_bytes, 0);
+        assert_eq!(tracker.borrow().live, 0);
+        assert_eq!(tracker.borrow().drops, 1);
+        assert!(owner.snapshot().is_none());
     }
 
     #[test]
