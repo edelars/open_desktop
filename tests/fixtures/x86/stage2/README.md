@@ -4113,3 +4113,31 @@ python3 tests/cpu/generate_stage2_rep_scas_wdq.py --check
 cargo test -p od-testkit --offline rep_scas_wdq_literal_fixtures_match_full_expected_answers
 cargo test -p od-runner --test fixture_v2 rep_scas_wdq_cli_fixtures_check_full_state_and_jit_denial
 ```
+
+## Bounded REPE CMPSW/D/Q fixtures S2-19h
+
+Exactly 71 literal schema-v2 fixtures extend S2-19f `F3 A6` CMPSB with
+`F3 66 A7` CMPSW, `F3 A7` CMPSD, and effective-REX.W `F3 A7` CMPSQ. Each
+width has 19 cases: zero count for both DF values; one equal and mismatch
+comparison for both DF values; middle mismatch and all-equal count three for
+both DF values; source/destination unmapped at the first read and after one
+complete equal element; noncanonical RSI and RDI; count 1025 for both DF
+values; and zero instruction budget. Two additional cases check
+`F3 48 66 A7` as word and `F3 66 48 A7` as qword. Twelve compositions check
+CMP RAX,RAX followed by successful REPE or each ordered read fault, plus TEST
+RAX,RAX rejection for each width with undefined AF. Snapshots cover all GPRs,
+flags/definedness, RIP, and fixture memory.
+
+The generator serializes fixed bytes and expected state only; it does not use
+an assembler, oracle, or execution engine. The runner fixture test compares
+complete interpreter state and checks explicit JIT Unsupported/no-fallback for
+all 71 cases. A Linux-only native-admission test requires all 71 fixtures to
+remain denied; it was not executed on this macOS host. No native execution,
+Mini, SSH, or physical acceptance is claimed. Existing CMPSB fixtures and the
+schema/profile remain unchanged.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_cmps_wdq.py --check
+python3 -m unittest tests/cpu/test_stage2_rep_cmps_wdq_generator.py
+cargo test -p od-runner --test fixture_v2 rep_cmps_wdq_cli_fixtures_check_full_state_and_jit_denial --offline
+```

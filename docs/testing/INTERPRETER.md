@@ -1040,3 +1040,34 @@ prefix rejects and 36 full-state literal fixtures. Non-REP LODS and REP STOS
 regressions remain covered. Native/JIT and physical execution remain deferred;
 ISSUE-016 and ISSUE-020 remain open. See the [CPU contract](../specs/CPU_CONTRACT.md)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+## REPE CMPSW/D/Q — S2-19h local interpreter coverage
+
+This extends exact S2-19f `F3 A6` byte support to `F3 66 A7` word, `F3 A7`
+dword, and effective-REX.W `F3 A7` qword. Normalized `66 F3 A7` and
+`F3 48 66 A7` are word; `F3 66 48 A7` is qword; all effective REX.W bytes
+`48..4F` are accepted. `F3 66 A6`, F2, LOCK, address/segment overrides, and
+non-W REX remain rejected. The arithmetic entry/restart gate applies before
+every read, including zero count.
+
+Each iteration reads width-sized DS:[RSI] before ES:[RDI], compares source
+minus destination, then commits flags, width-sized DF-directed pointer steps,
+and RCX only after both reads. The first read remains visible on a second-read
+fault, but the current iteration is uncommitted; prior equal iterations remain
+committed. Count completion and mismatch precede STOP and the 1024 iteration
+limit. RSI-first is local policy only; ISSUE-020 still records the unknown
+hardware dual-fault winner for CMPS B/W/D/Q. JIT/native admission and physical,
+Mini, and SSH execution remain unclaimed.
+
+Local checks include decoder prefix admission (35 requested W/D/Q rejects plus
+non-W REX coverage), 864 W/D/Q single-comparison states against an independent
+CMP flag oracle, 720 termination paths, 49,140 entry-gate rejects, 144 injected
+read failures, 12 STOP/replay cases and 18 count/DF/width work-limit cases.
+Separate cases cover alias/overlap and unaligned offsets, ordered reads,
+cross-page access widths, exact range failure, canonical pointer wrap,
+noncanonical post-index, zero count with invalid pointers, initial STOP,
+STOP-versus-limit, RCX maximum, budget zero, truncated fetch and mismatch at
+iteration 1024. Exactly 71 literal fixtures compare complete interpreter
+state and typed fault answers; the CLI asserts JIT denial for every fixture. A
+Linux-only test asserts native admission denial for all fixtures and was not
+executed on this macOS host. No native execution, physical, Mini or SSH
+acceptance is claimed.

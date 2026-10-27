@@ -10502,3 +10502,32 @@ decoder/width matrices and Graphify update also passed. See the [CPU contract](.
 [plan](../plans/STAGE_2.md#s2-19g--ограниченные-f3-af-repe-scaswdq),
 [interpreter coverage](../testing/INTERPRETER.md#repe-scaswdq--s2-19g-local-interpreter-coverage),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#bounded-repe-scaswdq-fixtures-s2-19g).
+
+## S2-19h — REPE CMPSW/D/Q
+
+The Long64/address64 decoder and interpreter accept `F3 66 A7` word,
+`F3 A7` dword, and effective-REX.W `F3 A7` qword, including normalized
+prefix ordering. The prior exact `F3 A6` byte form remains admitted and
+prefixed A6 remains rejected. CMPS now advances RSI and RDI by the operand
+width in either DF direction. The local RSI-first read order and commit-after-
+both-reads behavior remain unchanged; JIT/native support was not widened.
+
+Focused local checks passed for the 35 W/D/Q prefix rejects plus non-W REX and
+byte-prefix rejection cases; 864 independent CMP states; 720 termination
+paths; 49,140 entry-gate rejects before reads; 144 injected read faults; 12
+STOP/replay paths; and 18 work-limit paths. Additional tests cover second-read
+fault replay, aliases/overlap, unaligned and cross-page widths, exact range
+failure, canonical pointer wrap, maximum RCX, budget zero, truncated fetch, and
+mismatch at comparison 1024. The 71 schema-v2 fixtures compare full CPU state,
+defined flags, RIP, and memory. The CLI verifies JIT denial/no fallback for all
+fixtures. A Linux-only native-admission rejection test is present but was not
+run on this macOS host.
+
+Validation passed: 100 Python CPU tests including all existing generators and
+the new 71-fixture serializer, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and `cargo test --workspace
+--offline` (all suites passed; 779 `od-isa` tests, 212 runner fixture tests,
+and 229 `od-testkit` tests). Graphify was refreshed. Final independent review
+found no concrete code or fixture correctness defects. No native execution,
+physical, Mini, or SSH acceptance was performed; ISSUE-020 remains open for the
+unverified hardware dual-fault winner.

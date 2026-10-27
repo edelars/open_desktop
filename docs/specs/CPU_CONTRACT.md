@@ -7982,3 +7982,38 @@ alignment/range/wrap and noncanonical post-index checks, plus exactly 59 literal
 schema-v2 fixtures. S2-19e retains its byte comparison and gate matrices. The
 generator serializes fixture data; it is not an execution oracle. No native,
 Mini, SSH, or physical execution is claimed.
+
+### Local S2-19h bounded `F3 A7` REPE CMPSW/D/Q contract
+
+The Long64/address-size-64 interpreter extends the exact `F3 A6` CMPSB form
+with `F3 66 A7` CMPSW, `F3 A7` CMPSD, and effective-REX.W `F3 A7` CMPSQ.
+Normalized `66 F3 A7` and `F3 48 66 A7` are word forms; `F3 66 48 A7` is
+qword. All `48..4F` REX.W bytes are admitted when effective. `F3 66 A6`, F2,
+LOCK, `67`, segment overrides, and non-W REX are rejected in this bounded
+profile. This does not generalize prefix validity or widen JIT/native support.
+
+Before any read, including RCX zero, the local entry/restart gate requires
+concrete arithmetic values exactly `PF|ZF` (`0x44`) and all
+`ARITHMETIC_FLAGS` defined (`0x8d5`). Nonzero iterations read the selected
+width at flat `DS:[RSI]`, then flat `ES:[RDI]`, and compare source minus
+destination using existing CMP semantics. Commit flags, wrapping DF-directed
+RSI/RDI steps of operand width, and RCX decrement only after both reads
+succeed. A failed second read leaves the first read visible in the local access
+trace but commits no state for that iteration; prior complete equal iterations
+remain committed. RSI-first is a local bounded-profile policy only and does not
+establish dual-fault hardware priority. No MMIO rollback is claimed.
+
+RCX zero does not validate either index or perform data reads. Count completion
+or mismatch precedes STOP and the 1024-success work limit. Fault, STOP, and
+limit keep RIP at the REP instruction and retire zero. Replay re-enters the
+same concrete flag gate. ISSUE-020 continues to track the unresolved dual-fault
+winner for CMPS B/W/D/Q.
+
+Local coverage includes the 864-state independent CMP oracle, 720 termination
+paths, 49,140 gate rejects, 144 injected read failures, 12 STOP/replay paths,
+18 work-limit paths, prefix normalization/rejection, ordered reads, overlap,
+page/range/wrap/fetch boundaries, RCX maximum and mismatch at iteration 1024.
+Exactly 71 schema-v2 fixtures cover 19 per width, two normalization cases, and
+four CMP/TEST compositions per width. The CLI verifies full state and JIT
+denial; Linux-only native admission rejects these fixtures. This host did not
+run the Linux-only test. Native execution and physical acceptance are untested.

@@ -10263,6 +10263,67 @@ fn s2_30ci_test_producers_check_each_full_intermediate_snapshot() {
 }
 
 #[test]
+fn rep_cmps_wdq_literal_fault_answers_match_the_typed_exit() {
+    let directory = arithmetic_fixture_directory();
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(directory.join("s2_19h_rep_cmps_wdq_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 71);
+    let mut checked = 0;
+    for (id, answer) in answers {
+        let Some(fault) = answer.get("fault") else {
+            continue;
+        };
+        let input =
+            Fixture::from_json(&std::fs::read(directory.join(format!("{id}.case.json"))).unwrap())
+                .unwrap()
+                .fixture;
+        let mut state = input.initial_state.to_cpu().unwrap();
+        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            || false,
+        );
+        if fault.get("vector").is_some() {
+            assert_eq!(fault["vector"], 13, "{id}");
+            assert_eq!(fault["error_code"], 0, "{id}");
+            assert!(fault["linear_address"].is_null(), "{id}");
+            assert!(
+                matches!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None,
+                    })
+                ),
+                "{id}: {:?}",
+                result.exit
+            );
+        } else {
+            assert_eq!(fault["access"], "read", "{id}");
+            let address: HexU64 = serde_json::from_value(fault["address"].clone()).unwrap();
+            assert!(
+                matches!(
+                    result.exit,
+                    RunExit::MemoryError(MemoryError::Unmapped {
+                        address: actual,
+                        access: AccessKind::Read,
+                    }) if actual == address.get()
+                ),
+                "{id}: {:?}",
+                result.exit
+            );
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 24);
+}
+
+#[test]
 fn s2_30cj_literal_transfer_rejection_and_repeat_fixtures_match_full_snapshots() {
     for raw in [
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_30ci_fcmovnu_taken_zero.case.json")

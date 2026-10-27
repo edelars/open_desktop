@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_19h_cmp_rax_rax_rep_cmpsq_first_fault",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten instruction bytes and literal state/flag/memory answers; tests/cpu/generate_stage2_rep_cmps_wdq.py serializes constants only. No assembler, oracle, or execution engine is used.",
+    "specification": "Intel SDM revision 093, Vol.2B CMPS and REP/REPE entries; CMPS compares source DS:[RSI] minus destination ES:[RDI] in the stated order and both indices follow DF.",
+    "specification_version": "Intel SDM Vol.2B revision 093 (253667-093US); project S2-19h REPE CMPSW/D/Q"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667741",
+      "0x0000000000000002",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000300000",
+      "0x0000000000310000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x00000000000008d7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 6,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "4839c0f348a7",
+      "comparison_mask_hex": "ffffffffffff"
+    },
+    {
+      "region_id": "destination",
+      "guest_address": "0x0000000000310000",
+      "length": 8,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "4141414141414141",
+      "comparison_mask_hex": "ffffffffffffffff"
+    }
+  ],
+  "stop_rip": null,
+  "instruction_budget": 2,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "harness_error"
+}

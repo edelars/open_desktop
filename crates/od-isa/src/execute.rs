@@ -1077,14 +1077,30 @@ fn step_tracked_with_stop(
         }
         Operation::RepCmps { size } => {
             instruction.opcode.map == OpcodeMap::Primary
-                && instruction.opcode.byte == 0xa6
-                && instruction.length == 2
-                && instruction.prefixes
-                    == (Prefixes {
-                        group1: Some(0xf3),
-                        ..Prefixes::default()
-                    })
-                && size == OperandSize::Byte
+                && instruction.prefixes.group1 == Some(0xf3)
+                && instruction.prefixes.segment.is_none()
+                && !instruction.prefixes.address_override
+                && if instruction.opcode.byte == 0xa6 {
+                    instruction.length == 2
+                        && instruction.prefixes
+                            == (Prefixes {
+                                group1: Some(0xf3),
+                                ..Prefixes::default()
+                            })
+                        && size == OperandSize::Byte
+                } else if instruction.opcode.byte == 0xa7 {
+                    instruction.prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                        && size
+                            == if instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                                OperandSize::Qword
+                            } else if instruction.prefixes.operand_override {
+                                OperandSize::Word
+                            } else {
+                                OperandSize::Dword
+                            }
+                } else {
+                    false
+                }
         }
         Operation::Cmps { size } => {
             instruction.opcode.map == OpcodeMap::Primary
@@ -2722,9 +2738,9 @@ fn step_tracked_with_stop(
                     arithmetic_result(size, ArithmeticKind::Cmp, first, second, state.rflags);
                 state.rflags = flags;
                 let step = if state.rflags & (1 << 10) == 0 {
-                    1
+                    size.bytes() as u64
                 } else {
-                    u64::MAX
+                    0u64.wrapping_sub(size.bytes() as u64)
                 };
                 state.gpr[Register::Rsi as usize] =
                     state.gpr[Register::Rsi as usize].wrapping_add(step);
@@ -55544,6 +55560,122 @@ mod tests {
         flags
     }
 
+    fn rep_cmps_wdq_expected_flags(first: u64, second: u64, size: OperandSize, df: bool) -> u64 {
+        let bits = size.bytes() * 8;
+        let mask = size.mask();
+        let sign = 1u64 << (bits - 1);
+        let first = first & mask;
+        let second = second & mask;
+        let result = first.wrapping_sub(second) & mask;
+        let mut flags = 2 | if df { 1 << 10 } else { 0 };
+        if first < second {
+            flags |= crate::CF;
+        }
+        if (first ^ second ^ result) & 0x10 != 0 {
+            flags |= crate::AF;
+        }
+        if (result as u8).count_ones() % 2 == 0 {
+            flags |= crate::PF;
+        }
+        if result == 0 {
+            flags |= crate::ZF;
+        }
+        if result & sign != 0 {
+            flags |= crate::SF;
+        }
+        if ((first ^ second) & (first ^ result) & sign) != 0 {
+            flags |= crate::OF;
+        }
+        flags
+    }
+
+    #[test]
+    fn rep_cmps_wdq_all_single_comparison_states_match_independent_cmp_model() {
+        for (size, code) in [
+            (OperandSize::Word, &[0xf3, 0x66, 0xa7][..]),
+            (OperandSize::Dword, &[0xf3, 0xa7][..]),
+            (OperandSize::Qword, &[0xf3, 0x48, 0xa7][..]),
+        ] {
+            let values: [u64; 12] = match size {
+                OperandSize::Word => [
+                    0, 1, 2, 0x7f, 0x80, 0xff, 0x100, 0x7fff, 0x8000, 0xffff, 0x5555, 0xaaaa,
+                ],
+                OperandSize::Dword => [
+                    0,
+                    1,
+                    2,
+                    0x7f,
+                    0x80,
+                    0xff,
+                    0x100,
+                    0x7fff_ffff,
+                    0x8000_0000,
+                    0xffff_ffff,
+                    0x5555_5555,
+                    0xaaaa_aaaa,
+                ],
+                OperandSize::Qword => [
+                    0,
+                    1,
+                    2,
+                    0x7f,
+                    0x80,
+                    0xff,
+                    0x100,
+                    0x7fff_ffff_ffff_ffff,
+                    0x8000_0000_0000_0000,
+                    0xffff_ffff_ffff_ffff,
+                    0x5555_5555_5555_5555,
+                    0xaaaa_aaaa_aaaa_aaaa,
+                ],
+                _ => unreachable!("REP CMPS W/D/Q test form"),
+            };
+            for first in values {
+                for second in values {
+                    for df in [false, true] {
+                        let mut state = LongModeState::default();
+                        state.rip = 0x2000;
+                        state.gpr[Register::Rcx as usize] = 1;
+                        state.gpr[Register::Rsi as usize] = 0x1000;
+                        state.gpr[Register::Rdi as usize] = 0x1008;
+                        state.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                        let mut memory = Memory::at(code, 0x2000);
+                        memory.bytes = vec![0; 16];
+                        memory.bytes[..8].copy_from_slice(&first.to_le_bytes());
+                        memory.bytes[8..16].copy_from_slice(&second.to_le_bytes());
+                        assert_eq!(
+                            step(&mut state, &mut memory, AccessContext::default()),
+                            Ok(StepOutcome::Advanced)
+                        );
+                        let delta = size.bytes() as u64;
+                        let step = if df { 0u64.wrapping_sub(delta) } else { delta };
+                        assert_eq!(state.rip, 0x2000 + code.len() as u64);
+                        assert_eq!(state.gpr[Register::Rcx as usize], 0);
+                        assert_eq!(
+                            state.gpr[Register::Rsi as usize],
+                            0x1000u64.wrapping_add(step)
+                        );
+                        assert_eq!(
+                            state.gpr[Register::Rdi as usize],
+                            0x1008u64.wrapping_add(step)
+                        );
+                        assert_eq!(
+                            state.rflags,
+                            rep_cmps_wdq_expected_flags(first, second, size, df)
+                        );
+                        assert_eq!(
+                            memory.accesses,
+                            [
+                                (AccessKind::Read, 0x1000, size.bytes()),
+                                (AccessKind::Read, 0x1008, size.bytes())
+                            ]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn rep_cmpsb_all_single_comparison_states_match_independent_cmp_model() {
         for first in 0u16..=255 {
@@ -55718,6 +55850,640 @@ mod tests {
             }
         }
         assert_eq!(rejected, 16_380);
+    }
+
+    #[test]
+    fn rep_cmps_wdq_gate_rejects_49140_states_before_any_read() {
+        let flag_bits = [
+            crate::CF,
+            crate::PF,
+            crate::AF,
+            crate::ZF,
+            crate::SF,
+            crate::OF,
+        ];
+        let forms = [
+            (OperandSize::Word, &[0xf3, 0x66, 0xa7][..]),
+            (OperandSize::Dword, &[0xf3, 0xa7][..]),
+            (OperandSize::Qword, &[0xf3, 0x48, 0xa7][..]),
+        ];
+        let mut rejected = 0;
+        for (_, code) in forms {
+            for value_pattern in 0u8..64 {
+                let value = flag_bits
+                    .iter()
+                    .enumerate()
+                    .filter(|(bit, _)| value_pattern & (1 << bit) != 0)
+                    .fold(0, |flags, (_, bit)| flags | bit);
+                for defined_pattern in 0u8..64 {
+                    let defined = flag_bits
+                        .iter()
+                        .enumerate()
+                        .filter(|(bit, _)| defined_pattern & (1 << bit) != 0)
+                        .fold(0, |flags, (_, bit)| flags | bit);
+                    for df in [false, true] {
+                        for count in [0, 1] {
+                            if value == (crate::PF | crate::ZF)
+                                && defined == crate::ARITHMETIC_FLAGS
+                            {
+                                continue;
+                            }
+                            let mut state = LongModeState::default();
+                            state.rip = 0x2000;
+                            state.gpr[Register::Rcx as usize] = count;
+                            state.gpr[Register::Rsi as usize] = 0x0000_8000_0000_0000;
+                            state.gpr[Register::Rdi as usize] = 0x0000_8000_0000_0000;
+                            state.rflags = 2 | value | if df { 1 << 10 } else { 0 };
+                            let before = state.clone();
+                            let mut memory = Memory::at(code, 0x2000);
+                            let mut tracked = defined;
+                            assert_eq!(
+                                step_tracked_with_stop(
+                                    &mut state,
+                                    &mut memory,
+                                    AccessContext::default(),
+                                    &mut tracked,
+                                    &mut || false
+                                ),
+                                Ok(StepOutcome::Unsupported { opcode: 0xa7 })
+                            );
+                            assert_eq!(state, before);
+                            assert!(memory.accesses.is_empty());
+                            assert_eq!(tracked, defined);
+                            rejected += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(rejected, 49_140);
+    }
+
+    #[test]
+    fn rep_cmps_wdq_720_termination_paths_obey_count_and_mismatch() {
+        let paths = [
+            (1u64, None),
+            (2, None),
+            (2, Some(1)),
+            (3, None),
+            (3, Some(1)),
+            (3, Some(2)),
+            (4, None),
+            (4, Some(1)),
+            (4, Some(2)),
+            (4, Some(3)),
+        ];
+        let values: [u64; 12] = [
+            0,
+            1,
+            2,
+            0x7f,
+            0x80,
+            0xff,
+            0x100,
+            0x7fff,
+            0x8000,
+            0xffff,
+            0x7fff_ffff,
+            0x8000_0000,
+        ];
+        let forms = [
+            (OperandSize::Word, &[0xf3, 0x66, 0xa7][..]),
+            (OperandSize::Dword, &[0xf3, 0xa7][..]),
+            (OperandSize::Qword, &[0xf3, 0x48, 0xa7][..]),
+        ];
+        let mut cases = 0;
+        for (size, code) in forms {
+            let width = size.bytes();
+            let delta = width as u64;
+            for value in values {
+                let source_value = value & size.mask();
+                for df in [false, true] {
+                    for (count, mismatch_at) in paths {
+                        let start_source = if df {
+                            0x1000 + (count - 1) * delta
+                        } else {
+                            0x1000
+                        };
+                        let start_destination = if df {
+                            0x1020 + (count - 1) * delta
+                        } else {
+                            0x1020
+                        };
+                        let compared = mismatch_at.unwrap_or(count);
+                        let mismatch_value = source_value.wrapping_add(1) & size.mask();
+                        let mut state = LongModeState::default();
+                        state.rip = 0x2000;
+                        state.gpr[Register::Rcx as usize] = count;
+                        state.gpr[Register::Rsi as usize] = start_source;
+                        state.gpr[Register::Rdi as usize] = start_destination;
+                        state.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                        let mut memory = Memory::at(code, 0x2000);
+                        memory.bytes = vec![0; 0x80];
+                        let bytes = source_value.to_le_bytes();
+                        for position in 0..count as usize {
+                            let source_address = if df {
+                                start_source - position as u64 * delta
+                            } else {
+                                start_source + position as u64 * delta
+                            };
+                            let destination_address = if df {
+                                start_destination - position as u64 * delta
+                            } else {
+                                start_destination + position as u64 * delta
+                            };
+                            let dst_value = if mismatch_at == Some(position as u64 + 1) {
+                                mismatch_value
+                            } else {
+                                source_value
+                            };
+                            let dst_bytes = dst_value.to_le_bytes();
+                            let source_offset = (source_address - 0x1000) as usize;
+                            let destination_offset = (destination_address - 0x1000) as usize;
+                            memory.bytes[source_offset..source_offset + width]
+                                .copy_from_slice(&bytes[..width]);
+                            memory.bytes[destination_offset..destination_offset + width]
+                                .copy_from_slice(&dst_bytes[..width]);
+                        }
+                        assert_eq!(
+                            step(&mut state, &mut memory, AccessContext::default()),
+                            Ok(StepOutcome::Advanced)
+                        );
+                        let distance = compared * delta;
+                        assert_eq!(state.gpr[Register::Rcx as usize], count - compared);
+                        assert_eq!(
+                            state.gpr[Register::Rsi as usize],
+                            if df {
+                                start_source - distance
+                            } else {
+                                start_source + distance
+                            }
+                        );
+                        assert_eq!(
+                            state.gpr[Register::Rdi as usize],
+                            if df {
+                                start_destination - distance
+                            } else {
+                                start_destination + distance
+                            }
+                        );
+                        assert_eq!(
+                            state.rflags,
+                            rep_cmps_wdq_expected_flags(
+                                source_value,
+                                if mismatch_at.is_some() {
+                                    mismatch_value
+                                } else {
+                                    source_value
+                                },
+                                size,
+                                df
+                            )
+                        );
+                        assert_eq!(memory.accesses.len(), compared as usize * 2);
+                        assert_eq!(state.rip, 0x2000 + code.len() as u64);
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 720);
+    }
+
+    #[test]
+    fn rep_cmps_wdq_stop_replay_and_18_work_limit_paths() {
+        let forms = [
+            (OperandSize::Word, &[0xf3, 0x66, 0xa7][..]),
+            (OperandSize::Dword, &[0xf3, 0xa7][..]),
+            (OperandSize::Qword, &[0xf3, 0x48, 0xa7][..]),
+        ];
+        for (size, code) in forms {
+            let delta = size.bytes() as u64;
+            for df in [false, true] {
+                // An initial stop leaves the instruction and data operands untouched.
+                let mut initial_stop = LongModeState::default();
+                initial_stop.rip = 0x2000;
+                initial_stop.gpr[Register::Rcx as usize] = 1;
+                initial_stop.gpr[Register::Rsi as usize] = 0x1000;
+                initial_stop.gpr[Register::Rdi as usize] = 0x2000;
+                initial_stop.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                let before_stop = initial_stop.clone();
+                let mut initial_memory = Memory::at(code, 0x2000);
+                let stop = run(
+                    &mut initial_stop,
+                    &mut initial_memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    || true,
+                );
+                assert_eq!(stop.exit, RunExit::StopRequested);
+                assert_eq!(stop.instructions_executed, 0);
+                assert_eq!(initial_stop, before_stop);
+                assert!(initial_memory.accesses.is_empty());
+
+                for committed_before_stop in [1u64, 2] {
+                    let mut state = LongModeState::default();
+                    state.rip = 0x2000;
+                    state.gpr[Register::Rcx as usize] = 4;
+                    state.gpr[Register::Rsi as usize] =
+                        if df { 0x1000 + 3 * delta } else { 0x1000 };
+                    state.gpr[Register::Rdi as usize] =
+                        if df { 0x6000 + 3 * delta } else { 0x6000 };
+                    state.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                    let mut memory = Memory::at(code, 0x2000);
+                    memory.bytes = vec![0x41; 0x10000];
+                    let mut calls = 0;
+                    let partial = run(
+                        &mut state,
+                        &mut memory,
+                        RunConfig {
+                            instruction_budget: 1,
+                            stop_rip: None,
+                            context: AccessContext::default(),
+                        },
+                        || {
+                            calls += 1;
+                            calls > committed_before_stop
+                        },
+                    );
+                    assert_eq!(partial.exit, RunExit::StopRequested);
+                    assert_eq!(partial.instructions_executed, 0);
+                    assert_eq!(state.gpr[Register::Rcx as usize], 4 - committed_before_stop);
+                    assert_eq!(
+                        state.gpr[Register::Rsi as usize],
+                        if df {
+                            0x1000 + (3 - committed_before_stop) * delta
+                        } else {
+                            0x1000 + committed_before_stop * delta
+                        }
+                    );
+                    assert_eq!(
+                        state.gpr[Register::Rdi as usize],
+                        if df {
+                            0x6000 + (3 - committed_before_stop) * delta
+                        } else {
+                            0x6000 + committed_before_stop * delta
+                        }
+                    );
+                    assert_eq!(
+                        state.rflags & crate::ARITHMETIC_FLAGS,
+                        crate::PF | crate::ZF
+                    );
+                    assert_eq!(state.rip, 0x2000);
+                    let resumed = run(
+                        &mut state,
+                        &mut memory,
+                        RunConfig {
+                            instruction_budget: 1,
+                            stop_rip: Some(0x2000 + code.len() as u64),
+                            context: AccessContext::default(),
+                        },
+                        || false,
+                    );
+                    assert_eq!(resumed.exit, RunExit::StopAddress);
+                    assert_eq!(resumed.instructions_executed, 1);
+                    assert_eq!(state.gpr[Register::Rcx as usize], 0);
+                    assert_eq!(state.rip, 0x2000 + code.len() as u64);
+                }
+                for count in [1023u64, 1024, 1025] {
+                    let mut state = LongModeState::default();
+                    state.rip = 0x2000;
+                    state.gpr[Register::Rcx as usize] = count;
+                    state.gpr[Register::Rsi as usize] =
+                        if df { 0x1000 + 1024 * delta } else { 0x1000 };
+                    state.gpr[Register::Rdi as usize] =
+                        if df { 0x6000 + 1024 * delta } else { 0x6000 };
+                    state.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                    let mut memory = Memory::at(code, 0x2000);
+                    memory.bytes = vec![0x41; 0x10000];
+                    let result = run(
+                        &mut state,
+                        &mut memory,
+                        RunConfig {
+                            instruction_budget: 1,
+                            stop_rip: Some(0x2000 + code.len() as u64),
+                            context: AccessContext::default(),
+                        },
+                        || false,
+                    );
+                    let completed = count.min(1024);
+                    assert_eq!(state.gpr[Register::Rcx as usize], count - completed);
+                    assert_eq!(
+                        state.gpr[Register::Rsi as usize],
+                        if df {
+                            0x1000 + (1024 - completed) * delta
+                        } else {
+                            0x1000 + completed * delta
+                        }
+                    );
+                    assert_eq!(
+                        state.gpr[Register::Rdi as usize],
+                        if df {
+                            0x6000 + (1024 - completed) * delta
+                        } else {
+                            0x6000 + completed * delta
+                        }
+                    );
+                    assert_eq!(
+                        result.exit,
+                        if count <= 1024 {
+                            RunExit::StopAddress
+                        } else {
+                            RunExit::RepIterationBudgetExhausted
+                        }
+                    );
+                    assert_eq!(result.instructions_executed, u64::from(count <= 1024));
+                    assert_eq!(
+                        state.rip,
+                        if count <= 1024 {
+                            0x2000 + code.len() as u64
+                        } else {
+                            0x2000
+                        }
+                    );
+                    assert_eq!(
+                        state.rflags & crate::ARITHMETIC_FLAGS,
+                        crate::PF | crate::ZF
+                    );
+                }
+                // STOP requested immediately after iteration 1024 wins over
+                // the local limit and leaves one equal element replayable.
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rcx as usize] = 1025;
+                state.gpr[Register::Rsi as usize] = if df { 0x1000 + 1024 * delta } else { 0x1000 };
+                state.gpr[Register::Rdi as usize] = if df { 0x6000 + 1024 * delta } else { 0x6000 };
+                state.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                let mut memory = Memory::at(code, 0x2000);
+                memory.bytes = vec![0x41; 0x10000];
+                let mut stop_checks = 0;
+                let stopped_at_limit = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    || {
+                        stop_checks += 1;
+                        stop_checks == 1025
+                    },
+                );
+                assert_eq!(stopped_at_limit.exit, RunExit::StopRequested);
+                assert_eq!(stopped_at_limit.instructions_executed, 0);
+                assert_eq!(state.gpr[Register::Rcx as usize], 1);
+                assert_eq!(state.rip, 0x2000);
+                // A mismatch at comparison 1024 terminates before the local limit.
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rcx as usize] = 1025;
+                state.gpr[Register::Rsi as usize] = if df { 0x1000 + 1024 * delta } else { 0x1000 };
+                state.gpr[Register::Rdi as usize] = if df { 0x6000 + 1024 * delta } else { 0x6000 };
+                state.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                let mut memory = Memory::at(code, 0x2000);
+                memory.bytes = vec![0x41; 0x10000];
+                let mismatch_address = if df {
+                    0x6000 + delta
+                } else {
+                    0x6000 + 1023 * delta
+                };
+                memory.bytes[(mismatch_address - 0x1000) as usize] = 0x42;
+                let mismatch = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x2000 + code.len() as u64),
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(mismatch.exit, RunExit::StopAddress);
+                assert_eq!(mismatch.instructions_executed, 1);
+                assert_eq!(state.gpr[Register::Rcx as usize], 1);
+                assert_eq!(state.rflags & crate::ZF, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn rep_cmps_wdq_aliases_overlap_sub_width_offsets_and_ordered_reads() {
+        for (size, code) in [
+            (OperandSize::Word, &[0xf3, 0x66, 0xa7][..]),
+            (OperandSize::Dword, &[0xf3, 0xa7][..]),
+            (OperandSize::Qword, &[0xf3, 0x48, 0xa7][..]),
+        ] {
+            let width = size.bytes();
+            for (destination, count) in [(0x1000u64, 1u64), (0x1001, 2)] {
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rcx as usize] = count;
+                state.gpr[Register::Rsi as usize] = 0x1000;
+                state.gpr[Register::Rdi as usize] = destination;
+                state.rflags = 2 | crate::PF | crate::ZF;
+                let mut memory = Memory::at(code, 0x2000);
+                memory.bytes = vec![0x41; 0x40];
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Advanced)
+                );
+                assert_eq!(state.gpr[Register::Rcx as usize], 0);
+                assert_eq!(
+                    state.gpr[Register::Rsi as usize],
+                    0x1000 + count * width as u64
+                );
+                assert_eq!(
+                    state.gpr[Register::Rdi as usize],
+                    destination + count * width as u64
+                );
+                assert_eq!(
+                    state.rflags & crate::ARITHMETIC_FLAGS,
+                    crate::PF | crate::ZF
+                );
+                let expected = (0..count)
+                    .flat_map(|offset| {
+                        [
+                            (AccessKind::Read, 0x1000 + offset * width as u64, width),
+                            (AccessKind::Read, destination + offset * width as u64, width),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(memory.accesses, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn rep_cmps_wdq_cross_page_wrap_max_count_range_and_truncated_fetch() {
+        let forms = [
+            (
+                OperandSize::Word,
+                &[0xf3, 0x66, 0xa7][..],
+                &[0xf3, 0x66][..],
+            ),
+            (OperandSize::Dword, &[0xf3, 0xa7][..], &[0xf3][..]),
+            (
+                OperandSize::Qword,
+                &[0xf3, 0x48, 0xa7][..],
+                &[0xf3, 0x48][..],
+            ),
+        ];
+        for (size, code, truncated) in forms {
+            let width = size.bytes();
+            // Unaligned full-width reads cross separate 4 KiB boundaries.
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rcx as usize] = 1;
+            state.gpr[Register::Rsi as usize] = 0x1fff;
+            state.gpr[Register::Rdi as usize] = 0x2fff;
+            state.rflags = 2 | crate::PF | crate::ZF;
+            let mut memory = Memory::at(code, 0x2000);
+            memory.data_base = 0x1fff;
+            memory.bytes = vec![0x41; 0x3000];
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(
+                memory.accesses,
+                [
+                    (AccessKind::Read, 0x1fff, width),
+                    (AccessKind::Read, 0x2fff, width)
+                ]
+            );
+
+            // A width-exact backend range failure leaves this iteration uncommitted.
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rcx as usize] = 1;
+            state.gpr[Register::Rsi as usize] = 0x1000;
+            state.gpr[Register::Rdi as usize] = 0x2000;
+            state.rflags = 2 | crate::PF | crate::ZF;
+            let before = state.clone();
+            let mut memory = Memory::at(code, 0x2000);
+            memory.bytes = vec![0x41; width - 1];
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert!(matches!(
+                result.exit,
+                RunExit::MemoryError(MemoryError::Unmapped { .. })
+            ));
+            assert_eq!(state, before);
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, width)]);
+
+            // A final canonical qword/word/dword read may wrap its next index.
+            for df in [false, true] {
+                let base = if df { 0 } else { u64::MAX - width as u64 + 1 };
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rcx as usize] = 1;
+                state.gpr[Register::Rsi as usize] = base;
+                state.gpr[Register::Rdi as usize] = base;
+                state.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                let mut memory = Memory::at(code, 0x2000);
+                memory.data_base = base;
+                memory.bytes = vec![0x41; width];
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Advanced)
+                );
+                let movement = if df {
+                    0u64.wrapping_sub(width as u64)
+                } else {
+                    width as u64
+                };
+                assert_eq!(
+                    state.gpr[Register::Rsi as usize],
+                    base.wrapping_add(movement)
+                );
+                assert_eq!(
+                    state.gpr[Register::Rdi as usize],
+                    base.wrapping_add(movement)
+                );
+                assert_eq!(
+                    memory.accesses,
+                    [
+                        (AccessKind::Read, base, width),
+                        (AccessKind::Read, base, width)
+                    ]
+                );
+            }
+
+            // A canonical source read can leave a noncanonical post-index;
+            // the successful comparison still commits that index value.
+            let canonical_end = 0x0000_8000_0000_0000u64;
+            let base = canonical_end - width as u64;
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rcx as usize] = 1;
+            state.gpr[Register::Rsi as usize] = base;
+            state.gpr[Register::Rdi as usize] = base;
+            state.rflags = 2 | crate::PF | crate::ZF;
+            let mut memory = Memory::at(code, 0x2000);
+            memory.data_base = base;
+            memory.bytes = vec![0x41; width];
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(state.gpr[Register::Rsi as usize], canonical_end);
+            assert_eq!(state.gpr[Register::Rdi as usize], canonical_end);
+
+            // RCX=u64::MAX still commits only a completed mismatching element.
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rcx as usize] = u64::MAX;
+            state.gpr[Register::Rsi as usize] = 0x1000;
+            state.gpr[Register::Rdi as usize] = 0x2000;
+            state.rflags = 2 | crate::PF | crate::ZF;
+            let mut memory = Memory::at(code, 0x2000);
+            memory.bytes = vec![0x41; 0x2000];
+            memory.bytes[(0x2000 - 0x1000) as usize] = 0x42;
+            let outcome = step(&mut state, &mut memory, AccessContext::default());
+            assert_eq!(outcome, Ok(StepOutcome::Advanced));
+            assert_eq!(state.gpr[Register::Rcx as usize], u64::MAX - 1);
+            assert_eq!(state.gpr[Register::Rsi as usize], 0x1000 + width as u64);
+            assert_eq!(state.gpr[Register::Rdi as usize], 0x2000 + width as u64);
+            assert_eq!(state.rflags & crate::ZF, 0);
+
+            // Truncated instruction fetch cannot reach either data operand.
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rcx as usize] = 1;
+            state.gpr[Register::Rsi as usize] = 0x1000;
+            state.gpr[Register::Rdi as usize] = 0x2000;
+            state.rflags = 2 | crate::PF | crate::ZF;
+            let before = state.clone();
+            let mut memory = Memory::at(truncated, 0x2000);
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+            assert!(matches!(
+                result.exit,
+                RunExit::MemoryError(_) | RunExit::Unsupported { .. }
+            ));
+        }
     }
 
     fn rep_scasb_expected_flags(accumulator: u8, observed: u8, df: bool) -> u64 {
@@ -55898,6 +56664,223 @@ mod tests {
             }
         }
         assert_eq!(cases, 48);
+    }
+
+    #[test]
+    fn rep_cmps_wdq_fault_matrix_commits_only_complete_equal_iterations() {
+        let errors = [
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(4),
+                linear_address: Some(0x1000),
+            }),
+            MemoryError::Unmapped {
+                address: 0x1000,
+                access: AccessKind::Read,
+            },
+            MemoryError::PermissionDenied {
+                address: 0x1000,
+                access: AccessKind::Read,
+            },
+            MemoryError::Backend("injected CMPS width read failure".into()),
+        ];
+        let forms = [
+            (OperandSize::Word, &[0xf3, 0x66, 0xa7][..]),
+            (OperandSize::Dword, &[0xf3, 0xa7][..]),
+            (OperandSize::Qword, &[0xf3, 0x48, 0xa7][..]),
+        ];
+        let mut cases = 0;
+        for (size, code) in forms {
+            let width = size.bytes();
+            let delta = width as u64;
+            let destination_base = 0x1020;
+            for df in [false, true] {
+                for completed in 0..=2usize {
+                    for destination_fault in [false, true] {
+                        for error in &errors {
+                            let mut state = LongModeState::default();
+                            state.rip = 0x2000;
+                            state.gpr[Register::Rcx as usize] = 3;
+                            state.gpr[Register::Rsi as usize] = if df {
+                                0x1000 + 2 * delta + completed as u64 * delta
+                            } else {
+                                0x1000
+                            };
+                            state.gpr[Register::Rdi as usize] = if df {
+                                destination_base + 2 * delta + completed as u64 * delta
+                            } else {
+                                destination_base
+                            };
+                            state.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                            let mut memory = Memory::at(code, 0x2000);
+                            memory.bytes = vec![0x41; 0x80];
+                            memory.error = Some(match error {
+                                MemoryError::Architectural(fault) => {
+                                    MemoryError::Architectural(fault.clone())
+                                }
+                                MemoryError::Unmapped { .. } => MemoryError::Unmapped {
+                                    address: 0x1000,
+                                    access: AccessKind::Read,
+                                },
+                                MemoryError::PermissionDenied { .. } => {
+                                    MemoryError::PermissionDenied {
+                                        address: 0x1000,
+                                        access: AccessKind::Read,
+                                    }
+                                }
+                                MemoryError::Backend(message) => {
+                                    MemoryError::Backend(message.clone())
+                                }
+                                other => other.clone(),
+                            });
+                            memory.error_kind = Some(AccessKind::Read);
+                            memory.fail_after_reads =
+                                Some(completed * 2 + usize::from(destination_fault));
+                            let result = run(
+                                &mut state,
+                                &mut memory,
+                                RunConfig {
+                                    instruction_budget: 1,
+                                    stop_rip: None,
+                                    context: AccessContext::default(),
+                                },
+                                || false,
+                            );
+                            assert_eq!(state.gpr[Register::Rcx as usize], 3 - completed as u64);
+                            assert_eq!(
+                                state.gpr[Register::Rsi as usize],
+                                if df {
+                                    0x1000 + 2 * delta
+                                } else {
+                                    0x1000 + completed as u64 * delta
+                                }
+                            );
+                            assert_eq!(
+                                state.gpr[Register::Rdi as usize],
+                                if df {
+                                    destination_base + 2 * delta
+                                } else {
+                                    destination_base + completed as u64 * delta
+                                }
+                            );
+                            assert_eq!(
+                                state.rflags,
+                                2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 }
+                            );
+                            assert_eq!(state.rip, 0x2000);
+                            assert_eq!(result.instructions_executed, 0);
+                            assert_eq!(
+                                memory.accesses.len(),
+                                completed * 2 + if destination_fault { 2 } else { 1 }
+                            );
+                            assert_eq!(
+                                memory.accesses.last().unwrap().1,
+                                if destination_fault {
+                                    state.gpr[Register::Rdi as usize]
+                                } else {
+                                    state.gpr[Register::Rsi as usize]
+                                }
+                            );
+                            match (error, &result.exit) {
+                                (MemoryError::Architectural(expected), RunExit::Fault(actual)) => {
+                                    assert_eq!(actual.vector, expected.vector);
+                                    assert_eq!(actual.error_code, expected.error_code);
+                                }
+                                (
+                                    MemoryError::Unmapped { .. },
+                                    RunExit::MemoryError(MemoryError::Unmapped { .. }),
+                                ) => {}
+                                (
+                                    MemoryError::PermissionDenied { .. },
+                                    RunExit::MemoryError(MemoryError::PermissionDenied { .. }),
+                                ) => {}
+                                (
+                                    MemoryError::Backend(expected),
+                                    RunExit::MemoryError(MemoryError::Backend(actual)),
+                                ) => assert_eq!(actual, expected),
+                                (expected, actual) => panic!("{expected:?} => {actual:?}"),
+                            }
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 144);
+    }
+
+    #[test]
+    fn rep_cmps_wdq_second_read_retry_reloads_both_operands() {
+        for (size, code) in [
+            (OperandSize::Word, &[0xf3, 0x66, 0xa7][..]),
+            (OperandSize::Dword, &[0xf3, 0xa7][..]),
+            (OperandSize::Qword, &[0xf3, 0x48, 0xa7][..]),
+        ] {
+            let width = size.bytes();
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rcx as usize] = 1;
+            state.gpr[Register::Rsi as usize] = 0x1000;
+            state.gpr[Register::Rdi as usize] = 0x1020;
+            state.rflags = 2 | crate::PF | crate::ZF;
+            let before = state.clone();
+            let mut memory = Memory::at(code, 0x2000);
+            memory.bytes = vec![0x41; 0x40];
+            memory.error = Some(MemoryError::Backend("injected second-read error".into()));
+            memory.error_kind = Some(AccessKind::Read);
+            memory.fail_after_reads = Some(1);
+            let failed = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert!(matches!(
+                failed.exit,
+                RunExit::MemoryError(MemoryError::Backend(_))
+            ));
+            assert_eq!(failed.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(
+                memory.accesses,
+                [
+                    (AccessKind::Read, 0x1000, width),
+                    (AccessKind::Read, 0x1020, width)
+                ]
+            );
+
+            memory.error = None;
+            memory.error_kind = None;
+            memory.fail_after_reads = None;
+            let resumed = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2000 + code.len() as u64),
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(resumed.exit, RunExit::StopAddress);
+            assert_eq!(resumed.instructions_executed, 1);
+            assert_eq!(
+                memory.accesses,
+                [
+                    (AccessKind::Read, 0x1000, width),
+                    (AccessKind::Read, 0x1020, width),
+                    (AccessKind::Read, 0x1000, width),
+                    (AccessKind::Read, 0x1020, width),
+                ]
+            );
+            assert_eq!(state.gpr[Register::Rcx as usize], 0);
+            assert_eq!(state.gpr[Register::Rsi as usize], 0x1000 + width as u64);
+            assert_eq!(state.gpr[Register::Rdi as usize], 0x1020 + width as u64);
+        }
     }
 
     #[test]

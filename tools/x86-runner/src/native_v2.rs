@@ -2414,6 +2414,34 @@ mod tests {
     }
 
     #[test]
+    fn rep_cmps_wdq_fixtures_remain_outside_native_admission() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !name.starts_with("s2_19h_") || !name.ends_with(".case.json") {
+                continue;
+            }
+            let loaded = Fixture::from_json(&std::fs::read(&path).unwrap()).unwrap();
+            let mut actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            if name.contains("_cmp_rax_rax_") || name.contains("_test_rax_") {
+                // The producer instruction may be natively admitted. Probe the
+                // REP CMPS instruction itself at the following three-byte RIP.
+                actual.rip = actual.rip.wrapping_add(3);
+            }
+            let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            assert!(
+                admission(&loaded.fixture, &mut decoder, &actual).is_err(),
+                "{name} must remain outside native admission"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 71);
+    }
+
+    #[test]
     fn popfq_fixtures_admit_only_readable_stack_and_profile_flag_inputs() {
         let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/x86/stage2");

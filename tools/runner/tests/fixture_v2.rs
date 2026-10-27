@@ -5700,6 +5700,138 @@ fn rep_scas_wdq_cli_fixtures_check_full_state_and_jit_denial() {
 }
 
 #[test]
+fn rep_cmps_wdq_cli_fixtures_check_full_state_and_jit_denial() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_19h_rep_cmps_wdq_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 71);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let harness_error = case_id.contains("unmapped") || case_id.contains("_fault");
+        let expected_code = if harness_error {
+            5
+        } else if case_id.contains("undefined_af_reject") {
+            4
+        } else {
+            0
+        };
+        let (input, result) = run(&raw, "interpreter", expected_code);
+        if case_id.contains("budget_zero") {
+            assert!(
+                matches!(result.outcome, Outcome::InstructionBudgetExhausted {}),
+                "{case_id}"
+            );
+            assert_eq!(count(&result), 0, "{case_id}");
+        } else if case_id.contains("limit1025") {
+            assert!(
+                matches!(result.outcome, Outcome::RepIterationBudgetExhausted {}),
+                "{case_id}"
+            );
+            assert_eq!(count(&result), 0, "{case_id}");
+        } else if harness_error {
+            assert_eq!(
+                input.fixture.expected_exit,
+                ExpectedExit::HarnessError,
+                "{case_id}"
+            );
+            assert!(
+                matches!(result.outcome, Outcome::HarnessError { .. }),
+                "{case_id}"
+            );
+            assert_eq!(
+                count(&result),
+                u64::from(case_id.starts_with("s2_19h_cmp_rax_rax")),
+                "{case_id}"
+            );
+            assert_eq!(answer["fault"]["access"], "read", "{case_id}");
+            let _: HexU64 = serde_json::from_value(answer["fault"]["address"].clone()).unwrap();
+        } else if case_id.contains("noncanonical") {
+            assert!(matches!(result.outcome, Outcome::Exception {}), "{case_id}");
+            assert_eq!(count(&result), 0, "{case_id}");
+            let observed = snapshot(&result);
+            let Observation::Available {
+                value: Some(exception),
+            } = &observed.exception
+            else {
+                panic!("{case_id}: missing exception detail");
+            };
+            let expected_vector: u8 =
+                serde_json::from_value(answer["fault"]["vector"].clone()).unwrap();
+            assert_eq!(exception.vector, expected_vector, "{case_id}");
+            assert!(
+                matches!(exception.error_code, Observation::Available { value } if value.get() == 0),
+                "{case_id}"
+            );
+            assert_eq!(answer["fault"]["error_code"], 0, "{case_id}");
+            assert!(
+                matches!(
+                    &exception.fault_address,
+                    Observation::Unavailable { reason }
+                        if reason == "exception has no reported linear address"
+                ),
+                "{case_id}"
+            );
+        } else if case_id.contains("undefined_af_reject") {
+            assert!(
+                matches!(result.outcome, Outcome::Unsupported { .. }),
+                "{case_id}"
+            );
+            assert_eq!(count(&result), 1, "{case_id}");
+        } else {
+            assert!(
+                matches!(result.outcome, Outcome::StopAddress {}),
+                "{case_id}"
+            );
+            assert_eq!(
+                count(&result),
+                if case_id.contains("cmp_rax_rax") {
+                    2
+                } else {
+                    1
+                },
+                "{case_id}"
+            );
+        }
+        let observed = snapshot(&result);
+        let expected_gprs: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gprs, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.state.rip, expected_rip, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+
+        // The CLI must deny every new string form under JIT without falling back.
+        let (_, jit) = run(&raw, "jit", 4);
+        assert!(
+            matches!(jit.outcome, Outcome::Unsupported { .. }),
+            "{case_id}"
+        );
+        assert!(
+            matches!(jit.snapshot, Observation::Unavailable { .. }),
+            "{case_id}"
+        );
+        assert!(
+            matches!(jit.instructions_executed, Observation::Unavailable { .. }),
+            "{case_id}"
+        );
+    }
+}
+
+#[test]
 fn cmps_cli_fixtures_match_literal_full_state_and_status() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

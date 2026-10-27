@@ -1187,6 +1187,34 @@ Python tests прошли. Graphify обновлён. Linux-only native admissio
 добавлен, но не исполнялся на macOS; native execution и общая physical
 acceptance не выполнялись. Фактические границы и проверки — в [отчёте этапа](../reports/STAGE_2_REPORT.md#s2-19g--bounded-f3-af-repe-scaswdq).
 
+#### S2-19h — bounded `F3 A7` REPE CMPSW/D/Q
+
+Extend exact `F3 A6` REPE CMPSB with `F3 66 A7` word, `F3 A7` dword, and
+effective-REX.W `F3 A7` qword forms in Long64/address64. Accept both normalized
+prefix orders (`66 F3 A7`, `F3 48 66 A7` as word; `F3 66 48 A7` as qword) and
+all effective REX.W bytes `48..4F`. Keep `F3 66 A6`, F2/LOCK, address/segment
+overrides, and non-W REX unsupported. Do not widen the JIT/native profile.
+
+The CMPSB entry/restart gate remains in force before reads, including at RCX=0:
+concrete arithmetic flags exactly `PF|ZF` (`0x44`) and all
+`ARITHMETIC_FLAGS` defined (`0x8d5`). Each iteration reads the full-width
+DS:[RSI] then ES:[RDI], compares source minus destination, and commits flags,
+wrapping RSI/RDI by ±width, and RCX only after both reads. Preserve first-read
+trace on second-read failure; prior complete equal iterations remain committed.
+Completion/mismatch precedes STOP and the 1024-iteration limit. Partial RIP and
+retirement behavior remain the S2-19f local contract. ISSUE-020 remains a local
+RSI-first dual-fault limitation for CMPS B/W/D/Q; no hardware/MMIO claim.
+
+Local verification covers 864 independent single states, 720 termination
+paths, 49,140 gate rejects, 144 injected failures, 12 STOP/replay cases and 18
+limit cases; alias/overlap/sub-width offsets, ordered reads, page/range/
+alignment/wrap, mismatch-at-1024, zero invalid pointers, RCX maximum, budget
+zero and truncated fetch. Exactly 71 literal schema-v2 fixtures cover 19 per
+width, two prefix-normalization cases and four CMP/TEST compositions per width.
+The generator serializes fixed literal expectations only. The CLI verifies full
+state and JIT denial; Linux-only native admission remains explicitly denied.
+No native execution, physical, Mini, or SSH acceptance is claimed.
+
 ### S2-20. Точность исключений и exit state
 
 1. Свести для реализованных форм `#UD`, `#DE`, `#GP`, `#SS`, memory faults и traps только там, где они действительно определены профилем/адаптером.
