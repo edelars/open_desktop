@@ -8429,3 +8429,42 @@ medium review and re-review passed with no remaining findings. These are local
 interpreter/profile results only and
 do not close S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation, or
 deferred combined Mac mini/SSH acceptance.
+
+#### S2-35.24 — local-only bounded register `PUNPCKLBW`
+
+Requires S2-34.1 raw x87/SSE state and mandatory-66 XMM decoding from S2-35.1.
+Exact profile `s2-long-punpcklbw-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F 60 /r` with ModR/M.mod=3. ModR/M.reg is the
+destination and ModR/M.r/m the source, extended to XMM0–15. For each of eight
+low byte lanes, the result is `DEST[2*i] = old_DEST[i]` and
+`DEST[2*i+1] = SRC[i]`; byte 0 is least significant. All 16 destination bytes
+are written. Source and destination bytes 8–15 are ignored.
+
+Coverage includes the handwritten `00..07` / `80..87` interleave sentinel,
+self-alias `d0..d7`, every byte value at every lane position, walking bits,
+all 16×16 XMM pairs/REX extensions, upper-half independence, complete state
+preservation and zero data callbacks. Missing state, all truncated prefixes,
+STOP/budget atomicity, strict schema/decoder negatives including VEX
+`C5 F9 60 C1`, and a literal XMM8/XMM9 fixture with JIT/native denial are
+covered. High-half unpack, other widths, packing, shuffles, shifts, memory,
+MMX, extra prefixes, REX.W/X, VEX/EVEX, feature gates, exception delivery and
+physical execution remain excluded. SSE2 and CR0.EM=0, CR0.TS=0,
+CR4.OSFXSR=1 are assumptions only. S2-34, S2-35 and global `S2-35 → S2-34`
+remain open; Mac mini/SSH acceptance remains deferred.
+
+S2-35.24 implementation check (2026-10-27): focused `od-isa` PUNPCKLBW
+decoder/semantics/atomicity tests passed (3), including every byte value at
+each low lane, walking bits, all 16×16 XMM/REX combinations, self-alias,
+upper-half independence, full architectural state preservation, and zero data
+callbacks. The handwritten literal XMM8/XMM9 fixture/schema/JIT-denial test
+passed (1), including strict VEX rejection; all 319 `od-testkit` tests passed.
+`cargo test --workspace --offline --quiet` passed 1,725 tests. Workspace
+all-target offline check and `x86_64-unknown-linux-gnu` all-target compile
+check passed. The Linux-only native-denial test was compile-checked on this
+Darwin host, not executed. Formatting and diff whitespace checks passed.
+Graphify update completed with the existing header extractor warning for
+`include/open_desktop/host_abi.h`. Independent `gpt-6.1-sol` medium review and
+re-review passed with no remaining findings. Results remain local
+interpreter/profile evidence and do not close
+S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation, or deferred
+combined Mac mini/SSH acceptance.

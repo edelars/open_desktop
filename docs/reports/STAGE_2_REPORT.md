@@ -12476,3 +12476,32 @@ findings.
 This is local interpreter/profile evidence only and leaves S2-34, S2-35,
 global `S2-35 → S2-34`, physical x86 validation, and deferred combined
 Mac mini/SSH acceptance open.
+
+## S2-35.24 — local PUNPCKLBW XMM register slice
+
+Added local-only profile `s2-long-punpcklbw-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 60 /r`, ModR/M.mod=3, XMM0–15. ModR/M.reg is
+the destination and ModR/M.r/m the source. Each low-byte pair is interleaved
+into all 16 destination bytes; high input bytes are ignored. Coverage checks
+the `00..07` / `80..87` sentinel, self-alias, all byte values at each lane,
+walking bits, all XMM/REX pairs, state preservation, zero data callbacks,
+atomic failures, strict schema/decoder negatives including VEX
+`C5 F9 60 C1`, and a literal XMM8/XMM9 fixture with JIT/native denial.
+High-half unpack, other widths, pack/shuffle/shift, memory, MMX, extra prefixes,
+REX.W/X, VEX/EVEX execution, feature gates, exception delivery and physical
+execution remain excluded. SSE2 and CR0/CR4 preconditions are assumptions only.
+
+Focused `cargo test -p od-isa punpcklbw --offline` passed (3 tests),
+`cargo test -p od-runner punpcklbw_literal_cli_fixture_executes_and_keeps_jit_denied --offline`
+passed (1), and `cargo test -p od-testkit --offline` passed (319).
+`cargo test --workspace --offline --quiet` passed 1,725 tests.
+`cargo check --workspace --all-targets --offline` and
+`cargo check --workspace --all-targets --offline --target x86_64-unknown-linux-gnu`
+passed. The Linux-only native-denial test was compile-checked but not executed
+on this Darwin host. Formatting and diff checks passed; Graphify updated with
+the existing `include/open_desktop/host_abi.h` extractor warning. Independent
+`gpt-6.1-sol` medium review and re-review found no remaining findings.
+
+This is local interpreter/profile evidence only. S2-34, S2-35, global
+`S2-35 → S2-34`, physical x86 validation, and deferred Mac mini/SSH acceptance
+remain open.
