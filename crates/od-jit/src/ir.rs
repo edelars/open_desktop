@@ -655,6 +655,11 @@ fn is_checked_memory_address(
         let indexed = indexed
             && operand.index.is_some_and(|index| (index as u8) < 4)
             && matches!(operand.scale, 1 | 2 | 4 | 8);
+        let absolute_sib_disp32 = instruction_length == 9
+            && matches!(operand.base, AddressBase::None)
+            && operand.index.is_none()
+            && operand.scale == 1
+            && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement);
         let indexed_base_supported = base_supported
             || operand.index.is_some_and(|index| (index as u8) < 4)
                 && (matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
@@ -663,7 +668,8 @@ fn is_checked_memory_address(
         return (base_supported && direct)
             || (indexed_base_supported && indexed)
             || rsp_no_index_sib
-            || rbp_direct;
+            || rbp_direct
+            || absolute_sib_disp32;
     }
     if operand.address_size != od_isa::OperandSize::Qword {
         return false;
@@ -867,7 +873,20 @@ fn is_scoped_memory_data_operand(
             || is_address32_direct_stack_data_operand(operand, instruction_length)
             || is_address32_indexed_sib_stack_data_operand(operand, instruction_length)
             || is_address32_rsp_sib_stack_base_operand(operand, instruction_length)
-            || is_address32_rbp_direct_stack_base_operand(operand, instruction_length))
+            || is_address32_rbp_direct_stack_base_operand(operand, instruction_length)
+            || is_address32_absolute_sib_stack_data_operand(operand, instruction_length))
+}
+
+fn is_address32_absolute_sib_stack_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    operand.address_size == od_isa::OperandSize::Dword
+        && instruction_length == 9
+        && matches!(operand.base, AddressBase::None)
+        && operand.index.is_none()
+        && operand.scale == 1
+        && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
 }
 
 fn is_address32_direct_stack_data_operand(operand: MemoryOperand, instruction_length: u64) -> bool {

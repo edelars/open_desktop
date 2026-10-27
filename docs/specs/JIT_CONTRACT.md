@@ -2197,6 +2197,12 @@ Admit only singleton `48 8B/89 /r 25 disp32`: ModRM `mod=00,r/m=100`, exact SIB 
 
 Direct V2, shared IR, interpreter, and borrowed dispatcher evidence covers both directions and all six data registers; GPR/RIP-independent target calculation; contiguous qword at `-8`; pre-helper overflow for `-1`; architectural/backend no-commit behavior; store+STOP; byte-eight identity; and distinction from RIP-relative addressing. The byte-eight runtime case compiles two immutable decoder-built artifacts whose final disp32 byte differs, then verifies each artifact's independently expected callback target. Partial byte windows return fixture `BoundaryReached` without effects, while a complete address32 neighbor is Unsupported. See the [S3-20au evidence](../reports/STAGE_3_S3-20au_2026-10-27.md). Production owner/MMU integration, physical x86, Mini, and performance remain open.
 
+#### S3-20av: address32 absolute qword access through no-base/no-index SIB
+
+Admit only singleton `67 48 8B/89 /r 25 disp32`: ModRM `mod=00,r/m=100`, exact SIB `0x25`, data RAX..RBP, length nine, Dword address size and Qword data size. The decoded `MemoryOperand`/`access_address_48` computes the low-32-bit absolute target; the qword transfer is then one contiguous 64-bit callback and does not wrap each byte at 4 GiB. Runtime profile validation checks the fixed opcode/ModRM/SIB shape and takes displacement from the immutable decoder-built artifact; it does not re-decode raw displacement bytes. The 64-bit absolute 20au profile remains admitted. Indexed no-base, direct `rm=101`, extra prefixes, moffs, pairs, and V3 remain unsupported.
+
+Direct V2/shared IR/interpreter and borrowed-dispatcher evidence covers both directions and all six data registers, signed displacement edges, GPR/RIP-independent low-32-bit target, qword access across 4 GiB, precise fault/backend no-commit behavior, committed store+STOP, byte-nine identity across independently compiled immutable artifacts, and budget/actual-RIP continuation. Partial windows return `BoundaryReached`; complete invalid neighbors remain Unsupported. See the [S3-20av report](../reports/STAGE_3_S3-20av_2026-10-27.md). Production owner/MMU integration, physical x86, Mini, and performance remain open.
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

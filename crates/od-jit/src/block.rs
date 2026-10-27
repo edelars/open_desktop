@@ -676,6 +676,12 @@ fn build_block_with_profile(
                         guest_rip,
                         decoded.length,
                         0x89,
+                    )
+                    || exact_qword_address32_absolute_sib_disp32_memory_bytes(
+                        code,
+                        guest_rip,
+                        decoded.length,
+                        0x89,
                     ))
         } else if profile == BlockBuildProfile::CheckedQwordLoad {
             instructions.is_empty()
@@ -695,6 +701,12 @@ fn build_block_with_profile(
                         0x8b,
                     )
                     || exact_qword_absolute_sib_disp32_memory_bytes(
+                        code,
+                        guest_rip,
+                        decoded.length,
+                        0x8b,
+                    )
+                    || exact_qword_address32_absolute_sib_disp32_memory_bytes(
                         code,
                         guest_rip,
                         decoded.length,
@@ -1482,6 +1494,17 @@ fn is_rsp_memory_data_operand(
     if is_address32_rbp_direct_stack_base_operand(instruction, operand) {
         return true;
     }
+    if instruction.address_size == OperandSize::Dword
+        && instruction.length == 9
+        && operand.address_size == OperandSize::Dword
+        && operand.size == OperandSize::Qword
+        && matches!(operand.base, od_isa::long_decode::AddressBase::None)
+        && operand.index.is_none()
+        && operand.scale == 1
+        && i32::try_from(operand.displacement).is_ok()
+    {
+        return true;
+    }
     instruction.address_size == OperandSize::Qword
         && operand.address_size == OperandSize::Qword
         && operand.size == OperandSize::Qword
@@ -1561,6 +1584,17 @@ fn is_rbp_memory_data_operand(
         return true;
     }
     if is_address32_rbp_direct_stack_base_operand(instruction, operand) {
+        return true;
+    }
+    if instruction.address_size == OperandSize::Dword
+        && instruction.length == 9
+        && operand.address_size == OperandSize::Dword
+        && operand.size == OperandSize::Qword
+        && matches!(operand.base, od_isa::long_decode::AddressBase::None)
+        && operand.index.is_none()
+        && operand.scale == 1
+        && i32::try_from(operand.displacement).is_ok()
+    {
         return true;
     }
     instruction.address_size == OperandSize::Qword
@@ -1685,8 +1719,17 @@ fn is_checked_qword_memory_address(
                 } else {
                     i32::try_from(operand.displacement).is_ok()
                 };
+            let absolute_sib_disp32 = instruction.length == 9
+                && matches!(operand.base, od_isa::long_decode::AddressBase::None)
+                && operand.index.is_none()
+                && operand.scale == 1
+                && i32::try_from(operand.displacement).is_ok();
             instruction.prefixes.address_override
-                && (base_supported && direct || sib || rsp_no_index_sib || rbp_direct)
+                && (base_supported && direct
+                    || sib
+                    || rsp_no_index_sib
+                    || rbp_direct
+                    || absolute_sib_disp32)
         }
         OperandSize::Qword => {
             let register_base = matches!(
@@ -2018,6 +2061,33 @@ pub(crate) fn exact_qword_absolute_sib_disp32_memory_bytes(
         && bytes[2] & 7 == 4
         && (bytes[2] >> 3) & 7 <= 5
         && bytes[3] == 0x25
+}
+
+pub(crate) fn exact_qword_address32_absolute_sib_disp32_memory_bytes(
+    code: CodeView<'_>,
+    guest_rip: u64,
+    length: u8,
+    opcode: u8,
+) -> bool {
+    if length != 9 {
+        return false;
+    }
+    let Some(offset) = guest_rip
+        .checked_sub(code.base_rip)
+        .and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    let Some(bytes) = code.bytes.get(offset..offset.saturating_add(9)) else {
+        return false;
+    };
+    bytes[0] == 0x67
+        && bytes[1] == 0x48
+        && bytes[2] == opcode
+        && bytes[3] >> 6 == 0
+        && bytes[3] & 7 == 4
+        && (bytes[3] >> 3) & 7 <= 5
+        && bytes[4] == 0x25
 }
 
 fn address32_checked_displacement_matches_length(length: u8, displacement: i64) -> bool {
