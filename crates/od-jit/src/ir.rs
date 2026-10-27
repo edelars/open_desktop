@@ -325,7 +325,6 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
             Operation::CheckedLoad { dst, operand } => {
                 require_active(active_instruction, operation_index)?;
                 if operand.size != od_isa::OperandSize::Qword
-                    || operand.address_size != od_isa::OperandSize::Qword
                     || !is_checked_memory_address(
                         operand,
                         instruction_length(program, active_instruction),
@@ -342,7 +341,6 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                 let active = active_instruction.expect("require_active checked above");
                 validate_gpr(*src, operation_index)?;
                 if operand.size != od_isa::OperandSize::Qword
-                    || operand.address_size != od_isa::OperandSize::Qword
                     || !is_checked_memory_address(
                         operand,
                         instruction_length(program, active_instruction),
@@ -583,6 +581,16 @@ fn is_checked_memory_address(
     operand: &od_isa::long_decode::MemoryOperand,
     instruction_length: u64,
 ) -> bool {
+    if operand.address_size == od_isa::OperandSize::Dword {
+        return instruction_length == 4
+            && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+            && operand.index.is_none()
+            && operand.scale == 1
+            && operand.displacement == 0;
+    }
+    if operand.address_size != od_isa::OperandSize::Qword {
+        return false;
+    }
     let supported_index = match operand.index {
         Some(index) => {
             matches!(index as u8, 0..=3)

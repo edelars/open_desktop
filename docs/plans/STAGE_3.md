@@ -161,6 +161,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20l | RIP-relative qword MOV через shared IR и bounded memory dispatcher | Только singleton `48 8B/89 /r`, ModRM `mod=00,r/m=101`, disp32, data RAX..RBX; exact 7-byte source; no wider block/prefix/SIB |
 | [partial] | S3-20m | Direct-base signed disp8/disp32 MOV через shared IR и bounded dispatcher | Только singleton `48 8B/89 /r`, ModRM `mod=01/10`, base/data RAX..RBX, exact length 4/7; no SIB/prefix/wider block |
 | [partial] | S3-20n | No-displacement SIB MOV через shared IR и bounded dispatcher | Только `48 8B/89 /r sib`, ModRM `mod=00,r/m=100`, data/base/index RAX..RBX, scale 1/2/4/8, ровно 4 bytes |
+| [partial] | S3-20o | Address32 direct-base qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r`, ModRM `mod=00`, Dword EA/Qword data, base/data RAX..RBX, ровно 4 bytes |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1074,6 +1075,29 @@ composes SIB singleton → bare NOP interpreter fallback → existing pair acros
 budgets 0..4 and partial pre-SIB byte windows. Pair admissions and the unsafe
 private synchronous RAM contract are unchanged. See the
 [S3-20n report](../reports/STAGE_3_S3-20n_2026-10-27.md).
+
+#### S3-20o. Address32 direct-base qword MOV in shared IR and bounded dispatch
+
+The shared checked singleton additionally accepts only exact
+`67 48 8B/89 /r`, ModRM `mod=00`, data/base RAX..RBX, instruction length
+four. The descriptor retains the architectural distinction between qword
+operand width and dword effective-address width. No SIB, displacement,
+extended register, reordered/extra prefix, or trailing byte is accepted. The
+raw-byte check is a separate branch from four-byte SIB (`48` prefix) and
+direct disp8 (`mod=01`) forms. The decoder-provided `MemoryOperand` and
+`access_address_48` remain the sole address semantics; no mask, zero-extension,
+or qword access splitting was added.
+
+Native direct V2/shared IR/interpreter cases cover load/store and every data
+and base register pair, including source/destination aliasing the base and
+noncanonical u64 base values whose low dword is used. A qword at
+`0xffff_fffc` uses one contiguous callback through `0x1_0000_0003`. Exact
+architectural faults preserve CPU/RAM/budget/retirement, backend errors remain
+host errors, guards skip access, and a successful store remains committed
+when STOP follows. Bounded dispatch composes the singleton → bare NOP
+interpreter fallback → existing pair with budgets 0..4, STOP and continuation
+from actual RIP. See the
+[S3-20o report](../reports/STAGE_3_S3-20o_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

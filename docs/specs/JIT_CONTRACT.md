@@ -404,6 +404,31 @@ clearing STOP resumes without repeating the access. Truncated source windows bef
 synchronous RAM contract are unchanged. See the
 [S3-20n report](../reports/STAGE_3_S3-20n_2026-10-27.md).
 
+#### S3-20o: address32 direct-base qword MOV in shared IR and dispatch
+
+The shared checked singleton additionally accepts exactly four-byte
+`67 48 8B/89 /r`, ModRM `mod=00`, with data and base encodings RAX..RBX.
+Descriptors preserve qword operand width and dword address width as separate
+decoded fields. This is an exact admission branch distinct from the 64-bit
+address SIB and disp8 forms that also have four-byte encodings. SIB,
+displacement, extended registers, reordered or additional prefixes, and tail
+bytes remain rejected. The decoder's `MemoryOperand::access_address_48` is
+still the only address computation and canonical/range checker; runtime does
+not add an address mask or split the qword access.
+
+Native direct V2/shared IR/interpreter parity covers both operations and all
+data/base register pairs, including load destination/store source equal to the
+base. It checks noncanonical u64 GPR values are interpreted using the decoded
+dword address size, while a qword starting at `0xffff_fffc` accesses bytes
+through `0x1_0000_0003` in one callback. Architectural load/store faults
+preserve full CPU/RAM/budget/retirement with exact payload; backend store
+failure remains a host error; budget, stop-RIP and STOP guards return before
+access; successful store+STOP retains its commit. The bounded dispatcher
+composes this singleton → bare NOP fallback → existing pair across budgets
+0..4 and resumes from actual RIP after STOP. Partial prefix/opcode/ModRM
+windows do not retire or access guest data. Pair profiles are unchanged. See
+the [S3-20o report](../reports/STAGE_3_S3-20o_2026-10-27.md).
+
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
 alignment, same/different ranges, and safe partial overlaps for load→store;

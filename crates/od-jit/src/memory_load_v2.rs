@@ -617,7 +617,13 @@ pub fn compile_ir_memory_store_block_v2(
     entry_rip: u64,
 ) -> Result<IrMemoryStoreBlockV2, MemoryLoadCompileErrorV2> {
     let (site, bytes) = checked_memory_metadata_v2(code, entry_rip, MemorySiteOperationV2::Store)?;
-    if !crate::block::exact_direct_qword_memory_bytes(code, entry_rip, bytes.len() as u8, 0x89)
+    if !(crate::block::exact_direct_qword_memory_bytes(code, entry_rip, bytes.len() as u8, 0x89)
+        || crate::block::exact_qword_address32_memory_bytes(
+            code,
+            entry_rip,
+            bytes.len() as u8,
+            0x89,
+        ))
         || !site.has_supported_profile()
         || !site.matches_source_bytes(bytes, MemorySiteOperationV2::Store)
     {
@@ -740,7 +746,13 @@ fn checked_load_metadata_v2(
         .map_err(|_| MemoryLoadCompileErrorV2::Decode)?;
     if decoded.length as usize != bytes.len()
         || !crate::block::is_checked_qword_load_form(decoded)
-        || !crate::block::exact_direct_qword_memory_bytes(code, entry_rip, decoded.length, 0x8b)
+        || !(crate::block::exact_direct_qword_memory_bytes(code, entry_rip, decoded.length, 0x8b)
+            || crate::block::exact_qword_address32_memory_bytes(
+                code,
+                entry_rip,
+                decoded.length,
+                0x8b,
+            ))
     {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
@@ -1725,6 +1737,75 @@ mod tests {
                 .site()
                 .matches_source_bytes(&[0x67, 0x48, 0x89, 0x00], MemorySiteOperationV2::Store)
         );
+    }
+
+    #[test]
+    fn ir_address32_direct_base_mov_has_exact_qword_descriptor() {
+        for (opcode, access) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data in 0..4_u8 {
+                for base in 0..4_u8 {
+                    let bytes = [0x67, 0x48, opcode, (data << 3) | base];
+                    let code = CodeView::new(0x27c0, &bytes).unwrap();
+                    let (site, source) = match access {
+                        MemorySiteOperationV2::Load => {
+                            let ir = compile_ir_memory_load_block_v2(code, 0x27c0).unwrap();
+                            let direct = compile_memory_load_block_v2(code, 0x27c0).unwrap();
+                            assert_eq!(ir.site(), direct.site());
+                            (ir.site().clone(), ir.source_bytes().to_vec())
+                        }
+                        MemorySiteOperationV2::Store => {
+                            let ir = compile_ir_memory_store_block_v2(code, 0x27c0).unwrap();
+                            let direct = compile_memory_store_block_v2(code, 0x27c0).unwrap();
+                            assert_eq!(ir.site(), direct.site());
+                            (ir.site().clone(), ir.source_bytes().to_vec())
+                        }
+                    };
+                    assert_eq!(source, bytes);
+                    assert_eq!(site.guest_rip(), 0x27c0);
+                    assert_eq!(site.next_rip(), 0x27c4);
+                    assert_eq!(site.operand().address_size, od_isa::OperandSize::Dword);
+                    assert_eq!(site.operand().size, od_isa::OperandSize::Qword);
+                    assert_eq!(
+                        site.operand().base,
+                        AddressBase::Register(Register::from_encoding(base).unwrap())
+                    );
+                    assert_eq!(site.operand().index, None);
+                    assert_eq!(site.operand().scale, 1);
+                    assert_eq!(site.operand().displacement, 0);
+                    assert!(site.matches_source_bytes(&bytes, access));
+                }
+            }
+        }
+
+        for (opcode, access) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for bytes in [
+                vec![0x67, 0x48, opcode],
+                vec![0x67, 0x48, opcode, 0xc0],       // register form
+                vec![0x67, 0x48, opcode, 0x04, 0x18], // SIB
+                vec![0x67, 0x48, opcode, 0x40, 0],    // disp8
+                vec![0x67, 0x48, opcode, 0x80, 0, 0, 0, 0], // disp32
+                vec![0x67, 0x4c, opcode, 0],          // extended data/base
+                vec![0x48, 0x67, opcode, 0],          // wrong prefix order
+                vec![0x67, 0x48, opcode, 0, 0x90],    // trailing byte
+            ] {
+                let code = CodeView::new(0x27d0, &bytes).unwrap();
+                let result = match access {
+                    MemorySiteOperationV2::Load => {
+                        compile_ir_memory_load_block_v2(code, 0x27d0).map(|_| ())
+                    }
+                    MemorySiteOperationV2::Store => {
+                        compile_ir_memory_store_block_v2(code, 0x27d0).map(|_| ())
+                    }
+                };
+                assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
+            }
+        }
     }
 
     #[test]

@@ -657,11 +657,13 @@ fn build_block_with_profile(
         } else if profile == BlockBuildProfile::CheckedQwordStore {
             instructions.is_empty()
                 && is_checked_qword_store_form(decoded)
-                && exact_direct_qword_memory_bytes(code, guest_rip, decoded.length, 0x89)
+                && (exact_direct_qword_memory_bytes(code, guest_rip, decoded.length, 0x89)
+                    || exact_qword_address32_memory_bytes(code, guest_rip, decoded.length, 0x89))
         } else if profile == BlockBuildProfile::CheckedQwordLoad {
             instructions.is_empty()
                 && is_checked_qword_load_form(decoded)
-                && exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
+                && (exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
+                    || exact_qword_address32_memory_bytes(code, guest_rip, decoded.length, 0x8b))
         } else {
             is_s0_09_form(decoded)
         };
@@ -1259,7 +1261,6 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
     let exact_prefix = instruction.prefixes.group1.is_none()
         && instruction.prefixes.segment.is_none()
         && !instruction.prefixes.operand_override
-        && !instruction.prefixes.address_override
         && instruction.prefixes.rex == Some(0x48);
     let Operation::Mov {
         dst: Operand::Register(destination),
@@ -1272,32 +1273,17 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x8b
         && instruction.operand_size == OperandSize::Qword
-        && instruction.address_size == OperandSize::Qword
         && matches!(instruction.length, 3 | 4 | 7)
         && (destination.register() as u8) < 4
         && destination.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
-        && operand.address_size == OperandSize::Qword
-        && (matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
-            && (direct_checked_displacement_matches_length(
-                instruction.length,
-                operand.displacement,
-            ) || instruction.length == 4
-                && operand.index.is_some_and(|index| (index as u8) < 4)
-                && operand.displacement == 0
-                && matches!(operand.scale, 1 | 2 | 4 | 8))
-            || matches!(operand.base, od_isa::long_decode::AddressBase::NextRip)
-                && instruction.length == 7
-                && operand.displacement >= i32::MIN as i64
-                && operand.displacement <= i32::MAX as i64)
-        && (operand.index.is_some() || operand.scale == 1)
+        && is_checked_qword_memory_address(instruction, operand)
 }
 
 pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
     let exact_prefix = instruction.prefixes.group1.is_none()
         && instruction.prefixes.segment.is_none()
         && !instruction.prefixes.operand_override
-        && !instruction.prefixes.address_override
         && instruction.prefixes.rex == Some(0x48);
     let Operation::Mov {
         dst: Operand::Memory(operand),
@@ -1310,25 +1296,47 @@ pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x89
         && instruction.operand_size == OperandSize::Qword
-        && instruction.address_size == OperandSize::Qword
         && matches!(instruction.length, 3 | 4 | 7)
         && (source.register() as u8) < 4
         && source.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
-        && operand.address_size == OperandSize::Qword
-        && (matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
-            && (direct_checked_displacement_matches_length(
-                instruction.length,
-                operand.displacement,
-            ) || instruction.length == 4
-                && operand.index.is_some_and(|index| (index as u8) < 4)
+        && is_checked_qword_memory_address(instruction, operand)
+}
+
+fn is_checked_qword_memory_address(
+    instruction: Instruction,
+    operand: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    if operand.size != OperandSize::Qword || operand.address_size != instruction.address_size {
+        return false;
+    }
+    match instruction.address_size {
+        OperandSize::Dword => {
+            instruction.prefixes.address_override
+                && instruction.length == 4
+                && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+                && operand.index.is_none()
+                && operand.scale == 1
                 && operand.displacement == 0
-                && matches!(operand.scale, 1 | 2 | 4 | 8))
-            || matches!(operand.base, od_isa::long_decode::AddressBase::NextRip)
-                && instruction.length == 7
-                && operand.displacement >= i32::MIN as i64
-                && operand.displacement <= i32::MAX as i64)
-        && (operand.index.is_some() || operand.scale == 1)
+        }
+        OperandSize::Qword => {
+            !instruction.prefixes.address_override
+                && (matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+                    && (direct_checked_displacement_matches_length(
+                        instruction.length,
+                        operand.displacement,
+                    ) || instruction.length == 4
+                        && operand.index.is_some_and(|index| (index as u8) < 4)
+                        && operand.displacement == 0
+                        && matches!(operand.scale, 1 | 2 | 4 | 8))
+                    || matches!(operand.base, od_isa::long_decode::AddressBase::NextRip)
+                        && instruction.length == 7
+                        && operand.displacement >= i32::MIN as i64
+                        && operand.displacement <= i32::MAX as i64)
+                && (operand.index.is_some() || operand.scale == 1)
+        }
+        _ => false,
+    }
 }
 
 fn exact_direct_qword_load_bytes(code: CodeView<'_>, guest_rip: u64, length: u8) -> bool {
@@ -1383,6 +1391,31 @@ pub(crate) fn exact_direct_qword_memory_bytes(
             && bytes[2] >> 6 == 0
             && bytes[2] & 0b111 == 5
             && (bytes[2] >> 3) & 0b111 <= 3)
+}
+
+pub(crate) fn exact_qword_address32_memory_bytes(
+    code: CodeView<'_>,
+    guest_rip: u64,
+    length: u8,
+    opcode: u8,
+) -> bool {
+    let Some(offset) = guest_rip
+        .checked_sub(code.base_rip)
+        .and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    let Some(bytes) = code
+        .bytes
+        .get(offset..offset.saturating_add(usize::from(length)))
+    else {
+        return false;
+    };
+    bytes.len() == 4
+        && bytes[0..3] == [0x67, 0x48, opcode]
+        && bytes[3] >> 6 == 0
+        && (bytes[3] >> 3) & 7 < 4
+        && bytes[3] & 7 < 4
 }
 
 fn direct_checked_displacement_matches_length(length: u8, displacement: i64) -> bool {
