@@ -1254,6 +1254,23 @@ comparator corruption check проверяет GPR, RIP, byte памяти, reti
 Физический S3-21 для этого corpus: `not_run`. См.
 [S3-34a report](../reports/STAGE_3_S3-34a_2026-10-27.md).
 
+#### S3-34b. Versioned replay of one saved two-site mismatch
+
+The `od-host` corpus report now carries a strict version-1 case envelope with
+the exact selected sequence/source bytes, initial supported CPU and private RAM
+snapshots, instruction budget, STOP/stop-RIP request, typed site-0 fault
+injection and trigger, and optional budget-then-continuation protocol. The
+report records host/architecture/build revision, backend availability, and
+both result snapshots. The ignored `replay_saved_case_from_environment` test
+requires `OD_JIT_REPLAY_CASE`; replay validates the report before publishing
+native code, compares fresh native/interpreter results, and writes a new
+create-only replay report beside the original. Unknown versions/profiles,
+inconsistent source/state/addresses, malformed snapshots, unsupported protocol,
+or missing native support are explicit failures. Round-trip, both successful
+sequences, fault/STOP/budget/stop-RIP/continuation, comparator classes, and
+malformed reports are covered locally; the physical S3-21 gate remains
+`not_run`. См. [S3-34b report](../reports/STAGE_3_S3-34b_2026-10-27.md).
+
 ### S3-35. Измерить холодное исполнение
 
 1. Измерить полный первый запуск при пустом code cache: необходимые decode/IR/lowering/allocation/publication/lookup/execution, с явно указанной стоимостью initialization.

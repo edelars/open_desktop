@@ -1,27 +1,165 @@
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
-
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU8;
 
 use od_host::{MemoryOperationExecutionResultV2, PublishedCode};
 use od_isa::memory::{AccessContext, AccessKind, ArchitecturalFault, GuestMemory, MemoryError};
 use od_isa::{LongModeState, OperandSize};
+use serde::{Deserialize, Serialize};
 
 const ENTRY_RIP: u64 = 0x9e00;
 const RAM_LEN: usize = 128;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const CASES_PER_SEED: usize = 400;
+const REPORT_VERSION: u32 = 1;
+const ENVELOPE_VERSION: u32 = 1;
+const CASE_PROFILE: &str = "s3-20j-two-site-qword-mov-v1";
 const SEEDS: [u64; 3] = [
     0x5343_3441_0000_0001,
     0x5343_3441_0000_0002,
     0x5343_3441_0000_0003,
 ];
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 static JIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 enum Sequence {
     StoreThenLoad,
     LoadThenStore,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CpuSnapshot {
+    gpr: [u64; 16],
+    rflags: u64,
+    rip: u64,
+    auxiliary_state: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum MemoryAccess {
+    Read,
+    Write,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum InjectedFailure {
+    Architectural {
+        vector: u8,
+        error_code: Option<u32>,
+        linear_address: Option<u64>,
+    },
+    Backend {
+        message: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FaultInjection {
+    site_index: u8,
+    operation: MemoryAccess,
+    failure: InjectedFailure,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ContinuationProtocol {
+    first_budget: u64,
+    resume_instruction_index: u8,
+    continuation_budget: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReplayProtocol {
+    budget: u64,
+    stop_requested: bool,
+    stop_rip: Option<u64>,
+    fault: Option<FaultInjection>,
+    continuation: Option<ContinuationProtocol>,
+}
+
+impl ReplayProtocol {
+    fn successful_pair() -> Self {
+        Self {
+            budget: 2,
+            stop_requested: false,
+            stop_rip: None,
+            fault: None,
+            continuation: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CaseEnvelope {
+    version: u32,
+    profile: String,
+    seed: u64,
+    case_id: usize,
+    sequence: Sequence,
+    source_bytes_hex: String,
+    initial_cpu: CpuSnapshot,
+    initial_ram_hex: String,
+    first_address: u64,
+    second_address: u64,
+    protocol: ReplayProtocol,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct EnvironmentInfo {
+    os: String,
+    architecture: String,
+    build_revision: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct BackendAvailability {
+    native: bool,
+    interpreter: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ObservationRecord {
+    state_debug: String,
+    gpr: [u64; 16],
+    rflags: u64,
+    rip: u64,
+    ram_hex: String,
+    callbacks: Vec<String>,
+    status: String,
+    remaining_budget: u64,
+    retired: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReplayReport {
+    report_version: u32,
+    case: String,
+    case_envelope: CaseEnvelope,
+    environment: EnvironmentInfo,
+    backend_availability: BackendAvailability,
+    reason: String,
+    native_results: Vec<ObservationRecord>,
+    interpreter_results: Vec<ObservationRecord>,
+    equivalent: bool,
+    mismatch_classes: Vec<String>,
+    #[serde(default)]
+    reproduced_mismatch: Option<bool>,
 }
 
 impl Sequence {
@@ -29,13 +167,6 @@ impl Sequence {
         match self {
             Self::StoreThenLoad => [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b],
             Self::LoadThenStore => [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02],
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::StoreThenLoad => "store_then_load",
-            Self::LoadThenStore => "load_then_store",
         }
     }
 }
@@ -242,6 +373,226 @@ fn generated_input(seed: u64, index: usize, forced_sequence: Option<Sequence>) -
     }
 }
 
+impl CaseEnvelope {
+    fn from_input(
+        input: &CorpusInput,
+        seed: u64,
+        case_id: usize,
+        protocol: ReplayProtocol,
+    ) -> Self {
+        Self {
+            version: ENVELOPE_VERSION,
+            profile: CASE_PROFILE.into(),
+            seed,
+            case_id,
+            sequence: input.sequence,
+            source_bytes_hex: hex(&input.sequence.bytes()),
+            initial_cpu: CpuSnapshot {
+                gpr: input.gpr,
+                rflags: input.flags,
+                rip: ENTRY_RIP,
+                auxiliary_state: "default".into(),
+            },
+            initial_ram_hex: hex(&input.ram),
+            first_address: input.first_address,
+            second_address: input.second_address,
+            protocol,
+        }
+    }
+
+    fn validate(&self) -> Result<CorpusInput, String> {
+        if self.version != ENVELOPE_VERSION {
+            return Err(format!(
+                "unsupported case envelope version {}",
+                self.version
+            ));
+        }
+        if self.profile != CASE_PROFILE {
+            return Err(format!("unsupported replay profile {:?}", self.profile));
+        }
+        if self.source_bytes_hex != hex(&self.sequence.bytes()) {
+            return Err("source bytes do not match the selected sequence profile".into());
+        }
+        if self.initial_cpu.rip != ENTRY_RIP {
+            return Err(format!(
+                "entry RIP must be {ENTRY_RIP:#x}, got {:#x}",
+                self.initial_cpu.rip
+            ));
+        }
+        if self.initial_cpu.auxiliary_state != "default" {
+            return Err("unsupported non-default auxiliary CPU state".into());
+        }
+        let ram = decode_hex_array::<RAM_LEN>(&self.initial_ram_hex)
+            .map_err(|e| format!("invalid RAM snapshot: {e}"))?;
+        let first_address = self.initial_cpu.gpr[3];
+        let second_address = match self.sequence {
+            Sequence::StoreThenLoad => first_address,
+            Sequence::LoadThenStore => self.initial_cpu.gpr[2],
+        };
+        if self.first_address != first_address || self.second_address != second_address {
+            return Err("recorded access addresses do not match the initial GPR snapshot".into());
+        }
+        for (label, address) in [("first", first_address), ("second", second_address)] {
+            let start = usize::try_from(address)
+                .map_err(|_| format!("{label} qword address is outside fixture RAM"))?;
+            if start.checked_add(8).is_none_or(|end| end > RAM_LEN) {
+                return Err(format!("{label} qword access is outside fixture RAM"));
+            }
+        }
+        validate_protocol(
+            self.sequence,
+            self.protocol.budget,
+            &self.protocol,
+            first_address,
+        )?;
+        Ok(CorpusInput {
+            sequence: self.sequence,
+            gpr: self.initial_cpu.gpr,
+            flags: self.initial_cpu.rflags,
+            first_address,
+            second_address,
+            ram,
+        })
+    }
+}
+
+fn validate_protocol(
+    sequence: Sequence,
+    budget: u64,
+    protocol: &ReplayProtocol,
+    first_address: u64,
+) -> Result<(), String> {
+    if !(1..=2).contains(&budget) {
+        return Err(format!("unsupported instruction budget {budget}"));
+    }
+    if let Some(stop_rip) = protocol.stop_rip
+        && stop_rip != ENTRY_RIP
+        && stop_rip != ENTRY_RIP + 3
+    {
+        return Err(format!("unsupported stop-RIP {stop_rip:#x}"));
+    }
+    if let Some(fault) = &protocol.fault {
+        if fault.site_index != 0 {
+            return Err("fault injection is supported only at memory site 0".into());
+        }
+        let expected_operation = match sequence {
+            Sequence::StoreThenLoad => MemoryAccess::Write,
+            Sequence::LoadThenStore => MemoryAccess::Read,
+        };
+        if fault.operation != expected_operation {
+            return Err("fault trigger operation does not match memory site 0".into());
+        }
+        if protocol.stop_requested || protocol.stop_rip.is_some() || protocol.continuation.is_some()
+        {
+            return Err("fault injection cannot be combined with STOP or continuation".into());
+        }
+        if let InjectedFailure::Architectural {
+            linear_address: Some(address),
+            ..
+        } = fault.failure
+            && address != first_address
+        {
+            return Err("architectural fault address does not match site 0".into());
+        }
+    }
+    if let Some(continuation) = &protocol.continuation {
+        if protocol.budget != 1
+            || continuation.first_budget != 1
+            || continuation.resume_instruction_index != 1
+            || continuation.continuation_budget != 1
+            || protocol.stop_requested
+            || protocol.stop_rip.is_some()
+            || protocol.fault.is_some()
+        {
+            return Err("unsupported continuation protocol".into());
+        }
+    }
+    Ok(())
+}
+
+fn decode_hex_array<const N: usize>(value: &str) -> Result<[u8; N], String> {
+    if !value.is_ascii() || value.len() != N * 2 {
+        return Err(format!("expected {} hex characters", N * 2));
+    }
+    let mut bytes = [0; N];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+            .map_err(|_| format!("invalid hex byte at offset {index}"))?;
+    }
+    Ok(bytes)
+}
+
+impl InjectedFailure {
+    fn into_memory_error(&self) -> MemoryError {
+        match self {
+            Self::Architectural {
+                vector,
+                error_code,
+                linear_address,
+            } => MemoryError::Architectural(ArchitecturalFault {
+                vector: *vector,
+                error_code: *error_code,
+                linear_address: *linear_address,
+            }),
+            Self::Backend { message } => MemoryError::Backend(message.clone()),
+        }
+    }
+}
+
+impl EnvironmentInfo {
+    fn current() -> Self {
+        let build_revision = std::env::var("OD_JIT_BUILD_REVISION")
+            .ok()
+            .or_else(|| {
+                Command::new("git")
+                    .args(["rev-parse", "HEAD"])
+                    .output()
+                    .ok()
+                    .filter(|output| output.status.success())
+                    .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            })
+            .unwrap_or_else(|| "unknown".into());
+        Self {
+            os: std::env::consts::OS.into(),
+            architecture: std::env::consts::ARCH.into(),
+            build_revision,
+        }
+    }
+}
+
+impl BackendAvailability {
+    fn current() -> Self {
+        Self {
+            native: native_backend_available(),
+            interpreter: true,
+        }
+    }
+}
+
+fn native_backend_available() -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+}
+
+impl Observation {
+    fn to_record(&self) -> ObservationRecord {
+        ObservationRecord {
+            state_debug: format!("{:?}", self.state),
+            gpr: self.state.gpr,
+            rflags: self.state.rflags,
+            rip: self.state.rip,
+            ram_hex: hex(&self.ram),
+            callbacks: self
+                .callbacks
+                .iter()
+                .map(|call| (*call).to_owned())
+                .collect(),
+            status: self.status.clone(),
+            remaining_budget: self.remaining_budget,
+            retired: self.retired,
+        }
+    }
+}
+
 fn initial_state(input: &CorpusInput, rip: u64) -> LongModeState {
     LongModeState {
         gpr: input.gpr,
@@ -420,6 +771,7 @@ fn interpreter_continue(input: &CorpusInput, prior: &Observation) -> Observation
     outcome(state, ram, status, 0, 1)
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn assert_matches(
     seed: u64,
     case_id: usize,
@@ -427,146 +779,391 @@ fn assert_matches(
     native: &Observation,
     interp: &Observation,
 ) {
-    assert_matches_named("generated", seed, case_id, input, native, interp);
+    let envelope =
+        CaseEnvelope::from_input(input, seed, case_id, ReplayProtocol::successful_pair());
+    assert_matches_named("generated", &envelope, native, interp);
 }
 
-fn compare_observations(native: &Observation, interp: &Observation) -> Result<(), ()> {
-    if native == interp { Ok(()) } else { Err(()) }
+fn mismatch_classes(native: &Observation, interp: &Observation) -> Vec<String> {
+    let mut classes = Vec::new();
+    for (index, (left, right)) in native.state.gpr.iter().zip(&interp.state.gpr).enumerate() {
+        if left != right {
+            classes.push(format!("gpr[{index}]"));
+        }
+    }
+    if native.state.rflags != interp.state.rflags {
+        classes.push("rflags".into());
+    }
+    if native.state.rip != interp.state.rip {
+        classes.push("rip".into());
+    }
+    for (index, (left, right)) in native.ram.iter().zip(&interp.ram).enumerate() {
+        if left != right {
+            classes.push(format!("ram[{index}]"));
+        }
+    }
+    if native.callbacks != interp.callbacks {
+        classes.push("callbacks".into());
+    }
+    if native.status != interp.status {
+        classes.push("exit".into());
+    }
+    if native.remaining_budget != interp.remaining_budget {
+        classes.push("remaining_budget".into());
+    }
+    if native.retired != interp.retired {
+        classes.push("retirement".into());
+    }
+    if classes.is_empty() && native.state != interp.state {
+        classes.push("auxiliary_cpu_state".into());
+    }
+    classes
 }
 
+fn compare_observations(native: &Observation, interp: &Observation) -> Result<(), Vec<String>> {
+    let classes = mismatch_classes(native, interp);
+    if classes.is_empty() {
+        Ok(())
+    } else {
+        Err(classes)
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn assert_matches_named(
     case: &str,
-    seed: u64,
-    case_id: usize,
-    input: &CorpusInput,
+    envelope: &CaseEnvelope,
     native: &Observation,
     interp: &Observation,
 ) {
     if compare_observations(native, interp).is_ok() {
         return;
     }
-    save_mismatch(
-        case,
-        seed,
-        case_id,
-        input,
-        native,
-        interp,
-        "backend results differ",
-    );
+    save_mismatch(case, envelope, native, interp, "backend results differ");
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn assert_named_condition(
     case: &str,
-    seed: u64,
-    case_id: usize,
-    input: &CorpusInput,
+    envelope: &CaseEnvelope,
     native: &Observation,
     interp: &Observation,
     condition: bool,
     reason: &str,
 ) {
     if !condition {
-        save_mismatch(case, seed, case_id, input, native, interp, reason);
+        save_mismatch(case, envelope, native, interp, reason);
     }
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn save_mismatch(
     case: &str,
-    seed: u64,
-    case_id: usize,
-    input: &CorpusInput,
+    envelope: &CaseEnvelope,
     native: &Observation,
     interp: &Observation,
     reason: &str,
 ) -> ! {
-    let report = mismatch_report(case, seed, case_id, input, native, interp, reason);
+    let report = mismatch_report(case, envelope, native, interp, reason);
     let path = std::env::temp_dir().join(format!(
-        "od-host-memory-corpus-{seed:016x}-{case_id}-{case}.json"
+        "od-host-memory-corpus-{:016x}-{}-{case}.json",
+        envelope.seed, envelope.case_id
     ));
     let write_result = std::fs::write(&path, &report);
     panic!(
-        "memory corpus mismatch case={case} seed={seed:#018x} case_id={case_id}; saved={path:?}; write={write_result:?}\n{report}"
+        "memory corpus mismatch case={case} seed={:#018x} case_id={}; saved={path:?}; write={write_result:?}\n{report}",
+        envelope.seed, envelope.case_id
     );
 }
 
 fn mismatch_report(
     case: &str,
-    seed: u64,
-    case_id: usize,
-    input: &CorpusInput,
+    envelope: &CaseEnvelope,
     native: &Observation,
     interp: &Observation,
     reason: &str,
 ) -> String {
-    format!(
-        "{{\"case\":\"{}\",\"seed\":{seed},\"case_id\":{case_id},\"reason\":\"{}\",\"input\":{},\"native\":{},\"interpreter\":{}}}",
-        escape_json(case),
-        escape_json(reason),
-        input.to_json(),
-        native.to_json(),
-        interp.to_json(),
-    )
+    let report = ReplayReport {
+        report_version: REPORT_VERSION,
+        case: case.into(),
+        case_envelope: envelope.clone(),
+        environment: EnvironmentInfo::current(),
+        backend_availability: BackendAvailability::current(),
+        reason: reason.into(),
+        native_results: vec![native.to_record()],
+        interpreter_results: vec![interp.to_record()],
+        equivalent: compare_observations(native, interp).is_ok(),
+        mismatch_classes: mismatch_classes(native, interp),
+        reproduced_mismatch: None,
+    };
+    serde_json::to_string_pretty(&report).expect("replay report is serializable")
 }
 
-impl CorpusInput {
-    fn to_json(&self) -> String {
-        format!(
-            "{{\"sequence\":\"{}\",\"gpr\":{},\"flags\":{},\"first_address\":{},\"second_address\":{},\"ram_hex\":\"{}\"}}",
-            self.sequence.label(),
-            json_numbers(&self.gpr),
-            self.flags,
-            self.first_address,
-            self.second_address,
-            hex(&self.ram),
-        )
+fn sample_report(
+    envelope: CaseEnvelope,
+    backend_availability: BackendAvailability,
+) -> ReplayReport {
+    let input = envelope
+        .validate()
+        .expect("test case envelope must validate");
+    let observation = Observation {
+        state: initial_state(&input, ENTRY_RIP),
+        ram: input.ram,
+        callbacks: Vec::new(),
+        status: "SavedInput".into(),
+        remaining_budget: envelope.protocol.budget,
+        retired: 0,
+    };
+    ReplayReport {
+        report_version: REPORT_VERSION,
+        case: "saved_input".into(),
+        case_envelope: envelope,
+        environment: EnvironmentInfo::current(),
+        backend_availability,
+        reason: "round-trip fixture".into(),
+        native_results: vec![observation.to_record()],
+        interpreter_results: vec![observation.to_record()],
+        equivalent: true,
+        mismatch_classes: Vec::new(),
+        reproduced_mismatch: None,
     }
 }
 
-impl Observation {
-    fn to_json(&self) -> String {
-        format!(
-            "{{\"state_debug\":\"{}\",\"gpr\":{},\"flags\":{},\"rip\":{},\"ram_hex\":\"{}\",\"callbacks\":[{}],\"status\":\"{}\",\"remaining_budget\":{},\"retired\":{}}}",
-            escape_json(&format!("{:?}", self.state)),
-            json_numbers(&self.state.gpr),
-            self.state.rflags,
-            self.state.rip,
-            hex(&self.ram),
-            self.callbacks
-                .iter()
-                .map(|s| format!("\"{s}\""))
-                .collect::<Vec<_>>()
-                .join(","),
-            escape_json(&self.status),
-            self.remaining_budget,
-            self.retired,
-        )
-    }
+fn serialize_report(report: &ReplayReport) -> String {
+    serde_json::to_string_pretty(report).expect("replay report is serializable")
 }
 
-fn json_numbers(values: &[u64]) -> String {
-    format!(
-        "[{}]",
-        values
-            .iter()
-            .map(u64::to_string)
-            .collect::<Vec<_>>()
-            .join(",")
+fn decode_replay_report(source: &str) -> Result<ReplayReport, String> {
+    if source.len() > 128 * 1024 {
+        return Err("saved replay report exceeds the 128 KiB limit".into());
+    }
+    let report: ReplayReport = serde_json::from_str(source)
+        .map_err(|error| format!("invalid replay report JSON: {error}"))?;
+    if report.report_version != REPORT_VERSION {
+        return Err(format!(
+            "unsupported replay report version {}",
+            report.report_version
+        ));
+    }
+    if report.native_results.is_empty()
+        || report.native_results.len() != report.interpreter_results.len()
+    {
+        return Err("saved report has missing or unpaired backend snapshots".into());
+    }
+    for snapshot in report
+        .native_results
+        .iter()
+        .chain(&report.interpreter_results)
+    {
+        decode_hex_array::<RAM_LEN>(&snapshot.ram_hex)
+            .map_err(|error| format!("invalid saved result RAM: {error}"))?;
+    }
+    report.case_envelope.validate()?;
+    let actual_classes = report
+        .native_results
+        .iter()
+        .zip(&report.interpreter_results)
+        .flat_map(|(native, interpreter)| record_mismatch_classes(native, interpreter))
+        .collect::<Vec<_>>();
+    if actual_classes != report.mismatch_classes || report.equivalent != actual_classes.is_empty() {
+        return Err("saved mismatch classes do not match the stored backend snapshots".into());
+    }
+    Ok(report)
+}
+
+fn record_mismatch_classes(
+    native: &ObservationRecord,
+    interpreter: &ObservationRecord,
+) -> Vec<String> {
+    let mut classes = Vec::new();
+    for (index, (left, right)) in native.gpr.iter().zip(&interpreter.gpr).enumerate() {
+        if left != right {
+            classes.push(format!("gpr[{index}]"));
+        }
+    }
+    if native.rflags != interpreter.rflags {
+        classes.push("rflags".into());
+    }
+    if native.rip != interpreter.rip {
+        classes.push("rip".into());
+    }
+    let native_ram = decode_hex_vec(&native.ram_hex).unwrap_or_default();
+    let interpreter_ram = decode_hex_vec(&interpreter.ram_hex).unwrap_or_default();
+    if native_ram.len() != interpreter_ram.len() {
+        classes.push("ram_size".into());
+    }
+    for (index, (left, right)) in native_ram.iter().zip(&interpreter_ram).enumerate() {
+        if left != right {
+            classes.push(format!("ram[{index}]"));
+        }
+    }
+    if native.callbacks != interpreter.callbacks {
+        classes.push("callbacks".into());
+    }
+    if native.status != interpreter.status {
+        classes.push("exit".into());
+    }
+    if native.remaining_budget != interpreter.remaining_budget {
+        classes.push("remaining_budget".into());
+    }
+    if native.retired != interpreter.retired {
+        classes.push("retirement".into());
+    }
+    if classes.is_empty() && native.state_debug != interpreter.state_debug {
+        classes.push("auxiliary_cpu_state".into());
+    }
+    classes
+}
+
+fn decode_hex_vec(value: &str) -> Result<Vec<u8>, String> {
+    if !value.is_ascii() || value.len() % 2 != 0 {
+        return Err("hex string has odd length".into());
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&value[index..index + 2], 16)
+                .map_err(|_| format!("invalid hex byte at offset {}", index / 2))
+        })
+        .collect()
+}
+
+fn execute_replay_envelope(
+    envelope: &CaseEnvelope,
+) -> Result<(Vec<Observation>, Vec<Observation>), String> {
+    let input = envelope.validate()?;
+    if !native_backend_available() {
+        return Err(
+            "native JIT replay backend unavailable on this host (requires macOS ARM64)".into(),
+        );
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let _guard = JIT_TEST_LOCK
+        .lock()
+        .map_err(|_| "native JIT test lock is poisoned".to_owned())?;
+
+    let source = envelope.sequence.bytes();
+    if hex(&source) != envelope.source_bytes_hex {
+        return Err("source byte check failed before native entry".into());
+    }
+    let block = od_jit::memory_load_v2::compile_ir_memory_two_site_block_v2(
+        od_jit::block::CodeView::new(ENTRY_RIP, &source)
+            .map_err(|error| format!("invalid source code view: {error:?}"))?,
+        ENTRY_RIP,
     )
+    .map_err(|error| format!("unsupported source bytes: {error:?}"))?;
+    let published = PublishedCode::publish_ir_memory_two_site_v2(&block)
+        .map_err(|error| format!("native publication unavailable: {error:?}"))?;
+    let protocol = &envelope.protocol;
+    let fault = protocol
+        .fault
+        .as_ref()
+        .map(|fault| fault.failure.into_memory_error());
+    let stop = AtomicU8::new(u8::from(protocol.stop_requested));
+    let first_native = native_run(
+        &published,
+        &input,
+        protocol.budget,
+        protocol.stop_rip,
+        &stop,
+        fault.clone(),
+    );
+    let first_interpreter = interpreter_run(
+        &input,
+        protocol.budget,
+        protocol.stop_rip,
+        protocol.stop_requested,
+        fault,
+    );
+    let mut native_results = vec![first_native.clone()];
+    let mut interpreter_results = vec![first_interpreter.clone()];
+    if protocol.continuation.is_some() {
+        native_results.push(native_continue(&published, &input, &first_native));
+        interpreter_results.push(interpreter_continue(&input, &first_interpreter));
+    }
+    Ok((native_results, interpreter_results))
+}
+
+fn replay_report_text(source: &str) -> Result<ReplayReport, String> {
+    replay_report_text_with_backend(source, native_backend_available())
+}
+
+fn replay_report_text_with_backend(
+    source: &str,
+    current_native_available: bool,
+) -> Result<ReplayReport, String> {
+    let original = decode_replay_report(source)?;
+    if !original.backend_availability.native || !original.backend_availability.interpreter {
+        return Err("saved report did not have both execution backends available".into());
+    }
+    if !current_native_available {
+        return Err(
+            "native JIT replay backend unavailable on this host (requires macOS ARM64)".into(),
+        );
+    }
+    let (native, interpreter) = execute_replay_envelope(&original.case_envelope)?;
+    let classes = actual_mismatch_classes(&native, &interpreter);
+    let reproduced_mismatch = original.mismatch_classes == classes;
+    Ok(ReplayReport {
+        report_version: REPORT_VERSION,
+        case: format!("replay:{}", original.case),
+        case_envelope: original.case_envelope,
+        environment: EnvironmentInfo::current(),
+        backend_availability: BackendAvailability::current(),
+        reason: "independent replay".into(),
+        native_results: native.iter().map(Observation::to_record).collect(),
+        interpreter_results: interpreter.iter().map(Observation::to_record).collect(),
+        equivalent: classes.is_empty(),
+        mismatch_classes: classes,
+        reproduced_mismatch: Some(reproduced_mismatch),
+    })
+}
+
+fn actual_mismatch_classes(native: &[Observation], interpreter: &[Observation]) -> Vec<String> {
+    native
+        .iter()
+        .zip(interpreter)
+        .flat_map(|(native, interpreter)| mismatch_classes(native, interpreter))
+        .collect()
+}
+
+fn replay_saved_case(path: &Path) -> Result<PathBuf, String> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read saved case {}: {error}", path.display()))?;
+    let replay = replay_report_text(&source)?;
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| "saved case path has no UTF-8 file stem".to_owned())?;
+    let output = path.with_file_name(format!("{stem}.replay-{}.json", std::process::id()));
+    if output == path {
+        return Err("replay output path aliases the original report".into());
+    }
+    let bytes = serde_json::to_vec_pretty(&replay)
+        .map_err(|error| format!("cannot serialize replay report: {error}"))?;
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&output)
+        .map_err(|error| format!("cannot create replay report {}: {error}", output.display()))?;
+    file.write_all(&bytes)
+        .map_err(|error| format!("cannot write replay report {}: {error}", output.display()))?;
+    Ok(output)
+}
+
+fn replay_path_from_env(value: Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    value.map(PathBuf::from).ok_or_else(|| {
+        "OD_JIT_REPLAY_CASE is required; set it to the saved JSON report path".into()
+    })
 }
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn escape_json(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-}
-
 #[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn fixed_seed_memory_corpus_matches_interpreter_twice_per_input() {
     let _guard = JIT_TEST_LOCK.lock().unwrap();
     let mut unique = HashSet::new();
@@ -629,6 +1226,7 @@ fn fixed_seed_memory_corpus_matches_interpreter_twice_per_input() {
     assert!(address_relations.iter().all(|count| *count > 0));
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn expected_order(sequence: Sequence) -> Vec<&'static str> {
     match sequence {
         Sequence::StoreThenLoad => vec!["write", "read"],
@@ -637,6 +1235,7 @@ fn expected_order(sequence: Sequence) -> Vec<&'static str> {
 }
 
 #[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn named_fault_stop_budget_and_continuation_cases_are_separate() {
     let _guard = JIT_TEST_LOCK.lock().unwrap();
     let seed = 0x5343_3441_ffff_0001;
@@ -655,16 +1254,33 @@ fn named_fault_stop_budget_and_continuation_cases_are_separate() {
         )
         .unwrap();
         let published = PublishedCode::publish_ir_memory_two_site_v2(&block).unwrap();
+        let make_envelope = |protocol| CaseEnvelope::from_input(&input, seed, case_id, protocol);
 
         let stop = AtomicU8::new(0);
         let native_fault = native_run(&published, &input, 2, None, &stop, Some(fault.clone()));
         let interp_fault = interpreter_run(&input, 2, None, false, Some(fault.clone()));
-        assert_matches_named("fault", seed, case_id, &input, &native_fault, &interp_fault);
+        let fault_envelope = make_envelope(ReplayProtocol {
+            budget: 2,
+            stop_requested: false,
+            stop_rip: None,
+            fault: Some(FaultInjection {
+                site_index: 0,
+                operation: match sequence {
+                    Sequence::StoreThenLoad => MemoryAccess::Write,
+                    Sequence::LoadThenStore => MemoryAccess::Read,
+                },
+                failure: InjectedFailure::Architectural {
+                    vector: 14,
+                    error_code: Some(2),
+                    linear_address: Some(input.first_address),
+                },
+            }),
+            continuation: None,
+        });
+        assert_matches_named("fault", &fault_envelope, &native_fault, &interp_fault);
         assert_named_condition(
             "fault",
-            seed,
-            case_id,
-            &input,
+            &fault_envelope,
             &native_fault,
             &interp_fault,
             native_fault.status.contains("GuestFault")
@@ -675,12 +1291,17 @@ fn named_fault_stop_budget_and_continuation_cases_are_separate() {
         let requested = AtomicU8::new(1);
         let native_stop = native_run(&published, &input, 2, None, &requested, None);
         let interp_stop = interpreter_run(&input, 2, None, true, None);
-        assert_matches_named("stop", seed, case_id, &input, &native_stop, &interp_stop);
+        let stop_envelope = make_envelope(ReplayProtocol {
+            budget: 2,
+            stop_requested: true,
+            stop_rip: None,
+            fault: None,
+            continuation: None,
+        });
+        assert_matches_named("stop", &stop_envelope, &native_stop, &interp_stop);
         assert_named_condition(
             "stop",
-            seed,
-            case_id,
-            &input,
+            &stop_envelope,
             &native_stop,
             &interp_stop,
             native_stop.status == "StopRequested" && interp_stop.status == "StopRequested",
@@ -690,19 +1311,22 @@ fn named_fault_stop_budget_and_continuation_cases_are_separate() {
         let no_stop = AtomicU8::new(0);
         let native_budget = native_run(&published, &input, 1, None, &no_stop, None);
         let interp_budget = interpreter_run(&input, 1, None, false, None);
+        let budget_envelope = make_envelope(ReplayProtocol {
+            budget: 1,
+            stop_requested: false,
+            stop_rip: None,
+            fault: None,
+            continuation: None,
+        });
         assert_matches_named(
             "budget_before_continuation",
-            seed,
-            case_id,
-            &input,
+            &budget_envelope,
             &native_budget,
             &interp_budget,
         );
         assert_named_condition(
             "budget_before_continuation",
-            seed,
-            case_id,
-            &input,
+            &budget_envelope,
             &native_budget,
             &interp_budget,
             native_budget.status == "BudgetExhausted"
@@ -716,19 +1340,26 @@ fn named_fault_stop_budget_and_continuation_cases_are_separate() {
 
         let native_continuation = native_continue(&published, &input, &native_budget);
         let interp_continuation = interpreter_continue(&input, &interp_budget);
+        let continuation_envelope = make_envelope(ReplayProtocol {
+            budget: 1,
+            stop_requested: false,
+            stop_rip: None,
+            fault: None,
+            continuation: Some(ContinuationProtocol {
+                first_budget: 1,
+                resume_instruction_index: 1,
+                continuation_budget: 1,
+            }),
+        });
         assert_matches_named(
             "continuation_from_committed_snapshot",
-            seed,
-            case_id,
-            &input,
+            &continuation_envelope,
             &native_continuation,
             &interp_continuation,
         );
         assert_named_condition(
             "continuation_from_committed_snapshot",
-            seed,
-            case_id,
-            &input,
+            &continuation_envelope,
             &native_continuation,
             &interp_continuation,
             native_continuation.status == "Complete"
@@ -754,24 +1385,29 @@ fn comparator_rejects_corruption_and_serializes_named_diagnostics() {
     };
     let mut wrong = base.clone();
     wrong.state.gpr[0] ^= 1;
+    assert_eq!(mismatch_classes(&base, &wrong), ["gpr[0]"]);
     assert!(compare_observations(&base, &wrong).is_err(), "wrong GPR");
     let mut wrong = base.clone();
     wrong.state.rip += 1;
+    assert_eq!(mismatch_classes(&base, &wrong), ["rip"]);
     assert!(compare_observations(&base, &wrong).is_err(), "wrong RIP");
     let mut wrong = base.clone();
     wrong.ram[17] ^= 1;
+    assert_eq!(mismatch_classes(&base, &wrong), ["ram[17]"]);
     assert!(
         compare_observations(&base, &wrong).is_err(),
         "wrong memory byte"
     );
     let mut wrong = base.clone();
     wrong.retired -= 1;
+    assert_eq!(mismatch_classes(&base, &wrong), ["retirement"]);
     assert!(
         compare_observations(&base, &wrong).is_err(),
         "wrong retirement"
     );
     let mut missing_fault = base.clone();
     missing_fault.status = "GuestFault(ArchitecturalFault { vector: 14 })".into();
+    assert_eq!(mismatch_classes(&base, &missing_fault), ["exit"]);
     assert!(
         compare_observations(&base, &missing_fault).is_err(),
         "missing fault"
@@ -792,21 +1428,414 @@ fn comparator_rejects_corruption_and_serializes_named_diagnostics() {
     interpreter.status = "Complete".into();
 
     assert!(compare_observations(&native, &interpreter).is_err());
-    let report = mismatch_report(
-        "continuation_from_committed_snapshot",
+    let envelope = CaseEnvelope::from_input(
+        &input,
         seed,
         case_id,
-        &input,
+        ReplayProtocol {
+            budget: 1,
+            stop_requested: false,
+            stop_rip: None,
+            fault: None,
+            continuation: Some(ContinuationProtocol {
+                first_budget: 1,
+                resume_instruction_index: 1,
+                continuation_budget: 1,
+            }),
+        },
+    );
+    let report = mismatch_report(
+        "continuation_from_committed_snapshot",
+        &envelope,
         &native,
         &interpreter,
         "controlled named mismatch",
     );
-    assert!(report.starts_with("{\"case\":\"continuation_from_committed_snapshot\""));
-    assert!(report.contains(&format!("\"seed\":{seed}")));
-    assert!(report.contains("\"case_id\":1"));
-    assert!(report.contains("\"input\":{\"sequence\":\"load_then_store\""));
-    assert!(report.contains("\"native\":{\"state_debug\":"));
-    assert!(report.contains("\"interpreter\":{\"state_debug\":"));
-    assert!(report.contains("\"status\":\"BudgetExhausted\""));
-    assert!(report.contains("\"status\":\"Complete\""));
+    let decoded = decode_replay_report(&report).unwrap();
+    assert_eq!(decoded.case, "continuation_from_committed_snapshot");
+    assert_eq!(decoded.case_envelope.seed, seed);
+    assert_eq!(decoded.case_envelope.case_id, case_id);
+    assert_eq!(decoded.case_envelope, envelope);
+    assert_eq!(decoded.mismatch_classes, ["exit"]);
+    assert_eq!(decoded.native_results[0].status, "BudgetExhausted");
+    assert_eq!(decoded.interpreter_results[0].status, "Complete");
+}
+
+#[test]
+fn replay_envelope_round_trips_and_rejects_malformed_reports() {
+    for sequence in [Sequence::StoreThenLoad, Sequence::LoadThenStore] {
+        let input = generated_input(0x5343_3441_ffff_1000, sequence as usize, Some(sequence));
+        let envelope = CaseEnvelope::from_input(
+            &input,
+            0x5343_3441_ffff_1000,
+            sequence as usize,
+            ReplayProtocol::successful_pair(),
+        );
+        let original = serialize_report(&sample_report(
+            envelope.clone(),
+            BackendAvailability {
+                native: true,
+                interpreter: true,
+            },
+        ));
+        let decoded = decode_replay_report(&original).unwrap();
+        assert_eq!(decoded.case_envelope, envelope);
+        assert_eq!(decoded.environment.architecture, std::env::consts::ARCH);
+        assert!(!decoded.environment.build_revision.is_empty());
+
+        let mutations: [(&str, Box<dyn Fn(&mut serde_json::Value)>); 11] = [
+            (
+                "unsupported replay report version",
+                Box::new(|value| value["report_version"] = serde_json::json!(2)),
+            ),
+            (
+                "unsupported case envelope version",
+                Box::new(|value| value["case_envelope"]["version"] = serde_json::json!(2)),
+            ),
+            (
+                "unsupported replay profile",
+                Box::new(|value| value["case_envelope"]["profile"] = serde_json::json!("other")),
+            ),
+            (
+                "source bytes do not match",
+                Box::new(|value| {
+                    value["case_envelope"]["source_bytes_hex"] = serde_json::json!("000000000000")
+                }),
+            ),
+            (
+                "entry RIP must be",
+                Box::new(|value| {
+                    value["case_envelope"]["initial_cpu"]["rip"] = serde_json::json!(ENTRY_RIP + 1)
+                }),
+            ),
+            (
+                "invalid RAM snapshot",
+                Box::new(|value| {
+                    value["case_envelope"]["initial_ram_hex"] = serde_json::json!("00")
+                }),
+            ),
+            (
+                "recorded access addresses do not match",
+                Box::new(|value| value["case_envelope"]["first_address"] = serde_json::json!(99)),
+            ),
+            (
+                "unsupported instruction budget",
+                Box::new(|value| {
+                    value["case_envelope"]["protocol"]["budget"] = serde_json::json!(3)
+                }),
+            ),
+            (
+                "unsupported stop-RIP",
+                Box::new(|value| {
+                    value["case_envelope"]["protocol"]["stop_rip"] =
+                        serde_json::json!(ENTRY_RIP + 1)
+                }),
+            ),
+            (
+                "unknown field",
+                Box::new(|value| value["case_envelope"]["unexpected"] = serde_json::json!(true)),
+            ),
+            (
+                "invalid saved result RAM",
+                Box::new(|value| value["native_results"][0]["ram_hex"] = serde_json::json!("00")),
+            ),
+        ];
+        for (message, mutate) in mutations {
+            let mut value: serde_json::Value = serde_json::from_str(&original).unwrap();
+            mutate(&mut value);
+            let error = decode_replay_report(&value.to_string()).unwrap_err();
+            assert!(
+                error.contains(message),
+                "{error:?} should contain {message:?}"
+            );
+        }
+
+        let mut bad_trigger: serde_json::Value = serde_json::from_str(&original).unwrap();
+        bad_trigger["case_envelope"]["protocol"]["fault"] = serde_json::json!({
+            "site_index": 1,
+            "operation": "read",
+            "failure": {"kind": "architectural", "vector": 14, "error_code": 2, "linear_address": input.first_address}
+        });
+        let error = decode_replay_report(&bad_trigger.to_string()).unwrap_err();
+        assert!(error.contains("fault injection is supported only"));
+
+        let mut inconsistent: serde_json::Value = serde_json::from_str(&original).unwrap();
+        inconsistent["native_results"][0]["gpr"][0] = serde_json::json!(input.gpr[0] ^ 1);
+        let error = decode_replay_report(&inconsistent.to_string()).unwrap_err();
+        assert!(error.contains("mismatch classes do not match"));
+    }
+
+    let huge = " ".repeat(128 * 1024 + 1);
+    assert!(
+        decode_replay_report(&huge)
+            .unwrap_err()
+            .contains("128 KiB limit")
+    );
+    assert!(
+        replay_path_from_env(None)
+            .unwrap_err()
+            .contains("OD_JIT_REPLAY_CASE is required")
+    );
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn replay_success_fault_stop_budget_and_continuation_for_both_sequences() {
+    let seed = 0x5343_3441_ffff_2000;
+    let mut saved_path = None;
+    for sequence in [Sequence::StoreThenLoad, Sequence::LoadThenStore] {
+        let case_id = sequence as usize;
+        let input = generated_input(seed, case_id, Some(sequence));
+        let fault_access = match sequence {
+            Sequence::StoreThenLoad => MemoryAccess::Write,
+            Sequence::LoadThenStore => MemoryAccess::Read,
+        };
+        let scenarios = [
+            (
+                "success",
+                ReplayProtocol::successful_pair(),
+                "Complete",
+                expected_order(sequence),
+                2,
+            ),
+            (
+                "fault",
+                ReplayProtocol {
+                    budget: 2,
+                    stop_requested: false,
+                    stop_rip: None,
+                    fault: Some(FaultInjection {
+                        site_index: 0,
+                        operation: fault_access,
+                        failure: InjectedFailure::Architectural {
+                            vector: 14,
+                            error_code: Some(2),
+                            linear_address: Some(input.first_address),
+                        },
+                    }),
+                    continuation: None,
+                },
+                "GuestFault",
+                match sequence {
+                    Sequence::StoreThenLoad => vec!["write"],
+                    Sequence::LoadThenStore => vec!["read"],
+                },
+                0,
+            ),
+            (
+                "stop",
+                ReplayProtocol {
+                    budget: 2,
+                    stop_requested: true,
+                    stop_rip: None,
+                    fault: None,
+                    continuation: None,
+                },
+                "StopRequested",
+                vec![],
+                0,
+            ),
+            (
+                "stop_rip",
+                ReplayProtocol {
+                    budget: 2,
+                    stop_requested: false,
+                    stop_rip: Some(ENTRY_RIP + 3),
+                    fault: None,
+                    continuation: None,
+                },
+                "StopAddress",
+                match sequence {
+                    Sequence::StoreThenLoad => vec!["write"],
+                    Sequence::LoadThenStore => vec!["read"],
+                },
+                1,
+            ),
+            (
+                "budget",
+                ReplayProtocol {
+                    budget: 1,
+                    stop_requested: false,
+                    stop_rip: None,
+                    fault: None,
+                    continuation: None,
+                },
+                "BudgetExhausted",
+                match sequence {
+                    Sequence::StoreThenLoad => vec!["write"],
+                    Sequence::LoadThenStore => vec!["read"],
+                },
+                1,
+            ),
+            (
+                "continuation",
+                ReplayProtocol {
+                    budget: 1,
+                    stop_requested: false,
+                    stop_rip: None,
+                    fault: None,
+                    continuation: Some(ContinuationProtocol {
+                        first_budget: 1,
+                        resume_instruction_index: 1,
+                        continuation_budget: 1,
+                    }),
+                },
+                "Complete",
+                expected_order(sequence),
+                1,
+            ),
+        ];
+        for (index, (name, protocol, expected_exit, expected_calls, expected_retired)) in
+            scenarios.into_iter().enumerate()
+        {
+            let envelope = CaseEnvelope::from_input(&input, seed, case_id * 10 + index, protocol);
+            let source = serialize_report(&sample_report(
+                envelope.clone(),
+                BackendAvailability {
+                    native: true,
+                    interpreter: true,
+                },
+            ));
+            let decoded = decode_replay_report(&source).unwrap();
+            assert_eq!(
+                decoded.case_envelope, envelope,
+                "round trip {name} {sequence:?}"
+            );
+            let replay = replay_report_text(&source).unwrap();
+            assert!(
+                replay.reproduced_mismatch == Some(true),
+                "replay did not reproduce {name}"
+            );
+            assert_eq!(
+                replay.native_results, replay.interpreter_results,
+                "{name} {sequence:?}"
+            );
+            let final_native = replay.native_results.last().unwrap();
+            let final_interpreter = replay.interpreter_results.last().unwrap();
+            assert!(
+                final_native.status.starts_with(expected_exit),
+                "{name}: {}",
+                final_native.status
+            );
+            assert_eq!(
+                final_native.callbacks,
+                expected_calls
+                    .iter()
+                    .map(|call| call.to_string())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(final_interpreter.callbacks, final_native.callbacks);
+            assert_eq!(final_native.retired, expected_retired);
+            if name == "continuation" {
+                assert_eq!(replay.native_results.len(), 2);
+                assert_eq!(replay.native_results[0].status, "BudgetExhausted");
+                assert_eq!(
+                    replay.native_results[0].callbacks,
+                    match sequence {
+                        Sequence::StoreThenLoad => vec!["write"],
+                        Sequence::LoadThenStore => vec!["read"],
+                    }
+                );
+            } else {
+                assert_eq!(replay.native_results.len(), 1);
+            }
+            if name == "success" && sequence == Sequence::StoreThenLoad {
+                let path = std::env::temp_dir().join(format!(
+                    "od-jit-replay-original-{}.json",
+                    std::process::id()
+                ));
+                std::fs::write(&path, &source).unwrap();
+                let output = replay_saved_case(&path).unwrap();
+                assert_ne!(path, output);
+                assert_eq!(
+                    std::fs::read_to_string(&path).unwrap(),
+                    source,
+                    "original report was overwritten"
+                );
+                let fresh =
+                    decode_replay_report(&std::fs::read_to_string(&output).unwrap()).unwrap();
+                assert_eq!(fresh.reproduced_mismatch, Some(true));
+                let _ = std::fs::remove_file(path);
+                let _ = std::fs::remove_file(output);
+                saved_path = Some(true);
+            }
+        }
+    }
+    assert_eq!(saved_path, Some(true));
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn saved_mismatch_report_replays_and_preserves_original_classes() {
+    let seed = 0x5343_3441_ffff_0034;
+    for sequence in [Sequence::StoreThenLoad, Sequence::LoadThenStore] {
+        let case_id = sequence as usize;
+        let input = generated_input(seed, case_id, Some(sequence));
+        let envelope =
+            CaseEnvelope::from_input(&input, seed, case_id, ReplayProtocol::successful_pair());
+        let native = Observation {
+            state: initial_state(&input, ENTRY_RIP + 6),
+            ram: input.ram.clone(),
+            callbacks: vec!["write", "read"],
+            status: "Complete".into(),
+            remaining_budget: 0,
+            retired: 2,
+        };
+        let mut corrupted = native.clone();
+        corrupted.state.gpr[0] ^= 1;
+        let saved_classes = mismatch_classes(&native, &corrupted);
+        assert_eq!(saved_classes, ["gpr[0]"]);
+
+        let original_text = mismatch_report(
+            "controlled_saved_mismatch",
+            &envelope,
+            &native,
+            &corrupted,
+            "controlled GPR corruption for replay-path coverage",
+        );
+        let decoded = decode_replay_report(&original_text).unwrap();
+        assert_eq!(decoded.mismatch_classes, saved_classes);
+        assert!(!decoded.equivalent);
+
+        let fresh = replay_report_text(&original_text).unwrap();
+        assert!(fresh.equivalent, "{fresh:#?}");
+        assert_eq!(fresh.mismatch_classes, Vec::<String>::new());
+        assert_eq!(fresh.reproduced_mismatch, Some(false));
+        assert_eq!(decoded.mismatch_classes, saved_classes);
+        assert_eq!(serialize_report(&decoded), original_text);
+    }
+}
+
+#[test]
+fn replay_refuses_to_claim_equivalence_without_native_backend() {
+    let input = generated_input(SEEDS[0], 0, Some(Sequence::StoreThenLoad));
+    let envelope = CaseEnvelope::from_input(&input, SEEDS[0], 0, ReplayProtocol::successful_pair());
+    let source = serialize_report(&sample_report(
+        envelope,
+        BackendAvailability {
+            native: true,
+            interpreter: true,
+        },
+    ));
+    let error = replay_report_text_with_backend(&source, false).unwrap_err();
+    assert!(error.contains("native JIT replay backend unavailable"));
+}
+
+#[test]
+#[ignore = "set OD_JIT_REPLAY_CASE to a saved versioned mismatch report"]
+fn replay_saved_case_from_environment() {
+    let path = replay_path_from_env(std::env::var_os("OD_JIT_REPLAY_CASE"))
+        .unwrap_or_else(|error| panic!("{error}"));
+    let replay_path =
+        replay_saved_case(&path).unwrap_or_else(|error| panic!("case replay failed: {error}"));
+    let report: ReplayReport = serde_json::from_str(
+        &std::fs::read_to_string(&replay_path).expect("fresh replay report is readable"),
+    )
+    .expect("fresh replay report is valid JSON");
+    assert_eq!(
+        report.reproduced_mismatch,
+        Some(true),
+        "replayed mismatch class differs; see {}",
+        replay_path.display()
+    );
 }

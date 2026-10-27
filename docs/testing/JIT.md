@@ -64,6 +64,19 @@ original sequence/register/flags/address/RAM input and both serialized
 observations under the system temporary directory. A failed file write is
 included in the panic output.
 
+To replay a saved report explicitly, run
+`OD_JIT_REPLAY_CASE=/absolute/path/case.json cargo test -p od-host --test memory_corpus replay_saved_case_from_environment -- --ignored --exact`.
+The ignored test requires this variable; if it is missing, an explicit replay
+fails with a diagnostic. It validates the version/profile, exact source bytes,
+supported CPU/RAM snapshot, and execution protocol before native publication.
+It replays each backend independently and compares each phase, including
+continuation from the prior phase's returned state and memory. A fresh
+`.replay-<pid>.json` report is created beside the original without overwriting
+it; that report includes the current environment, build revision, backend
+availability, result snapshots, and whether the saved mismatch classes were
+reproduced. Unsupported native hosts and malformed or unsupported reports
+cannot produce an equivalence-success report.
+
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git
 revision, build fingerprint, host/OS/toolchain, fixtures/corpus fingerprint,
