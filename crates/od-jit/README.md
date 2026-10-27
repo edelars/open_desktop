@@ -182,5 +182,7 @@ with versions. Dependency spans обязаны покрыть весь CodeView 
 overlaps, иметь executable permission и согласованные версии. Stable IDs и
 generation принадлежат caller; `CodeView` пока не подключён к MMU и не
 подтверждает production invalidation. Это только typed metadata/equality,
-без cache lookup/reuse/eviction и без замеров структуры поиска; S3-17 остаётся
-открытой.
+без production cache lookup/reuse/eviction. Отдельный bounded `tools/bench`
+prototype готовит recorded dispatch trace и сценарии сравнения `Vec`/HashMap;
+фактический capture и timed runs ещё не выполнялись, поэтому структура не
+выбрана и ускорение не заявляется. S3-17 остаётся открытой.

@@ -104,3 +104,62 @@ Seed / настройки / число потоков:
 ## Хранение
 
 Сырые данные хранить вне Git в `work/` с именем, включающим сценарий, дату и commit. Краткий отчёт, ссылки на данные и выводы по незавершённым измерениям хранить в `docs/reports/` после появления конкретного результата. Пока результат не получен, отчёт не создавать и производительность продукта не заявлять.
+
+## S3-17: translation-key lookup prototype
+
+`tools/bench` содержит отдельный prototype, не production cache. На ARM64
+macOS `record` читает newline-separated список путей к frozen fixture-v1
+JSON, запускает interpreter и текущий iterative dispatcher для correctness,
+а `RecordingExecutor` записывает `state.rip` при каждом реальном входе в
+`execute_one_block` до вызова `PublishedBlockExecutor`. Trace не выводится из
+финальных snapshots. На других платформах `record` явно отказывает; готовый
+trace можно проверить и измерить через portable `measure`.
+
+Пример после подготовки неизменённого списка case paths и создания `work`
+директории:
+
+```sh
+cargo run --release -p od-bench --offline -- record \
+  --case-list work/s3-17/cases.txt --output work/s3-17/dispatch-trace.json
+cargo run --release -p od-bench --offline -- measure \
+  --trace work/s3-17/dispatch-trace.json --process-run 1 \
+  --output work/s3-17/measure-1.json
+```
+
+Для независимых process-level repeats запускать measure с `--process-run 2`
+и `3` и разными output paths. Trace и key construction выполняются до timing.
+Каждый suite чередует Vec/HashMap порядок на 20–100 paired samples; все четыре
+kernel (cold Vec, cold HashMap, warm Vec, warm HashMap) калибруются отдельно до
+batch не короче 200 ms. Сохраняются raw elapsed/operation samples и
+median/min/max/IQR. Оба варианта ищут полный `TranslationKey` и выполняют один
+и тот же `dependencies_match_snapshot`; stale scenarios сначала находят старый
+key, затем обнаруживают mismatch текущей версии/permission.
+Cold batches удерживают построенные таблицы до остановки таймера и уничтожают
+их после него; число повторов ограничено временным memory budget. Если batch
+не достигает 200 ms до границы памяти, measurement завершается явной ошибкой.
+Полная fixture-v1 decode/admission проверяется до построения сценариев;
+каждый replay entry и каждый record принадлежат известным instruction
+boundaries. Сценарий observed unique keys сохраняет исходное fixture
+соответствие, включая несколько разных block keys одной программы. Полный
+30-minute limit включает подготовку/replay validation; report отдельно
+показывает `preparation_elapsed_ns`, которое не входит в timed series. Trace
+schema хранит capture host (OS/version, architecture/CPU), build-bound
+compiler/revision/source fingerprint/profile и отдельный runtime
+cwd/repository-revision/dirty context. Measure report сохраняет SHA-256 точных
+trace JSON bytes и соответствующую build/runtime metadata самого измерения.
+
+Recorded trace дополняется ограниченными synthetic-сценариями:
+1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse
+unique sequence, alternating hit/miss, stale mapping/backing/execute
+permission, aliases с общим backing и 1/2/4 dependency spans. Synthetic-
+сценарии помечаются в отчёте и не выдаются за workload trace. Размер
+логической памяти является нижней оценкой; отчёт исключает метаданные
+аллокатора и RSS процесса, которые prototype не измеряет.
+
+Ограничения: не более 1 010 inputs; 4 KiB code и 64 KiB fixture JSON на input;
+4,096 visits per input; 65,536 visits total; 4,096 keys; 128 MiB logical
+payload; 24 scenarios; 10 minutes trace capture; 30 minutes measure run. Limit
+нарушение завершает операцию ошибкой. Тесты покрывают malformed trace,
+admission сценариев, parity вариантов и stale hit. Реальный corpus trace и
+timed run ещё не выполнялись; lookup structure не выбрана, ускорение не
+заявляется.

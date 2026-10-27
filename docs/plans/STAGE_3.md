@@ -529,6 +529,18 @@ identities могут alias один backing ID/generation. IDs и ненуле�
 структуры поиска не добавлены; S3-17 остаётся открытой до измерения и
 оставшихся acceptance checks.
 
+**Benchmark prototype:** `tools/bench` содержит ARM64 macOS `record` wrapper
+вокруг реальных `dispatch::run` block-entry вызовов и portable `measure`
+replay. Replay заново строит keys вне timing и сравнивает `Vec` с
+`std::collections::HashMap` при одинаковом полном key equality и
+`dependencies_match_snapshot`. Отдельно предусмотрены cold construction+insert
+и warmed lookup+dependency validation; сценарии включают recorded trace,
+key-size ladder/observed count, hot loops, unique sequence, mixed hit/miss,
+stale mapping/backing/permission, aliases и 1/2/4 dependency spans. Это только
+прототип harness: capture corpus и timed runs ещё не запускались, структуру
+lookup не выбирали, ускорение не заявляется. Ограничения и команды описаны в
+[протоколе измерений](../testing/BENCHMARKS.md#s3-17-translation-key-lookup-prototype).
+
 ### S3-18. Реализовать ограниченный cache
 
 1. Добавить lookup, compile miss, publish и reuse; проверить версии до вставки и входа в block.

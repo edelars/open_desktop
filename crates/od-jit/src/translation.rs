@@ -202,6 +202,17 @@ impl TranslationKey {
         &self.dependencies
     }
 
+    /// Validate a current owner snapshot against this key's complete
+    /// dependency coverage. The caller separately compares the full key/source
+    /// bytes; this method checks whether the mapped executable backing is
+    /// still the same versioned object.
+    pub fn dependencies_match_snapshot(
+        &self,
+        current: &[CodeDependencySpan],
+    ) -> Result<bool, TranslationKeyError> {
+        Ok(validate_dependency_spans(self.code_base, self.code_end, current)? == self.dependencies)
+    }
+
     pub fn fetch_ranges(&self) -> &[GuestByteRange] {
         self.fetch_ranges.as_slice()
     }
@@ -417,6 +428,14 @@ fn validate_dependencies(
     code: CodeView<'_>,
     spans: &[CodeDependencySpan],
 ) -> Result<Vec<CodeDependencySpan>, TranslationKeyError> {
+    validate_dependency_spans(code.base_rip(), code.code_end(), spans)
+}
+
+fn validate_dependency_spans(
+    code_base: u64,
+    code_end: u64,
+    spans: &[CodeDependencySpan],
+) -> Result<Vec<CodeDependencySpan>, TranslationKeyError> {
     if spans.is_empty() {
         return Err(TranslationKeyError::NoDependencySpans);
     }
@@ -425,22 +444,19 @@ fn validate_dependencies(
 
     let mut mapping_snapshots = HashMap::new();
     let mut backing_versions = HashMap::new();
-    let mut expected_start = code.base_rip();
+    let mut expected_start = code_base;
 
     for (index, span) in sorted.iter().enumerate() {
         if span.start_rip >= span.end_rip {
             return Err(TranslationKeyError::EmptyDependencySpan { index });
         }
-        if span.start_rip < code.base_rip()
-            || span.end_rip > code.code_end()
-            || span.start_rip > code.code_end()
-        {
+        if span.start_rip < code_base || span.end_rip > code_end || span.start_rip > code_end {
             return Err(TranslationKeyError::DependencyOutsideCode {
                 index,
                 start_rip: span.start_rip,
                 end_rip: span.end_rip,
-                base_rip: code.base_rip(),
-                code_end: code.code_end(),
+                base_rip: code_base,
+                code_end,
             });
         }
         if !span.identity.executable {
@@ -486,9 +502,9 @@ fn validate_dependencies(
         expected_start = span.end_rip;
     }
 
-    if expected_start != code.code_end() {
+    if expected_start != code_end {
         return Err(TranslationKeyError::DependencyCoverageIncomplete {
-            expected_end: code.code_end(),
+            expected_end: code_end,
             actual_end: expected_start,
         });
     }
@@ -896,5 +912,22 @@ mod tests {
         // Runtime budget, STOP, GPR and RFLAGS are not accepted by this API;
         // equal compile inputs therefore remain equal across runtime calls.
         assert_eq!(key_a, key_b);
+    }
+
+    #[test]
+    fn dependency_snapshot_validation_reports_stale_without_rebuilding_key() {
+        let bytes = [0x48, 0xb8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let (code, block) = build(&bytes, 0x4000);
+        let original = one_span(code, identity(10, 1, 20, 1, true));
+        let key = key(code, &block, CompileFlavor::S0_09NativeBlock, &original).unwrap();
+        assert!(key.dependencies_match_snapshot(&original).unwrap());
+
+        let changed_mapping = one_span(code, identity(10, 2, 20, 1, true));
+        assert!(!key.dependencies_match_snapshot(&changed_mapping).unwrap());
+        let denied = one_span(code, identity(10, 1, 20, 1, false));
+        assert!(matches!(
+            key.dependencies_match_snapshot(&denied),
+            Err(TranslationKeyError::NonExecutableDependency { .. })
+        ));
     }
 }
