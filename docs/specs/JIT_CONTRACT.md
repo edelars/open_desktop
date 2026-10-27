@@ -429,6 +429,28 @@ composes this singleton → bare NOP fallback → existing pair across budgets
 windows do not retire or access guest data. Pair profiles are unchanged. See
 the [S3-20o report](../reports/STAGE_3_S3-20o_2026-10-27.md).
 
+#### S3-20p: address32 signed-displacement qword MOV in shared IR and dispatch
+
+The shared checked singleton additionally admits only
+`67 48 8B/89 /r disp8|disp32`: ModRM `mod=01/10`, data/base RAX..RBX, dword
+address size, qword operand size, and exact lengths five/eight. Its typed
+descriptor retains the decoded signed displacement. Exact source validation
+binds opcode, prefix order, ModRM mode/registers, and length to that decoded
+site; it does not derive displacement semantics from bytes. The decoder's
+`MemoryOperand::access_address_48` remains the only effective-address,
+wrapping, canonicality, and complete qword-range implementation. No SIB,
+RIP-relative/base-less form, extra prefix, extended register, arbitrary block,
+or pair-profile change is admitted.
+
+Direct V2/shared IR/interpreter parity covers disp8 -128/-1/0/1/127 and disp32
+MIN/MIN+1/-1/0/1/MAX-1/MAX for both MOV directions, base aliases, high base
+bits, modulo-2^32 signed addition, and the contiguous qword callback across
+`0xffff_ffff`. Shared IR fault payloads preserve CPU/RAM/budget/retirement;
+backend errors remain host errors; store+STOP preserves the successful write.
+Bounded dispatch composes the disp8 singleton → bare NOP fallback → existing
+pair and tests partial disp8 and disp32 windows. Pair admissions are unchanged.
+See the [S3-20p report](../reports/STAGE_3_S3-20p_2026-10-27.md).
+
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
 alignment, same/different ranges, and safe partial overlaps for load→store;

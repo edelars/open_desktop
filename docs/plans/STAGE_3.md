@@ -162,6 +162,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20m | Direct-base signed disp8/disp32 MOV через shared IR и bounded dispatcher | Только singleton `48 8B/89 /r`, ModRM `mod=01/10`, base/data RAX..RBX, exact length 4/7; no SIB/prefix/wider block |
 | [partial] | S3-20n | No-displacement SIB MOV через shared IR и bounded dispatcher | Только `48 8B/89 /r sib`, ModRM `mod=00,r/m=100`, data/base/index RAX..RBX, scale 1/2/4/8, ровно 4 bytes |
 | [partial] | S3-20o | Address32 direct-base qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r`, ModRM `mod=00`, Dword EA/Qword data, base/data RAX..RBX, ровно 4 bytes |
+| [partial] | S3-20p | Address32 signed-displacement qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r disp8|disp32`, ModRM `mod=01/10`, Dword EA/Qword data, base/data RAX..RBX, ровно 5/8 bytes |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1098,6 +1099,29 @@ when STOP follows. Bounded dispatch composes the singleton → bare NOP
 interpreter fallback → existing pair with budgets 0..4, STOP and continuation
 from actual RIP. See the
 [S3-20o report](../reports/STAGE_3_S3-20o_2026-10-27.md).
+
+#### S3-20p. Address32 signed displacement through shared IR and bounded dispatch
+
+The shared checked singleton additionally admits only exact
+`67 48 8B/89 /r disp8|disp32` with ModRM `mod=01/10`, data/base RAX..RBX,
+and exact lengths five/eight. The descriptor retains qword data width and
+dword address width plus the decoder-provided signed displacement. Existing
+`MemoryOperand::access_address_48` remains the only EA and access-range
+semantics; admission checks the encoding and displacement range but does not
+re-sign-extend or compute an address. No SIB, RIP-relative form,
+extra/reordered prefixes, wider register, or multi-instruction profile is
+added; pair admissions remain unchanged.
+
+Native direct V2/shared IR/interpreter cases compare disp8 -128/-1/0/1/127
+and disp32 MIN/MIN+1/-1/0/1/MAX-1/MAX for load and store, with destination or
+source aliasing the base. They verify high base bits are ignored, signed
+addition wraps modulo 2^32, and a qword at `0xffff_fffc` uses one contiguous
+8-byte callback through `0x1_0000_0003`. IR architectural faults preserve exact
+payload and CPU/RAM/budget/retirement; backend failures remain host errors;
+successful store+STOP remains committed. Bounded dispatch composes disp8
+singleton → bare NOP fallback → existing pair for budgets 0..4 and resumes
+from the actual RIP; partial disp8/disp32 windows stop without effects. See
+the [S3-20p report](../reports/STAGE_3_S3-20p_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

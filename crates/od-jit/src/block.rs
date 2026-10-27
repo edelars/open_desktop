@@ -1273,7 +1273,7 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x8b
         && instruction.operand_size == OperandSize::Qword
-        && matches!(instruction.length, 3 | 4 | 7)
+        && matches!(instruction.length, 3 | 4 | 5 | 7 | 8)
         && (destination.register() as u8) < 4
         && destination.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
@@ -1296,7 +1296,7 @@ pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x89
         && instruction.operand_size == OperandSize::Qword
-        && matches!(instruction.length, 3 | 4 | 7)
+        && matches!(instruction.length, 3 | 4 | 5 | 7 | 8)
         && (source.register() as u8) < 4
         && source.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
@@ -1313,11 +1313,13 @@ fn is_checked_qword_memory_address(
     match instruction.address_size {
         OperandSize::Dword => {
             instruction.prefixes.address_override
-                && instruction.length == 4
+                && address32_checked_displacement_matches_length(
+                    instruction.length,
+                    operand.displacement,
+                )
                 && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
                 && operand.index.is_none()
                 && operand.scale == 1
-                && operand.displacement == 0
         }
         OperandSize::Qword => {
             !instruction.prefixes.address_override
@@ -1411,11 +1413,25 @@ pub(crate) fn exact_qword_address32_memory_bytes(
     else {
         return false;
     };
-    bytes.len() == 4
-        && bytes[0..3] == [0x67, 0x48, opcode]
-        && bytes[3] >> 6 == 0
+    let expected_mode = match bytes.len() {
+        4 => 0,
+        5 => 1,
+        8 => 2,
+        _ => return false,
+    };
+    bytes[0..3] == [0x67, 0x48, opcode]
+        && bytes[3] >> 6 == expected_mode
         && (bytes[3] >> 3) & 7 < 4
         && bytes[3] & 7 < 4
+}
+
+fn address32_checked_displacement_matches_length(length: u8, displacement: i64) -> bool {
+    match length {
+        4 => displacement == 0,
+        5 => (i8::MIN as i64..=i8::MAX as i64).contains(&displacement),
+        8 => (i32::MIN as i64..=i32::MAX as i64).contains(&displacement),
+        _ => false,
+    }
 }
 
 fn direct_checked_displacement_matches_length(length: u8, displacement: i64) -> bool {

@@ -582,11 +582,16 @@ fn is_checked_memory_address(
     instruction_length: u64,
 ) -> bool {
     if operand.address_size == od_isa::OperandSize::Dword {
-        return instruction_length == 4
+        return matches!(instruction_length, 4 | 5 | 8)
             && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
             && operand.index.is_none()
             && operand.scale == 1
-            && operand.displacement == 0;
+            && match instruction_length {
+                4 => operand.displacement == 0,
+                5 => (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement),
+                8 => (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement),
+                _ => false,
+            };
     }
     if operand.address_size != od_isa::OperandSize::Qword {
         return false;

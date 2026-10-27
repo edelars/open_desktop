@@ -1454,7 +1454,6 @@ mod tests {
             for bytes in [
                 vec![0x48, opcode, 0xc3],             // mod=11
                 vec![0x48, opcode, 0x44, 0x18],       // SIB with disp8
-                vec![0x67, 0x48, opcode, 0x43, 0x01], // address override
                 vec![0x48, opcode, 0x43, 0x01, 0x90], // trailing byte
             ] {
                 let code = CodeView::new(0x5500, &bytes).unwrap();
@@ -1788,8 +1787,6 @@ mod tests {
                 vec![0x67, 0x48, opcode],
                 vec![0x67, 0x48, opcode, 0xc0],       // register form
                 vec![0x67, 0x48, opcode, 0x04, 0x18], // SIB
-                vec![0x67, 0x48, opcode, 0x40, 0],    // disp8
-                vec![0x67, 0x48, opcode, 0x80, 0, 0, 0, 0], // disp32
                 vec![0x67, 0x4c, opcode, 0],          // extended data/base
                 vec![0x48, 0x67, opcode, 0],          // wrong prefix order
                 vec![0x67, 0x48, opcode, 0, 0x90],    // trailing byte
@@ -1840,6 +1837,29 @@ mod tests {
                             bytes.extend_from_slice(&displacement.to_le_bytes());
                         }
                         let code = CodeView::new(0x27a0, &bytes).unwrap();
+                        let ir_site = match access {
+                            MemorySiteOperationV2::Load => {
+                                let ir = compile_ir_memory_load_block_v2(code, 0x27a0).unwrap();
+                                assert_eq!(
+                                    ir.site(),
+                                    compile_memory_load_block_v2(code, 0x27a0).unwrap().site()
+                                );
+                                ir.site().clone()
+                            }
+                            MemorySiteOperationV2::Store => {
+                                let ir = compile_ir_memory_store_block_v2(code, 0x27a0).unwrap();
+                                assert_eq!(
+                                    ir.site(),
+                                    compile_memory_store_block_v2(code, 0x27a0).unwrap().site()
+                                );
+                                ir.site().clone()
+                            }
+                        };
+                        assert_eq!(ir_site.operand.address_size, od_isa::OperandSize::Dword);
+                        assert_eq!(ir_site.operand.size, od_isa::OperandSize::Qword);
+                        assert_eq!(ir_site.operand.displacement, i64::from(displacement));
+                        assert_eq!(ir_site.next_rip(), 0x27a0 + bytes.len() as u64);
+                        assert!(ir_site.matches_source_bytes(&bytes, access));
                         let artifact = match access {
                             MemorySiteOperationV2::Load => {
                                 compile_memory_load_block_v2(code, 0x27a0).unwrap().artifact
