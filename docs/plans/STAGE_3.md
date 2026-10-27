@@ -164,6 +164,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20o | Address32 direct-base qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r`, ModRM `mod=00`, Dword EA/Qword data, base/data RAX..RBX, ровно 4 bytes |
 | [partial] | S3-20p | Address32 signed-displacement qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r disp8|disp32`, ModRM `mod=01/10`, Dword EA/Qword data, base/data RAX..RBX, ровно 5/8 bytes |
 | [partial] | S3-20q | 64-bit SIB signed-displacement qword MOV через shared IR и bounded dispatcher | Только `48 8B/89 /r sib disp8|disp32`, ModRM `mod=01/10,r/m=100`, base/index/data RAX..RBX, scale1/2/4/8, ровно 5/8 bytes |
+| [partial] | S3-20r | Address32 no-displacement SIB qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r sib`, ModRM `mod=00,r/m=100`, data/base/index RAX..RBX, scale1/2/4/8, ровно 5 bytes |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1148,6 +1149,31 @@ budgets 0..4, resumes from the actual RIP after STOP, and rejects invalid SIB
 fields without a helper call. Partial disp8/disp32 windows stop before
 publication or data access. Pair admissions remain unchanged. See the
 [S3-20q report](../reports/STAGE_3_S3-20q_2026-10-27.md).
+
+#### S3-20r. Address32 no-displacement SIB through shared IR and bounded dispatch
+
+The shared checked singleton admits exactly `67 48 8B/89 /r sib` with ModRM
+`mod=00,r/m=100`, RAX..RBX data/base/index registers, scale 1/2/4/8, qword
+data, dword address size and exact length five. The raw source validator
+distinguishes it from address32 direct-base disp8 (ModRM `mod=01`), ordinary
+64-bit SIB (no `67` prefix), and displacement-bearing SIB forms. The decoder's
+`MemoryOperand` and `access_address_48` remain the only address semantics; no
+EA computation was added. No-index/no-base specials, RSP/RBP or extended
+register encodings, address32 SIB with displacement, extra prefixes and
+trailing bytes remain unsupported. The 9-byte addr32 SIB disp32 form is
+outside the fixed eight-byte site storage and is rejected. Pair admissions
+remain unchanged.
+
+Descriptor and native direct V2/shared IR/interpreter checks cover both MOV
+directions, every supported data/base/index register and scale, aliases,
+ignored high GPR halves, and wrapping modulo 2^32. Callback evidence includes
+a qword beginning at `0xffff_fffc`, proving the qword access continues linearly
+past 4 GiB. Fault payloads preserve state/RAM/budget/retirement, backend errors
+remain host errors, and successful store+STOP retains its commit. Bounded
+dispatch composes addr32 SIB → bare NOP fallback → existing pair at budgets
+0..4, checks no-effect guards and continuation from actual RIP, and rejects
+partial windows and forbidden fields before memory access. See the
+[S3-20r report](../reports/STAGE_3_S3-20r_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

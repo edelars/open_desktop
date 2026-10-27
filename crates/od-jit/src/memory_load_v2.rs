@@ -624,6 +624,12 @@ pub fn compile_ir_memory_store_block_v2(
             bytes.len() as u8,
             0x89,
         )
+        || crate::block::exact_qword_address32_sib_memory_bytes(
+            code,
+            entry_rip,
+            bytes.len() as u8,
+            0x89,
+        )
         || crate::block::exact_qword_sib_displacement_memory_bytes(
             code,
             entry_rip,
@@ -754,6 +760,12 @@ fn checked_load_metadata_v2(
         || !crate::block::is_checked_qword_load_form(decoded)
         || !(crate::block::exact_direct_qword_memory_bytes(code, entry_rip, decoded.length, 0x8b)
             || crate::block::exact_qword_address32_memory_bytes(
+                code,
+                entry_rip,
+                decoded.length,
+                0x8b,
+            )
+            || crate::block::exact_qword_address32_sib_memory_bytes(
                 code,
                 entry_rip,
                 decoded.length,
@@ -1443,7 +1455,6 @@ mod tests {
                 vec![0x4a, opcode, 0x04, 0x18],       // extended index
                 vec![0x49, opcode, 0x04, 0x18],       // extended base
                 vec![0x48, opcode, 0x04, 0x18, 0x90], // trailing byte
-                vec![0x67, 0x48, opcode, 0x04, 0x18], // address override
             ] {
                 let code = CodeView::new(0x5700, &source).unwrap();
                 let result = if opcode == 0x8b {
@@ -1895,11 +1906,10 @@ mod tests {
         ] {
             for bytes in [
                 vec![0x67, 0x48, opcode],
-                vec![0x67, 0x48, opcode, 0xc0],       // register form
-                vec![0x67, 0x48, opcode, 0x04, 0x18], // SIB
-                vec![0x67, 0x4c, opcode, 0],          // extended data/base
-                vec![0x48, 0x67, opcode, 0],          // wrong prefix order
-                vec![0x67, 0x48, opcode, 0, 0x90],    // trailing byte
+                vec![0x67, 0x48, opcode, 0xc0],    // register form
+                vec![0x67, 0x4c, opcode, 0],       // extended data/base
+                vec![0x48, 0x67, opcode, 0],       // wrong prefix order
+                vec![0x67, 0x48, opcode, 0, 0x90], // trailing byte
             ] {
                 let code = CodeView::new(0x27d0, &bytes).unwrap();
                 let result = match access {
@@ -1908,6 +1918,95 @@ mod tests {
                     }
                     MemorySiteOperationV2::Store => {
                         compile_ir_memory_store_block_v2(code, 0x27d0).map(|_| ())
+                    }
+                };
+                assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ir_address32_sib_no_displacement_has_exact_qword_descriptor() {
+        for (opcode, access) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data in 0..4_u8 {
+                for base in 0..4_u8 {
+                    for index in 0..4_u8 {
+                        for scale_shift in 0..4_u8 {
+                            let bytes = [
+                                0x67,
+                                0x48,
+                                opcode,
+                                (data << 3) | 4,
+                                (scale_shift << 6) | (index << 3) | base,
+                            ];
+                            let code = CodeView::new(0x27e0, &bytes).unwrap();
+                            let (site, source) = match access {
+                                MemorySiteOperationV2::Load => {
+                                    let ir = compile_ir_memory_load_block_v2(code, 0x27e0).unwrap();
+                                    let direct =
+                                        compile_memory_load_block_v2(code, 0x27e0).unwrap();
+                                    assert_eq!(ir.site(), direct.site());
+                                    (ir.site().clone(), ir.source_bytes().to_vec())
+                                }
+                                MemorySiteOperationV2::Store => {
+                                    let ir =
+                                        compile_ir_memory_store_block_v2(code, 0x27e0).unwrap();
+                                    let direct =
+                                        compile_memory_store_block_v2(code, 0x27e0).unwrap();
+                                    assert_eq!(ir.site(), direct.site());
+                                    (ir.site().clone(), ir.source_bytes().to_vec())
+                                }
+                            };
+                            assert_eq!(source, bytes);
+                            assert_eq!(site.guest_rip(), 0x27e0);
+                            assert_eq!(site.next_rip(), 0x27e5);
+                            assert_eq!(site.operand().address_size, od_isa::OperandSize::Dword);
+                            assert_eq!(site.operand().size, od_isa::OperandSize::Qword);
+                            assert_eq!(
+                                site.operand().base,
+                                AddressBase::Register(Register::from_encoding(base).unwrap())
+                            );
+                            assert_eq!(
+                                site.operand().index,
+                                Some(Register::from_encoding(index).unwrap())
+                            );
+                            assert_eq!(site.operand().scale, 1 << scale_shift);
+                            assert_eq!(site.operand().displacement, 0);
+                            assert!(site.matches_source_bytes(&bytes, access));
+                        }
+                    }
+                }
+            }
+        }
+
+        for (opcode, access) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for bytes in [
+                vec![0x67, 0x48, opcode],
+                vec![0x67, 0x48, opcode, 0x04],          // missing SIB
+                vec![0x67, 0x48, opcode, 0xc0, 0x18],    // register mode
+                vec![0x67, 0x48, opcode, 0x04, 0x20],    // no-index
+                vec![0x67, 0x48, opcode, 0x04, 0x25],    // no-base and no-index specials
+                vec![0x67, 0x48, opcode, 0x04, 0x28],    // index outside RAX..RBX
+                vec![0x67, 0x48, opcode, 0x04, 0x1d],    // no-base SIB with missing disp32
+                vec![0x67, 0x4c, opcode, 0x04, 0x18],    // extended data
+                vec![0x48, 0x67, opcode, 0x04, 0x18],    // wrong prefix order
+                vec![0x67, 0x48, opcode, 0x44, 0x18, 0], // displacement
+                vec![0x67, 0x48, opcode, 0x84, 0x18, 0, 0, 0, 0], // disp32
+                vec![0x67, 0x48, opcode, 0x04, 0x18, 0x90], // trailing byte
+            ] {
+                let code = CodeView::new(0x27f0, &bytes).unwrap();
+                let result = match access {
+                    MemorySiteOperationV2::Load => {
+                        compile_ir_memory_load_block_v2(code, 0x27f0).map(|_| ())
+                    }
+                    MemorySiteOperationV2::Store => {
+                        compile_ir_memory_store_block_v2(code, 0x27f0).map(|_| ())
                     }
                 };
                 assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
@@ -2002,7 +2101,6 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x80, 0, 0, 0],          // truncated disp32
                 vec![0x67, 0x48, opcode, 0x40, 0, 0x90],          // trailing byte
                 vec![0x67, 0x48, opcode, 0x80, 0, 0, 0, 0, 0x90], // trailing byte
-                vec![0x67, 0x48, opcode, 0x04, 0],                // SIB form
                 vec![0x67, 0x48, opcode, 0x40 | (4 << 3), 0],     // unsupported base
                 vec![0x67, 0x4c, opcode, 0x40, 0],                // extended data/base register
                 vec![0x48, 0x67, opcode, 0x40, 0],                // reordered prefix

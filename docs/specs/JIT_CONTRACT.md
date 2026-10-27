@@ -478,6 +478,31 @@ resumes from actual RIP, rejects invalid SIB fields without helper access,
 and classifies partial disp8/disp32 windows as `BoundaryReached`. See the
 [S3-20q report](../reports/STAGE_3_S3-20q_2026-10-27.md).
 
+#### S3-20r: address32 no-displacement SIB qword MOV in shared IR and dispatch
+
+The exact additional singleton is `67 48 8B/89 /r sib`, with ModRM
+`mod=00,r/m=100`, RAX..RBX data/base/index encodings, scale 1/2/4/8, qword
+data, dword address size, and five source bytes. `MemorySiteV2` validates the
+decoded base, index, scale, zero displacement and source bytes together.
+Address32 direct disp8 has the same total length but uses ModRM `mod=01` and a
+direct base; the validator keeps those shapes separate. Ordinary 64-bit SIB
+uses no `67` prefix. Address32 SIB displacement, including a 9-byte disp32
+form beyond the site's eight-byte source storage, is unsupported. No-index
+and no-base specials, RSP/RBP and extended fields, extra prefixes and trailing
+bytes are rejected. The decoder's `MemoryOperand::access_address_48` remains
+the sole source for 32-bit effective-address truncation, scale/add wrapping,
+canonicality and contiguous qword range checks. Existing pair profiles are
+unchanged.
+
+Native direct V2/shared IR/interpreter cases cover both operations and all
+data/base/index/scale combinations, aliases, high register halves, wraparound,
+and a contiguous qword access beginning at `0xffff_fffc`. Fault, backend error
+and successful store+STOP checks preserve the established commit contract.
+Bounded dispatch composes this singleton → bare NOP interpreter fallback →
+existing pair across budgets 0..4, with actual-RIP continuation and no repeated
+access; partial byte windows stop without publishing or calling data memory.
+See the [S3-20r report](../reports/STAGE_3_S3-20r_2026-10-27.md).
+
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
 alignment, same/different ranges, and safe partial overlaps for load→store;

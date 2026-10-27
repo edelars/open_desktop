@@ -173,24 +173,36 @@ impl MemorySiteV2 {
         }
 
         if self.operand.address_size == od_isa::OperandSize::Dword {
-            let displacement_is_valid = match length {
-                4 => self.operand.displacement == 0,
-                5 => i8::try_from(self.operand.displacement).is_ok(),
-                8 => i32::try_from(self.operand.displacement).is_ok(),
-                _ => false,
-            };
-            return displacement_is_valid
-                && self.operand.index.is_none()
+            let supported_base = matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(
+                    od_isa::Register::Rax
+                        | od_isa::Register::Rcx
+                        | od_isa::Register::Rdx
+                        | od_isa::Register::Rbx
+                )
+            );
+            let direct = self.operand.index.is_none()
                 && self.operand.scale == 1
-                && matches!(
-                    self.operand.base,
-                    od_isa::long_decode::AddressBase::Register(
+                && match length {
+                    4 => self.operand.displacement == 0,
+                    5 => i8::try_from(self.operand.displacement).is_ok(),
+                    8 => i32::try_from(self.operand.displacement).is_ok(),
+                    _ => false,
+                };
+            let indexed = length == 5
+                && self.operand.displacement == 0
+                && self.operand.index.is_some_and(|index| {
+                    matches!(
+                        index,
                         od_isa::Register::Rax
                             | od_isa::Register::Rcx
                             | od_isa::Register::Rdx
                             | od_isa::Register::Rbx
                     )
-                );
+                })
+                && matches!(self.operand.scale, 1 | 2 | 4 | 8);
+            return supported_base && (direct || indexed);
         }
 
         let displacement_is_valid = match (self.operand.base, self.operand.index, length) {
@@ -260,6 +272,33 @@ impl MemorySiteV2 {
             let od_isa::long_decode::AddressBase::Register(decoded_base) = self.operand.base else {
                 return false;
             };
+            if base == 4 {
+                let Some(&sib) = source.get(4) else {
+                    return false;
+                };
+                let sib_base = sib & 7;
+                let sib_index = (sib >> 3) & 7;
+                let scale = 1_u8 << (sib >> 6);
+                let Some(decoded_sib_base) = od_isa::Register::from_encoding(sib_base) else {
+                    return false;
+                };
+                let Some(decoded_sib_index) = od_isa::Register::from_encoding(sib_index) else {
+                    return false;
+                };
+                return source.len() == 5
+                    && mode == 0
+                    && data_register < 4
+                    && sib_base < 4
+                    && sib_index < 4
+                    && site_register == Some(data_register)
+                    && self.next_rip.checked_sub(self.guest_rip) == Some(5)
+                    && self.operand.address_size == od_isa::OperandSize::Dword
+                    && self.operand.size == od_isa::OperandSize::Qword
+                    && decoded_base == decoded_sib_base
+                    && self.operand.index == Some(decoded_sib_index)
+                    && self.operand.scale == scale
+                    && self.operand.displacement == 0;
+            }
             let (expected_length, displacement_valid) = match mode {
                 0 => (4, self.operand.displacement == 0),
                 1 => (5, i8::try_from(self.operand.displacement).is_ok()),

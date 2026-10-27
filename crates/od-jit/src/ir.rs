@@ -582,9 +582,9 @@ fn is_checked_memory_address(
     instruction_length: u64,
 ) -> bool {
     if operand.address_size == od_isa::OperandSize::Dword {
-        return matches!(instruction_length, 4 | 5 | 8)
-            && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
-            && operand.index.is_none()
+        let base_supported =
+            matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4);
+        let direct = operand.index.is_none()
             && operand.scale == 1
             && match instruction_length {
                 4 => operand.displacement == 0,
@@ -592,6 +592,11 @@ fn is_checked_memory_address(
                 8 => (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement),
                 _ => false,
             };
+        let indexed = instruction_length == 5
+            && operand.index.is_some_and(|index| (index as u8) < 4)
+            && matches!(operand.scale, 1 | 2 | 4 | 8)
+            && operand.displacement == 0;
+        return base_supported && (direct || indexed);
     }
     if operand.address_size != od_isa::OperandSize::Qword {
         return false;
