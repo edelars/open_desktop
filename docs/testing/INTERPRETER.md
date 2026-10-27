@@ -2080,3 +2080,15 @@ literal CLI execution and JIT/native denial. This local slice does not cover
 MMX, memory, other widths, saturation, extra prefixes, REX.W/X, VEX/EVEX, host
 exception delivery, or physical acceptance. Mac mini/SSH remains deferred to
 the combined final substage.
+
+## Local PUNPCKHDQ slice — S2-35.29
+
+The local profile `s2-long-punpckhdq-reg-v1` decodes only
+`66 [one optional REX.R/B] 0F 6A /r` with register ModR/M and interleaves the
+two high little-endian dwords into `[DEST[2], SRC[2], DEST[3], SRC[3]]`. Tests
+cover the high-dword sentinel, aliasing, all consumed byte values and walking
+bits, low-half independence, every XMM pair, state and no-callback preservation,
+missing state, truncation, stop/budget atomicity, strict encoding negatives,
+and the literal fixture. JIT and native admission remain closed; no physical
+acceptance is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md) and
+[Stage 2 plan](../plans/STAGE_2.md#s2-3529--local-only-bounded-register-punpckhdq).

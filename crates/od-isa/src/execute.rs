@@ -1285,6 +1285,7 @@ fn step_tracked_with_stop(
         | Operation::PunpcklwdRegister { .. }
         | Operation::PunpckhwdRegister { .. }
         | Operation::PunpckldqRegister { .. }
+        | Operation::PunpckhdqRegister { .. }
         | Operation::PsubwRegister { .. }
         | Operation::PadduswRegister { .. }
         | Operation::PsubuswRegister { .. }
@@ -3055,6 +3056,29 @@ fn step_tracked_with_stop(
                     u32::from_le_bytes(source[lane * 4..lane * 4 + 4].try_into().unwrap());
                 destination[lane * 8..lane * 8 + 4].copy_from_slice(&dest_dword.to_le_bytes());
                 destination[lane * 8 + 4..lane * 8 + 8].copy_from_slice(&src_dword.to_le_bytes());
+            }
+        }
+        Operation::PunpckhdqRegister {
+            destination,
+            source,
+        } => {
+            let source = state
+                .sse
+                .as_ref()
+                .expect("PUNPCKHDQ state was prevalidated")
+                .xmm[usize::from(source)];
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("PUNPCKHDQ state was prevalidated");
+            let destination = &mut sse.xmm[usize::from(destination)];
+            let original = *destination;
+            for lane in 0..2 {
+                let dest_offset = 8 + lane * 4;
+                destination[lane * 8..lane * 8 + 4]
+                    .copy_from_slice(&original[dest_offset..dest_offset + 4]);
+                destination[lane * 8 + 4..lane * 8 + 8]
+                    .copy_from_slice(&source[dest_offset..dest_offset + 4]);
             }
         }
         Operation::PsubwRegister {
@@ -74355,6 +74379,236 @@ mod tests {
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Unsupported { opcode: 0x62 })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        for cut in 0..code.len() {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code[..cut], 0x1000);
+            assert!(step(&mut state, &mut memory, AccessContext::default()).is_err());
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        for (budget, stop, exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x1000);
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip: stop,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(result.exit, exit);
+        }
+    }
+
+    #[test]
+    fn punpckhdq_high_dword_interleave_preserves_state_and_handles_aliasing() {
+        let code = [0x66, 0x0f, 0x6a, 0xc1];
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.x87 = Some(X87State::fixture_seed());
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        state.sse.as_mut().unwrap().xmm[0] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        state.sse.as_mut().unwrap().xmm[1] = [
+            0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d,
+            0x8e, 0x8f,
+        ];
+        let before = state.clone();
+        let mut expected = before.clone();
+        expected.rip += 4;
+        expected.sse.as_mut().unwrap().xmm[0] = [
+            8, 9, 10, 11, 0x88, 0x89, 0x8a, 0x8b, 12, 13, 14, 15, 0x8c, 0x8d, 0x8e, 0x8f,
+        ];
+        let mut memory = Memory::at(&code, 0x1000);
+        step(&mut state, &mut memory, AccessContext::default()).unwrap();
+        assert_eq!(state, expected);
+        assert!(memory.accesses.is_empty());
+
+        let self_alias = [0x66, 0x0f, 0x6a, 0xc0];
+        state.sse.as_mut().unwrap().xmm[0] = [
+            0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd,
+            0xde, 0xdf,
+        ];
+        let mut memory = Memory::at(&self_alias, state.rip);
+        step(&mut state, &mut memory, AccessContext::default()).unwrap();
+        assert_eq!(
+            state.sse.as_ref().unwrap().xmm[0],
+            [
+                0xd8, 0xd9, 0xda, 0xdb, 0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf, 0xdc, 0xdd,
+                0xde, 0xdf
+            ]
+        );
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn punpckhdq_consumes_only_high_dwords_and_covers_lane_bits() {
+        let code = [0x66, 0x0f, 0x6a, 0xc1];
+        for operand in 0..2 {
+            for position in 0..8 {
+                for value in 0..=255u16 {
+                    let mut state = LongModeState::default();
+                    state.rip = 0x1000;
+                    state.x87 = Some(X87State::fixture_seed());
+                    state.sse = Some(SseState {
+                        xmm: [[0x5a; 16]; 16],
+                        mxcsr: 0x1f80,
+                    });
+                    state.sse.as_mut().unwrap().xmm[0][8..]
+                        .copy_from_slice(&[8, 9, 10, 11, 12, 13, 14, 15]);
+                    state.sse.as_mut().unwrap().xmm[1][8..]
+                        .copy_from_slice(&[0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f]);
+                    state.sse.as_mut().unwrap().xmm[operand][8 + position] = value as u8;
+                    let mut expected = [
+                        8, 9, 10, 11, 0x88, 0x89, 0x8a, 0x8b, 12, 13, 14, 15, 0x8c, 0x8d, 0x8e,
+                        0x8f,
+                    ];
+                    let out = (position / 4) * 8 + operand * 4 + position % 4;
+                    expected[out] = value as u8;
+                    let mut memory = Memory::at(&code, 0x1000);
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap();
+                    assert_eq!(
+                        state.sse.as_ref().unwrap().xmm[0],
+                        expected,
+                        "operand={operand}, position={position}, value={value}"
+                    );
+                    assert!(memory.accesses.is_empty());
+                }
+            }
+        }
+        let expected = [
+            8, 9, 10, 11, 0x88, 0x89, 0x8a, 0x8b, 12, 13, 14, 15, 0x8c, 0x8d, 0x8e, 0x8f,
+        ];
+        for value in 0..=255u8 {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[value; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            state.sse.as_mut().unwrap().xmm[0][8..]
+                .copy_from_slice(&[8, 9, 10, 11, 12, 13, 14, 15]);
+            state.sse.as_mut().unwrap().xmm[1][8..]
+                .copy_from_slice(&[0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f]);
+            let mut memory = Memory::at(&code, 0x1000);
+            step(&mut state, &mut memory, AccessContext::default()).unwrap();
+            assert_eq!(state.sse.as_ref().unwrap().xmm[0], expected);
+            assert!(memory.accesses.is_empty());
+        }
+        for operand in 0..2 {
+            for bit in 0..128 {
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.x87 = Some(X87State::fixture_seed());
+                state.sse = Some(SseState {
+                    xmm: [[0; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+                state.sse.as_mut().unwrap().xmm[operand][bit / 8] = 1 << (bit % 8);
+                let mut memory = Memory::at(&code, 0x1000);
+                step(&mut state, &mut memory, AccessContext::default()).unwrap();
+                let actual = state.sse.as_ref().unwrap().xmm[0];
+                let mut expected = [0; 16];
+                if bit >= 64 {
+                    let input_byte = bit / 8;
+                    let output = ((input_byte - 8) / 4) * 8
+                        + if operand == 0 { 0 } else { 4 }
+                        + (input_byte % 4);
+                    expected[output] = 1 << (bit % 8);
+                }
+                assert_eq!(actual, expected, "operand={operand}, bit={bit}");
+                assert!(memory.accesses.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn punpckhdq_all_xmm_pairs_and_failures_are_atomic() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut code = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    code.push(rex);
+                }
+                code.extend([0x0f, 0x6a, modrm]);
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.x87 = Some(X87State::fixture_seed());
+                state.sse = Some(SseState {
+                    xmm: [[0; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+                for register in 0..16 {
+                    for byte in 0..16 {
+                        state.sse.as_mut().unwrap().xmm[register][byte] =
+                            register as u8 * 16 + byte as u8;
+                    }
+                }
+                let before = state.clone();
+                let mut expected = before.clone();
+                let d = before.sse.as_ref().unwrap().xmm[destination as usize];
+                let s = before.sse.as_ref().unwrap().xmm[source as usize];
+                expected.sse.as_mut().unwrap().xmm[destination as usize] = [
+                    d[8], d[9], d[10], d[11], s[8], s[9], s[10], s[11], d[12], d[13], d[14], d[15],
+                    s[12], s[13], s[14], s[15],
+                ];
+                expected.rip += code.len() as u64;
+                let mut memory = Memory::at(&code, 0x1000);
+                step(&mut state, &mut memory, AccessContext::default()).unwrap();
+                assert_eq!(state, expected, "dest={destination}, source={source}");
+                assert!(memory.accesses.is_empty());
+            }
+        }
+        let code = [0x66, 0x0f, 0x6a, 0xc1];
+        for missing_x87 in [true, false] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            if missing_x87 {
+                state.x87 = None;
+            } else {
+                state.sse = None;
+            }
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x1000);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: 0x6a })
             );
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());

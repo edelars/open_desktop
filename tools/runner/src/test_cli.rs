@@ -6933,4 +6933,43 @@ mod tests {
         };
         assert_eq!(&value.state.sse.as_ref().unwrap().xmm[8][..4], "1013");
     }
+
+    #[test]
+    fn punpckhdq_literal_fixture_runs_in_interpreter_and_jit_stays_denied() {
+        let fixture = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_29_punpckhdq_register.case.json"
+        ))
+        .expect("PUNPCKHDQ schema");
+        fixture.fixture.validate().unwrap();
+        let code = fixture
+            .fixture
+            .memory
+            .iter()
+            .find(|r| r.region_id == "code")
+            .unwrap()
+            .initial_bytes_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            od_jit::compile(&code).is_err(),
+            "PUNPCKHDQ remains JIT-denied"
+        );
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(1) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("PUNPCKHDQ fixture snapshot unavailable")
+        };
+        assert_eq!(
+            value.state.sse.as_ref().unwrap().xmm[8],
+            "08090a0b88898a8b0c0d0e0f8c8d8e8f"
+        );
+    }
 }

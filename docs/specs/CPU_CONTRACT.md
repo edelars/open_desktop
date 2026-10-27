@@ -9391,3 +9391,16 @@ or exception-delivery claim is made. Encoding and semantics follow PCMPGTB in
 Intel SDM revision 093, Volume 2B. S2-34, S2-35 and global S2-35 → S2-34 remain
 open; Mac mini/SSH acceptance is deferred. See the
 [S2-35.21 plan](../plans/STAGE_2.md#s2-3521--local-only-bounded-register-pcmpgtb).
+
+## Local register-only PUNPCKHDQ slice — S2-35.29
+
+The profile `s2-long-punpckhdq-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F 6A /r` with ModR/M.mod=3. ModR/M.reg selects the
+destination XMM register and r/m selects the source. The destination becomes
+the four little-endian u32 elements `[old_DEST[2], SRC[2], old_DEST[3],
+SRC[3]]`; its low two input dwords and the source low two dwords are ignored.
+All destination bits are overwritten. The profile assumes SSE2 and
+CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1; it does not implement feature/control gates.
+MMX, memory, other prefixes, REX.W/X, VEX/EVEX, JIT/native execution, guest
+exception delivery and physical acceptance are excluded. Parent S2-34, S2-35
+and the global S2-35 → S2-34 dependency remain open.

@@ -2175,6 +2175,42 @@ fn malformed_versions_fields_profiles_and_state_are_rejected() {
 }
 
 #[test]
+fn punpckhdq_profile_admits_only_the_literal_register_encoding() {
+    let input = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_29_punpckhdq_register.case.json"
+    ))
+    .unwrap();
+    input.fixture.validate().unwrap();
+
+    let mut vex = input.fixture.clone();
+    let code = vex
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.length = 4;
+    code.initial_bytes_hex = "c5f96ac1".into();
+    code.comparison_mask_hex = "ffffffff".into();
+    vex.stop_rip = Some(HexU64(vex.initial_state.rip.get() + 4));
+    assert!(
+        vex.validate().is_err(),
+        "VEX encoding must not enter the legacy profile"
+    );
+
+    let mut low_dq = input.fixture.clone();
+    low_dq
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap()
+        .initial_bytes_hex = "66450f62c1".into();
+    assert!(
+        low_dq.validate().is_err(),
+        "PUNPCKLDQ must remain a separate profile"
+    );
+}
+
+#[test]
 fn fs_base_profile_is_required_and_old_wire_shape_stays_unchanged() {
     let raw = include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_21g_mfence_store_fence_load.case.json"

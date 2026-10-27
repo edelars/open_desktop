@@ -12661,3 +12661,41 @@ test checks that this guard returns before native trace setup. Linux-target
 all-target compilation passed after the correction, and review/re-review
 found no remaining issues. S2-34, S2-35, global `S2-35 → S2-34`, physical x86
 validation, and combined Mac mini/SSH acceptance remain open.
+
+## S2-35.29 — local PUNPCKHDQ XMM register slice
+
+Added the local-only profile `s2-long-punpckhdq-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 6A /r`, ModR/M.mod=3, XMM0–15, with ModR/M.reg
+as destination and r/m as source. The destination is overwritten with the four
+little-endian dwords `[old_DEST[2], SRC[2], old_DEST[3], SRC[3]]`; both input
+low halves are ignored. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 remain
+assumptions only.
+
+The literal high-half sentinel `DEST [0b0a0908,0f0e0d0c]` and
+`SRC [8b8a8988,8f8e8d8c]` yields
+`[0b0a0908,8b8a8988,0f0e0d0c,8f8e8d8c]`. Self-alias yields
+`[d2,d2,d3,d3]`. Tests cover every byte value at each of the 16 consumed
+operand-byte positions, both low-half independence and walking-bit matrices,
+all 16×16 XMM/REX.R/B combinations, full architectural state preservation,
+zero data-memory callbacks, missing state, truncation, and STOP/budget
+atomicity. Decoder negatives include extra prefixes, REX.W/X, memory ModR/M,
+truncation, VEX `C5 F9 6A C1`, VEX3, and EVEX. Schema validation separately
+rejects VEX and the adjacent PUNPCKLDQ opcode. The handwritten literal
+XMM8/XMM9 fixture passes interpreter execution with XMM8 snapshot
+`08090a0b88898a8b0c0d0e0f8c8d8e8f`; JIT compilation and native admission are
+denied.
+
+Focused `cargo test -p od-isa punpckhdq --offline` passed (4 tests), the
+profile schema test passed (1), the runner fixture/JIT denial test passed (1),
+and `cargo test --workspace --all-targets --offline --quiet` passed all 1,749
+tests. Host and Linux-target
+`cargo check --workspace --all-targets --offline` passed, as did
+`cargo fmt --all -- --check` and `git diff --check`. Linux-target checking
+compile-checked the native-denial test, but this Darwin host cannot execute the
+Linux-gated test. `python3 tools/check_layout.py` still reports the linked
+worktree `.git` marker and two missing historical oracle-manifest links.
+`graphify update .` completed; it reported the existing extractor warning for
+`include/open_desktop/host_abi.h`. Independent `gpt-6.1-sol` high-effort review
+found no code defects. This remains a local interpreter/profile result only;
+S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation, and combined
+Mac mini/SSH acceptance remain open.
