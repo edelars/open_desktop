@@ -347,10 +347,12 @@ fn execute_fixture_v2(
         let end = offset.checked_add(3)?;
         bytes.get(offset..end).map(<[u8]>::to_vec)
     });
-    let execution = if entry_bytes
-        .as_deref()
-        .is_some_and(|bytes| bytes == [0xf2, 0x67, 0xae] || bytes == [0x67, 0xf2, 0xae])
-    {
+    let execution = if entry_bytes.as_deref().is_some_and(|bytes| {
+        bytes == [0xf2, 0x67, 0xae]
+            || bytes == [0x67, 0xf2, 0xae]
+            || bytes == [0xf2, 0x67, 0xa6]
+            || bytes == [0x67, 0xf2, 0xa6]
+    }) {
         let mut continuation = None;
         run_with_rep_continuation(
             &mut state,

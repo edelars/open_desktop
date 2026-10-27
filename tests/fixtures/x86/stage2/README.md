@@ -4470,3 +4470,15 @@ comparisons using literal full-state expected answers. The token is intentionall
 not serialized by schema v2: callers retain it in memory between calls to
 resume a partial REP instruction. JIT/native remain denied; no physical, Mac
 mini or SSH execution is claimed.
+
+### Bounded REPNE CMPSB address-size-32 fixtures S2-19r
+
+Two schema-v2 one-shot cases cover zero count with arbitrary concrete flags
+and mismatch followed by equality, with literal full-state answers for both
+normalized prefix orders. The generator only serializes authored input and
+expected values. Each fixture begins with a fresh `None` continuation token;
+the token is not part of schema v2. Testkit separately carries it in memory
+through a STOP/resume sidecar. Runner CLI checks the complete snapshots and
+keeps JIT denied. ISSUE-020 remains open for the local ESI-first dual-fault
+policy; no hardware priority, MMIO rollback, native, physical, Mac mini or SSH
+claim is made.

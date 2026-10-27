@@ -8106,6 +8106,47 @@ fault rollback, and old-entry rejection tests. See the [S2-19q plan](../plans/ST
 [interpreter notes](../testing/INTERPRETER.md#repne-scasb-address-size-32--s2-19q),
 and [report](../reports/STAGE_2_REPORT.md#s2-19q--bounded-repne-scasb-addr32).
 
+### Local S2-19r bounded REPNE CMPSB address-size-32 contract
+
+Only Long64 `F2 67 A6` and `67 F2 A6` are admitted as addr32 REPNE CMPSB.
+Existing address-size-64 F3 CMPS and address-size-32 F3 CMPSB stay unchanged.
+Address-size-64 F2, wide F2 CMPS, LOCK, segment overrides, and extra or
+repeated prefixes remain unsupported. JIT/native admission remains closed.
+Legacy `run`, `run_with_rflags_defined`, and step APIs fail closed. The
+explicit `run_with_rep_continuation` API accepts this form alongside S2-19q
+SCASB; its opaque token records a tagged accumulator or source-index checkpoint
+and shared RIP/count/destination/flags/mask/context state. Tokens stay with the
+caller; schema v2 remains unchanged.
+
+Before reading ECX or data, the entry gate requires all arithmetic flags to be
+defined, including when ECX is zero; concrete RFLAGS values are unrestricted.
+Zero ECX performs no data reads and preserves full RCX/RSI/RDI/RFLAGS and mask,
+then retires once. Otherwise read one byte from zero-extended ESI followed by
+one byte from zero-extended EDI, then compute source minus destination. Only
+after both reads succeed commit CMP flags, ESI/EDI modulo 32 according to DF,
+and zero-extended ECX-1. Completion at ECX zero or ZF one wins over STOP and
+the 1024-success work limit.
+
+An architectural source or destination read fault restores entry RFLAGS and
+definedness, retains progress from earlier completed iterations, and clears the
+token; destination failure leaves the completed source access in the trace.
+A backend `MemoryError` leaves current architectural state and token intact.
+Retry re-reads source and destination; the token does not retain a source byte.
+Resume checks the full relevant checkpoint and context before callbacks/fetch,
+then checks decoded operation identity before data reads. SCASB and CMPSB tokens
+cannot cross-resume. `None` begins a fresh boundary; a partial fixture snapshot
+cannot restore its token. The source-first and dual-invalid outcome is local
+ISSUE-020 policy only, without a hardware priority or MMIO rollback claim.
+
+Tests use an independent byte CMP model and cover both prefix orders, zero
+count, continuation and work-limit boundaries, both read-fault positions,
+source-first trace, backend retry after changed source data, stale state and
+instruction cross-kind rejection, old entry APIs, literal schema-v2 full
+snapshots, and JIT denial. No native/JIT/physical, Mac mini, or SSH run is
+claimed. See the [S2-19r plan](../plans/STAGE_2.md#s2-19r--bounded-repne-cmpsb-с-address-size-32),
+[interpreter notes](../testing/INTERPRETER.md#repne-cmpsb-address-size-32--s2-19r),
+and [report](../reports/STAGE_2_REPORT.md#s2-19r--bounded-repne-cmpsb-addr32).
+
 ### Local S2-19d bounded REP MOVSB/W/D/Q contract
 
 The interpreter admits exact `F3 A4` MOVSB, `F3 66 A5` MOVSW, `F3 A5` MOVSD,

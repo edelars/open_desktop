@@ -10996,3 +10996,34 @@ SDM Combined Vol. 2B REP/REPE/REPNE p. 4-568 (revision 093) is cited for flag
 restart behavior; local fault handling does not claim physical #PF semantics.
 
 JIT/native changes and physical x86, Mac mini or SSH runs were not performed.
+
+## S2-19r — bounded REPNE CMPSB addr32
+
+The decoder accepts only the normalized `F2 67 A6` and `67 F2 A6` byte forms.
+The existing explicit continuation runner now carries either an SCASB RAX
+checkpoint or a CMPSB RSI checkpoint in its opaque caller-owned token. CMPSB
+reads ESI then EDI, compares source−destination, and commits flags/count/indices
+only after both byte reads succeed. Old entry APIs still reject the form and
+JIT/native admission is unchanged.
+
+Focused tests cover an independent CMP model with both DF directions and zero
+count, ordered reads, STOP/resume, source and destination architectural faults
+after prior progress, destination backend failure followed by retry after the
+source byte changes, token cross-kind rejection, and stale RSI rejection before
+callbacks/accesses. Two literal schema-v2 fixtures use a serializer-only
+generator; the testkit keeps continuation in a caller-side multi-run sidecar.
+Runner CLI checks full snapshots and JIT denial. ISSUE-020 was expanded to
+include this profile and remains open: ESI-first/dual-invalid selection is
+local policy, not a hardware priority or MMIO rollback claim.
+
+Verification passed: `cargo test --workspace --all-targets --offline`,
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+all 129 `tests/cpu` Python tests including fixture freshness, the S2-19r
+generator `--check`, targeted testkit and runner CLI snapshot/JIT-denial tests,
+`git diff --check`, and Graphify update. `tools/check_layout.py` was attempted;
+it reports the managed worktree `.git` marker as an unmapped root file plus two
+pre-existing links to absent Stage 1/2 oracle manifest artifacts. No layout
+change was required. Native/JIT execution, physical x86, Mac mini and SSH
+checks were not performed. Independent `gpt-6.1-sol` medium review found no
+actionable defects in token validation, operand ordering/commit, fault/error
+handling, decoder bounds, fixtures or CLI/JIT denial.

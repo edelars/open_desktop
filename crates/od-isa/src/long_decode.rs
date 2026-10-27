@@ -708,6 +708,8 @@ pub enum Operation {
     },
     /// Bounded Long64 REPNE SCASB with address-size 32; continuation is explicit.
     RepneScasbAddr32,
+    /// Bounded Long64 REPNE CMPSB with address-size 32; continuation is explicit.
+    RepneCmpsbAddr32,
     /// One bounded invocation of long-mode REPE CMPSB.
     RepCmps {
         size: OperandSize,
@@ -927,6 +929,10 @@ impl Instruction {
                 undefined: 0,
             },
             Operation::RepCmps { .. } => FlagEffects {
+                defined: crate::ARITHMETIC_FLAGS,
+                undefined: 0,
+            },
+            Operation::RepneCmpsbAddr32 => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -1328,6 +1334,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && self.length == 3
             && prefixes.rex.is_none()
             && !prefixes.operand_override;
+        let repne_cmpsb_addr32 = opcode.map == OpcodeMap::Primary
+            && opcode.byte == 0xa6
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.address_override
+            && prefixes.segment.is_none()
+            && self.length == 3
+            && prefixes.rex.is_none()
+            && !prefixes.operand_override;
         let rep_cmps = opcode.map == OpcodeMap::Primary
             && matches!(opcode.byte, 0xa6 | 0xa7)
             && prefixes.group1 == Some(0xf3)
@@ -1367,6 +1381,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !rep_movs
                 && !rep_scas
                 && !repne_scasb_addr32
+                && !repne_cmpsb_addr32
                 && !rep_cmps
                 && !locked_qword_memory_xadd_candidate)
         {
@@ -1793,7 +1808,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Primary, 0xa6 | 0xa7) => {
-                if rep_cmps && opcode.byte == 0xa6 {
+                if repne_cmpsb_addr32 {
+                    size = OperandSize::Byte;
+                    Operation::RepneCmpsbAddr32
+                } else if rep_cmps && opcode.byte == 0xa6 {
                     size = OperandSize::Byte;
                     Operation::RepCmps { size }
                 } else if rep_cmps {
@@ -6150,6 +6168,34 @@ mod tests {
     }
 
     #[test]
+    fn repne_cmpsb_addr32_admits_only_two_normalized_prefix_orders() {
+        for bytes in [&[0xf2, 0x67, 0xa6][..], &[0x67, 0xf2, 0xa6][..]] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(instruction.operation, Operation::RepneCmpsbAddr32);
+            assert_eq!(instruction.address_size, OperandSize::Dword);
+            assert_eq!(instruction.length, 3);
+        }
+        for bytes in [
+            &[0xf2, 0xa6][..],
+            &[0xf2, 0x67, 0x67, 0xa6][..],
+            &[0xf2, 0x66, 0x67, 0xa6][..],
+            &[0xf2, 0x48, 0x67, 0xa6][..],
+            &[0xf2, 0x67, 0xf2, 0xa6][..],
+            &[0xf2, 0xa7][..],
+            &[0xf2, 0x67, 0xa7][..],
+            &[0xf2, 0x67, 0x66, 0xa7][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "unexpectedly admitted {bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn rep_scas_addr32_admits_only_wide_f3_af_prefix_groups() {
         for (bytes, size) in [
             (&[0xf3, 0x67, 0x66, 0xaf][..], OperandSize::Word),
@@ -6336,7 +6382,6 @@ mod tests {
             vec![0xf3, 0x67, 0x66, 0xa6],
             vec![0xf3, 0x67, 0x48, 0xa6],
             vec![0xf3, 0x67, 0xf3, 0xa6],
-            vec![0xf2, 0x67, 0xa6],
             vec![0xf3, 0x67, 0x67, 0xa7],
             vec![0xf3, 0xf3, 0x67, 0xa7],
             vec![0xf3, 0xf2, 0x67, 0xa7],
@@ -6450,6 +6495,9 @@ mod tests {
         let mut rejected = Vec::new();
         for form in &forms {
             for prefix in [0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
+                if prefix == 0xf2 && *form == [0x67, 0xa6] {
+                    continue;
+                }
                 if prefix == 0xf3 && (*form == [0x67, 0xa6] || form.last() == Some(&0xa7)) {
                     continue;
                 }
@@ -6465,7 +6513,7 @@ mod tests {
             rejected.push(vec![0x67, rex, 0xa7]);
             rejected.push(vec![0x67, 0x66, rex, 0xa7]);
         }
-        assert_eq!(rejected.len(), 69);
+        assert_eq!(rejected.len(), 68);
         for bytes in rejected {
             assert!(
                 matches!(

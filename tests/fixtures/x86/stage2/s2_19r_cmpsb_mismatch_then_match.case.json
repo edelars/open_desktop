@@ -1,0 +1,79 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_19r_cmpsb_mismatch_then_match",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten bytes and literal complete snapshots; serialization only.",
+    "specification": "Intel SDM revision 093, Vol. 2B REPNE CMPS; project S2-19r.",
+    "specification_version": "Intel SDM Vol. 2B revision 093; project S2-19r"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0xdeadbeef00000000",
+      "0x0000000000000002",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0xfeedface00300000",
+      "0xcafebabe00300100",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000002"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 3,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "67f2a6",
+      "comparison_mask_hex": "ffffff"
+    },
+    {
+      "region_id": "source",
+      "guest_address": "0x0000000000300000",
+      "length": 2,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "4241",
+      "comparison_mask_hex": "ffff"
+    },
+    {
+      "region_id": "destination",
+      "guest_address": "0x0000000000300100",
+      "length": 2,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "4141",
+      "comparison_mask_hex": "ffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100003",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x00000000000008d5",
+  "expected_exit": "stop_address"
+}

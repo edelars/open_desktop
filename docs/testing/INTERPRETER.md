@@ -764,6 +764,38 @@ execution were not performed.
 See the [S2-19q CPU contract](../specs/CPU_CONTRACT.md#local-s2-19q-bounded-repne-scasb-address-size-32-contract)
 and [report](../reports/STAGE_2_REPORT.md#s2-19q--bounded-repne-scasb-addr32).
 
+## REPNE CMPSB address-size 32 — S2-19r local interpreter coverage
+
+Only normalized `F2 67 A6` / `67 F2 A6` is admitted. Existing address-size-64
+and F3 profiles remain unchanged; other F2 forms and JIT/native admission stay
+closed. A full arithmetic-flag-definedness gate runs before ECX or data reads,
+including at zero count. Zero ECX preserves complete RCX/RSI/RDI/RFLAGS and
+retires once. Nonzero iterations read zero-extended ESI first, then EDI, compare
+source−destination, and commit flags, modulo-32 indices and zero-extended ECX
+only after both reads succeed. REPNE ends at ECX=0 or ZF=1 before STOP/1024.
+
+The explicit `run_with_rep_continuation` token supports SCASB or CMPSB with a
+tagged operand checkpoint and shared state/context fields. State and context
+are validated before callbacks/fetch; decoded operation identity (including
+AE↔A6 token kind) is checked before data reads. Architectural read faults
+restore entry flags/mask, retain earlier completed iterations and clear the
+token. Backend errors preserve the token checkpoint; retry reads both operands
+again, so no source byte is retained. Schema-v2 fixtures are fresh one-shot
+calls and the testkit carries continuation only in a caller-side multi-run
+sidecar. This is local source-first behavior under ISSUE-020, without hardware
+dual-fault priority or MMIO rollback claims.
+
+Coverage includes independent byte-CMP results under both DF values and zero/
+nonzero counts, exact read ordering, destination backend-error retry after
+changing source data, source/destination architectural faults after progress,
+stale RSI and cross-kind token rejection, old entry API rejection, a caller
+sidecar STOP/resume, and two literal schema-v2 full snapshots. Runner CLI checks
+the complete snapshots and confirms JIT denial. No native/JIT/physical, Mac
+mini or SSH execution was performed.
+
+See the [S2-19r CPU contract](../specs/CPU_CONTRACT.md#local-s2-19r-bounded-repne-cmpsb-address-size-32-contract)
+and [report](../reports/STAGE_2_REPORT.md#s2-19r--bounded-repne-cmpsb-addr32).
+
 ## REPE CMPSB — S2-19f local interpreter coverage
 
 Only exact `F3 A6` is admitted in Long64/address64. Even at RCX zero, entry

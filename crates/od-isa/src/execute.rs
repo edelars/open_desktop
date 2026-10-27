@@ -66,12 +66,18 @@ pub struct RepContinuation {
     rip: u64,
     entry_rflags: u64,
     entry_defined: u64,
-    expected_rax: u64,
+    operand: RepContinuationOperand,
     expected_rcx: u64,
     expected_rdi: u64,
     expected_rflags: u64,
     expected_defined: u64,
     context: AccessContext,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RepContinuationOperand {
+    Scasb { rax: u64 },
+    Cmpsb { rsi: u64 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -81,7 +87,7 @@ pub enum RepRunInputError {
     ContinuationInstructionMismatch,
 }
 
-/// Execute with explicit restart metadata for bounded addr32 `F2 AE`.
+/// Execute with explicit restart metadata for bounded addr32 REPNE SCASB/CMPSB.
 /// Passing `None` starts a new execution boundary; a partial snapshot alone is
 /// not enough to reconstruct an in-progress token.
 pub fn run_with_rep_continuation(
@@ -99,12 +105,12 @@ pub fn run_with_rep_continuation(
     }
     if let Some(token) = continuation.as_ref() {
         if token.rip != state.rip
-            || token.expected_rax != state.gpr[Register::Rax as usize]
             || token.expected_rcx != state.gpr[Register::Rcx as usize]
             || token.expected_rdi != state.gpr[Register::Rdi as usize]
             || token.expected_rflags != state.rflags
             || token.expected_defined != initial_rflags_defined
             || token.context != config.context
+            || !rep_continuation_operand_matches(token, state)
         {
             return Err(RepRunInputError::ContinuationStateMismatch);
         }
@@ -144,8 +150,22 @@ pub fn run_with_rep_continuation(
                 }
                 Err(_) => return Err(RepRunInputError::ContinuationInstructionMismatch),
             };
-            if instruction.operation != Operation::RepneScasbAddr32
-                || instruction.opcode.byte != 0xae
+            if !matches!(
+                (
+                    &continuation
+                        .as_ref()
+                        .expect("validated continuation")
+                        .operand,
+                    instruction.operation
+                ),
+                (
+                    RepContinuationOperand::Scasb { .. },
+                    Operation::RepneScasbAddr32
+                ) | (
+                    RepContinuationOperand::Cmpsb { .. },
+                    Operation::RepneCmpsbAddr32
+                )
+            ) || !matches!(instruction.opcode.byte, 0xae | 0xa6)
                 || instruction.address_size != OperandSize::Dword
             {
                 return Err(RepRunInputError::ContinuationInstructionMismatch);
@@ -176,11 +196,13 @@ pub fn run_with_rep_continuation(
                 Ok(StepOutcome::StopRequested) => {
                     return Ok(rep_run_result(RunExit::StopRequested, retired, defined));
                 }
-                Ok(StepOutcome::Unsupported { opcode }) if opcode == 0xae => {
+                Ok(StepOutcome::Unsupported { opcode }) if matches!(opcode, 0xae | 0xa6) => {
                     match long_decode::decode(memory, state.rip, config.context) {
                         Ok(instruction)
-                            if instruction.operation == Operation::RepneScasbAddr32
-                                && instruction.address_size == OperandSize::Dword =>
+                            if matches!(
+                                instruction.operation,
+                                Operation::RepneScasbAddr32 | Operation::RepneCmpsbAddr32
+                            ) && instruction.address_size == OperandSize::Dword =>
                         {
                             target_instruction = Some(instruction);
                         }
@@ -227,7 +249,7 @@ pub fn run_with_rep_continuation(
             }
         }
         if let Some(instruction) = target_instruction {
-            match execute_repne_scasb_addr32(
+            match execute_repne_addr32(
                 state,
                 memory,
                 config.context,
@@ -306,6 +328,13 @@ pub fn run_with_rep_continuation(
     }
 }
 
+fn rep_continuation_operand_matches(token: &RepContinuation, state: &LongModeState) -> bool {
+    match token.operand {
+        RepContinuationOperand::Scasb { rax } => rax == state.gpr[Register::Rax as usize],
+        RepContinuationOperand::Cmpsb { rsi } => rsi == state.gpr[Register::Rsi as usize],
+    }
+}
+
 fn rep_run_result(exit: RunExit, instructions_executed: u64, rflags_defined: u64) -> RunResult {
     RunResult {
         exit,
@@ -322,7 +351,7 @@ enum RepSpecialExit {
     Unsupported(u8),
 }
 
-fn execute_repne_scasb_addr32(
+fn execute_repne_addr32(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
@@ -331,6 +360,7 @@ fn execute_repne_scasb_addr32(
     continuation: &mut Option<RepContinuation>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<RepSpecialExit, MemoryError> {
+    let cmps = instruction.operation == Operation::RepneCmpsbAddr32;
     if *defined & crate::ARITHMETIC_FLAGS != crate::ARITHMETIC_FLAGS {
         return Ok(RepSpecialExit::Unsupported(instruction.opcode.byte));
     }
@@ -345,7 +375,15 @@ fn execute_repne_scasb_addr32(
             rip: state.rip,
             entry_rflags: state.rflags,
             entry_defined: *defined,
-            expected_rax: state.gpr[Register::Rax as usize],
+            operand: if cmps {
+                RepContinuationOperand::Cmpsb {
+                    rsi: state.gpr[Register::Rsi as usize],
+                }
+            } else {
+                RepContinuationOperand::Scasb {
+                    rax: state.gpr[Register::Rax as usize],
+                }
+            },
             expected_rcx: state.gpr[Register::Rcx as usize],
             expected_rdi: state.gpr[Register::Rdi as usize],
             expected_rflags: state.rflags,
@@ -354,33 +392,65 @@ fn execute_repne_scasb_addr32(
         });
     }
     for _ in 0..REP_ITERATION_WORK_LIMIT {
-        let operand = Operand::Memory(MemoryOperand {
-            base: AddressBase::Register(Register::Rdi),
-            index: None,
-            scale: 1,
-            displacement: 0,
-            address_size: OperandSize::Dword,
-            size: OperandSize::Byte,
-        });
-        let observed = match read_operand(state, memory, context, next_rip, operand) {
-            Ok(value) => value,
-            Err(MemoryError::Architectural(fault)) => {
-                if let Some(token) = continuation.take() {
-                    state.rflags = token.entry_rflags;
-                    *defined = token.entry_defined;
+        let observed = if cmps {
+            let source = Operand::Memory(MemoryOperand {
+                base: AddressBase::Register(Register::Rsi),
+                index: None,
+                scale: 1,
+                displacement: 0,
+                address_size: OperandSize::Dword,
+                size: OperandSize::Byte,
+            });
+            let source_value = match read_operand(state, memory, context, next_rip, source) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    restore_rep_entry_flags(state, defined, continuation);
+                    return Ok(RepSpecialExit::Fault(fault));
                 }
-                return Ok(RepSpecialExit::Fault(fault));
-            }
-            Err(error) => {
-                checkpoint_rep(state, *defined, continuation);
-                return Err(error);
-            }
+                Err(error) => return Err(error),
+            };
+            let destination = Operand::Memory(MemoryOperand {
+                base: AddressBase::Register(Register::Rdi),
+                index: None,
+                scale: 1,
+                displacement: 0,
+                address_size: OperandSize::Dword,
+                size: OperandSize::Byte,
+            });
+            let destination_value =
+                match read_operand(state, memory, context, next_rip, destination) {
+                    Ok(value) => value,
+                    Err(MemoryError::Architectural(fault)) => {
+                        restore_rep_entry_flags(state, defined, continuation);
+                        return Ok(RepSpecialExit::Fault(fault));
+                    }
+                    Err(error) => return Err(error),
+                };
+            (source_value, destination_value)
+        } else {
+            let destination = Operand::Memory(MemoryOperand {
+                base: AddressBase::Register(Register::Rdi),
+                index: None,
+                scale: 1,
+                displacement: 0,
+                address_size: OperandSize::Dword,
+                size: OperandSize::Byte,
+            });
+            let observed = match read_operand(state, memory, context, next_rip, destination) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    restore_rep_entry_flags(state, defined, continuation);
+                    return Ok(RepSpecialExit::Fault(fault));
+                }
+                Err(error) => return Err(error),
+            };
+            (state.gpr[Register::Rax as usize] & 0xff, observed)
         };
         let (_, flags) = arithmetic_result(
             OperandSize::Byte,
             ArithmeticKind::Cmp,
-            state.gpr[Register::Rax as usize] & 0xff,
-            observed,
+            observed.0,
+            observed.1,
             state.rflags,
         );
         state.rflags = flags;
@@ -392,6 +462,15 @@ fn execute_repne_scasb_addr32(
             index.wrapping_sub(1)
         };
         state.gpr[Register::Rdi as usize] = u64::from(index);
+        if cmps {
+            let index = state.gpr[Register::Rsi as usize] as u32;
+            let index = if state.rflags & crate::DF == 0 {
+                index.wrapping_add(1)
+            } else {
+                index.wrapping_sub(1)
+            };
+            state.gpr[Register::Rsi as usize] = u64::from(index);
+        }
         let count = (state.gpr[Register::Rcx as usize] as u32).wrapping_sub(1);
         state.gpr[Register::Rcx as usize] = u64::from(count);
         if count == 0 || state.rflags & crate::ZF != 0 {
@@ -410,11 +489,25 @@ fn execute_repne_scasb_addr32(
 
 fn checkpoint_rep(state: &LongModeState, defined: u64, continuation: &mut Option<RepContinuation>) {
     if let Some(token) = continuation {
-        token.expected_rax = state.gpr[Register::Rax as usize];
+        match &mut token.operand {
+            RepContinuationOperand::Scasb { rax } => *rax = state.gpr[Register::Rax as usize],
+            RepContinuationOperand::Cmpsb { rsi } => *rsi = state.gpr[Register::Rsi as usize],
+        }
         token.expected_rcx = state.gpr[Register::Rcx as usize];
         token.expected_rdi = state.gpr[Register::Rdi as usize];
         token.expected_rflags = state.rflags;
         token.expected_defined = defined;
+    }
+}
+
+fn restore_rep_entry_flags(
+    state: &mut LongModeState,
+    defined: &mut u64,
+    continuation: &mut Option<RepContinuation>,
+) {
+    if let Some(token) = continuation.take() {
+        state.rflags = token.entry_rflags;
+        *defined = token.entry_defined;
     }
 }
 
@@ -1797,6 +1890,7 @@ fn step_tracked_with_stop(
                 && matches!(destination.size, OperandSize::Word | OperandSize::Qword)
         }
         Operation::RepneScasbAddr32 => false,
+        Operation::RepneCmpsbAddr32 => false,
     };
     if !executable {
         return Ok(StepOutcome::Unsupported {
@@ -3429,6 +3523,11 @@ fn step_tracked_with_stop(
             }
         }
         Operation::RepneScasbAddr32 => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        Operation::RepneCmpsbAddr32 => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -65194,5 +65293,699 @@ mod tests {
                 .iter()
                 .any(|(kind, _, _)| *kind == AccessKind::Read)
         );
+    }
+
+    #[test]
+    fn repne_cmpsb_addr32_matches_independent_model_and_preserves_zero_count_state() {
+        for df in [false, true] {
+            for count in [0u32, 1, 3] {
+                let start = if df { 0x1002u32 } else { 0x1000u32 };
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rcx as usize] = 0xfeed_beef_0000_0000 | u64::from(count);
+                state.gpr[Register::Rsi as usize] = 0xaabb_ccdd_0000_0000 | u64::from(start);
+                state.gpr[Register::Rdi as usize] = 0x9988_7766_0000_1004;
+                state.rflags = 2 | if df { crate::DF } else { 0 };
+                let before = state.clone();
+                let code = if df {
+                    &[0x67, 0xf2, 0xa6][..]
+                } else {
+                    &[0xf2, 0x67, 0xa6][..]
+                };
+                let mut memory = Memory::at(code, 0x2000);
+                memory.bytes = vec![0x10, 0x20, 0x30, 0x40, 0x10, 0x20, 0x30, 0x40];
+                let mut continuation = None;
+                let result = run_with_rep_continuation(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x2003),
+                        context: AccessContext::default(),
+                    },
+                    crate::INTEGER_FLAGS,
+                    &mut continuation,
+                    || false,
+                )
+                .unwrap();
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(result.instructions_executed, 1);
+                assert!(continuation.is_none());
+
+                let mut expected_count = count;
+                let mut esi = start;
+                let mut edi = 0x1004u32;
+                let mut flags = before.rflags;
+                let mut completed = 0;
+                while expected_count != 0 {
+                    let src = memory.bytes[(esi - 0x1000) as usize];
+                    let dst = memory.bytes[(edi - 0x1000) as usize];
+                    flags = rep_scasb_expected_flags(src, dst, df);
+                    let delta = if df { u32::MAX } else { 1 };
+                    esi = esi.wrapping_add(delta);
+                    edi = edi.wrapping_add(delta);
+                    expected_count -= 1;
+                    completed += 1;
+                    if expected_count == 0 || flags & crate::ZF != 0 {
+                        break;
+                    }
+                }
+                assert_eq!(state.rflags, flags, "DF={df} count={count}");
+                assert_eq!(
+                    state.gpr[Register::Rcx as usize],
+                    if count == 0 {
+                        before.gpr[Register::Rcx as usize]
+                    } else {
+                        u64::from(expected_count)
+                    }
+                );
+                assert_eq!(
+                    state.gpr[Register::Rsi as usize],
+                    if count == 0 {
+                        before.gpr[Register::Rsi as usize]
+                    } else {
+                        u64::from(esi)
+                    }
+                );
+                assert_eq!(
+                    state.gpr[Register::Rdi as usize],
+                    if count == 0 {
+                        before.gpr[Register::Rdi as usize]
+                    } else {
+                        u64::from(edi)
+                    }
+                );
+                assert_eq!(
+                    memory
+                        .accesses
+                        .iter()
+                        .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                        .count(),
+                    completed * 2
+                );
+                if completed != 0 {
+                    let reads: Vec<_> = memory
+                        .accesses
+                        .iter()
+                        .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                        .map(|(_, address, _)| *address)
+                        .collect();
+                    for (iteration, pair) in reads.chunks_exact(2).enumerate() {
+                        let delta = iteration as u32;
+                        let expected_source = if df {
+                            start.wrapping_sub(delta)
+                        } else {
+                            start.wrapping_add(delta)
+                        };
+                        let expected_destination = if df {
+                            0x1004u32.wrapping_sub(delta)
+                        } else {
+                            0x1004u32.wrapping_add(delta)
+                        };
+                        assert_eq!(pair[0], u64::from(expected_source));
+                        assert_eq!(pair[1], u64::from(expected_destination));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn repne_cmpsb_addr32_orders_reads_replays_both_and_restores_flags_on_fault() {
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.gpr[Register::Rcx as usize] = 2;
+        state.gpr[Register::Rsi as usize] = 0x1000;
+        state.gpr[Register::Rdi as usize] = 0x1004;
+        state.rflags = 2 | crate::CF;
+        let mut memory = Memory::at(&[0xf2, 0x67, 0xa6], 0x2000);
+        memory.bytes = vec![0x40, 0x41, 0, 0, 0x41, 0x41];
+        let mut continuation = None;
+        let mut stop_checks = 0;
+        let partial = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            crate::INTEGER_FLAGS,
+            &mut continuation,
+            || {
+                stop_checks += 1;
+                stop_checks == 2
+            },
+        )
+        .unwrap();
+        assert_eq!(partial.exit, RunExit::StopRequested);
+        assert_eq!(state.gpr[Register::Rcx as usize], 1);
+        assert_eq!(state.gpr[Register::Rsi as usize], 0x1001);
+        assert_eq!(state.gpr[Register::Rdi as usize], 0x1005);
+        assert_eq!(
+            memory.accesses,
+            [(AccessKind::Read, 0x1000, 1), (AccessKind::Read, 0x1004, 1)]
+        );
+        memory.accesses.clear();
+        let flags_before_backend_error = state.rflags;
+        memory.error = Some(MemoryError::Backend("destination backend failure".into()));
+        memory.error_kind = Some(AccessKind::Read);
+        memory.fail_after_reads = Some(1);
+        let resumed_error = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            partial.rflags_defined,
+            &mut continuation,
+            || false,
+        )
+        .unwrap();
+        assert!(matches!(resumed_error.exit, RunExit::MemoryError(_)));
+        assert_eq!(
+            memory
+                .accesses
+                .iter()
+                .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                .map(|(_, address, _)| *address)
+                .collect::<Vec<_>>(),
+            [0x1001, 0x1005]
+        );
+        assert_eq!(state.rflags, flags_before_backend_error);
+        assert!(continuation.is_some());
+        memory.bytes[1] = 0x42;
+        memory.bytes[5] = 0x40;
+        memory.error = None;
+        memory.error_kind = None;
+        memory.fail_after_reads = None;
+        memory.accesses.clear();
+        let resumed = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x2003),
+                context: AccessContext::default(),
+            },
+            partial.rflags_defined,
+            &mut continuation,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(resumed.exit, RunExit::StopAddress);
+        assert_eq!(state.gpr[Register::Rcx as usize], 0);
+        assert_eq!(state.gpr[Register::Rsi as usize], 0x1002);
+        assert_eq!(state.gpr[Register::Rdi as usize], 0x1006);
+        assert_eq!(state.rflags, rep_scasb_expected_flags(0x42, 0x40, false));
+        assert!(continuation.is_none());
+    }
+
+    #[test]
+    fn repne_cmpsb_addr32_rejects_stale_and_cross_kind_tokens_before_data_reads() {
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.gpr[Register::Rcx as usize] = 2;
+        state.gpr[Register::Rsi as usize] = 0x1000;
+        state.gpr[Register::Rdi as usize] = 0x1004;
+        state.rflags = 2;
+        let mut memory = Memory::at(&[0xf2, 0x67, 0xa6], 0x2000);
+        memory.bytes = vec![0x41; 8];
+        memory.bytes[4] = 0x42;
+        let mut continuation = None;
+        let mut calls = 0;
+        let yielded = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            crate::INTEGER_FLAGS,
+            &mut continuation,
+            || {
+                calls += 1;
+                calls == 2
+            },
+        )
+        .unwrap();
+        assert_eq!(yielded.exit, RunExit::StopRequested);
+        let saved_state = state.clone();
+        let saved_token = continuation.clone();
+        memory.accesses.clear();
+        state.gpr[Register::Rsi as usize] ^= 0x100;
+        let mut callbacks = 0;
+        assert_eq!(
+            run_with_rep_continuation(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default()
+                },
+                yielded.rflags_defined,
+                &mut continuation,
+                || {
+                    callbacks += 1;
+                    false
+                },
+            ),
+            Err(RepRunInputError::ContinuationStateMismatch)
+        );
+        assert_eq!(callbacks, 0);
+        assert!(memory.accesses.is_empty());
+        state = saved_state;
+        assert_eq!(
+            run_with_rep_continuation(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default().descriptor_table()
+                },
+                yielded.rflags_defined,
+                &mut continuation,
+                || {
+                    callbacks += 1;
+                    false
+                },
+            ),
+            Err(RepRunInputError::ContinuationStateMismatch)
+        );
+        assert_eq!(callbacks, 0);
+        assert!(memory.accesses.is_empty());
+        memory.code = vec![0xf2, 0x67, 0xae];
+        assert_eq!(
+            run_with_rep_continuation(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default()
+                },
+                yielded.rflags_defined,
+                &mut continuation,
+                || {
+                    callbacks += 1;
+                    false
+                },
+            ),
+            Err(RepRunInputError::ContinuationInstructionMismatch)
+        );
+        assert_eq!(callbacks, 1);
+        assert!(continuation == saved_token);
+        assert!(
+            !memory
+                .accesses
+                .iter()
+                .any(|(kind, _, _)| *kind == AccessKind::Read)
+        );
+
+        for legacy in
+            [run as fn(&mut LongModeState, &mut Memory, RunConfig, fn() -> bool) -> RunResult]
+        {
+            let mut rejected = LongModeState::default();
+            rejected.rip = 0x2000;
+            rejected.gpr[Register::Rcx as usize] = 1;
+            rejected.gpr[Register::Rsi as usize] = 0x1000;
+            rejected.gpr[Register::Rdi as usize] = 0x1004;
+            let mut rejected_memory = Memory::at(&[0xf2, 0x67, 0xa6], 0x2000);
+            assert_eq!(
+                legacy(
+                    &mut rejected,
+                    &mut rejected_memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default()
+                    },
+                    || false
+                )
+                .exit,
+                RunExit::Unsupported { opcode: 0xa6 }
+            );
+            assert!(
+                !rejected_memory
+                    .accesses
+                    .iter()
+                    .any(|(kind, _, _)| *kind == AccessKind::Read)
+            );
+        }
+
+        let mut step_state = LongModeState::default();
+        step_state.rip = 0x2000;
+        let mut step_memory = Memory::at(&[0xf2, 0x67, 0xa6], 0x2000);
+        assert_eq!(
+            step(&mut step_state, &mut step_memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xa6 })
+        );
+        let mut tracked_state = LongModeState::default();
+        tracked_state.rip = 0x2000;
+        let mut tracked_memory = Memory::at(&[0xf2, 0x67, 0xa6], 0x2000);
+        let tracked = run_with_rflags_defined(
+            &mut tracked_state,
+            &mut tracked_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            crate::INTEGER_FLAGS,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(tracked.exit, RunExit::Unsupported { opcode: 0xa6 });
+        assert!(
+            !tracked_memory
+                .accesses
+                .iter()
+                .any(|(kind, _, _)| *kind == AccessKind::Read)
+        );
+    }
+
+    #[test]
+    fn repne_cmpsb_addr32_architectural_source_and_destination_faults_restore_entry_flags() {
+        for failed_read in [0usize, 1] {
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rcx as usize] = 3;
+            state.gpr[Register::Rsi as usize] = 0x1000;
+            state.gpr[Register::Rdi as usize] = 0x1008;
+            state.rflags = 2 | crate::CF;
+            let entry_flags = state.rflags;
+            let mut memory = Memory::at(&[0x67, 0xf2, 0xa6], 0x2000);
+            memory.bytes = vec![0x40; 16];
+            memory.bytes[8] = 0x41;
+            let mut continuation = None;
+            let mut stop_checks = 0;
+            let partial = run_with_rep_continuation(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                crate::INTEGER_FLAGS,
+                &mut continuation,
+                || {
+                    stop_checks += 1;
+                    stop_checks == 2
+                },
+            )
+            .unwrap();
+            assert_eq!(partial.exit, RunExit::StopRequested);
+            assert_eq!(state.gpr[Register::Rcx as usize], 2);
+            assert_eq!(state.gpr[Register::Rsi as usize], 0x1001);
+            assert_eq!(state.gpr[Register::Rdi as usize], 0x1009);
+
+            memory.accesses.clear();
+            memory.error = Some(MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(if failed_read == 0 { 0x1001 } else { 0x1009 }),
+            }));
+            memory.error_kind = Some(AccessKind::Read);
+            memory.fail_after_reads = Some(failed_read);
+            let fault = run_with_rep_continuation(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                partial.rflags_defined,
+                &mut continuation,
+                || false,
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    fault.exit,
+                    RunExit::Fault(ArchitecturalFault { vector: 14, .. })
+                ),
+                "failed_read={failed_read} exit={:?} state={state:?} token={continuation:?}",
+                fault.exit
+            );
+            assert_eq!(state.rflags, entry_flags);
+            assert_eq!(fault.rflags_defined, crate::INTEGER_FLAGS);
+            assert_eq!(state.gpr[Register::Rcx as usize], 2);
+            assert_eq!(state.gpr[Register::Rsi as usize], 0x1001);
+            assert_eq!(state.gpr[Register::Rdi as usize], 0x1009);
+            assert_eq!(state.rip, 0x2000);
+            assert!(continuation.is_none());
+            let reads: Vec<_> = memory
+                .accesses
+                .iter()
+                .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                .map(|(_, address, _)| *address)
+                .collect();
+            assert_eq!(
+                reads,
+                if failed_read == 0 {
+                    vec![0x1001]
+                } else {
+                    vec![0x1001, 0x1009]
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn repne_cmpsb_addr32_zero_gate_boundary_preservation_and_fetch_fault() {
+        let mut zero = LongModeState::default();
+        zero.rip = 0x2000;
+        zero.gpr[Register::Rcx as usize] = 0xdead_beef_0000_0000;
+        zero.gpr[Register::Rsi as usize] = 0xfeed_face_8000_0000;
+        zero.gpr[Register::Rdi as usize] = 0xcafe_babe_ffff_ffff;
+        zero.rflags = 2 | crate::PF;
+        let mut zero_memory = Memory::at(&[0xf2, 0x67, 0xa6], 0x2000);
+        let rejected = run_with_rep_continuation(
+            &mut zero,
+            &mut zero_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            crate::INTEGER_FLAGS & !crate::AF,
+            &mut None,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(rejected.exit, RunExit::Unsupported { opcode: 0xa6 });
+        assert_eq!(zero.rip, 0x2000);
+        assert_eq!(zero.gpr[Register::Rcx as usize], 0xdead_beef_0000_0000);
+        assert!(
+            zero_memory
+                .accesses
+                .iter()
+                .all(|(kind, _, _)| *kind != AccessKind::Read)
+        );
+
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.gpr[Register::Rcx as usize] = 3;
+        state.gpr[Register::Rsi as usize] = 0x1000;
+        state.gpr[Register::Rdi as usize] = 0x1008;
+        state.rflags = 2;
+        let entry_flags = state.rflags;
+        let mut memory = Memory::at(&[0xf2, 0x67, 0xa6], 0x2000);
+        memory.bytes = vec![0x40; 16];
+        memory.bytes[8] = 0x41;
+        let mut continuation = None;
+        let mut calls = 0;
+        let yielded = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            crate::INTEGER_FLAGS,
+            &mut continuation,
+            || {
+                calls += 1;
+                calls == 2
+            },
+        )
+        .unwrap();
+        assert_eq!(yielded.exit, RunExit::StopRequested);
+        let saved_state = state.clone();
+        let saved_token = continuation.clone();
+        memory.accesses.clear();
+        let no_budget = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 0,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            yielded.rflags_defined,
+            &mut continuation,
+            || {
+                calls += 1;
+                false
+            },
+        )
+        .unwrap();
+        assert_eq!(no_budget.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(state, saved_state);
+        assert_eq!(continuation, saved_token);
+        assert!(memory.accesses.is_empty());
+        let initial_stop = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            yielded.rflags_defined,
+            &mut continuation,
+            || true,
+        )
+        .unwrap();
+        assert_eq!(initial_stop.exit, RunExit::StopRequested);
+        assert_eq!(state, saved_state);
+        assert_eq!(continuation, saved_token);
+        assert!(memory.accesses.is_empty());
+        let current_rip = state.rip;
+        let stop_boundary = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(current_rip),
+                context: AccessContext::default(),
+            },
+            yielded.rflags_defined,
+            &mut continuation,
+            || panic!("stop-address precedes callback"),
+        )
+        .unwrap();
+        assert_eq!(stop_boundary.exit, RunExit::StopAddress);
+        assert_eq!(state, saved_state);
+        assert_eq!(continuation, saved_token);
+        assert!(memory.accesses.is_empty());
+        memory.fetch_error = Some((
+            0x2000,
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(0x2000),
+            }),
+        ));
+        let fetch_fault = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            yielded.rflags_defined,
+            &mut continuation,
+            || false,
+        )
+        .unwrap();
+        assert!(matches!(
+            fetch_fault.exit,
+            RunExit::Fault(ArchitecturalFault { vector: 14, .. })
+        ));
+        assert_eq!(state.rflags, entry_flags);
+        assert_eq!(fetch_fault.rflags_defined, crate::INTEGER_FLAGS);
+        assert_eq!(state.gpr[Register::Rcx as usize], 2);
+        assert_eq!(state.gpr[Register::Rsi as usize], 0x1001);
+        assert_eq!(state.gpr[Register::Rdi as usize], 0x1009);
+        assert!(continuation.is_none());
+    }
+
+    #[test]
+    fn repne_cmpsb_addr32_yields_repeatedly_and_resumes_after_iteration_limit() {
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.gpr[Register::Rcx as usize] = 1026;
+        state.gpr[Register::Rsi as usize] = 0x1000;
+        state.gpr[Register::Rdi as usize] = 0x4000;
+        state.rflags = 2;
+        let mut memory = Memory::at(&[0xf2, 0x67, 0xa6], 0x2000);
+        memory.data_base = 0;
+        memory.bytes = vec![0; 0x5000];
+        memory.bytes[0x1000..0x1000 + 1026].fill(0x40);
+        memory.bytes[0x4000..0x4000 + 1026].fill(0x41);
+        let mut continuation = None;
+        let mut checks = 0;
+        let stopped = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            crate::INTEGER_FLAGS,
+            &mut continuation,
+            || {
+                checks += 1;
+                checks == 2
+            },
+        )
+        .unwrap();
+        assert_eq!(stopped.exit, RunExit::StopRequested);
+        assert_eq!(state.gpr[Register::Rcx as usize], 1025);
+        assert_eq!(state.gpr[Register::Rsi as usize], 0x1001);
+        assert_eq!(state.gpr[Register::Rdi as usize], 0x4001);
+        assert!(continuation.is_some());
+
+        let limited = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            stopped.rflags_defined,
+            &mut continuation,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(limited.exit, RunExit::RepIterationBudgetExhausted);
+        assert_eq!(state.gpr[Register::Rcx as usize], 1);
+        assert_eq!(state.gpr[Register::Rsi as usize], 0x1401);
+        assert_eq!(state.gpr[Register::Rdi as usize], 0x4401);
+        assert!(continuation.is_some());
+
+        // Backend state may change between calls; the last comparison sees the new byte.
+        memory.bytes[0x1401] = 0x41;
+        let completed = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x2003),
+                context: AccessContext::default(),
+            },
+            limited.rflags_defined,
+            &mut continuation,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(completed.exit, RunExit::StopAddress);
+        assert_eq!(state.gpr[Register::Rcx as usize], 0);
+        assert_eq!(state.gpr[Register::Rsi as usize], 0x1402);
+        assert_eq!(state.gpr[Register::Rdi as usize], 0x4402);
+        assert_eq!(state.rflags & crate::ZF, crate::ZF);
+        assert!(continuation.is_none());
     }
 }

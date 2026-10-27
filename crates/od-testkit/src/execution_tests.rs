@@ -7567,6 +7567,94 @@ fn repne_scasb_addr32_literal_fixtures_use_fresh_continuation_tokens() {
 }
 
 #[test]
+fn repne_cmpsb_addr32_continuation_sidecar_and_literal_fixtures() {
+    let directory = arithmetic_fixture_directory();
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(directory.join("s2_19r_repne_cmpsb_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 2);
+    for (id, answer) in answers {
+        let input =
+            Fixture::from_json(&std::fs::read(directory.join(format!("{id}.case.json"))).unwrap())
+                .unwrap()
+                .fixture;
+        let mut state = input.initial_state.to_cpu().unwrap();
+        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+        let mut continuation = None;
+        let result = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            od_isa::INTEGER_FLAGS,
+            &mut continuation,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(result.exit, RunExit::StopAddress, "{id}");
+        assert_eq!(result.instructions_executed, 1, "{id}");
+        assert!(continuation.is_none(), "one-shot token: {id}");
+        let gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        assert_eq!(state.gpr, gpr.map(HexU64::get), "{id}");
+        let flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let defined: HexU64 = serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(state.rflags, flags.get(), "{id}");
+        assert_eq!(result.rflags_defined, defined.get(), "{id}");
+        assert_eq!(state.rip, rip.get(), "{id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in memory.snapshot() {
+            assert_eq!(region.bytes_hex, expected_memory[&region.region_id], "{id}");
+        }
+    }
+
+    let mut input = Fixture::from_json(
+        &std::fs::read(directory.join("s2_19r_cmpsb_mismatch_then_match.case.json")).unwrap(),
+    )
+    .unwrap()
+    .fixture;
+    input.stop_rip = None;
+    input.expected_exit = ExpectedExit::InstructionBudgetExhausted;
+    let mut state = input.initial_state.to_cpu().unwrap();
+    let mut memory = FlatMemory::from_fixture(&input).unwrap();
+    let mut continuation = None;
+    let mut callbacks = 0;
+    let first = run_with_rep_continuation(
+        &mut state,
+        &mut memory,
+        config(1, None),
+        od_isa::INTEGER_FLAGS,
+        &mut continuation,
+        || {
+            callbacks += 1;
+            callbacks == 2
+        },
+    )
+    .unwrap();
+    assert_eq!(first.exit, RunExit::StopRequested);
+    assert_eq!(state.gpr[Register::Rcx as usize], 1);
+    assert!(continuation.is_some());
+    let resumed = run_with_rep_continuation(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: Some(0x0010_0003),
+            context: AccessContext::default(),
+        },
+        first.rflags_defined,
+        &mut continuation,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(resumed.exit, RunExit::StopAddress);
+    assert_eq!(state.rip, 0x0010_0003);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0);
+    assert!(continuation.is_none());
+}
+
+#[test]
 fn rep_scas_wdq_literal_fixtures_match_full_expected_answers() {
     let dir = arithmetic_fixture_directory();
     let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(

@@ -1528,6 +1528,45 @@ fixture README и report. Без physical/Mac mini/SSH execution.
 **Результат:** реализация и проверки описываются фактически в
 [отчёте S2-19q](../reports/STAGE_2_REPORT.md#s2-19q--bounded-repne-scasb-addr32).
 
+#### S2-19r — bounded REPNE CMPSB с address-size 32
+
+Расширить только Long64 точными normalized prefix-порядками `F2 67 A6` и
+`67 F2 A6`. Сохранить addr64 F3 и addr32 F3 профили; addr64 F2 и wide F2
+CMPS, LOCK, segment, лишние/повторные prefixes остаются закрыты. JIT/native
+admission не менять. Старые entry APIs должны fail closed; explicit
+`run_with_rep_continuation` добавляет новую форму через discriminator opaque
+token (`ScasbAddr32 { rax }` / `CmpsbAddr32 { rsi }`) при общей checkpoint
+части. Schema v2 остаётся прежней; fixtures — fresh one-shot, а multi-run
+testkit хранит token в sidecar.
+
+До ECX и любых data reads требовать definedness всех arithmetic flags, в том
+числе при ECX=0; конкретные значения flags не ограничивать. Нулевой ECX
+сохраняет полные RCX/RSI/RDI/RFLAGS и завершает instruction без чтений. Для
+ненулевого count читать byte из zero-extended ESI, затем byte из zero-extended
+EDI; сравнить source−destination. Только после обоих успехов коммитить flags,
+ESI/EDI modulo 32 по DF и zero-extended ECX−1. Architectural read fault
+восстанавливает entry flags/mask, оставляет ранее выполненный progress и
+очищает token; destination failure сохраняет source read в trace. Host backend
+MemoryError сохраняет текущую token checkpoint пару; retry читает оба байта
+заново и не хранит source byte в token. Завершение ECX=0 или ZF=1 предшествует
+STOP и пределу 1024 успешных сравнений.
+
+Проверить независимую byte-CMP модель, STOP/limit yields и resume, обе позиции
+fault на entry и после progress, changed-source retry после backend failure,
+stale state/context/mask/identity и AE↔A6 token cross-kind без data access,
+prefix reorder, old APIs, initial stop/budget token preservation, zero-count
+gate/retirement и fetched architectural fault. Добавить literal schema-v2
+fixtures с serialization-only generator и runner full snapshots/JIT denial.
+Обновить CPU contract, interpreter notes, fixture README, report и ISSUE-020
+scope. ISSUE-020 остаётся открытым; source-first и dual-invalid outcome — local
+policy, без hardware priority/MMIO claim. Не выполнять native/JIT/physical,
+Mac mini или SSH проверки.
+
+**Результат:** bounded decoder/interpreter profile реализован на общей
+continuation API; имеются независимая модель, fault/replay, sidecar и две
+literal fixture snapshots. Targeted проверка прошла; полная проверка и diff
+review записываются в [отчёте S2-19r](../reports/STAGE_2_REPORT.md#s2-19r--bounded-repne-cmpsb-addr32).
+
 ### S2-20. Точность исключений и exit state
 
 1. Свести для реализованных форм `#UD`, `#DE`, `#GP`, `#SS`, memory faults и traps только там, где они действительно определены профилем/адаптером.
