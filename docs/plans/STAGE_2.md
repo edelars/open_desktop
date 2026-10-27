@@ -1411,6 +1411,43 @@ retry, gate в том числе при ECX=0, zero budget, STOP, limit и track
 runner full snapshot/JIT denial, затем обновить контракт, notes, issue и report.
 Native/JIT/physical/Mac mini/SSH проверки не выполнять.
 
+#### S2-19o — bounded REPE SCASW/D/Q с address-size 32
+
+Расширить Long64 REPE SCAS только для широких `AF` форм с address-size 32.
+Принимать normalized group1 F3, address override 67 и только W/D/Q ширину:
+`F3 67 66 AF` — W, `F3 67 AF` — D, `F3 67 48 AF` — Q. Учитывать legacy
+порядок: `F3 67 48 66 AF` — W, `F3 67 66 48 AF` — Q, а `F3 48 67 AF` — D,
+поскольку последующий legacy prefix сбрасывает REX. Decoder и executor admission
+должны принимать один профиль. Существующий `F3 AE` и addr32 `F3 67 AE` /
+`67 F3 AE` остаются без изменений; addr32 CMPS `A7` и дополнительные F2,
+LOCK, segment, repeated group, effective non-W REX и неподдержанные prefix
+формы остаются закрыты.
+
+Сохраняется полный локальный entry/restart gate до проверки ECX, включая ECX=0:
+`RFLAGS & 0x8d5 == 0x44`, definedness содержит `0x8d5`. Count — ECX. При нуле
+не читать память и полностью сохранить RCX/RDI/RAX/RSI и flags. Для каждой
+успешной ненулевой итерации выполнить один width-sized read из zero-extended
+EDI, сравнить AX/EAX/RAX с данными, затем commit CMP flags, modulo-32 EDI ±
+width и zero-extended ECX-1. Весь read непрерывен при пересечении 4 GiB; память
+после wrap не дочитывается. Fault текущего чтения не коммитит итерацию,
+предыдущие успешные итерации сохраняются. Completion/mismatch предшествует
+STOP, затем идёт предел 1024 успешных reads; partial RIP/retirement и tracked
+resume сохраняют общий REP контракт. JIT/native остаются закрытыми.
+
+Локальное покрытие: W/D/Q × DF с независимой CMP-моделью, zero/high-half и
+noncanonical full RDI при корректном EDI, width read через границу 4 GiB,
+частичные/unmapped tails, gates включая ECX=0, count/work-limit, mismatch,
+fault/replay и CMP→SCAS success / TEST undefined-AF reject. Literal fixture-v2
+snapshots используют serialization-only генератор. Обновить CPU contract,
+interpreter notes, fixture README и report. ISSUE-020 остаётся открытым. Не
+выполнять native/JIT/physical/Mac mini/SSH execution.
+
+**Результат:** локальный decoder/interpreter срез реализован; executor loop
+не требовал изменения, только admission согласован с decoder. Добавлены
+1,350 независимых одноэлементных сравнения, addr32 count/mismatch/replay/gate
+проверки и 14 полных literal fixture snapshots с CLI JIT denial. Итоговые
+проверки и ограничения зафиксированы в [отчёте S2-19o](../reports/STAGE_2_REPORT.md#s2-19o--bounded-repe-scaswdq-address-size-32).
+
 ### S2-20. Точность исключений и exit state
 
 1. Свести для реализованных форм `#UD`, `#DE`, `#GP`, `#SS`, memory faults и traps только там, где они действительно определены профилем/адаптером.

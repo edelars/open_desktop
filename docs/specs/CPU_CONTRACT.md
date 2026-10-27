@@ -7941,9 +7941,11 @@ and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19l--bounded-rep-movs-addre
 The Long64 interpreter additionally admits only the byte SCAS form with exact
 prefix sequences `F3 67 AE` and `67 F3 AE`, each of length three, decoded as
 `Operation::RepScas { size: Byte }`. Existing address-size-64 `F3 AE` remains
-unchanged. Address-size-32 `AF`, REPNE, extra 66/REX/segment/LOCK prefixes and
-repeated prefixes remain outside this local profile. Decoder and execution
-admission enforce the same boundary. JIT/native admission remains closed.
+unchanged. This byte-only S2-19m slice does not include `AF`; S2-19o below adds
+bounded address-size-32 W/D/Q `AF`. Addr32 `A7`, REPNE, extra 66/REX/segment/LOCK
+prefixes and repeated prefixes remain outside the combined local profile.
+Decoder and execution admission enforce the same boundary. JIT/native admission
+remains closed.
 
 Before count handling, including when ECX is zero, the complete existing gate
 requires `RFLAGS & 0x8d5 == 0x44` and the definedness mask to include `0x8d5`.
@@ -7991,6 +7993,38 @@ remains a fresh entry. Missing mappings remain harness errors.
 The implementation evidence is in the [S2-19n plan](../plans/STAGE_2.md#s2-19n--bounded-repe-cmpsb-с-address-size-32),
 [interpreter notes](../testing/INTERPRETER.md#repe-cmpsb-address-size-32--s2-19n),
 and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19n--bounded-repe-cmpsb-address-size-32). ISSUE-020 remains open.
+
+### Local S2-19o bounded REPE SCASW/D/Q address-size-32 contract
+
+The Long64 interpreter adds only wide `AF` REPE SCAS forms with address-size
+32. Normalized group1 F3 plus 67 accepts W (`F3 67 66 AF`), D (`F3 67 AF`),
+or Q (`F3 67 REX.W AF`). Legacy prefix order is respected: a later 66 resets
+an earlier REX.W (`F3 67 48 66 AF` is W), while a final effective REX.W
+overrides 66 (`F3 67 66 48 AF` is Q). `F3 48 67 AF` is D because 67 resets
+the earlier REX. Every effective `48..4F` REX.W encoding is admitted. The
+existing address-size-64 W/D/Q slice and address-size-32 SCASB `AE` forms stay
+unchanged. Address-size-32 CMPS `A7`, F2, LOCK, segment overrides, repeated
+prefix groups, effective non-W REX and other prefixes remain outside this
+profile. Decoder and executor admission agree; JIT/native remain denied.
+
+Before checking ECX, including ECX=0, the local entry/restart gate requires
+`RFLAGS & 0x8d5 == 0x44` and definedness to contain `0x8d5`. Count uses ECX.
+Zero ECX preserves complete RCX, RDI, RAX, RSI and flags, performs no data
+address validation or read, advances RIP by the full instruction length and
+retires once. Each nonzero iteration performs one contiguous width-sized read
+from zero-extended EDI, then compares AX/EAX/RAX against the memory value.
+After a successful read it commits CMP flags, EDI ± width modulo 2^32 and
+zero-extended ECX-1. The complete operand read may cross 4 GiB; it does not
+wrap into a second read at address zero. A failed current read commits no
+current-iteration state; earlier successful iterations remain committed.
+Completion or mismatch precedes STOP, then the 1024-success limit. Fault,
+STOP and limit preserve REP RIP and retire zero; tracked resume carries the
+prior definedness mask. Missing mappings remain harness errors.
+
+Evidence is recorded in the [S2-19o plan](../plans/STAGE_2.md#s2-19o--bounded-repe-scaswdq-с-address-size-32),
+[interpreter notes](../testing/INTERPRETER.md#repe-scaswdq-address-size-32--s2-19o),
+and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19o--bounded-repe-scaswdq-address-size-32).
+ISSUE-020 remains open.
 
 ### Local S2-19d bounded REP MOVSB/W/D/Q contract
 

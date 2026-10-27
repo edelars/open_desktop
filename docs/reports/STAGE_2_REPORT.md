@@ -10906,3 +10906,33 @@ worktree it reports the `.git` worktree marker as an unmapped root file and
 two existing links in the report to absent `work/.../manifest.json` artifacts;
 no layout changes were made. No native, physical x86, Mac mini, or SSH
 execution was performed.
+# S2-19o — bounded REPE SCASW/D/Q address-size-32
+
+The Long64 decoder and executor admission now agree on normalized F3+67 `AF`
+forms for SCASW, SCASD and SCASQ. Legacy-prefix ordering is respected,
+including `F3 67 48 66 AF` as W, `F3 67 66 48 AF` as Q, and `F3 48 67 AF` as
+D because the later legacy prefix resets REX. Existing SCASB address-size-32
+forms remain admitted; address-size-32 CMPS `A7` remains unsupported. The
+generic SCAS loop was sufficient: it already selects ECX/EDI, performs one
+width-sized read, and commits the current iteration only after a successful
+read. This does not claim that a read wraps at 4 GiB; a cross-boundary operand
+is one contiguous width-sized access.
+
+The local entry gate remains `RFLAGS & 0x8d5 == 0x44` plus all `0x8d5` bits
+defined, even when ECX is zero. Zero count performs no data access and preserves
+the full state. Nonzero success compares AX/EAX/RAX and commits flags, modulo-32
+EDI and zero-extended ECX-1. Completion/mismatch precedes STOP and the 1024-read
+limit. Fault, STOP and limit preserve REP RIP and do not retire; prior successful
+iterations remain committed. JIT/native remain closed. ISSUE-020 remains open.
+
+Local evidence: the decoder prefix matrix passed; 1,350 W/D/Q×DF comparisons
+matched an independent CMP flag calculation; tests covered full high halves,
+zero-count invalid RDI, a contiguous cross-4GiB access and short-tail no-commit.
+Fourteen literal schema-v2 fixtures cover snapshots, gates, faults, resume
+boundaries, CMP/TEST composition, and unsupported forms. The serialization-only
+generator freshness test, od-testkit full snapshot test, and CLI full snapshot
+and JIT-denial test passed. Final verification passed: 1,429 workspace tests,
+zero failures; `cargo check --workspace --all-targets --offline`;
+`cargo fmt --all -- --check`; and 125 Python CPU tests with fixture freshness.
+Graphify was refreshed. No native/JIT execution, physical x86, Mac mini, or SSH
+test was run.

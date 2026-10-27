@@ -1306,7 +1306,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                                 ..Prefixes::default()
                             }))
             } else {
-                !prefixes.address_override && prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                if prefixes.address_override {
+                    prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                        && match (self.length, prefixes.operand_override, prefixes.rex) {
+                            (3, false, None) | (4, false, None) => true,
+                            (4, true, None) | (4, false, Some(0x48..=0x4f)) => true,
+                            (5, true, None) | (5, true, Some(0x48..=0x4f)) => true,
+                            _ => false,
+                        }
+                } else {
+                    prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                }
             };
         let rep_cmps = opcode.map == OpcodeMap::Primary
             && matches!(opcode.byte, 0xa6 | 0xa7)
@@ -6091,6 +6101,66 @@ mod tests {
     }
 
     #[test]
+    fn rep_scas_addr32_admits_only_wide_f3_af_prefix_groups() {
+        for (bytes, size) in [
+            (&[0xf3, 0x67, 0x66, 0xaf][..], OperandSize::Word),
+            (&[0x67, 0xf3, 0x66, 0xaf][..], OperandSize::Word),
+            (&[0x67, 0xf3, 0x66, 0xaf][..], OperandSize::Word),
+            (&[0xf3, 0x67, 0xaf][..], OperandSize::Dword),
+            (&[0x67, 0xf3, 0xaf][..], OperandSize::Dword),
+            (&[0xf3, 0x48, 0x67, 0xaf][..], OperandSize::Dword),
+            (&[0xf3, 0x67, 0x48, 0xaf][..], OperandSize::Qword),
+            (&[0xf3, 0x67, 0x48, 0x66, 0xaf][..], OperandSize::Word),
+            (&[0xf3, 0x67, 0x66, 0x48, 0xaf][..], OperandSize::Qword),
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::RepScas { size },
+                "{bytes:02x?}"
+            );
+            assert_eq!(instruction.address_size, OperandSize::Dword, "{bytes:02x?}");
+            assert_eq!(instruction.length as usize, bytes.len(), "{bytes:02x?}");
+        }
+        for rex in 0x48..=0x4f {
+            assert_eq!(
+                Memory::new(&[0xf3, 0x67, rex, 0xaf])
+                    .decode()
+                    .unwrap()
+                    .operation,
+                Operation::RepScas {
+                    size: OperandSize::Qword
+                }
+            );
+        }
+
+        let rejected: &[&[u8]] = &[
+            &[0xf2, 0x67, 0xaf],
+            &[0xf0, 0xf3, 0x67, 0xaf],
+            &[0xf3, 0x67, 0xf2, 0xaf],
+            &[0x26, 0xf3, 0x67, 0xaf],
+            &[0xf3, 0x67, 0x64, 0xaf],
+            &[0xf3, 0x67, 0x40, 0xaf],
+            &[0xf3, 0x67, 0x47, 0xaf],
+            &[0xf3, 0x67, 0x66, 0x40, 0xaf],
+            &[0xf3, 0x67, 0x66, 0x47, 0xaf],
+            &[0xf3, 0x67, 0x66, 0x66, 0xaf],
+            &[0xf3, 0x67, 0x67, 0xaf],
+            &[0xf3, 0xf3, 0x67, 0xaf],
+            &[0xf3, 0x67, 0xf3, 0xaf],
+        ];
+        for bytes in rejected {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "unexpected admission: {bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn repe_scas_word_dword_qword_prefix_normalization_is_exact() {
         for (bytes, size) in [
             (vec![0xf3, 0x66, 0xaf], OperandSize::Word),
@@ -6121,7 +6191,7 @@ mod tests {
         ];
         let mut rejected = Vec::new();
         for stream in streams {
-            for prefix in [0xf0, 0xf2, 0xf3, 0x67, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
+            for prefix in [0xf0, 0xf2, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
                 let mut bytes = vec![prefix];
                 bytes.extend_from_slice(&stream);
                 rejected.push(bytes);
@@ -6134,7 +6204,7 @@ mod tests {
             vec![0xf3, 0x66, 0x40, 0xaf],
             vec![0xf3, 0x66, 0x47, 0xaf],
         ]);
-        assert_eq!(rejected.len(), 35);
+        assert_eq!(rejected.len(), 29);
         for bytes in rejected {
             assert!(
                 matches!(
@@ -6825,10 +6895,9 @@ mod tests {
             &[0x67, 0xaf],
             &[0x67, 0x48, 0xaf],
         ];
-        let prefixes: [&[u8]; 9] = [
+        let prefixes: [&[u8]; 8] = [
             &[0xf0],
             &[0xf2],
-            &[0xf3],
             &[0x26],
             &[0x2e],
             &[0x36],
@@ -6854,7 +6923,7 @@ mod tests {
             cases.push(vec![0x67, rex, 0xaf]);
             cases.push(vec![0x67, 0x66, rex, 0xaf]);
         }
-        assert_eq!(cases.len(), 72);
+        assert_eq!(cases.len(), 69);
         for bytes in cases {
             assert!(
                 matches!(

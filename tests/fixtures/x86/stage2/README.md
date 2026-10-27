@@ -4124,7 +4124,7 @@ Thirteen literal schema-v2 fixtures cover both exact three-byte encodings,
 EDI; nonzero ECX/EDI high-half aliases; mismatch under DF; an unmapped first
 read and a fault after one committed equal read; the 1024-success limit; zero
 instruction budget; CMP→REP success; TEST→REP undefined-AF rejection; bad
-entry flags at zero count; and extra-prefix/AF rejects. The expected sidecar
+entry flags at zero count; and extra-prefix/addr32 `A7` rejects. The expected sidecar
 records complete GPR, RFLAGS, definedness, RIP and memory state. The generator
 serializes a static input/expected table only. Fixture schema/profile are
 unchanged.
@@ -4142,6 +4142,29 @@ cargo test -p od-testkit --offline rep_scasb_addr32_literal_fixtures_match_full_
 cargo test -p od-runner --test fixture_v2 --offline rep_scasb_addr32_cli_fixtures_check_full_state_and_jit_denial
 ```
 
+## Bounded REPE SCASW/D/Q address-size-32 fixtures S2-19o
+
+Fourteen literal schema-v2 fixtures extend the addr32 REPE SCAS profile to
+`F3 67 66 AF` SCASW, `F3 67 AF` SCASD, and effective-REX.W SCASQ. Cases cover
+zero count and preserved high halves, mismatch under DF, completion, an
+unmapped first access and fault after one successful element, the 1024-read
+limit, zero instruction budget, a width-sized read crossing 4 GiB, CMP→SCAS
+success, TEST→SCAS undefined-AF rejection, a bad zero-count gate, extra-prefix
+rejection, and addr32 `A7` rejection. Snapshots include all GPRs,
+RFLAGS/definedness, RIP, and complete fixture memory. The generator serializes
+hand-authored input/answer constants; it does not compute instruction results.
+
+The CLI compares full interpreter snapshots and confirms JIT remains denied
+without fallback. No native or physical x86 execution is claimed; ISSUE-020
+remains open.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_scas_wdq_addr32.py --check
+python3 tests/cpu/test_stage2_rep_scas_wdq_addr32_generator.py
+cargo test -p od-testkit --offline rep_scas_wdq_addr32_literal_fixtures_match_full_expected_answers
+cargo test -p od-runner --test fixture_v2 rep_scas_wdq_addr32_cli_fixtures_check_full_state_and_jit_denial
+```
+
 ## Bounded REPE CMPSB address-size-32 fixtures S2-19n
 
 Thirteen literal schema-v2 fixtures cover both exact encodings (`F3 67 A6`,
@@ -4149,7 +4172,7 @@ Thirteen literal schema-v2 fixtures cover both exact encodings (`F3 67 A6`,
 equal completion, mismatch at comparison two, source and destination unmapped reads,
 the 1024-success limit, zero instruction budget, CMP→REP success,
 TEST→REP undefined-AF rejection, bad entry values at ECX=0, and address-size-32
-AF rejection. Expected sidecars contain full GPR/RFLAGS/definedness/RIP/memory
+`A7` rejection. Expected sidecars contain full GPR/RFLAGS/definedness/RIP/memory
 snapshots. The generator serializes a fixed input and expected-state table; it
 does not calculate or execute instruction semantics.
 

@@ -1195,16 +1195,31 @@ fn step_tracked_with_stop(
                             && instruction.address_size == OperandSize::Dword))
                         && size == OperandSize::Byte
                 } else if instruction.opcode.byte == 0xaf {
-                    !instruction.prefixes.address_override
-                        && instruction.prefixes.rex.is_none_or(|rex| rex & 8 != 0)
-                        && size
-                            == if instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
-                                OperandSize::Qword
-                            } else if instruction.prefixes.operand_override {
-                                OperandSize::Word
-                            } else {
-                                OperandSize::Dword
+                    instruction.prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                        && if instruction.address_size == OperandSize::Dword {
+                            match (
+                                instruction.length,
+                                instruction.prefixes.operand_override,
+                                instruction.prefixes.rex,
+                            ) {
+                                (3 | 4, false, None) => size == OperandSize::Dword,
+                                (4 | 5, true, None) => size == OperandSize::Word,
+                                (4, false, Some(0x48..=0x4f)) | (5, true, Some(0x48..=0x4f)) => {
+                                    size == OperandSize::Qword
+                                }
+                                _ => false,
                             }
+                        } else {
+                            !instruction.prefixes.address_override
+                                && size
+                                    == if instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                                        OperandSize::Qword
+                                    } else if instruction.prefixes.operand_override {
+                                        OperandSize::Word
+                                    } else {
+                                        OperandSize::Dword
+                                    }
+                        }
                 } else {
                     false
                 }
@@ -60354,8 +60369,6 @@ mod tests {
             vec![0x67, 0x67, 0xf3, 0xae],
             vec![0xf3, 0xf3, 0x67, 0xae],
             vec![0xf3, 0x67, 0xf3, 0xae],
-            vec![0xf3, 0x67, 0xaf],
-            vec![0x67, 0xf3, 0xaf],
         ]);
         for code in rejected {
             let mut state = LongModeState::default();
@@ -61204,6 +61217,357 @@ mod tests {
             }
         }
         assert_eq!(tested, 864);
+    }
+
+    #[test]
+    fn rep_scas_wdq_address32_matches_independent_cmp_model_and_commits_low_halves() {
+        let samples = [
+            0,
+            1,
+            0x7f,
+            0x80,
+            0xff,
+            0x100,
+            0x7fff,
+            0x8000,
+            0xffff,
+            0x7fff_ffff,
+            0x8000_0000,
+            0xffff_ffff,
+            0x0123_4567_89ab_cdef,
+            0x8000_0000_0000_0000,
+            u64::MAX,
+        ];
+        let cases = [
+            (OperandSize::Word, vec![0xf3, 0x67, 0x66, 0xaf]),
+            (OperandSize::Dword, vec![0x67, 0xf3, 0xaf]),
+            (OperandSize::Qword, vec![0xf3, 0x67, 0x48, 0xaf]),
+        ];
+        let mut tested = 0;
+        for (size, code) in cases {
+            let width = size.bytes() as usize;
+            for &left in &samples {
+                for &right in &samples {
+                    for df in [false, true] {
+                        let accumulator = left & size.mask();
+                        let observed = right & size.mask();
+                        let original_rax = 0xa5a5_5a5a_1234_5678 & !size.mask() | accumulator;
+                        let mut state = LongModeState::default();
+                        state.rip = 0x2000;
+                        state.gpr[Register::Rax as usize] = original_rax;
+                        state.gpr[Register::Rcx as usize] = 0xfeed_beef_0000_0001;
+                        state.gpr[Register::Rdi as usize] = 0xaabb_ccdd_0000_1000;
+                        state.gpr[Register::Rsi as usize] = 0x9988_7766_5544_3322;
+                        state.rflags = 2 | crate::PF | crate::ZF | if df { crate::DF } else { 0 };
+                        let mut memory = Memory::at(&code, 0x2000);
+                        memory.data_base = 0x1000;
+                        memory.bytes = observed.to_le_bytes()[..width].to_vec();
+                        assert_eq!(
+                            crate::long_decode::decode(
+                                &mut memory,
+                                0x2000,
+                                AccessContext::default()
+                            )
+                            .unwrap()
+                            .operation,
+                            Operation::RepScas { size },
+                            "decode {size:?} {code:02x?}"
+                        );
+                        assert_eq!(
+                            state.rflags & crate::ARITHMETIC_FLAGS,
+                            crate::PF | crate::ZF
+                        );
+                        assert_eq!(
+                            step(&mut state, &mut memory, AccessContext::default()),
+                            Ok(StepOutcome::Advanced),
+                            "{size:?} left={accumulator:#x} right={observed:#x} DF={df}"
+                        );
+                        assert_eq!(state.rip, 0x2000 + code.len() as u64);
+                        assert_eq!(state.gpr[Register::Rax as usize], original_rax);
+                        assert_eq!(state.gpr[Register::Rcx as usize], 0);
+                        assert_eq!(
+                            state.gpr[Register::Rdi as usize],
+                            if df {
+                                0x1000u32.wrapping_sub(width as u32) as u64
+                            } else {
+                                0x1000 + width as u64
+                            }
+                        );
+                        assert_eq!(state.gpr[Register::Rsi as usize], 0x9988_7766_5544_3322);
+                        assert_eq!(
+                            state.rflags,
+                            rep_scas_width_expected_flags(accumulator, observed, size, df)
+                        );
+                        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, width)]);
+                        tested += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(tested, 1350);
+    }
+
+    #[test]
+    fn rep_scas_wdq_address32_zero_gate_fault_and_contiguous_read_boundaries() {
+        for (size, code) in [
+            (OperandSize::Word, vec![0xf3, 0x67, 0x66, 0xaf]),
+            (OperandSize::Dword, vec![0x67, 0xf3, 0xaf]),
+            (OperandSize::Qword, vec![0xf3, 0x67, 0x48, 0xaf]),
+        ] {
+            let width = size.bytes() as usize;
+            let mut zero = LongModeState::default();
+            zero.rip = 0x2000;
+            zero.gpr[Register::Rax as usize] = 0x1122_3344_5566_7788;
+            zero.gpr[Register::Rcx as usize] = 0xdead_beef_0000_0000;
+            zero.gpr[Register::Rdi as usize] = 0xfeed_face_8000_0000;
+            zero.rflags = 2 | crate::PF | crate::ZF;
+            let before = zero.clone();
+            let mut memory = Memory::at(&code, 0x2000);
+            assert_eq!(
+                step(&mut zero, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            let mut expected = before;
+            expected.rip += code.len() as u64;
+            assert_eq!(zero, expected, "{size:?} zero ECX preserves full state");
+            assert!(memory.accesses.is_empty());
+
+            let mut undefined = LongModeState::default();
+            undefined.rip = 0x2000;
+            undefined.gpr[Register::Rcx as usize] = 0xdead_beef_0000_0000;
+            undefined.gpr[Register::Rdi as usize] = 0xface_cafe_8000_0000;
+            undefined.rflags = 2 | crate::PF | crate::ZF;
+            let before = undefined.clone();
+            let mut memory = Memory::at(&code, 0x2000);
+            let defined = crate::INTEGER_FLAGS & !crate::AF;
+            let result = run_with_rflags_defined(
+                &mut undefined,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                defined,
+                || false,
+            )
+            .unwrap();
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0xaf },
+                "{size:?}"
+            );
+            assert_eq!(undefined, before, "{size:?} undefined AF at zero ECX");
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(result.rflags_defined, defined);
+            assert!(memory.accesses.is_empty());
+
+            // A complete operand crossing 4 GiB is one contiguous read. Its
+            // bytes do not wrap to address zero when EDI is near UINT32_MAX.
+            let start = 0xffff_ffffu64 - (width as u64) / 2;
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rax as usize] = 0x41;
+            state.gpr[Register::Rcx as usize] = 0xaabb_ccdd_0000_0001;
+            state.gpr[Register::Rdi as usize] = 0xface_cafe_0000_0000 | start;
+            state.rflags = 2 | crate::PF | crate::ZF;
+            let mut memory = Memory::at(&code, 0x2000);
+            memory.data_base = start;
+            memory.bytes = vec![0x41; width];
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced),
+                "{size:?}"
+            );
+            assert_eq!(memory.accesses, [(AccessKind::Read, start, width)]);
+            assert_eq!(state.gpr[Register::Rcx as usize], 0);
+            assert_eq!(
+                state.gpr[Register::Rdi as usize],
+                (start as u32).wrapping_add(width as u32) as u64
+            );
+
+            // A short final region faults the single width-sized read and
+            // leaves the faulting iteration untouched.
+            let mut fault = LongModeState::default();
+            fault.rip = 0x2000;
+            fault.gpr[Register::Rax as usize] = 0x41;
+            fault.gpr[Register::Rcx as usize] = 1;
+            fault.gpr[Register::Rdi as usize] = 0xface_cafe_0000_1000;
+            fault.rflags = 2 | crate::PF | crate::ZF;
+            let before = fault.clone();
+            let mut memory = Memory::at(&code, 0x2000);
+            memory.data_base = 0x1000;
+            memory.bytes = vec![0x41; width - 1];
+            assert!(matches!(
+                step(&mut fault, &mut memory, AccessContext::default()),
+                Err(_)
+            ));
+            assert_eq!(fault, before, "{size:?}");
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, width)]);
+        }
+    }
+
+    #[test]
+    fn rep_scas_wdq_address32_counts_limit_and_tracked_replay() {
+        for (size, code) in [
+            (OperandSize::Word, vec![0xf3, 0x67, 0x66, 0xaf]),
+            (OperandSize::Dword, vec![0xf3, 0x67, 0xaf]),
+            (OperandSize::Qword, vec![0xf3, 0x67, 0x48, 0xaf]),
+        ] {
+            let width = size.bytes() as usize;
+            for count in [0u32, 1, 1023, 1024, 1025, u32::MAX] {
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rax as usize] = 0x41;
+                state.gpr[Register::Rcx as usize] = 0xaabb_ccdd_0000_0000 | u64::from(count);
+                state.gpr[Register::Rdi as usize] = 0xface_cafe_0000_1000;
+                state.rflags = 2 | crate::PF | crate::ZF;
+                let mut memory = Memory::at(&code, 0x2000);
+                memory.bytes = vec![0; REP_ITERATION_WORK_LIMIT as usize * width];
+                for element in memory.bytes.chunks_exact_mut(width) {
+                    element.copy_from_slice(&0x41u64.to_le_bytes()[..width]);
+                }
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                let committed = u64::from(count).min(REP_ITERATION_WORK_LIMIT);
+                if count > REP_ITERATION_WORK_LIMIT as u32 {
+                    assert_eq!(
+                        result.exit,
+                        RunExit::RepIterationBudgetExhausted,
+                        "{size:?} {count}"
+                    );
+                    assert_eq!(result.instructions_executed, 0);
+                    assert_eq!(state.rip, 0x2000);
+                } else {
+                    assert_eq!(
+                        result.exit,
+                        RunExit::InstructionBudgetExhausted,
+                        "{size:?} {count}"
+                    );
+                    assert_eq!(result.instructions_executed, 1);
+                    assert_eq!(state.rip, 0x2000 + code.len() as u64);
+                }
+                assert_eq!(
+                    state.gpr[Register::Rcx as usize],
+                    if count == 0 {
+                        0xaabb_ccdd_0000_0000
+                    } else {
+                        u64::from(count) - committed
+                    }
+                );
+                assert_eq!(
+                    state.gpr[Register::Rdi as usize],
+                    if count == 0 {
+                        0xface_cafe_0000_1000
+                    } else {
+                        0x1000 + committed * width as u64
+                    }
+                );
+                assert_eq!(state.rflags, 0x46);
+                assert_eq!(memory.accesses.len(), committed as usize);
+                assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS);
+            }
+
+            for df in [false, true] {
+                for mismatch in 0..4u32 {
+                    let start = 0x2000u32;
+                    let data_base = if df {
+                        u64::from(start - 3 * width as u32)
+                    } else {
+                        u64::from(start)
+                    };
+                    let mut bytes = 0x41u64.to_le_bytes()[..width].repeat(4);
+                    let element = if df { 3 - mismatch } else { mismatch } as usize;
+                    bytes[element * width..(element + 1) * width]
+                        .copy_from_slice(&0x42u64.to_le_bytes()[..width]);
+                    let mut state = LongModeState::default();
+                    state.rip = 0x2000;
+                    state.gpr[Register::Rax as usize] = 0x41;
+                    state.gpr[Register::Rcx as usize] = 0xabcd_0000_0000_0004;
+                    state.gpr[Register::Rdi as usize] = 0xeeee_ffff_0000_2000;
+                    state.rflags = 2 | crate::PF | crate::ZF | if df { crate::DF } else { 0 };
+                    let mut memory = Memory::at(&code, 0x2000);
+                    memory.data_base = data_base;
+                    memory.bytes = bytes;
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced),
+                        "{size:?} mismatch={mismatch} DF={df}"
+                    );
+                    let committed = mismatch + 1;
+                    assert_eq!(state.gpr[Register::Rcx as usize], u64::from(3 - mismatch));
+                    assert_eq!(
+                        state.gpr[Register::Rdi as usize],
+                        if df {
+                            start.wrapping_sub(committed * width as u32) as u64
+                        } else {
+                            (start + committed * width as u32) as u64
+                        }
+                    );
+                    assert_eq!(
+                        state.rflags,
+                        rep_scas_width_expected_flags(0x41, 0x42, size, df)
+                    );
+                    assert_eq!(memory.accesses.len(), committed as usize);
+                }
+            }
+
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rax as usize] = 0x41;
+            state.gpr[Register::Rcx as usize] = 0xabcd_0000_0000_0002;
+            state.gpr[Register::Rdi as usize] = 0xeeee_ffff_0000_1000;
+            state.rflags = 2 | crate::PF | crate::ZF;
+            let mut defined = crate::INTEGER_FLAGS;
+            let mut memory = Memory::at(&code, 0x2000);
+            memory.bytes = 0x41u64.to_le_bytes()[..width].repeat(2);
+            let mut stopped = false;
+            assert_eq!(
+                step_tracked_with_stop(
+                    &mut state,
+                    &mut memory,
+                    AccessContext::default(),
+                    &mut defined,
+                    &mut || {
+                        if stopped {
+                            false
+                        } else {
+                            stopped = true;
+                            true
+                        }
+                    },
+                ),
+                Ok(StepOutcome::StopRequested),
+                "{size:?}"
+            );
+            assert_eq!(state.rip, 0x2000);
+            assert_eq!(state.gpr[Register::Rcx as usize], 1);
+            assert_eq!(state.gpr[Register::Rdi as usize], 0x1000 + width as u64);
+            assert_eq!(defined, crate::INTEGER_FLAGS);
+            assert_eq!(memory.accesses.len(), 1);
+            assert_eq!(
+                step_tracked_with_stop(
+                    &mut state,
+                    &mut memory,
+                    AccessContext::default(),
+                    &mut defined,
+                    &mut || false,
+                ),
+                Ok(StepOutcome::Advanced),
+                "{size:?} replay"
+            );
+            assert_eq!(state.rip, 0x2000 + code.len() as u64);
+            assert_eq!(state.gpr[Register::Rcx as usize], 0);
+            assert_eq!(memory.accesses.len(), 2);
+        }
     }
 
     #[test]

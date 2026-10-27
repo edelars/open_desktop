@@ -601,8 +601,9 @@ Physical, Mac mini, and SSH checks remain deferred to shared final acceptance.
 
 Only exact `F3 67 AE` and `67 F3 AE` (three bytes) are admitted in Long64, and
 both decode to byte `RepScas`. Existing exact address-size-64 `F3 AE` remains
-unchanged. `AF`, REPNE, additional 66/REX/segment/LOCK prefixes and repeated
-prefixes are rejected by both decoder and executor admission.
+unchanged. S2-19m did not include `AF`; S2-19o adds only bounded W/D/Q
+address-size-32 `AF` forms. Addr32 `A7`, REPNE, additional 66/REX/segment/LOCK
+prefixes and repeated prefixes remain rejected by both decoder and executor.
 
 The full REPE entry/restart gate still runs before checking ECX, including at
 ECX=0: arithmetic values must satisfy `RFLAGS & 0x8d5 == 0x44`, and the carried
@@ -623,6 +624,33 @@ TEST→REP undefined-AF rejection. Thirteen literal schema-v2 fixtures compare
 complete CPU and memory snapshots; their generator serializes hand-authored
 input and expected tables only. The CLI also checks complete snapshots and
 keeps JIT denied. No native or physical execution is claimed.
+
+## REPE SCASW/D/Q address-size 32 — S2-19o
+
+Long64 additionally admits normalized F3+67 `AF` forms for SCASW/D/Q. The
+prefix parser retains legacy ordering: `F3 67 48 66 AF` is W, `F3 67 66 48
+AF` is Q, and `F3 48 67 AF` is D because the later 67 resets the earlier REX.
+Address-size-32 `F3 67 AE` / `67 F3 AE` remains the existing SCASB slice;
+address-size-32 `A7` CMPS and F2, LOCK, segment, repeated-group, and effective
+non-W REX variants remain unsupported. Decoder and executor admission agree.
+
+Before ECX or data access, including zero ECX, the full local gate still
+requires `RFLAGS & 0x8d5 == 0x44` and all bits in `0x8d5` defined. Zero ECX
+preserves full RCX/RDI/RAX/RSI and flags and performs no memory access. For
+each nonzero element, the executor reads one contiguous 2/4/8-byte value at
+zero-extended EDI, compares AX/EAX/RAX, then commits CMP flags, modulo-32 EDI
+by the width according to DF, and zero-extended ECX-1. A read crossing 4 GiB
+does not split or wrap. Faulting elements have no current commit; prior
+elements remain. Completion/mismatch precedes STOP, followed by the 1024-read
+limit; partial RIP/retirement and tracked resume follow the existing REP
+contract. JIT/native remain denied.
+
+Coverage includes 1,350 W/D/Q model states against an independent CMP flags
+calculation, both DF values, upper-half preservation, zero ECX with invalid
+full RDI, valid low EDI with noncanonical high bits, contiguous reads across
+4 GiB, width-tail faults, and 14 literal schema-v2 snapshots. Fixture
+generation serializes fixed input and expected values only. ISSUE-020 remains
+open; no native or physical execution is claimed.
 
 ## REPE CMPSB address-size 32 — S2-19n
 
