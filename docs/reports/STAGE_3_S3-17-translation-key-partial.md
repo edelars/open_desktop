@@ -65,21 +65,33 @@ observed unique-key workloads preserve originating fixture associations across
 multiple keys per fixture. Vec and `std::collections::HashMap` use exact key
 equality and the same complete dependency snapshot validator. Cold
 construction+insert is timed separately from warmed lookup+dependency
-validation; each of the four kernels is independently calibrated, samples
-alternate order and report raw operation counts and elapsed nanoseconds,
-median/min/max/IQR. The prototype reports logical payload lower bounds and
-explicitly does not measure RSS or allocator metadata. Trace schema 2 stores
-capture host data, build-bound toolchain/revision/source fingerprint/profile,
-and a separate runtime working-directory/revision/dirty context. Measure
-reports include the exact input trace SHA-256 and the corresponding build/runtime
-metadata for the measure binary.
+validation. Cold repetitions run in bounded micro-batches. Each
+sample sums only table-construction timer intervals; table destruction and
+between-batch pauses are excluded from `elapsed_ns`, while report
+`total_elapsed_ns` includes them. Raw samples record the number of cold
+micro-batches. Calibration
+keeps the 200 ms minimum and can exceed the per-batch table count by running
+additional bounded batches. The 128 MiB logical budget subtracts resident suite
+data and the execution Vec/HashMap copies before bounding one cold micro-batch;
+it counts inline key/table slots and owned key buffers. Cold HashMaps reserve
+for their known entry count before insertion. HashMap control bytes, allocator
+metadata, runtime overhead, and process RSS are not measured, so this is an
+explicit logical-storage bound rather than an RSS guarantee. The raw trace
+buffer and parsed trace are dropped before timing. Each of the four kernels is
+independently calibrated;
+samples alternate order and report raw operation counts, summed elapsed
+nanoseconds, batch counts, median/min/max/IQR. Trace schema 2 stores capture host
+data, build-bound toolchain/revision/source fingerprint/profile, and a separate
+runtime working-directory/revision/dirty context. Measure report schema 3 adds
+the per-sample batch count and includes the exact input trace SHA-256 and the
+corresponding build/runtime metadata for the measure binary.
 
 The recorder is gated to macOS ARM64; the measure/replay command is portable.
 Hard input/visit/key/scenario/payload/time bounds are enforced. Tests verify
 trace reconstruction and every required scenario family, stale-hit behavior
 after a successful old-key lookup, Vec/HashMap result parity, malformed
 input/limit rejection, retirement count validation, build/runtime metadata,
-and sample-configuration bounds. `cargo test -p od-bench --offline` passed 11/11;
+and sample-configuration bounds. `cargo test -p od-bench --offline` passed 12/12;
 `cargo test -p od-jit --offline` passed 79/79; `cargo test -p od-host --offline`
 passed 27/27; `cargo check --workspace --all-targets --offline`,
 `cargo fmt --all -- --check`, `git diff --check`, and `graphify update .` passed.

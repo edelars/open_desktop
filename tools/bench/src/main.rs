@@ -67,8 +67,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let bytes = std::fs::read(&trace_path)?;
             let trace_sha256 = od_testkit::sha256_hex(&bytes);
             let trace: RecordedTrace = serde_json::from_slice(&bytes)?;
+            let capture_host = trace.capture_host.clone();
             let suite = suite_from_recorded_trace(&trace)
                 .map_err(|error| format!("trace validation failed: {error:?}"))?;
+            drop(trace);
+            drop(bytes);
             let measure_host = HostMetadata::current();
             let report = run_suite_with_metadata(
                 &suite,
@@ -79,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 BenchmarkRunMetadata {
                     trace_sha256: Some(trace_sha256),
-                    capture_host: Some(trace.capture_host.clone()),
+                    capture_host: Some(capture_host),
                     measure_host,
                 },
             )

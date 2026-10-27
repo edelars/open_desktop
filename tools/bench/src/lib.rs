@@ -315,7 +315,10 @@ pub enum BenchmarkError {
         max: usize,
     },
     InvalidBenchmarkConfig,
-    ColdBatchMemoryLimit { requested: u64, max: u64 },
+    ColdBatchMemoryLimit {
+        requested: u64,
+        max: u64,
+    },
     TotalTimeExceeded {
         elapsed: Duration,
         max: Duration,
@@ -328,6 +331,14 @@ pub enum BenchmarkError {
 }
 
 impl BenchmarkSuite {
+    fn logical_memory_lower_bound(&self) -> Result<usize, BenchmarkError> {
+        self.scenarios.iter().try_fold(0usize, |total, scenario| {
+            total
+                .checked_add(scenario.logical_memory_lower_bound()?)
+                .ok_or(BenchmarkError::CounterOverflow)
+        })
+    }
+
     pub fn validate(&self) -> Result<(), BenchmarkError> {
         if self.max_input_json_bytes > MAX_INPUT_JSON_BYTES {
             return Err(BenchmarkError::InputJsonTooLarge {
@@ -935,25 +946,46 @@ fn synthetic_workload(
 
 impl ScenarioWorkload {
     fn logical_memory_lower_bound(&self) -> Result<usize, BenchmarkError> {
-        let mut total = 0usize;
-        for key in self
-            .cache_entries
-            .iter()
-            .chain(self.queries.iter().map(|q| &q.key))
-        {
+        let mut total = std::mem::size_of::<ScenarioWorkload>()
+            .checked_add(self.name.capacity())
+            .and_then(|value| {
+                value.checked_add(
+                    self.cache_entries
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<TranslationKey>())?,
+                )
+            })
+            .and_then(|value| {
+                value.checked_add(
+                    self.queries
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<LookupQuery>())?,
+                )
+            })
+            .and_then(|value| {
+                value.checked_add(
+                    self.visits_per_input
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<usize>())?,
+                )
+            })
+            .ok_or(BenchmarkError::CounterOverflow)?;
+        for key in &self.cache_entries {
             total = total
-                .checked_add(key_payload_lower_bound(key))
+                .checked_add(key_owned_buffer_bytes(key))
                 .ok_or(BenchmarkError::CounterOverflow)?;
         }
         for query in &self.queries {
             total = total
-                .checked_add(
-                    query
-                        .current_dependencies
-                        .len()
-                        .checked_mul(std::mem::size_of::<CodeDependencySpan>())
-                        .ok_or(BenchmarkError::CounterOverflow)?,
-                )
+                .checked_add(key_owned_buffer_bytes(&query.key))
+                .and_then(|value| {
+                    value.checked_add(
+                        query
+                            .current_dependencies
+                            .capacity()
+                            .checked_mul(std::mem::size_of::<CodeDependencySpan>())?,
+                    )
+                })
                 .ok_or(BenchmarkError::CounterOverflow)?;
         }
         Ok(total)
@@ -1081,6 +1113,10 @@ impl ScenarioWorkload {
 }
 
 fn key_payload_lower_bound(key: &TranslationKey) -> usize {
+    key_owned_buffer_bytes(key)
+}
+
+fn key_owned_buffer_bytes(key: &TranslationKey) -> usize {
     key.code_bytes().len()
         + key
             .dependencies()
@@ -1090,6 +1126,22 @@ fn key_payload_lower_bound(key: &TranslationKey) -> usize {
             .fetch_ranges()
             .len()
             .saturating_mul(std::mem::size_of::<od_jit::block::GuestByteRange>())
+}
+
+/// Conservative element-capacity bound for the standard library's current
+/// power-of-two HashMap bucket growth, including its minimum four-bucket
+/// allocation for nonempty maps. It is used for admission/accounting; the
+/// measured map reports its actual public capacity separately.
+fn logical_hash_map_capacity_bound(entries: usize) -> usize {
+    if entries == 0 {
+        0
+    } else {
+        entries
+            .checked_next_power_of_two()
+            .unwrap_or(usize::MAX)
+            .saturating_mul(2)
+            .max(4)
+    }
 }
 
 fn lookup_in_cached_key(key: &TranslationKey, query: &LookupQuery) -> LookupResult {
@@ -1118,8 +1170,13 @@ pub fn lookup_hash_map(entries: &HashMap<TranslationKey, ()>, query: &LookupQuer
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct RawSample {
+    /// Sum of construction-only timer intervals. Destruction and inter-batch
+    /// pauses are excluded; the report's total elapsed time includes them.
     pub elapsed_ns: u64,
     pub operations: u64,
+    /// Number of bounded construction batches used by this sample. Warm
+    /// lookup samples use one batch.
+    pub batches: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -1243,17 +1300,18 @@ pub fn run_suite_with_metadata(
     let started = Instant::now();
     check_duration(config.preparation_elapsed, config.total_time_limit)?;
     suite.validate()?;
+    let suite_resident = suite.logical_memory_lower_bound()?;
     check_deadline(started, config.preparation_elapsed, config.total_time_limit)?;
     let mut reports = Vec::with_capacity(suite.scenarios.len());
     for scenario in &suite.scenarios {
         check_deadline(started, config.preparation_elapsed, config.total_time_limit)?;
-        reports.push(run_scenario(scenario, config, started)?);
+        reports.push(run_scenario(scenario, suite_resident, config, started)?);
     }
     let total_elapsed = started.elapsed();
     let total_elapsed = config.preparation_elapsed.saturating_add(total_elapsed);
     check_duration(total_elapsed, config.total_time_limit)?;
     Ok(BenchmarkReport {
-        schema: 2,
+        schema: 3,
         evidence_scope: if suite.recorded_trace_visits == 0 {
             "synthetic_prototype".into()
         } else {
@@ -1273,9 +1331,48 @@ pub fn run_suite_with_metadata(
 
 fn run_scenario(
     scenario: &ScenarioWorkload,
+    suite_resident_bytes: usize,
     config: BenchmarkConfig,
     started: Instant,
 ) -> Result<ScenarioReport, BenchmarkError> {
+    let map_capacity_bound = logical_hash_map_capacity_bound(scenario.cache_entries.len());
+    let key_buffers_bytes = scenario
+        .cache_entries
+        .iter()
+        .map(key_owned_buffer_bytes)
+        .sum::<usize>();
+    let execution_tables_bytes = std::mem::size_of::<Vec<TranslationKey>>()
+        .saturating_add(
+            scenario
+                .cache_entries
+                .len()
+                .saturating_mul(std::mem::size_of::<TranslationKey>()),
+        )
+        .saturating_add(key_buffers_bytes)
+        .saturating_add(std::mem::size_of::<HashMap<TranslationKey, ()>>())
+        .saturating_add(
+            map_capacity_bound.saturating_mul(std::mem::size_of::<(TranslationKey, ())>()),
+        )
+        .saturating_add(key_buffers_bytes);
+    let cold_memory_budget = MAX_LOGICAL_BYTES
+        .saturating_sub(suite_resident_bytes)
+        .saturating_sub(execution_tables_bytes);
+    let max_vec_batch =
+        cold_batch_repetition_limit(&scenario.cache_entries, false, cold_memory_budget, 0);
+    let max_map_batch = cold_batch_repetition_limit(
+        &scenario.cache_entries,
+        true,
+        cold_memory_budget,
+        map_capacity_bound,
+    );
+    if max_vec_batch == 0 || max_map_batch == 0 {
+        return Err(BenchmarkError::ColdBatchMemoryLimit {
+            requested: 1,
+            max: max_vec_batch.min(max_map_batch),
+        });
+    }
+
+    // Check the live-memory budget before allocating the execution tables.
     let mut entries_vec = scenario.cache_entries.clone();
     let mut entries_map: HashMap<TranslationKey, ()> = scenario
         .cache_entries
@@ -1295,7 +1392,6 @@ fn run_scenario(
         entry_capacity: entries_map.capacity(),
         logical_payload_lower_bound_bytes: vec_capacity.logical_payload_lower_bound_bytes,
     };
-
     let totals_vec = run_queries_vec(&entries_vec, &scenario.queries, 1);
     let totals_map = run_queries_map(&entries_map, &scenario.queries, 1);
     if totals_vec != totals_map {
@@ -1304,18 +1400,46 @@ fn run_scenario(
     let expected_totals = totals_vec;
 
     let repetitions = CalibrationRepetitions {
-        cold_vec: calibrate_repetitions(started, config, |repetitions| {
-            time_cold_build_vec(&scenario.cache_entries, repetitions).elapsed
-        }, cold_batch_repetition_limit(&scenario.cache_entries, false))?,
-        cold_hash_map: calibrate_repetitions(started, config, |repetitions| {
-            time_cold_build_map(&scenario.cache_entries, repetitions).elapsed
-        }, cold_batch_repetition_limit(&scenario.cache_entries, true))?,
-        warm_vec: calibrate_repetitions(started, config, |repetitions| {
-            time_warm_vec(&entries_vec, &scenario.queries, repetitions).elapsed
-        }, u64::MAX)?,
-        warm_hash_map: calibrate_repetitions(started, config, |repetitions| {
-            time_warm_map(&entries_map, &scenario.queries, repetitions).elapsed
-        }, u64::MAX)?,
+        cold_vec: calibrate_repetitions(
+            started,
+            config,
+            |repetitions| {
+                time_cold_build_vec(&scenario.cache_entries, repetitions, cold_memory_budget)
+                    .elapsed
+            },
+            cold_batch_repetition_limit(&scenario.cache_entries, false, cold_memory_budget, 0),
+        )?,
+        cold_hash_map: calibrate_repetitions(
+            started,
+            config,
+            |repetitions| {
+                time_cold_build_map(
+                    &scenario.cache_entries,
+                    repetitions,
+                    cold_memory_budget,
+                    map_capacity_bound,
+                )
+                .elapsed
+            },
+            cold_batch_repetition_limit(
+                &scenario.cache_entries,
+                true,
+                cold_memory_budget,
+                map_capacity_bound,
+            ),
+        )?,
+        warm_vec: calibrate_repetitions(
+            started,
+            config,
+            |repetitions| time_warm_vec(&entries_vec, &scenario.queries, repetitions).elapsed,
+            u64::MAX,
+        )?,
+        warm_hash_map: calibrate_repetitions(
+            started,
+            config,
+            |repetitions| time_warm_map(&entries_map, &scenario.queries, repetitions).elapsed,
+            u64::MAX,
+        )?,
     };
 
     let mut cold_vec_samples = Vec::with_capacity(config.sample_pairs);
@@ -1328,10 +1452,13 @@ fn run_scenario(
             cold_vec_samples.push(sample(time_cold_build_vec(
                 &scenario.cache_entries,
                 repetitions.cold_vec,
+                cold_memory_budget,
             ))?);
             cold_map_samples.push(sample(time_cold_build_map(
                 &scenario.cache_entries,
                 repetitions.cold_hash_map,
+                cold_memory_budget,
+                map_capacity_bound,
             ))?);
             warm_vec_samples.push(sample(time_warm_vec(
                 &entries_vec,
@@ -1357,10 +1484,13 @@ fn run_scenario(
             cold_map_samples.push(sample(time_cold_build_map(
                 &scenario.cache_entries,
                 repetitions.cold_hash_map,
+                cold_memory_budget,
+                map_capacity_bound,
             ))?);
             cold_vec_samples.push(sample(time_cold_build_vec(
                 &scenario.cache_entries,
                 repetitions.cold_vec,
+                cold_memory_budget,
             ))?);
         }
     }
@@ -1380,7 +1510,7 @@ fn run_scenario(
         vec_capacity,
         hash_capacity,
         expected_totals,
-        rss_note: "logical payload is a lower bound; allocator metadata, HashMap control bytes, process/runtime overhead and peak RSS are not included".into(),
+        rss_note: "the 128 MiB logical budget includes inline key/table slots and owned key buffers across resident suite state, execution tables, and one cold micro-batch; allocator metadata, HashMap control bytes, runtime overhead, and process RSS are not measured".into(),
     })
 }
 
@@ -1388,17 +1518,18 @@ fn calibrate_repetitions(
     started: Instant,
     config: BenchmarkConfig,
     mut measure: impl FnMut(u64) -> Duration,
-    max_repetitions: u64,
+    max_batch_repetitions: u64,
 ) -> Result<u64, BenchmarkError> {
+    check_deadline(started, config.preparation_elapsed, config.total_time_limit)?;
+    if max_batch_repetitions == 0 {
+        return Err(BenchmarkError::ColdBatchMemoryLimit {
+            requested: 1,
+            max: 0,
+        });
+    }
     let mut repetitions = 1u64;
     loop {
         check_deadline(started, config.preparation_elapsed, config.total_time_limit)?;
-        if repetitions > max_repetitions {
-            return Err(BenchmarkError::ColdBatchMemoryLimit {
-                requested: repetitions,
-                max: max_repetitions,
-            });
-        }
         let elapsed = measure(repetitions);
         check_deadline(started, config.preparation_elapsed, config.total_time_limit)?;
         if elapsed >= config.minimum_batch {
@@ -1407,65 +1538,112 @@ fn calibrate_repetitions(
         repetitions = repetitions
             .checked_mul(2)
             .ok_or(BenchmarkError::CounterOverflow)?;
+        // Cold construction partitions repetitions into memory-bounded
+        // micro-batches. The cap bounds peak retained tables, not total work.
     }
 }
 
-fn cold_batch_repetition_limit(keys: &[TranslationKey], hash_map: bool) -> u64 {
-    let per_table = keys.iter().fold(0usize, |total, key| {
-        total.saturating_add(key_payload_lower_bound(key))
+fn cold_batch_repetition_limit(
+    keys: &[TranslationKey],
+    hash_map: bool,
+    logical_budget: usize,
+    map_capacity: usize,
+) -> u64 {
+    let key_buffers = keys.iter().fold(0usize, |total, key| {
+        total.saturating_add(key_owned_buffer_bytes(key))
     });
-    let outer_slot = if hash_map {
+    let per_table = if hash_map {
         std::mem::size_of::<HashMap<TranslationKey, ()>>()
+            .saturating_add(
+                map_capacity.saturating_mul(std::mem::size_of::<(TranslationKey, ())>()),
+            )
+            .saturating_add(key_buffers)
     } else {
         std::mem::size_of::<Vec<TranslationKey>>()
+            .saturating_add(
+                keys.len()
+                    .saturating_mul(std::mem::size_of::<TranslationKey>()),
+            )
+            .saturating_add(key_buffers)
     };
-    // Leave a factor-of-two margin for hash control storage and allocator
-    // bookkeeping, while still treating the reported payload as a lower bound.
-    let per_repetition = per_table
-        .saturating_add(outer_slot)
-        .saturating_mul(2)
-        .max(1);
-    u64::try_from(MAX_LOGICAL_BYTES / per_repetition).unwrap_or(u64::MAX)
+    if per_table == 0 {
+        0
+    } else {
+        u64::try_from(logical_budget / per_table).unwrap_or(u64::MAX)
+    }
 }
 
 struct TimedBatch {
     elapsed: Duration,
     operations: u64,
+    batches: u64,
 }
 
-fn time_cold_build_vec(keys: &[TranslationKey], repetitions: u64) -> TimedBatch {
-    let started = Instant::now();
+fn time_cold_build_vec(
+    keys: &[TranslationKey],
+    repetitions: u64,
+    logical_budget: usize,
+) -> TimedBatch {
     let mut operations = 0u64;
-    let mut tables = Vec::with_capacity(repetitions as usize);
-    for _ in 0..repetitions {
-        let constructed = keys.to_vec();
-        operations = operations.saturating_add(constructed.len() as u64);
-        tables.push(constructed);
+    let batch_limit = cold_batch_repetition_limit(keys, false, logical_budget, 0).max(1);
+    let mut elapsed = Duration::ZERO;
+    let mut completed = 0u64;
+    let mut batches = 0u64;
+    while completed < repetitions {
+        let count = (repetitions - completed).min(batch_limit);
+        let mut tables = Vec::with_capacity(usize::try_from(count).unwrap_or(usize::MAX));
+        let started = Instant::now();
+        for _ in 0..count {
+            let constructed = keys.to_vec();
+            operations = operations.saturating_add(constructed.len() as u64);
+            tables.push(constructed);
+        }
+        black_box(&tables);
+        elapsed = elapsed.saturating_add(started.elapsed());
+        drop(tables);
+        completed += count;
+        batches = batches.saturating_add(1);
     }
-    black_box(&tables);
-    let elapsed = started.elapsed();
-    drop(tables);
     TimedBatch {
         elapsed,
         operations,
+        batches,
     }
 }
 
-fn time_cold_build_map(keys: &[TranslationKey], repetitions: u64) -> TimedBatch {
-    let started = Instant::now();
+fn time_cold_build_map(
+    keys: &[TranslationKey],
+    repetitions: u64,
+    logical_budget: usize,
+    map_capacity: usize,
+) -> TimedBatch {
     let mut operations = 0u64;
-    let mut tables = Vec::with_capacity(repetitions as usize);
-    for _ in 0..repetitions {
-        let constructed: HashMap<_, _> = keys.iter().cloned().map(|key| (key, ())).collect();
-        operations = operations.saturating_add(constructed.len() as u64);
-        tables.push(constructed);
+    let batch_limit = cold_batch_repetition_limit(keys, true, logical_budget, map_capacity).max(1);
+    let mut elapsed = Duration::ZERO;
+    let mut completed = 0u64;
+    let mut batches = 0u64;
+    while completed < repetitions {
+        let count = (repetitions - completed).min(batch_limit);
+        let mut tables = Vec::with_capacity(usize::try_from(count).unwrap_or(usize::MAX));
+        let started = Instant::now();
+        for _ in 0..count {
+            let mut constructed = HashMap::with_capacity(keys.len());
+            for key in keys {
+                constructed.insert(key.clone(), ());
+            }
+            operations = operations.saturating_add(constructed.len() as u64);
+            tables.push(constructed);
+        }
+        black_box(&tables);
+        elapsed = elapsed.saturating_add(started.elapsed());
+        drop(tables);
+        completed += count;
+        batches = batches.saturating_add(1);
     }
-    black_box(&tables);
-    let elapsed = started.elapsed();
-    drop(tables);
     TimedBatch {
         elapsed,
         operations,
+        batches,
     }
 }
 
@@ -1476,6 +1654,7 @@ fn time_warm_vec(keys: &[TranslationKey], queries: &[LookupQuery], repetitions: 
     TimedBatch {
         elapsed: started.elapsed(),
         operations: (queries.len() as u64).saturating_mul(repetitions),
+        batches: 1,
     }
 }
 
@@ -1490,6 +1669,7 @@ fn time_warm_map(
     TimedBatch {
         elapsed: started.elapsed(),
         operations: (queries.len() as u64).saturating_mul(repetitions),
+        batches: 1,
     }
 }
 
@@ -1528,6 +1708,7 @@ fn sample(batch: TimedBatch) -> Result<RawSample, BenchmarkError> {
     Ok(RawSample {
         elapsed_ns: duration_ns(batch.elapsed),
         operations: batch.operations,
+        batches: batch.batches,
     })
 }
 
@@ -1890,27 +2071,54 @@ mod tests {
         let started = Instant::now();
         let config = BenchmarkConfig::default();
         let minimum = config.minimum_batch;
-        let cold_vec = calibrate_repetitions(started, config, |repetitions| {
-            if repetitions >= 2 {
-                minimum
-            } else {
-                Duration::ZERO
-            }
-        }, u64::MAX)
+        let cold_vec = calibrate_repetitions(
+            started,
+            config,
+            |repetitions| {
+                if repetitions >= 2 {
+                    minimum
+                } else {
+                    Duration::ZERO
+                }
+            },
+            u64::MAX,
+        )
         .unwrap();
-        let cold_map = calibrate_repetitions(started, config, |repetitions| {
-            if repetitions >= 8 {
-                minimum
-            } else {
-                Duration::ZERO
-            }
-        }, u64::MAX)
+        let cold_map = calibrate_repetitions(
+            started,
+            config,
+            |repetitions| {
+                if repetitions >= 8 {
+                    minimum
+                } else {
+                    Duration::ZERO
+                }
+            },
+            u64::MAX,
+        )
         .unwrap();
         assert_eq!(cold_vec, 2);
         assert_eq!(cold_map, 8);
+        let micro_batched = calibrate_repetitions(
+            started,
+            config,
+            |repetitions| {
+                if repetitions >= 4 {
+                    minimum
+                } else {
+                    Duration::ZERO
+                }
+            },
+            1,
+        )
+        .unwrap();
+        assert_eq!(micro_batched, 4);
         assert!(matches!(
-            calibrate_repetitions(started, config, |_| Duration::ZERO, 1),
-            Err(BenchmarkError::ColdBatchMemoryLimit { .. })
+            calibrate_repetitions(started, config, |_| Duration::ZERO, 0),
+            Err(BenchmarkError::ColdBatchMemoryLimit {
+                requested: 1,
+                max: 0
+            })
         ));
     }
 
@@ -1920,16 +2128,69 @@ mod tests {
             RawSample {
                 elapsed_ns: 3,
                 operations: 1,
+                batches: 1,
             },
             RawSample {
                 elapsed_ns: 3,
                 operations: 1,
+                batches: 1,
             },
         ])
         .unwrap();
         assert_eq!(series.distribution.median_ns_per_operation, 3);
         assert_eq!(series.distribution.min_ns_per_operation, 3);
         assert_eq!(series.distribution.max_ns_per_operation, 3);
+    }
+
+    #[test]
+    fn cold_micro_batches_fit_logical_budget_and_count_operations() {
+        let keys = vec![key(1, 1, 1), key(2, 2, 2)];
+        let key_buffers = keys.iter().map(key_owned_buffer_bytes).sum::<usize>();
+        let vec_per_table = std::mem::size_of::<Vec<TranslationKey>>()
+            + keys.len() * std::mem::size_of::<TranslationKey>()
+            + key_buffers;
+        let outer_batch_header = std::mem::size_of::<Vec<HashMap<TranslationKey, ()>>>();
+        let vec_budget = outer_batch_header + vec_per_table * 2;
+        assert_eq!(cold_batch_repetition_limit(&keys, false, vec_budget, 0), 2);
+        let vec_batch = time_cold_build_vec(&keys, 5, vec_budget);
+        assert_eq!(vec_batch.operations, 10);
+        assert_eq!(vec_batch.batches, 3);
+
+        let map: HashMap<_, _> = keys.iter().cloned().map(|key| (key, ())).collect();
+        let map_per_table = std::mem::size_of::<HashMap<TranslationKey, ()>>()
+            + map.capacity() * std::mem::size_of::<(TranslationKey, ())>()
+            + key_buffers;
+        let map_budget = outer_batch_header + map_per_table * 2;
+        assert_eq!(
+            cold_batch_repetition_limit(&keys, true, map_budget, map.capacity()),
+            2
+        );
+        let map_batch = time_cold_build_map(&keys, 5, map_budget, map.capacity());
+        assert_eq!(map_batch.operations, 10);
+        assert_eq!(map_batch.batches, 3);
+
+        // This matches the original 256 -> 512 calibration failure shape:
+        // the batch cap is 416, but the 512-work batch is measured as two
+        // bounded sub-batches instead of being rejected.
+        let vec_budget = outer_batch_header + vec_per_table * 416;
+        let cap = cold_batch_repetition_limit(&keys, false, vec_budget, 0);
+        assert_eq!(cap, 416);
+        let over_cap = time_cold_build_vec(&keys, 512, vec_budget);
+        assert_eq!(over_cap.operations, 1_024);
+        assert_eq!(over_cap.batches, 2);
+    }
+
+    #[test]
+    fn hash_map_capacity_bound_covers_standard_capacity_for_supported_sizes() {
+        for entries in 0..=MAX_KEYS {
+            let map = HashMap::<u64, ()>::with_capacity(entries);
+            assert!(
+                map.capacity() <= logical_hash_map_capacity_bound(entries),
+                "entry count {entries}: actual capacity {}, bound {}",
+                map.capacity(),
+                logical_hash_map_capacity_bound(entries)
+            );
+        }
     }
 
     #[test]

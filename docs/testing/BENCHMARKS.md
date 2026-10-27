@@ -134,9 +134,17 @@ batch не короче 200 ms. Сохраняются raw elapsed/operation sam
 median/min/max/IQR. Оба варианта ищут полный `TranslationKey` и выполняют один
 и тот же `dependencies_match_snapshot`; stale scenarios сначала находят старый
 key, затем обнаруживают mismatch текущей версии/permission.
-Cold batches удерживают построенные таблицы до остановки таймера и уничтожают
-их после него; число повторов ограничено временным memory budget. Если batch
-не достигает 200 ms до границы памяти, measurement завершается явной ошибкой.
+Cold construction uses bounded micro-batches. Each raw sample sums only the
+table-construction timer intervals; it drops each batch between intervals.
+`elapsed_ns` excludes destruction and pauses, while report `total_elapsed_ns`
+includes them. Raw report schema 3 records the number of micro-batches per
+sample. Calibration retains the 200 ms minimum by increasing total repetitions
+across bounded batches. Before cloning execution tables, admission accounts
+for resident suite storage and the execution Vec/HashMap copies, then limits
+one cold batch to the remaining 128 MiB logical budget. This accounting includes
+inline key/table slots and owned key buffers; cold HashMaps reserve for their
+known entry count before insertion. HashMap control bytes, allocator metadata,
+runtime overhead, and process RSS are not measured.
 Полная fixture-v1 decode/admission проверяется до построения сценариев;
 каждый replay entry и каждый record принадлежат известным instruction
 boundaries. Сценарий observed unique keys сохраняет исходное fixture
