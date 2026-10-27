@@ -935,10 +935,11 @@ pointers are not key inputs. Existing mapping/backing IDs, versions, and
 permissions continue to detect their own changes.
 
 This is a fixture contract, not production mode/MMU/TLB integration. V2 memory
-load/store paths remain uncached. The current API relies on the caller to hold
-the immutable owner snapshot; it does not lock a future mapping owner across
-decode, compilation, and publication. A backing mutation racing that interval
-remains an S3-23 owner/invalidation integration dependency. Local tests cover
+load/store paths remain uncached. The current synchronous API relies on the
+caller to hold the immutable owner snapshot through decode, compilation, and
+publication, which excludes an intervening owner mutation. A live-owner
+candidate commit is still required if future background/asynchronous
+compilation can outlive or release that snapshot. Local tests cover
 same-context hits, changed-generation misses and handle drop, unsupported
 profile rejection before work, reset/recompile, mapping/backing/permission
 changes, and exclusion of architectural state and invocation controls from the
@@ -966,10 +967,13 @@ the fixture caller from invalidating an active entry through the safe API.
 
 This is not complete S3-23 integration. It does not connect the interpreter,
 V2 memory stores, control-plane writers, production MMU, DMA, or device
-callbacks. It does not serialize a writer against compile/publication after a
-snapshot has been captured, and it does not retire active/self-modifying code.
-Those remain separate owner/publication and S3-24 lifecycle work. No physical
-Mac mini check was run; see [S3-23a report](../reports/STAGE_3_S3-23a_2026-10-27.md).
+callbacks. In the current synchronous path, the caller keeps the owner snapshot
+frozen through compile and publication, so an intervening owner write cannot
+race that path. There is no separate live-owner candidate commit for compilation
+that outlives/releases that snapshot; add one if background/asynchronous
+compilation or a production owner permits such mutation. Active/self-modifying
+code retirement remains separate S3-24 lifecycle work. No physical Mac mini
+check was run; see [S3-23a report](../reports/STAGE_3_S3-23a_2026-10-27.md).
 
 ### S3-23c: tracked executable-code store fixture partial
 
@@ -1025,10 +1029,13 @@ full CPU state/RAM, version, invalidated target, retained unrelated entry, and
 the next execution of changed target code. Control writes test alias-based
 invalidation and backend-failure preservation.
 
-This is still fixture-only. It does not provide a production MMU/control owner,
-multi-writer synchronization, asynchronous/shared RAM, MMIO, DMA, SMP, REP/RMW,
-compile/publication race protection, or active-code retirement. No Stage 2
-files were changed. See the [S3-23d report](../reports/STAGE_3_S3-23d_2026-10-27.md).
+This is still fixture-only. The current synchronous adapter holds a frozen
+owner snapshot through compile/publication; it does not provide a live-owner
+candidate commit for future background/unfrozen compilation. It also does not
+provide a production MMU/control owner, multi-writer synchronization,
+asynchronous/shared RAM, MMIO, DMA, SMP, REP/RMW, or active-code retirement.
+No Stage 2 files were changed. See the
+[S3-23d report](../reports/STAGE_3_S3-23d_2026-10-27.md).
 
 ### S3-23e: region-scoped executable-write notification and redispatch
 

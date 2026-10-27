@@ -156,8 +156,8 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20f | Address-size override `67 48 8B/89` для V2 MOV | Только ModRM `mod=00`, qword data + dword address, RAX..RBX base/data, ровно 4 bytes |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
-| [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Caller-owned frozen snapshot; production mode/MMU lease and compile/publication race remain open |
-| [partial] | S3-23a | Fixture owner notifications для изменения backing/mapping и cache invalidation между sync dispatch calls | Только неактивные entries; production owner, writer integration и publication race остаются открытыми |
+| [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
+| [partial] | S3-23a | Fixture owner notifications для изменения backing/mapping и cache invalidation между sync dispatch calls | Только неактивные entries; current synchronous caller holds frozen snapshot; production owner/writers and future async/unfrozen candidate commit remain open |
 | [partial] | S3-23c | Fixture-only V2 generated store to a different tracked executable backing | One vCPU/fixed RAM; active-source overlap rejected; no active-code retirement or production MMU |
 | [partial] | S3-23d | Shared fixture write transaction for interpreter MOV, V2 store, and control writes | Interpreter and control adapters commit between calls; production MMU/DMA/MMIO/SMP remain open |
 | [partial] | S3-23e | Region-scoped executable-write notification and redispatch | Separate store entry invalidates cached prefix/tail and aliases before next lookup; no active native tail or S3-24 claim |
@@ -874,11 +874,12 @@ RIP/source, old-handle drop, reset/republication, unsupported profiles with no
 backend work, existing mapping/backing/permission invalidation, and state/control
 changes without false misses.
 
-This slice does not add a production MMU owner or synchronize mapping mutation
-across compilation/publication. The caller's frozen-snapshot lease is the
-current boundary; racing owner mutation remains for S3-23 integration. Cached
-V2 memory load/store paths are not enabled. Physical Mini checks remain deferred
-until final S3-21 after local Stage 3 work. Results are recorded in the
+This slice does not add a production MMU owner or live-owner candidate commit
+for compilation that outlives/releases its snapshot. The caller's frozen
+snapshot lease prevents owner mutation during the current synchronous
+compile/publication path; revalidation is needed if a future async/unfrozen
+path is added. Cached V2 memory load/store paths are not enabled. Physical Mini
+checks remain deferred until final S3-21 after local Stage 3 work. Results are recorded in the
 [S3-22a report](../reports/STAGE_3_S3-22a_2026-10-27.md).
 
 ### S3-23. Инвалидировать зависимости изменённого кода
