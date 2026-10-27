@@ -106,6 +106,10 @@ impl MemorySiteV2 {
     pub const fn operation(self) -> MemorySiteOperationV2 {
         self.operation
     }
+
+    pub const fn operand(self) -> MemoryOperand {
+        self.operand
+    }
 }
 
 /// V2 call record. Its first member preserves the V1 control prefix, while
@@ -185,8 +189,17 @@ pub unsafe extern "C" fn memory_site_helper_v2(
     let site = unsafe { *context.memory_sites.add(site_index as usize) };
     // SAFETY: the state pointer is kept live by the V2 host wrapper.
     let state = unsafe { &*context.base.state };
+    let decoded_memory_form_matches = match (
+        site.next_rip.checked_sub(site.guest_rip),
+        site.operand.index,
+    ) {
+        (Some(3), None) => site.operand.scale == 1,
+        (Some(4), Some(_)) => matches!(site.operand.scale, 1 | 2 | 4 | 8),
+        _ => false,
+    };
     if site.instruction_index != 0
-        || site.next_rip.checked_sub(site.guest_rip) != Some(3)
+        || !matches!(site.next_rip.checked_sub(site.guest_rip), Some(3 | 4))
+        || !decoded_memory_form_matches
         || state.rip != site.guest_rip
         || match site.operation {
             MemorySiteOperationV2::Load => {
@@ -205,7 +218,15 @@ pub unsafe extern "C" fn memory_site_helper_v2(
                     | od_isa::Register::Rbx
             )
         )
-        || site.operand.index.is_some()
+        || site.operand.index.is_some_and(|index| {
+            !matches!(
+                index,
+                od_isa::Register::Rax
+                    | od_isa::Register::Rcx
+                    | od_isa::Register::Rdx
+                    | od_isa::Register::Rbx
+            )
+        })
         || site.operand.displacement != 0
         || site.operand.address_size != od_isa::OperandSize::Qword
         || site.operand.size != od_isa::OperandSize::Qword

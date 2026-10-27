@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-22a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-22a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -150,6 +150,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-19b | Production V2 block/helper path для одного MOV r64 load | Точный `48 8B /r`, base/dst RAX..RBX; без cache/general IR |
 | [partial] | S3-20 | Memory lowering и partial registers; сейчас только проверенные MOV qword load/store slices | S3-19; interpreter соответствующих форм |
 | [partial] | S3-20b | Production V2 MOV qword store с private-RAM unsafe entry | Точный `48 89 /r`, source/base RAX..RBX; остальные stores и executable aliases запрещены |
+| [partial] | S3-20c | Один-byte SIB extension для V2 MOV qword load/store | ModRM `mod=00,r/m=100`; base/index/data RAX..RBX, scale 1/2/4/8, no displacement |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Caller-owned frozen snapshot; production mode/MMU lease and compile/publication race remain open |
@@ -727,6 +728,30 @@ Stores beyond this exact isolated slice, other address forms, general memory
 lowering and dispatch/cache integration remain open. Локальные Rust/ARM64 проверки разрешены;
 физические Mac mini/x86 проверки не запускать до финального S3-21 gate после
 завершения остальных локальных задач Stage 3.
+
+#### S3-20c. Один SIB byte для V2 MOV load/store
+
+Обе production V2 qword операции принимают ровно четырёхбайтовую форму
+`48 8B/89 /r sib`: ModRM `mod=00,r/m=100`, data/base/index RAX..RBX,
+scale 1/2/4/8, без displacement, лишнего prefix или хвостовых байтов. Index
+`100` (no-index), base `101` (no-base/disp32), RSP/RBP и R8+ формы запрещены.
+Существующие direct-base трёхбайтовые encoding остаются допустимы.
+
+`long_decode::decode` остаётся единственным декодером; компилятор сверяет raw
+ModRM/SIB биты с decoded length/operation/register/base/index/scale, но не
+вычисляет effective address. Source identity хранит bounded `[u8; 4]` плюс
+length, а site использует существующий `MemoryOperand::access_address_48` с
+wrapping и canonical48 правилами. ABI, V2 tag, load/store publication/API,
+store safety и commit ordering не меняются.
+
+Локальные ARM64 native differential tests сравнивают все 256 валидных
+data-register/base/index/scale комбинаций отдельно для load и store с
+`od_isa::execute::step` на независимых полных CPU/RAM snapshots. Проверены
+little-endian store bytes, aliases, wrap-to-canonical, noncanonical guest fault,
+backend boundary error и отсутствие эффектов при STOP/stop-RIP/нулевом budget.
+Invalid/truncated/tail/displacement/no-index/no-base/extended/prefix формы
+отвергаются. Срез описан в [S3-20c report](../reports/STAGE_3_S3-20c_2026-10-27.md).
+Физическая проверка Mac mini остаётся отложенной до финального S3-21 gate.
 
 ### S3-20. Добавить memory lowering
 

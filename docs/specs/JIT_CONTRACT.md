@@ -117,6 +117,35 @@ IR, multi-instruction block, or PC-map integration. Other memory forms remain
 unsupported. The physical Mac mini check is reserved for final S3-21 after
 local Stage 3 work is complete.
 
+#### S3-20c: one-byte SIB extension
+
+S3-20c extends both existing qword operations to exactly one SIB byte:
+`48 8B/89 /r`, ModRM `mod=00,r/m=100`, followed by SIB, with no displacement,
+prefix, or tail bytes. The data register, SIB base, and SIB index encodings must
+be RAX..RBX (0..3); index `100` (no-index) and base `101` (no-base plus
+disp32), RSP/RBP, and extended registers remain rejected. Scale bits select
+only 1, 2, 4, or 8. The original three-byte direct-base forms remain admitted.
+
+The decoder remains the sole source of `MemoryOperand`; raw ModRM/SIB bits are
+checked only against decoded instruction length, operation, register, base,
+index, and scale. The artifact binds a four-byte bounded source buffer and an
+explicit source length so source identity includes the SIB when present. Site
+validation accepts decoded instruction lengths three or four and checks the
+same allowed base/index/scale profile. The emitter still passes the immutable
+site index to Rust; effective-address wrapping and canonical48 validation
+continue exclusively through `MemoryOperand::access_address_48`. Helper ABI,
+V1 tags, operation-specific V2 artifacts, store safety boundary, and commit
+ordering are unchanged.
+
+Local ARM64 native differential tests cover all 256 valid combinations per
+operation (data register, base, index, and scale), full CPU/RAM comparisons
+against committed `od_isa::execute::step`, little-endian store bytes, aliases,
+wrap-to-canonical addressing, noncanonical faults, backend boundary failures,
+and STOP/stop-RIP/zero-budget no-effect guards. Invalid truncated/tail,
+displacement, no-index, no-base, extended-register, and extra-prefix forms are
+rejected. The physical Mac mini check remains deferred to the final S3-21 gate;
+see [the S3-20c report](../reports/STAGE_3_S3-20c_2026-10-27.md).
+
 ## 4. Начальные runtime bounds
 
 - Один гостевой vCPU; компиляция блоков последовательная.

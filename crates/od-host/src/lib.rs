@@ -34,7 +34,8 @@ struct BlockMetadata {
 struct MemoryOperationMetadataV2 {
     entry_rip: u64,
     site: od_jit::runtime::MemorySiteV2,
-    source_bytes: [u8; 3],
+    source_bytes: [u8; 4],
+    source_len: u8,
     compile_flavor: od_jit::translation::CompileFlavor,
 }
 
@@ -261,7 +262,8 @@ impl PublishedCode {
             Some(MemoryOperationMetadataV2 {
                 entry_rip: block.entry_rip(),
                 site: *block.site(),
-                source_bytes: *block.source_bytes(),
+                source_bytes: block.source_bytes_storage().0,
+                source_len: block.source_bytes_storage().1,
                 compile_flavor: block.compile_flavor(),
             }),
         )
@@ -287,7 +289,8 @@ impl PublishedCode {
             Some(MemoryOperationMetadataV2 {
                 entry_rip: block.entry_rip(),
                 site: *block.site(),
-                source_bytes: *block.source_bytes(),
+                source_bytes: block.source_bytes_storage().0,
+                source_len: block.source_bytes_storage().1,
                 compile_flavor: block.compile_flavor(),
             }),
         )
@@ -375,29 +378,66 @@ impl PublishedCode {
             .memory_operation_metadata_v2
             .as_ref()
             .ok_or(MemoryOperationExecutionErrorV2::NotV2MemoryBlock)?;
-        if metadata.source_bytes[0] != 0x48
-            || metadata.source_bytes[1]
+        let source_len = usize::from(metadata.source_len);
+        if !matches!(source_len, 3 | 4) {
+            return Err(MemoryOperationExecutionErrorV2::InvalidMetadata);
+        }
+        let source = &metadata.source_bytes[..source_len];
+        let modrm = source[2];
+        let decoded_address_matches = if modrm & 7 == 4 {
+            if source_len != 4 {
+                false
+            } else {
+                let sib = source[3];
+                let base = sib & 7;
+                let index = (sib >> 3) & 7;
+                let scale = 1_u8 << (sib >> 6);
+                base < 4
+                    && index < 4
+                    && metadata.site.operand().base
+                        == od_isa::long_decode::AddressBase::Register(
+                            od_isa::Register::from_encoding(base).unwrap(),
+                        )
+                    && metadata.site.operand().index
+                        == Some(od_isa::Register::from_encoding(index).unwrap())
+                    && metadata.site.operand().scale == scale
+            }
+        } else {
+            source_len == 3
+                && modrm & 7 < 4
+                && metadata.site.operand().base
+                    == od_isa::long_decode::AddressBase::Register(
+                        od_isa::Register::from_encoding(modrm & 7).unwrap(),
+                    )
+                && metadata.site.operand().index.is_none()
+                && metadata.site.operand().scale == 1
+        };
+        if source[0] != 0x48
+            || source[1]
                 != match expected_operation {
                     od_jit::runtime::MemorySiteOperationV2::Load => 0x8b,
                     od_jit::runtime::MemorySiteOperationV2::Store => 0x89,
                 }
-            || metadata.source_bytes[2] >> 6 != 0
-            || (metadata.source_bytes[2] >> 3) & 7 >= 4
-            || metadata.source_bytes[2] & 7 >= 4
+            || modrm >> 6 != 0
+            || (modrm >> 3) & 7 >= 4
+            || !decoded_address_matches
+            || metadata.site.operand().displacement != 0
+            || metadata.site.operand().address_size != od_isa::OperandSize::Qword
+            || metadata.site.operand().size != od_isa::OperandSize::Qword
             || metadata.site.instruction_index() != 0
             || metadata.site.operation() != expected_operation
             || match expected_operation {
                 od_jit::runtime::MemorySiteOperationV2::Load => {
                     metadata.site.source().is_some()
-                        || metadata.site.destination() != Some((metadata.source_bytes[2] >> 3) & 7)
+                        || metadata.site.destination() != Some((modrm >> 3) & 7)
                 }
                 od_jit::runtime::MemorySiteOperationV2::Store => {
                     metadata.site.destination().is_some()
-                        || metadata.site.source() != Some((metadata.source_bytes[2] >> 3) & 7)
+                        || metadata.site.source() != Some((modrm >> 3) & 7)
                 }
             }
             || metadata.site.guest_rip() != metadata.entry_rip
-            || metadata.entry_rip.checked_add(3) != Some(metadata.site.next_rip())
+            || metadata.entry_rip.checked_add(source_len as u64) != Some(metadata.site.next_rip())
             || metadata.compile_flavor
                 != match expected_operation {
                     od_jit::runtime::MemorySiteOperationV2::Load => {
@@ -2616,6 +2656,395 @@ mod tests {
         assert_eq!(native_ram.write_attempts, 1);
         assert_eq!(native_ram.committed_writes, 1);
         assert_eq!(native.retired_instructions, 1);
+    }
+
+    #[test]
+    fn v2_sib_mov_native_matches_interpreter_for_all_supported_register_scale_combinations() {
+        use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
+
+        #[derive(Clone, Debug, Eq, PartialEq)]
+        struct MatrixRam {
+            bytes: [u8; 512],
+            code: [u8; 4],
+            code_rip: u64,
+            writes: usize,
+        }
+        impl GuestMemory for MatrixRam {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                if (self.code_rip..self.code_rip + 4).contains(&address) {
+                    return Ok(self.code[(address - self.code_rip) as usize]);
+                }
+                self.bytes
+                    .get(address as usize)
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                output: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                let start = address as usize;
+                let source =
+                    self.bytes
+                        .get(start..start + output.len())
+                        .ok_or(MemoryError::Unmapped {
+                            address,
+                            access: AccessKind::Read,
+                        })?;
+                output.copy_from_slice(source);
+                Ok(())
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                source: &[u8],
+            ) -> Result<(), MemoryError> {
+                let start = address as usize;
+                let destination = self.bytes.get_mut(start..start + source.len()).ok_or(
+                    MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Write,
+                    },
+                )?;
+                destination.copy_from_slice(source);
+                self.writes += 1;
+                Ok(())
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        let _guard = jit_test_lock();
+        let stop = AtomicU8::new(0);
+        for (opcode, is_load) in [(0x8b, true), (0x89, false)] {
+            for data_register in 0..4_u8 {
+                for base in 0..4_u8 {
+                    for index in 0..4_u8 {
+                        for scale_shift in 0..4_u8 {
+                            let code_bytes = [
+                                0x48,
+                                opcode,
+                                0x04 | (data_register << 3),
+                                (scale_shift << 6) | (index << 3) | base,
+                            ];
+                            let code = CodeView::new(0xa000, &code_bytes).unwrap();
+                            let block = if is_load {
+                                let block = od_jit::memory_load_v2::compile_memory_load_block_v2(
+                                    code, 0xa000,
+                                )
+                                .unwrap();
+                                PublishedCode::publish_memory_load_v2(&block).unwrap()
+                            } else {
+                                let block = od_jit::memory_load_v2::compile_memory_store_block_v2(
+                                    code, 0xa000,
+                                )
+                                .unwrap();
+                                PublishedCode::publish_memory_store_v2(&block).unwrap()
+                            };
+                            let mut initial_ram = MatrixRam {
+                                bytes: [0; 512],
+                                code: code_bytes,
+                                code_rip: 0xa000,
+                                writes: 0,
+                            };
+                            for (offset, byte) in initial_ram.bytes.iter_mut().enumerate() {
+                                *byte = (offset as u8).wrapping_mul(29).wrapping_add(7);
+                            }
+                            let mut initial_state = od_isa::LongModeState {
+                                rip: 0xa000,
+                                rflags: 0x8d7,
+                                ..od_isa::LongModeState::default()
+                            };
+                            initial_state.gpr[0..4].copy_from_slice(&[16, 20, 24, 28]);
+                            let effective_address = initial_state.gpr[base as usize].wrapping_add(
+                                initial_state.gpr[index as usize]
+                                    .wrapping_mul(1_u64 << scale_shift),
+                            );
+                            let expected_store_bytes =
+                                initial_state.gpr[data_register as usize].to_le_bytes();
+                            let mut native_ram = initial_ram.clone();
+                            let mut interpreted_ram = initial_ram.clone();
+                            let mut native_state = initial_state.clone();
+                            let mut interpreted_state = initial_state.clone();
+                            let native = if is_load {
+                                block
+                                    .execute_memory_load_v2(
+                                        &mut native_state,
+                                        &mut native_ram,
+                                        AccessContext::default(),
+                                        1,
+                                        None,
+                                        &stop,
+                                    )
+                                    .unwrap()
+                            } else {
+                                // SAFETY: this fixture is private synchronous RAM,
+                                // with all-or-nothing writes, no MMIO/DMA/concurrency,
+                                // and no executable/code alias or later transition.
+                                unsafe {
+                                    block.execute_memory_store_v2(
+                                        &mut native_state,
+                                        &mut native_ram,
+                                        AccessContext::default(),
+                                        1,
+                                        None,
+                                        &stop,
+                                    )
+                                }
+                                .unwrap()
+                            };
+                            let interpreted = od_isa::execute::step(
+                                &mut interpreted_state,
+                                &mut interpreted_ram,
+                                AccessContext::default(),
+                            )
+                            .unwrap();
+                            assert_eq!(native.exit, MemoryOperationExecutionExitV2::Complete);
+                            assert_eq!(interpreted, od_isa::execute::StepOutcome::Advanced);
+                            assert_eq!(native_state, interpreted_state);
+                            assert_eq!(native_ram.bytes, interpreted_ram.bytes);
+                            assert_eq!(native_ram.writes, usize::from(!is_load));
+                            assert_eq!(native_state.rip, 0xa004);
+                            if !is_load {
+                                let start = effective_address as usize;
+                                assert_eq!(
+                                    &native_ram.bytes[start..start + 8],
+                                    expected_store_bytes.as_slice()
+                                );
+                            }
+
+                            // STOP, stop-RIP, and zero-budget guards must return
+                            // before any helper access for each admitted site.
+                            for (budget, stop_rip, stop_value, expected) in [
+                                (0, None, 1, MemoryOperationExecutionExitV2::StopRequested),
+                                (
+                                    1,
+                                    Some(0xa000),
+                                    0,
+                                    MemoryOperationExecutionExitV2::StopAddress,
+                                ),
+                                (0, None, 0, MemoryOperationExecutionExitV2::BudgetExhausted),
+                            ] {
+                                let mut guarded_state = initial_state.clone();
+                                let before_state = guarded_state.clone();
+                                let mut guarded_ram = initial_ram.clone();
+                                let before_bytes = guarded_ram.bytes;
+                                let local_stop = AtomicU8::new(stop_value);
+                                let guarded = if is_load {
+                                    block.execute_memory_load_v2(
+                                        &mut guarded_state,
+                                        &mut guarded_ram,
+                                        AccessContext::default(),
+                                        budget,
+                                        stop_rip,
+                                        &local_stop,
+                                    )
+                                } else {
+                                    // SAFETY: same private-RAM fixture guarantees
+                                    // as the successful store immediately above.
+                                    unsafe {
+                                        block.execute_memory_store_v2(
+                                            &mut guarded_state,
+                                            &mut guarded_ram,
+                                            AccessContext::default(),
+                                            budget,
+                                            stop_rip,
+                                            &local_stop,
+                                        )
+                                    }
+                                }
+                                .unwrap();
+                                assert_eq!(guarded.exit, expected);
+                                assert_eq!(guarded_state, before_state);
+                                assert_eq!(guarded_ram.bytes, before_bytes);
+                                assert_eq!(guarded_ram.writes, 0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // The decoded EA helper preserves wrapping addition before canonical
+        // validation. RAX + RCX*2 wraps to canonical address zero.
+        let wrapping_code_bytes = [0x48, 0x8b, 0x04, 0x48];
+        let wrapping_code = CodeView::new(0xa100, &wrapping_code_bytes).unwrap();
+        let wrapping_block =
+            od_jit::memory_load_v2::compile_memory_load_block_v2(wrapping_code, 0xa100).unwrap();
+        let wrapping_published = PublishedCode::publish_memory_load_v2(&wrapping_block).unwrap();
+        let mut wrapping_state = od_isa::LongModeState {
+            rip: 0xa100,
+            ..od_isa::LongModeState::default()
+        };
+        wrapping_state.gpr[0] = u64::MAX - 3;
+        wrapping_state.gpr[1] = 2;
+        let mut wrapping_ram = MatrixRam {
+            bytes: [0x3c; 512],
+            code: wrapping_code_bytes,
+            code_rip: 0xa100,
+            writes: 0,
+        };
+        let mut wrapping_reference_state = wrapping_state.clone();
+        let mut wrapping_reference_ram = wrapping_ram.clone();
+        let wrapping_stop = AtomicU8::new(0);
+        let wrapping_native = wrapping_published
+            .execute_memory_load_v2(
+                &mut wrapping_state,
+                &mut wrapping_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &wrapping_stop,
+            )
+            .unwrap();
+        let wrapping_interpreted = od_isa::execute::step(
+            &mut wrapping_reference_state,
+            &mut wrapping_reference_ram,
+            AccessContext::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            wrapping_native.exit,
+            MemoryOperationExecutionExitV2::Complete
+        );
+        assert_eq!(wrapping_interpreted, od_isa::execute::StepOutcome::Advanced);
+        assert_eq!(wrapping_state, wrapping_reference_state);
+        assert_eq!(wrapping_ram.bytes, wrapping_reference_ram.bytes);
+        assert_eq!(wrapping_state.gpr[0], u64::from_le_bytes([0x3c; 8]));
+
+        // A noncanonical sum faults before any helper access or state commit.
+        let mut noncanonical_state = od_isa::LongModeState {
+            rip: 0xa100,
+            ..od_isa::LongModeState::default()
+        };
+        noncanonical_state.gpr[0] = 0x0000_8000_0000_0000;
+        noncanonical_state.gpr[1] = 0;
+        let noncanonical_before = noncanonical_state.clone();
+        let mut noncanonical_ram = MatrixRam {
+            bytes: [0x69; 512],
+            code: wrapping_code_bytes,
+            code_rip: 0xa100,
+            writes: 0,
+        };
+        let mut noncanonical_reference_state = noncanonical_state.clone();
+        let mut noncanonical_reference_ram = noncanonical_ram.clone();
+        let noncanonical_before_ram = noncanonical_ram.bytes;
+        let noncanonical_native = wrapping_published
+            .execute_memory_load_v2(
+                &mut noncanonical_state,
+                &mut noncanonical_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &wrapping_stop,
+            )
+            .unwrap();
+        let noncanonical_interpreted = od_isa::execute::step(
+            &mut noncanonical_reference_state,
+            &mut noncanonical_reference_ram,
+            AccessContext::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            noncanonical_native.exit,
+            MemoryOperationExecutionExitV2::GuestFault(_)
+        ));
+        assert!(matches!(
+            noncanonical_interpreted,
+            od_isa::execute::StepOutcome::Fault(_)
+        ));
+        assert_eq!(noncanonical_state, noncanonical_before);
+        assert_eq!(noncanonical_state, noncanonical_reference_state);
+        assert_eq!(noncanonical_ram.bytes, noncanonical_before_ram);
+        assert_eq!(noncanonical_ram.bytes, noncanonical_reference_ram.bytes);
+
+        // A checked backend boundary failure from a SIB site also preserves
+        // CPU and RAM and remains distinct from an architectural guest fault.
+        let mut boundary_state = od_isa::LongModeState {
+            rip: 0xa100,
+            ..od_isa::LongModeState::default()
+        };
+        boundary_state.gpr[0] = 500;
+        boundary_state.gpr[1] = 500;
+        let boundary_before = boundary_state.clone();
+        let mut boundary_ram = MatrixRam {
+            bytes: [0x96; 512],
+            code: wrapping_code_bytes,
+            code_rip: 0xa100,
+            writes: 0,
+        };
+        let mut boundary_reference_state = boundary_state.clone();
+        let mut boundary_reference_ram = boundary_ram.clone();
+        let boundary_before_ram = boundary_ram.bytes;
+        let boundary_native = wrapping_published.execute_memory_load_v2(
+            &mut boundary_state,
+            &mut boundary_ram,
+            AccessContext::default(),
+            1,
+            None,
+            &wrapping_stop,
+        );
+        let boundary_interpreted = od_isa::execute::step(
+            &mut boundary_reference_state,
+            &mut boundary_reference_ram,
+            AccessContext::default(),
+        );
+        assert!(matches!(
+            boundary_native,
+            Err(MemoryOperationExecutionErrorV2::MemoryError(_))
+        ));
+        assert!(matches!(
+            boundary_interpreted,
+            Err(od_isa::memory::MemoryError::Unmapped { .. })
+        ));
+        assert_eq!(boundary_state, boundary_before);
+        assert_eq!(boundary_state, boundary_reference_state);
+        assert_eq!(boundary_ram.bytes, boundary_before_ram);
+        assert_eq!(boundary_ram.bytes, boundary_reference_ram.bytes);
     }
 
     const PROBE_HELPER_SENTINEL: u64 = 0xD15E_A5E0_CAFE_BEEF;

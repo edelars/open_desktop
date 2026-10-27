@@ -33,7 +33,8 @@ struct MemoryArtifactV2 {
     code: EncodedCode,
     site: MemorySiteV2,
     entry_rip: u64,
-    source_bytes: [u8; 3],
+    source_bytes: [u8; 4],
+    source_len: u8,
     compile_flavor: crate::translation::CompileFlavor,
 }
 
@@ -64,8 +65,12 @@ macro_rules! impl_artifact_accessors {
                 self.artifact.entry_rip
             }
 
-            pub const fn source_bytes(&self) -> &[u8; 3] {
-                &self.artifact.source_bytes
+            pub fn source_bytes(&self) -> &[u8] {
+                &self.artifact.source_bytes[..usize::from(self.artifact.source_len)]
+            }
+
+            pub const fn source_bytes_storage(&self) -> ([u8; 4], u8) {
+                (self.artifact.source_bytes, self.artifact.source_len)
             }
 
             pub const fn compile_flavor(&self) -> crate::translation::CompileFlavor {
@@ -111,7 +116,8 @@ fn compile_memory_operation_v2(
         .and_then(|offset| usize::try_from(offset).ok())
         .filter(|offset| *offset < code.len())
         .ok_or(MemoryLoadCompileErrorV2::EntryOutsideCode)?;
-    if code.len() - offset != 3 {
+    let instruction_bytes_len = code.len() - offset;
+    if !(3..=4).contains(&instruction_bytes_len) {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
     let mut memory = CodeMemory::full_code(code);
@@ -119,20 +125,18 @@ fn compile_memory_operation_v2(
         .map_err(|_| MemoryLoadCompileErrorV2::Decode)?;
     let bytes = code
         .bytes()
-        .get(offset..offset.saturating_add(3))
+        .get(offset..offset.saturating_add(instruction_bytes_len))
         .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
     let opcode = match access {
         MemorySiteOperationV2::Load => 0x8b,
         MemorySiteOperationV2::Store => 0x89,
     };
-    let [0x48, actual_opcode, modrm] = bytes else {
-        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
-    };
-    if *actual_opcode != opcode {
+    if bytes.len() < 3 || bytes[0] != 0x48 || bytes[1] != opcode {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
-    let modrm = *modrm;
-    if decoded.length != 3 || modrm >> 6 != 0 || (modrm >> 3) & 7 >= 4 || modrm & 7 >= 4 {
+    let modrm = bytes[2];
+    if decoded.length as usize != instruction_bytes_len || modrm >> 6 != 0 || (modrm >> 3) & 7 >= 4
+    {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
     let (register, operand) = match (access, decoded.operation) {
@@ -152,20 +156,54 @@ fn compile_memory_operation_v2(
         ) if source.size() == od_isa::OperandSize::Qword => (source.register(), operand),
         _ => return Err(MemoryLoadCompileErrorV2::UnsupportedForm),
     };
+    let decoded_base = match operand.base {
+        AddressBase::Register(base) => base,
+        AddressBase::None | AddressBase::NextRip => {
+            return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+        }
+    };
+    let raw_rm = modrm & 7;
+    let raw_base = if raw_rm == 4 {
+        if bytes.len() != 4 || decoded.length != 4 {
+            return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+        }
+        let sib = bytes[3];
+        let base = sib & 7;
+        let index = (sib >> 3) & 7;
+        let scale = 1_u8 << (sib >> 6);
+        if base >= 4 || index >= 4 {
+            return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+        }
+        if operand.index != Register::from_encoding(index)
+            || operand.scale != scale
+            || Register::from_encoding(base) != Some(decoded_base)
+        {
+            return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+        }
+        base
+    } else {
+        if bytes.len() != 3 || raw_rm >= 4 || operand.index.is_some() || operand.scale != 1 {
+            return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+        }
+        raw_rm
+    };
     if register as u8 >= 4
         || !matches!(
-            operand.base,
-            AddressBase::Register(Register::Rax | Register::Rcx | Register::Rdx | Register::Rbx)
+            decoded_base,
+            Register::Rax | Register::Rcx | Register::Rdx | Register::Rbx
         )
-        || operand.index.is_some()
+        || operand.index.is_some_and(|index| {
+            !matches!(
+                index,
+                Register::Rax | Register::Rcx | Register::Rdx | Register::Rbx
+            )
+        })
         || operand.displacement != 0
         || operand.address_size != od_isa::OperandSize::Qword
         || operand.size != od_isa::OperandSize::Qword
-        || operand.base
-            != AddressBase::Register(
-                Register::from_encoding(modrm & 7)
-                    .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?,
-            )
+        || decoded_base
+            != Register::from_encoding(raw_base).ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?
+        || !matches!(operand.scale, 1 | 2 | 4 | 8)
         || register as u8 != ((modrm >> 3) & 7)
     {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
@@ -191,7 +229,13 @@ fn compile_memory_operation_v2(
         code,
         site,
         entry_rip,
-        source_bytes: [0x48, opcode, modrm],
+        source_bytes: [
+            0x48,
+            opcode,
+            modrm,
+            if bytes.len() == 4 { bytes[3] } else { 0 },
+        ],
+        source_len: bytes.len() as u8,
         compile_flavor,
     })
 }
@@ -454,20 +498,68 @@ mod tests {
     }
 
     #[test]
-    fn rejects_prefixes_sib_displacement_and_out_of_profile_registers() {
+    fn rejects_prefixes_displacements_and_out_of_profile_registers() {
         for bytes in [
             vec![0x40, 0x8b, 0x00],
-            vec![0x48, 0x8b, 0x04, 0x00],
             vec![0x48, 0x8b, 0x40, 0x00],
             vec![0x48, 0x8b, 0x20],
-            vec![0x48, 0x8b, 0x04],
+            vec![0x48, 0x8b, 0x04],             // truncated SIB
+            vec![0x48, 0x8b, 0x04, 0x24],       // RSP index is unsupported
+            vec![0x48, 0x8b, 0x04, 0x28],       // RBP base requires disp32
+            vec![0x48, 0x8b, 0x04, 0x20],       // no-index SIB
+            vec![0x48, 0x8b, 0x04, 0x05],       // no-base SIB requires disp32
+            vec![0x48, 0x8b, 0x44, 0x00],       // mod=01 displacement
+            vec![0x4a, 0x8b, 0x04, 0x00],       // REX.X extended index
+            vec![0x49, 0x8b, 0x04, 0x00],       // REX.B extended base
+            vec![0x48, 0x8b, 0x04, 0x00, 0x90], // ignored tail
         ] {
             let code = CodeView::new(0x2000, &bytes).unwrap();
-            assert!(matches!(
-                compile_memory_load_block_v2(code, 0x2000),
-                Err(MemoryLoadCompileErrorV2::UnsupportedForm)
-                    | Err(MemoryLoadCompileErrorV2::Decode)
-            ));
+            assert!(
+                matches!(
+                    compile_memory_load_block_v2(code, 0x2000),
+                    Err(MemoryLoadCompileErrorV2::UnsupportedForm)
+                        | Err(MemoryLoadCompileErrorV2::Decode)
+                ),
+                "unexpectedly admitted bytes {bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn admits_all_valid_sib_register_scale_combinations_for_load_and_store() {
+        for (opcode, is_load) in [(0x8b, true), (0x89, false)] {
+            for data_register in 0..4_u8 {
+                for base in 0..4_u8 {
+                    for index in 0..4_u8 {
+                        for scale_shift in 0..4_u8 {
+                            let modrm = 0x04 | (data_register << 3);
+                            let sib = (scale_shift << 6) | (index << 3) | base;
+                            let bytes = [0x48, opcode, modrm, sib];
+                            let code = CodeView::new(0x2800, &bytes).unwrap();
+                            let block = if is_load {
+                                let block = compile_memory_load_block_v2(code, 0x2800).unwrap();
+                                assert_eq!(block.source_bytes(), &bytes);
+                                assert_eq!(block.site().destination(), Some(data_register));
+                                block.artifact
+                            } else {
+                                let block = compile_memory_store_block_v2(code, 0x2800).unwrap();
+                                assert_eq!(block.source_bytes(), &bytes);
+                                assert_eq!(block.site().source(), Some(data_register));
+                                block.artifact
+                            };
+                            assert_eq!(block.source_len, 4);
+                            assert_eq!(
+                                block.site.operand.base,
+                                AddressBase::Register(Register::from_encoding(base).unwrap())
+                            );
+                            assert_eq!(block.site.operand.index, Register::from_encoding(index));
+                            assert_eq!(block.site.operand.scale, 1 << scale_shift);
+                            assert_eq!(block.site.operand.displacement, 0);
+                            assert_eq!(block.site.next_rip(), 0x2804);
+                        }
+                    }
+                }
+            }
         }
     }
 
