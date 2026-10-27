@@ -4,7 +4,8 @@ use std::time::Instant;
 
 use od_bench::{
     BenchmarkConfig, BenchmarkRunMetadata, BenchmarkSuite, HostMetadata, LookupQuery,
-    RecordedTrace, ScenarioWorkload, run_suite_with_metadata, suite_from_recorded_trace,
+    RecordedTrace, ScenarioWorkload, benchmark_execution_context, run_suite_with_metadata,
+    suite_from_recorded_trace,
 };
 use od_isa::memory::AccessContext;
 use od_jit::block::{BlockLimits, BuildOutcome, CodeView, build_block};
@@ -268,6 +269,7 @@ fn make_key(
         code,
         &block,
         CompileFlavor::S0_09NativeBlock,
+        benchmark_execution_context(),
         &[CodeDependencySpan {
             start_rip: code.base_rip(),
             end_rip: code.code_end(),

@@ -156,6 +156,7 @@ impl Variant {
             Self::Single { backend, cache } => run_cached(
                 code,
                 &case.admission,
+                crate::benchmark_execution_context(),
                 &dep,
                 state,
                 case.budget,
@@ -166,6 +167,7 @@ impl Variant {
             Self::Fifo { backend, cache } | Self::Lru { backend, cache } => run_multi_cached(
                 code,
                 &case.admission,
+                crate::benchmark_execution_context(),
                 &dep,
                 state,
                 case.budget,

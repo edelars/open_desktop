@@ -15,8 +15,8 @@ use od_jit::block::{
     AdmittedInstructionBoundaries, BlockLimits, BuildOutcome, CodeView, build_block,
 };
 use od_jit::translation::{
-    AddressSpaceId, BackingId, BackingVersion, CodeIdentity, CompileFlavor, MappingId,
-    MappingVersion,
+    AddressSpaceId, BackingId, BackingVersion, CodeIdentity, CompileFlavor, ExecutionContextId,
+    ExecutionContextSnapshot, MappingId, MappingVersion,
 };
 use od_jit::translation::{CodeDependencySpan, TranslationKey};
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,14 @@ pub const MAX_RUN_TIME: Duration = Duration::from_secs(30 * 60);
 pub const DEFAULT_SAMPLE_PAIRS: usize = 20;
 pub const MAX_SAMPLE_PAIRS: usize = 100;
 pub const MIN_BATCH_TIME: Duration = Duration::from_millis(200);
+
+/// Stable synthetic execution-context identity used only by this fixture
+/// benchmark harness; it is not a host pointer or production VM identity.
+pub fn benchmark_execution_context() -> ExecutionContextSnapshot {
+    ExecutionContextSnapshot::s0_09_fixture(
+        ExecutionContextId::from_u64(1).expect("benchmark context ID is nonzero"),
+    )
+}
 
 #[derive(Clone, Debug)]
 pub struct LookupQuery {
@@ -542,6 +550,7 @@ pub fn suite_from_recorded_trace(trace: &RecordedTrace) -> Result<BenchmarkSuite
             code,
             &block,
             CompileFlavor::S0_09FixtureDispatch,
+            benchmark_execution_context(),
             &[dependency],
         )
         .map_err(|error| {
@@ -910,8 +919,14 @@ fn synthetic_key(
             }
         })
         .collect::<Vec<_>>();
-    TranslationKey::for_block(code, &block, flavor, &dependencies)
-        .map_err(|error| BenchmarkError::MalformedTrace(format!("synthetic key: {error:?}")))
+    TranslationKey::for_block(
+        code,
+        &block,
+        flavor,
+        benchmark_execution_context(),
+        &dependencies,
+    )
+    .map_err(|error| BenchmarkError::MalformedTrace(format!("synthetic key: {error:?}")))
 }
 
 fn query_for(input_index: usize, key: &TranslationKey, current: &TranslationKey) -> LookupQuery {
@@ -1805,6 +1820,7 @@ mod tests {
             code,
             &block,
             CompileFlavor::S0_09NativeBlock,
+            benchmark_execution_context(),
             &[CodeDependencySpan {
                 start_rip: code.base_rip(),
                 end_rip: code.code_end(),

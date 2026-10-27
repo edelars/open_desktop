@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b реализованы как узкие partial slices, общие memory lowering и S3-19 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-22a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -151,7 +151,8 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20 | Memory lowering и partial registers; сейчас только проверенные MOV qword load/store slices | S3-19; interpreter соответствующих форм |
 | [partial] | S3-20b | Production V2 MOV qword store с private-RAM unsafe entry | Точный `48 89 /r`, source/base RAX..RBX; остальные stores и executable aliases запрещены |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
-| [ ] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
+| [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
+| [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Caller-owned frozen snapshot; production mode/MMU lease and compile/publication race remain open |
 | [ ] | S3-23 | Инвалидация code dependencies | S3-18, S3-21, S3-22 |
 | [ ] | S3-24 | Self-modifying code в текущем блоке | S3-23 |
 | [ ] | S3-25 | Eviction, retirement и освобождение | S3-18, S3-24 |
@@ -751,6 +752,33 @@ lowering and dispatch/cache integration remain open. Локальные Rust/ARM
 4. Для reset и будущего restore/clone определить очистку или перепроверку cache. Архитектурные snapshots не содержат host code pointers; executable blocks создаются заново. Реализация полного VM snapshot относится к отдельному этапу.
 
 **Готово:** context-sensitive cases не используют несовместимый перевод. Фактическое paging/TLB поведение не заявляется на основании fixture test.
+
+#### S3-22a. Bounded fixture context generation
+
+`ExecutionContextId` — caller-owned nonzero monotonic generation, а
+`ExecutionContextSnapshot` combines it with the explicit JIT profile. Cached
+single- and multi-entry APIs require this stamp and admit only the existing
+`S0_09Fixture + Long64 + canonical48` profile; rejection occurs before cache
+binding, compile, publish, or execute. The snapshot must remain frozen under an
+owner lease for the whole synchronous dispatch. Mapping/backing IDs, versions,
+and executable permission remain in the existing code dependency spans.
+
+`TranslationKey` includes the context snapshot. A higher generation clears
+resident entries and drops their published handles before a new lookup; a
+same-generation profile change and generation regression are errors. Explicit
+cache reset requires a higher generation. A reset/restore/clone therefore
+causes fresh publication. GPRs, RFLAGS, budget, STOP-RIP and STOP pointers stay
+out of the key. Tests cover same-context hit, changed-context miss at unchanged
+RIP/source, old-handle drop, reset/republication, unsupported profiles with no
+backend work, existing mapping/backing/permission invalidation, and state/control
+changes without false misses.
+
+This slice does not add a production MMU owner or synchronize mapping mutation
+across compilation/publication. The caller's frozen-snapshot lease is the
+current boundary; racing owner mutation remains for S3-23 integration. Cached
+V2 memory load/store paths are not enabled. Physical Mini checks remain deferred
+until final S3-21 after local Stage 3 work. Results are recorded in the
+[S3-22a report](../reports/STAGE_3_S3-22a_2026-10-27.md).
 
 ### S3-23. Инвалидировать зависимости изменённого кода
 

@@ -15,7 +15,10 @@ use crate::block_compile::{
     compile_block_for_nop_fallback, compile_prepared_dispatch_block,
 };
 use crate::runtime::RuntimeExitTag;
-use crate::translation::{CodeDependencySpan, CompileFlavor, TranslationKey, TranslationKeyError};
+use crate::translation::{
+    CodeDependencySpan, CompileFlavor, ExecutionContextSnapshot, ExecutionProfile, TranslationKey,
+    TranslationKeyError,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlockExecutionReport {
@@ -154,6 +157,38 @@ trait CachedEntryStore<H> {
     fn record_miss(&mut self) -> Result<(), CacheError>;
     fn record_compile(&mut self) -> Result<(), CacheError>;
     fn record_publish(&mut self) -> Result<(), CacheError>;
+    fn bind_execution_context(
+        &mut self,
+        context: ExecutionContextSnapshot,
+    ) -> Result<(), ExecutionContextError>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionContextError {
+    UnsupportedProfile(ExecutionProfile),
+    GenerationNotAdvanced { current: u64, requested: u64 },
+}
+
+fn validate_execution_context(
+    current: Option<ExecutionContextSnapshot>,
+    requested: ExecutionContextSnapshot,
+) -> Result<bool, ExecutionContextError> {
+    if !requested.profile.is_supported_fixture() {
+        return Err(ExecutionContextError::UnsupportedProfile(requested.profile));
+    }
+    let Some(current) = current else {
+        return Ok(true);
+    };
+    if current == requested {
+        return Ok(false);
+    }
+    if requested.id <= current.id {
+        return Err(ExecutionContextError::GenerationNotAdvanced {
+            current: current.id.get(),
+            requested: requested.id.get(),
+        });
+    }
+    Ok(true)
 }
 
 /// Explicitly bounded one-entry cache. Published host memory stays alive only
@@ -164,6 +199,7 @@ trait CachedEntryStore<H> {
 pub struct SingleEntryBlockCache<H> {
     max_bytes: usize,
     entry: Option<CachedEntry<H>>,
+    execution_context: Option<ExecutionContextSnapshot>,
     counters: SingleEntryCacheCounters,
 }
 
@@ -195,6 +231,7 @@ impl<H> SingleEntryBlockCache<H> {
         Ok(Self {
             max_bytes,
             entry: None,
+            execution_context: None,
             counters: SingleEntryCacheCounters::default(),
         })
     }
@@ -223,6 +260,31 @@ impl<H> SingleEntryBlockCache<H> {
 
     pub fn clear(&mut self) {
         self.entry = None;
+    }
+
+    /// Flush entries and bind the cache to a new context generation. Reusing
+    /// the current generation for a reset is rejected.
+    pub fn reset_for_execution_context(
+        &mut self,
+        context: ExecutionContextSnapshot,
+    ) -> Result<(), ExecutionContextError> {
+        let Some(current) = self.execution_context else {
+            if !context.profile.is_supported_fixture() {
+                return Err(ExecutionContextError::UnsupportedProfile(context.profile));
+            }
+            self.clear();
+            self.execution_context = Some(context);
+            return Ok(());
+        };
+        if !validate_execution_context(Some(current), context)? || context.id == current.id {
+            return Err(ExecutionContextError::GenerationNotAdvanced {
+                current: current.id.get(),
+                requested: context.id.get(),
+            });
+        }
+        self.clear();
+        self.execution_context = Some(context);
+        Ok(())
     }
 
     fn install(&mut self, entry: CachedEntry<H>) -> Result<(), CacheError> {
@@ -315,6 +377,17 @@ impl<H> CachedEntryStore<H> for SingleEntryBlockCache<H> {
     fn record_publish(&mut self) -> Result<(), CacheError> {
         Self::add_counter(&mut self.counters.successful_publications)
     }
+
+    fn bind_execution_context(
+        &mut self,
+        context: ExecutionContextSnapshot,
+    ) -> Result<(), ExecutionContextError> {
+        if validate_execution_context(self.execution_context, context)? {
+            self.clear();
+            self.execution_context = Some(context);
+        }
+        Ok(())
+    }
 }
 
 impl<H> SingleEntryBlockCache<H> {
@@ -355,6 +428,7 @@ pub struct MultiEntryBlockCache<H> {
     max_metadata_bytes: usize,
     eviction_policy: CacheEvictionPolicy,
     entries: Vec<CachedEntry<H>>,
+    execution_context: Option<ExecutionContextSnapshot>,
     counters: MultiEntryCacheCounters,
 }
 
@@ -402,6 +476,7 @@ impl<H> MultiEntryBlockCache<H> {
             max_metadata_bytes,
             eviction_policy,
             entries: Vec::with_capacity(max_entries),
+            execution_context: None,
             counters: MultiEntryCacheCounters::default(),
         })
     }
@@ -429,6 +504,31 @@ impl<H> MultiEntryBlockCache<H> {
         self.entries.clear();
         self.counters.resident_code_bytes = 0;
         self.counters.resident_logical_metadata_bytes = 0;
+    }
+
+    /// Flush entries and bind the cache to a new context generation. Reusing
+    /// the current generation for a reset is rejected.
+    pub fn reset_for_execution_context(
+        &mut self,
+        context: ExecutionContextSnapshot,
+    ) -> Result<(), ExecutionContextError> {
+        let Some(current) = self.execution_context else {
+            if !context.profile.is_supported_fixture() {
+                return Err(ExecutionContextError::UnsupportedProfile(context.profile));
+            }
+            self.clear();
+            self.execution_context = Some(context);
+            return Ok(());
+        };
+        if !validate_execution_context(Some(current), context)? || context.id == current.id {
+            return Err(ExecutionContextError::GenerationNotAdvanced {
+                current: current.id.get(),
+                requested: context.id.get(),
+            });
+        }
+        self.clear();
+        self.execution_context = Some(context);
+        Ok(())
     }
 
     fn add_counter(counter: &mut u64) -> Result<(), CacheError> {
@@ -589,6 +689,17 @@ impl<H> CachedEntryStore<H> for MultiEntryBlockCache<H> {
     fn record_publish(&mut self) -> Result<(), CacheError> {
         Self::add_counter(&mut self.counters.successful_publications)
     }
+
+    fn bind_execution_context(
+        &mut self,
+        context: ExecutionContextSnapshot,
+    ) -> Result<(), ExecutionContextError> {
+        if validate_execution_context(self.execution_context, context)? {
+            self.clear();
+            self.execution_context = Some(context);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -608,6 +719,7 @@ pub struct DispatchResult {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum DispatchError<E> {
+    ExecutionContext(ExecutionContextError),
     AdmissionDoesNotMatchCode,
     EntryNotAdmitted { rip: u64 },
     Compile(BlockCompileError),
@@ -641,6 +753,7 @@ pub enum DispatchError<E> {
 pub fn run_cached<B: CachedBlockBackend>(
     code: CodeView<'_>,
     admission: &AdmittedInstructionBoundaries,
+    execution_context: ExecutionContextSnapshot,
     dependencies: &[CodeDependencySpan],
     state: &mut LongModeState,
     total_budget: u64,
@@ -651,6 +764,7 @@ pub fn run_cached<B: CachedBlockBackend>(
     run_cached_controlled(
         code,
         admission,
+        execution_context,
         dependencies,
         state,
         total_budget,
@@ -669,6 +783,7 @@ pub fn run_cached<B: CachedBlockBackend>(
 pub fn run_cached_controlled<B: CachedBlockBackend>(
     code: CodeView<'_>,
     admission: &AdmittedInstructionBoundaries,
+    execution_context: ExecutionContextSnapshot,
     dependencies: &[CodeDependencySpan],
     state: &mut LongModeState,
     total_budget: u64,
@@ -679,6 +794,7 @@ pub fn run_cached_controlled<B: CachedBlockBackend>(
     run_cached_store_controlled(
         code,
         admission,
+        execution_context,
         dependencies,
         state,
         total_budget,
@@ -693,6 +809,7 @@ pub fn run_cached_controlled<B: CachedBlockBackend>(
 pub fn run_multi_cached<B: MultiBlockCachedBackend>(
     code: CodeView<'_>,
     admission: &AdmittedInstructionBoundaries,
+    execution_context: ExecutionContextSnapshot,
     dependencies: &[CodeDependencySpan],
     state: &mut LongModeState,
     total_budget: u64,
@@ -703,6 +820,7 @@ pub fn run_multi_cached<B: MultiBlockCachedBackend>(
     run_multi_cached_controlled(
         code,
         admission,
+        execution_context,
         dependencies,
         state,
         total_budget,
@@ -718,6 +836,7 @@ pub fn run_multi_cached<B: MultiBlockCachedBackend>(
 pub fn run_multi_cached_controlled<B: MultiBlockCachedBackend>(
     code: CodeView<'_>,
     admission: &AdmittedInstructionBoundaries,
+    execution_context: ExecutionContextSnapshot,
     dependencies: &[CodeDependencySpan],
     state: &mut LongModeState,
     total_budget: u64,
@@ -725,6 +844,11 @@ pub fn run_multi_cached_controlled<B: MultiBlockCachedBackend>(
     cache: &mut MultiEntryBlockCache<B::Published>,
     backend: &mut B,
 ) -> Result<DispatchResult, DispatchError<B::Error>> {
+    if !execution_context.profile.is_supported_fixture() {
+        return Err(DispatchError::ExecutionContext(
+            ExecutionContextError::UnsupportedProfile(execution_context.profile),
+        ));
+    }
     let capacity = backend.published_block_capacity();
     if cache.max_entries() > capacity {
         return Err(DispatchError::MultiCacheConfig(
@@ -737,6 +861,7 @@ pub fn run_multi_cached_controlled<B: MultiBlockCachedBackend>(
     run_cached_store_controlled(
         code,
         admission,
+        execution_context,
         dependencies,
         state,
         total_budget,
@@ -749,6 +874,7 @@ pub fn run_multi_cached_controlled<B: MultiBlockCachedBackend>(
 fn run_cached_store_controlled<B, C>(
     code: CodeView<'_>,
     admission: &AdmittedInstructionBoundaries,
+    execution_context: ExecutionContextSnapshot,
     dependencies: &[CodeDependencySpan],
     state: &mut LongModeState,
     total_budget: u64,
@@ -760,9 +886,17 @@ where
     B: CachedBlockBackend,
     C: CachedEntryStore<B::Published>,
 {
+    if !execution_context.profile.is_supported_fixture() {
+        return Err(DispatchError::ExecutionContext(
+            ExecutionContextError::UnsupportedProfile(execution_context.profile),
+        ));
+    }
     if !admission.matches_code(code) {
         return Err(DispatchError::AdmissionDoesNotMatchCode);
     }
+    cache
+        .bind_execution_context(execution_context)
+        .map_err(DispatchError::ExecutionContext)?;
 
     if control.stop_rip == Some(state.rip) {
         return Ok(result(
@@ -819,6 +953,7 @@ where
             code,
             guest_block,
             CompileFlavor::S0_09FixtureDispatch,
+            execution_context,
             dependencies,
         )
         .map_err(DispatchError::TranslationKey)?;
@@ -1505,11 +1640,22 @@ fn result(
 mod tests {
     use super::*;
     use crate::translation::{
-        AddressSpaceId, BackingId, BackingVersion, CodeIdentity, MappingId, MappingVersion,
+        AddressSpaceId, BackingId, BackingVersion, CodeIdentity, ExecutionContextId, MappingId,
+        MappingVersion,
     };
     use std::cell::RefCell;
     use std::num::NonZeroU64;
     use std::rc::Rc;
+
+    fn test_context() -> ExecutionContextSnapshot {
+        test_context_with_generation(1)
+    }
+
+    fn test_context_with_generation(generation: u64) -> ExecutionContextSnapshot {
+        ExecutionContextSnapshot::s0_09_fixture(
+            ExecutionContextId::from_u64(generation).expect("test context ID is nonzero"),
+        )
+    }
 
     #[derive(Default)]
     struct ScriptedExecutor {
@@ -1630,6 +1776,8 @@ mod tests {
     struct PublishedTracker {
         publishes: usize,
         executions: usize,
+        published_ids: Vec<usize>,
+        executed_ids: Vec<usize>,
         live: usize,
         max_live: usize,
         drops: usize,
@@ -1640,7 +1788,7 @@ mod tests {
         capacity: usize,
     }
 
-    struct MockPublished(Rc<RefCell<PublishedTracker>>);
+    struct MockPublished(Rc<RefCell<PublishedTracker>>, usize);
 
     impl Drop for MockPublished {
         fn drop(&mut self) {
@@ -1669,15 +1817,17 @@ mod tests {
                 assert_eq!(tracker.live, 0, "old mapping must drop before publish");
             }
             tracker.publishes += 1;
+            let published_id = tracker.publishes;
+            tracker.published_ids.push(published_id);
             tracker.live += 1;
             tracker.max_live = tracker.max_live.max(tracker.live);
             drop(tracker);
-            Ok(MockPublished(self.0.clone()))
+            Ok(MockPublished(self.0.clone(), published_id))
         }
 
         fn execute_cached_block(
             &mut self,
-            _published: &Self::Published,
+            published: &Self::Published,
             block: &crate::block_compile::CompiledBlock,
             state: &mut LongModeState,
             incoming_budget: u64,
@@ -1686,6 +1836,7 @@ mod tests {
             let (loop_to_entry, request_stop_once) = {
                 let mut tracker = self.0.borrow_mut();
                 tracker.executions += 1;
+                tracker.executed_ids.push(published.1);
                 let request_stop = tracker.request_stop_once;
                 tracker.request_stop_once = false;
                 (tracker.loop_to_entry, request_stop)
@@ -1760,6 +1911,7 @@ mod tests {
         run_multi_cached(
             view,
             &admission,
+            test_context(),
             &dependencies,
             &mut state,
             1,
@@ -2267,6 +2419,7 @@ mod tests {
         let result = run_cached(
             view,
             &admission,
+            test_context(),
             &dependencies,
             &mut state,
             3,
@@ -2284,6 +2437,7 @@ mod tests {
         let second = run_cached(
             view,
             &admission,
+            test_context(),
             &dependencies,
             &mut state,
             1,
@@ -2303,9 +2457,14 @@ mod tests {
             _ => panic!("self-loop fixture should produce a block"),
         };
         let deps = dependency(view, 1);
-        let key =
-            TranslationKey::for_block(view, source, CompileFlavor::S0_09FixtureDispatch, &deps)
-                .unwrap();
+        let key = TranslationKey::for_block(
+            view,
+            source,
+            CompileFlavor::S0_09FixtureDispatch,
+            test_context(),
+            &deps,
+        )
+        .unwrap();
         let compiled =
             match compile_prepared_dispatch_block(view.code_end(), built, &admission).unwrap() {
                 BlockCompileOutcome::Compiled(block) => block,
@@ -2330,6 +2489,7 @@ mod tests {
         run_cached(
             view,
             &admission,
+            test_context(),
             &deps,
             &mut exact_state,
             1,
@@ -2351,11 +2511,175 @@ mod tests {
             ..LongModeState::default()
         };
         assert!(matches!(
-            run_cached(view, &admission, &deps, &mut short_state, 1, &mut short_limit_cache, &mut short_backend),
+            run_cached(view, &admission,
+            test_context(), &deps, &mut short_state, 1, &mut short_limit_cache, &mut short_backend),
             Err(DispatchError::Cache(CacheError::EntryTooLarge { actual, max }))
                 if actual == expected_legacy_bytes && max == expected_legacy_bytes - 1
         ));
         assert_eq!(short_tracker.borrow().publishes, 0);
+    }
+
+    #[test]
+    fn execution_context_generation_separates_same_rip_cache_entries() {
+        let code = [0x48, 0xB8, 0x2A, 0, 0, 0, 0, 0, 0, 0];
+        let (view, admission) = cached_fixture(&code, 0x7B40);
+        let dependencies = dependency(view, 1);
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        let first_stop = AtomicU8::new(0);
+
+        run_cached_controlled(
+            view,
+            &admission,
+            test_context_with_generation(10),
+            &dependencies,
+            &mut state,
+            3,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &first_stop,
+            },
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(tracker.borrow().executed_ids, [1]);
+
+        // Architectural state, budget, STOP-RIP and STOP byte are invocation
+        // inputs and must not create another translation.
+        state.rip = view.base_rip();
+        state.gpr[3] = 0xCAFE;
+        state.rflags = 0xA55;
+        let second_stop = AtomicU8::new(0);
+        run_cached_controlled(
+            view,
+            &admission,
+            test_context_with_generation(10),
+            &dependencies,
+            &mut state,
+            1,
+            DispatchControl {
+                stop_rip: Some(view.base_rip() + 1),
+                stop_requested: &second_stop,
+            },
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(cache.counters().hits, 1);
+        assert_eq!(tracker.borrow().publishes, 1);
+        assert_eq!(tracker.borrow().executed_ids, [1, 1]);
+
+        // Same RIP/code/dependencies with a fresh context generation flushes
+        // and drops the old handle before publication; the old handle is never
+        // used for this invocation.
+        state.rip = view.base_rip();
+        run_cached(
+            view,
+            &admission,
+            test_context_with_generation(11),
+            &dependencies,
+            &mut state,
+            3,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        let tracked = tracker.borrow();
+        assert_eq!(tracked.published_ids, [1, 2]);
+        assert_eq!(tracked.executed_ids, [1, 1, 2]);
+        assert_eq!(tracked.drops, 1);
+        assert_eq!(tracked.live, 1);
+        drop(tracked);
+
+        assert!(matches!(
+            cache.reset_for_execution_context(test_context_with_generation(11)),
+            Err(ExecutionContextError::GenerationNotAdvanced { .. })
+        ));
+        assert_eq!(cache.resident_entries(), 1);
+        cache
+            .reset_for_execution_context(test_context_with_generation(12))
+            .unwrap();
+        assert_eq!(cache.resident_entries(), 0);
+        assert_eq!(tracker.borrow().live, 0);
+
+        state.rip = view.base_rip();
+        run_cached(
+            view,
+            &admission,
+            test_context_with_generation(12),
+            &dependencies,
+            &mut state,
+            3,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        let tracked = tracker.borrow();
+        assert_eq!(tracked.published_ids, [1, 2, 3]);
+        assert_eq!(tracked.executed_ids, [1, 1, 2, 3]);
+        assert_eq!(tracked.drops, 2);
+        assert_eq!(tracked.live, 1);
+    }
+
+    #[test]
+    fn unsupported_execution_profiles_fail_before_cache_or_backend_work() {
+        let code = [0x48, 0xB8, 0x2A, 0, 0, 0, 0, 0, 0, 0];
+        let (view, admission) = cached_fixture(&code, 0x7B60);
+        let dependencies = dependency(view, 1);
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        let unsupported_profiles = [
+            ExecutionProfile {
+                mode: crate::translation::GuestExecutionMode::Compatibility,
+                canonical_address_bits: 48,
+                jit_profile: crate::translation::JitSemanticProfile::S0_09Fixture,
+            },
+            ExecutionProfile {
+                mode: crate::translation::GuestExecutionMode::Long64,
+                canonical_address_bits: 57,
+                jit_profile: crate::translation::JitSemanticProfile::S0_09Fixture,
+            },
+            ExecutionProfile {
+                mode: crate::translation::GuestExecutionMode::Long64,
+                canonical_address_bits: 48,
+                jit_profile: crate::translation::JitSemanticProfile::Other,
+            },
+        ];
+        for profile in unsupported_profiles {
+            assert!(matches!(
+                run_cached(
+                    view,
+                    &admission,
+                    ExecutionContextSnapshot::new(test_context().id, profile),
+                    &dependencies,
+                    &mut state,
+                    1,
+                    &mut cache,
+                    &mut backend,
+                ),
+                Err(DispatchError::ExecutionContext(
+                    ExecutionContextError::UnsupportedProfile(_)
+                ))
+            ));
+        }
+        assert_eq!(cache.counters().successful_compiles, 0);
+        assert_eq!(cache.counters().successful_publications, 0);
+        assert_eq!(cache.resident_entries(), 0);
+        let tracked = tracker.borrow();
+        assert_eq!(tracked.publishes, 0);
+        assert_eq!(tracked.executions, 0);
+        assert_eq!(tracked.live, 0);
     }
 
     #[test]
@@ -2376,6 +2700,7 @@ mod tests {
         run_cached(
             view_a,
             &admission_a,
+            test_context(),
             &deps_a,
             &mut state,
             1,
@@ -2388,6 +2713,7 @@ mod tests {
         run_cached(
             view_b,
             &admission_b,
+            test_context(),
             &deps_b,
             &mut state,
             1,
@@ -2409,6 +2735,7 @@ mod tests {
         run_cached(
             view_b,
             &admission_b,
+            test_context(),
             &deps_b,
             &mut state,
             1,
@@ -2438,6 +2765,7 @@ mod tests {
         run_cached(
             view,
             &admission,
+            test_context(),
             &deps_v1,
             &mut state,
             1,
@@ -2449,6 +2777,7 @@ mod tests {
         run_cached(
             view,
             &admission,
+            test_context(),
             &deps_v2,
             &mut state,
             1,
@@ -2458,20 +2787,43 @@ mod tests {
         .unwrap();
         assert_eq!(tracker.borrow().publishes, 2);
 
+        let nz = |value| NonZeroU64::new(value).unwrap();
+        let mut deps_new_mapping = deps_v2;
+        deps_new_mapping[0].identity.mapping = MappingId::new(nz(77));
+        deps_new_mapping[0].identity.backing = BackingId::new(nz(88));
         state.rip = view.base_rip();
+        run_cached(
+            view,
+            &admission,
+            test_context(),
+            &deps_new_mapping,
+            &mut state,
+            1,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(tracker.borrow().publishes, 3);
+
+        state.rip = view.base_rip();
+        let mut non_executable = deps_new_mapping;
+        non_executable[0].identity.executable = false;
         assert!(matches!(
             run_cached(
                 view,
                 &admission,
-                &[],
+                test_context(),
+                &non_executable,
                 &mut state,
                 1,
                 &mut cache,
                 &mut backend,
             ),
-            Err(DispatchError::TranslationKey(_))
+            Err(DispatchError::TranslationKey(
+                TranslationKeyError::NonExecutableDependency { .. }
+            ))
         ));
-        assert_eq!(tracker.borrow().publishes, 2);
+        assert_eq!(tracker.borrow().publishes, 3);
     }
 
     #[test]
@@ -2490,6 +2842,7 @@ mod tests {
             run_cached(
                 view,
                 &admission,
+                test_context(),
                 &dependencies,
                 &mut state,
                 1,
@@ -2508,6 +2861,7 @@ mod tests {
             run_cached(
                 view,
                 &admission,
+                test_context(),
                 &dependencies,
                 &mut state,
                 1,
@@ -2538,6 +2892,7 @@ mod tests {
             run_cached(
                 view,
                 &admission,
+                test_context(),
                 &dependencies,
                 &mut state,
                 1,
@@ -2581,6 +2936,7 @@ mod tests {
         let result = run_cached(
             view,
             &admission,
+            test_context(),
             &dependencies,
             &mut state,
             0,
@@ -2594,6 +2950,7 @@ mod tests {
         let result = run_cached(
             view,
             &admission,
+            test_context(),
             &dependencies,
             &mut state,
             0,
@@ -2608,6 +2965,7 @@ mod tests {
             run_cached(
                 view,
                 &admission,
+                test_context(),
                 &dependencies,
                 &mut state,
                 0,
@@ -2637,6 +2995,7 @@ mod tests {
         let stopped = run_cached_controlled(
             view,
             &admission,
+            test_context(),
             &dependencies,
             &mut state,
             1,
@@ -2661,6 +3020,7 @@ mod tests {
         let stop_once = run_cached(
             view,
             &admission,
+            test_context(),
             &dependencies,
             &mut state,
             1,
@@ -2676,6 +3036,7 @@ mod tests {
         let next_call = run_cached(
             view,
             &admission,
+            test_context(),
             &dependencies,
             &mut state,
             1,
@@ -2723,6 +3084,7 @@ mod tests {
         let result = run_multi_cached(
             view,
             &admission,
+            test_context(),
             &deps,
             &mut state,
             3,
@@ -2826,9 +3188,14 @@ mod tests {
             _ => panic!(),
         };
         let deps = dependency(view, 1);
-        let key =
-            TranslationKey::for_block(view, guest, CompileFlavor::S0_09FixtureDispatch, &deps)
-                .unwrap();
+        let key = TranslationKey::for_block(
+            view,
+            guest,
+            CompileFlavor::S0_09FixtureDispatch,
+            test_context(),
+            &deps,
+        )
+        .unwrap();
         let compiled =
             match compile_prepared_dispatch_block(view.code_end(), built, &admission).unwrap() {
                 BlockCompileOutcome::Compiled(block) => block,
@@ -2900,6 +3267,7 @@ mod tests {
             run_multi_cached(
                 view,
                 &admission,
+                test_context(),
                 &[],
                 &mut state,
                 1,
@@ -2927,6 +3295,7 @@ mod tests {
             view,
             source,
             CompileFlavor::S0_09FixtureDispatch,
+            test_context(),
             &dependencies_v1,
         )
         .unwrap();
@@ -2934,7 +3303,7 @@ mod tests {
             live: 1,
             ..PublishedTracker::default()
         }));
-        let candidate = MockPublished(tracker.clone());
+        let candidate = MockPublished(tracker.clone(), 1);
         let checked = validate_published_candidate::<&'static str, _>(
             &key,
             view,
@@ -2993,6 +3362,7 @@ mod tests {
             run_multi_cached(
                 view,
                 &admission,
+                test_context(),
                 &deps,
                 &mut state,
                 1,

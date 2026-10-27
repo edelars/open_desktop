@@ -1562,6 +1562,13 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    fn cached_test_context() -> od_jit::translation::ExecutionContextSnapshot {
+        od_jit::translation::ExecutionContextSnapshot::s0_09_fixture(
+            od_jit::translation::ExecutionContextId::from_u64(1)
+                .expect("test context ID is nonzero"),
+        )
+    }
+
     #[test]
     fn v2_mov_load_commits_alias_and_preserves_faulting_state_on_helper_failure() {
         use od_isa::memory::{
@@ -4037,6 +4044,7 @@ mod tests {
         let cached = od_jit::dispatch::run_cached(
             view,
             &admission,
+            cached_test_context(),
             &dependencies,
             &mut cached_state,
             4,
@@ -4053,6 +4061,7 @@ mod tests {
         let repeated = od_jit::dispatch::run_cached(
             view,
             &admission,
+            cached_test_context(),
             &dependencies,
             &mut cached_state,
             4,
@@ -4135,6 +4144,7 @@ mod tests {
             let actual = od_jit::dispatch::run_multi_cached(
                 view,
                 &admission,
+                cached_test_context(),
                 &dependencies,
                 &mut actual_state,
                 4,
@@ -4172,6 +4182,7 @@ mod tests {
         let hit = od_jit::dispatch::run_multi_cached(
             view,
             &admission,
+            cached_test_context(),
             &dependencies,
             &mut actual_state,
             4,

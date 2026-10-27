@@ -59,6 +59,87 @@ nonzero_identity!(BackingId);
 nonzero_version!(MappingVersion);
 nonzero_version!(BackingVersion);
 
+/// Caller-owned nonzero generation for one frozen execution-context snapshot.
+/// It is never a host pointer and must advance without wrapping across reset,
+/// restore, or clone boundaries while a cache could retain compiled code.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ExecutionContextId(NonZeroU64);
+
+impl ExecutionContextId {
+    pub const fn new(value: NonZeroU64) -> Self {
+        Self(value)
+    }
+
+    pub const fn from_u64(value: u64) -> Option<Self> {
+        match NonZeroU64::new(value) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+
+    pub fn checked_next(self) -> Option<Self> {
+        NonZeroU64::new(self.0.get().checked_add(1)?).map(Self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum GuestExecutionMode {
+    Long64,
+    Compatibility,
+    Protected,
+    Real,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum JitSemanticProfile {
+    S0_09Fixture,
+    Other,
+}
+
+/// The bounded architectural context portion relevant to this fixture cache.
+/// It intentionally does not model production control-register/MMU state.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ExecutionProfile {
+    pub mode: GuestExecutionMode,
+    pub canonical_address_bits: u8,
+    pub jit_profile: JitSemanticProfile,
+}
+
+impl ExecutionProfile {
+    pub const S0_09_LONG64_CANONICAL48: Self = Self {
+        mode: GuestExecutionMode::Long64,
+        canonical_address_bits: 48,
+        jit_profile: JitSemanticProfile::S0_09Fixture,
+    };
+
+    pub const fn is_supported_fixture(self) -> bool {
+        matches!(self, Self::S0_09_LONG64_CANONICAL48)
+    }
+}
+
+/// Caller-owned frozen stamp held stable for an entire synchronous dispatch.
+/// The owner must keep its mapping/backing snapshot leased until dispatch
+/// returns; code dependency identities and versions remain separately keyed.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ExecutionContextSnapshot {
+    pub id: ExecutionContextId,
+    pub profile: ExecutionProfile,
+}
+
+impl ExecutionContextSnapshot {
+    pub const fn new(id: ExecutionContextId, profile: ExecutionProfile) -> Self {
+        Self { id, profile }
+    }
+
+    pub const fn s0_09_fixture(id: ExecutionContextId) -> Self {
+        Self::new(id, ExecutionProfile::S0_09_LONG64_CANONICAL48)
+    }
+}
+
 /// Compile modes whose admission/lowering assumptions can change output.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum CompileFlavor {
@@ -135,6 +216,7 @@ impl InstructionFetchRanges {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct TranslationKey {
     flavor: CompileFlavor,
+    execution_context: ExecutionContextSnapshot,
     entry_rip: u64,
     code_base: u64,
     code_end: u64,
@@ -149,6 +231,7 @@ impl TranslationKey {
         code: CodeView<'_>,
         block: &BasicBlock,
         flavor: CompileFlavor,
+        execution_context: ExecutionContextSnapshot,
         dependency_spans: &[CodeDependencySpan],
     ) -> Result<Self, TranslationKeyError> {
         if block.code_end != code.code_end() {
@@ -172,6 +255,7 @@ impl TranslationKey {
 
         Ok(Self {
             flavor,
+            execution_context,
             entry_rip: block.entry_rip,
             code_base: code.base_rip(),
             code_end: code.code_end(),
@@ -184,6 +268,10 @@ impl TranslationKey {
 
     pub const fn flavor(&self) -> CompileFlavor {
         self.flavor
+    }
+
+    pub const fn execution_context(&self) -> ExecutionContextSnapshot {
+        self.execution_context
     }
 
     pub const fn entry_rip(&self) -> u64 {
@@ -550,6 +638,12 @@ mod tests {
         NonZeroU64::new(value).expect("nonzero fixture value")
     }
 
+    fn test_context() -> ExecutionContextSnapshot {
+        ExecutionContextSnapshot::s0_09_fixture(
+            ExecutionContextId::from_u64(1).expect("test context ID is nonzero"),
+        )
+    }
+
     fn identity(
         mapping: u64,
         mapping_version: u64,
@@ -598,11 +692,34 @@ mod tests {
         flavor: CompileFlavor,
         spans: &[CodeDependencySpan],
     ) -> Result<TranslationKey, TranslationKeyError> {
-        TranslationKey::for_block(code, block, flavor, spans)
+        key_in_context(code, block, flavor, test_context(), spans)
+    }
+
+    fn key_in_context<'a>(
+        code: CodeView<'a>,
+        block: &BasicBlock,
+        flavor: CompileFlavor,
+        context: ExecutionContextSnapshot,
+        spans: &[CodeDependencySpan],
+    ) -> Result<TranslationKey, TranslationKeyError> {
+        TranslationKey::for_block(code, block, flavor, context, spans)
     }
 
     fn one_span(code: CodeView<'_>, id: CodeIdentity) -> [CodeDependencySpan; 1] {
         [span(code.base_rip(), code.code_end(), id)]
+    }
+
+    #[test]
+    fn execution_context_id_is_nonzero_and_advances_without_wrapping() {
+        assert!(ExecutionContextId::from_u64(0).is_none());
+        let id = ExecutionContextId::from_u64(41).unwrap();
+        assert_eq!(id.checked_next().unwrap().get(), 42);
+        assert!(
+            ExecutionContextId::from_u64(u64::MAX)
+                .unwrap()
+                .checked_next()
+                .is_none()
+        );
     }
 
     #[test]
@@ -694,6 +811,40 @@ mod tests {
             )
             .unwrap()
         );
+    }
+
+    #[test]
+    fn translation_key_distinguishes_execution_context_and_profile() {
+        let bytes = [0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0];
+        let (code, block) = build(&bytes, 0x4000);
+        let spans = one_span(code, identity(10, 1, 20, 1, true));
+        let base = key(code, &block, CompileFlavor::S0_09FixtureDispatch, &spans).unwrap();
+        let new_generation = key_in_context(
+            code,
+            &block,
+            CompileFlavor::S0_09FixtureDispatch,
+            ExecutionContextSnapshot::s0_09_fixture(ExecutionContextId::from_u64(2).unwrap()),
+            &spans,
+        )
+        .unwrap();
+        assert_ne!(base, new_generation);
+
+        let new_profile = key_in_context(
+            code,
+            &block,
+            CompileFlavor::S0_09FixtureDispatch,
+            ExecutionContextSnapshot::new(
+                test_context().id,
+                ExecutionProfile {
+                    mode: GuestExecutionMode::Long64,
+                    canonical_address_bits: 57,
+                    jit_profile: JitSemanticProfile::S0_09Fixture,
+                },
+            ),
+            &spans,
+        )
+        .unwrap();
+        assert_ne!(base, new_profile);
     }
 
     #[test]

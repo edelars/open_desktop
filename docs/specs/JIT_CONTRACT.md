@@ -770,6 +770,8 @@ fallback are outside this partial API.
 fully comparable compile identity from the complete `CodeView` bytes and
 base/end, entry RIP, typed compile flavor, terminal classification, the
 block's exact instruction fetch ranges, and caller-supplied dependency spans.
+The bounded cached fixture path also includes the explicit
+`ExecutionContextSnapshot` described in S3-22a.
 Dependency spans must exactly and contiguously cover the complete code view,
 including unread tail bytes that can affect admission or terminal behavior.
 Because `BasicBlock` is public data, the constructor re-decodes each claimed
@@ -783,11 +785,44 @@ code bytes after hashing.
 
 The caller owns the meaning and lifetime of these stable IDs and versions and
 must advance versions without wrap when mappings or backing contents change.
-The current `CodeView` has no MMU owner, so this module does not invent
-generations or pointer-derived identities and does not establish production
-invalidation. Runtime budget, STOP, GPRs, and RFLAGS are not key inputs. No
-lookup container, cache, eviction, or reuse is implemented. Benchmarking key
-lookup structures is a separate S3-17 task; S3-17 remains open.
+The current `CodeView` has no production MMU owner, so this module does not
+establish production invalidation. Runtime budget, STOP, GPRs, and RFLAGS are
+not key inputs. The keys are used by the opt-in partial fixture caches in
+S3-18; production dispatch, MMU ownership, and complete invalidation remain
+open under S3-17/18/22/23.
+
+### S3-22a: bounded fixture execution-context identity
+
+The cached fixture-dispatch APIs require a caller-owned, nonzero
+`ExecutionContextId` generation and an explicit `ExecutionProfile`. The only
+admitted profile is `S0_09Fixture + Long64 + canonical48`; other modes,
+canonical widths, or semantic profiles are rejected before cache binding,
+compilation, publication, or execution. `TranslationKey` includes this
+context stamp/profile in addition to existing mapping/backing identities,
+versions, and executable permissions. No second MMU identity layer is added.
+
+The owner must hold a frozen execution/mapping snapshot or lease for the full
+synchronous dispatch call and advance the generation without wrapping on
+reset, restore, clone, or profile change. Reusing the same snapshot permits a
+hit. A higher generation clears the cache and drops old published handles
+before lookup/compile, so old code cannot run under the new context. Explicit
+cache reset also clears entries and requires a higher generation. A profile
+change under the same ID is rejected. Restore/clone therefore compiles fresh
+code artifacts. GPRs, RFLAGS, budget, STOP-RIP and invocation-local STOP
+pointers are not key inputs. Existing mapping/backing IDs, versions, and
+permissions continue to detect their own changes.
+
+This is a fixture contract, not production mode/MMU/TLB integration. V2 memory
+load/store paths remain uncached. The current API relies on the caller to hold
+the immutable owner snapshot; it does not lock a future mapping owner across
+decode, compilation, and publication. A backing mutation racing that interval
+remains an S3-23 owner/invalidation integration dependency. Local tests cover
+same-context hits, changed-generation misses and handle drop, unsupported
+profile rejection before work, reset/recompile, mapping/backing/permission
+changes, and exclusion of architectural state and invocation controls from the
+key. Physical Mac mini execution remains reserved for final S3-21 after local
+Stage 3 is complete. Local evidence is recorded in
+[the S3-22a report](../reports/STAGE_3_S3-22a_2026-10-27.md).
 
 ### S3-19a: invocation-local checked memory helper ABI partial
 

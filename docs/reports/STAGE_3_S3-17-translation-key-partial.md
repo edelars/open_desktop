@@ -22,11 +22,12 @@ and aliases may use distinct mapping IDs with the same backing ID/version.
 Versions expose checked increment that refuses wrap. Key hashing is only a
 candidate accelerator: equality compares all key fields and complete bytes.
 
-The identity/version provider remains caller-owned. The current CodeView is
-not connected to an MMU owner, so the implementation does not derive IDs from
-host pointers, invent generations, or claim production invalidation. No
-production cache, reuse, or eviction was added. Runtime budget, STOP, GPR and
-RFLAGS do not enter the key API. S3-17 remains open.
+Mapping/backing identity and version providers remain caller-owned. The
+follow-on S3-22a slice adds a nonzero caller-owned execution-context generation
+and the bounded S0_09/Long64/canonical48 profile to both translation keys and
+cached fixture dispatch. The current `CodeView` is still not connected to a
+production MMU owner and does not claim production invalidation. Runtime
+budget, STOP, GPR and RFLAGS do not enter the key. S3-17 remains open.
 
 ## Verification
 
@@ -44,8 +45,9 @@ Cases cover same RIP with changed bytes/tail, flavor/base/end/terminal,
 mapping/backing identity and versions, executable permission, aliases, a fetch
 range spanning multiple dependency regions, coverage gaps/overlap, arithmetic
 overflow, inconsistent snapshots, non-wrapping versions, runtime-state
-exclusion, and full equality after forced hash collisions. No live cache or
-runtime invalidation behavior was tested or is claimed.
+exclusion, and full equality after forced hash collisions. This original
+report does not cover cache context transitions; the later S3-22a report covers
+that bounded behavior and explicitly leaves production invalidation open.
 
 ## Lookup benchmark prototype (implementation only)
 

@@ -291,6 +291,7 @@ impl BlockExecutor for RecordingExecutor<'_> {
             self.code,
             &source,
             CompileFlavor::S0_09FixtureDispatch,
+            crate::benchmark_execution_context(),
             &[dependency],
         )
         .map_err(|error| RecordExecutorError::Source(format!("translation key: {error:?}")))?;
