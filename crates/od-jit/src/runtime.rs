@@ -134,12 +134,31 @@ impl MemorySiteV2 {
             Some(length) => length,
             None => return false,
         };
+        let rsp_data_profile = length == 3
+            && self.operand.address_size == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Qword
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && self.operand.displacement == 0
+            && matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(
+                    od_isa::Register::Rax
+                        | od_isa::Register::Rcx
+                        | od_isa::Register::Rdx
+                        | od_isa::Register::Rbx
+                )
+            );
         let register_profile = match self.operation {
             MemorySiteOperationV2::Load => {
-                matches!(self.destination, Some(0..=3)) && self.source.is_none()
+                self.destination
+                    .is_some_and(|register| register <= 3 || register == 4 && rsp_data_profile)
+                    && self.source.is_none()
             }
             MemorySiteOperationV2::Store => {
-                matches!(self.source, Some(0..=3)) && self.destination.is_none()
+                self.source
+                    .is_some_and(|register| register <= 3 || register == 4 && rsp_data_profile)
+                    && self.destination.is_none()
             }
         };
         let base_is_supported = match self.operand.base {
@@ -355,7 +374,11 @@ impl MemorySiteV2 {
         }
         let modrm = source[2];
         let mode = modrm >> 6;
-        if mode == 3 || (modrm >> 3) & 7 >= 4 {
+        let data_register = (modrm >> 3) & 7;
+        if mode == 3
+            || data_register > 4
+            || data_register == 4 && !(mode == 0 && modrm & 7 < 4 && source.len() == 3)
+        {
             return false;
         }
         let rip_relative = mode == 0 && modrm & 7 == 5;

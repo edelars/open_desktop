@@ -16,7 +16,7 @@ use crate::ir::Operation;
 use crate::lowering::{self, LoweredProgram, LoweringError, LoweringOutcome};
 
 pub const MAX_EMITTED_BLOCK_BYTES: usize = 4096;
-const RUNTIME_FRAME_PREFIX_BYTES: u32 = 112;
+const RUNTIME_FRAME_PREFIX_BYTES: u32 = 144;
 const CHECKED_LOAD_FRAME_PREFIX_BYTES_V2: u32 = 144;
 const CHECKED_STORE_FRAME_PREFIX_BYTES_V2: u32 = 144;
 const REGISTER_HOME_BUDGET: u8 = 4;

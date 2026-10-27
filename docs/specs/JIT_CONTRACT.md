@@ -1833,6 +1833,26 @@ production runtime integration. The follow-on V2 production slice is specified
 below. All other memory forms, including stores, RMW/atomic, MMIO, REP,
 descriptor access, and direct host-memory access, remain outside the contract.
 
+#### S3-20z: guest RSP as an exact qword MOV data operand
+
+Admit only `48 8B/89 /r` with ModRM `mod=00`, `reg=4` (guest RSP data), and
+`r/m=0..3` (direct base RAX..RBX), exact length three. This exception is
+scoped to checked memory data: generic GPR reads/writes remain RAX..RBX, and a
+load may stage/write guest RSP only after its matching successful checked
+load. No SIB, displacement, address-size override, prefix, other base or pair
+profile is included. Decoded `MemoryOperand` remains the sole address
+semantics; full-width noncanonical data is not itself an address fault.
+
+The IR runtime frame stages guest GPRs at `SP+56..95`, flags at `SP+96` and
+RIP at `SP+104`; saved X19/X20 and X21/X22 pairs follow at `SP+112` and
+`SP+128`, respectively. The minimum reserved prefix is 144 bytes. This is
+private generated-code frame layout; it does not change the host SP or public
+runtime/C ABI. A sequential
+load to guest RSP commits only on successful memory read; a following use of
+that RSP as an address then receives the normal architectural fault at its own
+RIP without replaying the prior effect. See the
+[S3-20z report](../reports/STAGE_3_S3-20z_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

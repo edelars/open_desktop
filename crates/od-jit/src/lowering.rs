@@ -7,7 +7,9 @@
 //! no observable exit or helper may be inserted between them.
 
 use od_isa::RegisterView;
-use od_isa::long_decode::{ArithmeticKind, ConditionCode, Operand, Operation as DecodedOperation};
+use od_isa::long_decode::{
+    ArithmeticKind, ConditionCode, Instruction, Operand, Operation as DecodedOperation,
+};
 
 use crate::block::{
     self, AdmittedInstructionBoundaries, BlockStopReason, BranchTargetResolution, BuildOutcome,
@@ -419,7 +421,8 @@ fn lower_instruction(
             dst: Operand::Register(destination),
             src: Operand::Memory(operand),
         } if block::is_checked_qword_load_form(instruction.decoded) => {
-            let destination = guest_gpr(destination).ok_or_else(invalid)?;
+            let destination =
+                guest_memory_data_gpr(destination, instruction.decoded).ok_or_else(invalid)?;
             let value = allocate_temp(next_temp);
             operations.push(Operation::CheckedLoad {
                 dst: value,
@@ -436,7 +439,7 @@ fn lower_instruction(
             src: Operand::Register(source),
         } if block::is_checked_qword_store_form(instruction.decoded) => {
             operations.push(Operation::CheckedStore {
-                src: guest_gpr(source).ok_or_else(invalid)?,
+                src: guest_memory_data_gpr(source, instruction.decoded).ok_or_else(invalid)?,
                 operand,
             });
         }
@@ -519,6 +522,16 @@ fn allocate_temp(next_temp: &mut u32) -> TempId {
 fn guest_gpr(register: RegisterView) -> Option<GuestGpr> {
     let number = register.register() as u8;
     (number < 4 && register.size() == od_isa::OperandSize::Qword).then_some(GuestGpr(number))
+}
+
+fn guest_memory_data_gpr(register: RegisterView, instruction: Instruction) -> Option<GuestGpr> {
+    let number = register.register() as u8;
+    (register.size() == od_isa::OperandSize::Qword
+        && (number < 4
+            || number == 4
+                && (block::is_checked_qword_load_form(instruction)
+                    || block::is_checked_qword_store_form(instruction))))
+    .then_some(GuestGpr(number))
 }
 
 #[cfg(test)]

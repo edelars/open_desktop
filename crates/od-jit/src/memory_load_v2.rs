@@ -1448,6 +1448,62 @@ mod tests {
     }
 
     #[test]
+    fn rsp_is_admitted_only_as_qword_memory_data_for_exact_direct_forms() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for base in 0..4_u8 {
+                let source = [0x48, opcode, 0x20 | base]; // data=RSP, [base]
+                let code = CodeView::new(0x5800, &source).unwrap();
+                let (site, copied) = match operation {
+                    MemorySiteOperationV2::Load => {
+                        let ir = compile_ir_memory_load_block_v2(code, 0x5800).unwrap();
+                        let direct = compile_memory_load_block_v2(code, 0x5800).unwrap();
+                        assert_eq!(ir.site(), direct.site());
+                        (ir.site().clone(), ir.source_bytes().to_vec())
+                    }
+                    MemorySiteOperationV2::Store => {
+                        let ir = compile_ir_memory_store_block_v2(code, 0x5800).unwrap();
+                        let direct = compile_memory_store_block_v2(code, 0x5800).unwrap();
+                        assert_eq!(ir.site(), direct.site());
+                        (ir.site().clone(), ir.source_bytes().to_vec())
+                    }
+                };
+                assert_eq!(copied, source);
+                assert_eq!(site.next_rip(), 0x5803);
+                assert_eq!(
+                    site.operand().base,
+                    AddressBase::Register(Register::from_encoding(base).unwrap())
+                );
+                assert_eq!(site.operand().index, None);
+                assert_eq!(site.operand().displacement, 0);
+                assert_eq!(site.operation(), operation);
+                assert_eq!(
+                    site.destination(),
+                    (operation == MemorySiteOperationV2::Load).then_some(4)
+                );
+                assert_eq!(
+                    site.source(),
+                    (operation == MemorySiteOperationV2::Store).then_some(4)
+                );
+                assert!(site.has_supported_profile());
+                assert!(site.matches_source_bytes(&source, operation));
+            }
+        }
+
+        for invalid in [
+            [0x48, 0x8b, 0x24], // RSP data with RSP base
+            [0x48, 0x8b, 0x64], // RSP data with SIB
+            [0x48, 0x89, 0x65], // RSP source with RBP disp8 form
+        ] {
+            let code = CodeView::new(0x5800, &invalid).unwrap();
+            assert!(compile_ir_memory_load_block_v2(code, 0x5800).is_err());
+            assert!(compile_ir_memory_store_block_v2(code, 0x5800).is_err());
+        }
+    }
+
+    #[test]
     fn ir_checked_sib_singletons_match_decoded_metadata_for_all_registers_and_scales() {
         for (opcode, operation) in [
             (0x8b, MemorySiteOperationV2::Load),
@@ -2000,7 +2056,7 @@ mod tests {
     fn rejects_prefixes_displacements_and_out_of_profile_registers() {
         for bytes in [
             vec![0x40, 0x8b, 0x00],
-            vec![0x48, 0x8b, 0x20],
+            vec![0x48, 0x8b, 0x28],       // unsupported RBP data register
             vec![0x48, 0x8b, 0xc0],       // register-register mod=11
             vec![0x48, 0x8b, 0x04],       // truncated SIB
             vec![0x48, 0x8b, 0x04, 0x28], // RBP base requires disp32
@@ -2934,7 +2990,7 @@ mod tests {
             vec![0x40, 0x48, 0x89, 0x18], // extra prefix
             vec![0x48, 0x89, 0x1c],       // SIB
             vec![0x48, 0x89, 0x58],       // displacement
-            vec![0x48, 0x89, 0x20],       // out-of-profile source register
+            vec![0x48, 0x89, 0x28],       // out-of-profile source register
         ] {
             let code = CodeView::new(0x5000, &bytes).unwrap();
             assert!(matches!(

@@ -24,7 +24,7 @@ use crate::statepoints::{
 use od_isa::integer_flags;
 
 const MAX_RUNTIME_FRAME_BYTES: u32 = 32_768;
-const MIN_RUNTIME_PREFIX_BYTES: u32 = 104;
+const MIN_RUNTIME_PREFIX_BYTES: u32 = 144;
 const FRAME_STAGING_GPRS_POINTER: u32 = 0;
 const FRAME_STAGING_FLAGS_POINTER: u32 = 16;
 const FRAME_STAGING_RIP_POINTER: u32 = 24;
@@ -32,8 +32,10 @@ const FRAME_HELPER_FLAGS_OUTPUT: u32 = 32;
 const FRAME_CANONICAL_STATE_POINTER: u32 = 40;
 const FRAME_RUNTIME_CONTEXT_POINTER: u32 = 48;
 const FRAME_STAGING_GPRS: u32 = 56;
-const FRAME_STAGING_FLAGS: u32 = 88;
-const FRAME_STAGING_RIP: u32 = 96;
+const FRAME_STAGING_FLAGS: u32 = 96;
+const FRAME_STAGING_RIP: u32 = 104;
+const FRAME_SAVED_X19_X20: i32 = 112;
+const FRAME_SAVED_X21_X22: i32 = 128;
 const MAX_BLOCK_INSTRUCTIONS: usize = 32;
 
 /// An emitted block entry with private code/map provenance. Only blocks made
@@ -269,7 +271,7 @@ pub fn emit_checked_load_runtime_block_v2(
     let service_start = code_offset(&encoder)?;
     emit_prologue(&mut encoder, pair_count)?;
     // Preserve the additional callee-saved registers used for the V2 helper context.
-    for (a, b, offset) in [(19, 20, 104), (21, 22, 120)] {
+    for (a, b, offset) in [(19, 20, FRAME_SAVED_X19_X20), (21, 22, FRAME_SAVED_X21_X22)] {
         encoder.stp_x(
             xreg(a)?,
             xreg(b)?,
@@ -456,7 +458,7 @@ pub fn emit_checked_load_runtime_block_v2(
     }
     let epilogue_start = code_offset(&encoder)?;
     encoder.bind(epilogue)?;
-    for (a, b, offset) in [(19, 20, 104), (21, 22, 120)] {
+    for (a, b, offset) in [(19, 20, FRAME_SAVED_X19_X20), (21, 22, FRAME_SAVED_X21_X22)] {
         encoder.ldp_x(
             xreg(a)?,
             xreg(b)?,
@@ -550,7 +552,7 @@ pub fn emit_checked_store_runtime_block_v2(
     let mut guard_returns = Vec::new();
     let service_start = code_offset(&encoder)?;
     emit_prologue(&mut encoder, pair_count)?;
-    for (a, b, offset) in [(19, 20, 104), (21, 22, 120)] {
+    for (a, b, offset) in [(19, 20, FRAME_SAVED_X19_X20), (21, 22, FRAME_SAVED_X21_X22)] {
         encoder.stp_x(
             xreg(a)?,
             xreg(b)?,
@@ -715,7 +717,7 @@ pub fn emit_checked_store_runtime_block_v2(
     }
     let epilogue_start = code_offset(&encoder)?;
     encoder.bind(epilogue)?;
-    for (a, b, offset) in [(19, 20, 104), (21, 22, 120)] {
+    for (a, b, offset) in [(19, 20, FRAME_SAVED_X19_X20), (21, 22, FRAME_SAVED_X21_X22)] {
         encoder.ldp_x(
             xreg(a)?,
             xreg(b)?,
@@ -818,7 +820,7 @@ pub fn emit_two_memory_runtime_block_v2(
 
     let service_start = code_offset(&encoder)?;
     emit_prologue(&mut encoder, pair_count)?;
-    for (a, b, offset) in [(19, 20, 104), (21, 22, 120)] {
+    for (a, b, offset) in [(19, 20, FRAME_SAVED_X19_X20), (21, 22, FRAME_SAVED_X21_X22)] {
         encoder.stp_x(
             xreg(a)?,
             xreg(b)?,
@@ -1062,7 +1064,7 @@ pub fn emit_two_memory_runtime_block_v2(
     }
     let epilogue_start = code_offset(&encoder)?;
     encoder.bind(epilogue)?;
-    for (a, b, offset) in [(19, 20, 104), (21, 22, 120)] {
+    for (a, b, offset) in [(19, 20, FRAME_SAVED_X19_X20), (21, 22, FRAME_SAVED_X21_X22)] {
         encoder.ldp_x(
             xreg(a)?,
             xreg(b)?,
@@ -1804,7 +1806,7 @@ fn emit_runtime_frame_setup(encoder: &mut Encoder) -> Result<(), BlockEmitterErr
         encoder.str_x(XRegOrZero::Reg(xreg(17)?), AddressBase::Sp, field_offset)?;
     }
 
-    for register in 0..4u32 {
+    for register in 0..5u32 {
         let guest_offset = checked_offset(LONG_MODE_GPR_OFFSET, register * 8)?;
         let staged_offset = FRAME_STAGING_GPRS + register * 8;
         encoder.ldr_x(
@@ -1977,7 +1979,7 @@ fn emit_commit(
     instruction_index: usize,
     _pair_count: usize,
 ) -> Result<(), BlockEmitterError> {
-    for register in 0..4u32 {
+    for register in 0..5u32 {
         encoder.ldr_x(
             XRegOrZero::Reg(xreg(13)?),
             AddressBase::Sp,
@@ -2151,7 +2153,7 @@ fn emit_u64(encoder: &mut Encoder, destination: XReg, value: u64) -> Result<(), 
 }
 
 fn guest_gpr_offset(register: GuestGpr) -> Result<u32, BlockEmitterError> {
-    if register.0 >= 4 {
+    if register.0 > 4 {
         return Err(BlockEmitterError::InvalidRegister(register));
     }
     Ok(u32::from(register.0) * 8)
@@ -2294,7 +2296,7 @@ mod tests {
             &program,
             AllocatorConfig {
                 register_homes: 1,
-                reserved_prefix_bytes: 112,
+                reserved_prefix_bytes: 144,
             },
             &[],
         )

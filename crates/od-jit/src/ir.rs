@@ -21,8 +21,9 @@ pub enum IntWidth {
     W64,
 }
 
-/// Register number from the guest encoding. The verifier accepts only the
-/// four GPRs in the initial S0-09 JIT profile (RAX..RBX).
+/// Register number from the guest encoding. General operations accept the
+/// initial four-GPR profile (RAX..RBX); checked memory has an exact scoped
+/// exception for RSP as the MOV data register.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GuestGpr(pub u8);
 
@@ -339,7 +340,19 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
             Operation::CheckedStore { src, operand } => {
                 require_active(active_instruction, operation_index)?;
                 let active = active_instruction.expect("require_active checked above");
-                validate_gpr(*src, operation_index)?;
+                if src.0 == 4 {
+                    if !is_rsp_memory_data_operand(
+                        *operand,
+                        instruction_length(program, active_instruction),
+                    ) {
+                        return Err(VerifyError::InvalidGpr {
+                            operation: operation_index,
+                            register: src.0,
+                        });
+                    }
+                } else {
+                    validate_gpr(*src, operation_index)?;
+                }
                 if operand.size != od_isa::OperandSize::Qword
                     || !is_checked_memory_address(
                         operand,
@@ -390,7 +403,28 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                 width,
             } => {
                 require_active(active_instruction, operation_index)?;
-                validate_gpr(*register, operation_index)?;
+                if register.0 == 4 {
+                    let valid_rsp_load = matches!(
+                        program.operations.get(operation_index.wrapping_sub(1)),
+                        Some(Operation::CheckedLoad {
+                            dst: loaded_value,
+                            operand,
+                        })
+                            if *loaded_value == *src
+                                && is_rsp_memory_data_operand(
+                                *operand,
+                                instruction_length(program, active_instruction)
+                            )
+                    );
+                    if !valid_rsp_load {
+                        return Err(VerifyError::InvalidGpr {
+                            operation: operation_index,
+                            register: register.0,
+                        });
+                    }
+                } else {
+                    validate_gpr(*register, operation_index)?;
+                }
                 require_temp(&definitions, *src, *width, operation_index)?;
             }
             Operation::CommitInstruction { index } => {
@@ -653,6 +687,19 @@ fn validate_gpr(register: GuestGpr, operation: usize) -> Result<(), VerifyError>
             register: register.0,
         })
     }
+}
+
+fn is_rsp_memory_data_operand(operand: MemoryOperand, instruction_length: u64) -> bool {
+    instruction_length == 3
+        && operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
+        && operand.index.is_none()
+        && operand.scale == 1
+        && operand.displacement == 0
+        && matches!(
+            operand.base,
+            AddressBase::Register(register) if (register as u8) < 4
+        )
 }
 
 fn validate_flags(flags: FlagEffect, operation: usize) -> Result<(), VerifyError> {
