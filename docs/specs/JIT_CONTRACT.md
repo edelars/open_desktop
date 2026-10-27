@@ -1889,6 +1889,27 @@ faults at its own RIP while retaining the earlier commit; budget and callback
 STOP continuation do not repeat the first access. See the
 [S3-20ab report](../reports/STAGE_3_S3-20ab_2026-10-27.md).
 
+#### S3-20ac: RSP as qword MOV data and exact SIB base
+
+Admit only singleton `48 8B/89 24 24`: ModRM `mod=00/rm=100`, reg/data RSP,
+SIB exactly `0x24`, RSP base, no index, scale 1, no displacement, qword data,
+64-bit effective address and length four. `MemoryOperand` and
+`access_address_48` remain the only address semantics. Generic GPR validation,
+frame layout, and public C ABI do not change. Other SIB values, displacement,
+prefix, register combination, pair and V3 forms remain excluded; existing
+RSP-data-only and RSP-base forms remain separate.
+
+For `MOV RSP,[RSP]`, the address uses entry RSP; successful read commits a
+distinct loaded value only afterward. `MOV [RSP],RSP` writes the full old RSP
+payload to the address based on that old value. Direct V2, shared IR,
+interpreter and dispatcher parity cover CPU/RAM/callback/retirement. A current
+noncanonical RSP faults as #SS before callback and commits nothing. After
+loading a noncanonical value, a subsequent `[RSP]` instruction faults at its
+own RIP while preserving the prior commit. Budget and callback STOP resume
+without replay. The ARM64/macOS x19 canary covers success, guard and fault
+returns. See the
+[S3-20ac report](../reports/STAGE_3_S3-20ac_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

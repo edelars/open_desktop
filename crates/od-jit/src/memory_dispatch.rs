@@ -755,6 +755,14 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
             .map(BoundedMemoryArtifact::Store)
             .map(CompileAt::Block)
             .unwrap_or(CompileAt::Unsupported),
+        [0x48, 0x8b, 0x24, 0x24] => compile_ir_memory_load_block_v2(view, rip)
+            .map(BoundedMemoryArtifact::Load)
+            .map(CompileAt::Block)
+            .unwrap_or(CompileAt::Unsupported),
+        [0x48, 0x89, 0x24, 0x24] => compile_ir_memory_store_block_v2(view, rip)
+            .map(BoundedMemoryArtifact::Store)
+            .map(CompileAt::Block)
+            .unwrap_or(CompileAt::Unsupported),
         [0x48, 0x8b, modrm, sib]
             if modrm >> 6 == 0
                 && modrm & 7 == 4

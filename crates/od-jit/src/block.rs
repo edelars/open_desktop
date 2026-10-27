@@ -1337,17 +1337,22 @@ fn is_rsp_memory_data_operand(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
 ) -> bool {
-    instruction.length == 3
-        && instruction.address_size == OperandSize::Qword
+    instruction.address_size == OperandSize::Qword
         && operand.address_size == OperandSize::Qword
         && operand.size == OperandSize::Qword
         && operand.index.is_none()
         && operand.scale == 1
         && operand.displacement == 0
-        && matches!(
-            operand.base,
-            od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4
-        )
+        && ((instruction.length == 3
+            && matches!(
+                operand.base,
+                od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4
+            ))
+            || (instruction.length == 4
+                && matches!(
+                    operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                )))
 }
 
 fn is_rbp_memory_data_operand(
@@ -1522,7 +1527,7 @@ pub(crate) fn exact_direct_qword_memory_bytes(
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] >> 6 == 0
             && bytes[2] & 7 == 4
-            && (bytes[2] >> 3) & 7 < 4
+            && ((bytes[2] >> 3) & 7 < 4 || bytes[2] == 0x24)
             && bytes[3] == 0x24)
         || (bytes.len() == 5
             && bytes[0..2] == [0x48, opcode]

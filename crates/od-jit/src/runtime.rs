@@ -152,7 +152,17 @@ impl MemorySiteV2 {
             && self.operand.index.is_none()
             && self.operand.scale == 1
             && match data_register {
-                Some(4) => length == 3 && self.operand.displacement == 0 && base_is_low_gpr,
+                Some(4) => {
+                    self.operand.displacement == 0
+                        && (length == 3 && base_is_low_gpr
+                            || length == 4
+                                && matches!(
+                                    self.operand.base,
+                                    od_isa::long_decode::AddressBase::Register(
+                                        od_isa::Register::Rsp
+                                    )
+                                ))
+                }
                 Some(5) => {
                     (length == 3 && self.operand.displacement == 0 && base_is_low_gpr)
                         || (length == 4
@@ -394,6 +404,7 @@ impl MemorySiteV2 {
             || data_register > 5
             || data_register >= 4
                 && !((mode == 0 && modrm & 7 < 4 && source.len() == 3)
+                    || (data_register == 4 && mode == 0 && modrm == 0x24 && source.len() == 4)
                     || (data_register == 5 && mode == 1 && modrm == 0x6d && source.len() == 4))
         {
             return false;
@@ -431,7 +442,7 @@ impl MemorySiteV2 {
             };
             if mode == 0 && sib == 0x24 {
                 return source.len() == 4
-                    && (modrm >> 3) & 7 < 4
+                    && ((modrm >> 3) & 7 < 4 || modrm == 0x24)
                     && decoded_base == od_isa::Register::Rsp
                     && self.operand.index.is_none()
                     && self.operand.scale == 1

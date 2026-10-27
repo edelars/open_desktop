@@ -1690,7 +1690,7 @@ mod tests {
 
             for bytes in [
                 vec![0x48, opcode, 0x04],       // truncated before SIB
-                vec![0x48, opcode, 0x24, 0x24], // RSP as data register
+                vec![0x48, opcode, 0x24, 0x25], // no base
                 vec![0x48, opcode, 0x04, 0x64], // scale > 1, no index
                 vec![0x48, opcode, 0x04, 0x25], // no base
                 vec![0x67, 0x48, opcode, 0x04, 0x24],
@@ -1703,6 +1703,64 @@ mod tests {
                         .and_then(|_| compile_memory_load_block_v2(code, 0x5710).map(|_| ())),
                     MemorySiteOperationV2::Store => compile_ir_memory_store_block_v2(code, 0x5710)
                         .and_then(|_| compile_memory_store_block_v2(code, 0x5710).map(|_| ())),
+                };
+                assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ir_rsp_data_and_base_is_only_exact_0x24_sib_form() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            let source = [0x48, opcode, 0x24, 0x24];
+            let code = CodeView::new(0x5718, &source).unwrap();
+            let (ir_site, direct_site, ir_source) = match operation {
+                MemorySiteOperationV2::Load => {
+                    let ir = compile_ir_memory_load_block_v2(code, 0x5718).unwrap();
+                    let direct = compile_memory_load_block_v2(code, 0x5718).unwrap();
+                    (
+                        ir.site().clone(),
+                        direct.site().clone(),
+                        ir.source_bytes().to_vec(),
+                    )
+                }
+                MemorySiteOperationV2::Store => {
+                    let ir = compile_ir_memory_store_block_v2(code, 0x5718).unwrap();
+                    let direct = compile_memory_store_block_v2(code, 0x5718).unwrap();
+                    (
+                        ir.site().clone(),
+                        direct.site().clone(),
+                        ir.source_bytes().to_vec(),
+                    )
+                }
+            };
+            assert_eq!(ir_site, direct_site);
+            assert_eq!(ir_source, source);
+            assert_eq!(ir_site.destination().or(ir_site.source()), Some(4));
+            assert_eq!(ir_site.operand().base, AddressBase::Register(Register::Rsp));
+            assert_eq!(ir_site.operand().index, None);
+            assert_eq!(ir_site.operand().scale, 1);
+            assert_eq!(ir_site.operand().displacement, 0);
+            assert!(ir_site.matches_source_bytes(&source, operation));
+
+            for bytes in [
+                vec![0x48, opcode, 0x24],             // missing SIB
+                vec![0x48, opcode, 0x24, 0x25],       // no base
+                vec![0x48, opcode, 0x24, 0x64],       // non-unit scale with no index
+                vec![0x48, opcode, 0x24, 0x2c],       // index present
+                vec![0x48, opcode, 0x24, 0x24, 0],    // displacement/trailing byte
+                vec![0x67, 0x48, opcode, 0x24, 0x24], // address-size override
+                vec![0x48, 0x67, opcode, 0x24, 0x24], // reordered prefix
+            ] {
+                let code = CodeView::new(0x5718, &bytes).unwrap();
+                let result = match operation {
+                    MemorySiteOperationV2::Load => compile_ir_memory_load_block_v2(code, 0x5718)
+                        .and_then(|_| compile_memory_load_block_v2(code, 0x5718).map(|_| ())),
+                    MemorySiteOperationV2::Store => compile_ir_memory_store_block_v2(code, 0x5718)
+                        .and_then(|_| compile_memory_store_block_v2(code, 0x5718).map(|_| ())),
                 };
                 assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
             }

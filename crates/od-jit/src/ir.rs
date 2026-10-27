@@ -702,12 +702,17 @@ fn is_scoped_memory_data_operand(
         && operand.scale == 1
         && match data_register {
             4 => {
-                instruction_length == 3
-                    && operand.displacement == 0
-                    && matches!(
-                        operand.base,
-                        AddressBase::Register(register) if (register as u8) < 4
-                    )
+                operand.displacement == 0
+                    && ((instruction_length == 3
+                        && matches!(
+                            operand.base,
+                            AddressBase::Register(register) if (register as u8) < 4
+                        ))
+                        || (instruction_length == 4
+                            && matches!(
+                                operand.base,
+                                AddressBase::Register(od_isa::Register::Rsp)
+                            )))
             }
             5 => {
                 (instruction_length == 3
