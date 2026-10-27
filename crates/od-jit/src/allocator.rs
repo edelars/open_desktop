@@ -459,6 +459,7 @@ fn collect_definitions(program: &Program) -> Result<Vec<(TempId, IntWidth)>, All
             Operation::Constant { dst, width, .. } | Operation::ReadGpr { dst, width, .. } => {
                 definitions.push((*dst, *width))
             }
+            Operation::CheckedLoad { dst, .. } => definitions.push((*dst, IntWidth::W64)),
             Operation::Integer {
                 result: Some(dst),
                 width,
@@ -483,7 +484,9 @@ fn compute_liveness(program: &Program) -> Vec<BTreeSet<TempId>> {
     for index in (0..program.operations.len()).rev() {
         let mut live = live_at[index + 1].clone();
         match &program.operations[index] {
-            Operation::Constant { dst, .. } | Operation::ReadGpr { dst, .. } => {
+            Operation::Constant { dst, .. }
+            | Operation::ReadGpr { dst, .. }
+            | Operation::CheckedLoad { dst, .. } => {
                 live.remove(dst);
             }
             Operation::Integer {

@@ -231,6 +231,11 @@ pub fn emit_data_effects(
                     DataEffectOutputKind::Temporary(*dst),
                 )?);
             }
+            Operation::CheckedLoad { .. } => {
+                return Err(EmitterError::InvalidOperation {
+                    operation: operation_index,
+                });
+            }
             Operation::Integer {
                 kind,
                 result,
@@ -427,6 +432,11 @@ pub fn emit_data_effects(
                     )?,
                     xreg(13)?,
                 )?;
+            }
+            Operation::CheckedLoad { .. } => {
+                return Err(EmitterError::InvalidOperation {
+                    operation: operation_index,
+                });
             }
             Operation::Integer {
                 kind,

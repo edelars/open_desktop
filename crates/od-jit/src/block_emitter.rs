@@ -46,6 +46,27 @@ pub struct EmittedRuntimeBlock {
     safe_entry: bool,
 }
 
+/// Isolated V2 entry emitted from the shared typed IR and allocator path.
+/// Its code and map are compiler-issued and cannot be called as a V1 block.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmittedCheckedLoadBlockV2 {
+    code: EncodedCode,
+    pc_map: PcMap,
+    entry_rip: u64,
+}
+
+impl EmittedCheckedLoadBlockV2 {
+    pub fn code(&self) -> &EncodedCode {
+        &self.code
+    }
+    pub fn pc_map(&self) -> &PcMap {
+        &self.pc_map
+    }
+    pub const fn entry_rip(&self) -> u64 {
+        self.entry_rip
+    }
+}
+
 impl EmittedRuntimeBlock {
     pub fn code(&self) -> &EncodedCode {
         &self.code
@@ -130,6 +151,300 @@ pub fn emit_runtime_block(
     allocation: &Allocation<'_>,
 ) -> Result<EmittedRuntimeBlock, BlockEmitterError> {
     emit_runtime_block_inner(program, allocation, arithmetic_flags_helper_adapter, true)
+}
+
+/// Emit the one-instruction checked-load IR profile through the common IR,
+/// allocator helper boundary, commit, and PC-map machinery. Context layout
+/// starts with V1, but this entry is explicitly typed V2 by its publisher.
+pub fn emit_checked_load_runtime_block_v2(
+    program: &Program,
+    allocation: &Allocation<'_>,
+) -> Result<EmittedCheckedLoadBlockV2, BlockEmitterError> {
+    ir::verify(program).map_err(BlockEmitterError::InvalidProgram)?;
+    if !std::ptr::eq(program, allocation.program()) {
+        return Err(BlockEmitterError::AllocationProgramMismatch);
+    }
+    let (load_operation, loaded_temp) = program
+        .operations
+        .iter()
+        .enumerate()
+        .find_map(|(i, op)| {
+            if let Operation::CheckedLoad { dst, .. } = op {
+                Some((i, *dst))
+            } else {
+                None
+            }
+        })
+        .ok_or(BlockEmitterError::UnsupportedShape {
+            instruction_index: 0,
+        })?;
+    let instruction =
+        program
+            .guest_instructions
+            .first()
+            .ok_or(BlockEmitterError::UnsupportedShape {
+                instruction_index: 0,
+            })?;
+    if program.guest_instructions.len() != 1
+        || program.operations.len() != 5
+        || load_operation != 1
+        || !matches!(
+            program.operations.first(),
+            Some(Operation::BeginInstruction { index: 0 })
+        )
+        || !matches!(program.operations.get(load_operation + 1), Some(Operation::WriteGpr { src, width: IntWidth::W64, .. }) if *src == loaded_temp)
+        || !matches!(
+            program.operations.get(load_operation + 2),
+            Some(Operation::CommitInstruction { index: 0 })
+        )
+        || !matches!(program.operations.last(), Some(Operation::Exit { kind: ExitKind::BlockComplete, target_rip }) if *target_rip == instruction.next_rip)
+    {
+        return Err(BlockEmitterError::UnsupportedShape {
+            instruction_index: 0,
+        });
+    }
+    if allocation.frame().reserved_prefix_bytes < 144 {
+        return Err(BlockEmitterError::InsufficientFramePrefix {
+            required: 144,
+            actual: allocation.frame().reserved_prefix_bytes,
+        });
+    }
+
+    let mut encoder = Encoder::new();
+    let frame = allocation.frame();
+    if frame.alignment != 16
+        || frame.frame_bytes % frame.alignment != 0
+        || frame.frame_bytes > MAX_RUNTIME_FRAME_BYTES
+    {
+        return Err(BlockEmitterError::FrameTooLarge);
+    }
+    let pair_count =
+        usize::try_from(frame.frame_bytes / 16).map_err(|_| BlockEmitterError::FrameTooLarge)?;
+    let epilogue = encoder.new_label()?;
+    let helper_failure = encoder.new_label()?;
+    let mut returns = Vec::<ReturnStub>::new();
+    let mut ranges = Vec::<StatePointRange>::new();
+    let mut boundaries = Vec::<GuestBoundaryPoint>::new();
+
+    let service_start = code_offset(&encoder)?;
+    emit_prologue(&mut encoder, pair_count)?;
+    // Preserve the additional callee-saved registers used for the V2 helper context.
+    for (a, b, offset) in [(19, 20, 104), (21, 22, 120)] {
+        encoder.stp_x(
+            xreg(a)?,
+            xreg(b)?,
+            AddressBase::Sp,
+            offset,
+            PairIndexMode::Offset,
+        )?;
+    }
+    emit_runtime_frame_setup(&mut encoder)?;
+    push_range(
+        &mut ranges,
+        service_start,
+        code_offset(&encoder)?,
+        instruction.guest_rip,
+        None,
+        StatePhase::Service,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+
+    let guard_start = code_offset(&encoder)?;
+    emit_instruction_guards(&mut encoder, &mut returns, instruction.guest_rip, 0)?;
+    push_range(
+        &mut ranges,
+        guard_start,
+        code_offset(&encoder)?,
+        instruction.guest_rip,
+        Some(0),
+        StatePhase::BeforeInstruction,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+
+    let boundary = HelperBoundaryPosition::BeforeOperation(load_operation);
+    allocation
+        .helper_boundary(boundary)
+        .map_err(|_| BlockEmitterError::MissingHelperBoundary {
+            operation: load_operation,
+        })?;
+    let pending_start = code_offset(&encoder)?;
+    allocation.emit_save_before_helper(&mut encoder, boundary)?;
+    emit_saved_pointer_load(&mut encoder, FRAME_RUNTIME_CONTEXT_POINTER, xreg(19)?)?;
+    encoder.mov_x(xreg(0)?, XRegOrZero::Reg(xreg(19)?));
+    encoder.movz_x(xreg(1)?, 0, 0)?;
+    emit_u64(
+        &mut encoder,
+        xreg(16)?,
+        crate::runtime::memory_site_helper_v2 as *const () as usize as u64,
+    )?;
+    let call_start = code_offset(&encoder)?;
+    push_range(
+        &mut ranges,
+        pending_start,
+        call_start,
+        instruction.guest_rip,
+        Some(0),
+        StatePhase::PendingEffects,
+        SnapshotAdmissibility::ReplayCurrentInstruction,
+    );
+    push_range(
+        &mut ranges,
+        call_start,
+        call_start
+            .checked_add(4)
+            .ok_or(BlockEmitterError::CodeRangeOverflow)?,
+        instruction.guest_rip,
+        Some(0),
+        StatePhase::HelperCall,
+        SnapshotAdmissibility::ReplayCurrentInstruction,
+    );
+    encoder.blr(xreg(16)?);
+    encoder.cbnz_w(crate::arm64::WReg::new(0)?, helper_failure)?;
+    allocation.emit_restore_after_helper(&mut encoder, boundary)?;
+    emit_saved_pointer_load(&mut encoder, FRAME_RUNTIME_CONTEXT_POINTER, xreg(19)?)?;
+    encoder.ldr_x(
+        XRegOrZero::Reg(xreg(13)?),
+        AddressBase::Reg(xreg(19)?),
+        crate::runtime::RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET as u32,
+    )?;
+    allocation.emit_store_scratch(&mut encoder, loaded_temp, xreg(13)?)?;
+    push_range(
+        &mut ranges,
+        call_start + 4,
+        code_offset(&encoder)?,
+        instruction.guest_rip,
+        Some(0),
+        StatePhase::AfterHelper,
+        SnapshotAdmissibility::ReplayCurrentInstruction,
+    );
+
+    let write = program
+        .operations
+        .iter()
+        .find_map(|op| {
+            if let Operation::WriteGpr { register, src, .. } = op {
+                Some((*register, *src))
+            } else {
+                None
+            }
+        })
+        .ok_or(BlockEmitterError::UnsupportedShape {
+            instruction_index: 0,
+        })?;
+    let write_start = code_offset(&encoder)?;
+    allocation.emit_load_scratch(&mut encoder, write.1, xreg(13)?)?;
+    emit_saved_pointer_load(&mut encoder, FRAME_STAGING_GPRS_POINTER, xreg(16)?)?;
+    encoder.str_x(
+        XRegOrZero::Reg(xreg(13)?),
+        AddressBase::Reg(xreg(16)?),
+        guest_gpr_offset(write.0)?,
+    )?;
+    push_range(
+        &mut ranges,
+        write_start,
+        code_offset(&encoder)?,
+        instruction.guest_rip,
+        Some(0),
+        StatePhase::PendingEffects,
+        SnapshotAdmissibility::ReplayCurrentInstruction,
+    );
+
+    let commit_start = code_offset(&encoder)?;
+    emit_u64(&mut encoder, xreg(13)?, instruction.next_rip)?;
+    emit_saved_pointer_load(&mut encoder, FRAME_STAGING_RIP_POINTER, xreg(16)?)?;
+    encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
+    emit_commit(&mut encoder, 0, pair_count)?;
+    push_range(
+        &mut ranges,
+        commit_start,
+        code_offset(&encoder)?,
+        instruction.guest_rip,
+        Some(0),
+        StatePhase::CommitInProgress,
+        SnapshotAdmissibility::InadmissibleDuringCommit,
+    );
+    boundaries.push(GuestBoundaryPoint {
+        host_offset: code_offset(&encoder)?,
+        rip: GuestRipBoundary::Fixed(instruction.next_rip),
+        instruction_index: 0,
+        committed_instructions: 1,
+        phase: StatePhase::Committed,
+    });
+
+    let terminal_start = code_offset(&encoder)?;
+    let complete = encoder.new_label()?;
+    encoder.b(complete)?;
+    returns.push(ReturnStub {
+        label: complete,
+        raw_tag: RuntimeExitTag::BlockComplete as u32,
+        guest_rip: GuestRipSource::CanonicalState,
+        instruction_index: Some(0),
+        snapshot: SnapshotAdmissibility::CanonicalBoundary,
+    });
+    push_range(
+        &mut ranges,
+        terminal_start,
+        code_offset(&encoder)?,
+        instruction.next_rip,
+        Some(0),
+        StatePhase::Exit,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+
+    let mut failures = Vec::new();
+    failures.push(ReturnStub {
+        label: helper_failure,
+        raw_tag: crate::runtime::RUNTIME_EXIT_V2_MEMORY_OPERATION,
+        guest_rip: GuestRipSource::Fixed(instruction.guest_rip),
+        instruction_index: Some(0),
+        snapshot: SnapshotAdmissibility::ReplayCurrentInstruction,
+    });
+    for stub in returns.iter().chain(failures.iter()) {
+        let start = code_offset(&encoder)?;
+        encoder.bind(stub.label)?;
+        emit_u64(&mut encoder, xreg(0)?, u64::from(stub.raw_tag))?;
+        encoder.b(epilogue)?;
+        push_range_with_source(
+            &mut ranges,
+            start,
+            code_offset(&encoder)?,
+            stub.guest_rip,
+            stub.instruction_index,
+            StatePhase::Exit,
+            stub.snapshot,
+        );
+    }
+    let epilogue_start = code_offset(&encoder)?;
+    encoder.bind(epilogue)?;
+    for (a, b, offset) in [(19, 20, 104), (21, 22, 120)] {
+        encoder.ldp_x(
+            xreg(a)?,
+            xreg(b)?,
+            AddressBase::Sp,
+            offset,
+            PairIndexMode::Offset,
+        )?;
+    }
+    emit_epilogue(&mut encoder, pair_count)?;
+    push_range_with_source(
+        &mut ranges,
+        epilogue_start,
+        code_offset(&encoder)?,
+        GuestRipSource::CanonicalState,
+        None,
+        StatePhase::Service,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+
+    let code = encoder.finish()?;
+    let bytes = code.to_le_bytes()?;
+    let pc_map =
+        PcMap::new(bytes.len(), 1, ranges, boundaries).map_err(BlockEmitterError::PcMap)?;
+    Ok(EmittedCheckedLoadBlockV2 {
+        code,
+        pc_map,
+        entry_rip: instruction.guest_rip,
+    })
 }
 
 /// Emit a test-only/custom-helper block. Such a block cannot be called by the
@@ -295,6 +610,11 @@ fn emit_runtime_block_inner(
                     StatePhase::PendingEffects,
                     SnapshotAdmissibility::ReplayCurrentInstruction,
                 );
+            }
+            Operation::CheckedLoad { .. } => {
+                return Err(BlockEmitterError::UnsupportedShape {
+                    instruction_index: active_instruction.unwrap_or(0),
+                });
             }
             Operation::Integer {
                 kind,
@@ -649,6 +969,11 @@ fn validate_runtime_shape(
             }
             Operation::Constant { width, .. } | Operation::ReadGpr { width, .. } => {
                 require_w64(*width, index)?;
+            }
+            Operation::CheckedLoad { .. } => {
+                return Err(BlockEmitterError::UnsupportedShape {
+                    instruction_index: active.unwrap_or(0),
+                });
             }
             Operation::WriteGpr { width, .. } => {
                 require_w64(*width, index)?;

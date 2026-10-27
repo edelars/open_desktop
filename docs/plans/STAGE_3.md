@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22/S3-23/S3-24/S3-25 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-26a/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -155,6 +155,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20e | RIP-relative disp32 для V2 MOV load/store | Только `mod=00,r/m=101`, ровно 7 bytes, qword и data register RAX..RBX |
 | [partial] | S3-20f | Address-size override `67 48 8B/89` для V2 MOV | Только ModRM `mod=00`, qword data + dword address, RAX..RBX base/data, ровно 4 bytes |
 | [partial] | S3-20g | Signed disp8/disp32 для V2 MOV с address-size override | `67 48 8B/89 /r`, ModRM `mod=01/10`, qword data + dword address, base/data RAX..RBX, exact lengths 5/8; без SIB и других форм |
+| [partial] | S3-20h / S3-26a | Checked qword load через общий BasicBlock → typed IR → allocator → runtime emitter | Только `48 8B /r`, ModRM `mod=00`, data/base RAX..RBX, без SIB/displacement; V1/direct V2 остаются отдельными |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -859,6 +860,30 @@ ModRM `mod=01/10`; data/base RAX..RBX, длины ровно 5/8 байт. Су�
 3. Сохранить commit ordering: fault не оставляет запрещённую запись в register/flags/RIP, successful store уведомляет memory owner о side effect.
 
 **Готово:** memory fixtures с boundary/unaligned/alias cases совпадают локально с interpreter; до S3-21 это не физическая приёмка памяти.
+
+#### S3-20h / S3-26a. Один checked qword load через общий IR runtime path
+
+Отдельный opt-in builder допускает ровно `48 8B /r`, ModRM `mod=00`, data и
+base RAX..RBX, без SIB/displacement. `CheckedLoad` — typed IR effect с
+qword `MemoryOperand` и success-only temporary; verifier связывает его с
+единственной текущей instruction, валидным descriptor, `WriteGpr` этого
+temporary и commit после write. Lowering получает операнд только из decoder.
+
+Allocator видит реальную helper boundary, планирует spill/capture и restore;
+общий runtime emitter вызывает существующий checked-memory helper по site
+index 0, оставляет результат staged до GPR/RIP/counter commit и строит общую
+PC map с helper-call и commit границами. Новый compile flavor, compiler-issued
+artifact, опубликованная metadata и `RuntimeContextV2` entry имеют отдельные
+типы. V1 executor и прямой V2 load API отвергают этот artifact до native
+entry. Существующий прямой V2 compiler остаётся самостоятельным baseline.
+
+Локальный native ARM64 test сравнивает alias load `[RAX] → RAX` с прямым V2 и
+interpreter по полному CPU state и памяти. Также проверены qword success,
+retirement, architectural fault с неизменным destination/flags/RIP/state,
+backend error, STOP, stop-RIP, zero budget, verifier negatives, и границы
+helper/commit в PC map. Это один bounded fixture slice: нет общего multiblock
+memory lowering, stores, MMIO, atomic операций или автоматического host fault
+recovery. См. [S3-20h/S3-26a report](../reports/STAGE_3_S3-20h_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

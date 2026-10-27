@@ -23,6 +23,7 @@ pub struct PublishedCode {
     region: MappedRegion,
     block_metadata: Option<BlockMetadata>,
     memory_operation_metadata_v2: Option<MemoryOperationMetadataV2>,
+    checked_load_ir_metadata_v2: Option<CheckedLoadIrMetadataV2>,
 }
 
 struct BlockMetadata {
@@ -38,6 +39,16 @@ struct MemoryOperationMetadataV2 {
     source_bytes: [u8; 8],
     source_len: u8,
     compile_flavor: od_jit::translation::CompileFlavor,
+}
+
+#[derive(Clone)]
+struct CheckedLoadIrMetadataV2 {
+    entry_rip: u64,
+    site: od_jit::runtime::MemorySiteV2,
+    source_bytes: [u8; 8],
+    source_len: u8,
+    compile_flavor: od_jit::translation::CompileFlavor,
+    pc_map: od_jit::statepoints::PcMap,
 }
 
 #[derive(Clone, Copy)]
@@ -278,6 +289,100 @@ impl PublishedCode {
         )
     }
 
+    /// Publishes a shared-IR checked-load artifact under a separate typed
+    /// metadata record. It cannot be entered through either V1 or direct V2.
+    pub fn publish_ir_memory_load_v2(
+        block: &od_jit::memory_load_v2::IrMemoryLoadBlockV2,
+    ) -> Result<Self, ExecutableMemoryError> {
+        if block.site().operation() != od_jit::runtime::MemorySiteOperationV2::Load
+            || block.compile_flavor() != od_jit::translation::CompileFlavor::S3_26aIrMemoryLoadV2
+            || block.pc_map().instruction_count() != 1
+            || block.site().instruction_index() != 0
+            || block.site().guest_rip() != block.entry_rip()
+        {
+            return Err(ExecutableMemoryError::InvalidBlockArtifact);
+        }
+        let code = block
+            .code()
+            .to_le_bytes()
+            .map_err(|_| ExecutableMemoryError::AllocationFailed)?;
+        if usize::try_from(block.pc_map().code_len()).ok() != Some(code.len()) {
+            return Err(ExecutableMemoryError::InvalidBlockArtifact);
+        }
+        let source = block.source_bytes();
+        if source.len() != 3
+            || !block
+                .site()
+                .matches_source_bytes(source, od_jit::runtime::MemorySiteOperationV2::Load)
+        {
+            return Err(ExecutableMemoryError::InvalidBlockArtifact);
+        }
+        let mut source_bytes = [0; 8];
+        source_bytes[..source.len()].copy_from_slice(source);
+        let mut published = Self::publish_with_metadata(&code, None, None)?;
+        published.checked_load_ir_metadata_v2 = Some(CheckedLoadIrMetadataV2 {
+            entry_rip: block.entry_rip(),
+            site: *block.site(),
+            source_bytes,
+            source_len: source.len() as u8,
+            compile_flavor: block.compile_flavor(),
+            pc_map: block.pc_map().clone(),
+        });
+        Ok(published)
+    }
+
+    /// Execute one shared-IR checked load through its typed V2 entry.
+    pub fn execute_ir_memory_load_v2(
+        &self,
+        state: &mut od_isa::LongModeState,
+        memory: &mut dyn od_isa::memory::GuestMemory,
+        access_context: od_isa::memory::AccessContext,
+        initial_budget: u64,
+        stop_rip: Option<u64>,
+        stop_requested: &std::sync::atomic::AtomicU8,
+    ) -> Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2> {
+        let ir = self
+            .checked_load_ir_metadata_v2
+            .as_ref()
+            .ok_or(MemoryOperationExecutionErrorV2::NotV2MemoryBlock)?;
+        if ir.compile_flavor != od_jit::translation::CompileFlavor::S3_26aIrMemoryLoadV2
+            || ir.source_len != 3
+            || ir.site.operation() != od_jit::runtime::MemorySiteOperationV2::Load
+            || ir.site.instruction_index() != 0
+            || ir.site.guest_rip() != ir.entry_rip
+            || ir.entry_rip.checked_add(3) != Some(ir.site.next_rip())
+            || !ir.site.matches_source_bytes(
+                &ir.source_bytes[..usize::from(ir.source_len)],
+                od_jit::runtime::MemorySiteOperationV2::Load,
+            )
+        {
+            return Err(MemoryOperationExecutionErrorV2::InvalidMetadata);
+        }
+        if state.rip != ir.entry_rip {
+            return Err(MemoryOperationExecutionErrorV2::EntryRipMismatch {
+                expected: ir.entry_rip,
+                actual: state.rip,
+            });
+        }
+        let metadata = MemoryOperationMetadataV2 {
+            entry_rip: ir.entry_rip,
+            site: ir.site,
+            source_bytes: ir.source_bytes,
+            source_len: ir.source_len,
+            compile_flavor: ir.compile_flavor,
+        };
+        execute_memory_operation_v2_at(
+            self.as_ptr(),
+            &metadata,
+            state,
+            memory,
+            access_context,
+            initial_budget,
+            stop_rip,
+            stop_requested,
+        )
+    }
+
     /// Publishes a compiler-issued one-instruction V2 checked-memory store.
     /// Publication alone does not authorize running it on an arbitrary backend.
     pub fn publish_memory_store_v2(
@@ -442,6 +547,7 @@ impl PublishedCode {
                 region,
                 block_metadata,
                 memory_operation_metadata_v2,
+                checked_load_ir_metadata_v2: None,
             });
         }
 
@@ -450,6 +556,7 @@ impl PublishedCode {
             let _ = code;
             let _ = block_metadata;
             let _ = memory_operation_metadata_v2;
+            let _ = std::marker::PhantomData::<CheckedLoadIrMetadataV2>;
             Err(ExecutableMemoryError::UnsupportedPlatform)
         }
     }
@@ -458,6 +565,11 @@ impl PublishedCode {
         self.block_metadata
             .as_ref()
             .map(|metadata| &metadata.pc_map)
+            .or_else(|| {
+                self.checked_load_ir_metadata_v2
+                    .as_ref()
+                    .map(|metadata| &metadata.pc_map)
+            })
     }
 
     /// Invoke only a runtime entry emitted with the production helper and
@@ -3988,7 +4100,7 @@ mod tests {
         impl GuestMemory for Ram {
             fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
                 if (0x9c00..0x9c03).contains(&address) {
-                    return Ok([0x48, 0x8b, 0x03][(address - 0x9c00) as usize]);
+                    return Ok([0x48, 0x8b, 0x00][(address - 0x9c00) as usize]);
                 }
                 self.bytes
                     .get(address as usize)
@@ -4079,9 +4191,11 @@ mod tests {
         }
 
         let _guard = jit_test_lock();
-        let code = CodeView::new(0x9c00, &[0x48, 0x8b, 0x03]).unwrap();
+        let code = CodeView::new(0x9c00, &[0x48, 0x8b, 0x00]).unwrap();
         let compiled = od_jit::memory_load_v2::compile_memory_load_block_v2(code, 0x9c00).unwrap();
         let published = PublishedCode::publish_memory_load_v2(&compiled).unwrap();
+        let ir_compiled =
+            od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, 0x9c00).unwrap();
         let stop = AtomicU8::new(0);
         let base_ram = Ram {
             bytes: {
@@ -4101,8 +4215,8 @@ mod tests {
         let mut interpreter_ram = base_ram.clone();
         let mut native_state = base_state.clone();
         let mut interpreter_state = base_state.clone();
-        native_state.gpr[3] = 8;
-        interpreter_state.gpr[3] = 8;
+        native_state.gpr[0] = 8;
+        interpreter_state.gpr[0] = 8;
         let native = published
             .execute_memory_load_v2(
                 &mut native_state,
@@ -4123,6 +4237,8 @@ mod tests {
         assert_eq!(interpreted, od_isa::execute::StepOutcome::Advanced);
         assert_eq!(native_state, interpreter_state);
         assert_eq!(native_ram, interpreter_ram);
+        let successful_native_state = native_state.clone();
+        let successful_native_ram = native_ram.clone();
 
         let architectural = MemoryError::Architectural(ArchitecturalFault {
             vector: 14,
@@ -4134,8 +4250,8 @@ mod tests {
         let mut interpreter_ram = native_ram.clone();
         let mut native_state = base_state.clone();
         let mut interpreter_state = base_state.clone();
-        native_state.gpr[3] = 8;
-        interpreter_state.gpr[3] = 8;
+        native_state.gpr[0] = 8;
+        interpreter_state.gpr[0] = 8;
         let native = published
             .execute_memory_load_v2(
                 &mut native_state,
@@ -4179,8 +4295,8 @@ mod tests {
         let mut interpreter_ram = native_ram.clone();
         let mut native_state = base_state.clone();
         let mut interpreter_state = base_state.clone();
-        native_state.gpr[3] = 8;
-        interpreter_state.gpr[3] = 8;
+        native_state.gpr[0] = 8;
+        interpreter_state.gpr[0] = 8;
         let native = published.execute_memory_load_v2(
             &mut native_state,
             &mut native_ram,
@@ -4213,6 +4329,163 @@ mod tests {
         ));
         assert_eq!(native_state, interpreter_state);
         assert_eq!(native_ram, interpreter_ram);
+
+        drop(published);
+        let ir_published = PublishedCode::publish_ir_memory_load_v2(&ir_compiled).unwrap();
+        let mut rejected_state = base_state.clone();
+        let rejected_before = rejected_state.clone();
+        assert!(matches!(
+            ir_published.execute_block(&mut rejected_state, 1, None, &stop),
+            Err(BlockExecutionError::NotRuntimeBlock)
+        ));
+        assert_eq!(rejected_state, rejected_before);
+        assert!(matches!(
+            ir_published.execute_memory_load_v2(
+                &mut rejected_state,
+                &mut base_ram.clone(),
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            ),
+            Err(MemoryOperationExecutionErrorV2::NotV2MemoryBlock)
+        ));
+        let mut ir_ram = base_ram.clone();
+        let mut ir_state = base_state.clone();
+        ir_state.gpr[0] = 8;
+        let ir_result = ir_published
+            .execute_ir_memory_load_v2(
+                &mut ir_state,
+                &mut ir_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+            .unwrap();
+        assert_eq!(ir_result.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(ir_result.retired_instructions, 1);
+        assert_eq!(ir_state.rip, 0x9c03);
+        assert_eq!(ir_state.gpr[0], 0xa1b2_c3d4_e5f6_0718);
+        assert_eq!(ir_state.rflags, base_state.rflags);
+        assert_eq!(ir_state, successful_native_state);
+        assert_eq!(ir_ram, successful_native_ram);
+        assert_eq!(ir_ram.reads, 1);
+
+        let mut ir_ram = base_ram.clone();
+        ir_ram.read_error = Some(architectural.clone());
+        let mut ir_state = base_state.clone();
+        ir_state.gpr[0] = 8;
+        let ir_before = ir_state.clone();
+        let ir_error = ir_published
+            .execute_ir_memory_load_v2(
+                &mut ir_state,
+                &mut ir_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+            .unwrap();
+        assert_eq!(
+            ir_error.exit,
+            MemoryOperationExecutionExitV2::GuestFault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(8),
+            })
+        );
+        assert_eq!(ir_error.retired_instructions, 0);
+        assert_eq!(ir_state, ir_before);
+        assert_eq!(ir_ram.reads, 1);
+
+        let mut ir_ram = base_ram.clone();
+        ir_ram.read_error = Some(MemoryError::Unmapped {
+            address: 8,
+            access: AccessKind::Read,
+        });
+        let mut ir_state = base_state.clone();
+        ir_state.gpr[0] = 8;
+        let ir_before = ir_state.clone();
+        let ir_backend_error = ir_published.execute_ir_memory_load_v2(
+            &mut ir_state,
+            &mut ir_ram,
+            AccessContext::default(),
+            1,
+            None,
+            &stop,
+        );
+        assert!(matches!(
+            ir_backend_error,
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_UNMAPPED,
+                    address: 8,
+                    length: 0,
+                }
+            ))
+        ));
+        assert_eq!(ir_state, ir_before);
+        assert_eq!(ir_ram.reads, 1);
+
+        let mut ir_ram = base_ram.clone();
+        let mut ir_state = base_state.clone();
+        ir_state.gpr[0] = 8;
+        let before = ir_state.clone();
+        let budget_exit = ir_published
+            .execute_ir_memory_load_v2(
+                &mut ir_state,
+                &mut ir_ram,
+                AccessContext::default(),
+                0,
+                None,
+                &stop,
+            )
+            .unwrap();
+        assert_eq!(
+            budget_exit.exit,
+            MemoryOperationExecutionExitV2::BudgetExhausted
+        );
+        assert_eq!(ir_state, before);
+        assert_eq!(ir_ram.reads, 0);
+
+        stop.store(1, Ordering::Release);
+        let mut ir_state = before.clone();
+        let stop_exit = ir_published
+            .execute_ir_memory_load_v2(
+                &mut ir_state,
+                &mut ir_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+            .unwrap();
+        assert_eq!(
+            stop_exit.exit,
+            MemoryOperationExecutionExitV2::StopRequested
+        );
+        assert_eq!(ir_state, before);
+        assert_eq!(ir_ram.reads, 0);
+        stop.store(0, Ordering::Release);
+
+        let mut ir_state = before.clone();
+        let stop_rip_exit = ir_published
+            .execute_ir_memory_load_v2(
+                &mut ir_state,
+                &mut ir_ram,
+                AccessContext::default(),
+                1,
+                Some(0x9c00),
+                &stop,
+            )
+            .unwrap();
+        assert_eq!(
+            stop_rip_exit.exit,
+            MemoryOperationExecutionExitV2::StopAddress
+        );
+        assert_eq!(ir_state, before);
+        assert_eq!(ir_ram.reads, 0);
     }
 
     #[test]

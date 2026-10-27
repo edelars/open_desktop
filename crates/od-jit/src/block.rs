@@ -440,6 +440,27 @@ pub fn build_block(
     context: AccessContext,
     limits: BlockLimits,
 ) -> Result<BuildOutcome, BuildError> {
+    build_block_with_load_profile(code, entry_rip, context, limits, false)
+}
+
+/// Build one exact checked-qword-load candidate. This profile is opt-in and
+/// stops after its first instruction; it does not widen the S0-09 block path.
+pub(crate) fn build_checked_qword_load_block(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    context: AccessContext,
+    limits: BlockLimits,
+) -> Result<BuildOutcome, BuildError> {
+    build_block_with_load_profile(code, entry_rip, context, limits, true)
+}
+
+fn build_block_with_load_profile(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    context: AccessContext,
+    limits: BlockLimits,
+    checked_load_only: bool,
+) -> Result<BuildOutcome, BuildError> {
     validate_limits(limits)?;
     let entry_offset = code.offset(entry_rip).ok_or(BuildError::EntryOutsideCode {
         entry_rip,
@@ -551,7 +572,14 @@ pub fn build_block(
             });
         }
 
-        if !is_s0_09_form(decoded) {
+        let admitted = if checked_load_only {
+            instructions.is_empty()
+                && is_checked_qword_load_form(decoded)
+                && exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
+        } else {
+            is_s0_09_form(decoded)
+        };
+        if !admitted {
             return Ok(finish(
                 entry_rip,
                 code.code_end,
@@ -621,6 +649,16 @@ pub fn build_block(
             start_rip: guest_rip,
             end_rip: next_rip,
         });
+
+        if checked_load_only {
+            return Ok(finish(
+                entry_rip,
+                code.code_end,
+                instructions,
+                guest_ranges,
+                BlockStopReason::InstructionLimit,
+            ));
+        }
 
         if let Some(target) = branch_target {
             return Ok(finish(
@@ -1078,6 +1116,55 @@ pub(crate) fn is_s0_09_form(instruction: Instruction) -> bool {
         }
         _ => false,
     }
+}
+
+pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
+    let exact_prefix = instruction.prefixes.group1.is_none()
+        && instruction.prefixes.segment.is_none()
+        && !instruction.prefixes.operand_override
+        && !instruction.prefixes.address_override
+        && instruction.prefixes.rex == Some(0x48);
+    let Operation::Mov {
+        dst: Operand::Register(destination),
+        src: Operand::Memory(operand),
+    } = instruction.operation
+    else {
+        return false;
+    };
+    exact_prefix
+        && instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0x8b
+        && instruction.operand_size == OperandSize::Qword
+        && instruction.address_size == OperandSize::Qword
+        && instruction.length == 3
+        && (destination.register() as u8) < 4
+        && destination.size() == OperandSize::Qword
+        && operand.size == OperandSize::Qword
+        && operand.address_size == OperandSize::Qword
+        && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+        && operand.index.is_none()
+        && operand.scale == 1
+        && operand.displacement == 0
+}
+
+fn exact_direct_qword_load_bytes(code: CodeView<'_>, guest_rip: u64, length: u8) -> bool {
+    let Some(offset) = guest_rip
+        .checked_sub(code.base_rip)
+        .and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    let Some(bytes) = code
+        .bytes
+        .get(offset..offset.saturating_add(usize::from(length)))
+    else {
+        return false;
+    };
+    bytes.len() == 3
+        && bytes[0..2] == [0x48, 0x8b]
+        && bytes[2] >> 6 == 0
+        && bytes[2] & 0b111 <= 3
+        && (bytes[2] >> 3) & 0b111 <= 3
 }
 
 enum TargetClassification {

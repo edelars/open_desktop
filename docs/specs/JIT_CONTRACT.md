@@ -244,6 +244,36 @@ rejected. Other address-size-override forms stay outside this slice. Physical Ma
 execution remains reserved for the final S3-21 gate; see the
 [S3-20g report](../reports/STAGE_3_S3-20g_2026-10-27.md).
 
+#### S3-20h / S3-26a: one checked qword load through shared typed IR
+
+The opt-in profile accepts only `48 8B /r`, ModRM `mod=00`, data and base
+registers RAX..RBX, without SIB or displacement. It follows
+`BasicBlock → typed IR → allocator → runtime emitter`; it does not call the
+direct V2 compiler as a hidden code-generation fallback. `CheckedLoad` carries
+the decoder's qword `MemoryOperand`, defines a W64 success-only temporary, and
+must be followed by `WriteGpr` of that temporary before the instruction commit.
+The verifier rejects malformed descriptors, unavailable values, and a commit
+that precedes publication of the load result.
+
+The allocator records a helper boundary at the actual checked helper call and
+emits its live-value saves/restores and spill homes. The runtime emitter calls
+`memory_site_helper_v2` using site index 0. The qword remains staged until the
+shared GPR/RIP/budget/retirement commit. The emitted PC map identifies the
+helper-call and commit ranges. The compiler-issued IR artifact has a distinct
+compile flavor, publication metadata, and V2 entry/context path. V1 block
+execution and direct V2 load execution reject it before entering generated
+code; the existing direct V2 compiler remains unchanged as a baseline.
+
+Local native ARM64 differential coverage runs `[RAX] → RAX` through this path,
+the direct V2 compiler, and the interpreter; it compares full state/RAM and
+checks success retirement, architectural fault preservation, backend-error
+classification/payload, STOP, stop-RIP, and zero-budget no-read behavior.
+Verifier negatives cover malformed memory descriptors, undefined result
+temporaries, missing writes, and early commit. This does not claim general
+memory lowering, multiblock execution, MMIO, stores, atomics, or automatic host
+fault recovery. Results are recorded in the
+[S3-20h/S3-26a report](../reports/STAGE_3_S3-20h_2026-10-27.md).
+
 ## 4. Начальные runtime bounds
 
 - Один гостевой vCPU; компиляция блоков последовательная.

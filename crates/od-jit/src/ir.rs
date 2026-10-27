@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use crate::block::AdmittedInstructionBoundaries;
+use od_isa::long_decode::{AddressBase, MemoryOperand};
 
 /// Identity of a temporary value. Temporaries are separate from guest GPRs.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -88,6 +89,12 @@ pub enum Operation {
         dst: TempId,
         register: GuestGpr,
         width: IntWidth,
+    },
+    /// A checked qword read. `dst` is defined only when the invocation-local
+    /// checked helper succeeds; the generated entry stages it until commit.
+    CheckedLoad {
+        dst: TempId,
+        operand: MemoryOperand,
     },
     Integer {
         kind: IntegerKind,
@@ -183,6 +190,15 @@ pub enum VerifyError {
         temp: TempId,
         expected: IntWidth,
         actual: IntWidth,
+    },
+    InvalidCheckedLoadDescriptor {
+        operation: usize,
+    },
+    CheckedLoadInstructionMismatch {
+        operation: usize,
+    },
+    CheckedLoadWithoutWrite {
+        operation: usize,
     },
     InvalidIntegerResult {
         operation: usize,
@@ -291,6 +307,26 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                 validate_gpr(*register, operation_index)?;
                 define(&mut definitions, *dst, *width, operation_index)?;
             }
+            Operation::CheckedLoad { dst, operand } => {
+                require_active(active_instruction, operation_index)?;
+                if program.guest_instructions.len() != 1 || active_instruction != Some(0) {
+                    return Err(VerifyError::CheckedLoadInstructionMismatch {
+                        operation: operation_index,
+                    });
+                }
+                if operand.size != od_isa::OperandSize::Qword
+                    || operand.address_size != od_isa::OperandSize::Qword
+                    || operand.index.is_some()
+                    || operand.scale != 1
+                    || operand.displacement != 0
+                    || !matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+                {
+                    return Err(VerifyError::InvalidCheckedLoadDescriptor {
+                        operation: operation_index,
+                    });
+                }
+                define(&mut definitions, *dst, IntWidth::W64, operation_index)?;
+            }
             Operation::Integer {
                 kind,
                 lhs,
@@ -337,6 +373,36 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                         expected: active,
                         actual: *index,
                     });
+                }
+                let has_checked_load = program.operations[..operation_index]
+                    .iter()
+                    .rposition(|operation| matches!(operation, Operation::BeginInstruction { .. }))
+                    .is_some_and(|begin| {
+                        program.operations[begin + 1..operation_index]
+                            .iter()
+                            .any(|operation| matches!(operation, Operation::CheckedLoad { .. }))
+                    });
+                if has_checked_load {
+                    let Some(load_position) = program.operations[..operation_index]
+                        .iter()
+                        .rposition(|operation| matches!(operation, Operation::CheckedLoad { .. }))
+                    else {
+                        return Err(VerifyError::CheckedLoadWithoutWrite {
+                            operation: operation_index,
+                        });
+                    };
+                    let load_result = match &program.operations[load_position] {
+                        Operation::CheckedLoad { dst, .. } => *dst,
+                        _ => unreachable!(),
+                    };
+                    if !program.operations[load_position + 1..operation_index]
+                        .iter()
+                        .any(|operation| matches!(operation, Operation::WriteGpr { src, width: IntWidth::W64, .. } if *src == load_result))
+                    {
+                        return Err(VerifyError::CheckedLoadWithoutWrite {
+                            operation: load_position,
+                        });
+                    }
                 }
                 active_instruction = None;
                 next_commit += 1;
@@ -515,6 +581,80 @@ fn require_temp(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn checked_load_program() -> Program {
+        Program {
+            guest_instructions: vec![GuestInstruction {
+                guest_rip: 0x2000,
+                next_rip: 0x2003,
+            }],
+            operations: vec![
+                Operation::BeginInstruction { index: 0 },
+                Operation::CheckedLoad {
+                    dst: TempId(0),
+                    operand: MemoryOperand {
+                        base: AddressBase::Register(od_isa::Register::Rax),
+                        index: None,
+                        scale: 1,
+                        displacement: 0,
+                        address_size: od_isa::OperandSize::Qword,
+                        size: od_isa::OperandSize::Qword,
+                    },
+                },
+                Operation::WriteGpr {
+                    register: GuestGpr(0),
+                    src: TempId(0),
+                    width: IntWidth::W64,
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::Exit {
+                    kind: ExitKind::BlockComplete,
+                    target_rip: 0x2003,
+                },
+            ],
+            code_end: 0x2003,
+        }
+    }
+
+    #[test]
+    fn checked_load_requires_valid_descriptor_result_write_and_commit_order() {
+        assert_eq!(verify(&checked_load_program()), Ok(()));
+
+        let mut malformed = checked_load_program();
+        if let Operation::CheckedLoad { operand, .. } = &mut malformed.operations[1] {
+            operand.index = Some(od_isa::Register::Rbx);
+        }
+        assert!(matches!(
+            verify(&malformed),
+            Err(VerifyError::InvalidCheckedLoadDescriptor { .. })
+        ));
+
+        let mut unavailable = checked_load_program();
+        if let Operation::WriteGpr { src, .. } = &mut unavailable.operations[2] {
+            *src = TempId(8);
+        }
+        assert!(matches!(
+            verify(&unavailable),
+            Err(VerifyError::UndefinedTemporary {
+                temp: TempId(8),
+                ..
+            })
+        ));
+
+        let mut missing_write = checked_load_program();
+        missing_write.operations.remove(2);
+        assert!(matches!(
+            verify(&missing_write),
+            Err(VerifyError::CheckedLoadWithoutWrite { .. })
+        ));
+
+        let mut early_commit = checked_load_program();
+        early_commit.operations.swap(2, 3);
+        assert!(matches!(
+            verify(&early_commit),
+            Err(VerifyError::CheckedLoadWithoutWrite { .. })
+        ));
+    }
 
     fn base_program() -> Program {
         Program {

@@ -7,12 +7,16 @@ use crate::block::{
     self, AdmittedInstructionBoundaries, BlockLimits, BlockStopReason, BuildError, BuildOutcome,
     CodeView, DecodeBoundary, S0_09NopAdmission,
 };
-use crate::block_emitter::{BlockEmitterError, EmittedRuntimeBlock, emit_runtime_block};
+use crate::block_emitter::{
+    BlockEmitterError, EmittedCheckedLoadBlockV2, EmittedRuntimeBlock,
+    emit_checked_load_runtime_block_v2, emit_runtime_block,
+};
 use crate::ir::Operation;
 use crate::lowering::{self, LoweredProgram, LoweringError, LoweringOutcome};
 
 pub const MAX_EMITTED_BLOCK_BYTES: usize = 4096;
 const RUNTIME_FRAME_PREFIX_BYTES: u32 = 112;
+const CHECKED_LOAD_FRAME_PREFIX_BYTES_V2: u32 = 144;
 const REGISTER_HOME_BUDGET: u8 = 4;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,6 +76,47 @@ pub fn compile_block(
     entry_rip: u64,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
     compile_block_inner(code, entry_rip, None, None)
+}
+
+/// Compile only the exact checked qword-load profile through the shared block
+/// builder, typed lowering, allocator, and runtime emitter. The result has a
+/// distinct V2 entry type and cannot enter the V1 executor.
+pub(crate) fn compile_checked_load_block_v2(
+    code: CodeView<'_>,
+    entry_rip: u64,
+) -> Result<EmittedCheckedLoadBlockV2, BlockCompileError> {
+    let built = block::build_checked_qword_load_block(
+        code,
+        entry_rip,
+        AccessContext::default(),
+        BlockLimits::default(),
+    )
+    .map_err(BlockCompileError::Build)?;
+    let lowered = match lowering::lower(&built).map_err(BlockCompileError::Lowering)? {
+        LoweringOutcome::Program(lowered) => lowered,
+        LoweringOutcome::NoNativePrefix { .. } => {
+            return Err(BlockCompileError::Emitter(
+                BlockEmitterError::UnsupportedShape {
+                    instruction_index: 0,
+                },
+            ));
+        }
+    };
+    let allocation = allocate_block(&lowered, CHECKED_LOAD_FRAME_PREFIX_BYTES_V2)?;
+    let emitted = emit_checked_load_runtime_block_v2(&lowered.program, &allocation)
+        .map_err(BlockCompileError::Emitter)?;
+    let actual = emitted
+        .code()
+        .to_le_bytes()
+        .map_err(|error| BlockCompileError::Emitter(BlockEmitterError::Encoding(error)))?
+        .len();
+    if actual > MAX_EMITTED_BLOCK_BYTES {
+        return Err(BlockCompileError::EmittedCodeTooLarge {
+            actual,
+            max: MAX_EMITTED_BLOCK_BYTES,
+        });
+    }
+    Ok(emitted)
 }
 
 /// Compile one block with a typed Jcc dispatch handoff, using boundaries from
@@ -217,7 +262,7 @@ fn compile_lowered(
     code_end: u64,
     lowered: LoweredProgram,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
-    let allocation = allocate_block(&lowered)?;
+    let allocation = allocate_block(&lowered, RUNTIME_FRAME_PREFIX_BYTES)?;
     let emitted =
         emit_runtime_block(&lowered.program, &allocation).map_err(BlockCompileError::Emitter)?;
     let actual = emitted
@@ -237,22 +282,28 @@ fn compile_lowered(
     }))
 }
 
-fn allocate_block(lowered: &LoweredProgram) -> Result<Allocation<'_>, BlockCompileError> {
+fn allocate_block(
+    lowered: &LoweredProgram,
+    reserved_prefix_bytes: u32,
+) -> Result<Allocation<'_>, BlockCompileError> {
     let helper_boundaries: Vec<_> = lowered
         .program
         .operations
         .iter()
         .enumerate()
         .filter_map(|(index, operation)| {
-            matches!(operation, Operation::Integer { .. })
-                .then_some(HelperBoundaryPosition::BeforeOperation(index))
+            matches!(
+                operation,
+                Operation::Integer { .. } | Operation::CheckedLoad { .. }
+            )
+            .then_some(HelperBoundaryPosition::BeforeOperation(index))
         })
         .collect();
     let allocation = Allocation::build(
         &lowered.program,
         AllocatorConfig {
             register_homes: REGISTER_HOME_BUDGET,
-            reserved_prefix_bytes: RUNTIME_FRAME_PREFIX_BYTES,
+            reserved_prefix_bytes,
         },
         &helper_boundaries,
     )
@@ -412,7 +463,7 @@ mod tests {
             LoweringOutcome::Program(lowered) => lowered,
             LoweringOutcome::NoNativePrefix { .. } => panic!("fixture must have native prefix"),
         };
-        let allocation = allocate_block(&lowered).unwrap();
+        let allocation = allocate_block(&lowered, RUNTIME_FRAME_PREFIX_BYTES).unwrap();
         assert!(allocation.counters().value_spill_slots > 0);
         assert!(allocation.counters().helper_capture_slots > 0);
         assert!(allocation.counters().helper_saves > 0);

@@ -50,6 +50,35 @@ pub struct MemoryLoadBlockV2 {
     artifact: MemoryArtifactV2,
 }
 
+/// Compiler-issued checked load lowered from the shared typed IR/allocator
+/// path. Its entry and publication contract are distinct from direct V2.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IrMemoryLoadBlockV2 {
+    artifact: MemoryArtifactV2,
+    pc_map: crate::statepoints::PcMap,
+}
+
+impl IrMemoryLoadBlockV2 {
+    pub fn code(&self) -> &EncodedCode {
+        &self.artifact.code
+    }
+    pub fn site(&self) -> &MemorySiteV2 {
+        &self.artifact.site
+    }
+    pub const fn entry_rip(&self) -> u64 {
+        self.artifact.entry_rip
+    }
+    pub fn source_bytes(&self) -> &[u8] {
+        &self.artifact.source_bytes[..usize::from(self.artifact.source_len)]
+    }
+    pub const fn compile_flavor(&self) -> crate::translation::CompileFlavor {
+        self.artifact.compile_flavor
+    }
+    pub fn pc_map(&self) -> &crate::statepoints::PcMap {
+        &self.pc_map
+    }
+}
+
 /// Compiler-issued store artifact, kept distinct from load publication/API.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MemoryStoreBlockV2 {
@@ -492,6 +521,84 @@ pub fn compile_memory_load_block_v2(
     })
 }
 
+/// Compile the exact checked qword load through BasicBlock → typed IR →
+/// allocator → runtime emitter. This is an independent V2 artifact type.
+pub fn compile_ir_memory_load_block_v2(
+    code: CodeView<'_>,
+    entry_rip: u64,
+) -> Result<IrMemoryLoadBlockV2, MemoryLoadCompileErrorV2> {
+    let (site, bytes) = checked_load_metadata_v2(code, entry_rip)?;
+    let emitted = crate::block_compile::compile_checked_load_block_v2(code, entry_rip)
+        .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    let mut source_bytes = [0; 8];
+    source_bytes[..bytes.len()].copy_from_slice(bytes);
+    Ok(IrMemoryLoadBlockV2 {
+        artifact: MemoryArtifactV2 {
+            code: emitted.code().clone(),
+            site,
+            entry_rip,
+            source_bytes,
+            source_len: bytes.len() as u8,
+            compile_flavor: crate::translation::CompileFlavor::S3_26aIrMemoryLoadV2,
+        },
+        pc_map: emitted.pc_map().clone(),
+    })
+}
+
+fn checked_load_metadata_v2(
+    code: CodeView<'_>,
+    entry_rip: u64,
+) -> Result<(MemorySiteV2, &[u8]), MemoryLoadCompileErrorV2> {
+    let offset = entry_rip
+        .checked_sub(code.base_rip())
+        .and_then(|offset| usize::try_from(offset).ok())
+        .filter(|offset| *offset < code.len())
+        .ok_or(MemoryLoadCompileErrorV2::EntryOutsideCode)?;
+    let bytes = code
+        .bytes()
+        .get(offset..)
+        .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    if !(3..=8).contains(&bytes.len()) {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
+    let mut memory = CodeMemory::full_code(code);
+    let decoded = long_decode::decode(&mut memory, entry_rip, AccessContext::default())
+        .map_err(|_| MemoryLoadCompileErrorV2::Decode)?;
+    if decoded.length as usize != bytes.len()
+        || !crate::block::is_checked_qword_load_form(decoded)
+        || bytes.len() != 3
+        || bytes[..2] != [0x48, 0x8b]
+        || bytes[2] >> 6 != 0
+        || bytes[2] & 0b111 > 3
+        || (bytes[2] >> 3) & 0b111 > 3
+    {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
+    let (destination, operand) = match decoded.operation {
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Memory(operand),
+        } => (destination, operand),
+        _ => return Err(MemoryLoadCompileErrorV2::UnsupportedForm),
+    };
+    let next_rip = entry_rip
+        .checked_add(u64::from(decoded.length))
+        .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    let site = MemorySiteV2 {
+        instruction_index: 0,
+        guest_rip: entry_rip,
+        next_rip,
+        operation: MemorySiteOperationV2::Load,
+        destination: Some(destination.register() as u8),
+        source: None,
+        operand,
+    };
+    if !site.matches_source_bytes(bytes, MemorySiteOperationV2::Load) {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
+    Ok((site, bytes))
+}
+
 /// Compile the exact checked-memory V2 qword store profile.
 pub fn compile_memory_store_block_v2(
     code: CodeView<'_>,
@@ -827,6 +934,29 @@ mod tests {
     use super::*;
     use od_isa::Register;
     use od_isa::long_decode::AddressBase;
+
+    #[test]
+    fn ir_checked_load_uses_distinct_v2_artifact_and_pc_map() {
+        let code = CodeView::new(0x1000, &[0x48, 0x8b, 0x03]).unwrap();
+        let ir_block = compile_ir_memory_load_block_v2(code, 0x1000).unwrap();
+        let direct = compile_memory_load_block_v2(code, 0x1000).unwrap();
+        assert_eq!(
+            ir_block.compile_flavor(),
+            crate::translation::CompileFlavor::S3_26aIrMemoryLoadV2
+        );
+        assert_eq!(ir_block.site(), direct.site());
+        assert_eq!(ir_block.source_bytes(), &[0x48, 0x8b, 0x03]);
+        assert_eq!(ir_block.pc_map().instruction_count(), 1);
+        assert!(
+            ir_block
+                .pc_map()
+                .ranges()
+                .iter()
+                .any(|range| range.phase == crate::statepoints::StatePhase::HelperCall)
+        );
+        assert_eq!(ir_block.pc_map().boundaries().len(), 1);
+        assert_ne!(ir_block.code().words(), direct.code().words());
+    }
 
     #[test]
     fn compiles_only_the_exact_checked_qword_load_form() {

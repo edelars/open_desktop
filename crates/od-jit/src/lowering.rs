@@ -86,6 +86,17 @@ fn lower_with_admission(
     };
 
     let deferred = deferred_error(&block.stop_reason);
+    if block
+        .instructions
+        .iter()
+        .any(|instruction| block::is_checked_qword_load_form(instruction.decoded))
+        && (block.instructions.len() != 1
+            || !block::is_checked_qword_load_form(block.instructions[0].decoded))
+    {
+        return Err(LoweringError::InvalidDecodedForm {
+            guest_rip: block.entry_rip,
+        });
+    }
     let (included_count, terminal) = match &block.stop_reason {
         BlockStopReason::Branch { target } => {
             let Some(branch) = block.instructions.last() else {
@@ -206,7 +217,9 @@ fn lower_with_admission(
     let mut operations = Vec::new();
     let mut next_temp = 0u32;
     for (index, instruction) in instructions.iter().enumerate() {
-        if !block::is_s0_09_form(instruction.decoded) {
+        if !block::is_s0_09_form(instruction.decoded)
+            && !block::is_checked_qword_load_form(instruction.decoded)
+        {
             return Err(LoweringError::InvalidDecodedForm {
                 guest_rip: instruction.guest_rip,
             });
@@ -333,6 +346,22 @@ fn lower_instruction(
     };
     operations.push(Operation::BeginInstruction { index });
     match instruction.decoded.operation {
+        DecodedOperation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Memory(operand),
+        } if block::is_checked_qword_load_form(instruction.decoded) => {
+            let destination = guest_gpr(destination).ok_or_else(invalid)?;
+            let value = allocate_temp(next_temp);
+            operations.push(Operation::CheckedLoad {
+                dst: value,
+                operand,
+            });
+            operations.push(Operation::WriteGpr {
+                register: destination,
+                src: value,
+                width: IntWidth::W64,
+            });
+        }
         DecodedOperation::MovImmediate {
             dst: Operand::Register(dst),
             value,
