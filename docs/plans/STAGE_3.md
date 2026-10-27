@@ -180,6 +180,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20ae | RSP одновременно data и base в qword MOV через exact SIB + signed disp32 | Только `48 8B/89 A4 24 id`, ModRM `mod=10/reg=RSP/rm=100`, SIB `0x24`, ровно 8 bytes; адрес и store payload используют старый RSP, байты displacement 4..7 сохраняются |
 | [partial] | S3-20af | RBP одновременно data и base в qword MOV через signed disp32 | Только `48 8B/89 AD id`, ModRM `mod=10/reg=RBP/rm=RBP`, ровно 7 bytes; адрес и store payload используют старый RBP |
 | [partial] | S3-20ag | RBP как data и RSP как base через exact no-index SIB | Только `48 8B/89 2C 24`, ModRM `mod=00/reg=RBP/rm=SIB`, SIB `0x24`, ровно 4 bytes |
+| [partial] | S3-20ai | RSP как data и RBP как base через direct disp8/disp32 | Только `48 8B/89 65 ib` или `48 8B/89 A5 id`, ModRM `mod=01/10,reg=RSP,rm=RBP`, ровно 4/7 bytes; `mod=00/rm=5` остаётся RIP-relative |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1470,6 +1471,26 @@ bounded dispatcher checks both widths in singleton→NOP→pair continuation and
 uses a loaded RBP for the next RBP-relative access. Partial windows and
 near-match forms stop before side effects. See the
 [S3-20ah report](../reports/STAGE_3_S3-20ah_2026-10-27.md).
+
+#### S3-20ai. RSP data with an RBP-base direct displacement
+
+Add only singleton `48 8B/89 65 ib` (signed disp8, length 4) and
+`48 8B/89 A5 id` (signed disp32, length 7): ModRM `mod=01/10`,
+`reg=4` (RSP data), `rm=5` (RBP base), qword data and 64-bit EA. Do not
+admit SIB, prefixes, other register combinations, pairs or V3. Decoded
+`MemoryOperand` remains the only EA semantics; generic register validation,
+frame and ABI do not change. Keep `mod=00/rm=5` RIP-relative and existing
+RBP-data `mod=10/rm=5` profiles distinct.
+
+Direct V2/shared IR/interpreter acceptance covers both widths and signed
+boundaries, including disp32 source byte-six identity, independent
+`RBP+displacement` target formulas, RSP/RBP alias semantics and full state/RAM
+parity. Noncanonical RSP is valid data; a noncanonical RBP address raises #SS
+before callback. Store+STOP keeps all old RSP bits. Dispatch resumes from
+actual RIP and uses a successfully loaded RSP in the next `[RSP]` access;
+budget splits and STOP do not repeat the first effect. Partial and forbidden
+forms have no effects. See the
+[S3-20ai report](../reports/STAGE_3_S3-20ai_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

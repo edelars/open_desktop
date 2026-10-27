@@ -2018,6 +2018,28 @@ returns `BoundaryReached` before publication or memory effects; it is not a
 guest fetch fault. See the
 [S3-20ah report](../reports/STAGE_3_S3-20ah_2026-10-27.md).
 
+#### S3-20ai: RSP data with an RBP-base direct displacement
+
+The added exact singleton spellings are `48 8B/89 65 ib` (ModRM
+`mod=01/reg=4/rm=5`, signed disp8 at byte 3, length 4) and `48 8B/89 A5 id`
+(`mod=10/reg=4/rm=5`, signed disp32 at bytes 3..6, length 7). The effective
+address is computed only by the decoder's `MemoryOperand`; this does not
+widen generic GPR predicates or change SIB, pair, V3, frame or ABI profiles.
+The exact ModRM distinguishes the forms from RBP-data encodings. The
+neighboring `mod=00/rm=5` form remains RIP-relative and uses instruction-local
+NextRip.
+
+Both operations are compared through direct V2, shared IR and interpreter.
+The address uses entry RBP plus signed displacement; load writes RSP only
+after a successful access, while store writes all 64 bits of old RSP. A
+noncanonical RSP value is valid data, while noncanonical RBP as EA returns
+exact #SS before callback and preserves state/accounting. Successful store
+STOP retains the write. Dispatcher continuation from actual RIP uses the
+loaded RSP in a following `[RSP]`, with budget split/STOP and no replay. The
+disp32 byte-six host check ties differing source bytes to independently
+expected addresses. See the
+[S3-20ai report](../reports/STAGE_3_S3-20ai_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

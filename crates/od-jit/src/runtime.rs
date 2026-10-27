@@ -168,11 +168,23 @@ impl MemorySiteV2 {
                                 self.operand.base,
                                 od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
                             ))
+                        || (length == 4
+                            && i8::try_from(self.operand.displacement).is_ok()
+                            && matches!(
+                                self.operand.base,
+                                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
+                            ))
                         || (length == 8
                             && i32::try_from(self.operand.displacement).is_ok()
                             && matches!(
                                 self.operand.base,
                                 od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                            ))
+                        || (length == 7
+                            && i32::try_from(self.operand.displacement).is_ok()
+                            && matches!(
+                                self.operand.base,
+                                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                             ))
                 }
                 Some(5) => {
@@ -441,6 +453,8 @@ impl MemorySiteV2 {
             || data_register >= 4
                 && !((mode == 0 && modrm & 7 < 4 && source.len() == 3)
                     || (data_register == 4 && mode == 0 && modrm == 0x24 && source.len() == 4)
+                    || (data_register == 4 && mode == 1 && modrm == 0x65 && source.len() == 4)
+                    || (data_register == 4 && mode == 2 && modrm == 0xa5 && source.len() == 7)
                     || (data_register == 5 && mode == 0 && modrm == 0x2c && source.len() == 4)
                     || (data_register == 4 && mode == 1 && modrm == 0x64 && source.len() == 5)
                     || (data_register == 5 && mode == 1 && modrm == 0x6c && source.len() == 5)

@@ -1351,11 +1351,16 @@ fn is_rsp_memory_data_operand(
                     )
             }
             4 => {
-                operand.displacement == 0
+                (operand.displacement == 0
                     && matches!(
                         operand.base,
                         od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
-                    )
+                    ))
+                    || (i8::try_from(operand.displacement).is_ok()
+                        && matches!(
+                            operand.base,
+                            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
+                        ))
             }
             5 => {
                 (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement)
@@ -1369,6 +1374,13 @@ fn is_rsp_memory_data_operand(
                     && matches!(
                         operand.base,
                         od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                    )
+            }
+            7 => {
+                i32::try_from(operand.displacement).is_ok()
+                    && matches!(
+                        operand.base,
+                        od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                     )
             }
             _ => false,
@@ -1565,11 +1577,13 @@ pub(crate) fn exact_direct_qword_memory_bytes(
             && bytes[2] >> 6 == 1
             && bytes[2] & 7 == 5
             && ((bytes[2] >> 3) & 7 < 4 || bytes[2] == 0x6d))
+        || (bytes.len() == 4 && bytes[0..2] == [0x48, opcode] && bytes[2] == 0x65)
         || (bytes.len() == 7
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] >> 6 == 2
             && bytes[2] & 7 == 5
             && ((bytes[2] >> 3) & 7 < 4 || bytes[2] == 0xad))
+        || (bytes.len() == 7 && bytes[0..2] == [0x48, opcode] && bytes[2] == 0xa5)
         || (bytes.len() == 4
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] == 0x2c

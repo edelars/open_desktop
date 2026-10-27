@@ -1959,6 +1959,122 @@ mod tests {
     }
 
     #[test]
+    fn ir_rsp_data_with_rbp_base_disp8_and_disp32_is_exact() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for (modrm, length, values) in [
+                (
+                    0x65_u8,
+                    4_usize,
+                    vec![i8::MIN as i32, -1, 0, i8::MAX as i32],
+                ),
+                (0xa5_u8, 7_usize, vec![i32::MIN, -1, 0, i32::MAX, 128]),
+            ] {
+                for displacement in values {
+                    let bytes = displacement.to_le_bytes();
+                    let mut source = vec![0x48, opcode, modrm];
+                    source.extend_from_slice(&bytes[..length - 3]);
+                    let code = CodeView::new(0x5740, &source).unwrap();
+                    let (site, direct_site, copied) = match operation {
+                        MemorySiteOperationV2::Load => {
+                            let ir = compile_ir_memory_load_block_v2(code, 0x5740).unwrap();
+                            let direct = compile_memory_load_block_v2(code, 0x5740).unwrap();
+                            (
+                                ir.site().clone(),
+                                direct.site().clone(),
+                                ir.source_bytes().to_vec(),
+                            )
+                        }
+                        MemorySiteOperationV2::Store => {
+                            let ir = compile_ir_memory_store_block_v2(code, 0x5740).unwrap();
+                            let direct = compile_memory_store_block_v2(code, 0x5740).unwrap();
+                            (
+                                ir.site().clone(),
+                                direct.site().clone(),
+                                ir.source_bytes().to_vec(),
+                            )
+                        }
+                    };
+                    assert_eq!(site, direct_site);
+                    assert_eq!(copied, source);
+                    assert_eq!(
+                        site.destination(),
+                        (operation == MemorySiteOperationV2::Load).then_some(4)
+                    );
+                    assert_eq!(
+                        site.source(),
+                        (operation == MemorySiteOperationV2::Store).then_some(4)
+                    );
+                    assert_eq!(site.operand().base, AddressBase::Register(Register::Rbp));
+                    assert_eq!(site.operand().index, None);
+                    assert_eq!(site.operand().scale, 1);
+                    assert_eq!(site.operand().displacement, i64::from(displacement));
+                    assert_eq!(site.next_rip(), 0x5740 + length as u64);
+                    assert!(site.matches_source_bytes(&source, operation));
+                }
+                let valid = if length == 4 {
+                    vec![0x48, opcode, 0x65, 0]
+                } else {
+                    vec![0x48, opcode, 0xa5, 0, 0, 0, 0]
+                };
+                for partial in 1..length {
+                    let code = CodeView::new(0x5740, &valid[..partial]).unwrap();
+                    let result = match operation {
+                        MemorySiteOperationV2::Load => {
+                            compile_ir_memory_load_block_v2(code, 0x5740).and_then(|_| {
+                                compile_memory_load_block_v2(code, 0x5740).map(|_| ())
+                            })
+                        }
+                        MemorySiteOperationV2::Store => {
+                            compile_ir_memory_store_block_v2(code, 0x5740).and_then(|_| {
+                                compile_memory_store_block_v2(code, 0x5740).map(|_| ())
+                            })
+                        }
+                    };
+                    assert!(result.is_err(), "partial len={partial}");
+                }
+                let mut wrong_modrm = valid.clone();
+                wrong_modrm[2] = if length == 4 { 0x75 } else { 0xb5 };
+                let mut wrong_prefix = vec![0x67];
+                wrong_prefix.extend_from_slice(&valid);
+                let mut reordered_prefix = vec![0x48, 0x67, opcode];
+                reordered_prefix.extend_from_slice(&valid[2..]);
+                let indexed_sib = if length == 4 {
+                    vec![0x48, opcode, 0x64, 0x2c, 0]
+                } else {
+                    vec![0x48, opcode, 0xa4, 0x2c, 0, 0, 0, 0]
+                };
+                let mut segment_prefix = vec![0x64, 0x48];
+                segment_prefix.extend_from_slice(&valid[1..]);
+                for invalid in [
+                    wrong_modrm,
+                    wrong_prefix,
+                    reordered_prefix,
+                    indexed_sib,
+                    segment_prefix,
+                ] {
+                    let code = CodeView::new(0x5740, &invalid).unwrap();
+                    let result = match operation {
+                        MemorySiteOperationV2::Load => {
+                            compile_ir_memory_load_block_v2(code, 0x5740).and_then(|_| {
+                                compile_memory_load_block_v2(code, 0x5740).map(|_| ())
+                            })
+                        }
+                        MemorySiteOperationV2::Store => {
+                            compile_ir_memory_store_block_v2(code, 0x5740).and_then(|_| {
+                                compile_memory_store_block_v2(code, 0x5740).map(|_| ())
+                            })
+                        }
+                    };
+                    assert!(result.is_err(), "unexpectedly admitted {invalid:02x?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ir_rsp_data_and_base_disp8_is_exact_signed_0x64_sib_form() {
         for (opcode, operation) in [
             (0x8b, MemorySiteOperationV2::Load),
@@ -2842,7 +2958,7 @@ mod tests {
 
             for bytes in [
                 vec![0x48, opcode, 0x6d],          // missing displacement
-                vec![0x48, opcode, 0x65, 0],       // RSP data with RBP base
+                vec![0x48, opcode, 0x75, 0],       // unsupported data register
                 vec![0x48, opcode, 0x6c, 0x2c, 0], // indexed SIB form
                 vec![0x67, 0x48, opcode, 0x6d, 0], // addr32
                 vec![0x48, opcode, 0x6d, 0, 0x90], // trailing byte
