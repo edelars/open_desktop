@@ -65,6 +65,8 @@ pub enum CompileFlavor {
     S0_09NativeBlock,
     S0_09FixtureDispatch,
     S0_09NopFallback,
+    /// Uncached first V2 checked `MOV r64, [mem]` compiler profile.
+    S3_19bMemoryLoadV2,
 }
 
 /// Caller-owned identity/version metadata for one guest mapping span.

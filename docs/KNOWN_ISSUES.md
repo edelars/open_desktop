@@ -12,14 +12,14 @@
 
 ## Записи
 
-### ISSUE-024 — checked memory helper ещё не подключён к generated guest blocks
+### ISSUE-024 — checked memory lowering ограничен одним V2 MOV load
 
 - **Дата обнаружения:** 2026-10-27.
-- **Компонент:** `od-jit` checked memory bridge / generated block runtime (S3-19).
-- **Статус:** открыта; S3-19a реализует только helper transport и standalone native probe. Production block exits, guest-fault mapping и memory lowering отсутствуют.
-- **Суть и последствия:** `CheckedMemoryAdapter` принимает fetch/read/write через `GuestMemory` и отделяет architectural fault от memory/boundary/backend error внутри отдельного fixed-width helper ABI. Он не вызывается из production generated guest block и не материализует CPU state, RIP или retirement counters. Поэтому текущий JIT по-прежнему не исполняет memory operands, а fault не имеет production block-exit representation.
-- **Основание:** `cargo test -p od-jit memory_bridge::tests --offline` прошёл четыре targeted tests; `cargo test -p od-host generated_checked_memory_probe_calls_fixed_width_helper --offline` прошёл generated ARM64 helper-call probe на ARM64/macOS host. Probe commits test load/counter sentinels only for Success and preserves them on backend error. См. [S3-19a contract](specs/JIT_CONTRACT.md#s3-19a-invocation-local-checked-memory-helper-abi-partial) и [plan](plans/STAGE_3.md#s3-19-подключить-checked-memory-bridge).
-- **Следующий шаг:** согласовать отдельно production representation для guest fault/commit и подключить helper invocation на generated block boundary; сохранить `RuntimeContextV1` tag 6 invalid до утверждения новой версии контракта. Затем выполнить S3-20 lowering и последующую проверку S3-21.
+- **Компонент:** `od-jit` checked memory bridge / generated block runtime (S3-19/S3-20).
+- **Статус:** открыта; реализован только один production V2 load профиля `48 8B /r`, ModRM `mod=00`, destination/base RAX..RBX. Store, прочие адресные формы, общий IR/PC-map/cache и multiblock интеграция остаются за пределами среза.
+- **Суть и последствия:** dedicated V2 compiler создает verified one-instruction artifact и отдельный host entry, который использует `MemoryOperand::access_address_48` и `CheckedMemoryHelperV1`, сохраняет staged-load commit и различает ArchitecturalFault от boundary/backend errors. Общий JIT всё ещё не исполняет остальные memory operands; V1 ABI и tag 6 остаются неизменными.
+- **Основание:** targeted `od-jit` tests подтверждают точную admission-границу; ARM64 native host tests для `RAX` alias/non-alias, fault payload/state preservation, internal backend error, budget, STOP и stop-RIP проходят локально. Success, architectural fault и Unmapped error сравниваются с `od_isa::execute::step` на независимых CPU/RAM snapshots с полным сравнением state, bytes и read count. См. [S3-19b/S3-20 contract](specs/JIT_CONTRACT.md#s3-19b--s3-20-один-production-v2-mov-load) и [plan](plans/STAGE_3.md#s3-19-подключить-checked-memory-bridge). Физическая проверка Mac mini отложена до финального S3-21 gate после локального Stage 3.
+- **Следующий шаг:** расширять memory lowering только отдельными проверенными формами, не меняя V1 admission; выполнить физическую проверку после завершения локального Stage 3.
 
 ### ISSUE-020 — unresolved branch-target handoff between block builder and IR
 

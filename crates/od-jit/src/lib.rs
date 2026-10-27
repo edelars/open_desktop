@@ -17,6 +17,7 @@ pub mod emitter;
 pub mod ir;
 pub mod lowering;
 pub mod memory_bridge;
+pub mod memory_load_v2;
 pub mod runtime;
 pub mod statepoints;
 pub mod translation;

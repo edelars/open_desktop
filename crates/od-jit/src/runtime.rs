@@ -3,6 +3,7 @@
 //! These tags are integer ABI values. `LongModeState` remains an opaque pointer:
 //! generated code may use the offsets below only when compiled with this crate.
 
+use od_isa::long_decode::MemoryOperand;
 use od_isa::{LongModeState, integer_flags};
 
 pub const LONG_MODE_GPR_OFFSET: usize = std::mem::offset_of!(LongModeState, gpr);
@@ -50,6 +51,173 @@ pub struct RuntimeContextV1 {
 /// SIMD state are volatile; x19-x29 and SP are preserved. Generated code must
 /// not use Apple-reserved x18 or unwind through a generated frame.
 pub type BlockEntry = unsafe extern "C" fn(*mut RuntimeContextV1) -> u32;
+
+/// ABI for the first production checked-memory block profile. This remains a
+/// separate entry type so V1 blocks can never be called with a V2 context.
+pub type BlockEntryV2 = unsafe extern "C" fn(*mut RuntimeContextV2) -> u32;
+
+/// V2 runtime return for a checked memory operation which did not complete.
+/// It is not a `RuntimeExitTag`; the host decodes the invocation-local outcome.
+pub const RUNTIME_EXIT_V2_MEMORY_OPERATION: u32 = 9;
+
+/// Immutable per-block description for one verifier-approved memory load.
+/// The pointed-to representation is private to the same linked build; it is
+/// never passed as a C-layout record or retained by the translation key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoryLoadSiteV2 {
+    pub(crate) instruction_index: u32,
+    pub(crate) guest_rip: u64,
+    pub(crate) next_rip: u64,
+    pub(crate) destination: u8,
+    pub(crate) operand: MemoryOperand,
+}
+
+impl MemoryLoadSiteV2 {
+    pub const fn instruction_index(self) -> u32 {
+        self.instruction_index
+    }
+
+    pub const fn guest_rip(self) -> u64 {
+        self.guest_rip
+    }
+
+    pub const fn next_rip(self) -> u64 {
+        self.next_rip
+    }
+
+    pub const fn destination(self) -> u8 {
+        self.destination
+    }
+}
+
+/// V2 call record. Its first member preserves the V1 control prefix, while
+/// the additional invocation and site pointers are valid only for this call.
+/// Never pass this record to a V1 `BlockEntry`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RuntimeContextV2 {
+    pub base: RuntimeContextV1,
+    pub memory_adapter: *mut std::ffi::c_void,
+    pub memory_sites: *const MemoryLoadSiteV2,
+    pub memory_site_count: u32,
+    /// Output: site index used by the last helper call, or `u32::MAX`.
+    pub last_memory_site: u32,
+    /// Output: raw status in the separate CheckedMemoryHelperV1 namespace.
+    pub last_memory_status: u32,
+    pub reserved: u32,
+    /// Staged load value, valid only when `last_memory_status == 0`.
+    pub staged_load_value: u64,
+    /// Output payload written by CheckedMemoryHelperV1.
+    pub memory_outcome: crate::memory_bridge::CheckedMemoryOutcomeV1,
+}
+
+pub const RUNTIME_CONTEXT_V2_BASE_OFFSET: usize = std::mem::offset_of!(RuntimeContextV2, base);
+pub const RUNTIME_CONTEXT_V2_MEMORY_ADAPTER_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV2, memory_adapter);
+pub const RUNTIME_CONTEXT_V2_MEMORY_SITES_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV2, memory_sites);
+pub const RUNTIME_CONTEXT_V2_MEMORY_SITE_COUNT_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV2, memory_site_count);
+pub const RUNTIME_CONTEXT_V2_LAST_MEMORY_SITE_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV2, last_memory_site);
+pub const RUNTIME_CONTEXT_V2_LAST_MEMORY_STATUS_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV2, last_memory_status);
+pub const RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV2, staged_load_value);
+pub const RUNTIME_CONTEXT_V2_MEMORY_OUTCOME_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV2, memory_outcome);
+
+/// Trusted Rust helper used only by verified V2 memory-load blocks. The
+/// generated code passes a site index; effective address validation remains
+/// in `MemoryOperand::access_address_48` and memory access remains checked.
+///
+/// # Safety
+/// `context` must point to a live invocation-local `RuntimeContextV2` whose
+/// state, adapter, and immutable memory-site table remain valid for the call.
+pub unsafe extern "C" fn memory_load_site_helper_v2(
+    context: *mut RuntimeContextV2,
+    site_index: u32,
+) -> u32 {
+    use crate::memory_bridge::{
+        CheckedMemoryOutcomeV1, MEMORY_HELPER_INVALID_ARGUMENT, MEMORY_HELPER_SUCCESS,
+        MEMORY_OP_READ, checked_memory_helper_v1, classify_error,
+    };
+
+    if context.is_null() {
+        return MEMORY_HELPER_INVALID_ARGUMENT;
+    }
+    // SAFETY: required by this function's caller contract.
+    let context = unsafe { &mut *context };
+    context.last_memory_site = u32::MAX;
+    context.last_memory_status = MEMORY_HELPER_INVALID_ARGUMENT;
+    context.staged_load_value = 0;
+    context.memory_outcome = CheckedMemoryOutcomeV1::default();
+    context.memory_outcome.status = MEMORY_HELPER_INVALID_ARGUMENT;
+
+    if context.memory_adapter.is_null()
+        || context.memory_sites.is_null()
+        || site_index >= context.memory_site_count
+        || context.base.state.is_null()
+    {
+        context.last_memory_site = site_index;
+        return MEMORY_HELPER_INVALID_ARGUMENT;
+    }
+
+    // SAFETY: site bounds and table lifetime are part of the caller contract.
+    let site = unsafe { *context.memory_sites.add(site_index as usize) };
+    // SAFETY: the state pointer is kept live by the V2 host wrapper.
+    let state = unsafe { &*context.base.state };
+    if site.instruction_index != 0
+        || site.next_rip.checked_sub(site.guest_rip) != Some(3)
+        || state.rip != site.guest_rip
+        || site.destination >= 4
+        || !matches!(
+            site.operand.base,
+            od_isa::long_decode::AddressBase::Register(
+                od_isa::Register::Rax
+                    | od_isa::Register::Rcx
+                    | od_isa::Register::Rdx
+                    | od_isa::Register::Rbx
+            )
+        )
+        || site.operand.index.is_some()
+        || site.operand.displacement != 0
+        || site.operand.address_size != od_isa::OperandSize::Qword
+        || site.operand.size != od_isa::OperandSize::Qword
+    {
+        context.last_memory_site = site_index;
+        return MEMORY_HELPER_INVALID_ARGUMENT;
+    }
+    let address = match site.operand.access_address_48(state, site.next_rip) {
+        Ok(address) => address,
+        Err(error) => {
+            classify_error(error, &mut context.memory_outcome);
+            context.last_memory_site = site_index;
+            context.last_memory_status = context.memory_outcome.status;
+            return context.last_memory_status;
+        }
+    };
+
+    let mut bytes = [0_u8; 8];
+    // SAFETY: the adapter and outcome belong to this live invocation; bytes is
+    // an aligned writable staging buffer and all pointers are non-overlapping.
+    let status = unsafe {
+        checked_memory_helper_v1(
+            context.memory_adapter,
+            MEMORY_OP_READ,
+            address,
+            8,
+            bytes.as_mut_ptr(),
+            &mut context.memory_outcome,
+        )
+    };
+    context.last_memory_site = site_index;
+    context.last_memory_status = status;
+    if status == MEMORY_HELPER_SUCCESS {
+        context.staged_load_value = u64::from_le_bytes(bytes);
+    }
+    status
+}
 
 /// Raw block exit values. Unknown values are host/runtime contract failures.
 #[repr(u32)]
@@ -292,6 +460,32 @@ mod tests {
         assert_eq!(
             RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET,
             2 * pointer_size + 32
+        );
+        assert_eq!(RESERVED_GUEST_FAULT_EXIT_V1, 6);
+        assert_eq!(
+            RuntimeExitTag::try_from(RESERVED_GUEST_FAULT_EXIT_V1),
+            Err(6)
+        );
+        assert_eq!(
+            RuntimeExitTag::try_from(RUNTIME_EXIT_V2_MEMORY_OPERATION),
+            Err(9)
+        );
+        assert_eq!(std::mem::offset_of!(RuntimeContextV2, base), 0);
+        assert_eq!(
+            RUNTIME_CONTEXT_V2_MEMORY_ADAPTER_OFFSET,
+            std::mem::size_of::<RuntimeContextV1>()
+        );
+        assert_eq!(
+            RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET,
+            std::mem::offset_of!(RuntimeContextV2, staged_load_value)
+        );
+        assert!(
+            RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET
+                > RUNTIME_CONTEXT_V2_LAST_MEMORY_STATUS_OFFSET
+        );
+        assert_eq!(
+            RUNTIME_CONTEXT_V2_MEMORY_OUTCOME_OFFSET,
+            std::mem::offset_of!(RuntimeContextV2, memory_outcome)
         );
     }
 }

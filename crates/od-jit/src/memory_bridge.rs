@@ -143,7 +143,7 @@ fn supported_width(operation: u32, width: u32) -> Option<usize> {
     }
 }
 
-fn classify_error(error: MemoryError, outcome: &mut CheckedMemoryOutcomeV1) {
+pub(crate) fn classify_error(error: MemoryError, outcome: &mut CheckedMemoryOutcomeV1) {
     match error {
         MemoryError::Architectural(fault) => {
             outcome.status = MEMORY_HELPER_ARCHITECTURAL_FAULT;

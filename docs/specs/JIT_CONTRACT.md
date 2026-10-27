@@ -63,7 +63,7 @@ RAX/RCX/RDX/RBX, без high-byte registers и памяти. Для ModR/M `mod`
 
 | Класс | Путь на текущем шаге | Условие дальнейшего включения |
 |---|---|---|
-| Любые memory operands, включая ограниченный v2 memory profile | Test runner отклоняет выбор JIT для v2 state; `od-jit` не имеет v2 entry. Не обходить `GuestMemory` и не выполнять host pointer access | Подтверждённая семантика конкретной формы в S2, checked bridge S3-19, lowering S3-20 и необходимые native fault evidence |
+| Любые memory operands, кроме точного первого `48 8B /r` load V2-среза ниже | Runner и V1 block/cache path не выбирают memory code. Для первого load доступен отдельный compiler-issued V2 artifact и отдельный host entry; host pointer access запрещён | Каждая новая форма отдельно проходит S2 semantic confirmation, checked access/commit implementation и собственную проверку |
 | Остальные формы, уже принятые interpreter этапа 2 | Runner не допускает их к текущему legacy JIT. Interpreter fallback запланирован в S3-16 и не реализован текущим contract | Завершённая interpreter semantics конкретной формы и fallback с точным progress/state |
 | x87, SIMD, privilege/system, interrupts, unsupported/invalid decode | Runner не допускает эти формы к текущему legacy JIT; interpreter путь разрешён только если соответствующая форма уже реализована и запрошен явный fallback после S3-16 | Отдельные S2 contracts, CPU state mapping и сопоставимые внешние evidence для каждой формы |
 
@@ -72,9 +72,32 @@ RAX/RCX/RDX/RBX, без high-byte registers и памяти. Для ModR/M `mod`
 Ни native execution, ни память, ни исключения этапа 2 не наследуются этапом 3
 автоматически.
 
-S3-19a adds only a standalone checked helper transport; it does not change this
-memory-operand admission row. Generated blocks still have no memory lowering,
-guest-memory exit, fault replay, or production access to `GuestMemory`.
+### S3-19b / S3-20: один production V2 MOV load
+
+S3-19a adds a standalone checked helper transport. S3-19b admits one production
+V2 block ending in one exact qword `MOV r64,[base]`: bytes `48 8B /r`, ModRM
+`mod=00`, `reg` and `r/m` in RAX..RBX, with no SIB, displacement, segment, or
+address-size override. This profile uses the existing `long_decode` result and
+`MemoryOperand::access_address_48`; generated ARM64 passes immutable site index
+0 to the trusted Rust helper and performs no effective-address calculation.
+The V2 artifact and entry type are distinct from V1. The V1 host path rejects a
+V2 artifact before pointer conversion, and V1 tag 6 remains invalid.
+
+The load result remains staged until the checked read succeeds. On success the
+entry commits the destination, next RIP, and one retirement; flags are
+preserved. On an architectural fault or checked-memory boundary/backend error,
+the destination, flags, RIP, and retirement remain unchanged. The host returns
+the complete fixed-width architectural fault payload separately from
+non-architectural `MemoryError` outcomes. `MOV RAX,[RAX]` is covered to verify
+that address calculation reads the old canonical RAX before the load commits.
+Native success, architectural-fault preservation, and boundary-error outcomes
+are also compared with `od_isa::execute::step` using independent state and RAM
+copies; the comparison includes the full CPU state and backend bytes/read count.
+The V2 context, adapter, and site table are invocation-local; no pointers or RAM
+contents enter a translation key. This one-instruction compiler path is not
+cached and has no general IR, multi-instruction block, or PC-map integration.
+Stores and all other memory forms remain unsupported. The physical Mac mini
+check is reserved for the final S3-21 gate after local Stage 3 work is complete.
 
 ## 4. Начальные runtime bounds
 
@@ -778,10 +801,9 @@ after Success, and verifies both remain untouched on backend error. Bridge unit
 tests verify a single backend write and distinct architectural/boundary/backend
 error classes. The probe is not a generated guest block and does not validate
 guest state commit, architectural RIP/counters, guest-fault exit mapping, or
-production runtime integration.
-No memory instruction is admitted to the JIT by this partial slice. RMW/atomic,
-MMIO, REP, descriptor access, direct host-memory access, and S3-20 lowering
-remain outside the contract.
+production runtime integration. The follow-on V2 production slice is specified
+below. All other memory forms, including stores, RMW/atomic, MMIO, REP,
+descriptor access, and direct host-memory access, remain outside the contract.
 
 ## 6. Host и этапная приёмка
 

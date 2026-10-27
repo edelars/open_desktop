@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19a выполнена как partial slice, S3-19 остаётся открытой.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20 реализованы как один узкий partial slice, общие memory lowering и S3-19 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -145,10 +145,11 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-16 | Interpreter fallback с прогрессом | S3-15; нужный S2 step |
 | [ ] | S3-17 | Cache key и code dependencies | S3-04, S3-15 |
 | [ ] | S3-18 | Ограниченный block cache | S3-07, S3-17 |
-| [ ] | S3-19 | Checked memory/helper bridge | S3-08, S3-16; S2-04/08 |
+| [partial] | S3-19 | Checked memory/helper bridge | S3-08, S3-16; S2-04/08 |
 | [partial] | S3-19a | Invocation-local checked helper ABI и native probe | Узкий standalone slice внутри S3-19; production block exits остаются открыты |
-| [ ] | S3-20 | Memory lowering и partial registers | S3-19; interpreter соответствующих форм |
-| [ ] | S3-21 | Физическая проверка memory slice | S3-20; S2-09 и нужный native profile |
+| [partial] | S3-19b | Production V2 block/helper path для одного MOV r64 load | Точный `48 8B /r`, base/dst RAX..RBX; без cache/general IR |
+| [partial] | S3-20 | Memory lowering и partial registers | S3-19; interpreter соответствующих форм |
+| [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [ ] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [ ] | S3-23 | Инвалидация code dependencies | S3-18, S3-21, S3-22 |
 | [ ] | S3-24 | Self-modifying code в текущем блоке | S3-23 |
@@ -674,6 +675,36 @@ backend-error status с сохранением этих sentinels при оши�
 MMIO, RMW/atomic, REP, descriptor accesses, direct host-memory access или
 lowering; полный S3-19 и S3-20 остаются открытыми.
 
+#### S3-19b / S3-20. Один production V2 MOV load
+
+Отдельный `compile_memory_load_block_v2` использует единственный источник
+decoded semantics — `od_isa::long_decode` — и выдаёт приватный compiler-issued
+V2 artifact только для exact `48 8B /r`, ModRM `mod=00`, destination/base
+RAX..RBX. Он не допускает SIB, displacement, segment prefix или address-size
+override и останавливает native block после этого одного load. В ARM64-коде
+нет вычисления effective address: код передаёт site index доверенному Rust
+helper, который вызывает `MemoryOperand::access_address_48`, затем
+`CheckedMemoryHelperV1`.
+
+V2 имеет отдельные `RuntimeContextV2`/`BlockEntryV2`, compile flavor и host
+publish/execute APIs; V1 entry остаётся отдельным и отклоняет V2 до pointer
+cast, tag 6 в V1 остаётся invalid. Успешный read сначала записывается в staging,
+после чего одним commit меняются destination, RIP и retirement; fault и
+boundary/backend errors сохраняют canonical state на faulting RIP и
+различаются по результату host API. `RAX` alias и non-alias формы проверены на
+ARM64 native path вместе с fault payload, boundary/backend separation,
+budget/STOP/stop-RIP. Native success, architectural-fault preservation и
+boundary error сравниваются с `od_isa::execute::step` на независимых copies
+CPU/RAM, включая полный CPU state, RAM bytes и read count. Этот путь не использует общий IR/allocator, не имеет
+PC-map, cache или multiblock integration; source bytes/decoded site/compiler
+provenance остаются частью отдельного V2 artifact. Memory pointers и RAM
+contents invocation-local и не входят в translation key.
+
+Stores, остальные address forms, general memory lowering и dispatch/cache
+integration остаются открытыми. Локальные Rust/ARM64 проверки разрешены;
+физические Mac mini/x86 проверки не запускать до финального S3-21 gate после
+завершения остальных локальных задач Stage 3.
+
 ### S3-20. Добавить memory lowering
 
 1. Начать с проверенных S2 MOV load/store forms, затем подключать остальные формы по готовности interpreter/native.
@@ -684,7 +715,7 @@ lowering; полный S3-19 и S3-20 остаются открытыми.
 
 ### S3-21. Подтвердить memory slice на физическом x86
 
-1. Использовать завершённый S2-09 native memory profile. Проверить одинаковые входы, наблюдение всех заявленных GPR, нормализацию guest addresses и сравнение memory effects.
+1. Выполнить после локального завершения Stage 3 как финальный gate. Использовать завершённый S2-09 native memory profile. Проверить одинаковые входы, наблюдение всех заявленных GPR, нормализацию guest addresses и сравнение memory effects.
 2. Добавить ручные и generated load/store cases, пересечения regions/pages, ошибки доступов и неполное наблюдение fault metadata.
 3. Сравнить interpreter/JIT/native, повторить прогоны и сохранить полные результаты. Проверять helper и allocator clobbers вместе с памятью.
 
