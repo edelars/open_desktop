@@ -1,0 +1,1172 @@
+{
+  "s2_18k_lodsb_df0": {
+    "gpr": [
+      "0x11223344556677d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200001",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "67ac",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsb_df1": {
+    "gpr": [
+      "0x1122334455667789",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200007",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "67ac",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsw_df0": {
+    "gpr": [
+      "0x112233445566c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200002",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "6766ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsw_df1": {
+    "gpr": [
+      "0x1122334455669a89",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200006",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "6766ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsd_df0": {
+    "gpr": [
+      "0x00000000a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200004",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "67ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsd_df1": {
+    "gpr": [
+      "0x00000000bcab9a89",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200004",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "67ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsq_df0": {
+    "gpr": [
+      "0x68778695a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200008",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "6748ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsq_df1": {
+    "gpr": [
+      "0x10efdecdbcab9a89",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "6748ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsb_unmapped": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0xffffffff00210000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "67ac",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "harness_error",
+    "retired": 0,
+    "fault_address": "0x0000000000210000"
+  },
+  "s2_18k_lodsw_unmapped": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0xffffffff00210000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "6766ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "harness_error",
+    "retired": 0,
+    "fault_address": "0x0000000000210000"
+  },
+  "s2_18k_lodsd_unmapped": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0xffffffff00210000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "67ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "harness_error",
+    "retired": 0,
+    "fault_address": "0x0000000000210000"
+  },
+  "s2_18k_lodsq_unmapped": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0xffffffff00210000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "6748ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "harness_error",
+    "retired": 0,
+    "fault_address": "0x0000000000210000"
+  },
+  "s2_18k_lodsb_budget0": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x1234567800200000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "67ac",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "instruction_budget_exhausted",
+    "retired": 0,
+    "fault_address": null
+  },
+  "s2_18k_lodsw_budget0": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x1234567800200000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "6766ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "instruction_budget_exhausted",
+    "retired": 0,
+    "fault_address": null
+  },
+  "s2_18k_lodsd_budget0": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x1234567800200000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "67ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "instruction_budget_exhausted",
+    "retired": 0,
+    "fault_address": null
+  },
+  "s2_18k_lodsq_budget0": {
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x1234567800200000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100000",
+    "memory": {
+      "code": "6748ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "instruction_budget_exhausted",
+    "retired": 0,
+    "fault_address": null
+  },
+  "s2_18k_lodsb_wrap_up": {
+    "gpr": [
+      "0x11223344556677d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000000000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "67ac",
+      "data": "d1"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsw_wrap_up": {
+    "gpr": [
+      "0x112233445566c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000000000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "6766ad",
+      "data": "d1c2"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsd_wrap_up": {
+    "gpr": [
+      "0x00000000a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000000000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "67ad",
+      "data": "d1c2b3a4"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsq_wrap_up": {
+    "gpr": [
+      "0x68778695a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000000000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "6748ad",
+      "data": "d1c2b3a495867768"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsb_wrap_down": {
+    "gpr": [
+      "0x11223344556677d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x00000000ffffffff",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "67ac",
+      "data": "d1"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsw_wrap_down": {
+    "gpr": [
+      "0x112233445566c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x00000000ffffffff",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "6766ad",
+      "data": "d1c2"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsd_wrap_down": {
+    "gpr": [
+      "0x00000000a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x00000000ffffffff",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "67ad",
+      "data": "d1c2b3a4"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsq_wrap_down": {
+    "gpr": [
+      "0x68778695a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x00000000ffffffff",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "6748ad",
+      "data": "d1c2b3a495867768"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsw_cross_4g": {
+    "gpr": [
+      "0x112233445566c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000000001",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "6766ad",
+      "data": "d1c2"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsd_cross_4g": {
+    "gpr": [
+      "0x00000000a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000000003",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100002",
+    "memory": {
+      "code": "67ad",
+      "data": "d1c2b3a4"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsq_cross_4g": {
+    "gpr": [
+      "0x68778695a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000000007",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "6748ad",
+      "data": "d1c2b3a495867768"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsw_normalize_66_67": {
+    "gpr": [
+      "0x112233445566c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200002",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "6667ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_lodsw_normalize_rex_66": {
+    "gpr": [
+      "0x112233445566c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200002",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100004",
+    "memory": {
+      "code": "674866ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 1,
+    "fault_address": null
+  },
+  "s2_18k_test_lodsd": {
+    "gpr": [
+      "0x00000000a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200004",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000046",
+    "rflags_defined": "0x0000000000000cc7",
+    "rip": "0x0000000000100005",
+    "memory": {
+      "code": "4885c067ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 2,
+    "fault_address": null
+  },
+  "s2_18k_test_lodsd_unmapped": {
+    "gpr": [
+      "0x0000000000000000",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x1234567800210000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000046",
+    "rflags_defined": "0x0000000000000cc7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "4885c067ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "harness_error",
+    "retired": 1,
+    "fault_address": "0x0000000000210000"
+  },
+  "s2_18k_cld_lodsb": {
+    "gpr": [
+      "0x11223344556677d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200001",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "fc67ac",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 2,
+    "fault_address": null
+  },
+  "s2_18k_cld_lodsw": {
+    "gpr": [
+      "0x112233445566c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200002",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100004",
+    "memory": {
+      "code": "fc6766ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 2,
+    "fault_address": null
+  },
+  "s2_18k_cld_lodsd": {
+    "gpr": [
+      "0x00000000a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200004",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "fc67ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 2,
+    "fault_address": null
+  },
+  "s2_18k_cld_lodsq": {
+    "gpr": [
+      "0x68778695a4b3c2d1",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200008",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100004",
+    "memory": {
+      "code": "fc6748ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 2,
+    "fault_address": null
+  },
+  "s2_18k_std_lodsb": {
+    "gpr": [
+      "0x1122334455667789",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200007",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "fd67ac",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 2,
+    "fault_address": null
+  },
+  "s2_18k_std_lodsw": {
+    "gpr": [
+      "0x1122334455669a89",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200006",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100004",
+    "memory": {
+      "code": "fd6766ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 2,
+    "fault_address": null
+  },
+  "s2_18k_std_lodsd": {
+    "gpr": [
+      "0x00000000bcab9a89",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200004",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100003",
+    "memory": {
+      "code": "fd67ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 2,
+    "fault_address": null
+  },
+  "s2_18k_std_lodsq": {
+    "gpr": [
+      "0x10efdecdbcab9a89",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200000",
+      "0x0000000000200000",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rflags": "0x0000000000000cd7",
+    "rflags_defined": "0x0000000000000cd7",
+    "rip": "0x0000000000100004",
+    "memory": {
+      "code": "fd6748ad",
+      "data": "d1c2b3a495867768899aabbccddeef10"
+    },
+    "expected_exit": "stop_address",
+    "retired": 2,
+    "fault_address": null
+  }
+}

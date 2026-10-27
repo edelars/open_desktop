@@ -8029,3 +8029,25 @@ and memory are preserved; there are no data accesses or pointer/privilege checks
 bits are preserved. Prefix forms are admission failures within this bounded
 profile; no architectural #UD or fault-priority claim is made. Primary-map `FC`
 is not D9-map `FC` FRNDINT. JIT/native/physical support is closed/deferred.
+
+### Local S2-18k non-REP address-size-32 LODS contract
+
+The bounded Long64 profile accepts non-REP `67 AC` LODSB, `67 66 AD` LODSW,
+`67 AD` LODSD, and `67 48 AD` LODSQ. Prefixes use normalized decoder state:
+effective REX.W overrides 66, while a following legacy prefix discards an
+earlier REX. Repeated 67, REP67, segment overrides, and effective non-W REX on
+AD remain outside LODS admission; admission for other string operations is
+unchanged. These are profile
+boundaries, not universal #UD assertions.
+
+The initial linear address is zero-extended ESI with flat DS. Exactly one
+width-sized read is issued from that starting address; address-size wrap does
+not apply per byte, so a qword at ESI=`ffffffff` spans through
+`1_0000_0006`. On success AL/AX preserve high RAX, EAX zero-extends, and RAX
+receives a qword; RSI becomes zero-extended `(ESI +/- width) mod 2^32`, based
+on DF. RIP advances by decoded length and one instruction retires. Any read
+fault/error leaves CPU and RAM unchanged; high RSI/RAX and faulting RIP remain
+as before and retirement is zero. High RSI bits discarded by address-size
+truncation alone do not fault. RDI, RCX, flags and their definedness, segments,
+x87 state, and RAM are otherwise preserved. JIT/native/physical support is not
+enabled by this local interpreter contract.

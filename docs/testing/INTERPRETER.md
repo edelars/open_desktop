@@ -995,6 +995,24 @@ execution are outside this slice. See the
 [CPU contract](../specs/CPU_CONTRACT.md) and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+## Non-REP LODS address-size 32 — S2-18k
+
+The local profile admits only `67 AC`, `67 66 AD`, `67 AD`, and `67 48 AD` in
+Long64. Prefix interpretation uses the decoder's normalized state: REX.W wins
+over 66, and a later legacy prefix clears an earlier REX. Address-size 32
+zero-extends the starting ESI for one width-sized flat DS read; byte lanes do
+not wrap individually at 4 GiB. After a successful read, RSI is adjusted by
+DF and the operand width modulo 2^32, then zero-extended. A fault preserves the
+full original RSI/RAX, all state and RAM, and the faulting RIP.
+
+The interpreter tests cover 18,432 complete successful snapshots, 96 pointer
+boundary cases, 96 injected read failures and 73 enumerated prefix rejects.
+They also check normalized prefix order, truncated fetch, budget/STOP/stop_rip,
+RCX=0, TEST→LODS with AF undefined, and CLD/STD direction changes. Address64
+LODS and REP LODS retain their earlier coverage. REP67, every segment override
+(including FS/GS), and non-W REX on AD remain outside LODS admission; other
+string operation admission is unchanged. JIT/native execution is not enabled.
+
 ## REP STOSW/D/Q — S2-19b local interpreter coverage
 
 The local profile extends exact `F3 AA` with `F3 66 AB` (word), `F3 AB`

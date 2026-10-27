@@ -844,6 +844,32 @@ shape сохранена; валидатор допускает instruction budg
 LODS не добавлено. ISSUE-016 и ISSUE-019 остаются открытыми. Физическая
 проверка остаётся в едином финальном Mac mini substage.
 
+#### S2-18k — non-REP LODS с address-size 32
+
+Расширить только Long64 LODS без REP: `67 AC` byte, `67 66 AD` word,
+`67 AD` dword и `67 48 AD` qword. Использовать нормализованные prefixes:
+REX.W имеет приоритет над 66, legacy prefix после REX удаляет REX; поэтому
+`66 67 AD` — word, `67 48 66 AD` — word, `48 67 AD` — dword, а
+`67 66 48 AD` — qword. Повторный 67, REP67, все segment overrides (включая
+FS/GS) и не-W REX AD не входят в LODS admission; admission прочих string
+operations не меняется.
+Отказы ограничивают профиль и не утверждают универсальную доставку #UD.
+
+Начальный адрес чтения — zero-extended ESI, DS flat. Читается одна ширина
+целиком по этому начальному адресу; 32-bit wrap применяется к ESI до чтения и
+к обновлённому RSI, но не к каждому байту доступа. Поэтому qword от ESI
+`ffffffff` охватывает `ffffffff..1_0000_0006`. Успех обновляет AL/AX/EAX/RAX
+с обычным aliasing, zero-extends конечный ESI с DF-направленным шагом,
+продвигает RIP и retire-ит одну инструкцию. Ошибка чтения не меняет CPU/RAM,
+сохраняет исходные high RSI/RAX, faulting RIP и нулевой retirement.
+
+Проверить 18,432 полных успешных snapshots, 96 boundary successes, 96 injected
+read failures, 73 enumerated prefix rejects, fetch truncation, RCX=0,
+budget/STOP/stop_rip, TEST→LODS undefined-AF composition, CLD/STD consumers и
+регрессии address64/REP. Добавить ровно 39 schema-v2/profile literal cases;
+JIT/native admission остаётся закрытой, физическое исполнение — в общем
+финальном acceptance. ISSUE-016/020/021 остаются открытыми; не закрывать стадии.
+
 #### S2-18g — одна non-REP STOSW/D/Q итерация (локальный профиль)
 
 Оставить bare `AA` STOSB и точный `F3 AA` REP STOSB без изменений. Добавить

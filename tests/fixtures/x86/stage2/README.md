@@ -4142,6 +4142,31 @@ python3 -m unittest tests/cpu/test_stage2_rep_cmps_wdq_generator.py
 cargo test -p od-runner --test fixture_v2 rep_cmps_wdq_cli_fixtures_check_full_state_and_jit_denial --offline
 ```
 
+## Non-REP address-size-32 LODS B/W/D/Q fixtures S2-18k
+
+Thirty-nine literal schema-v2 cases cover the four non-REP LODS widths with
+nonzero upper RSI halves, unmapped source errors, zero instruction budget,
+32-bit RSI increment/decrement wrap, contiguous reads crossing the 4-GiB
+boundary, two prefix-normalization cases, TEST composition with success and
+unmapped read, and CLD/STD composition for every width. The upper half of RSI
+is discarded before forming the starting address; reads themselves remain
+contiguous and do not wrap individual bytes at 4 GiB. Successful pointer
+updates are zero-extended 32-bit results. Expected snapshots include all GPRs,
+flags and their definedness, RIP, and fixture memory.
+
+The generator serializes fixed bytes, state, memory, and expected snapshots;
+it does not invoke an assembler, interpreter, or external oracle. The runner
+CLI test compares every complete interpreter snapshot and checks that JIT
+execution is denied without fallback. These are local interpreter fixtures;
+native, Mac mini, SSH, and physical acceptance remain part of the shared final
+acceptance stage.
+
+```sh
+python3 tests/cpu/generate_stage2_lods_addr32.py --check
+python3 -m unittest tests/cpu/test_stage2_lods_addr32_generator.py
+cargo test -p od-runner --test fixture_v2 addr32_lods_fixtures_match_literal_full_state_answers_and_fail_closed --offline
+```
+
 
 ### S2-18j bare CLD/STD
 

@@ -1604,7 +1604,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     size = OperandSize::Byte;
                     Operation::RepLods { size }
                 } else {
-                    if prefixes != Prefixes::default() {
+                    if prefixes != Prefixes::default()
+                        && prefixes
+                            != (Prefixes {
+                                address_override: true,
+                                ..Prefixes::default()
+                            })
+                    {
                         return Err(self.unsupported(opcode));
                     }
                     size = OperandSize::Byte;
@@ -1624,7 +1630,6 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 } else {
                     if prefixes.group1.is_some()
                         || prefixes.segment.is_some()
-                        || prefixes.address_override
                         || prefixes.rex.is_some_and(|rex| rex & 8 == 0)
                     {
                         return Err(self.unsupported(opcode));
@@ -5839,16 +5844,30 @@ mod tests {
     fn lods_decodes_only_the_bounded_long_mode_forms() {
         for (bytes, size) in [
             (&[0xac][..], OperandSize::Byte),
+            (&[0x67, 0xac][..], OperandSize::Byte),
             (&[0x66, 0xad][..], OperandSize::Word),
             (&[0xad][..], OperandSize::Dword),
             (&[0x48, 0xad][..], OperandSize::Qword),
+            (&[0x67, 0x66, 0xad][..], OperandSize::Word),
+            (&[0x67, 0x48, 0xad][..], OperandSize::Qword),
+            (&[0x67, 0x66, 0x48, 0xad][..], OperandSize::Qword),
+            (&[0x48, 0x67, 0xad][..], OperandSize::Dword),
+            (&[0x67, 0x48, 0x66, 0xad][..], OperandSize::Word),
             (&[0x66, 0x48, 0xad][..], OperandSize::Qword),
             (&[0x48, 0x66, 0xad][..], OperandSize::Word),
         ] {
             let instruction = Memory::new(bytes).decode().unwrap();
             assert_eq!(instruction.length as usize, bytes.len(), "{bytes:02x?}");
             assert_eq!(instruction.operand_size, size, "{bytes:02x?}");
-            assert_eq!(instruction.address_size, OperandSize::Qword, "{bytes:02x?}");
+            assert_eq!(
+                instruction.address_size,
+                if bytes.contains(&0x67) {
+                    OperandSize::Dword
+                } else {
+                    OperandSize::Qword
+                },
+                "{bytes:02x?}"
+            );
             assert_eq!(
                 instruction.operation,
                 Operation::Lods { size },
@@ -5871,12 +5890,17 @@ mod tests {
     }
 
     #[test]
-    fn lods_rejects_44_explicitly_enumerated_prefix_cases() {
-        let forms: [&[u8]; 4] = [&[0xac], &[0x66, 0xad], &[0xad], &[0x48, 0xad]];
+    fn lods_rejects_73_explicitly_enumerated_prefix_cases() {
+        let forms: [&[u8]; 4] = [
+            &[0x67, 0xac],
+            &[0x67, 0x66, 0xad],
+            &[0x67, 0xad],
+            &[0x67, 0x48, 0xad],
+        ];
         let prefixes: [&[u8]; 9] = [
             &[0xf0],
             &[0xf2],
-            &[0x67],
+            &[0xf3],
             &[0x26],
             &[0x2e],
             &[0x36],
@@ -5891,16 +5915,20 @@ mod tests {
             }
         }
         cases.extend([
-            vec![0x66, 0xac],
-            vec![0x40, 0xac],
-            vec![0x48, 0xac],
-            vec![0x40, 0xad],
-            vec![0x47, 0xad],
-            vec![0xf3, 0x66, 0xac],
-            vec![0xf2, 0xf3, 0xad],
-            vec![0x64, 0x65, 0xad],
+            vec![0x67, 0x67, 0xac],
+            vec![0x67, 0x67, 0x66, 0xad],
+            vec![0x67, 0x67, 0xad],
+            vec![0x67, 0x67, 0x48, 0xad],
+            vec![0x67, 0x66, 0xac],
         ]);
-        assert_eq!(cases.len(), 44);
+        for rex in 0x40..=0x4f {
+            cases.push(vec![0x67, rex, 0xac]);
+        }
+        for rex in (0x40..=0x4f).filter(|rex| rex & 8 == 0) {
+            cases.push(vec![0x67, rex, 0xad]);
+            cases.push(vec![0x67, 0x66, rex, 0xad]);
+        }
+        assert_eq!(cases.len(), 73);
         let mut rejected = 0;
         for bytes in cases {
             assert!(
@@ -5912,7 +5940,17 @@ mod tests {
             );
             rejected += 1;
         }
-        assert_eq!(rejected, 44);
+        assert_eq!(rejected, 73);
+
+        for bytes in [&[0xf3, 0x67, 0xac][..], &[0xf3, 0x67, 0xad][..]] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "unexpected 67 string admission: {bytes:02x?}"
+            );
+        }
 
         for bytes in [&[0x66, 0xac][..]] {
             assert!(matches!(

@@ -10551,3 +10551,28 @@ focused fixture CLI check passed and confirms full snapshots plus JIT denial
 without fallback. Graphify was refreshed and `git diff --check` passed. A
 Linux-only native admission test was added but not run on this macOS host; no
 Native, Mini, SSH or physical execution was performed.
+
+
+## S2-18k — non-REP address-size-32 LODS fixtures (local)
+
+Added 39 literal schema-v2 fixtures for address-size-32 LODSB/W/D/Q: all four
+widths in both DF directions with nonzero high RSI halves; four unmapped source
+errors; four zero-budget cases; eight 32-bit pointer-wrap cases; three
+contiguous cross-4-GiB reads; two 66/67/REX normalization cases; TEST→LODS
+success and read-error compositions; and CLD/STD→LODS for every width. Inputs
+and expected CPU/memory snapshots are fixed constants serialized by
+`tests/cpu/generate_stage2_lods_addr32.py`; the generator does not invoke an
+interpreter or external oracle. The runner test checks full state, definedness,
+retirement, exact harness read addresses, and JIT denial without fallback.
+
+The generator freshness and shape checks passed (3 tests), and
+`python3 tests/cpu/generate_stage2_lods_addr32.py --check` passed. The focused
+runner CLI test passed for all 39 fixtures, comparing full state, flags and
+definedness, memory, retirement, unmapped read addresses, and JIT denial.
+`cargo test -p od-isa --offline lods_` passed all 12 focused decoder/executor
+tests; `cargo fmt --all -- --check` and `git diff --check` passed. A Linux-only
+native-admission test now rejects the four forms before tracee execution; it
+was not run on this macOS host. Workspace-wide verification remains part of
+the integrated check. No native execution, Mac mini, SSH, or physical
+acceptance is claimed; those checks are deferred to the shared final
+acceptance stage.

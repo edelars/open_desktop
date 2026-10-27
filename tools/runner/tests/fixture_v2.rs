@@ -8881,6 +8881,97 @@ fn local_x87_fcmovne_fixtures_check_raw_copy_and_untaken_state_and_deny_jit() {
 }
 
 #[test]
+fn addr32_lods_fixtures_match_literal_full_state_answers_and_fail_closed() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_18k_lods_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 39);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let expected_exit = answer["expected_exit"].as_str().unwrap();
+        let is_harness_error = expected_exit == "harness_error";
+        let (input, result) = run(&raw, "interpreter", if is_harness_error { 5 } else { 0 });
+        assert_eq!(input.fixture.case_id, case_id);
+        match expected_exit {
+            "stop_address" => assert!(
+                matches!(result.outcome, Outcome::StopAddress {}),
+                "{case_id}"
+            ),
+            "instruction_budget_exhausted" => assert!(
+                matches!(result.outcome, Outcome::InstructionBudgetExhausted {}),
+                "{case_id}"
+            ),
+            "harness_error" => assert!(
+                matches!(result.outcome, Outcome::HarnessError { .. }),
+                "{case_id}"
+            ),
+            other => panic!("unexpected S2-18k exit {other} for {case_id}"),
+        }
+        assert_eq!(
+            count(&result),
+            answer["retired"].as_u64().unwrap(),
+            "{case_id}"
+        );
+
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(observed.state.rip, expected_rip, "{case_id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+        if is_harness_error {
+            let reason = match &result.outcome {
+                Outcome::HarnessError { reason } => reason,
+                _ => unreachable!(),
+            };
+            assert!(reason.contains("access: Read"), "{case_id}: {reason}");
+            let address = answer["fault_address"].as_str().unwrap();
+            let address_value = u64::from_str_radix(address.trim_start_matches("0x"), 16).unwrap();
+            assert!(
+                reason.contains(&format!("address: {address_value}")),
+                "{case_id}: {reason}"
+            );
+            assert_eq!(
+                observed.state.gpr, input.fixture.initial_state.gpr,
+                "faulting LODS must not commit its accumulator or pointer: {case_id}"
+            );
+        }
+
+        let (_, jit_result) = run(&raw, "jit", 4);
+        assert!(
+            matches!(jit_result.outcome, Outcome::Unsupported { .. }),
+            "{case_id}"
+        );
+        assert!(
+            matches!(
+                &jit_result.instructions_executed,
+                Observation::Unavailable { reason } if reason == "engine was not executed"
+            ),
+            "{case_id}"
+        );
+        assert!(
+            matches!(jit_result.snapshot, Observation::Unavailable { .. }),
+            "{case_id}"
+        );
+    }
+}
+
+#[test]
 fn local_x87_fcmovbe_fixtures_check_full_state_producers_and_deny_jit() {
     let one = "0000000000000080ff3f";
     let minus_one = "0000000000000080ffbf";

@@ -991,22 +991,37 @@ fn step_tracked_with_stop(
         Operation::Lods { size } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && ((instruction.opcode.byte == 0xac
-                    && instruction.prefixes == Prefixes::default()
+                    && (instruction.prefixes == Prefixes::default()
+                        || instruction.prefixes
+                            == (Prefixes {
+                                address_override: true,
+                                ..Prefixes::default()
+                            }))
                     && size == OperandSize::Byte)
                     || (instruction.opcode.byte == 0xad
-                        && instruction.prefixes == Prefixes::default()
+                        && (instruction.prefixes == Prefixes::default()
+                            || instruction.prefixes
+                                == (Prefixes {
+                                    address_override: true,
+                                    ..Prefixes::default()
+                                }))
                         && size == OperandSize::Dword)
                     || (instruction.opcode.byte == 0xad
-                        && instruction.prefixes
+                        && (instruction.prefixes
                             == (Prefixes {
                                 operand_override: true,
                                 ..Prefixes::default()
                             })
+                            || instruction.prefixes
+                                == (Prefixes {
+                                    operand_override: true,
+                                    address_override: true,
+                                    ..Prefixes::default()
+                                }))
                         && size == OperandSize::Word)
                     || (instruction.opcode.byte == 0xad
                         && instruction.prefixes.group1.is_none()
                         && instruction.prefixes.segment.is_none()
-                        && !instruction.prefixes.address_override
                         && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
                         && size == OperandSize::Qword))
         }
@@ -2515,7 +2530,11 @@ fn step_tracked_with_stop(
                 index: None,
                 scale: 1,
                 displacement: 0,
-                address_size: OperandSize::Qword,
+                address_size: if instruction.prefixes.address_override {
+                    OperandSize::Dword
+                } else {
+                    OperandSize::Qword
+                },
                 size,
             });
             let value = match read_operand(state, memory, context, next_rip, source) {
@@ -2529,8 +2548,12 @@ fn step_tracked_with_stop(
             } else {
                 0u64.wrapping_sub(size.bytes() as u64)
             };
-            state.gpr[Register::Rsi as usize] =
-                state.gpr[Register::Rsi as usize].wrapping_add(step);
+            let next_rsi = state.gpr[Register::Rsi as usize].wrapping_add(step);
+            state.gpr[Register::Rsi as usize] = if instruction.prefixes.address_override {
+                next_rsi as u32 as u64
+            } else {
+                next_rsi
+            };
         }
         Operation::RepStos { size } => {
             let mut completed = 0;
@@ -5766,6 +5789,398 @@ mod tests {
     }
 
     #[test]
+    fn lods_address32_success_matrix_truncates_initial_and_updated_rsi() {
+        let forms = [
+            (&[0x67, 0xac][..], OperandSize::Byte),
+            (&[0x67, 0x66, 0xad][..], OperandSize::Word),
+            (&[0x67, 0xad][..], OperandSize::Dword),
+            (&[0x67, 0x48, 0xad][..], OperandSize::Qword),
+        ];
+        let rsi_high: [u32; 3] = [0, 0x1234_5678, 0xffff_ffff];
+        let sentinels = [0x1122_3344_5566_7788, 0xaabb_ccdd_eeff_0011];
+        let flags = [
+            crate::CF,
+            crate::PF,
+            crate::AF,
+            crate::ZF,
+            crate::SF,
+            crate::OF,
+        ];
+        let mut cases = 0;
+        for (code, size) in forms {
+            let sign = 1u64 << (size.bytes() * 8 - 1);
+            let mask = size.mask();
+            let values = [0, 1, sign - 1, sign, mask, 0x5555_5555_5555_5555 & mask];
+            for direction in [false, true] {
+                for value in values {
+                    for sentinel in sentinels {
+                        for flag_bits in 0..64 {
+                            for high in rsi_high {
+                                let mut memory = Memory::new(code);
+                                memory.bytes[..8].copy_from_slice(&value.to_le_bytes());
+                                let mut state = LongModeState::default();
+                                state.gpr = [0x8877_6655_4433_2211; 16];
+                                state.gpr[Register::Rax as usize] = sentinel;
+                                state.gpr[Register::Rsi as usize] =
+                                    (u64::from(high) << 32) | 0x1000;
+                                state.gpr[Register::Rcx as usize] = 0x1234_5678_9abc_def0;
+                                state.gpr[Register::Rdi as usize] = 0xfedc_ba98_7654_3210;
+                                state.rflags = 2 | if direction { 1 << 10 } else { 0 };
+                                for (index, flag) in flags.iter().enumerate() {
+                                    if flag_bits & (1 << index) != 0 {
+                                        state.rflags |= *flag;
+                                    }
+                                }
+                                state.fs_base = 0x1111;
+                                state.gs_base = 0x2222;
+                                state.fs_selector = 0x33;
+                                state.gs_selector = 0x44;
+                                state.gdtr = Some(Gdtr {
+                                    base: 0x5000,
+                                    limit: 0x123,
+                                });
+                                state.fs_cache = Some(crate::FsDescriptorCache {
+                                    limit: 0x4567,
+                                    access: 0x93,
+                                    flags: 0x0c,
+                                });
+                                state.gs_cache = state.fs_cache;
+                                state.x87 = Some(X87State::fixture_seed());
+                                let mut expected = state.clone();
+                                expected.write(RegisterView::low(Register::Rax, size), value);
+                                expected.gpr[Register::Rsi as usize] = if direction {
+                                    0x1000u64.wrapping_sub(size.bytes() as u64) as u32 as u64
+                                } else {
+                                    0x1000u64.wrapping_add(size.bytes() as u64) as u32 as u64
+                                };
+                                expected.rip = code.len() as u64;
+                                let before_ram = memory.bytes.clone();
+                                let result = run(
+                                    &mut state,
+                                    &mut memory,
+                                    RunConfig {
+                                        instruction_budget: 1,
+                                        stop_rip: Some(code.len() as u64),
+                                        context: AccessContext::default(),
+                                    },
+                                    || false,
+                                );
+                                assert_eq!(
+                                    result.exit,
+                                    RunExit::StopAddress,
+                                    "{code:02x?} rsi high={high:#x}"
+                                );
+                                assert_eq!(result.instructions_executed, 1);
+                                assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS);
+                                assert_eq!(state, expected);
+                                assert_eq!(memory.bytes, before_ram);
+                                assert_eq!(
+                                    memory.accesses,
+                                    [(AccessKind::Read, 0x1000, size.bytes())]
+                                );
+                                cases += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 18_432);
+    }
+
+    #[test]
+    fn lods_address32_boundary_successes_read_contiguous_ranges() {
+        let forms = [
+            (&[0x67, 0xac][..], OperandSize::Byte),
+            (&[0x67, 0x66, 0xad][..], OperandSize::Word),
+            (&[0x67, 0xad][..], OperandSize::Dword),
+            (&[0x67, 0x48, 0xad][..], OperandSize::Qword),
+        ];
+        let indices: [u32; 4] = [0, 0x1fff, 0xffff_fff8, 0xffff_ffff];
+        let highs: [u32; 3] = [0, 0x1234_5678, 0xffff_ffff];
+        let mut cases = 0;
+        for (code, size) in forms {
+            for direction in [false, true] {
+                for index in indices {
+                    for high in highs {
+                        let mut memory = Memory::new(code);
+                        memory.data_base = u64::from(index);
+                        memory.bytes = (0..32).map(|byte| byte as u8 ^ 0xa5).collect();
+                        let mut state = LongModeState::default();
+                        state.gpr = [0x8877_6655_4433_2211; 16];
+                        state.gpr[Register::Rax as usize] = 0xaabb_ccdd_eeff_0011;
+                        state.gpr[Register::Rsi as usize] =
+                            (u64::from(high) << 32) | u64::from(index);
+                        state.rflags = 2 | if direction { 1 << 10 } else { 0 };
+                        let mut expected = state.clone();
+                        let mut lane = [0u8; 8];
+                        lane[..size.bytes()].copy_from_slice(&memory.bytes[..size.bytes()]);
+                        expected.write(
+                            RegisterView::low(Register::Rax, size),
+                            u64::from_le_bytes(lane),
+                        );
+                        let next = if direction {
+                            index.wrapping_sub(size.bytes() as u32)
+                        } else {
+                            index.wrapping_add(size.bytes() as u32)
+                        };
+                        expected.gpr[Register::Rsi as usize] = u64::from(next);
+                        expected.rip = code.len() as u64;
+                        let before_ram = memory.bytes.clone();
+                        let result = run(
+                            &mut state,
+                            &mut memory,
+                            RunConfig {
+                                instruction_budget: 1,
+                                stop_rip: Some(code.len() as u64),
+                                context: AccessContext::default(),
+                            },
+                            || false,
+                        );
+                        assert_eq!(
+                            result.exit,
+                            RunExit::StopAddress,
+                            "{code:02x?} index={index:#x} high={high:#x}"
+                        );
+                        assert_eq!(result.instructions_executed, 1);
+                        assert_eq!(state, expected);
+                        assert_eq!(memory.bytes, before_ram);
+                        assert_eq!(
+                            memory.accesses,
+                            [(AccessKind::Read, u64::from(index), size.bytes())]
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 96);
+    }
+
+    #[test]
+    fn lods_address32_read_errors_leave_full_state_uncommitted() {
+        let forms = [
+            (&[0x67, 0xac][..], OperandSize::Byte),
+            (&[0x67, 0x66, 0xad][..], OperandSize::Word),
+            (&[0x67, 0xad][..], OperandSize::Dword),
+            (&[0x67, 0x48, 0xad][..], OperandSize::Qword),
+        ];
+        let errors = [
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(4),
+                linear_address: Some(0x2000),
+            }),
+            MemoryError::Unmapped {
+                address: 0x2000,
+                access: AccessKind::Read,
+            },
+            MemoryError::PermissionDenied {
+                address: 0x2000,
+                access: AccessKind::Read,
+            },
+            MemoryError::Backend("injected LODS read error".into()),
+        ];
+        let highs: [u32; 3] = [0, 0x1234_5678, 0xffff_ffff];
+        let mut cases = 0;
+        for (code, size) in forms {
+            for direction in [false, true] {
+                for high in highs {
+                    for error in &errors {
+                        let mut memory = Memory::new(code);
+                        memory.error_kind = Some(AccessKind::Read);
+                        memory.error = Some(error.clone());
+                        let mut state = LongModeState::default();
+                        state.gpr = [0x8877_6655_4433_2211; 16];
+                        state.gpr[Register::Rax as usize] = 0xaabb_ccdd_eeff_0011;
+                        state.gpr[Register::Rsi as usize] = (u64::from(high) << 32) | 0x2000;
+                        state.gpr[Register::Rcx as usize] = 0x1234_5678_9abc_def0;
+                        state.rflags = 2
+                            | crate::CF
+                            | crate::PF
+                            | crate::AF
+                            | crate::ZF
+                            | crate::SF
+                            | crate::OF
+                            | if direction { 1 << 10 } else { 0 };
+                        state.fs_base = 0x1111;
+                        state.gs_base = 0x2222;
+                        state.x87 = Some(X87State::fixture_seed());
+                        let before = state.clone();
+                        let before_ram = memory.bytes.clone();
+                        let result = run(
+                            &mut state,
+                            &mut memory,
+                            RunConfig {
+                                instruction_budget: 1,
+                                stop_rip: None,
+                                context: AccessContext::default(),
+                            },
+                            || false,
+                        );
+                        match error {
+                            MemoryError::Architectural(fault) => {
+                                assert_eq!(result.exit, RunExit::Fault(fault.clone()))
+                            }
+                            other => assert_eq!(result.exit, RunExit::MemoryError(other.clone())),
+                        }
+                        assert_eq!(result.instructions_executed, 0);
+                        assert_eq!(state, before);
+                        assert_eq!(memory.bytes, before_ram);
+                        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, size.bytes())]);
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 96);
+    }
+
+    #[test]
+    fn lods_address32_prefix_normalization_and_flag_direction_composition() {
+        for (code, size) in [
+            (&[0x66, 0x67, 0xad][..], OperandSize::Word),
+            (&[0x67, 0x48, 0x66, 0xad][..], OperandSize::Word),
+            (&[0x48, 0x67, 0xad][..], OperandSize::Dword),
+            (&[0x67, 0x66, 0x48, 0xad][..], OperandSize::Qword),
+        ] {
+            let mut memory = Memory::new(code);
+            let mut state = LongModeState::default();
+            state.gpr[Register::Rsi as usize] = 0x1234_5678_0000_1000;
+            state.gpr[Register::Rax as usize] = 0xaabb_ccdd_eeff_0011;
+            let mut expected = state.clone();
+            let mut lane = [0u8; 8];
+            lane[..size.bytes()].copy_from_slice(&memory.bytes[..size.bytes()]);
+            expected.write(
+                RegisterView::low(Register::Rax, size),
+                u64::from_le_bytes(lane),
+            );
+            expected.gpr[Register::Rsi as usize] = 0x1000 + size.bytes() as u64;
+            expected.rip = code.len() as u64;
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(code.len() as u64),
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress, "{code:02x?}");
+            assert_eq!(state, expected, "{code:02x?}");
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, size.bytes())]);
+        }
+
+        let code = [0xa9, 0, 0, 0, 0, 0xfc, 0x67, 0xac, 0xfd, 0x67, 0xac];
+        let mut memory = Memory::new(&code);
+        let mut state = LongModeState::default();
+        state.gpr[Register::Rsi as usize] = 0xffff_ffff_0000_1000;
+        state.gpr[Register::Rcx as usize] = 0;
+        let result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 5,
+                stop_rip: Some(code.len() as u64),
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 5);
+        assert_eq!(result.rflags_defined & crate::AF, 0);
+        assert_ne!(state.rflags & (1 << 10), 0);
+        assert_eq!(state.gpr[Register::Rsi as usize], 0x1000);
+        assert_eq!(state.gpr[Register::Rax as usize] & 0xff, 1);
+        assert_eq!(state.gpr[Register::Rcx as usize], 0);
+        assert_eq!(
+            memory.accesses,
+            [(AccessKind::Read, 0x1000, 1), (AccessKind::Read, 0x1001, 1)]
+        );
+    }
+
+    #[test]
+    fn lods_address32_fetch_budget_and_stop_boundaries_do_not_read_data() {
+        for code in [
+            &[0x67, 0xac][..],
+            &[0x67, 0x66, 0xad][..],
+            &[0x67, 0xad][..],
+            &[0x67, 0x48, 0xad][..],
+        ] {
+            for cut in 0..code.len() {
+                let mut memory = Memory::new(&code[..cut]);
+                let mut state = LongModeState::default();
+                state.gpr[Register::Rsi as usize] = 0xffff_ffff_0000_1000;
+                state.gpr[Register::Rax as usize] = 0xaabb_ccdd_eeff_0011;
+                let before = state.clone();
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(
+                    result.exit,
+                    RunExit::MemoryError(MemoryError::Unmapped {
+                        address: cut as u64,
+                        access: AccessKind::Fetch
+                    }),
+                    "{code:02x?} cut={cut}"
+                );
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
+            }
+            for (budget, stop_rip, expected_exit) in [
+                (0, None, RunExit::InstructionBudgetExhausted),
+                (1, Some(0), RunExit::StopAddress),
+            ] {
+                let mut memory = Memory::new(code);
+                let mut state = LongModeState::default();
+                state.gpr[Register::Rsi as usize] = 0x1234_5678_0000_1000;
+                let before = state.clone();
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: budget,
+                        stop_rip,
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(result.exit, expected_exit);
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
+            }
+            let mut memory = Memory::new(code);
+            let mut state = LongModeState::default();
+            state.gpr[Register::Rsi as usize] = 0x1234_5678_0000_1000;
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || true,
+            );
+            assert_eq!(result.exit, RunExit::StopRequested);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
     fn lods_read_fault_preserves_architectural_state_and_has_no_writes() {
         for code in [
             &[0xac][..],
@@ -6088,11 +6503,16 @@ mod tests {
 
     #[test]
     fn lods_prefix_rejects_leave_cpu_and_data_memory_untouched() {
-        let forms: [&[u8]; 4] = [&[0xac], &[0x66, 0xad], &[0xad], &[0x48, 0xad]];
+        let forms: [&[u8]; 4] = [
+            &[0x67, 0xac],
+            &[0x67, 0x66, 0xad],
+            &[0x67, 0xad],
+            &[0x67, 0x48, 0xad],
+        ];
         let prefixes: [&[u8]; 9] = [
             &[0xf0],
             &[0xf2],
-            &[0x67],
+            &[0xf3],
             &[0x26],
             &[0x2e],
             &[0x36],
@@ -6107,16 +6527,20 @@ mod tests {
             }
         }
         cases.extend([
-            vec![0x66, 0xac],
-            vec![0x40, 0xac],
-            vec![0x48, 0xac],
-            vec![0x40, 0xad],
-            vec![0x47, 0xad],
-            vec![0xf3, 0x66, 0xac],
-            vec![0xf2, 0xf3, 0xad],
-            vec![0x64, 0x65, 0xad],
+            vec![0x67, 0x67, 0xac],
+            vec![0x67, 0x67, 0x66, 0xad],
+            vec![0x67, 0x67, 0xad],
+            vec![0x67, 0x67, 0x48, 0xad],
+            vec![0x67, 0x66, 0xac],
         ]);
-        assert_eq!(cases.len(), 44);
+        for rex in 0x40..=0x4f {
+            cases.push(vec![0x67, rex, 0xac]);
+        }
+        for rex in (0x40..=0x4f).filter(|rex| rex & 8 == 0) {
+            cases.push(vec![0x67, rex, 0xad]);
+            cases.push(vec![0x67, 0x66, rex, 0xad]);
+        }
+        assert_eq!(cases.len(), 73);
         let mut rejected = 0;
         for code in cases {
             let opcode = *code.last().unwrap();
@@ -6134,7 +6558,7 @@ mod tests {
             assert!(memory.accesses.is_empty(), "{code:02x?}");
             rejected += 1;
         }
-        assert_eq!(rejected, 44);
+        assert_eq!(rejected, 73);
 
         let mut byte_prefixes = vec![vec![0x66, 0xac]];
         byte_prefixes.extend((0x40..=0x4f).map(|rex| vec![rex, 0xac]));

@@ -4844,4 +4844,27 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn s2_18k_addr32_lods_forms_fail_native_admission_before_tracee_or_snapshot() {
+        for code in [
+            &[0x67, 0xac][..],       // LODSB, address-size 32
+            &[0x67, 0x66, 0xad][..], // LODSW, address-size 32
+            &[0x67, 0xad][..],       // LODSD, address-size 32
+            &[0x67, 0x48, 0xad][..], // LODSQ, address-size 32
+        ] {
+            let loaded = fixture(code);
+            let mut actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            actual.gpr[6] = 0xffff_ffff_0020_0000;
+            let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            // `admission` passes no tracee PID and returns only flag effects or
+            // an error; rejected instructions cannot produce a guest snapshot.
+            let error = admission(&loaded.fixture, &mut decoder, &actual)
+                .expect_err("address-size-32 LODS must remain outside native execution");
+            assert!(
+                error.contains("not in data-transfer/integer arithmetic/direct-branch allowlist"),
+                "unexpected admission error for {code:02x?}: {error}"
+            );
+        }
+    }
 }
