@@ -92,7 +92,17 @@ pub trait CachedBlockBackend {
     ) -> Result<BlockExecutionReport, Self::Error>;
 }
 
+/// Capacity contract for backends that can retain more than one published
+/// block at once. This stays separate so existing single-block backends keep
+/// their current implementation and release-on-return API.
+pub trait MultiBlockCachedBackend: CachedBlockBackend {
+    fn published_block_capacity(&self) -> usize;
+}
+
 pub const MAX_SINGLE_ENTRY_CACHE_BYTES: usize = 512 * 1024;
+pub const MAX_MULTI_ENTRY_CACHE_BLOCKS: usize = 16;
+pub const MAX_MULTI_ENTRY_CACHE_CODE_BYTES: usize = 65_536;
+pub const MAX_MULTI_ENTRY_CACHE_METADATA_BYTES: usize = 512 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CacheConfigError {
@@ -105,6 +115,7 @@ pub enum CacheError {
     EntryTooLarge { actual: usize, max: usize },
     MinimumEntryTooLarge { minimum: usize, max: usize },
     SizeOverflow,
+    CounterOverflow,
 }
 
 struct CachedEntry<H> {
@@ -112,6 +123,28 @@ struct CachedEntry<H> {
     block: crate::block_compile::CompiledBlock,
     published: H,
     logical_bytes: usize,
+}
+
+trait CachedEntryStore<H> {
+    fn find(&self, key: &TranslationKey) -> Option<usize>;
+    fn entry(&self, index: usize) -> Option<&CachedEntry<H>>;
+    fn check_minimum(&self, minimum: usize) -> Result<(), CacheError>;
+    fn size_for_candidate(
+        &self,
+        key: &TranslationKey,
+        block: &crate::block_compile::CompiledBlock,
+    ) -> Result<usize, CacheError>;
+    fn prepare_install(
+        &mut self,
+        code_bytes: usize,
+        logical_bytes: usize,
+    ) -> Result<(), CacheError>;
+    fn install(&mut self, entry: CachedEntry<H>) -> Result<usize, CacheError>;
+    fn remove(&mut self, index: usize) -> Result<(), CacheError>;
+    fn record_hit(&mut self) -> Result<(), CacheError>;
+    fn record_miss(&mut self) -> Result<(), CacheError>;
+    fn record_compile(&mut self) -> Result<(), CacheError>;
+    fn record_publish(&mut self) -> Result<(), CacheError>;
 }
 
 /// Explicitly bounded one-entry cache. Published host memory stays alive only
@@ -159,20 +192,310 @@ impl<H> SingleEntryBlockCache<H> {
         self.entry = None;
     }
 
-    fn key(&self) -> Option<&TranslationKey> {
-        self.entry.as_ref().map(|entry| &entry.key)
-    }
-
-    fn cached_block(&self) -> Option<&crate::block_compile::CompiledBlock> {
-        self.entry.as_ref().map(|entry| &entry.block)
-    }
-
-    fn published(&self) -> Option<&H> {
-        self.entry.as_ref().map(|entry| &entry.published)
-    }
-
     fn install(&mut self, entry: CachedEntry<H>) {
         self.entry = Some(entry);
+    }
+}
+
+impl<H> CachedEntryStore<H> for SingleEntryBlockCache<H> {
+    fn find(&self, key: &TranslationKey) -> Option<usize> {
+        self.entry
+            .as_ref()
+            .filter(|entry| entry.key == *key)
+            .map(|_| 0)
+    }
+
+    fn entry(&self, index: usize) -> Option<&CachedEntry<H>> {
+        (index == 0).then(|| self.entry.as_ref()).flatten()
+    }
+
+    fn check_minimum(&self, minimum: usize) -> Result<(), CacheError> {
+        if minimum > self.max_bytes {
+            Err(CacheError::MinimumEntryTooLarge {
+                minimum,
+                max: self.max_bytes,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn size_for_candidate(
+        &self,
+        key: &TranslationKey,
+        block: &crate::block_compile::CompiledBlock,
+    ) -> Result<usize, CacheError> {
+        cached_entry_size::<H>(key, block)
+    }
+
+    fn prepare_install(
+        &mut self,
+        _code_bytes: usize,
+        logical_bytes: usize,
+    ) -> Result<(), CacheError> {
+        if logical_bytes > self.max_bytes {
+            return Err(CacheError::EntryTooLarge {
+                actual: logical_bytes,
+                max: self.max_bytes,
+            });
+        }
+        self.clear();
+        Ok(())
+    }
+
+    fn install(&mut self, entry: CachedEntry<H>) -> Result<usize, CacheError> {
+        SingleEntryBlockCache::install(self, entry);
+        Ok(0)
+    }
+
+    fn remove(&mut self, index: usize) -> Result<(), CacheError> {
+        if index == 0 {
+            self.clear();
+        }
+        Ok(())
+    }
+
+    fn record_hit(&mut self) -> Result<(), CacheError> {
+        Ok(())
+    }
+    fn record_miss(&mut self) -> Result<(), CacheError> {
+        Ok(())
+    }
+    fn record_compile(&mut self) -> Result<(), CacheError> {
+        Ok(())
+    }
+    fn record_publish(&mut self) -> Result<(), CacheError> {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MultiEntryCacheCounters {
+    pub hits: u64,
+    pub misses: u64,
+    pub successful_compiles: u64,
+    pub successful_publications: u64,
+    pub evictions: u64,
+    pub resident_code_bytes: usize,
+    pub resident_logical_metadata_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MultiEntryCacheConfigError {
+    InvalidEntryLimit { requested: usize, max: usize },
+    InvalidCodeLimit { requested: usize, max: usize },
+    InvalidMetadataLimit { requested: usize, max: usize },
+    BackendCapacityTooSmall { requested: usize, available: usize },
+}
+
+/// Bounded FIFO cache for published blocks. A hit does not refresh insertion
+/// order. Limits account for emitted bytes and logical key/block/publication
+/// metadata, not allocator bookkeeping or process RSS.
+pub struct MultiEntryBlockCache<H> {
+    max_entries: usize,
+    max_code_bytes: usize,
+    max_metadata_bytes: usize,
+    entries: Vec<CachedEntry<H>>,
+    counters: MultiEntryCacheCounters,
+}
+
+impl<H> MultiEntryBlockCache<H> {
+    pub fn new(
+        max_entries: usize,
+        max_code_bytes: usize,
+        max_metadata_bytes: usize,
+    ) -> Result<Self, MultiEntryCacheConfigError> {
+        if max_entries == 0 || max_entries > MAX_MULTI_ENTRY_CACHE_BLOCKS {
+            return Err(MultiEntryCacheConfigError::InvalidEntryLimit {
+                requested: max_entries,
+                max: MAX_MULTI_ENTRY_CACHE_BLOCKS,
+            });
+        }
+        if max_code_bytes == 0 || max_code_bytes > MAX_MULTI_ENTRY_CACHE_CODE_BYTES {
+            return Err(MultiEntryCacheConfigError::InvalidCodeLimit {
+                requested: max_code_bytes,
+                max: MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            });
+        }
+        if max_metadata_bytes == 0 || max_metadata_bytes > MAX_MULTI_ENTRY_CACHE_METADATA_BYTES {
+            return Err(MultiEntryCacheConfigError::InvalidMetadataLimit {
+                requested: max_metadata_bytes,
+                max: MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            });
+        }
+        Ok(Self {
+            max_entries,
+            max_code_bytes,
+            max_metadata_bytes,
+            entries: Vec::with_capacity(max_entries),
+            counters: MultiEntryCacheCounters::default(),
+        })
+    }
+
+    pub const fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+    pub const fn max_code_bytes(&self) -> usize {
+        self.max_code_bytes
+    }
+    pub const fn max_metadata_bytes(&self) -> usize {
+        self.max_metadata_bytes
+    }
+    pub const fn counters(&self) -> MultiEntryCacheCounters {
+        self.counters
+    }
+    pub fn resident_entries(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.counters.resident_code_bytes = 0;
+        self.counters.resident_logical_metadata_bytes = 0;
+    }
+
+    fn add_counter(counter: &mut u64) -> Result<(), CacheError> {
+        *counter = counter.checked_add(1).ok_or(CacheError::CounterOverflow)?;
+        Ok(())
+    }
+
+    fn evict_oldest(&mut self) -> Result<(), CacheError> {
+        let oldest = self.entries.first().ok_or(CacheError::SizeOverflow)?;
+        let oldest_code_bytes = emitted_code_bytes(&oldest.block)?;
+        let code_bytes = self
+            .counters
+            .resident_code_bytes
+            .checked_sub(oldest_code_bytes)
+            .ok_or(CacheError::SizeOverflow)?;
+        let metadata_bytes = self
+            .counters
+            .resident_logical_metadata_bytes
+            .checked_sub(oldest.logical_bytes)
+            .ok_or(CacheError::SizeOverflow)?;
+        let entry = self.entries.remove(0);
+        self.counters.resident_code_bytes = code_bytes;
+        self.counters.resident_logical_metadata_bytes = metadata_bytes;
+        Self::add_counter(&mut self.counters.evictions)?;
+        drop(entry);
+        Ok(())
+    }
+}
+
+impl<H> CachedEntryStore<H> for MultiEntryBlockCache<H> {
+    fn find(&self, key: &TranslationKey) -> Option<usize> {
+        self.entries.iter().position(|entry| entry.key == *key)
+    }
+
+    fn entry(&self, index: usize) -> Option<&CachedEntry<H>> {
+        self.entries.get(index)
+    }
+
+    fn check_minimum(&self, minimum: usize) -> Result<(), CacheError> {
+        if minimum > self.max_metadata_bytes {
+            Err(CacheError::MinimumEntryTooLarge {
+                minimum,
+                max: self.max_metadata_bytes,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn size_for_candidate(
+        &self,
+        key: &TranslationKey,
+        block: &crate::block_compile::CompiledBlock,
+    ) -> Result<usize, CacheError> {
+        cached_entry_metadata_size::<H>(key, block)
+    }
+
+    fn prepare_install(
+        &mut self,
+        code_bytes: usize,
+        logical_bytes: usize,
+    ) -> Result<(), CacheError> {
+        if code_bytes > self.max_code_bytes {
+            return Err(CacheError::EntryTooLarge {
+                actual: code_bytes,
+                max: self.max_code_bytes,
+            });
+        }
+        if logical_bytes > self.max_metadata_bytes {
+            return Err(CacheError::EntryTooLarge {
+                actual: logical_bytes,
+                max: self.max_metadata_bytes,
+            });
+        }
+        while self.entries.len() >= self.max_entries
+            || self
+                .counters
+                .resident_code_bytes
+                .checked_add(code_bytes)
+                .ok_or(CacheError::SizeOverflow)?
+                > self.max_code_bytes
+            || self
+                .counters
+                .resident_logical_metadata_bytes
+                .checked_add(logical_bytes)
+                .ok_or(CacheError::SizeOverflow)?
+                > self.max_metadata_bytes
+        {
+            self.evict_oldest()?;
+        }
+        Ok(())
+    }
+
+    fn install(&mut self, entry: CachedEntry<H>) -> Result<usize, CacheError> {
+        let entry_code_bytes = emitted_code_bytes(&entry.block)?;
+        let code_bytes = self
+            .counters
+            .resident_code_bytes
+            .checked_add(entry_code_bytes)
+            .ok_or(CacheError::SizeOverflow)?;
+        let metadata_bytes = self
+            .counters
+            .resident_logical_metadata_bytes
+            .checked_add(entry.logical_bytes)
+            .ok_or(CacheError::SizeOverflow)?;
+        self.counters.resident_code_bytes = code_bytes;
+        self.counters.resident_logical_metadata_bytes = metadata_bytes;
+        self.entries.push(entry);
+        Ok(self.entries.len() - 1)
+    }
+
+    fn remove(&mut self, index: usize) -> Result<(), CacheError> {
+        if index < self.entries.len() {
+            let current = &self.entries[index];
+            let code_bytes = emitted_code_bytes(&current.block)?;
+            let resident_code_bytes = self
+                .counters
+                .resident_code_bytes
+                .checked_sub(code_bytes)
+                .ok_or(CacheError::SizeOverflow)?;
+            let resident_metadata_bytes = self
+                .counters
+                .resident_logical_metadata_bytes
+                .checked_sub(current.logical_bytes)
+                .ok_or(CacheError::SizeOverflow)?;
+            let entry = self.entries.remove(index);
+            self.counters.resident_code_bytes = resident_code_bytes;
+            self.counters.resident_logical_metadata_bytes = resident_metadata_bytes;
+            drop(entry);
+        }
+        Ok(())
+    }
+
+    fn record_hit(&mut self) -> Result<(), CacheError> {
+        Self::add_counter(&mut self.counters.hits)
+    }
+    fn record_miss(&mut self) -> Result<(), CacheError> {
+        Self::add_counter(&mut self.counters.misses)
+    }
+    fn record_compile(&mut self) -> Result<(), CacheError> {
+        Self::add_counter(&mut self.counters.successful_compiles)
+    }
+    fn record_publish(&mut self) -> Result<(), CacheError> {
+        Self::add_counter(&mut self.counters.successful_publications)
     }
 }
 
@@ -208,6 +531,7 @@ pub enum DispatchError<E> {
     TranslationKey(TranslationKeyError),
     StaleDependencySnapshot,
     Cache(CacheError),
+    MultiCacheConfig(MultiEntryCacheConfigError),
     CachePublish(E),
     CacheExecutor(E),
     NopAdmissionDoesNotMatchCode,
@@ -260,6 +584,90 @@ pub fn run_cached_controlled<B: CachedBlockBackend>(
     cache: &mut SingleEntryBlockCache<B::Published>,
     backend: &mut B,
 ) -> Result<DispatchResult, DispatchError<B::Error>> {
+    run_cached_store_controlled(
+        code,
+        admission,
+        dependencies,
+        state,
+        total_budget,
+        control,
+        cache,
+        backend,
+    )
+}
+
+/// Run through the bounded FIFO cache. The configured entry count must fit
+/// the backend's simultaneously published-block capacity.
+pub fn run_multi_cached<B: MultiBlockCachedBackend>(
+    code: CodeView<'_>,
+    admission: &AdmittedInstructionBoundaries,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    cache: &mut MultiEntryBlockCache<B::Published>,
+    backend: &mut B,
+) -> Result<DispatchResult, DispatchError<B::Error>> {
+    let no_stop = AtomicU8::new(0);
+    run_multi_cached_controlled(
+        code,
+        admission,
+        dependencies,
+        state,
+        total_budget,
+        DispatchControl {
+            stop_rip: None,
+            stop_requested: &no_stop,
+        },
+        cache,
+        backend,
+    )
+}
+
+pub fn run_multi_cached_controlled<B: MultiBlockCachedBackend>(
+    code: CodeView<'_>,
+    admission: &AdmittedInstructionBoundaries,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    cache: &mut MultiEntryBlockCache<B::Published>,
+    backend: &mut B,
+) -> Result<DispatchResult, DispatchError<B::Error>> {
+    let capacity = backend.published_block_capacity();
+    if cache.max_entries() > capacity {
+        return Err(DispatchError::MultiCacheConfig(
+            MultiEntryCacheConfigError::BackendCapacityTooSmall {
+                requested: cache.max_entries(),
+                available: capacity,
+            },
+        ));
+    }
+    run_cached_store_controlled(
+        code,
+        admission,
+        dependencies,
+        state,
+        total_budget,
+        control,
+        cache,
+        backend,
+    )
+}
+
+fn run_cached_store_controlled<B, C>(
+    code: CodeView<'_>,
+    admission: &AdmittedInstructionBoundaries,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    cache: &mut C,
+    backend: &mut B,
+) -> Result<DispatchResult, DispatchError<B::Error>>
+where
+    B: CachedBlockBackend,
+    C: CachedEntryStore<B::Published>,
+{
     if !admission.matches_code(code) {
         return Err(DispatchError::AdmissionDoesNotMatchCode);
     }
@@ -314,12 +722,7 @@ pub fn run_cached_controlled<B: CachedBlockBackend>(
         };
         let minimum = minimum_cache_key_size::<B::Published>(code, dependencies, guest_block)
             .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
-        if minimum > cache.max_bytes() {
-            return Err(DispatchError::Cache(CacheError::MinimumEntryTooLarge {
-                minimum,
-                max: cache.max_bytes(),
-            }));
-        }
+        cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
         let key = TranslationKey::for_block(
             code,
             guest_block,
@@ -329,12 +732,14 @@ pub fn run_cached_controlled<B: CachedBlockBackend>(
         .map_err(DispatchError::TranslationKey)?;
         validate_cached_snapshot(&key, code, dependencies)?;
 
-        let hit = cache.key().is_some_and(|resident| resident == &key)
-            && cache
-                .key()
-                .is_some_and(|resident| resident.matches_code_view(code));
+        let hit = cache.find(&key).is_some();
+        if hit {
+            cache.record_hit().map_err(DispatchError::Cache)?;
+        } else {
+            cache.record_miss().map_err(DispatchError::Cache)?;
+        }
 
-        if !hit {
+        let cached_index = if !hit {
             let compiled = match compile_prepared_dispatch_block(code.code_end(), built, admission)
                 .map_err(DispatchError::Compile)?
             {
@@ -343,56 +748,53 @@ pub fn run_cached_controlled<B: CachedBlockBackend>(
                     return Err(DispatchError::NoNativePrefix { rip });
                 }
             };
-            let logical_bytes =
-                cached_entry_size::<B::Published>(&key, &compiled).map_err(DispatchError::Cache)?;
-            if logical_bytes > cache.max_bytes() {
-                return Err(DispatchError::Cache(CacheError::EntryTooLarge {
-                    actual: logical_bytes,
-                    max: cache.max_bytes(),
-                }));
-            }
+            cache.record_compile().map_err(DispatchError::Cache)?;
+            let logical_bytes = cache
+                .size_for_candidate(&key, &compiled)
+                .map_err(DispatchError::Cache)?;
+            let code_bytes = emitted_code_bytes(&compiled).map_err(DispatchError::Cache)?;
+            cache
+                .prepare_install(code_bytes, logical_bytes)
+                .map_err(DispatchError::Cache)?;
 
             validate_cached_snapshot(&key, code, dependencies)?;
 
-            // MAP_JIT is a process-wide singleton lease on the supported host.
-            // Release the previous owner before requesting another publication.
-            cache.clear();
             let published = backend
                 .publish_cached_block(&compiled)
                 .map_err(DispatchError::CachePublish)?;
-            if !key.matches_code_view(code) {
-                drop(published);
-                return Err(DispatchError::StaleDependencySnapshot);
-            }
-            if let Err(error) = validate_cached_snapshot(&key, code, dependencies) {
-                drop(published);
-                return Err(error);
-            }
-            cache.install(CachedEntry {
-                key,
-                block: compiled,
-                published,
-                logical_bytes,
-            });
-        }
+            cache.record_publish().map_err(DispatchError::Cache)?;
+            let published = validate_published_candidate(&key, code, dependencies, published)?;
+            let index = cache
+                .install(CachedEntry {
+                    key,
+                    block: compiled,
+                    published,
+                    logical_bytes,
+                })
+                .map_err(DispatchError::Cache)?;
+            index
+        } else {
+            cache.find(&key).expect("hit index still resident")
+        };
 
-        let cached_key = cache.key().expect("cache entry installed or hit");
+        let cached_key = &cache.entry(cached_index).expect("cache index valid").key;
         if let Err(error) = validate_cached_snapshot(cached_key, code, dependencies) {
-            cache.clear();
+            cache.remove(cached_index).map_err(DispatchError::Cache)?;
             return Err(error);
         }
         if !cached_key.matches_code_view(code) {
-            cache.clear();
+            cache.remove(cached_index).map_err(DispatchError::Cache)?;
             return Err(DispatchError::StaleDependencySnapshot);
         }
-        let cached_block = cache.cached_block().expect("cache entry installed or hit");
-        let published = cache.published().expect("cache entry installed or hit");
+        let cached = cache.entry(cached_index).expect("cache index valid");
+        let cached_block = &cached.block;
+        let published = &cached.published;
         let execution =
             backend.execute_cached_block(published, cached_block, state, remaining, control);
         let report = match execution {
             Ok(report) => report,
             Err(error) => {
-                cache.clear();
+                cache.remove(cached_index).map_err(DispatchError::Cache)?;
                 return Err(DispatchError::CacheExecutor(error));
             }
         };
@@ -459,6 +861,19 @@ fn validate_cached_snapshot<E>(
     Ok(())
 }
 
+fn validate_published_candidate<E, H>(
+    key: &TranslationKey,
+    code: CodeView<'_>,
+    dependencies: &[CodeDependencySpan],
+    published: H,
+) -> Result<H, DispatchError<E>> {
+    if !key.matches_code_view(code) {
+        return Err(DispatchError::StaleDependencySnapshot);
+    }
+    validate_cached_snapshot(key, code, dependencies)?;
+    Ok(published)
+}
+
 fn cached_entry_size<H>(
     key: &TranslationKey,
     block: &crate::block_compile::CompiledBlock,
@@ -480,6 +895,40 @@ fn cached_entry_size<H>(
         .checked_add(compiled_bytes)
         .and_then(|total| total.checked_add(published_copy))
         .and_then(|total| total.checked_add(std::mem::size_of::<CachedEntry<H>>()))
+        .ok_or(CacheError::SizeOverflow)
+}
+
+fn cached_entry_metadata_size<H>(
+    key: &TranslationKey,
+    block: &crate::block_compile::CompiledBlock,
+) -> Result<usize, CacheError> {
+    let key_bytes = key
+        .logical_storage_bytes()
+        .ok_or(CacheError::SizeOverflow)?
+        .checked_sub(std::mem::size_of::<TranslationKey>())
+        .ok_or(CacheError::SizeOverflow)?;
+    let map_bytes = block
+        .emitted()
+        .pc_map()
+        .logical_storage_bytes()
+        .ok_or(CacheError::SizeOverflow)?;
+    std::mem::size_of::<CachedEntry<H>>()
+        .checked_add(key_bytes)
+        .and_then(|sum| {
+            map_bytes
+                .checked_mul(2)
+                .and_then(|maps| sum.checked_add(maps))
+        })
+        .ok_or(CacheError::SizeOverflow)
+}
+
+fn emitted_code_bytes(block: &crate::block_compile::CompiledBlock) -> Result<usize, CacheError> {
+    block
+        .emitted()
+        .code()
+        .words()
+        .len()
+        .checked_mul(std::mem::size_of::<u32>())
         .ok_or(CacheError::SizeOverflow)
 }
 
@@ -1087,12 +1536,15 @@ mod tests {
     #[derive(Default)]
     struct PublishedTracker {
         publishes: usize,
+        executions: usize,
         live: usize,
         max_live: usize,
         drops: usize,
         fail_publish: bool,
         loop_to_entry: bool,
         request_stop_once: bool,
+        allow_multiple_live: bool,
+        capacity: usize,
     }
 
     struct MockPublished(Rc<RefCell<PublishedTracker>>);
@@ -1120,7 +1572,9 @@ mod tests {
             if tracker.fail_publish {
                 return Err("publish failed");
             }
-            assert_eq!(tracker.live, 0, "old mapping must drop before publish");
+            if !tracker.allow_multiple_live {
+                assert_eq!(tracker.live, 0, "old mapping must drop before publish");
+            }
             tracker.publishes += 1;
             tracker.live += 1;
             tracker.max_live = tracker.max_live.max(tracker.live);
@@ -1138,6 +1592,7 @@ mod tests {
         ) -> Result<BlockExecutionReport, Self::Error> {
             let (loop_to_entry, request_stop_once) = {
                 let mut tracker = self.0.borrow_mut();
+                tracker.executions += 1;
                 let request_stop = tracker.request_stop_once;
                 tracker.request_stop_once = false;
                 (tracker.loop_to_entry, request_stop)
@@ -1163,6 +1618,17 @@ mod tests {
         }
     }
 
+    impl MultiBlockCachedBackend for MockCachedBackend {
+        fn published_block_capacity(&self) -> usize {
+            let capacity = self.0.borrow().capacity;
+            if capacity == 0 {
+                MAX_MULTI_ENTRY_CACHE_BLOCKS
+            } else {
+                capacity
+            }
+        }
+    }
+
     fn dependency(code: CodeView<'_>, version: u64) -> [CodeDependencySpan; 1] {
         let nz = |value| NonZeroU64::new(value).unwrap();
         [CodeDependencySpan {
@@ -1184,6 +1650,29 @@ mod tests {
         base: u64,
     ) -> (CodeView<'a>, AdmittedInstructionBoundaries) {
         admitted(bytes, base)
+    }
+
+    fn run_multi_fixture(
+        bytes: &[u8],
+        base: u64,
+        cache: &mut MultiEntryBlockCache<MockPublished>,
+        backend: &mut MockCachedBackend,
+    ) -> Result<DispatchResult, DispatchError<&'static str>> {
+        let (view, admission) = cached_fixture(bytes, base);
+        let dependencies = dependency(view, 1);
+        let mut state = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+        run_multi_cached(
+            view,
+            &admission,
+            &dependencies,
+            &mut state,
+            1,
+            cache,
+            backend,
+        )
     }
 
     #[test]
@@ -1715,6 +2204,65 @@ mod tests {
             1,
             "cache hit must not republish"
         );
+        let built = build_dispatch_block(view, view.base_rip(), &admission).unwrap();
+        let source = match &built {
+            crate::block::BuildOutcome::Block(block) => block,
+            _ => panic!("self-loop fixture should produce a block"),
+        };
+        let deps = dependency(view, 1);
+        let key =
+            TranslationKey::for_block(view, source, CompileFlavor::S0_09FixtureDispatch, &deps)
+                .unwrap();
+        let compiled =
+            match compile_prepared_dispatch_block(view.code_end(), built, &admission).unwrap() {
+                BlockCompileOutcome::Compiled(block) => block,
+                _ => panic!("self-loop fixture should compile"),
+            };
+        let expected_legacy_bytes = key
+            .logical_storage_bytes()
+            .unwrap()
+            .checked_add(compiled.logical_storage_bytes().unwrap())
+            .and_then(|size| size.checked_add(compiled.emitted().logical_storage_bytes().unwrap()))
+            .and_then(|size| size.checked_add(std::mem::size_of::<CachedEntry<MockPublished>>()))
+            .unwrap();
+        assert_eq!(cache.resident_logical_bytes(), expected_legacy_bytes);
+
+        let mut exact_limit_cache = SingleEntryBlockCache::new(1, expected_legacy_bytes).unwrap();
+        let exact_tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut exact_backend = MockCachedBackend(exact_tracker.clone());
+        let mut exact_state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        run_cached(
+            view,
+            &admission,
+            &deps,
+            &mut exact_state,
+            1,
+            &mut exact_limit_cache,
+            &mut exact_backend,
+        )
+        .unwrap();
+        assert_eq!(
+            exact_limit_cache.resident_logical_bytes(),
+            expected_legacy_bytes
+        );
+
+        let mut short_limit_cache =
+            SingleEntryBlockCache::new(1, expected_legacy_bytes - 1).unwrap();
+        let short_tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut short_backend = MockCachedBackend(short_tracker.clone());
+        let mut short_state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        assert!(matches!(
+            run_cached(view, &admission, &deps, &mut short_state, 1, &mut short_limit_cache, &mut short_backend),
+            Err(DispatchError::Cache(CacheError::EntryTooLarge { actual, max }))
+                if actual == expected_legacy_bytes && max == expected_legacy_bytes - 1
+        ));
+        assert_eq!(short_tracker.borrow().publishes, 0);
     }
 
     #[test]
@@ -2044,5 +2592,314 @@ mod tests {
         .unwrap();
         assert_eq!(next_call.exit, DispatchExit::CodeEnd);
         assert_eq!(tracker.borrow().publishes, 1);
+    }
+
+    #[test]
+    fn multi_entry_cache_reuses_a_b_a_and_self_loop_without_refreshing_fifo_order() {
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            allow_multiple_live: true,
+            ..PublishedTracker::default()
+        }));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache =
+            MultiEntryBlockCache::new(2, 4096, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES).unwrap();
+        let a = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let b = [0x48, 0xB8, 2, 0, 0, 0, 0, 0, 0, 0];
+        run_multi_fixture(&a, 0x7000, &mut cache, &mut backend).unwrap();
+        run_multi_fixture(&b, 0x7000, &mut cache, &mut backend).unwrap();
+        run_multi_fixture(&a, 0x7000, &mut cache, &mut backend).unwrap();
+        assert_eq!(cache.counters().successful_compiles, 2);
+        assert_eq!(cache.counters().successful_publications, 2);
+        assert_eq!(cache.counters().hits, 1);
+        assert_eq!(tracker.borrow().live, 2);
+
+        let loop_code = [0x75, 0xFE];
+        let (view, admission) = cached_fixture(&loop_code, 0x7100);
+        let deps = dependency(view, 1);
+        let mut looping = MockCachedBackend(Rc::new(RefCell::new(PublishedTracker {
+            allow_multiple_live: true,
+            loop_to_entry: true,
+            ..PublishedTracker::default()
+        })));
+        let mut loop_cache =
+            MultiEntryBlockCache::new(2, 4096, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES).unwrap();
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        let result = run_multi_cached(
+            view,
+            &admission,
+            &deps,
+            &mut state,
+            3,
+            &mut loop_cache,
+            &mut looping,
+        )
+        .unwrap();
+        assert_eq!(result.exit, DispatchExit::BudgetExhausted);
+        assert_eq!(result.retired_instructions, 3);
+        assert_eq!(loop_cache.counters().successful_publications, 1);
+        assert_eq!(loop_cache.counters().hits, 2);
+    }
+
+    #[test]
+    fn multi_entry_cache_reuses_sixteen_keys_and_evicts_exact_fifo_victim() {
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            allow_multiple_live: true,
+            ..PublishedTracker::default()
+        }));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache =
+            MultiEntryBlockCache::new(16, 65_536, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES).unwrap();
+        let fixtures: Vec<[u8; 10]> = (0..17)
+            .map(|value| {
+                let mut bytes = [0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0];
+                bytes[2] = value;
+                bytes
+            })
+            .collect();
+        for bytes in &fixtures[..16] {
+            run_multi_fixture(bytes, 0x7200, &mut cache, &mut backend).unwrap();
+        }
+        for bytes in &fixtures[..16] {
+            run_multi_fixture(bytes, 0x7200, &mut cache, &mut backend).unwrap();
+        }
+        assert_eq!(cache.counters().successful_compiles, 16);
+        assert_eq!(cache.counters().successful_publications, 16);
+        assert_eq!(cache.counters().hits, 16);
+        assert_eq!(cache.resident_entries(), 16);
+
+        run_multi_fixture(&fixtures[16], 0x7200, &mut cache, &mut backend).unwrap();
+        assert_eq!(cache.counters().evictions, 1);
+        // The newest insertion did not refresh FIFO order: key 1 still hits,
+        // and key 0 was the exact victim and must compile again.
+        run_multi_fixture(&fixtures[1], 0x7200, &mut cache, &mut backend).unwrap();
+        run_multi_fixture(&fixtures[0], 0x7200, &mut cache, &mut backend).unwrap();
+        assert_eq!(cache.counters().successful_compiles, 18);
+        assert_eq!(cache.counters().hits, 17);
+        assert_eq!(cache.counters().evictions, 2);
+        assert!(cache.counters().resident_code_bytes <= cache.max_code_bytes());
+        assert!(cache.counters().resident_logical_metadata_bytes <= cache.max_metadata_bytes());
+    }
+
+    fn metadata_size_for_fixture(bytes: &[u8], base: u64) -> usize {
+        let (view, admission) = cached_fixture(bytes, base);
+        let built = build_dispatch_block(view, base, &admission).unwrap();
+        let guest = match &built {
+            crate::block::BuildOutcome::Block(block) => block,
+            _ => panic!(),
+        };
+        let deps = dependency(view, 1);
+        let key =
+            TranslationKey::for_block(view, guest, CompileFlavor::S0_09FixtureDispatch, &deps)
+                .unwrap();
+        let compiled =
+            match compile_prepared_dispatch_block(view.code_end(), built, &admission).unwrap() {
+                BlockCompileOutcome::Compiled(block) => block,
+                _ => panic!(),
+            };
+        cached_entry_metadata_size::<MockPublished>(&key, &compiled).unwrap()
+    }
+
+    #[test]
+    fn metadata_pressure_can_evict_multiple_entries_before_publish() {
+        let short_a = [0x48, 0xB8, 11, 0, 0, 0, 0, 0, 0, 0];
+        let short_b = [0x48, 0xB8, 12, 0, 0, 0, 0, 0, 0, 0];
+        // The first Jcc ends the compiled block. The complete admitted tail
+        // still increases key metadata without increasing emitted code.
+        let mut long = vec![0x74, 0x00];
+        for value in 0..20 {
+            long.extend_from_slice(&[0x48, 0xB8, value, 0, 0, 0, 0, 0, 0, 0]);
+        }
+        let small = metadata_size_for_fixture(&short_a, 0x7300);
+        let large = metadata_size_for_fixture(&long, 0x7300);
+        assert!(large > small);
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            allow_multiple_live: true,
+            ..PublishedTracker::default()
+        }));
+        let mut backend = MockCachedBackend(tracker);
+        let mut cache =
+            MultiEntryBlockCache::new(4, 65_536, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES).unwrap();
+        run_multi_fixture(&short_a, 0x7300, &mut cache, &mut backend).unwrap();
+        run_multi_fixture(&short_b, 0x7300, &mut cache, &mut backend).unwrap();
+        cache.max_metadata_bytes = large + small - 1;
+        run_multi_fixture(&long, 0x7300, &mut cache, &mut backend).unwrap();
+        assert_eq!(cache.counters().evictions, 2);
+        assert_eq!(cache.resident_entries(), 1);
+        assert_eq!(cache.counters().resident_logical_metadata_bytes, large);
+    }
+
+    #[test]
+    fn multi_cache_rejects_oversize_without_eviction_and_malformed_dependencies_without_execution()
+    {
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            allow_multiple_live: true,
+            ..PublishedTracker::default()
+        }));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache =
+            MultiEntryBlockCache::new(4, 4096, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES).unwrap();
+        let a = [0x48, 0xB8, 21, 0, 0, 0, 0, 0, 0, 0];
+        run_multi_fixture(&a, 0x7400, &mut cache, &mut backend).unwrap();
+        let existing_code = cache.counters().resident_code_bytes;
+        cache.max_code_bytes = existing_code;
+        let two = [
+            0x48, 0xB8, 22, 0, 0, 0, 0, 0, 0, 0, 0x48, 0xB8, 23, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert!(matches!(
+            run_multi_fixture(&two, 0x7400, &mut cache, &mut backend),
+            Err(DispatchError::Cache(CacheError::EntryTooLarge { .. }))
+        ));
+        assert_eq!(cache.resident_entries(), 1);
+        assert_eq!(cache.counters().evictions, 0);
+
+        let before_exec = tracker.borrow().executions;
+        let (view, admission) = cached_fixture(&a, 0x7400);
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        assert!(matches!(
+            run_multi_cached(
+                view,
+                &admission,
+                &[],
+                &mut state,
+                1,
+                &mut cache,
+                &mut backend
+            ),
+            Err(DispatchError::TranslationKey(_))
+        ));
+        assert_eq!(tracker.borrow().executions, before_exec);
+        assert_eq!(cache.resident_entries(), 1);
+    }
+
+    #[test]
+    fn post_publish_stale_candidate_is_dropped_before_entry_or_execution() {
+        let code = [0x48, 0xB8, 24, 0, 0, 0, 0, 0, 0, 0];
+        let (view, admission) = cached_fixture(&code, 0x7450);
+        let built = build_dispatch_block(view, view.base_rip(), &admission).unwrap();
+        let source = match &built {
+            crate::block::BuildOutcome::Block(block) => block,
+            _ => panic!("MOV fixture should produce a block"),
+        };
+        let dependencies_v1 = dependency(view, 1);
+        let dependencies_v2 = dependency(view, 2);
+        let key = TranslationKey::for_block(
+            view,
+            source,
+            CompileFlavor::S0_09FixtureDispatch,
+            &dependencies_v1,
+        )
+        .unwrap();
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            live: 1,
+            ..PublishedTracker::default()
+        }));
+        let candidate = MockPublished(tracker.clone());
+        let checked = validate_published_candidate::<&'static str, _>(
+            &key,
+            view,
+            &dependencies_v2,
+            candidate,
+        );
+        assert!(matches!(
+            checked,
+            Err(DispatchError::StaleDependencySnapshot)
+        ));
+        assert_eq!(
+            tracker.borrow().live,
+            0,
+            "stale candidate handle is dropped"
+        );
+        assert_eq!(tracker.borrow().drops, 1);
+        assert_eq!(tracker.borrow().executions, 0);
+        let cache = MultiEntryBlockCache::<MockPublished>::new(
+            1,
+            4096,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        assert_eq!(cache.resident_entries(), 0);
+    }
+
+    #[test]
+    fn multi_cache_checks_backend_capacity_and_config_limits() {
+        assert!(matches!(
+            MultiEntryBlockCache::<()>::new(17, 1, 1),
+            Err(MultiEntryCacheConfigError::InvalidEntryLimit { .. })
+        ));
+        assert!(matches!(
+            MultiEntryBlockCache::<()>::new(1, 65_537, 1),
+            Err(MultiEntryCacheConfigError::InvalidCodeLimit { .. })
+        ));
+        assert!(matches!(
+            MultiEntryBlockCache::<()>::new(1, 1, 512 * 1024 + 1),
+            Err(MultiEntryCacheConfigError::InvalidMetadataLimit { .. })
+        ));
+        let code = [0x48, 0xB8, 31, 0, 0, 0, 0, 0, 0, 0];
+        let (view, admission) = cached_fixture(&code, 0x7500);
+        let deps = dependency(view, 1);
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            capacity: 1,
+            ..PublishedTracker::default()
+        }));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache =
+            MultiEntryBlockCache::new(2, 4096, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES).unwrap();
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        assert!(matches!(
+            run_multi_cached(
+                view,
+                &admission,
+                &deps,
+                &mut state,
+                1,
+                &mut cache,
+                &mut backend
+            ),
+            Err(DispatchError::MultiCacheConfig(
+                MultiEntryCacheConfigError::BackendCapacityTooSmall {
+                    requested: 2,
+                    available: 1
+                }
+            ))
+        ));
+        assert_eq!(tracker.borrow().publishes, 0);
+    }
+
+    #[test]
+    fn publish_failure_keeps_prior_fifo_evictions_but_does_not_install_candidate() {
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            allow_multiple_live: true,
+            ..PublishedTracker::default()
+        }));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache =
+            MultiEntryBlockCache::new(2, 4096, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES).unwrap();
+        let a = [0x48, 0xB8, 51, 0, 0, 0, 0, 0, 0, 0];
+        let b = [0x48, 0xB8, 52, 0, 0, 0, 0, 0, 0, 0];
+        let c = [0x48, 0xB8, 53, 0, 0, 0, 0, 0, 0, 0];
+        run_multi_fixture(&a, 0x7600, &mut cache, &mut backend).unwrap();
+        run_multi_fixture(&b, 0x7600, &mut cache, &mut backend).unwrap();
+        tracker.borrow_mut().fail_publish = true;
+        assert_eq!(
+            run_multi_fixture(&c, 0x7600, &mut cache, &mut backend),
+            Err(DispatchError::CachePublish("publish failed"))
+        );
+        assert_eq!(cache.resident_entries(), 1);
+        assert_eq!(cache.counters().evictions, 1);
+        assert_eq!(
+            cache.counters().resident_code_bytes,
+            emitted_code_bytes(&cache.entries[0].block).unwrap()
+        );
+        assert_eq!(tracker.borrow().live, 1);
+        assert_eq!(tracker.borrow().publishes, 2);
     }
 }

@@ -301,11 +301,10 @@ internals, so it is not an RSS bound. Runtime budget and STOP guards retain the
 existing ordering, including a fresh invocation-local STOP flag and boundary
 resampling; zero-budget and code-end checks do not compile or publish.
 The native fixture test compares cached and uncached results and reuses the
-resident owner. This is only a one-entry register-only fixture path; it has no
-multi-entry cache integration, memory lowering, production MMU identity source,
-invalidation protocol, hit/miss telemetry, or performance claim. The separate
-host-only arena publication partial is described below; it does not change the
-one-entry `od-jit` cache policy. S3-18 remains open, as do
+resident owner. This subsection documents only the one-entry register-only
+path. A separate multi-entry cache partial is described below; it does not
+change the `SingleEntryBlockCache` API or memory-lowering/production MMU
+identity/invalidation scope. S3-18 remains open, as do
 context/invalidation/retirement work in S3-22/23/25.
 
 ### S3-18b: bounded host publication arena partial
@@ -330,8 +329,48 @@ Arena entry uses the same verified call/result decoder as `PublishedCode`;
 owned slot metadata remains live throughout execution. The native test keeps A
 and B live together, executes both, replaces dropped A's slot with C, and
 re-executes B to check isolation. The 16-slot limit is a bounded provisional
-choice only; it has no performance evidence. Memory lowering, cache eviction,
-SMP/concurrent MAP_JIT policy, and S3-22/23/25 remain open.
+choice only; it has no performance evidence. This host-only subsection adds
+the arena, not an `od-jit` eviction policy; the separate FIFO cache partial
+below covers that S3-18 slice. Memory lowering, S3-25 retirement,
+SMP/concurrent MAP_JIT policy, and S3-22/23 remain open.
+
+### S3-18c: bounded multi-entry cache partial
+
+`od_jit::dispatch::MultiEntryBlockCache` adds a separate opt-in FIFO policy
+over the shared cache-dispatch control loop. It keeps an insertion-ordered
+`Vec` of full `TranslationKey`, compiled blocks and opaque published handles;
+hits do not refresh order. `MultiBlockCachedBackend` exposes simultaneous
+publication capacity without changing the existing release-on-return
+executors. `PublishedArenaBackend` implements this capacity contract, and the
+runner rejects a configured cache larger than the arena before work starts.
+
+Limits are at most 16 entries, 65,536 actual emitted bytes total, 512 KiB
+aggregate logical resident metadata, and 4096 bytes per compiled block. The
+metadata budget counts each cache-entry's inline key/block/handle storage,
+owned source/dependency/fetch payloads, and both compiled and published PC-map
+payloads. Emitted instruction bytes are accounted separately. It excludes
+allocator bookkeeping, arena page rounding and opaque host handle internals,
+so it is not an RSS cap. An individually oversized candidate
+is rejected before eviction. For an eligible miss, the candidate is compiled
+and source/dependency validated before oldest inactive entries are evicted;
+their published handles are dropped before the backend publishes the new block.
+If publication fails, prior evictions stay applied. The post-publication stale
+check drops the candidate without execution and never retries. Execution and
+compile errors remain terminal, with no interpreter fallback. Counters report
+hits, misses, successful compiles/publications, evictions, resident emitted
+bytes and resident logical metadata.
+
+Unit tests cover A→B→A reuse, self-loop budget accounting, 16-key reuse, the
+exact FIFO victim on insertion 17, metadata-triggered multiple eviction,
+oversized-candidate retention, malformed dependency rejection, stale
+post-publication handle drop, publish-failure eviction semantics, backend
+capacity checks and resident accounting. Native
+ARM64 od-host tests compare arena-cached execution to the uncached path and
+verify reuse. FIFO and the 16-entry ceiling are provisional. No optimality,
+speedup, production-MMU invalidation, or memory-lowering claim is made. An
+end-to-end repeat measurement must compare FIFO with LRU for 16-key and full
+execution workloads before selecting a final policy/capacity. S3-18 remains
+open; S3-22/23/25 and physical S3-14/15 acceptance remain separate work.
 
 Compile result остаётся Rust-side: успешная компиляция даёт непубликованный
 код/metadata; неподдержанная форма классифицируется как `Unsupported`, а

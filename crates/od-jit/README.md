@@ -160,8 +160,18 @@ compiled block и opaque host-published handle; same-key reuse сравнива�
 snapshot проверяется на hit, до публикации и до входа; stale state завершает
 вызов без retry. Максимум — 512 KiB логических key/code/state-map bytes,
 включая копию для публикации; allocator/RSS overhead не входит. Это не
-multi-entry cache integration, memory JIT, MMU invalidation или performance result; S3-18
-остаётся открытой до полного capacity/lifecycle/telemetry acceptance.
+memory JIT, MMU invalidation или performance result; S3-18 остаётся открытой
+до полного invalidation/lifecycle/performance acceptance. Отдельный
+`dispatch::MultiEntryBlockCache` partial добавляет opt-in FIFO cache для
+`PublishedArenaBackend`: максимум 16 entries, 65,536 emitted bytes и 512 KiB
+logical key/block/PC-map metadata, с capacity check перед execution. Hits не
+обновляют FIFO order. Candidate over-limit отклоняется до eviction; подходящий
+miss вытесняет только неактивные старые handles между завершёнными calls и
+сбрасывает их до publication. Counters показывают hits/misses/compiles/
+publications/evictions/resident bytes. Limits и FIFO policy остаются
+предварительными и не являются performance claim; требуется repeat
+end-to-end FIFO-vs-LRU measurement. `SingleEntryBlockCache` API и обычные
+release-on-return executors не менялись.
 
 S3-13 добавляет `block_compile::compile_block`: bounded block → typed lowering
 → allocation → runtime block emission. `NoNativePrefix` остаётся отдельным

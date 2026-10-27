@@ -19,10 +19,13 @@ JIT-пользователей процесса. API не позволяет б�
 `PublishedCode`; legacy `CompiledFragment` сохраняет владеющий mapping на время
 своего verified fragment entry. S3-18b добавляет host-only
 `PublishedArenaBackend`: одна MAP_JIT region с 1..=16 фиксированными 4096-byte
-slots и отдельными owning handles. Это не меняет release-on-return callbacks и
-не подключено к multi-entry `od-jit` cache. Capacity 16 — предварительная
-ограниченная конфигурация без performance evidence; concurrency/global
-write-protection contract не расширен.
+slots и отдельными owning handles. Это не меняет release-on-return callbacks.
+`PublishedArenaBackend` теперь сообщает slot capacity через отдельный
+multi-block cached-backend contract; `od-jit::dispatch::MultiEntryBlockCache`
+может использовать эту arena в bounded FIFO partial. Cache rejects limits
+выше arena capacity. Capacity 16 и FIFO policy предварительные, без
+performance evidence; concurrency/global write-protection contract не
+расширен.
 
 Локальная проверка S3-07 выполнена на macOS 26.7.1 ARM64, Xcode/macOS SDK 27.0:
 `od-host` unit tests, подписанный ad-hoc VMHost smoke с Hardened Runtime и

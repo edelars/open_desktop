@@ -570,8 +570,10 @@ per guest instruction. Mock tests cover same-key reuse, self-loop/budget, A→B 
 and drop ordering, dependency changes, invalid snapshots, oversize candidates,
 publication errors, clear/drop lifetime and zero-budget/code-end priority. A
 native od-host fixture compares cached and uncached state/results and repeats a
-cache hit. The one-entry `od-jit` policy does not yet integrate the separate
-host arena described below. Cache telemetry, memory lowering, production MMU
+cache hit. This S3-18a subsection describes only the one-entry policy and does
+not integrate the separate host arena described below. Its counters are not
+cache telemetry; S3-18c adds multi-entry hit/miss/compile/publication/eviction
+and resident-byte counters. Memory lowering, production MMU
 identity/invalidation, and benchmark evidence remain absent. S3-18 stays open;
 S3-22/23/25 remain separate context, invalidation and retirement work.
 
@@ -592,6 +594,34 @@ full capacity, reuse of a dropped slot while another block remains executable,
 foreign handles, owner/handle lifetime and checked size overflow. The 16-slot
 limit is a provisional capacity choice without performance evidence. This host
 publication API does not alter S3-18a's one-entry cache. S3-18 remains open.
+
+**S3-18c multi-entry cache partial:** `od_jit::dispatch::MultiEntryBlockCache`
+is a separate opt-in path using the shared cached-dispatch control loop and an
+opaque `CachedBlockBackend` handle. `PublishedArenaBackend` reports slot
+capacity through `MultiBlockCachedBackend`; the runner rejects a cache whose
+configured entry count exceeds that capacity before compile or publication.
+The cache uses insertion-order `Vec` lookup with FIFO eviction; hits do not
+refresh order. Its hard limits are 1..=16 entries, 65,536 actual emitted code
+bytes total, 512 KiB aggregate logical entry/key/PC-map metadata, and the
+existing 4096-byte per-block compiler cap. Individual over-limit candidates
+are rejected without eviction. A miss is compiled and source/dependency
+validated before capacity eviction; inactive oldest handles are dropped before
+publication. Publish failure leaves those evictions in effect. A stale check
+after publication drops the candidate without execution and does not retry.
+Counters expose hits, misses, successful compiles/publications, evictions and
+resident code/metadata bytes. Tests cover A→B→A, self-loop/budget, sixteen-key
+reuse, exact seventeenth-key FIFO victim, metadata-driven multi-eviction,
+oversized candidates, malformed dependency rejection, stale post-publication
+handle drop, publication failure, capacity
+mismatch, and accounting bounds. A native od-host fixture compares cached
+arena execution with uncached execution and verifies reuse. This remains
+partial: no multi-entry benchmark conclusion, production MMU
+identity/invalidation, memory lowering, or S3-22/23/25 lifecycle work is
+claimed. S3-18 remains open.
+
+Future measurement must compare the 16-key workload against FIFO/LRU and
+end-to-end execution with repeat samples before choosing policy or capacity;
+the current implementation makes no optimality or speedup claim.
 
 ### S3-19. Подключить checked memory bridge
 

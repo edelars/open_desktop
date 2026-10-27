@@ -771,6 +771,12 @@ impl od_jit::dispatch::CachedBlockBackend for PublishedArenaBackend {
     }
 }
 
+impl od_jit::dispatch::MultiBlockCachedBackend for PublishedArenaBackend {
+    fn published_block_capacity(&self) -> usize {
+        self.capacity()
+    }
+}
+
 fn arena_mapping_size(slot_count: usize, slot_bytes: usize, page_bytes: usize) -> Option<usize> {
     if slot_count == 0 || slot_bytes == 0 || page_bytes == 0 {
         return None;
@@ -2609,6 +2615,128 @@ mod tests {
         assert_eq!(cached_state, uncached_state);
         cache.clear();
         assert_eq!(cache.resident_entries(), 0);
+    }
+
+    #[test]
+    fn multi_entry_arena_cache_matches_uncached_native_blocks_and_reuses_key() {
+        let _guard = jit_test_lock();
+        use od_jit::translation::{
+            AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity, MappingId,
+            MappingVersion,
+        };
+        use std::num::NonZeroU64;
+
+        let base_rip = 0x7B80;
+        let mut expected_results = Vec::new();
+        let mut uncached_executor = PublishedBlockExecutor;
+        for value in [41u8, 42u8] {
+            let code = [0x48, 0xB8, value, 0, 0, 0, 0, 0, 0, 0];
+            let view = CodeView::new(base_rip, &code).unwrap();
+            let decoded = od_isa::decode(&code).unwrap();
+            let admission =
+                AdmittedInstructionBoundaries::from_fixture_decode(view, &decoded).unwrap();
+            let initial = od_isa::LongModeState {
+                rip: base_rip,
+                rflags: 0xA55,
+                ..od_isa::LongModeState::default()
+            };
+            let mut expected_state = initial.clone();
+            let expected_result = od_jit::dispatch::run(
+                view,
+                &admission,
+                &mut expected_state,
+                4,
+                &mut uncached_executor,
+            )
+            .unwrap();
+            expected_results.push((expected_result, expected_state));
+        }
+
+        let mut arena = PublishedArenaBackend::new(2).unwrap();
+        let mut cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            2,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        for (index, value) in [41u8, 42u8].into_iter().enumerate() {
+            let code = [0x48, 0xB8, value, 0, 0, 0, 0, 0, 0, 0];
+            let view = CodeView::new(base_rip, &code).unwrap();
+            let decoded = od_isa::decode(&code).unwrap();
+            let admission =
+                AdmittedInstructionBoundaries::from_fixture_decode(view, &decoded).unwrap();
+            let nz = |number| NonZeroU64::new(number).unwrap();
+            let dependencies = [CodeDependencySpan {
+                start_rip: view.base_rip(),
+                end_rip: view.code_end(),
+                identity: CodeIdentity {
+                    address_space: AddressSpaceId::new(nz(1)),
+                    mapping: MappingId::new(nz(2)),
+                    mapping_version: MappingVersion::new(nz(1)),
+                    backing: BackingId::new(nz(3)),
+                    backing_version: BackingVersion::new(nz(1)),
+                    executable: true,
+                },
+            }];
+            let mut actual_state = od_isa::LongModeState {
+                rip: base_rip,
+                rflags: 0xA55,
+                ..od_isa::LongModeState::default()
+            };
+            let actual = od_jit::dispatch::run_multi_cached(
+                view,
+                &admission,
+                &dependencies,
+                &mut actual_state,
+                4,
+                &mut cache,
+                &mut arena,
+            )
+            .unwrap();
+            assert_eq!(actual, expected_results[index].0);
+            assert_eq!(actual_state, expected_results[index].1);
+        }
+
+        let code = [0x48, 0xB8, 41, 0, 0, 0, 0, 0, 0, 0];
+        let view = CodeView::new(base_rip, &code).unwrap();
+        let decoded = od_isa::decode(&code).unwrap();
+        let admission = AdmittedInstructionBoundaries::from_fixture_decode(view, &decoded).unwrap();
+        let nz = |number| NonZeroU64::new(number).unwrap();
+        let dependencies = [CodeDependencySpan {
+            start_rip: view.base_rip(),
+            end_rip: view.code_end(),
+            identity: CodeIdentity {
+                address_space: AddressSpaceId::new(nz(1)),
+                mapping: MappingId::new(nz(2)),
+                mapping_version: MappingVersion::new(nz(1)),
+                backing: BackingId::new(nz(3)),
+                backing_version: BackingVersion::new(nz(1)),
+                executable: true,
+            },
+        }];
+        let mut actual_state = od_isa::LongModeState {
+            rip: base_rip,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        let before = cache.counters();
+        let hit = od_jit::dispatch::run_multi_cached(
+            view,
+            &admission,
+            &dependencies,
+            &mut actual_state,
+            4,
+            &mut cache,
+            &mut arena,
+        )
+        .unwrap();
+        assert_eq!(hit, expected_results[0].0);
+        assert_eq!(actual_state, expected_results[0].1);
+        assert_eq!(cache.counters().successful_publications, 2);
+        assert_eq!(cache.counters().hits, before.hits + 1);
+        assert_eq!(arena.available_slots(), 0);
+        cache.clear();
+        assert_eq!(arena.available_slots(), 2);
     }
 
     #[test]
