@@ -12,12 +12,12 @@ use crate::arm64::{
 };
 use crate::block::{CodeMemory, CodeView};
 use crate::runtime::{
-    LONG_MODE_GPR_OFFSET, LONG_MODE_RIP_OFFSET, MemorySiteOperationV2, MemorySiteV2,
-    RUNTIME_CONTEXT_INITIAL_BUDGET_OFFSET, RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET,
-    RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET, RUNTIME_CONTEXT_STOP_REQUESTED_OFFSET,
-    RUNTIME_CONTEXT_STOP_RIP_ENABLED_OFFSET, RUNTIME_CONTEXT_STOP_RIP_OFFSET,
-    RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET, RUNTIME_CONTEXT_V3_CODE_DIRTY_OFFSET,
-    RuntimeExitV3, memory_site_helper_v2,
+    LONG_MODE_GPR_OFFSET, LONG_MODE_RIP_OFFSET, MEMORY_SITE_SOURCE_BYTES_MAX,
+    MemorySiteOperationV2, MemorySiteV2, RUNTIME_CONTEXT_INITIAL_BUDGET_OFFSET,
+    RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET, RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET,
+    RUNTIME_CONTEXT_STOP_REQUESTED_OFFSET, RUNTIME_CONTEXT_STOP_RIP_ENABLED_OFFSET,
+    RUNTIME_CONTEXT_STOP_RIP_OFFSET, RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET,
+    RUNTIME_CONTEXT_V3_CODE_DIRTY_OFFSET, RuntimeExitV3, memory_site_helper_v2,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,7 +39,7 @@ struct MemoryArtifactV2 {
     code: EncodedCode,
     site: MemorySiteV2,
     entry_rip: u64,
-    source_bytes: [u8; 8],
+    source_bytes: [u8; MEMORY_SITE_SOURCE_BYTES_MAX],
     source_len: u8,
     compile_flavor: crate::translation::CompileFlavor,
 }
@@ -559,7 +559,7 @@ macro_rules! impl_artifact_accessors {
                 &self.artifact.source_bytes[..usize::from(self.artifact.source_len)]
             }
 
-            pub const fn source_bytes_storage(&self) -> ([u8; 8], u8) {
+            pub const fn source_bytes_storage(&self) -> ([u8; MEMORY_SITE_SOURCE_BYTES_MAX], u8) {
                 (self.artifact.source_bytes, self.artifact.source_len)
             }
 
@@ -595,7 +595,7 @@ pub fn compile_ir_memory_load_block_v2(
     let (site, bytes) = checked_load_metadata_v2(code, entry_rip)?;
     let emitted = crate::block_compile::compile_checked_load_block_v2(code, entry_rip)
         .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
-    let mut source_bytes = [0; 8];
+    let mut source_bytes = [0; MEMORY_SITE_SOURCE_BYTES_MAX];
     source_bytes[..bytes.len()].copy_from_slice(bytes);
     Ok(IrMemoryLoadBlockV2 {
         artifact: MemoryArtifactV2 {
@@ -643,7 +643,7 @@ pub fn compile_ir_memory_store_block_v2(
     }
     let emitted = crate::block_compile::compile_checked_store_block_v2(code, entry_rip)
         .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
-    let mut source_bytes = [0; 8];
+    let mut source_bytes = [0; MEMORY_SITE_SOURCE_BYTES_MAX];
     source_bytes[..bytes.len()].copy_from_slice(bytes);
     Ok(IrMemoryStoreBlockV2 {
         artifact: MemoryArtifactV2 {
@@ -750,7 +750,7 @@ fn checked_load_metadata_v2(
         .bytes()
         .get(offset..)
         .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
-    if !(3..=8).contains(&bytes.len()) {
+    if !(3..=MEMORY_SITE_SOURCE_BYTES_MAX).contains(&bytes.len()) {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
     let mut memory = CodeMemory::full_code(code);
@@ -826,7 +826,7 @@ fn compile_memory_operation_v2(
         MemorySiteOperationV2::Load => crate::translation::CompileFlavor::S3_19bMemoryLoadV2,
         MemorySiteOperationV2::Store => crate::translation::CompileFlavor::S3_20bMemoryStoreV2,
     };
-    let mut source_bytes = [0; 8];
+    let mut source_bytes = [0; MEMORY_SITE_SOURCE_BYTES_MAX];
     source_bytes[..bytes.len()].copy_from_slice(bytes);
     Ok(MemoryArtifactV2 {
         code,
@@ -851,7 +851,7 @@ fn checked_memory_metadata_v2(
         .filter(|offset| *offset < code.len())
         .ok_or(MemoryLoadCompileErrorV2::EntryOutsideCode)?;
     let instruction_bytes_len = code.len() - offset;
-    if !(3..=8).contains(&instruction_bytes_len) {
+    if !(3..=MEMORY_SITE_SOURCE_BYTES_MAX).contains(&instruction_bytes_len) {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
     let mut memory = CodeMemory::full_code(code);
@@ -1995,7 +1995,6 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x04, 0x1d], // no-base SIB with missing disp32
                 vec![0x67, 0x4c, opcode, 0x04, 0x18], // extended data
                 vec![0x48, 0x67, opcode, 0x04, 0x18], // wrong prefix order
-                vec![0x67, 0x48, opcode, 0x84, 0x18, 0, 0, 0, 0], // disp32
                 vec![0x67, 0x48, opcode, 0x04, 0x18, 0x90], // trailing byte
             ] {
                 let code = CodeView::new(0x27f0, &bytes).unwrap();
@@ -2088,7 +2087,6 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x44, 0x1d, 0], // unsupported base
                 vec![0x67, 0x4c, opcode, 0x44, 0x18, 0], // extended data
                 vec![0x48, 0x67, opcode, 0x44, 0x18, 0], // wrong prefix order
-                vec![0x67, 0x48, opcode, 0x84, 0x18, 0, 0, 0, 0], // disp32
                 vec![0x67, 0x48, opcode, 0x44, 0x18, 0, 0x90], // trailing byte
             ] {
                 let code = CodeView::new(0x2810, &bytes).unwrap();
@@ -2107,6 +2105,109 @@ mod tests {
             let bytes = [0x67, 0x48, 0x8b, 0x44, 0x18, 0x80];
             let code = CodeView::new(0x2820, &bytes[..length]).unwrap();
             assert!(compile_ir_memory_load_block_v2(code, 0x2820).is_err());
+        }
+    }
+
+    #[test]
+    fn ir_address32_sib_disp32_has_exact_nine_byte_qword_descriptor() {
+        for (opcode, access) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data in 0..4_u8 {
+                for base in 0..4_u8 {
+                    for index in 0..4_u8 {
+                        for scale_shift in 0..4_u8 {
+                            for displacement in [i32::MIN, -1, 0, i32::MAX] {
+                                let bytes = [
+                                    0x67,
+                                    0x48,
+                                    opcode,
+                                    0x80 | (data << 3) | 4,
+                                    (scale_shift << 6) | (index << 3) | base,
+                                    displacement.to_le_bytes()[0],
+                                    displacement.to_le_bytes()[1],
+                                    displacement.to_le_bytes()[2],
+                                    displacement.to_le_bytes()[3],
+                                ];
+                                let code = CodeView::new(0x2830, &bytes).unwrap();
+                                let (site, source) = match access {
+                                    MemorySiteOperationV2::Load => {
+                                        let ir =
+                                            compile_ir_memory_load_block_v2(code, 0x2830).unwrap();
+                                        let direct =
+                                            compile_memory_load_block_v2(code, 0x2830).unwrap();
+                                        assert_eq!(ir.site(), direct.site());
+                                        assert_eq!(ir.pc_map().instruction_count(), 1);
+                                        assert_eq!(ir.pc_map().boundaries().len(), 1);
+                                        assert_eq!(
+                                            ir.pc_map().boundaries()[0].rip,
+                                            crate::statepoints::GuestRipBoundary::Fixed(0x2839)
+                                        );
+                                        assert_eq!(direct.source_bytes_storage().1, 9);
+                                        (ir.site().clone(), ir.source_bytes().to_vec())
+                                    }
+                                    MemorySiteOperationV2::Store => {
+                                        let ir =
+                                            compile_ir_memory_store_block_v2(code, 0x2830).unwrap();
+                                        let direct =
+                                            compile_memory_store_block_v2(code, 0x2830).unwrap();
+                                        assert_eq!(ir.site(), direct.site());
+                                        assert_eq!(ir.pc_map().instruction_count(), 1);
+                                        assert_eq!(ir.pc_map().boundaries().len(), 1);
+                                        assert_eq!(
+                                            ir.pc_map().boundaries()[0].rip,
+                                            crate::statepoints::GuestRipBoundary::Fixed(0x2839)
+                                        );
+                                        assert_eq!(direct.source_bytes_storage().1, 9);
+                                        (ir.site().clone(), ir.source_bytes().to_vec())
+                                    }
+                                };
+                                assert_eq!(source, bytes);
+                                assert_eq!(site.guest_rip(), 0x2830);
+                                assert_eq!(site.next_rip(), 0x2839);
+                                assert_eq!(site.operand().address_size, od_isa::OperandSize::Dword);
+                                assert_eq!(site.operand().size, od_isa::OperandSize::Qword);
+                                assert_eq!(site.operand().displacement, i64::from(displacement));
+                                assert_eq!(site.operand().scale, 1 << scale_shift);
+                                assert!(site.matches_source_bytes(&bytes, access));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for opcode in [0x8b, 0x89] {
+            for bytes in [
+                vec![0x67, 0x48, opcode, 0x84, 0x18], // truncated disp32
+                vec![0x67, 0x48, opcode, 0x44, 0x18, 0, 0, 0, 0], // disp8 shape
+                vec![0x67, 0x48, opcode, 0x84, 0x20, 0, 0, 0, 0], // no index
+                vec![0x67, 0x48, opcode, 0x84, 0x25, 0, 0, 0, 0], // no base
+                vec![0x67, 0x48, opcode, 0x84, 0x28, 0, 0, 0, 0], // unsupported index
+                vec![0x67, 0x48, opcode, 0x84, 0x1d, 0, 0, 0, 0], // unsupported base
+                vec![0x67, 0x4c, opcode, 0x84, 0x18, 0, 0, 0, 0], // extended data
+                vec![0x48, 0x67, opcode, 0x84, 0x18, 0, 0, 0, 0], // wrong prefix order
+                vec![0x67, 0x48, opcode, 0x84, 0x18, 0, 0, 0, 0, 0x90], // trailing byte
+            ] {
+                let code = CodeView::new(0x2840, &bytes).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x2840).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x2840).map(|_| ())
+                };
+                assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
+            }
+            let bytes = [0x67, 0x48, opcode, 0x84, 0x18, 0, 0, 0, 0];
+            for length in 1..9 {
+                let code = CodeView::new(0x2850, &bytes[..length]).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x2850).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x2850).map(|_| ())
+                };
+                assert!(result.is_err(), "partial window length {length} accepted");
+            }
         }
     }
 

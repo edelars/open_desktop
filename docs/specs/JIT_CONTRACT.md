@@ -152,7 +152,7 @@ S3-20d extends the same two qword MOV operations to ModRM `mod=01` signed
 disp8 and `mod=10` signed disp32, both with or without the supported SIB byte.
 For direct-base addressing, exact lengths are 3/4/7 bytes for mod00/01/10;
 with SIB they are 4/5/8 bytes. Mod00 remains the existing no-displacement
-profile. The source buffer is fixed at eight bytes and carries an explicit
+profile. At that slice, the source buffer was fixed at eight bytes and carries an explicit
 length; the next RIP is derived from `long_decode::decode`'s instruction length.
 
 A shared `MemorySiteV2` shape/source validator is used by compilation, host
@@ -512,8 +512,9 @@ from the five-byte `mod=00` addr32 SIB form, the same-length addr32 direct
 disp8 form, and 64-bit SIB forms. The decoder supplies the signed displacement
 and `MemoryOperand::access_address_48` supplies all address/truncation,
 wrapping, canonicality and qword-range semantics. The fixed site source
-storage remains eight bytes, so the nine-byte addr32 SIB disp32 form is not
-admitted. Extra prefixes, no-index/no-base specials, unsupported registers,
+storage remained eight bytes, so addr32 SIB disp32 was not yet admitted. S3-20t
+extends singleton source storage for its exact nine-byte form. Extra prefixes,
+no-index/no-base specials, unsupported registers,
 and trailing bytes are rejected. Existing pair profiles are unchanged; the
 six-byte singleton is selected by exact bytes and metadata, not length alone.
 
@@ -525,6 +526,30 @@ successful store+STOP keeps the write. Bounded dispatch composes this
 singleton → bare NOP fallback → existing pair across budgets 0..4, including
 six-byte standalone admission and actual-RIP continuation without replay.
 See the [S3-20s report](../reports/STAGE_3_S3-20s_2026-10-27.md).
+
+#### S3-20t: address32 SIB disp32 qword MOV in shared IR and dispatch
+
+The checked singleton admits exactly `67 48 8B/89 /r sib disp32`, ModRM
+`mod=10,r/m=100`, RAX..RBX data/base/index encodings, scale 1/2/4/8, qword
+data, dword address size and nine bytes. The named singleton source bound is
+`MEMORY_SITE_SOURCE_BYTES_MAX = 9`; `source_bytes_storage()` now returns
+`([u8; 9], u8)` instead of `([u8; 8], u8)`. Callers validate decoded
+instruction length before slicing/copying and preserve the ninth byte in
+compiler, IR, host publication, and dispatcher metadata. This bound does not
+change qword data buffers, pair source `[u8; 6]`, ActiveCodeV3 source
+`[u8; 23]`, or RuntimeContext/C ABI layout. `MemoryOperand` and
+`access_address_48` remain the sole displacement and effective-address source.
+
+The descriptor matrix covers both MOV directions, all allowed GPR encodings
+and scales, and disp32 MIN/-1/0/MAX. Native direct V2/shared IR/interpreter
+parity checks callback address/count and complete CPU/RAM state, including a
+qword callback crossing 4 GiB and two inputs differing only in byte nine.
+Architectural faults preserve payload and no-commit accounting; backend errors
+stay host errors; successful store+STOP retains its write. Bounded dispatch
+composes the nine-byte singleton → bare NOP interpreter bridge → existing
+pair, with budget, stop-RIP, callback STOP, and continuation coverage. Partial
+windows 1..8 and malformed profiles reject before data callbacks. See the
+[S3-20t report](../reports/STAGE_3_S3-20t_2026-10-27.md).
 
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,

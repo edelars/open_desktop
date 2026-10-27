@@ -1297,7 +1297,7 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x8b
         && instruction.operand_size == OperandSize::Qword
-        && matches!(instruction.length, 3 | 4 | 5 | 6 | 7 | 8)
+        && matches!(instruction.length, 3 | 4 | 5 | 6 | 7 | 8 | 9)
         && (destination.register() as u8) < 4
         && destination.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
@@ -1320,7 +1320,7 @@ pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x89
         && instruction.operand_size == OperandSize::Qword
-        && matches!(instruction.length, 3 | 4 | 5 | 6 | 7 | 8)
+        && matches!(instruction.length, 3 | 4 | 5 | 6 | 7 | 8 | 9)
         && (source.register() as u8) < 4
         && source.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
@@ -1346,13 +1346,15 @@ fn is_checked_qword_memory_address(
                     instruction.length,
                     operand.displacement,
                 );
-            let sib = matches!(instruction.length, 5 | 6)
+            let sib = matches!(instruction.length, 5 | 6 | 9)
                 && operand.index.is_some_and(|index| (index as u8) < 4)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && if instruction.length == 5 {
                     operand.displacement == 0
-                } else {
+                } else if instruction.length == 6 {
                     (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement)
+                } else {
+                    (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
                 };
             instruction.prefixes.address_override && base_supported && (direct || sib)
         }
@@ -1493,6 +1495,7 @@ pub(crate) fn exact_qword_address32_sib_memory_bytes(
     let expected_mode = match bytes.len() {
         5 => 0,
         6 => 1,
+        9 => 2,
         _ => return false,
     };
     bytes[0..3] == [0x67, 0x48, opcode]

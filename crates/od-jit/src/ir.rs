@@ -594,7 +594,9 @@ fn is_checked_memory_address(
             };
         let indexed = instruction_length == 5 && operand.displacement == 0
             || instruction_length == 6
-                && (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement);
+                && (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement)
+            || instruction_length == 9
+                && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement);
         let indexed = indexed
             && operand.index.is_some_and(|index| (index as u8) < 4)
             && matches!(operand.scale, 1 | 2 | 4 | 8);

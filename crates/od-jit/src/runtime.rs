@@ -60,6 +60,10 @@ pub type BlockEntryV2 = unsafe extern "C" fn(*mut RuntimeContextV2) -> u32;
 /// It is not a `RuntimeExitTag`; the host decodes the invocation-local outcome.
 pub const RUNTIME_EXIT_V2_MEMORY_OPERATION: u32 = 9;
 
+/// Maximum exact source width for a checked singleton memory MOV artifact.
+/// Pair and active-code artifacts have separate, intentionally unchanged bounds.
+pub const MEMORY_SITE_SOURCE_BYTES_MAX: usize = 9;
+
 /// The checked memory operation encoded by a V2 site.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemorySiteOperationV2 {
@@ -190,11 +194,12 @@ impl MemorySiteV2 {
                     8 => i32::try_from(self.operand.displacement).is_ok(),
                     _ => false,
                 };
-            let indexed = matches!(length, 5 | 6)
-                && if length == 5 {
-                    self.operand.displacement == 0
-                } else {
-                    i8::try_from(self.operand.displacement).is_ok()
+            let indexed = matches!(length, 5 | 6 | 9)
+                && match length {
+                    5 => self.operand.displacement == 0,
+                    6 => i8::try_from(self.operand.displacement).is_ok(),
+                    9 => i32::try_from(self.operand.displacement).is_ok(),
+                    _ => false,
                 }
                 && self.operand.index.is_some_and(|index| {
                     matches!(
@@ -289,7 +294,7 @@ impl MemorySiteV2 {
                 let Some(decoded_sib_index) = od_isa::Register::from_encoding(sib_index) else {
                     return false;
                 };
-                return matches!((source.len(), mode), (5, 0) | (6, 1))
+                return matches!((source.len(), mode), (5, 0) | (6, 1) | (9, 2))
                     && data_register < 4
                     && sib_base < 4
                     && sib_index < 4
@@ -300,10 +305,11 @@ impl MemorySiteV2 {
                     && decoded_base == decoded_sib_base
                     && self.operand.index == Some(decoded_sib_index)
                     && self.operand.scale == scale
-                    && if source.len() == 5 {
-                        self.operand.displacement == 0
-                    } else {
-                        i8::try_from(self.operand.displacement).is_ok()
+                    && match source.len() {
+                        5 => self.operand.displacement == 0,
+                        6 => i8::try_from(self.operand.displacement).is_ok(),
+                        9 => i32::try_from(self.operand.displacement).is_ok(),
+                        _ => false,
                     };
             }
             let (expected_length, displacement_valid) = match mode {

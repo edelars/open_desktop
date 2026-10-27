@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-26a/S3-26b/S3-26c/S3-26d/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-20n/S3-20o/S3-20p/S3-20q/S3-20r/S3-20s/S3-20t/S3-26a/S3-26b/S3-26c/S3-26d/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -166,6 +166,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20q | 64-bit SIB signed-displacement qword MOV через shared IR и bounded dispatcher | Только `48 8B/89 /r sib disp8|disp32`, ModRM `mod=01/10,r/m=100`, base/index/data RAX..RBX, scale1/2/4/8, ровно 5/8 bytes |
 | [partial] | S3-20r | Address32 no-displacement SIB qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r sib`, ModRM `mod=00,r/m=100`, data/base/index RAX..RBX, scale1/2/4/8, ровно 5 bytes |
 | [partial] | S3-20s | Address32 signed disp8 SIB qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r sib disp8`, ModRM `mod=01,r/m=100`, data/base/index RAX..RBX, scale1/2/4/8, ровно 6 bytes |
+| [partial] | S3-20t | Address32 signed disp32 SIB qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r sib disp32`, ModRM `mod=10,r/m=100`, data/base/index RAX..RBX, scale1/2/4/8, ровно 9 bytes; singleton source metadata bound 9 bytes |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1196,6 +1197,30 @@ singleton boundary proves the form is not mistaken for a two-instruction pair
 by length. Continuation resumes at actual RIP without repeating effects.
 Partial byte windows and forbidden encodings stop before helper access. See
 the [S3-20s report](../reports/STAGE_3_S3-20s_2026-10-27.md).
+
+#### S3-20t. Address32 signed disp32 SIB through shared IR and bounded dispatch
+
+The checked singleton admits exactly `67 48 8B/89 /r sib disp32`, ModRM
+`mod=10,r/m=100`, RAX..RBX data/base/index, SIB scale 1/2/4/8, qword data,
+dword address size and exact length nine. Singleton source metadata capacity
+is now the named `MEMORY_SITE_SOURCE_BYTES_MAX = 9`; the Rust return type of
+`source_bytes_storage()` changes from `([u8; 8], u8)` to `([u8; 9], u8)`.
+This capacity applies only to singleton source identity. Qword data staging,
+two-site source `[u8; 6]`, ActiveCodeV3 source `[u8; 23]`, and RuntimeContext/C
+ABI layouts are unchanged. Validate the decoded length before slicing or
+copying all nine bytes. The decoder's `MemoryOperand` and
+`access_address_48` remain the only displacement and effective-address source.
+
+Descriptor and direct V2/shared IR/interpreter tests cover disp32 MIN/-1/0/MAX
+for both operations, all scales and the RAX address/data alias, including the
+contiguous qword callback at `0xffff_fffc`. A pair of code sources differs only
+in byte nine and retains distinct displacement metadata. Architectural fault
+payloads preserve CPU/RAM/budget/retirement; backend errors remain host errors;
+successful store+STOP retains its write. Bounded dispatch composes the
+nine-byte singleton → bare NOP interpreter bridge → existing pair, checks
+budgets 0..4, stop-RIP, callback STOP, and continuation from actual RIP without
+repeating the first access. Windows 1..8 and malformed encodings are rejected
+before a helper callback. See the [S3-20t report](../reports/STAGE_3_S3-20t_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 
