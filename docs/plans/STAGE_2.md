@@ -410,6 +410,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.20 | Local-only bounded register PCMPEQD XMM diagnostic slice; dword equality masks, native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.21 | Local-only bounded register PCMPGTB XMM diagnostic slice; signed byte greater-than masks, native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.22 | Local-only bounded register PCMPGTW XMM diagnostic slice; signed word greater-than masks, native/JIT closed | S2-34.1, S2-35.1 |
+| [x] | S2-35.25 | Local-only bounded register PUNPCKHBW XMM diagnostic slice; high-byte interleave, native/JIT closed | S2-34.1, S2-35.1 |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
@@ -8468,3 +8469,47 @@ re-review passed with no remaining findings. Results remain local
 interpreter/profile evidence and do not close
 S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation, or deferred
 combined Mac mini/SSH acceptance.
+
+#### S2-35.25 — local-only bounded register `PUNPCKHBW`
+
+Requires S2-34.1 raw x87/SSE state and mandatory-66 XMM decoding from S2-35.1.
+Exact profile `s2-long-punpckhbw-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F 68 /r` with ModR/M.mod=3. ModR/M.reg is the
+destination and ModR/M.r/m the source, extended through XMM15. For each of
+eight byte lanes, `DEST[2*i] = old_DEST[8+i]` and
+`DEST[2*i+1] = SRC[8+i]`; byte 0 is least significant. All destination bytes
+are overwritten and the low halves of both inputs are ignored.
+
+Coverage includes the literal high-half sentinel `08..0f` / `88..8f`,
+self-alias `d8..df`, every byte value at each consumed position, low-half
+independence, walking bits, all 16×16 XMM pairs and REX extensions, complete
+architectural state preservation, and zero guest data-memory callbacks.
+Missing state, truncation, STOP/budget atomicity, strict schema and decoder
+negatives including VEX `C5 F9 68 C1`, and a handwritten literal XMM8/XMM9
+fixture with JIT/native denial are covered. Other unpack widths such as
+PUNPCKLWD, PUNPCKHWD, PUNPCKLQDQ and PUNPCKHQDQ, packing, shuffles, shifts,
+memory, MMX, extra prefixes, REX.W/X,
+VEX/EVEX, feature gates, exception delivery and physical execution remain
+excluded. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only.
+S2-34, S2-35 and global `S2-35 → S2-34` remain open; Mac mini/SSH acceptance
+remains deferred.
+
+S2-35.25 implementation check (2026-10-27): focused `od-isa` PUNPCKHBW
+decoder, semantics and atomicity tests passed (3); all 319 `od-testkit` tests
+passed, and the handwritten literal XMM8/XMM9 runner fixture test passed (1),
+including strict VEX rejection and explicit JIT denial. The fixture's high
+halves `08..0f` and `88..8f` produce `08 88 09 89 0a 8a 0b 8b 0c 8c 0d 8d
+0e 8e 0f 8f`. `cargo test --workspace --offline --quiet` passed all 1,729
+workspace tests. Workspace all-target offline check and
+`x86_64-unknown-linux-gnu` all-target compile check passed; the Linux-gated
+native-denial assertion was compile-checked but not executed on this Darwin
+host. Formatting, diff whitespace checks and `graphify update .` passed; the
+graph update reported its existing `include/open_desktop/host_abi.h`
+extractor warning. `python3 tools/check_layout.py` still reports the linked
+worktree `.git` pointer and two missing historical oracle manifest links.
+Independent `gpt-6.1-sol` medium review found one documentation scope typo;
+the exclusion wording was corrected and review/re-review passed with no
+remaining findings. These are local interpreter/profile results only and do
+not close S2-34, S2-35, global
+`S2-35 → S2-34`, physical x86 validation, or deferred combined Mac mini/SSH
+acceptance.

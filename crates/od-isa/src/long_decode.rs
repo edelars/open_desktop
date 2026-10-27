@@ -541,6 +541,11 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only mandatory-66 PUNPCKHBW with high-byte interleaving.
+    PunpckhbwRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only mandatory-66 PSUBW with word-wise wrapping XMM subtraction.
     PsubwRegister {
         destination: u8,
@@ -1455,7 +1460,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && (direct_arithmetic(opcode.byte).is_some() || direct_logic(opcode.byte).is_some()))
             || matches!((opcode.map, opcode.byte),
             (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf6 | 0xf7 | 0xfc | 0xfd)
-            | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x11 | 0x40..=0x4f | 0x54..=0x57 | 0x60 | 0x64 | 0x65 | 0x66 | 0x74 | 0x75 | 0x76 | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf | 0xd4 | 0xd8 | 0xd9 | 0xdc | 0xdd | 0xe8 | 0xe9 | 0xec | 0xed | 0xef | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
+            | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x11 | 0x40..=0x4f | 0x54..=0x57 | 0x60 | 0x64 | 0x65 | 0x66 | 0x68 | 0x74 | 0x75 | 0x76 | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf | 0xd4 | 0xd8 | 0xd9 | 0xdc | 0xdd | 0xe8 | 0xe9 | 0xec | 0xed | 0xef | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
                 opcode,
@@ -1789,6 +1794,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
         // PUNPCKLBW's mandatory 66 selects the XMM/SSE2 form; bare 0F 60 is MMX.
         let punpcklbw_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x60
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PUNPCKHBW's mandatory 66 selects the XMM/SSE2 form; bare 0F 68 is MMX.
+        let punpckhbw_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x68
             && prefixes.operand_override
             && prefix_count >= 1
             && prefix_bytes[0] == 0x66
@@ -2348,6 +2364,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::PunpcklbwRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x68) => {
+                if !punpckhbw_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PunpckhbwRegister {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
@@ -4543,6 +4572,48 @@ mod tests {
             &[0xc5, 0xf9, 0x60, 0xc1],
             &[0xc4, 0xe1, 0x79, 0x60, 0xc1],
             &[0x62, 0xf1, 0x7d, 0x08, 0x60, 0xc1],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn punpckhbw_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut bytes = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    bytes.push(rex);
+                }
+                bytes.extend([0x0f, 0x68, modrm]);
+                let decoded = Memory::new(&bytes).decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PunpckhbwRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, bytes.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0x0f, 0x68, 0xc1][..],
+            &[0xf2, 0x66, 0x0f, 0x68, 0xc1],
+            &[0xf3, 0x66, 0x0f, 0x68, 0xc1],
+            &[0x67, 0x66, 0x0f, 0x68, 0xc1],
+            &[0xf0, 0x66, 0x0f, 0x68, 0xc1],
+            &[0x66, 0x48, 0x0f, 0x68, 0xc1],
+            &[0x66, 0x42, 0x0f, 0x68, 0xc1],
+            &[0x66, 0x40, 0x41, 0x0f, 0x68, 0xc1],
+            &[0x66, 0x0f, 0x68, 0x01],
+            &[0x66, 0x0f, 0x68],
+            &[0x66, 0x0f],
+            &[0xc5, 0xf9, 0x68, 0xc1],
+            &[0xc4, 0xe1, 0x79, 0x68, 0xc1],
+            &[0x62, 0xf1, 0x7d, 0x08, 0x68, 0xc1],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
