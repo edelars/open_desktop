@@ -1367,12 +1367,14 @@ fn is_checked_qword_memory_address(
                     operand.base,
                     od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                 )
-                || matches!(instruction.length, 4 | 5)
+                || matches!(instruction.length, 4 | 5 | 8)
                     && operand.index.is_none()
                     && operand.scale == 1
                     && (instruction.length == 4 && operand.displacement == 0
                         || instruction.length == 5
-                            && (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement))
+                            && (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement)
+                        || instruction.length == 8
+                            && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement))
                     && matches!(
                         operand.base,
                         od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
@@ -1395,7 +1397,12 @@ fn is_checked_qword_memory_address(
                     operand.base,
                     od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
                 ) && instruction.length == 5
-                    && (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement));
+                    && (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement)
+                    || matches!(
+                        operand.base,
+                        od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                    ) && instruction.length == 8
+                        && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement));
             let rip_relative = matches!(operand.base, od_isa::long_decode::AddressBase::NextRip)
                 && operand.index.is_none()
                 && operand.scale == 1
@@ -1459,6 +1466,12 @@ pub(crate) fn exact_direct_qword_memory_bytes(
         || (bytes.len() == 5
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] >> 6 == 1
+            && bytes[2] & 7 == 4
+            && (bytes[2] >> 3) & 7 < 4
+            && bytes[3] == 0x24)
+        || (bytes.len() == 8
+            && bytes[0..2] == [0x48, opcode]
+            && bytes[2] >> 6 == 2
             && bytes[2] & 7 == 4
             && (bytes[2] >> 3) & 7 < 4
             && bytes[3] == 0x24)

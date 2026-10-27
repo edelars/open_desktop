@@ -152,11 +152,12 @@ impl MemorySiteV2 {
                         | od_isa::Register::Rbx
                 ) || register == od_isa::Register::Rbp && length == 4
                     || register == od_isa::Register::Rsp
-                        && matches!(length, 4 | 5)
+                        && matches!(length, 4 | 5 | 8)
                         && self.operand.index.is_none()
                         && self.operand.scale == 1
                         && (length == 4 && self.operand.displacement == 0
-                            || length == 5 && i8::try_from(self.operand.displacement).is_ok())
+                            || length == 5 && i8::try_from(self.operand.displacement).is_ok()
+                            || length == 8 && i32::try_from(self.operand.displacement).is_ok())
             }
             od_isa::long_decode::AddressBase::NextRip => {
                 self.operand.index.is_none() && length == 7
@@ -236,6 +237,9 @@ impl MemorySiteV2 {
             }
             (od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp), None, 5) => {
                 i8::try_from(self.operand.displacement).is_ok()
+            }
+            (od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp), None, 8) => {
+                i32::try_from(self.operand.displacement).is_ok()
             }
             (od_isa::long_decode::AddressBase::Register(_), None, 7)
             | (od_isa::long_decode::AddressBase::Register(_), Some(_), 8) => {
@@ -400,6 +404,14 @@ impl MemorySiteV2 {
                     && self.operand.index.is_none()
                     && self.operand.scale == 1
                     && i8::try_from(self.operand.displacement).is_ok();
+            }
+            if mode == 2 && sib == 0x24 {
+                return source.len() == 8
+                    && (modrm >> 3) & 7 < 4
+                    && decoded_base == od_isa::Register::Rsp
+                    && self.operand.index.is_none()
+                    && self.operand.scale == 1
+                    && i32::try_from(self.operand.displacement).is_ok();
             }
             base < 4
                 && index < 4

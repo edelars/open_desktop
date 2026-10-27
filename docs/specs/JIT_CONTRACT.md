@@ -616,6 +616,29 @@ budget accounting, STOP-RIP and actual-RIP continuation. Partial windows stop
 as `BoundaryReached`; unsupported variants have no effect. See the
 [S3-20w report](../reports/STAGE_3_S3-20w_2026-10-27.md).
 
+#### S3-20x: RSP-base no-index SIB qword MOV with disp32
+
+Admit exactly singleton `48 8B/89 /r sib disp32`, ModRM `mod=10,r/m=100`,
+SIB `0x24`: RSP base, no index, scale 1, signed disp32, data RAX..RBX, qword,
+64-bit effective address and exact length eight. The displacement bytes are
+bytes 4..7 after the SIB. Decoder `MemoryOperand` and `access_address_48` are
+the only signed displacement and address semantics. The existing source
+metadata capacity is sufficient. Address-size override, other prefixes,
+indexed/no-base SIB forms, pair/V3 and data-buffer changes are excluded; the
+separate `[RSP]` and RSP+disp8 profiles remain unchanged.
+
+Direct V2/shared IR/interpreter parity covers load/store, disp32
+MIN/-1/0/MAX, full state/RAM, callback address/count and retirement. A qword
+callback crossing `0xffff_ffff`, positive u64 wrap to address zero and sources
+that differ only in the high displacement byte are checked at runtime. RSP
+faults retain #SS while RBX controls retain #GP; faults do not commit, and
+AddressOverflow remains distinct from backend errors. Entry STOP/budget zero
+make no callback, successful store+STOP remains committed. Bounded dispatch
+composes the eight-byte singleton → bare NOP → existing pair with budgets 0..4
+and actual-RIP continuation; partial windows return `BoundaryReached` and
+invalid forms have no effects. See the
+[S3-20x report](../reports/STAGE_3_S3-20x_2026-10-27.md).
+
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
 alignment, same/different ranges, and safe partial overlaps for load→store;
