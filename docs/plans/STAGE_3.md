@@ -257,9 +257,9 @@ Host PC map нужен для диагностики и восстановлен
 
 **Фактически сделано:** `od-host::PublishedCode::publish` строит байты в private `MAP_JIT`, RAII guard возвращает write protection до cache sync, `sys_icache_invalidate` происходит до выдачи owner. Owner удерживает один mapping и освобождает его в Drop. Проверены отказ второй публикации и повторное использование slot после Drop; C ABI переводит конкурентный host resource отказ в существующий `STATUS_BUSY`, layout/signatures C ABI не менялись. `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, `cargo test -p od-host --offline` (8/8), `git diff --check`; layout check прошёл в основном checkout. Независимое review clean после исправления ссылки на ISSUE-021.
 
-Apple SDK 27.0 объявляет `pthread_jit_write_protect_np` доступным с macOS 11.0; явный deployment target проекта не найден. В Hardened Runtime с allow-jit допускается одна MAP_JIT region на процесс, поэтому этот срез явно ограничивает `od-host` одним живым mapping. Указанная write protection действует на текущий thread и не является process-wide synchronization с посторонними JIT users; `od-host` не пишет опубликованный code повторно. Подробная граница — [ISSUE-021](../KNOWN_ISSUES.md#issue-021--ограничение-одной-map_jit-region-в-publisher-contract).
+Apple SDK 27.0 объявляет `pthread_jit_write_protect_np` доступным с macOS 11.0; явный deployment target проекта не найден. В Hardened Runtime с allow-jit допускается одна MAP_JIT region на процесс, поэтому `od-host` допускает один standalone mapping или одну shared arena. Указанная write protection действует на текущий thread и не является process-wide synchronization с посторонними JIT users; `od-host` не пишет standalone опубликованный code повторно. Подробная граница — [ISSUE-021](../KNOWN_ISSUES.md#issue-021--ограничение-одной-map_jit-region-и-незавершённая-multi-block-интеграция).
 
-Ad-hoc подписанный Hardened Runtime VMHost smoke с allow-jit entitlement и JIT execution через launcher прошёл на macOS 26.7.1 ARM64 / Xcode SDK 27.0 вне debugger. Это локальная проверка текущей машины, не Developer ID signing, notarization, packaged-app acceptance или подтверждение другой версии macOS; ISSUE-004 остаётся открытой. Много-block cache потребует отдельного bounded-slot дизайна внутри одной region либо иной проверенной стратегии; не использовать per-block mmap как multi-block implementation.
+Ad-hoc подписанный Hardened Runtime VMHost smoke с allow-jit entitlement и JIT execution через launcher прошёл на macOS 26.7.1 ARM64 / Xcode SDK 27.0 вне debugger. Это локальная проверка текущей машины, не Developer ID signing, notarization, packaged-app acceptance или подтверждение другой версии macOS; ISSUE-004 остаётся открытой. S3-18b добавляет host-only bounded slots внутри одной region, но od-jit multi-entry cache integration и performance-based capacity choice остаются открытыми. Не использовать per-block mmap как multi-block implementation.
 
 ### S3-08. Реализовать generated entry и helper calls
 
@@ -570,10 +570,28 @@ per guest instruction. Mock tests cover same-key reuse, self-loop/budget, A→B 
 and drop ordering, dependency changes, invalid snapshots, oversize candidates,
 publication errors, clear/drop lifetime and zero-budget/code-end priority. A
 native od-host fixture compares cached and uncached state/results and repeats a
-cache hit. This does not provide a multi-block executable arena, cache
-telemetry, memory lowering, production MMU identity/invalidation, or benchmark
-evidence. S3-18 stays open; S3-22/23/25 remain separate context, invalidation
-and retirement work.
+cache hit. The one-entry `od-jit` policy does not yet integrate the separate
+host arena described below. Cache telemetry, memory lowering, production MMU
+identity/invalidation, and benchmark evidence remain absent. S3-18 stays open;
+S3-22/23/25 remain separate context, invalidation and retirement work.
+
+**S3-18b host arena partial:** `od-host::PublishedArenaBackend` owns one
+`MAP_JIT` mapping with a fixed slot size of 4096 bytes and a bounded capacity of
+1..=16 blocks. Mapping length is checked and rounded using the runtime page
+size. A preallocated free-slot stack tracks slots; each
+`PublishedArenaBlock` handle retains the arena, slot generation and PC map.
+The arena uses the same global `MapJitLease` as `PublishedCode`, so concurrent
+standalone/another-arena publication returns typed `MappingAlreadyLive` until
+the last backend or handle drops. Code publication validates the slot length
+and metadata, temporarily enables current-thread JIT write access only for the
+slot copy, restores protection, and performs instruction-cache invalidation
+before exposing the handle. Slot exhaustion does not consume a slot; there is
+no per-slot mmap/munmap, relocation or compaction. Arena calls reuse the shared
+verified call/result decoder. Native tests cover two simultaneous live blocks,
+full capacity, reuse of a dropped slot while another block remains executable,
+foreign handles, owner/handle lifetime and checked size overflow. The 16-slot
+limit is a provisional capacity choice without performance evidence. This host
+publication API does not alter S3-18a's one-entry cache. S3-18 remains open.
 
 ### S3-19. Подключить checked memory bridge
 

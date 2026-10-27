@@ -17,8 +17,12 @@ S3-07 добавил `PublishedCode::publish` для macOS ARM64: publisher со
 код после публикации, но это не задаёт process-wide write-protection для других
 JIT-пользователей процесса. API не позволяет безопасно вызвать произвольный
 `PublishedCode`; legacy `CompiledFragment` сохраняет владеющий mapping на время
-своего verified fragment entry. Много одновременно живых code blocks требуют
-отдельного bounded-slot дизайна внутри одной JIT region; это не реализовано.
+своего verified fragment entry. S3-18b добавляет host-only
+`PublishedArenaBackend`: одна MAP_JIT region с 1..=16 фиксированными 4096-byte
+slots и отдельными owning handles. Это не меняет release-on-return callbacks и
+не подключено к multi-entry `od-jit` cache. Capacity 16 — предварительная
+ограниченная конфигурация без performance evidence; concurrency/global
+write-protection contract не расширен.
 
 Локальная проверка S3-07 выполнена на macOS 26.7.1 ARM64, Xcode/macOS SDK 27.0:
 `od-host` unit tests, подписанный ad-hoc VMHost smoke с Hardened Runtime и
@@ -60,3 +64,12 @@ attribution. The map does not recover arbitrary host faults, panics, ABI
 violations or asynchronous snapshots. Independent review found no remaining
 concrete defects; the primary-checkout layout check remains with the root task.
 See the JIT contract and stage plan for exact scope/evidence.
+
+S3-18b uses the same `MapJitLease` and verified entry/result decoder for a
+bounded fixed-slot arena. A live arena blocks standalone/another MAP_JIT
+publication until its final backend/slot handle drops. Tests exercise two
+resident blocks, independent execution, dropped-slot reuse, full-capacity
+recovery, foreign-handle rejection and mapping-owner lifetime. Native tests
+passed in the local macOS ARM64 Cargo test run. These tests do not constitute a separate
+Hardened Runtime/allow-jit signed arena smoke. Slot count remains provisional;
+no performance claim is made.

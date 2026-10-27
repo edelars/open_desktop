@@ -4,6 +4,7 @@
 use std::ptr::NonNull;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::{cell::RefCell, rc::Rc};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExecutableMemoryError {
@@ -81,6 +82,76 @@ impl Drop for MappedRegion {
     }
 }
 
+impl MappedRegion {
+    fn allocate(len: usize) -> Result<Self, ExecutableMemoryError> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            use std::ffi::c_void;
+            const PROT_READ: i32 = 1;
+            const PROT_WRITE: i32 = 2;
+            const PROT_EXEC: i32 = 4;
+            const MAP_PRIVATE: i32 = 0x0002;
+            const MAP_ANON: i32 = 0x1000;
+            const MAP_JIT: i32 = 0x0800;
+            const MAP_FAILED: *mut c_void = -1_isize as *mut c_void;
+
+            unsafe extern "C" {
+                fn mmap(
+                    addr: *mut c_void,
+                    len: usize,
+                    prot: i32,
+                    flags: i32,
+                    fd: i32,
+                    offset: i64,
+                ) -> *mut c_void;
+                fn munmap(addr: *mut c_void, len: usize) -> i32;
+            }
+
+            let lease = MapJitLease::acquire()?;
+            let len = len.max(4);
+            // SAFETY: the arguments request one anonymous private MAP_JIT
+            // mapping; `len` is nonzero, fd is -1, and offset is zero.
+            let raw = unsafe {
+                mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    PROT_READ | PROT_WRITE | PROT_EXEC,
+                    MAP_PRIVATE | MAP_ANON | MAP_JIT,
+                    -1,
+                    0,
+                )
+            };
+            if raw == MAP_FAILED {
+                return Err(ExecutableMemoryError::AllocationFailed);
+            }
+            let Some(ptr) = NonNull::new(raw.cast::<u8>()) else {
+                // SAFETY: this is the successful raw mapping above with the
+                // exact length passed to mmap.
+                unsafe {
+                    let _ = munmap(raw, len);
+                }
+                return Err(ExecutableMemoryError::AllocationFailed);
+            };
+            Ok(Self {
+                ptr,
+                len,
+                _lease: lease,
+            })
+        }
+
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            let _ = len;
+            Err(ExecutableMemoryError::UnsupportedPlatform)
+        }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn ptr(&self) -> NonNull<u8> {
+        self.ptr
+    }
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 struct JitWriteAccess;
 
@@ -107,6 +178,25 @@ impl Drop for JitWriteAccess {
         // on the same macOS ARM64 platform where `begin` disabled it.
         unsafe { pthread_jit_write_protect_np(1) };
     }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+unsafe fn write_mapping_bytes(destination: NonNull<u8>, bytes: &[u8]) {
+    use std::ffi::c_void;
+    unsafe extern "C" {
+        fn sys_icache_invalidate(start: *mut c_void, len: usize);
+    }
+
+    let write_access = JitWriteAccess::begin();
+    // SAFETY: callers ensure `destination` covers `bytes.len()` writable bytes
+    // in a live MAP_JIT region; the borrowed source cannot alias that region.
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), destination.as_ptr(), bytes.len());
+    }
+    drop(write_access);
+    // SAFETY: this is the just-written range in the live mapping; invalidating
+    // it after restoring write protection is required before entry visibility.
+    unsafe { sys_icache_invalidate(destination.as_ptr().cast(), bytes.len()) };
 }
 
 impl PublishedCode {
@@ -146,71 +236,9 @@ impl PublishedCode {
     ) -> Result<Self, ExecutableMemoryError> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            use std::ffi::c_void;
-            const PROT_READ: i32 = 1;
-            const PROT_WRITE: i32 = 2;
-            const PROT_EXEC: i32 = 4;
-            const MAP_PRIVATE: i32 = 0x0002;
-            const MAP_ANON: i32 = 0x1000;
-            const MAP_JIT: i32 = 0x0800;
-            const MAP_FAILED: *mut c_void = -1_isize as *mut c_void;
-
-            unsafe extern "C" {
-                fn mmap(
-                    addr: *mut c_void,
-                    len: usize,
-                    prot: i32,
-                    flags: i32,
-                    fd: i32,
-                    offset: i64,
-                ) -> *mut c_void;
-                fn sys_icache_invalidate(start: *mut c_void, len: usize);
-                fn munmap(addr: *mut c_void, len: usize) -> i32;
-            }
-
-            let lease = MapJitLease::acquire()?;
-            let len = code.len().max(4);
-            // SAFETY: the arguments request one anonymous private MAP_JIT
-            // mapping; `len` is nonzero, fd is -1, and offset is zero.
-            let raw = unsafe {
-                mmap(
-                    std::ptr::null_mut(),
-                    len,
-                    PROT_READ | PROT_WRITE | PROT_EXEC,
-                    MAP_PRIVATE | MAP_ANON | MAP_JIT,
-                    -1,
-                    0,
-                )
-            };
-            if raw == MAP_FAILED {
-                return Err(ExecutableMemoryError::AllocationFailed);
-            }
-            let Some(ptr) = NonNull::new(raw.cast::<u8>()) else {
-                // mmap succeeded but returned an address the public non-null
-                // pointer contract cannot represent. Release it immediately.
-                // SAFETY: this is the successful raw mapping above with the
-                // exact length passed to mmap.
-                unsafe {
-                    let _ = munmap(raw, len);
-                }
-                return Err(ExecutableMemoryError::AllocationFailed);
-            };
-            let region = MappedRegion {
-                ptr,
-                len,
-                _lease: lease,
-            };
-            unsafe {
-                let write_access = JitWriteAccess::begin();
-                // SAFETY: `region` owns a mapping of at least `code.len()`
-                // bytes, the immutable source slice cannot alias the fresh
-                // mapping, and the current thread has write access enabled.
-                std::ptr::copy_nonoverlapping(code.as_ptr(), ptr.as_ptr(), code.len());
-                drop(write_access);
-                // SAFETY: this is the just-written range in the live mapping;
-                // invalidating it is required before its entry becomes visible.
-                sys_icache_invalidate(ptr.as_ptr().cast(), code.len());
-            }
+            let region = MappedRegion::allocate(code.len())?;
+            // SAFETY: the new region owns at least `code.len()` writable bytes.
+            unsafe { write_mapping_bytes(region.ptr(), code) };
             return Ok(Self {
                 region,
                 block_metadata,
@@ -245,41 +273,17 @@ impl PublishedCode {
             .block_metadata
             .as_ref()
             .ok_or(BlockExecutionError::NotRuntimeBlock)?;
-        if !metadata.safe_entry {
-            return Err(BlockExecutionError::UntrustedHelper);
-        }
-        if state.rip != metadata.entry_rip {
-            return Err(BlockExecutionError::EntryRipMismatch {
-                expected: metadata.entry_rip,
-                actual: state.rip,
-            });
-        }
-
-        let mut context = od_jit::runtime::RuntimeContextV1 {
+        execute_block_at(
+            self.as_ptr(),
+            metadata,
             state,
             initial_budget,
-            stop_rip_enabled: u32::from(stop_rip.is_some()),
-            reserved: 0,
-            stop_rip: stop_rip.unwrap_or(0),
-            stop_requested: (stop_requested as *const std::sync::atomic::AtomicU8).cast(),
-            remaining_budget: initial_budget,
-            retired_instructions: 0,
-        };
-        // SAFETY: this mapping was created from the private emitted-block type,
-        // the production helper ABI is fixed, the state and atomic references
-        // outlive the call, and this borrow keeps the code/map owner alive.
-        let entry: od_jit::runtime::BlockEntry = unsafe { std::mem::transmute(self.as_ptr()) };
-        // SAFETY: all RuntimeContextV1 pointers are built from live references
-        // above and the entry provenance was checked before invocation.
-        let raw = unsafe { entry(&mut context) };
-        self.decode_block_result(
-            raw,
-            state.rip,
-            context.remaining_budget,
-            context.retired_instructions,
+            stop_rip,
+            stop_requested,
         )
     }
 
+    #[cfg(test)]
     fn decode_block_result(
         &self,
         raw: u32,
@@ -291,23 +295,13 @@ impl PublishedCode {
             .block_metadata
             .as_ref()
             .ok_or(BlockExecutionError::NotRuntimeBlock)?;
-        if raw == od_jit::runtime::RAW_HELPER_CONTRACT_FAILURE_V1 {
-            if metadata.pc_map.has_helper_failure_site(state_rip) {
-                return Err(BlockExecutionError::HelperContractFailure {
-                    guest_rip: state_rip,
-                    remaining_budget,
-                    retired_instructions,
-                });
-            }
-            return Err(BlockExecutionError::UnknownHelperFailureSite { state_rip });
-        }
-        let exit = od_jit::runtime::RuntimeExitTag::try_from(raw)
-            .map_err(BlockExecutionError::InvalidExitTag)?;
-        Ok(BlockExecutionResult {
-            exit,
+        decode_block_result(
+            metadata,
+            raw,
+            state_rip,
             remaining_budget,
             retired_instructions,
-        })
+        )
     }
 
     /// Legacy constructor retained for existing `ExecutableMemory` callers.
@@ -327,6 +321,76 @@ impl PublishedCode {
             std::ptr::null()
         }
     }
+}
+
+fn execute_block_at(
+    code_ptr: *const u8,
+    metadata: &BlockMetadata,
+    state: &mut od_isa::LongModeState,
+    initial_budget: u64,
+    stop_rip: Option<u64>,
+    stop_requested: &std::sync::atomic::AtomicU8,
+) -> Result<BlockExecutionResult, BlockExecutionError> {
+    if !metadata.safe_entry {
+        return Err(BlockExecutionError::UntrustedHelper);
+    }
+    if state.rip != metadata.entry_rip {
+        return Err(BlockExecutionError::EntryRipMismatch {
+            expected: metadata.entry_rip,
+            actual: state.rip,
+        });
+    }
+
+    let mut context = od_jit::runtime::RuntimeContextV1 {
+        state,
+        initial_budget,
+        stop_rip_enabled: u32::from(stop_rip.is_some()),
+        reserved: 0,
+        stop_rip: stop_rip.unwrap_or(0),
+        stop_requested: (stop_requested as *const std::sync::atomic::AtomicU8).cast(),
+        remaining_budget: initial_budget,
+        retired_instructions: 0,
+    };
+    // SAFETY: callers keep the owning PublishedCode/ArenaBlock alive for this
+    // full call. Metadata only comes from a verifier-checked runtime emitter,
+    // the production helper ABI is fixed, and all context references outlive
+    // the generated entry.
+    let entry: od_jit::runtime::BlockEntry = unsafe { std::mem::transmute(code_ptr) };
+    // SAFETY: RuntimeContextV1 pointers above refer to live state and control.
+    let raw = unsafe { entry(&mut context) };
+    decode_block_result(
+        metadata,
+        raw,
+        state.rip,
+        context.remaining_budget,
+        context.retired_instructions,
+    )
+}
+
+fn decode_block_result(
+    metadata: &BlockMetadata,
+    raw: u32,
+    state_rip: u64,
+    remaining_budget: u64,
+    retired_instructions: u64,
+) -> Result<BlockExecutionResult, BlockExecutionError> {
+    if raw == od_jit::runtime::RAW_HELPER_CONTRACT_FAILURE_V1 {
+        if metadata.pc_map.has_helper_failure_site(state_rip) {
+            return Err(BlockExecutionError::HelperContractFailure {
+                guest_rip: state_rip,
+                remaining_budget,
+                retired_instructions,
+            });
+        }
+        return Err(BlockExecutionError::UnknownHelperFailureSite { state_rip });
+    }
+    let exit = od_jit::runtime::RuntimeExitTag::try_from(raw)
+        .map_err(BlockExecutionError::InvalidExitTag)?;
+    Ok(BlockExecutionResult {
+        exit,
+        remaining_budget,
+        retired_instructions,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -451,6 +515,289 @@ impl od_jit::dispatch::CachedBlockBackend for PublishedBlockExecutor {
             retired_instructions: result.retired_instructions,
         })
     }
+}
+
+pub const ARENA_SLOT_BYTES: usize = od_jit::block_compile::MAX_EMITTED_BLOCK_BYTES;
+pub const MAX_PUBLISHED_ARENA_BLOCKS: usize = 16;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublishedArenaError {
+    InvalidCapacity { requested: usize, max: usize },
+    SizeOverflow,
+    MappingAlreadyLive,
+    Mapping(ExecutableMemoryError),
+    CapacityFull,
+    BlockTooLarge { actual: usize, max: usize },
+    InvalidBlockMetadata,
+    ForeignHandle,
+    StaleHandle,
+    GenerationExhausted,
+    Execution(BlockExecutionError),
+}
+
+struct ArenaSlot {
+    generation: u64,
+    metadata: Option<BlockMetadata>,
+}
+
+struct ArenaInner {
+    region: MappedRegion,
+    slots: Vec<ArenaSlot>,
+    free_slots: Vec<usize>,
+}
+
+/// Single MAP_JIT region divided into fixed, bounded block slots. The backend
+/// and handles are deliberately Rc-based and therefore neither Send nor Sync.
+/// Capacity is a provisional bounded choice; no speed claim is made.
+pub struct PublishedArenaBackend {
+    arena: Rc<RefCell<ArenaInner>>,
+    owner_id: Rc<()>,
+}
+
+/// Owns one slot and keeps its arena mapping alive. Dropping the final handle
+/// for a backend frees that slot; the mapping lease ends when backend and all
+/// handles have dropped.
+pub struct PublishedArenaBlock {
+    arena: Rc<RefCell<ArenaInner>>,
+    owner_id: Rc<()>,
+    slot_index: usize,
+    generation: u64,
+}
+
+impl PublishedArenaBackend {
+    pub fn new(max_blocks: usize) -> Result<Self, PublishedArenaError> {
+        if max_blocks == 0 || max_blocks > MAX_PUBLISHED_ARENA_BLOCKS {
+            return Err(PublishedArenaError::InvalidCapacity {
+                requested: max_blocks,
+                max: MAX_PUBLISHED_ARENA_BLOCKS,
+            });
+        }
+
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let page_size = system_page_size().ok_or(PublishedArenaError::SizeOverflow)?;
+            let mapping_size = arena_mapping_size(max_blocks, ARENA_SLOT_BYTES, page_size)
+                .ok_or(PublishedArenaError::SizeOverflow)?;
+            let region = MappedRegion::allocate(mapping_size).map_err(arena_mapping_error)?;
+            let mut slots = Vec::with_capacity(max_blocks);
+            slots.resize_with(max_blocks, || ArenaSlot {
+                generation: 0,
+                metadata: None,
+            });
+            let mut free_slots = Vec::with_capacity(max_blocks);
+            free_slots.extend((0..max_blocks).rev());
+            return Ok(Self {
+                arena: Rc::new(RefCell::new(ArenaInner {
+                    region,
+                    slots,
+                    free_slots,
+                })),
+                owner_id: Rc::new(()),
+            });
+        }
+
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            Err(PublishedArenaError::Mapping(
+                ExecutableMemoryError::UnsupportedPlatform,
+            ))
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.arena.borrow().slots.len()
+    }
+
+    pub fn available_slots(&self) -> usize {
+        self.arena.borrow().free_slots.len()
+    }
+}
+
+impl Drop for PublishedArenaBlock {
+    fn drop(&mut self) {
+        let Ok(mut arena) = self.arena.try_borrow_mut() else {
+            return;
+        };
+        let Some(slot) = arena.slots.get_mut(self.slot_index) else {
+            return;
+        };
+        if slot.generation == self.generation && slot.metadata.take().is_some() {
+            // The stack was preallocated to the fixed slot count and each
+            // live handle returns at most one slot.
+            arena.free_slots.push(self.slot_index);
+        }
+    }
+}
+
+impl od_jit::dispatch::CachedBlockBackend for PublishedArenaBackend {
+    type Error = PublishedArenaError;
+    type Published = PublishedArenaBlock;
+
+    fn publish_cached_block(
+        &mut self,
+        block: &od_jit::block_compile::CompiledBlock,
+    ) -> Result<Self::Published, Self::Error> {
+        let emitted = block.emitted();
+        let code = emitted
+            .to_le_bytes()
+            .map_err(|_| PublishedArenaError::InvalidBlockMetadata)?;
+        if code.is_empty() || code.len() > ARENA_SLOT_BYTES {
+            return Err(PublishedArenaError::BlockTooLarge {
+                actual: code.len(),
+                max: ARENA_SLOT_BYTES,
+            });
+        }
+        if usize::try_from(emitted.pc_map().code_len()).ok() != Some(code.len())
+            || !emitted.safe_entry_provenance()
+        {
+            return Err(PublishedArenaError::InvalidBlockMetadata);
+        }
+        let metadata = BlockMetadata {
+            pc_map: emitted.pc_map().clone(),
+            entry_rip: emitted.entry_rip(),
+            safe_entry: emitted.safe_entry_provenance(),
+        };
+
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let mut arena = self.arena.borrow_mut();
+            let slot_index = *arena
+                .free_slots
+                .last()
+                .ok_or(PublishedArenaError::CapacityFull)?;
+            let slot = &arena.slots[slot_index];
+            let generation = slot
+                .generation
+                .checked_add(1)
+                .ok_or(PublishedArenaError::GenerationExhausted)?;
+            let offset = slot_index
+                .checked_mul(ARENA_SLOT_BYTES)
+                .ok_or(PublishedArenaError::SizeOverflow)?;
+            let end = offset
+                .checked_add(code.len())
+                .ok_or(PublishedArenaError::SizeOverflow)?;
+            if end > arena.region.len {
+                return Err(PublishedArenaError::SizeOverflow);
+            }
+
+            let slot_base = unsafe { arena.region.ptr().as_ptr().add(offset) };
+            let slot_base = NonNull::new(slot_base).ok_or(PublishedArenaError::SizeOverflow)?;
+            // All fallible validation and metadata allocation precede slot
+            // reservation. Copy/cache sync has no recoverable error path.
+            arena.free_slots.pop();
+            let slot = &mut arena.slots[slot_index];
+            slot.generation = generation;
+            slot.metadata = Some(metadata);
+            // SAFETY: the checked slot range belongs to this arena; the source
+            // `code` vector cannot alias the MAP_JIT mapping.
+            unsafe { write_mapping_bytes(slot_base, &code) };
+            drop(arena);
+            return Ok(PublishedArenaBlock {
+                arena: self.arena.clone(),
+                owner_id: self.owner_id.clone(),
+                slot_index,
+                generation,
+            });
+        }
+
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            let _ = (code, metadata);
+            Err(PublishedArenaError::Mapping(
+                ExecutableMemoryError::UnsupportedPlatform,
+            ))
+        }
+    }
+
+    fn execute_cached_block(
+        &mut self,
+        published: &Self::Published,
+        _block: &od_jit::block_compile::CompiledBlock,
+        state: &mut od_isa::LongModeState,
+        incoming_budget: u64,
+        control: od_jit::dispatch::DispatchControl<'_>,
+    ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+        if !Rc::ptr_eq(&self.owner_id, &published.owner_id)
+            || !Rc::ptr_eq(&self.arena, &published.arena)
+        {
+            return Err(PublishedArenaError::ForeignHandle);
+        }
+
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let arena = published.arena.borrow();
+            let slot = arena
+                .slots
+                .get(published.slot_index)
+                .ok_or(PublishedArenaError::StaleHandle)?;
+            if slot.generation != published.generation {
+                return Err(PublishedArenaError::StaleHandle);
+            }
+            let metadata = slot
+                .metadata
+                .as_ref()
+                .ok_or(PublishedArenaError::StaleHandle)?;
+            let offset = published
+                .slot_index
+                .checked_mul(ARENA_SLOT_BYTES)
+                .ok_or(PublishedArenaError::SizeOverflow)?;
+            if offset >= arena.region.len {
+                return Err(PublishedArenaError::SizeOverflow);
+            }
+            let code_ptr = unsafe { arena.region.ptr().as_ptr().add(offset) };
+            let result = execute_block_at(
+                code_ptr,
+                metadata,
+                state,
+                incoming_budget,
+                control.stop_rip,
+                control.stop_requested,
+            )
+            .map_err(PublishedArenaError::Execution)?;
+            return Ok(od_jit::dispatch::BlockExecutionReport {
+                exit: result.exit,
+                remaining_budget: result.remaining_budget,
+                retired_instructions: result.retired_instructions,
+            });
+        }
+
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            let _ = (published, state, incoming_budget, control);
+            Err(PublishedArenaError::Mapping(
+                ExecutableMemoryError::UnsupportedPlatform,
+            ))
+        }
+    }
+}
+
+fn arena_mapping_size(slot_count: usize, slot_bytes: usize, page_bytes: usize) -> Option<usize> {
+    if slot_count == 0 || slot_bytes == 0 || page_bytes == 0 {
+        return None;
+    }
+    let used = slot_count.checked_mul(slot_bytes)?;
+    let remainder = used % page_bytes;
+    if remainder == 0 {
+        Some(used)
+    } else {
+        used.checked_add(page_bytes.checked_sub(remainder)?)
+    }
+}
+
+fn arena_mapping_error(error: ExecutableMemoryError) -> PublishedArenaError {
+    match error {
+        ExecutableMemoryError::MappingAlreadyLive => PublishedArenaError::MappingAlreadyLive,
+        other => PublishedArenaError::Mapping(other),
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn system_page_size() -> Option<usize> {
+    unsafe extern "C" {
+        fn getpagesize() -> i32;
+    }
+    let size = unsafe { getpagesize() };
+    usize::try_from(size).ok().filter(|size| *size != 0)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -781,6 +1128,7 @@ mod tests {
     };
     use od_jit::block::{self, AdmittedInstructionBoundaries, BlockLimits, CodeView};
     use od_jit::block_compile::{BlockCompileOutcome, compile_block, compile_block_for_dispatch};
+    use od_jit::dispatch::CachedBlockBackend;
     use od_jit::emitter::{
         self, DATA_EFFECTS_UNCOMMITTED_V1, DataEffectContextV2, DataEffectEntry,
         DataEffectOutputKind, DataEffectTerminal, FlagMaterialization,
@@ -2995,5 +3343,197 @@ mod tests {
             STATUS_OK
         );
         assert_eq!(unsafe { od_fragment_destroy(raw_handle) }, STATUS_OK);
+    }
+
+    fn compiled_arena_mov(base_rip: u64, value: u64) -> od_jit::block_compile::CompiledBlock {
+        let mut code = vec![0x48, 0xB8];
+        code.extend_from_slice(&value.to_le_bytes());
+        let view = CodeView::new(base_rip, &code).unwrap();
+        let BlockCompileOutcome::Compiled(block) = compile_block(view, base_rip).unwrap() else {
+            panic!("MOV fixture should compile");
+        };
+        block
+    }
+
+    fn execute_arena_handle(
+        backend: &mut PublishedArenaBackend,
+        handle: &PublishedArenaBlock,
+        block: &od_jit::block_compile::CompiledBlock,
+        state: &mut od_isa::LongModeState,
+        budget: u64,
+    ) -> od_jit::dispatch::BlockExecutionReport {
+        let stop = AtomicU8::new(0);
+        backend
+            .execute_cached_block(
+                handle,
+                block,
+                state,
+                budget,
+                od_jit::dispatch::DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &stop,
+                },
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn published_arena_executes_two_live_blocks_and_reuses_only_dropped_slot() {
+        let _guard = jit_test_lock();
+        let block_a = compiled_arena_mov(0x8000, 11);
+        let block_b = compiled_arena_mov(0x8100, 22);
+        let block_c = compiled_arena_mov(0x8200, 33);
+        let mut backend = PublishedArenaBackend::new(2).unwrap();
+        let handle_a = backend.publish_cached_block(&block_a).unwrap();
+        let slot_a = handle_a.slot_index;
+        let handle_b = backend.publish_cached_block(&block_b).unwrap();
+        assert_eq!(backend.available_slots(), 0);
+        assert!(matches!(
+            backend.publish_cached_block(&block_c),
+            Err(PublishedArenaError::CapacityFull)
+        ));
+        assert_eq!(
+            backend.available_slots(),
+            0,
+            "full failure must not consume a slot"
+        );
+
+        let mut state_a = od_isa::LongModeState {
+            rip: 0x8000,
+            ..od_isa::LongModeState::default()
+        };
+        let report_a = execute_arena_handle(&mut backend, &handle_a, &block_a, &mut state_a, 2);
+        assert_eq!(report_a.exit, RuntimeExitTag::BlockComplete);
+        assert_eq!(report_a.retired_instructions, 1);
+        assert_eq!(state_a.gpr[0], 11);
+
+        let mut state_b = od_isa::LongModeState {
+            rip: 0x8100,
+            ..od_isa::LongModeState::default()
+        };
+        let report_b = execute_arena_handle(&mut backend, &handle_b, &block_b, &mut state_b, 2);
+        assert_eq!(report_b.exit, RuntimeExitTag::BlockComplete);
+        assert_eq!(state_b.gpr[0], 22);
+
+        drop(handle_a);
+        assert_eq!(backend.available_slots(), 1);
+        let handle_c = backend.publish_cached_block(&block_c).unwrap();
+        assert_eq!(handle_c.slot_index, slot_a, "free stack reuses A's slot");
+
+        state_b.rip = 0x8100;
+        let report_b_again =
+            execute_arena_handle(&mut backend, &handle_b, &block_b, &mut state_b, 2);
+        assert_eq!(report_b_again.exit, RuntimeExitTag::BlockComplete);
+        assert_eq!(state_b.gpr[0], 22, "publishing C must not overwrite B");
+
+        let mut state_c = od_isa::LongModeState {
+            rip: 0x8200,
+            ..od_isa::LongModeState::default()
+        };
+        let report_c = execute_arena_handle(&mut backend, &handle_c, &block_c, &mut state_c, 2);
+        assert_eq!(report_c.exit, RuntimeExitTag::BlockComplete);
+        assert_eq!(state_c.gpr[0], 33);
+    }
+
+    #[test]
+    fn arena_lease_outlives_backend_until_last_handle_and_can_reopen() {
+        let _guard = jit_test_lock();
+        let block = compiled_arena_mov(0x8300, 44);
+        let mut backend = PublishedArenaBackend::new(2).unwrap();
+        let handle = backend.publish_cached_block(&block).unwrap();
+        // This is an allocation-only probe; the bytes are never invoked.
+        assert_eq!(
+            PublishedCode::publish(&[0xC0, 0x03, 0x5F, 0xD6]).err(),
+            Some(ExecutableMemoryError::MappingAlreadyLive)
+        );
+        assert_eq!(
+            PublishedArenaBackend::new(1).err(),
+            Some(PublishedArenaError::MappingAlreadyLive)
+        );
+        drop(backend);
+        assert_eq!(
+            PublishedCode::publish(&[0xC0, 0x03, 0x5F, 0xD6]).err(),
+            Some(ExecutableMemoryError::MappingAlreadyLive),
+            "the handle retains the arena after its backend drops"
+        );
+        assert_eq!(
+            PublishedArenaBackend::new(1).err(),
+            Some(PublishedArenaError::MappingAlreadyLive),
+            "a slot handle also retains the global arena lease"
+        );
+        drop(handle);
+        drop(PublishedCode::publish(&[0xC0, 0x03, 0x5F, 0xD6]).unwrap());
+        let reopened = PublishedArenaBackend::new(1).unwrap();
+        assert_eq!(reopened.available_slots(), 1);
+    }
+
+    #[test]
+    fn arena_mapping_rounding_is_checked_and_capacity_is_bounded() {
+        assert_eq!(arena_mapping_size(1, ARENA_SLOT_BYTES, 4096), Some(4096));
+        assert_eq!(
+            arena_mapping_size(2, ARENA_SLOT_BYTES, 16_384),
+            Some(16_384)
+        );
+        assert_eq!(arena_mapping_size(0, ARENA_SLOT_BYTES, 4096), None);
+        assert_eq!(arena_mapping_size(1, ARENA_SLOT_BYTES, 0), None);
+        assert_eq!(arena_mapping_size(usize::MAX, ARENA_SLOT_BYTES, 4096), None);
+        assert!(matches!(
+            PublishedArenaBackend::new(0),
+            Err(PublishedArenaError::InvalidCapacity { requested: 0, .. })
+        ));
+        assert!(matches!(
+            PublishedArenaBackend::new(MAX_PUBLISHED_ARENA_BLOCKS + 1),
+            Err(PublishedArenaError::InvalidCapacity { .. })
+        ));
+    }
+
+    #[test]
+    fn arena_rejects_foreign_handle_before_entry() {
+        let _guard = jit_test_lock();
+        let block = compiled_arena_mov(0x8400, 55);
+        let mut backend = PublishedArenaBackend::new(1).unwrap();
+        let handle = backend.publish_cached_block(&block).unwrap();
+        // Fabricate a distinct owner token in the unit-test module to exercise
+        // the same guard used for a handle passed from another arena backend.
+        let mut foreign_backend = PublishedArenaBackend {
+            arena: backend.arena.clone(),
+            owner_id: Rc::new(()),
+        };
+        let mut state = od_isa::LongModeState {
+            rip: 0x8400,
+            ..od_isa::LongModeState::default()
+        };
+        let stop = AtomicU8::new(0);
+        assert_eq!(
+            foreign_backend.execute_cached_block(
+                &handle,
+                &block,
+                &mut state,
+                1,
+                od_jit::dispatch::DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &stop,
+                },
+            ),
+            Err(PublishedArenaError::ForeignHandle)
+        );
+    }
+
+    #[test]
+    fn failed_slot_reservation_rolls_back_and_slot_remains_reusable() {
+        let _guard = jit_test_lock();
+        let block = compiled_arena_mov(0x8500, 66);
+        let mut backend = PublishedArenaBackend::new(1).unwrap();
+        backend.arena.borrow_mut().slots[0].generation = u64::MAX;
+        assert!(matches!(
+            backend.publish_cached_block(&block),
+            Err(PublishedArenaError::GenerationExhausted)
+        ));
+        assert_eq!(backend.available_slots(), 1);
+        backend.arena.borrow_mut().slots[0].generation = 0;
+        let handle = backend.publish_cached_block(&block).unwrap();
+        assert_eq!(backend.available_slots(), 0);
+        drop(handle);
+        assert_eq!(backend.available_slots(), 1);
     }
 }

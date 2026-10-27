@@ -39,14 +39,14 @@
 - **Основание:** независимое ревью S3-09 выявило отсутствие отдельных unit vectors для перечисленных liveness сочетаний; native ARM64 probe подтверждает transport для четырёх register homes и двух spills через один helper.
 - **Следующий шаг:** при последующих allocator changes добавить table-driven def/use и boundary combinations, особенно несколько register homes одновременно live-through. Сохранить native helper-clobber probe; до этого считать покрытие базовым, не исчерпывающим.
 
-### ISSUE-021 — Ограничение одной MAP_JIT region в publisher contract
+### ISSUE-021 — Ограничение одной MAP_JIT region и незавершённая multi-block интеграция
 
 - **Дата обнаружения:** 2026-10-26.
 - **Компонент:** `od-host::PublishedCode` (S3-07), будущий block cache (S3-18).
-- **Статус:** открыта; текущий publisher допускает один живой mapping, bounded slots не реализованы.
-- **Суть и последствия:** Apple ограничивает процесс с Hardened Runtime и allow-jit entitlement одной `MAP_JIT` region. `od-host` отвергает вторую собственную публикацию как `MappingAlreadyLive` (C ABI: существующий `STATUS_BUSY`). Поэтому несколько разных fragments нельзя одновременно держать в отдельных mappings; будущий multi-block cache требует bounded slots внутри одной region или иной проверенной стратегии. `pthread_jit_write_protect_np` действует на текущий поток, а локальный gate не координирует посторонних JIT-пользователей процесса.
-- **Основание:** Apple [JIT porting documentation](https://developer.apple.com/documentation/apple-silicon/porting-just-in-time-compilers-to-apple-silicon) и [entitlement documentation](https://developer.apple.com/documentation/BundleResources/Entitlements/com.apple.security.cs.allow-jit?changes=latest_7_7_7&language=objc); реализация и тесты в [`od-host/src/lib.rs`](../crates/od-host/src/lib.rs); локальный ad-hoc signed Hardened Runtime smoke подтверждает только текущую конфигурацию.
-- **Следующий шаг:** до реализации S3-18 определить и проверить slot allocation/reuse, lifetime/pinning и synchronization между публикацией и исполнением внутри единственной region. Не создавать per-block MAP_JIT mappings.
+- **Статус:** частично устранена в S3-18b; ограничение одной region остаётся, host slot arena реализована, multi-entry cache integration открыта.
+- **Суть и последствия:** Apple ограничивает процесс с Hardened Runtime и allow-jit entitlement одной `MAP_JIT` region. `od-host` отвергает вторую отдельную region как `MappingAlreadyLive` (C ABI: существующий `STATUS_BUSY`). S3-18b добавляет один bounded arena с 1..=16 fixed slots по 4096 bytes и handle-owned lifetime; несколько verified blocks могут жить внутри той же region. Это не подключает arena к `od-jit` multi-entry cache, eviction/invalidation или производственному memory owner. `pthread_jit_write_protect_np` действует на текущий поток, а локальный gate не координирует посторонних или параллельных JIT-пользователей процесса.
+- **Основание:** Apple [JIT porting documentation](https://developer.apple.com/documentation/apple-silicon/porting-just-in-time-compilers-to-apple-silicon) и [entitlement documentation](https://developer.apple.com/documentation/BundleResources/Entitlements/com.apple.security.cs.allow-jit?changes=latest_7_7_7&language=objc); arena lifecycle/native tests в [`od-host/src/lib.rs`](../crates/od-host/src/lib.rs); локальный ad-hoc signed Hardened Runtime smoke подтверждает только текущую конфигурацию.
+- **Следующий шаг:** завершить ограниченную multi-entry cache integration, привязать identity/invalidation к execution context и отдельно оценить provisional 16-slot capacity замерами. Не создавать per-block MAP_JIT mappings.
 
 ### ISSUE-018 — Специальные значения и исключения indexed FCOMI-family вне bounded профиля
 

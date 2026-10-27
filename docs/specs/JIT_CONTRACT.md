@@ -302,9 +302,36 @@ existing ordering, including a fresh invocation-local STOP flag and boundary
 resampling; zero-budget and code-end checks do not compile or publish.
 The native fixture test compares cached and uncached results and reuses the
 resident owner. This is only a one-entry register-only fixture path; it has no
-multi-block executable arena, memory lowering, production MMU identity source,
-invalidation protocol, hit/miss telemetry, or performance claim. S3-18 remains
-open, as do context/invalidation/retirement work in S3-22/23/25.
+multi-entry cache integration, memory lowering, production MMU identity source,
+invalidation protocol, hit/miss telemetry, or performance claim. The separate
+host-only arena publication partial is described below; it does not change the
+one-entry `od-jit` cache policy. S3-18 remains open, as do
+context/invalidation/retirement work in S3-22/23/25.
+
+### S3-18b: bounded host publication arena partial
+
+`od-host::PublishedArenaBackend` owns one `MAP_JIT` region divided into a
+caller-selected 1..=16 fixed slots of 4096 bytes, matching
+`MAX_EMITTED_BLOCK_BYTES`. Arena length is checked and rounded to the runtime
+page size. A preallocated free-slot stack and per-slot generation/PC-map
+metadata allow up to the configured number of independently owned
+`PublishedArenaBlock` handles. Each handle keeps the arena and global
+`MapJitLease` alive; releasing the final backend/handle unmaps once and frees
+the lease. Existing `PublishedCode` still owns one standalone mapping and its
+release-on-return executor is unchanged. A live arena blocks standalone
+publication and another arena with typed `MappingAlreadyLive` errors.
+
+Publication reserves a free slot only after checked size/metadata validation,
+copies only that slot while the current thread has JIT write access, restores
+write protection, then invalidates the written instruction-cache range before
+returning the handle. Full capacity does not consume a slot. No per-slot
+mapping, compaction, relocation, or `od-jit` multi-entry cache policy is added.
+Arena entry uses the same verified call/result decoder as `PublishedCode`;
+owned slot metadata remains live throughout execution. The native test keeps A
+and B live together, executes both, replaces dropped A's slot with C, and
+re-executes B to check isolation. The 16-slot limit is a bounded provisional
+choice only; it has no performance evidence. Memory lowering, cache eviction,
+SMP/concurrent MAP_JIT policy, and S3-22/23/25 remain open.
 
 Compile result остаётся Rust-side: успешная компиляция даёт непубликованный
 код/metadata; неподдержанная форма классифицируется как `Unsupported`, а
@@ -356,15 +383,16 @@ host error; успешный handle освобождает mapping при Drop. 
 API могут исполнять generated code, удерживая owner на весь вызов.
 
 Apple разрешает Hardened Runtime процессу с
-`com.apple.security.cs.allow-jit` только одну `MAP_JIT` region. Поэтому текущий
-`od-host` резервирует максимум один одновременно живой mapping: вторая
-публикация возвращает `MappingAlreadyLive`, а legacy C ABI использует уже
-существующий `STATUS_BUSY`; после Drop mapping slot доступен снова. Это
-ограничение касается mappings, создаваемых `od-host`; OS остаётся последним
-контролем, если другая библиотека уже заняла разрешённую process JIT region.
-Multi-block cache не может считать каждый block отдельным mapping: для него
-нужен отдельный bounded-slot allocator внутри одной region или иная проверенная
-стратегия (см. ISSUE-021).
+`com.apple.security.cs.allow-jit` только одну `MAP_JIT` region. `od-host`
+резервирует не более одной живой region: standalone `PublishedCode` или один
+`PublishedArenaBackend`; вторая отдельная region получает `MappingAlreadyLive`,
+а legacy C ABI использует существующий `STATUS_BUSY`. S3-18b добавляет
+предварительный фиксированный slot allocator внутри этой region для нескольких
+verified blocks. Он не создаёт per-block mappings и не подключает multi-entry
+cache/eviction. Это ограничение касается mappings, создаваемых `od-host`; OS
+остаётся последним контролем, если другая библиотека уже заняла разрешённую
+process JIT region. Полный multi-block cache всё ещё требует od-jit integration,
+invalidation/lifecycle и проверки capacity (см. ISSUE-021).
 
 `pthread_jit_write_protect_np` меняет доступ текущего потока. Publisher
 восстанавливает protection для своего потока до публикации и не предоставляет

@@ -160,7 +160,7 @@ compiled block и opaque host-published handle; same-key reuse сравнива�
 snapshot проверяется на hit, до публикации и до входа; stale state завершает
 вызов без retry. Максимум — 512 KiB логических key/code/state-map bytes,
 включая копию для публикации; allocator/RSS overhead не входит. Это не
-multi-block arena, memory JIT, MMU invalidation или performance result; S3-18
+multi-entry cache integration, memory JIT, MMU invalidation или performance result; S3-18
 остаётся открытой до полного capacity/lifecycle/telemetry acceptance.
 
 S3-13 добавляет `block_compile::compile_block`: bounded block → typed lowering
