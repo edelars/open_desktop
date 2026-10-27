@@ -537,9 +537,12 @@ replay. Replay заново строит keys вне timing и сравнива�
 и warmed lookup+dependency validation; сценарии включают recorded trace,
 key-size ladder/observed count, hot loops, unique sequence, mixed hit/miss,
 stale mapping/backing/permission, aliases и 1/2/4 dependency spans. Это только
-прототип harness: capture corpus и timed runs ещё не запускались, структуру
-lookup не выбирали, ускорение не заявляется. Ограничения и команды описаны в
-[протоколе измерений](../testing/BENCHMARKS.md#s3-17-translation-key-lookup-prototype).
+прототип harness. На frozen corpus выполнены три release process runs; 18
+сценариев и сырые результаты описаны в [отчёте измерений](../reports/STAGE_3_S3-17-lookup-measurements-2026-10-26.md).
+Эти table-level результаты не являются end-to-end JIT speedup и пока не
+выбрали production lookup/cache policy. S3-17 остаётся открытой для reviewer
+acceptance и оставшихся cache-key/dependency требований. Ограничения и команды
+описаны в [протоколе измерений](../testing/BENCHMARKS.md#s3-17-translation-key-lookup-prototype).
 
 ### S3-18. Реализовать ограниченный cache
 

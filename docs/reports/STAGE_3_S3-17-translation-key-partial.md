@@ -55,7 +55,9 @@ records the state RIP at each actual block entry before publishing/executing
 that block. It checks interpreter/JIT retirement counts, budget conservation,
 state, and expected exit before retaining the trace. The trace stores frozen
 fixture/code digests, code bytes and caller identity/version metadata. Trace
-capture has not been run on a physical corpus.
+capture and local release measurements have been run on the frozen 1,010-input
+fixture corpus; the exact trace and three process reports are summarized in
+[the lookup measurement report](STAGE_3_S3-17-lookup-measurements-2026-10-26.md).
 
 `measure --trace PATH` validates the serialized trace, reconstructs typed
 translation keys outside timed regions, and creates the required corpus and
@@ -91,16 +93,16 @@ Hard input/visit/key/scenario/payload/time bounds are enforced. Tests verify
 trace reconstruction and every required scenario family, stale-hit behavior
 after a successful old-key lookup, Vec/HashMap result parity, malformed
 input/limit rejection, retirement count validation, build/runtime metadata,
-and sample-configuration bounds. `cargo test -p od-bench --offline` passed 12/12;
+and sample-configuration bounds. `cargo test -p od-bench --offline` passed 13/13;
 `cargo test -p od-jit --offline` passed 79/79; `cargo test -p od-host --offline`
 passed 27/27; `cargo check --workspace --all-targets --offline`,
 `cargo fmt --all -- --check`, `git diff --check`, and `graphify update .` passed.
 `python3 tools/check_layout.py` in the linked worktree reports `.git` as an
 unmapped root file and two pre-existing broken links in `docs/reports/STAGE_2_REPORT.md`;
 the primary-checkout layout run remains with the root task.
-The `od-bench synthetic` CLI smoke was manually interrupted before it produced
-a report because its 20-pair/200 ms protocol is a timed run, not a quick command
-test; it is not counted as a benchmark result or failure. No real trace or
-completed timing has been collected, so no lookup structure is selected and
-no performance claim is made. Further acceptance is deferred to the next
-S3-17 subtask.
+The earlier `od-bench synthetic` CLI smoke was manually interrupted before it
+produced a report; it is not counted as a benchmark result. Three subsequent
+release `measure` runs completed the recorded trace and all 18 scenarios. The
+lookup report is limited to table construction and lookup on prepared keys; it
+does not establish end-to-end dispatcher/JIT speed or a production cache policy.
+S3-17 remains open for implementation review and production cache integration.

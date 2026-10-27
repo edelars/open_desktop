@@ -145,6 +145,8 @@ one cold batch to the remaining 128 MiB logical budget. This accounting includes
 inline key/table slots and owned key buffers; cold HashMaps reserve for their
 known entry count before insertion. HashMap control bytes, allocator metadata,
 runtime overhead, and process RSS are not measured.
+Три завершённых process runs на frozen corpus и их ограничения записаны в
+[отчёте S3-17](../reports/STAGE_3_S3-17-lookup-measurements-2026-10-26.md).
 Полная fixture-v1 decode/admission проверяется до построения сценариев;
 каждый replay entry и каждый record принадлежат известным instruction
 boundaries. Сценарий observed unique keys сохраняет исходное fixture
