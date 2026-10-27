@@ -18,6 +18,7 @@ const CASES_PER_SEED: usize = 400;
 const REPORT_VERSION: u32 = 1;
 const ENVELOPE_VERSION: u32 = 1;
 const CASE_PROFILE: &str = "s3-20j-two-site-qword-mov-v1";
+const MAX_REDUCER_ATTEMPTS: usize = 512;
 const SEEDS: [u64; 3] = [
     0x5343_3441_0000_0001,
     0x5343_3441_0000_0002,
@@ -160,6 +161,31 @@ struct ReplayReport {
     mismatch_classes: Vec<String>,
     #[serde(default)]
     reproduced_mismatch: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReducerRun {
+    native_results: Vec<ObservationRecord>,
+    interpreter_results: Vec<ObservationRecord>,
+    mismatch_classes_by_phase: Vec<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReductionReport {
+    reducer_version: u32,
+    environment: EnvironmentInfo,
+    backend_availability: BackendAvailability,
+    original_envelope: CaseEnvelope,
+    reduced_envelope: CaseEnvelope,
+    original_mismatch_classes_by_phase: Vec<Vec<String>>,
+    reduced_mismatch_classes_by_phase: Vec<Vec<String>>,
+    initial_replays: Vec<ReducerRun>,
+    reduced_run: ReducerRun,
+    attempts: usize,
+    attempt_limit: usize,
+    stop_reason: String,
 }
 
 impl Sequence {
@@ -843,6 +869,20 @@ fn assert_matches_named(
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn assert_matches_named_phases(
+    case: &str,
+    envelope: &CaseEnvelope,
+    native: &[Observation],
+    interp: &[Observation],
+) {
+    assert_eq!(native.len(), interp.len(), "phase snapshots must be paired");
+    if actual_mismatch_classes(native, interp).is_empty() {
+        return;
+    }
+    save_mismatch_phases(case, envelope, native, interp, "backend results differ");
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn assert_named_condition(
     case: &str,
     envelope: &CaseEnvelope,
@@ -857,11 +897,42 @@ fn assert_named_condition(
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn assert_named_condition_phases(
+    case: &str,
+    envelope: &CaseEnvelope,
+    native: &[Observation],
+    interp: &[Observation],
+    condition: bool,
+    reason: &str,
+) {
+    if !condition {
+        save_mismatch_phases(case, envelope, native, interp, reason);
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn save_mismatch(
     case: &str,
     envelope: &CaseEnvelope,
     native: &Observation,
     interp: &Observation,
+    reason: &str,
+) -> ! {
+    save_mismatch_phases(
+        case,
+        envelope,
+        std::slice::from_ref(native),
+        std::slice::from_ref(interp),
+        reason,
+    )
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn save_mismatch_phases(
+    case: &str,
+    envelope: &CaseEnvelope,
+    native: &[Observation],
+    interp: &[Observation],
     reason: &str,
 ) -> ! {
     let report = mismatch_report(case, envelope, native, interp, reason);
@@ -879,10 +950,22 @@ fn save_mismatch(
 fn mismatch_report(
     case: &str,
     envelope: &CaseEnvelope,
-    native: &Observation,
-    interp: &Observation,
+    native: &[Observation],
+    interp: &[Observation],
     reason: &str,
 ) -> String {
+    assert_eq!(native.len(), interp.len(), "phase snapshots must be paired");
+    let expected_phases = if envelope.protocol.continuation.is_some() {
+        2
+    } else {
+        1
+    };
+    assert_eq!(
+        native.len(),
+        expected_phases,
+        "phase count must match protocol"
+    );
+    let mismatch_classes = actual_mismatch_classes(native, interp);
     let report = ReplayReport {
         report_version: REPORT_VERSION,
         case: case.into(),
@@ -890,10 +973,10 @@ fn mismatch_report(
         environment: EnvironmentInfo::current(),
         backend_availability: BackendAvailability::current(),
         reason: reason.into(),
-        native_results: vec![native.to_record()],
-        interpreter_results: vec![interp.to_record()],
-        equivalent: compare_observations(native, interp).is_ok(),
-        mismatch_classes: mismatch_classes(native, interp),
+        native_results: native.iter().map(Observation::to_record).collect(),
+        interpreter_results: interp.iter().map(Observation::to_record).collect(),
+        equivalent: mismatch_classes.is_empty(),
+        mismatch_classes,
         reproduced_mismatch: None,
     };
     serde_json::to_string_pretty(&report).expect("replay report is serializable")
@@ -914,6 +997,12 @@ fn sample_report(
         remaining_budget: envelope.protocol.budget,
         retired: 0,
     };
+    let record = observation.to_record();
+    let phase_count = if envelope.protocol.continuation.is_some() {
+        2
+    } else {
+        1
+    };
     ReplayReport {
         report_version: REPORT_VERSION,
         case: "saved_input".into(),
@@ -921,8 +1010,8 @@ fn sample_report(
         environment: EnvironmentInfo::current(),
         backend_availability,
         reason: "round-trip fixture".into(),
-        native_results: vec![observation.to_record()],
-        interpreter_results: vec![observation.to_record()],
+        native_results: vec![record.clone(); phase_count],
+        interpreter_results: vec![record; phase_count],
         equivalent: true,
         mismatch_classes: Vec::new(),
         reproduced_mismatch: None,
@@ -949,6 +1038,17 @@ fn decode_replay_report(source: &str) -> Result<ReplayReport, String> {
         || report.native_results.len() != report.interpreter_results.len()
     {
         return Err("saved report has missing or unpaired backend snapshots".into());
+    }
+    let expected_phases = if report.case_envelope.protocol.continuation.is_some() {
+        2
+    } else {
+        1
+    };
+    if report.native_results.len() != expected_phases {
+        return Err(format!(
+            "saved report has {} result phases for a protocol requiring {expected_phases}",
+            report.native_results.len()
+        ));
     }
     for snapshot in report
         .native_results
@@ -1120,11 +1220,323 @@ fn replay_report_text_with_backend(
 }
 
 fn actual_mismatch_classes(native: &[Observation], interpreter: &[Observation]) -> Vec<String> {
+    actual_mismatch_classes_by_phase(native, interpreter)
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+fn actual_mismatch_classes_by_phase(
+    native: &[Observation],
+    interpreter: &[Observation],
+) -> Vec<Vec<String>> {
     native
         .iter()
         .zip(interpreter)
-        .flat_map(|(native, interpreter)| mismatch_classes(native, interpreter))
+        .map(|(native, interpreter)| mismatch_classes(native, interpreter))
         .collect()
+}
+
+#[derive(Clone, Copy)]
+enum ReductionUnit {
+    GprGroup(usize),
+    RamGroup(usize),
+    GprByte(usize, usize),
+    RamByte(usize),
+    GprBit(usize, u32),
+    RamBit(usize, u32),
+}
+
+fn reducer_units(sequence: Sequence) -> Vec<ReductionUnit> {
+    let mut units = Vec::new();
+    for index in 0..16 {
+        if !is_address_register(sequence, index) {
+            units.push(ReductionUnit::GprGroup(index));
+        }
+    }
+    for offset in (0..RAM_LEN).step_by(8) {
+        units.push(ReductionUnit::RamGroup(offset));
+    }
+    for index in 0..16 {
+        if !is_address_register(sequence, index) {
+            for byte in 0..8 {
+                units.push(ReductionUnit::GprByte(index, byte));
+            }
+        }
+    }
+    for offset in 0..RAM_LEN {
+        units.push(ReductionUnit::RamByte(offset));
+    }
+    for index in 0..16 {
+        if !is_address_register(sequence, index) {
+            for bit in 0..64 {
+                units.push(ReductionUnit::GprBit(index, bit));
+            }
+        }
+    }
+    for offset in 0..RAM_LEN {
+        for bit in 0..8 {
+            units.push(ReductionUnit::RamBit(offset, bit));
+        }
+    }
+    units
+}
+
+fn is_address_register(sequence: Sequence, index: usize) -> bool {
+    index == 3 || (sequence == Sequence::LoadThenStore && index == 2)
+}
+
+fn reduction_complexity(envelope: &CaseEnvelope) -> u32 {
+    let mut score = envelope
+        .initial_cpu
+        .gpr
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !is_address_register(envelope.sequence, *index))
+        .map(|(_, value)| value.count_ones())
+        .sum::<u32>();
+    score += decode_hex_array::<RAM_LEN>(&envelope.initial_ram_hex)
+        .expect("validated reducer envelope RAM")
+        .iter()
+        .map(|byte| u32::from(*byte).count_ones())
+        .sum::<u32>();
+    score
+}
+
+fn reduced_candidate(envelope: &CaseEnvelope, unit: ReductionUnit) -> CaseEnvelope {
+    let mut candidate = envelope.clone();
+    match unit {
+        ReductionUnit::GprGroup(index) => {
+            candidate.initial_cpu.gpr[index] = 0;
+        }
+        ReductionUnit::RamGroup(offset) => {
+            let mut ram = decode_hex_array::<RAM_LEN>(&candidate.initial_ram_hex)
+                .expect("validated reducer envelope RAM");
+            ram[offset..offset + 8].fill(0);
+            candidate.initial_ram_hex = hex(&ram);
+        }
+        ReductionUnit::GprByte(index, byte) => {
+            let shift = (byte * 8) as u32;
+            let value = candidate.initial_cpu.gpr[index];
+            candidate.initial_cpu.gpr[index] = value & !(0xff_u64 << shift);
+        }
+        ReductionUnit::RamByte(offset) => {
+            let mut ram = decode_hex_array::<RAM_LEN>(&candidate.initial_ram_hex)
+                .expect("validated reducer envelope RAM");
+            ram[offset] = 0;
+            candidate.initial_ram_hex = hex(&ram);
+        }
+        ReductionUnit::GprBit(index, bit) => {
+            candidate.initial_cpu.gpr[index] &= !(1_u64 << bit);
+        }
+        ReductionUnit::RamBit(offset, bit) => {
+            let mut ram = decode_hex_array::<RAM_LEN>(&candidate.initial_ram_hex)
+                .expect("validated reducer envelope RAM");
+            ram[offset] &= !(1_u8 << bit);
+            candidate.initial_ram_hex = hex(&ram);
+        }
+    }
+    candidate
+}
+
+// This deliberately test-only corruption is used to validate the reducer's
+// acceptance and rejection path. It is not called by S3-34b replay or runtime code.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn reducer_test_run(envelope: &CaseEnvelope) -> Result<ReducerRun, String> {
+    let (mut native, interpreter) = execute_replay_envelope(envelope)?;
+    if envelope.initial_cpu.gpr[11] != 0
+        && let Some(first) = native.first_mut()
+    {
+        first.state.gpr[10] ^= 1;
+    }
+    Ok(ReducerRun {
+        native_results: native.iter().map(Observation::to_record).collect(),
+        interpreter_results: interpreter.iter().map(Observation::to_record).collect(),
+        mismatch_classes_by_phase: actual_mismatch_classes_by_phase(&native, &interpreter),
+    })
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+// Test-only probe keeps the synthetic mismatch when GPR[11] is cleared, so
+// the shared reducer core proves it has no marker-register special case.
+fn reducer_marker_independent_test_run(envelope: &CaseEnvelope) -> Result<ReducerRun, String> {
+    let (mut native, interpreter) = execute_replay_envelope(envelope)?;
+    if let Some(first) = native.first_mut() {
+        first.state.gpr[10] ^= 1;
+    }
+    Ok(ReducerRun {
+        native_results: native.iter().map(Observation::to_record).collect(),
+        interpreter_results: interpreter.iter().map(Observation::to_record).collect(),
+        mismatch_classes_by_phase: actual_mismatch_classes_by_phase(&native, &interpreter),
+    })
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn reducer_final_phase_test_run(envelope: &CaseEnvelope) -> Result<ReducerRun, String> {
+    let (mut native, interpreter) = execute_replay_envelope(envelope)?;
+    if let Some(last) = native.last_mut() {
+        last.state.gpr[10] ^= 1;
+    }
+    Ok(ReducerRun {
+        native_results: native.iter().map(Observation::to_record).collect(),
+        interpreter_results: interpreter.iter().map(Observation::to_record).collect(),
+        mismatch_classes_by_phase: actual_mismatch_classes_by_phase(&native, &interpreter),
+    })
+}
+
+fn reducer_native_run(envelope: &CaseEnvelope) -> Result<ReducerRun, String> {
+    let (native, interpreter) = execute_replay_envelope(envelope)?;
+    Ok(ReducerRun {
+        native_results: native.iter().map(Observation::to_record).collect(),
+        interpreter_results: interpreter.iter().map(Observation::to_record).collect(),
+        mismatch_classes_by_phase: actual_mismatch_classes_by_phase(&native, &interpreter),
+    })
+}
+
+fn reduce_report_text(
+    source: &str,
+    attempt_limit: usize,
+    current_native_available: bool,
+) -> Result<ReductionReport, String> {
+    reduce_report_text_with_probe(
+        source,
+        attempt_limit,
+        current_native_available,
+        reducer_native_run,
+    )
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn reduce_report_text_with_test_corruption(
+    source: &str,
+    attempt_limit: usize,
+    current_native_available: bool,
+) -> Result<ReductionReport, String> {
+    reduce_report_text_with_probe(
+        source,
+        attempt_limit,
+        current_native_available,
+        reducer_test_run,
+    )
+}
+
+fn reduce_report_text_with_probe(
+    source: &str,
+    attempt_limit: usize,
+    current_native_available: bool,
+    run_candidate: fn(&CaseEnvelope) -> Result<ReducerRun, String>,
+) -> Result<ReductionReport, String> {
+    if attempt_limit > MAX_REDUCER_ATTEMPTS {
+        return Err(format!(
+            "reducer attempt limit {attempt_limit} exceeds maximum {MAX_REDUCER_ATTEMPTS}"
+        ));
+    }
+    let original_report = decode_replay_report(source)?;
+    if !original_report.backend_availability.native
+        || !original_report.backend_availability.interpreter
+    {
+        return Err("saved report did not have both execution backends available".into());
+    }
+    if !current_native_available {
+        return Err("native JIT reducer unavailable on this host (requires macOS ARM64)".into());
+    }
+    let original = original_report.case_envelope;
+    let classes_by_phase = original_report
+        .native_results
+        .iter()
+        .zip(&original_report.interpreter_results)
+        .map(|(native, interpreter)| record_mismatch_classes(native, interpreter))
+        .collect::<Vec<_>>();
+    let first = run_candidate(&original)?;
+    let second = run_candidate(&original)?;
+    let mut current = original.clone();
+    let mut reduced_run = second.clone();
+    let mut attempts = 0;
+    let mut stop_reason = if classes_by_phase.iter().all(Vec::is_empty) {
+        "original_report_has_no_mismatch".to_owned()
+    } else if first.mismatch_classes_by_phase != second.mismatch_classes_by_phase {
+        "original_replay_unstable".to_owned()
+    } else if first.mismatch_classes_by_phase != classes_by_phase {
+        "original_mismatch_not_reproducible".to_owned()
+    } else {
+        "fixed_point".to_owned()
+    };
+
+    if stop_reason == "fixed_point" {
+        'units: for unit in reducer_units(original.sequence) {
+            if attempts >= attempt_limit {
+                stop_reason = "attempt_limit".into();
+                break;
+            }
+            let candidate = reduced_candidate(&current, unit);
+            if reduction_complexity(&candidate) >= reduction_complexity(&current) {
+                continue;
+            }
+            attempts += 1;
+            let run = run_candidate(&candidate)?;
+            if run.mismatch_classes_by_phase == classes_by_phase {
+                current = candidate;
+                reduced_run = run;
+            }
+            if attempts >= attempt_limit {
+                stop_reason = "attempt_limit".into();
+                break 'units;
+            }
+        }
+    }
+
+    Ok(ReductionReport {
+        reducer_version: 1,
+        environment: EnvironmentInfo::current(),
+        backend_availability: BackendAvailability::current(),
+        original_envelope: original,
+        reduced_envelope: current,
+        original_mismatch_classes_by_phase: classes_by_phase.clone(),
+        reduced_mismatch_classes_by_phase: reduced_run.mismatch_classes_by_phase.clone(),
+        initial_replays: vec![first, second],
+        reduced_run,
+        attempts,
+        attempt_limit,
+        stop_reason,
+    })
+}
+
+fn reduce_saved_case(path: &Path, attempt_limit: usize) -> Result<PathBuf, String> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read saved case {}: {error}", path.display()))?;
+    let report = reduce_report_text(&source, attempt_limit, native_backend_available())?;
+    write_reduction_report(path, &report)
+}
+
+fn write_reduction_report(path: &Path, report: &ReductionReport) -> Result<PathBuf, String> {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| "saved case path has no UTF-8 file stem".to_owned())?;
+    let output = path.with_file_name(format!("{stem}.reduced-{}.json", std::process::id()));
+    if output == path {
+        return Err("reducer output path aliases the original report".into());
+    }
+    let bytes = serde_json::to_vec_pretty(report)
+        .map_err(|error| format!("cannot serialize reduction report: {error}"))?;
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&output)
+        .map_err(|error| {
+            format!(
+                "cannot create reduction report {}: {error}",
+                output.display()
+            )
+        })?;
+    file.write_all(&bytes).map_err(|error| {
+        format!(
+            "cannot write reduction report {}: {error}",
+            output.display()
+        )
+    })?;
+    Ok(output)
 }
 
 fn replay_saved_case(path: &Path) -> Result<PathBuf, String> {
@@ -1155,6 +1567,12 @@ fn replay_saved_case(path: &Path) -> Result<PathBuf, String> {
 fn replay_path_from_env(value: Option<std::ffi::OsString>) -> Result<PathBuf, String> {
     value.map(PathBuf::from).ok_or_else(|| {
         "OD_JIT_REPLAY_CASE is required; set it to the saved JSON report path".into()
+    })
+}
+
+fn reducer_path_from_env(value: Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    value.map(PathBuf::from).ok_or_else(|| {
+        "OD_JIT_REDUCE_CASE is required; set it to a saved JSON mismatch report".into()
     })
 }
 
@@ -1340,6 +1758,8 @@ fn named_fault_stop_budget_and_continuation_cases_are_separate() {
 
         let native_continuation = native_continue(&published, &input, &native_budget);
         let interp_continuation = interpreter_continue(&input, &interp_budget);
+        let native_phases = [native_budget.clone(), native_continuation.clone()];
+        let interpreter_phases = [interp_budget.clone(), interp_continuation.clone()];
         let continuation_envelope = make_envelope(ReplayProtocol {
             budget: 1,
             stop_requested: false,
@@ -1351,17 +1771,17 @@ fn named_fault_stop_budget_and_continuation_cases_are_separate() {
                 continuation_budget: 1,
             }),
         });
-        assert_matches_named(
+        assert_matches_named_phases(
             "continuation_from_committed_snapshot",
             &continuation_envelope,
-            &native_continuation,
-            &interp_continuation,
+            &native_phases,
+            &interpreter_phases,
         );
-        assert_named_condition(
+        assert_named_condition_phases(
             "continuation_from_committed_snapshot",
             &continuation_envelope,
-            &native_continuation,
-            &interp_continuation,
+            &native_phases,
+            &interpreter_phases,
             native_continuation.status == "Complete"
                 && interp_continuation.status == "Complete"
                 && native_continuation.retired == 1
@@ -1444,11 +1864,13 @@ fn comparator_rejects_corruption_and_serializes_named_diagnostics() {
             }),
         },
     );
+    let native_phases = [native.clone(), native.clone()];
+    let interpreter_phases = [native.clone(), interpreter.clone()];
     let report = mismatch_report(
         "continuation_from_committed_snapshot",
         &envelope,
-        &native,
-        &interpreter,
+        &native_phases,
+        &interpreter_phases,
         "controlled named mismatch",
     );
     let decoded = decode_replay_report(&report).unwrap();
@@ -1457,8 +1879,379 @@ fn comparator_rejects_corruption_and_serializes_named_diagnostics() {
     assert_eq!(decoded.case_envelope.case_id, case_id);
     assert_eq!(decoded.case_envelope, envelope);
     assert_eq!(decoded.mismatch_classes, ["exit"]);
-    assert_eq!(decoded.native_results[0].status, "BudgetExhausted");
-    assert_eq!(decoded.interpreter_results[0].status, "Complete");
+    assert_eq!(decoded.native_results.len(), 2);
+    assert_eq!(decoded.interpreter_results.len(), 2);
+    assert!(
+        record_mismatch_classes(&decoded.native_results[0], &decoded.interpreter_results[0])
+            .is_empty()
+    );
+    assert_eq!(decoded.native_results[1].status, "BudgetExhausted");
+    assert_eq!(decoded.interpreter_results[1].status, "Complete");
+    assert_eq!(
+        record_mismatch_classes(&decoded.native_results[1], &decoded.interpreter_results[1]),
+        ["exit"]
+    );
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn reducer_fixture_report(sequence: Sequence, marker: u64) -> String {
+    let seed = 0x5343_3441_ffff_0035;
+    let case_id = sequence as usize;
+    let mut input = generated_input(seed, case_id, Some(sequence));
+    input.gpr[11] = marker;
+    input.gpr[0] = 0x1234_5678_9abc_def0;
+    let envelope = CaseEnvelope::from_input(
+        &input,
+        seed,
+        case_id,
+        ReplayProtocol {
+            budget: 1,
+            stop_requested: false,
+            stop_rip: None,
+            fault: None,
+            continuation: Some(ContinuationProtocol {
+                first_budget: 1,
+                resume_instruction_index: 1,
+                continuation_budget: 1,
+            }),
+        },
+    );
+    let (mut native, interpreter) = execute_replay_envelope(&envelope).unwrap();
+    native[0].state.gpr[10] ^= 1;
+    let classes = actual_mismatch_classes(&native, &interpreter);
+    assert_eq!(classes, ["gpr[10]"]);
+    serialize_report(&ReplayReport {
+        report_version: REPORT_VERSION,
+        case: "test_only_input_dependent_corruption".into(),
+        case_envelope: envelope,
+        environment: EnvironmentInfo::current(),
+        backend_availability: BackendAvailability::current(),
+        reason: "test-only reducer self-test corruption".into(),
+        native_results: native.iter().map(Observation::to_record).collect(),
+        interpreter_results: interpreter.iter().map(Observation::to_record).collect(),
+        equivalent: false,
+        mismatch_classes: classes,
+        reproduced_mismatch: None,
+    })
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn phase_moving_test_probe(envelope: &CaseEnvelope) -> Result<ReducerRun, String> {
+    let input = envelope.validate()?;
+    let mut native = Vec::new();
+    let mut interpreter = Vec::new();
+    for _ in 0..2 {
+        let base = Observation {
+            state: initial_state(&input, ENTRY_RIP + 3),
+            ram: input.ram,
+            callbacks: Vec::new(),
+            status: "Complete".into(),
+            remaining_budget: 0,
+            retired: 1,
+        };
+        native.push(base.clone());
+        interpreter.push(base);
+    }
+    let mismatch_phase = usize::from(envelope.initial_cpu.gpr[0] == 0);
+    native[mismatch_phase].state.gpr[10] ^= 1;
+    Ok(ReducerRun {
+        native_results: native.iter().map(Observation::to_record).collect(),
+        interpreter_results: interpreter.iter().map(Observation::to_record).collect(),
+        mismatch_classes_by_phase: actual_mismatch_classes_by_phase(&native, &interpreter),
+    })
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn bounded_reducer_is_deterministic_preserves_class_and_saves_report() {
+    for sequence in [Sequence::StoreThenLoad, Sequence::LoadThenStore] {
+        let original_text = reducer_fixture_report(sequence, 0xfeed_beef_0102_0304);
+        let original = decode_replay_report(&original_text).unwrap();
+        let first = reduce_report_text_with_test_corruption(&original_text, 12, true).unwrap();
+        let second = reduce_report_text_with_test_corruption(&original_text, 12, true).unwrap();
+        assert_eq!(first, second, "reduction must be deterministic");
+        assert_eq!(first.initial_replays.len(), 2);
+        assert!(first.attempts <= first.attempt_limit);
+        assert_eq!(first.stop_reason, "attempt_limit");
+        assert_eq!(first.original_envelope, original.case_envelope);
+        assert_eq!(
+            first.original_mismatch_classes_by_phase,
+            [vec![String::from("gpr[10]")], vec![]]
+        );
+        assert_eq!(
+            first.reduced_mismatch_classes_by_phase,
+            first.original_mismatch_classes_by_phase
+        );
+        assert_eq!(
+            first.reduced_run.mismatch_classes_by_phase,
+            first.original_mismatch_classes_by_phase
+        );
+        assert!(
+            reduction_complexity(&first.reduced_envelope)
+                < reduction_complexity(&first.original_envelope)
+        );
+        assert_eq!(
+            first.reduced_envelope.sequence,
+            first.original_envelope.sequence
+        );
+        assert_eq!(
+            first.reduced_envelope.source_bytes_hex,
+            first.original_envelope.source_bytes_hex
+        );
+        assert_eq!(
+            first.reduced_envelope.first_address,
+            first.original_envelope.first_address
+        );
+        assert_eq!(
+            first.reduced_envelope.second_address,
+            first.original_envelope.second_address
+        );
+        assert_eq!(
+            first.reduced_envelope.protocol,
+            first.original_envelope.protocol
+        );
+        assert_eq!(
+            first.reduced_envelope.initial_cpu.gpr[11], first.original_envelope.initial_cpu.gpr[11],
+            "marker-clearing candidate loses its synthetic mismatch and must be rejected"
+        );
+        let cleared_marker =
+            reduced_candidate(&first.original_envelope, ReductionUnit::GprGroup(11));
+        assert_eq!(cleared_marker.initial_cpu.gpr[11], 0);
+        assert!(
+            reduction_complexity(&cleared_marker) < reduction_complexity(&first.original_envelope)
+        );
+        assert!(
+            reducer_test_run(&cleared_marker)
+                .unwrap()
+                .mismatch_classes_by_phase
+                .iter()
+                .all(Vec::is_empty)
+        );
+        assert_eq!(
+            first.reduced_envelope.initial_ram_hex.len(),
+            first.original_envelope.initial_ram_hex.len()
+        );
+
+        let reduced_saved_report = sample_report(
+            first.reduced_envelope.clone(),
+            BackendAvailability::current(),
+        );
+        let replay = replay_report_text(&serialize_report(&reduced_saved_report)).unwrap();
+        assert!(replay.equivalent);
+
+        let unique = format!("od-host-reducer-{}-{sequence:?}", std::process::id());
+        let directory = std::env::temp_dir().join(unique);
+        std::fs::create_dir(&directory).unwrap();
+        let original_path = directory.join("original.json");
+        std::fs::write(&original_path, &original_text).unwrap();
+        let report_path = write_reduction_report(&original_path, &first).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&original_path).unwrap(),
+            original_text
+        );
+        let saved: ReductionReport = serde_json::from_slice(&std::fs::read(report_path).unwrap())
+            .expect("reducer report must be serializable");
+        assert_eq!(saved, first);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn reducer_rejects_malformed_and_unavailable_inputs_and_stops_on_nonreproduction() {
+    assert!(reduce_report_text("{bad json", 10, false).is_err());
+    assert!(
+        reduce_report_text("{}", MAX_REDUCER_ATTEMPTS + 1, false)
+            .unwrap_err()
+            .contains("exceeds maximum")
+    );
+    let unavailable = sample_report(
+        CaseEnvelope::from_input(
+            &generated_input(SEEDS[0], 0, Some(Sequence::StoreThenLoad)),
+            SEEDS[0],
+            0,
+            ReplayProtocol::successful_pair(),
+        ),
+        BackendAvailability::current(),
+    );
+    assert!(reduce_report_text(&serialize_report(&unavailable), 10, false).is_err());
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        let changed_class = reducer_fixture_report(Sequence::StoreThenLoad, 0);
+        let stopped = reduce_report_text_with_test_corruption(&changed_class, 10, true).unwrap();
+        assert_eq!(stopped.stop_reason, "original_mismatch_not_reproducible");
+        assert_eq!(stopped.attempts, 0);
+        assert_eq!(stopped.original_envelope, stopped.reduced_envelope);
+        assert!(
+            stopped
+                .initial_replays
+                .iter()
+                .all(|run| run.mismatch_classes_by_phase.iter().all(Vec::is_empty))
+        );
+
+        let mut wrong_original: ReplayReport =
+            serde_json::from_str(&reducer_fixture_report(Sequence::LoadThenStore, 1)).unwrap();
+        // Update the stored snapshots to retain a valid report whose real replay
+        // changes the class to the test-only gpr[10] corruption.
+        for (native, interpreter) in wrong_original
+            .native_results
+            .iter_mut()
+            .zip(&wrong_original.interpreter_results)
+        {
+            native.gpr = interpreter.gpr;
+            native.gpr[0] ^= 1;
+            native.state_debug = format!(
+                "{:?}",
+                LongModeState {
+                    gpr: native.gpr,
+                    rip: native.rip,
+                    rflags: native.rflags,
+                    ..Default::default()
+                }
+            );
+        }
+        wrong_original.mismatch_classes = wrong_original
+            .native_results
+            .iter()
+            .zip(&wrong_original.interpreter_results)
+            .flat_map(|(native, interpreter)| record_mismatch_classes(native, interpreter))
+            .collect();
+        let wrong_original_text = serialize_report(&wrong_original);
+        let changed =
+            reduce_report_text_with_test_corruption(&wrong_original_text, 10, true).unwrap();
+        assert_eq!(changed.stop_reason, "original_mismatch_not_reproducible");
+        assert_eq!(changed.attempts, 0);
+
+        let real_replay = reduce_report_text(&wrong_original_text, 10, true).unwrap();
+        assert_eq!(
+            real_replay.stop_reason,
+            "original_mismatch_not_reproducible"
+        );
+        assert_eq!(real_replay.attempts, 0);
+    }
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn reducer_rejects_same_mismatch_moving_to_continuation_phase() {
+    let source = reducer_fixture_report(Sequence::StoreThenLoad, 0x1234);
+    let original = decode_replay_report(&source).unwrap();
+    let envelope = original.case_envelope.clone();
+    let moved_candidate = reduced_candidate(&envelope, ReductionUnit::GprGroup(0));
+    let original_run = phase_moving_test_probe(&envelope).unwrap();
+    let moved_run = phase_moving_test_probe(&moved_candidate).unwrap();
+    assert_eq!(
+        original_run.mismatch_classes_by_phase,
+        [vec![String::from("gpr[10]")], vec![]]
+    );
+    assert_eq!(
+        moved_run.mismatch_classes_by_phase,
+        [vec![], vec![String::from("gpr[10]")]]
+    );
+    assert_eq!(
+        original_run
+            .mismatch_classes_by_phase
+            .iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+        moved_run
+            .mismatch_classes_by_phase
+            .iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+        "flattened classes are intentionally identical"
+    );
+
+    let report = reduce_report_text_with_probe(&source, 1, true, phase_moving_test_probe).unwrap();
+    assert_eq!(report.attempts, 1);
+    assert_eq!(report.stop_reason, "attempt_limit");
+    assert_eq!(report.reduced_envelope, envelope);
+    assert_eq!(
+        report.reduced_mismatch_classes_by_phase,
+        original_run.mismatch_classes_by_phase
+    );
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn generic_reducer_can_clear_marker_when_comparator_allows_candidate() {
+    let source = reducer_fixture_report(Sequence::StoreThenLoad, 0xfeed_beef);
+    let report =
+        reduce_report_text_with_probe(&source, 11, true, reducer_marker_independent_test_run)
+            .unwrap();
+    assert_eq!(report.attempts, 11);
+    assert_eq!(report.reduced_envelope.initial_cpu.gpr[11], 0);
+    assert_eq!(
+        report.reduced_mismatch_classes_by_phase,
+        report.original_mismatch_classes_by_phase
+    );
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn mismatch_report_preserves_empty_first_and_mismatching_continuation_phases() {
+    let mut input = generated_input(0x5343_3441_ffff_0036, 1, Some(Sequence::LoadThenStore));
+    input.gpr[11] = 0xfeed_beef;
+    input.gpr[0] = 0x1020_3040_5060_7080;
+    let envelope = CaseEnvelope::from_input(
+        &input,
+        0x5343_3441_ffff_0036,
+        1,
+        ReplayProtocol {
+            budget: 1,
+            stop_requested: false,
+            stop_rip: None,
+            fault: None,
+            continuation: Some(ContinuationProtocol {
+                first_budget: 1,
+                resume_instruction_index: 1,
+                continuation_budget: 1,
+            }),
+        },
+    );
+    let (mut native, interpreter) = execute_replay_envelope(&envelope).unwrap();
+    native[1].state.gpr[10] ^= 1;
+    let original_text = mismatch_report(
+        "test_only_final_phase_corruption",
+        &envelope,
+        &native,
+        &interpreter,
+        "test-only continuation observation corruption",
+    );
+    let decoded = decode_replay_report(&original_text).unwrap();
+    assert_eq!(decoded.native_results.len(), 2);
+    assert!(
+        record_mismatch_classes(&decoded.native_results[0], &decoded.interpreter_results[0])
+            .is_empty()
+    );
+    assert_eq!(
+        record_mismatch_classes(&decoded.native_results[1], &decoded.interpreter_results[1]),
+        ["gpr[10]"]
+    );
+    assert_eq!(decoded.mismatch_classes, ["gpr[10]"]);
+
+    let mut missing_phase: serde_json::Value = serde_json::from_str(&original_text).unwrap();
+    missing_phase["native_results"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    assert!(decode_replay_report(&missing_phase.to_string()).is_err());
+
+    let reduced =
+        reduce_report_text_with_probe(&original_text, 1, true, reducer_final_phase_test_run)
+            .unwrap();
+    assert_eq!(
+        reduced.original_mismatch_classes_by_phase,
+        [vec![], vec![String::from("gpr[10]")]]
+    );
+    assert_eq!(
+        reduced.initial_replays[0].mismatch_classes_by_phase,
+        reduced.original_mismatch_classes_by_phase
+    );
+    assert_eq!(
+        reduced.reduced_mismatch_classes_by_phase,
+        reduced.original_mismatch_classes_by_phase
+    );
 }
 
 #[test]
@@ -1789,8 +2582,8 @@ fn saved_mismatch_report_replays_and_preserves_original_classes() {
         let original_text = mismatch_report(
             "controlled_saved_mismatch",
             &envelope,
-            &native,
-            &corrupted,
+            std::slice::from_ref(&native),
+            std::slice::from_ref(&corrupted),
             "controlled GPR corruption for replay-path coverage",
         );
         let decoded = decode_replay_report(&original_text).unwrap();
@@ -1838,4 +2631,33 @@ fn replay_saved_case_from_environment() {
         "replayed mismatch class differs; see {}",
         replay_path.display()
     );
+}
+
+#[test]
+#[ignore = "set OD_JIT_REDUCE_CASE to a saved versioned mismatch report"]
+fn reduce_saved_case_from_environment() {
+    let path = reducer_path_from_env(std::env::var_os("OD_JIT_REDUCE_CASE"))
+        .unwrap_or_else(|error| panic!("{error}"));
+    let report_path = reduce_saved_case(&path, 512)
+        .unwrap_or_else(|error| panic!("case reduction failed: {error}"));
+    let report: ReductionReport = serde_json::from_slice(
+        &std::fs::read(&report_path).expect("fresh reducer report is readable"),
+    )
+    .expect("fresh reducer report is valid JSON");
+    if report.stop_reason == "original_mismatch_not_reproducible" {
+        assert_eq!(
+            report.attempts, 0,
+            "nonreproducible input must not be reduced"
+        );
+    } else {
+        assert_eq!(
+            report.original_mismatch_classes_by_phase,
+            report.initial_replays[0].mismatch_classes_by_phase,
+            "first fresh replay must reproduce the saved classes"
+        );
+        assert_eq!(
+            report.original_mismatch_classes_by_phase, report.reduced_mismatch_classes_by_phase,
+            "accepted reductions must preserve the original mismatch classes"
+        );
+    }
 }

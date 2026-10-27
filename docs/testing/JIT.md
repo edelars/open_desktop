@@ -76,6 +76,24 @@ it; that report includes the current environment, build revision, backend
 availability, result snapshots, and whether the saved mismatch classes were
 reproduced. Unsupported native hosts and malformed or unsupported reports
 cannot produce an equivalence-success report.
+Continuation mismatch reports include the first budget-limited result and the
+resumed result as separate paired snapshots, even when only the latter differs;
+the decoder requires the snapshot count to match the saved protocol.
+
+To run the bounded reducer on a saved mismatch report, run
+`OD_JIT_REDUCE_CASE=/absolute/path/case.json cargo test -p od-host --test memory_corpus reduce_saved_case_from_environment -- --ignored --exact`.
+The reducer repeats the original mismatch twice before attempting candidates,
+then accepts only strictly simpler inputs with exactly matching recorded
+mismatch classes at every execution phase. It modifies non-address initial GPR values and RAM contents
+only, and preserves the sequence, source bytes, addresses and protocol. A fresh
+`.reduced-<pid>.json` report records both envelopes, the fresh observations,
+attempt count and stop reason; it is created without replacing the original.
+The reducer has a 512-attempt maximum and runs only on macOS ARM64. Its positive
+self-test injects a clearly labeled GPR[10] corruption when the input GPR[11]
+marker is nonzero; clearing that marker removes the synthetic mismatch and is
+rejected by the normal comparator. The generic reducer does not reserve GPR[11]
+and can reduce it when the mismatch predicate permits. This synthetic case
+validates reducer behavior and is not a JIT defect report.
 
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git

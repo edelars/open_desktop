@@ -1261,7 +1261,9 @@ the exact selected sequence/source bytes, initial supported CPU and private RAM
 snapshots, instruction budget, STOP/stop-RIP request, typed site-0 fault
 injection and trigger, and optional budget-then-continuation protocol. The
 report records host/architecture/build revision, backend availability, and
-both result snapshots. The ignored `replay_saved_case_from_environment` test
+result snapshots for each execution phase; continuation mismatch reports keep
+the budget-limited prefix even when only the resumed phase differs. The ignored
+`replay_saved_case_from_environment` test
 requires `OD_JIT_REPLAY_CASE`; replay validates the report before publishing
 native code, compares fresh native/interpreter results, and writes a new
 create-only replay report beside the original. Unknown versions/profiles,
@@ -1270,6 +1272,28 @@ or missing native support are explicit failures. Round-trip, both successful
 sequences, fault/STOP/budget/stop-RIP/continuation, comparator classes, and
 malformed reports are covered locally; the physical S3-21 gate remains
 `not_run`. См. [S3-34b report](../reports/STAGE_3_S3-34b_2026-10-27.md).
+
+#### S3-34c. Bounded reducer for the two saved memory profiles
+
+The ignored `reduce_saved_case_from_environment` entry uses
+`OD_JIT_REDUCE_CASE` and accepts only S3-34b version-1 envelopes for the two
+existing memory sequences. It first repeats the saved mismatch twice through
+fresh native/interpreter execution; a nonreproducing mismatch stops with an
+explicit report and zero reduction attempts. Candidate changes are limited to
+non-address initial GPR values and private RAM bytes. Deterministic passes
+reduce 8-byte groups, individual bytes, then bits, accepting a candidate only
+when a simple popcount complexity strictly decreases and all original mismatch
+classes remain phase by phase (including exact GPR/RAM indices); an identical
+class moving from the first entry to continuation is rejected. The attempt limit is capped;
+the saved result includes original/reduced envelopes, both initial replay
+observations, reduced observations, classes, attempt count and stop reason.
+The original file is create-only preserved, and a reduced envelope is checked
+through ordinary S3-34b replay. A clearly marked input-dependent GPR[10]
+corruption gated by nonzero GPR[11] is used only in reducer self-tests; it is
+not evidence of a JIT defect. The generic reducer has no special handling for
+the marker register and can reduce it when the mismatch predicate allows.
+Mac mini and physical x86 validation remain
+separate and `not_run`. См. [S3-34c report](../reports/STAGE_3_S3-34c_2026-10-27.md).
 
 ### S3-35. Измерить холодное исполнение
 
