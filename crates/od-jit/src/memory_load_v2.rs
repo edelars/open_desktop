@@ -1710,6 +1710,90 @@ mod tests {
     }
 
     #[test]
+    fn ir_rbp_data_with_rsp_sib_base_is_only_exact_0x2c_24_form() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            let source = [0x48, opcode, 0x2c, 0x24];
+            let code = CodeView::new(0x5718, &source).unwrap();
+            let mut decoder_memory = CodeMemory::full_code(code);
+            let decoded =
+                long_decode::decode(&mut decoder_memory, 0x5718, AccessContext::default()).unwrap();
+            if operation == MemorySiteOperationV2::Load {
+                assert!(crate::block::is_checked_qword_load_form(decoded));
+            } else {
+                assert!(crate::block::is_checked_qword_store_form(decoded));
+            }
+            assert!(crate::block::exact_direct_qword_memory_bytes(
+                code, 0x5718, 4, opcode
+            ));
+            if operation == MemorySiteOperationV2::Load {
+                let (site_probe, bytes_probe) = checked_load_metadata_v2(code, 0x5718).unwrap();
+                assert!(site_probe.has_supported_profile());
+                assert!(site_probe.matches_source_bytes(bytes_probe, MemorySiteOperationV2::Load));
+            }
+            let (ir_site, direct_site, copied) = match operation {
+                MemorySiteOperationV2::Load => {
+                    let ir = compile_ir_memory_load_block_v2(code, 0x5718).unwrap();
+                    let direct = compile_memory_load_block_v2(code, 0x5718).unwrap();
+                    (
+                        ir.site().clone(),
+                        direct.site().clone(),
+                        ir.source_bytes().to_vec(),
+                    )
+                }
+                MemorySiteOperationV2::Store => {
+                    let ir = compile_ir_memory_store_block_v2(code, 0x5718).unwrap();
+                    let direct = compile_memory_store_block_v2(code, 0x5718).unwrap();
+                    (
+                        ir.site().clone(),
+                        direct.site().clone(),
+                        ir.source_bytes().to_vec(),
+                    )
+                }
+            };
+            assert_eq!(ir_site, direct_site);
+            assert_eq!(copied, source);
+            assert_eq!(
+                ir_site.destination(),
+                (operation == MemorySiteOperationV2::Load).then_some(5)
+            );
+            assert_eq!(
+                ir_site.source(),
+                (operation == MemorySiteOperationV2::Store).then_some(5)
+            );
+            assert_eq!(ir_site.operand().base, AddressBase::Register(Register::Rsp));
+            assert_eq!(ir_site.operand().index, None);
+            assert_eq!(ir_site.operand().scale, 1);
+            assert_eq!(ir_site.operand().displacement, 0);
+            assert_eq!(ir_site.next_rip(), 0x571c);
+            assert!(ir_site.has_supported_profile());
+            assert!(ir_site.matches_source_bytes(&source, operation));
+
+            for invalid in [
+                vec![0x48, opcode, 0x2c],                   // truncated SIB
+                vec![0x48, opcode, 0x2c, 0x2c],             // index present
+                vec![0x48, opcode, 0x2c, 0x64],             // non-unit scale
+                vec![0x48, opcode, 0x34, 0x24],             // other data register
+                vec![0x48, opcode, 0x6c, 0x24, 0],          // displacement
+                vec![0x48, opcode, 0xac, 0x24, 0, 0, 0, 0], // disp32
+                vec![0x67, 0x48, opcode, 0x2c, 0x24],
+                vec![0x48, 0x67, opcode, 0x2c, 0x24],
+            ] {
+                let code = CodeView::new(0x5718, &invalid).unwrap();
+                let result = match operation {
+                    MemorySiteOperationV2::Load => compile_ir_memory_load_block_v2(code, 0x5718)
+                        .and_then(|_| compile_memory_load_block_v2(code, 0x5718).map(|_| ())),
+                    MemorySiteOperationV2::Store => compile_ir_memory_store_block_v2(code, 0x5718)
+                        .and_then(|_| compile_memory_store_block_v2(code, 0x5718).map(|_| ())),
+                };
+                assert!(result.is_err(), "unexpectedly admitted {invalid:02x?}");
+            }
+        }
+    }
+
+    #[test]
     fn ir_rsp_data_and_base_is_only_exact_0x24_sib_form() {
         for (opcode, operation) in [
             (0x8b, MemorySiteOperationV2::Load),

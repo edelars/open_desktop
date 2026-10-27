@@ -1976,6 +1976,26 @@ singleton→NOP→pair sequence checks separate native/interpreter/native counts
 1/1/2 with actual-RIP continuation and no repeated first read. See the
 [S3-20af report](../reports/STAGE_3_S3-20af_2026-10-27.md).
 
+#### S3-20ag: RBP data with the exact RSP-base SIB
+
+Admit only exact four-byte singleton `48 8B/89 2C 24`: ModRM
+`mod=00/reg=5/rm=4`, SIB `0x24` (RSP base, no index, scale 1, no
+displacement), qword data and 64-bit EA. Decoded `MemoryOperand` remains the
+only effective-address source. The exception is exact; generic register
+predicates, other RBP-data SIB forms, prefixes, displacement variants, pairs,
+V3 and frame/ABI are unchanged.
+
+Direct V2/shared IR/interpreter parity compares complete CPU/RAM state,
+callback and retirement for both operations with distinct RSP/RBP values.
+Load writes RBP only after success; store uses all 64 bits of old RBP at the
+old-RSP address. Noncanonical RSP produces #SS without a callback, while
+noncanonical RBP remains valid store data for canonical RSP. Store callback
+STOP preserves the write. Dispatcher continuation after `MOV RBP,[RSP]`
+uses the newly loaded RBP in the next instruction, resumes from actual RIP,
+and does not repeat the first read. Existing RSP/RBP data profiles and canary
+lifecycle tests remain green. See the
+[S3-20ag report](../reports/STAGE_3_S3-20ag_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

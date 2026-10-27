@@ -1391,6 +1391,12 @@ fn is_rbp_memory_data_operand(
                 od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4
             ))
             || (instruction.length == 4
+                && operand.displacement == 0
+                && matches!(
+                    operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                ))
+            || (instruction.length == 4
                 && (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement)
                 && matches!(
                     operand.base,
@@ -1529,7 +1535,7 @@ pub(crate) fn exact_direct_qword_memory_bytes(
                         .is_some_and(|modrm| modrm >> 6 == 0 && modrm & 7 == 4)
                     && bytes
                         .get(3)
-                        .is_some_and(|sib| sib & 7 < 4 && (sib >> 3) & 7 < 4)
+                        .is_some_and(|sib| *sib == 0x24 || sib & 7 < 4 && (sib >> 3) & 7 < 4)
         }
         7 => bytes.get(2).is_some_and(|modrm| modrm >> 6 == 2),
         8 => bytes
@@ -1552,6 +1558,10 @@ pub(crate) fn exact_direct_qword_memory_bytes(
             && bytes[2] >> 6 == 2
             && bytes[2] & 7 == 5
             && ((bytes[2] >> 3) & 7 < 4 || bytes[2] == 0xad))
+        || (bytes.len() == 4
+            && bytes[0..2] == [0x48, opcode]
+            && bytes[2] == 0x2c
+            && bytes[3] == 0x24)
         || (bytes.len() == 4
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] >> 6 == 0
