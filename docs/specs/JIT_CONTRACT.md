@@ -503,6 +503,29 @@ existing pair across budgets 0..4, with actual-RIP continuation and no repeated
 access; partial byte windows stop without publishing or calling data memory.
 See the [S3-20r report](../reports/STAGE_3_S3-20r_2026-10-27.md).
 
+#### S3-20s: address32 SIB disp8 qword MOV in shared IR and dispatch
+
+The checked singleton additionally admits `67 48 8B/89 /r sib disp8` with
+ModRM `mod=01,r/m=100`, RAX..RBX data/base/index encodings, scale 1/2/4/8,
+qword data, dword address size and exact six-byte source. It remains distinct
+from the five-byte `mod=00` addr32 SIB form, the same-length addr32 direct
+disp8 form, and 64-bit SIB forms. The decoder supplies the signed displacement
+and `MemoryOperand::access_address_48` supplies all address/truncation,
+wrapping, canonicality and qword-range semantics. The fixed site source
+storage remains eight bytes, so the nine-byte addr32 SIB disp32 form is not
+admitted. Extra prefixes, no-index/no-base specials, unsupported registers,
+and trailing bytes are rejected. Existing pair profiles are unchanged; the
+six-byte singleton is selected by exact bytes and metadata, not length alone.
+
+Native direct V2/shared IR/interpreter parity covers both MOV operations at
+disp8 `-128/-1/0/127`, all scales, aliases, high base/index halves, wrapping,
+and qword access crossing 4 GiB. Faults preserve exact payload and do not
+commit CPU, RAM, budget or retirement; backend errors remain host errors, and
+successful store+STOP keeps the write. Bounded dispatch composes this
+singleton → bare NOP fallback → existing pair across budgets 0..4, including
+six-byte standalone admission and actual-RIP continuation without replay.
+See the [S3-20s report](../reports/STAGE_3_S3-20s_2026-10-27.md).
+
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
 alignment, same/different ranges, and safe partial overlaps for load→store;

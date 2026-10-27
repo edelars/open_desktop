@@ -592,10 +592,12 @@ fn is_checked_memory_address(
                 8 => (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement),
                 _ => false,
             };
-        let indexed = instruction_length == 5
+        let indexed = instruction_length == 5 && operand.displacement == 0
+            || instruction_length == 6
+                && (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement);
+        let indexed = indexed
             && operand.index.is_some_and(|index| (index as u8) < 4)
-            && matches!(operand.scale, 1 | 2 | 4 | 8)
-            && operand.displacement == 0;
+            && matches!(operand.scale, 1 | 2 | 4 | 8);
         return base_supported && (direct || indexed);
     }
     if operand.address_size != od_isa::OperandSize::Qword {

@@ -1552,7 +1552,6 @@ mod tests {
                 vec![0x48, opcode, 0x84, 0x18, 0, 0, 0, 0, 0x90], // tail byte
                 vec![0x4a, opcode, 0x44, 0x18, 0],                // extended index
                 vec![0x49, opcode, 0x44, 0x18, 0],                // extended base
-                vec![0x67, 0x48, opcode, 0x44, 0x18, 0],          // address override
                 vec![0x48, opcode, 0x04, 0x18, 0, 0x90],          // wrong instruction length
             ] {
                 let code = CodeView::new(0x5690, &bytes).unwrap();
@@ -1988,15 +1987,14 @@ mod tests {
         ] {
             for bytes in [
                 vec![0x67, 0x48, opcode],
-                vec![0x67, 0x48, opcode, 0x04],          // missing SIB
-                vec![0x67, 0x48, opcode, 0xc0, 0x18],    // register mode
-                vec![0x67, 0x48, opcode, 0x04, 0x20],    // no-index
-                vec![0x67, 0x48, opcode, 0x04, 0x25],    // no-base and no-index specials
-                vec![0x67, 0x48, opcode, 0x04, 0x28],    // index outside RAX..RBX
-                vec![0x67, 0x48, opcode, 0x04, 0x1d],    // no-base SIB with missing disp32
-                vec![0x67, 0x4c, opcode, 0x04, 0x18],    // extended data
-                vec![0x48, 0x67, opcode, 0x04, 0x18],    // wrong prefix order
-                vec![0x67, 0x48, opcode, 0x44, 0x18, 0], // displacement
+                vec![0x67, 0x48, opcode, 0x04],       // missing SIB
+                vec![0x67, 0x48, opcode, 0xc0, 0x18], // register mode
+                vec![0x67, 0x48, opcode, 0x04, 0x20], // no-index
+                vec![0x67, 0x48, opcode, 0x04, 0x25], // no-base and no-index specials
+                vec![0x67, 0x48, opcode, 0x04, 0x28], // index outside RAX..RBX
+                vec![0x67, 0x48, opcode, 0x04, 0x1d], // no-base SIB with missing disp32
+                vec![0x67, 0x4c, opcode, 0x04, 0x18], // extended data
+                vec![0x48, 0x67, opcode, 0x04, 0x18], // wrong prefix order
                 vec![0x67, 0x48, opcode, 0x84, 0x18, 0, 0, 0, 0], // disp32
                 vec![0x67, 0x48, opcode, 0x04, 0x18, 0x90], // trailing byte
             ] {
@@ -2011,6 +2009,104 @@ mod tests {
                 };
                 assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
             }
+        }
+    }
+
+    #[test]
+    fn ir_address32_sib_disp8_has_exact_qword_descriptor() {
+        for (opcode, access) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data in 0..4_u8 {
+                for base in 0..4_u8 {
+                    for index in 0..4_u8 {
+                        for scale_shift in 0..4_u8 {
+                            for displacement in [i8::MIN, -1, 0, i8::MAX] {
+                                let bytes = [
+                                    0x67,
+                                    0x48,
+                                    opcode,
+                                    0x40 | (data << 3) | 4,
+                                    (scale_shift << 6) | (index << 3) | base,
+                                    displacement as u8,
+                                ];
+                                let code = CodeView::new(0x2800, &bytes).unwrap();
+                                let (site, source) = match access {
+                                    MemorySiteOperationV2::Load => {
+                                        let ir =
+                                            compile_ir_memory_load_block_v2(code, 0x2800).unwrap();
+                                        let direct =
+                                            compile_memory_load_block_v2(code, 0x2800).unwrap();
+                                        assert_eq!(ir.site(), direct.site());
+                                        (ir.site().clone(), ir.source_bytes().to_vec())
+                                    }
+                                    MemorySiteOperationV2::Store => {
+                                        let ir =
+                                            compile_ir_memory_store_block_v2(code, 0x2800).unwrap();
+                                        let direct =
+                                            compile_memory_store_block_v2(code, 0x2800).unwrap();
+                                        assert_eq!(ir.site(), direct.site());
+                                        (ir.site().clone(), ir.source_bytes().to_vec())
+                                    }
+                                };
+                                assert_eq!(source, bytes);
+                                assert_eq!(site.guest_rip(), 0x2800);
+                                assert_eq!(site.next_rip(), 0x2806);
+                                assert_eq!(site.operand().address_size, od_isa::OperandSize::Dword);
+                                assert_eq!(site.operand().size, od_isa::OperandSize::Qword);
+                                assert_eq!(
+                                    site.operand().base,
+                                    AddressBase::Register(Register::from_encoding(base).unwrap())
+                                );
+                                assert_eq!(
+                                    site.operand().index,
+                                    Some(Register::from_encoding(index).unwrap())
+                                );
+                                assert_eq!(site.operand().scale, 1 << scale_shift);
+                                assert_eq!(site.operand().displacement, i64::from(displacement));
+                                assert!(site.matches_source_bytes(&bytes, access));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for (opcode, access) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for bytes in [
+                vec![0x67, 0x48, opcode],
+                vec![0x67, 0x48, opcode, 0x44], // missing SIB and disp8
+                vec![0x67, 0x48, opcode, 0x44, 0x18], // missing disp8 after SIB
+                vec![0x67, 0x48, opcode, 0x04, 0x18, 0], // wrong ModRM mode
+                vec![0x67, 0x48, opcode, 0x44, 0x20, 0], // no index
+                vec![0x67, 0x48, opcode, 0x44, 0x25, 0], // no base special
+                vec![0x67, 0x48, opcode, 0x44, 0x28, 0], // unsupported index
+                vec![0x67, 0x48, opcode, 0x44, 0x1d, 0], // unsupported base
+                vec![0x67, 0x4c, opcode, 0x44, 0x18, 0], // extended data
+                vec![0x48, 0x67, opcode, 0x44, 0x18, 0], // wrong prefix order
+                vec![0x67, 0x48, opcode, 0x84, 0x18, 0, 0, 0, 0], // disp32
+                vec![0x67, 0x48, opcode, 0x44, 0x18, 0, 0x90], // trailing byte
+            ] {
+                let code = CodeView::new(0x2810, &bytes).unwrap();
+                let result = match access {
+                    MemorySiteOperationV2::Load => {
+                        compile_ir_memory_load_block_v2(code, 0x2810).map(|_| ())
+                    }
+                    MemorySiteOperationV2::Store => {
+                        compile_ir_memory_store_block_v2(code, 0x2810).map(|_| ())
+                    }
+                };
+                assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
+            }
+        }
+        for length in 1..6 {
+            let bytes = [0x67, 0x48, 0x8b, 0x44, 0x18, 0x80];
+            let code = CodeView::new(0x2820, &bytes[..length]).unwrap();
+            assert!(compile_ir_memory_load_block_v2(code, 0x2820).is_err());
         }
     }
 

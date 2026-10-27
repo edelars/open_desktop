@@ -190,8 +190,12 @@ impl MemorySiteV2 {
                     8 => i32::try_from(self.operand.displacement).is_ok(),
                     _ => false,
                 };
-            let indexed = length == 5
-                && self.operand.displacement == 0
+            let indexed = matches!(length, 5 | 6)
+                && if length == 5 {
+                    self.operand.displacement == 0
+                } else {
+                    i8::try_from(self.operand.displacement).is_ok()
+                }
                 && self.operand.index.is_some_and(|index| {
                     matches!(
                         index,
@@ -285,19 +289,22 @@ impl MemorySiteV2 {
                 let Some(decoded_sib_index) = od_isa::Register::from_encoding(sib_index) else {
                     return false;
                 };
-                return source.len() == 5
-                    && mode == 0
+                return matches!((source.len(), mode), (5, 0) | (6, 1))
                     && data_register < 4
                     && sib_base < 4
                     && sib_index < 4
                     && site_register == Some(data_register)
-                    && self.next_rip.checked_sub(self.guest_rip) == Some(5)
+                    && self.next_rip.checked_sub(self.guest_rip) == Some(source.len() as u64)
                     && self.operand.address_size == od_isa::OperandSize::Dword
                     && self.operand.size == od_isa::OperandSize::Qword
                     && decoded_base == decoded_sib_base
                     && self.operand.index == Some(decoded_sib_index)
                     && self.operand.scale == scale
-                    && self.operand.displacement == 0;
+                    && if source.len() == 5 {
+                        self.operand.displacement == 0
+                    } else {
+                        i8::try_from(self.operand.displacement).is_ok()
+                    };
             }
             let (expected_length, displacement_valid) = match mode {
                 0 => (4, self.operand.displacement == 0),

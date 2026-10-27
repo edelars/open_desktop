@@ -165,6 +165,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20p | Address32 signed-displacement qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r disp8|disp32`, ModRM `mod=01/10`, Dword EA/Qword data, base/data RAX..RBX, ровно 5/8 bytes |
 | [partial] | S3-20q | 64-bit SIB signed-displacement qword MOV через shared IR и bounded dispatcher | Только `48 8B/89 /r sib disp8|disp32`, ModRM `mod=01/10,r/m=100`, base/index/data RAX..RBX, scale1/2/4/8, ровно 5/8 bytes |
 | [partial] | S3-20r | Address32 no-displacement SIB qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r sib`, ModRM `mod=00,r/m=100`, data/base/index RAX..RBX, scale1/2/4/8, ровно 5 bytes |
+| [partial] | S3-20s | Address32 signed disp8 SIB qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r sib disp8`, ModRM `mod=01,r/m=100`, data/base/index RAX..RBX, scale1/2/4/8, ровно 6 bytes |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1174,6 +1175,27 @@ dispatch composes addr32 SIB → bare NOP fallback → existing pair at budgets
 0..4, checks no-effect guards and continuation from actual RIP, and rejects
 partial windows and forbidden fields before memory access. See the
 [S3-20r report](../reports/STAGE_3_S3-20r_2026-10-27.md).
+
+#### S3-20s. Address32 signed disp8 SIB through shared IR and bounded dispatch
+
+The checked singleton additionally admits exactly `67 48 8B/89 /r sib disp8`,
+ModRM `mod=01,r/m=100`, RAX..RBX data/base/index, SIB scale 1/2/4/8, qword
+data, dword address size and exact length six. The site stores at most eight
+source bytes; address32 SIB disp32 remains rejected because it is nine bytes.
+The decoder's `MemoryOperand` and `access_address_48` remain the sole
+displacement/effective-address and qword-range semantics. No prefix variants,
+special SIB fields, pair changes, or alternate encodings are admitted.
+
+Descriptor and direct V2/shared IR/interpreter cases cover disp8
+`-128/-1/0/127`, all scales and supported register aliases, high GPR halves,
+modulo-2^32 base/index/displacement arithmetic, and contiguous qword access
+across `0xffff_ffff`. Fault payloads and no-commit behavior, backend errors,
+and store+STOP commit are checked. Bounded dispatch composes the six-byte
+singleton → bare NOP fallback → existing pair across budgets 0..4; a six-byte
+singleton boundary proves the form is not mistaken for a two-instruction pair
+by length. Continuation resumes at actual RIP without repeating effects.
+Partial byte windows and forbidden encodings stop before helper access. See
+the [S3-20s report](../reports/STAGE_3_S3-20s_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

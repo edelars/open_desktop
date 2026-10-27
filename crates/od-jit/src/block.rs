@@ -1297,7 +1297,7 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x8b
         && instruction.operand_size == OperandSize::Qword
-        && matches!(instruction.length, 3 | 4 | 5 | 7 | 8)
+        && matches!(instruction.length, 3 | 4 | 5 | 6 | 7 | 8)
         && (destination.register() as u8) < 4
         && destination.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
@@ -1320,7 +1320,7 @@ pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x89
         && instruction.operand_size == OperandSize::Qword
-        && matches!(instruction.length, 3 | 4 | 5 | 7 | 8)
+        && matches!(instruction.length, 3 | 4 | 5 | 6 | 7 | 8)
         && (source.register() as u8) < 4
         && source.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
@@ -1346,10 +1346,14 @@ fn is_checked_qword_memory_address(
                     instruction.length,
                     operand.displacement,
                 );
-            let sib = instruction.length == 5
+            let sib = matches!(instruction.length, 5 | 6)
                 && operand.index.is_some_and(|index| (index as u8) < 4)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
-                && operand.displacement == 0;
+                && if instruction.length == 5 {
+                    operand.displacement == 0
+                } else {
+                    (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement)
+                };
             instruction.prefixes.address_override && base_supported && (direct || sib)
         }
         OperandSize::Qword => {
@@ -1486,9 +1490,13 @@ pub(crate) fn exact_qword_address32_sib_memory_bytes(
     else {
         return false;
     };
-    bytes.len() == 5
-        && bytes[0..3] == [0x67, 0x48, opcode]
-        && bytes[3] >> 6 == 0
+    let expected_mode = match bytes.len() {
+        5 => 0,
+        6 => 1,
+        _ => return false,
+    };
+    bytes[0..3] == [0x67, 0x48, opcode]
+        && bytes[3] >> 6 == expected_mode
         && bytes[3] & 7 == 4
         && (bytes[3] >> 3) & 7 < 4
         && bytes[4] & 7 < 4
