@@ -558,6 +558,21 @@ read failure; their generator serializes fixed answers. Address-size-64 REP
 LODS remains covered by S2-19c. JIT/native and physical execution remain
 deferred; no hardware restart-state claim is made.
 
+## REP STOS with address-size 32 — S2-19k
+
+S2-19k admits bounded `F3 67 AA`, `F3 67 66 AB`, `F3 67 AB`, and effective
+REX.W `F3 67 48 AB`. It uses zero-extended EDI and ECX; each successful
+width-sized store commits the EDI update modulo 2^32 and zero-extended ECX
+decrement. ECX=0 preserves the complete RCX/RDI and performs no data access.
+The existing partial-progress, STOP, tracked-definedness and 1024-success
+work-limit behavior applies. No JIT/native or physical execution is claimed.
+
+Eleven literal schema-v2 fixtures cover all widths, DF=1, EDI wrap, zero ECX
+with high-half values, a partial store fault, zero instruction budget, initial
+STOP, and normalized operand-size order. Their generator serializes fixed
+expected snapshots. `od-isa` tests separately exercise count/width/direction
+matrices, no-access zero count, and no-commit on the current failed store.
+
 ## REPE CMPSB — S2-19f local interpreter coverage
 
 Only exact `F3 A6` is admitted in Long64/address64. Even at RCX zero, entry

@@ -1237,16 +1237,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && prefixes.group1 == Some(0xf0);
         let rep_stosb = opcode.map == OpcodeMap::Primary
             && opcode.byte == 0xaa
-            && prefixes
-                == (Prefixes {
-                    group1: Some(0xf3),
-                    ..Prefixes::default()
-                });
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && prefixes.rex.is_none()
+            && (self.length == 2 && !prefixes.address_override
+                || self.length == 3 && prefixes.address_override);
         let rep_stos = opcode.map == OpcodeMap::Primary
             && opcode.byte == 0xab
             && prefixes.group1 == Some(0xf3)
             && prefixes.segment.is_none()
-            && !prefixes.address_override
             && prefixes.rex.is_none_or(|rex| rex & 8 != 0);
         let rep_lods = opcode.map == OpcodeMap::Primary
             && matches!(opcode.byte, 0xac | 0xad)
@@ -6335,6 +6335,82 @@ mod tests {
     }
 
     #[test]
+    fn rep_stos_address32_decodes_bounded_widths_and_normalized_prefixes() {
+        for (bytes, size) in [
+            (&[0xf3, 0x67, 0xaa][..], OperandSize::Byte),
+            (&[0xf3, 0x67, 0x66, 0xab][..], OperandSize::Word),
+            (&[0xf3, 0x67, 0xab][..], OperandSize::Dword),
+            (&[0xf3, 0x67, 0x48, 0xab][..], OperandSize::Qword),
+            (&[0xf3, 0x66, 0x67, 0xab][..], OperandSize::Word),
+            (&[0xf3, 0x67, 0x48, 0x66, 0xab][..], OperandSize::Word),
+            (&[0xf3, 0x67, 0x66, 0x48, 0xab][..], OperandSize::Qword),
+            (&[0xf3, 0x48, 0x67, 0xab][..], OperandSize::Dword),
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::RepStos { size },
+                "{bytes:02x?}"
+            );
+            assert_eq!(instruction.address_size, OperandSize::Dword, "{bytes:02x?}");
+        }
+        for rex in 0x48..=0x4f {
+            let bytes = [0xf3, 0x67, rex, 0xab];
+            assert_eq!(
+                Memory::new(&bytes).decode().unwrap().operation,
+                Operation::RepStos {
+                    size: OperandSize::Qword
+                },
+                "{bytes:02x?}"
+            );
+        }
+        assert_eq!(
+            Memory::new(&[0x67, 0xf3, 0xaa]).decode().unwrap().operation,
+            Operation::RepStos {
+                size: OperandSize::Byte
+            }
+        );
+
+        let forms: [&[u8]; 4] = [
+            &[0xf3, 0x67, 0xaa],
+            &[0xf3, 0x67, 0x66, 0xab],
+            &[0xf3, 0x67, 0xab],
+            &[0xf3, 0x67, 0x48, 0xab],
+        ];
+        let mut rejected = Vec::new();
+        for form in forms {
+            for prefix in [0xf0, 0xf2, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
+                rejected.push([vec![prefix], form.to_vec()].concat());
+            }
+            rejected.push([vec![0x67], form.to_vec()].concat());
+        }
+        rejected.extend([
+            vec![0xf3, 0x67, 0x66, 0xaa],
+            vec![0xf3, 0x67, 0x48, 0xaa],
+            vec![0xf3, 0x67, 0x66, 0x66, 0xab],
+            vec![0xf3, 0x67, 0x48, 0x40, 0xab],
+            vec![0xf3, 0x67, 0x48, 0x47, 0xab],
+        ]);
+        for rex in 0x40..=0x4f {
+            rejected.push(vec![0xf3, 0x67, rex, 0xaa]);
+        }
+        for rex in 0x40..=0x47 {
+            rejected.push(vec![0xf3, 0x67, rex, 0xab]);
+            rejected.push(vec![0xf3, 0x67, 0x66, rex, 0xab]);
+        }
+        assert_eq!(rejected.len(), 73);
+        for bytes in rejected {
+            assert!(
+                matches!(
+                    Memory::new(&bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn rep_lods_decodes_widths_and_normalized_prefix_ordering() {
         for (bytes, size) in [
             (&[0xf3, 0xac][..], OperandSize::Byte),
@@ -6527,10 +6603,9 @@ mod tests {
             &[0x67, 0xab],
             &[0x67, 0x48, 0xab],
         ];
-        let prefixes: [&[u8]; 9] = [
+        let prefixes: [&[u8]; 8] = [
             &[0xf0],
             &[0xf2],
-            &[0xf3],
             &[0x26],
             &[0x2e],
             &[0x36],
@@ -6555,7 +6630,7 @@ mod tests {
             cases.push(vec![0x67, rex, 0xab]);
             cases.push(vec![0x67, 0x66, rex, 0xab]);
         }
-        assert_eq!(cases.len(), 73);
+        assert_eq!(cases.len(), 69);
         for bytes in cases {
             assert!(
                 matches!(

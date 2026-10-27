@@ -7878,6 +7878,32 @@ Local evidence and limitations are recorded in the
 ISSUE-016/020/021 remain open; native/JIT and physical execution are deferred
 to shared final acceptance.
 
+### Local S2-19k bounded REP STOS address-size-32 contract
+
+The existing REP STOS operation additionally admits Long64/address-size-32
+forms `F3 67 AA` (byte), `F3 67 66 AB` (word), `F3 67 AB` (dword), and
+effective REX.W `F3 67 48 AB` (qword). The exercised normalized forms retain
+the existing 66/REX rule: `F3 66 67 AB` and `F3 67 48 66 AB` are word,
+`F3 67 66 48 AB` is qword, and `F3 48 67 AB` is dword. Other segment, LOCK,
+REP/REPNE, and unsupported prefix combinations remain outside this bounded
+admission. JIT/native admission stays closed.
+
+Each iteration writes exactly one width-sized value from AL/AX/EAX/RAX to the
+zero-extended EDI address, then advances EDI by ±width modulo 2^32 according
+to DF and decrements ECX with zero-extension into RCX. ECX=0 avoids memory
+access and preserves the complete RCX and RDI values. A failed current write
+does not commit its iteration; prior successful stores and their count/index
+progress remain visible. REP completion, STOP, tracked continuation and the
+1024-success limit use the existing REP ordering. Completion retires once;
+partial exits keep RIP at the instruction and retire zero. Flags and RAM
+contents are preserved except for successful stores. Missing mappings remain
+harness errors. No MMIO rollback, hardware restart-state, fault-priority,
+native/JIT, or physical behavior is claimed; ISSUE-016/020/021 remain open.
+
+Local implementation and limitations are recorded in the
+[S2-19k plan](../plans/STAGE_2.md#s2-19k-bounded-rep-stos-с-address-size-32) and
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19k--bounded-rep-stos-address-size-32).
+
 ### Local S2-19d bounded REP MOVSB/W/D/Q contract
 
 The interpreter admits exact `F3 A4` MOVSB, `F3 66 A5` MOVSW, `F3 A5` MOVSD,

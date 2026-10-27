@@ -6149,7 +6149,7 @@ fn rep_stosb_rejects_other_prefix_combinations_without_commit() {
     )
     .unwrap()
     .fixture;
-    for bytes in ["f2aa", "f366aa", "f367aa", "f340aa"] {
+    for bytes in ["f2aa", "f366aa", "f340aa"] {
         fixture.memory[0].length = (bytes.len() / 2) as u32;
         fixture.memory[0].initial_bytes_hex = bytes.into();
         fixture.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
@@ -7037,6 +7037,65 @@ fn rep_lods_address32_literal_fixtures_match_full_expected_answers() {
         for region in memory.snapshot() {
             assert_eq!(region.bytes_hex, expected_memory[&region.region_id], "{id}");
         }
+    }
+}
+
+#[test]
+fn rep_stos_address32_literal_fixtures_match_full_expected_answers() {
+    let dir = arithmetic_fixture_directory();
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(dir.join("s2_19k_rep_stos_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 11);
+    for (id, answer) in answers {
+        let input =
+            Fixture::from_json(&std::fs::read(dir.join(format!("{id}.case.json"))).unwrap())
+                .unwrap()
+                .fixture;
+        let mut state = input.initial_state.to_cpu().unwrap();
+        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            || false,
+        );
+        match input.expected_exit {
+            ExpectedExit::StopAddress => assert_eq!(result.exit, RunExit::StopAddress, "{id}"),
+            ExpectedExit::InstructionBudgetExhausted => {
+                assert_eq!(result.exit, RunExit::InstructionBudgetExhausted, "{id}");
+            }
+            ExpectedExit::HarnessError => {
+                let fault = &answer["fault"];
+                let address: HexU64 = serde_json::from_value(fault["address"].clone()).unwrap();
+                assert!(
+                    matches!(result.exit, RunExit::MemoryError(MemoryError::Unmapped { address: actual, access: AccessKind::Write }) if actual == address.get()),
+                    "{id}: {:?}",
+                    result.exit
+                );
+            }
+            other => panic!("unexpected S2-19k expected exit {other:?}: {id}"),
+        }
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(state.gpr, expected_gpr.map(HexU64::get), "{id}");
+        assert_eq!(state.rflags, expected_flags.get(), "{id}");
+        assert_eq!(result.rflags_defined, expected_defined.get(), "{id}");
+        assert_eq!(state.rip, expected_rip.get(), "{id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in memory.snapshot() {
+            assert_eq!(region.bytes_hex, expected_memory[&region.region_id], "{id}");
+        }
+        let retired = u64::from(
+            input.expected_exit == ExpectedExit::StopAddress
+                && input.stop_rip != Some(input.initial_state.rip),
+        );
+        assert_eq!(result.instructions_executed, retired, "{id}");
     }
 }
 
@@ -8610,7 +8669,7 @@ fn rep_stos_wdq_rejects_the_exact_out_of_profile_prefix_set() {
         vec![0xf3, 0xab],
         vec![0xf3, 0x48, 0xab],
     ];
-    let prefixes = [0xf0, 0xf2, 0xf3, 0x67, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65];
+    let prefixes = [0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65];
     let mut rejected = Vec::new();
     for form in forms {
         for prefix in prefixes {
@@ -8626,7 +8685,7 @@ fn rep_stos_wdq_rejects_the_exact_out_of_profile_prefix_set() {
         vec![0xf3, 0x66, 0x40, 0xab],
         vec![0xf3, 0x66, 0x47, 0xab],
     ]);
-    assert_eq!(rejected.len(), 35);
+    assert_eq!(rejected.len(), 32);
     for bytes in rejected {
         fixture.memory[0].length = bytes.len() as u32;
         fixture.memory[0].initial_bytes_hex = encode_bytes(&bytes);
@@ -8647,7 +8706,6 @@ fn rep_stos_wdq_rejects_the_exact_out_of_profile_prefix_set() {
     for bytes in [
         vec![0xf3, 0x66, 0xaa],
         vec![0xf3, 0x48, 0xaa],
-        vec![0xf3, 0x67, 0xaa],
         vec![0xf3, 0x26, 0xaa],
     ] {
         fixture.memory[0].length = bytes.len() as u32;

@@ -10783,3 +10783,27 @@ remain open and outside this change. Independent gpt-6.1-sol high review found
 no code or fixture defects; it identified one stale paragraph in
 `docs/testing/INTERPRETER.md`, which was corrected to the same ECX semantics and
 nine-fixture count before review closed.
+
+## S2-19k — bounded REP STOS address-size-32
+
+Extended `Operation::RepStos` to the four bounded Long64 address-size-32 STOS
+widths. The interpreter uses ECX/EDI, writes one contiguous width-sized
+accumulator value per successful iteration, zero-extends successful ECX
+decrements into RCX, and wraps EDI modulo 2^32. Zero ECX performs no access
+and preserves full RCX/RDI. A faulting current store leaves its CPU iteration
+uncommitted while earlier successful stores remain. Existing REP completion,
+STOP, tracked state, retirement, and 1024-success limit rules are reused.
+JIT/native admission and fixture schema/profile were not changed.
+
+Local evidence includes decoder acceptance for four widths and established
+prefix normalization, explicit rejects for out-of-profile prefixes, direct
+execution matrices across widths/direction/count, zero-count/no-access, a
+partial unmapped store, and eleven literal schema-v2 fixtures with complete
+state and memory sidecars. The fixture generator serializes fixed values.
+All targeted `od-isa` tests passed (5/5), the `od-testkit` full-snapshot fixture
+test passed (1/1), and the Python generator tests passed (2/2).
+`cargo test --workspace --offline`,
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+fixture freshness, `git diff --check`, and Graphify update passed. No physical,
+Mac mini, SSH, JIT or native checks were run. ISSUE-016/020/021 remain open;
+this slice makes no hardware restart, fault-priority, or MMIO rollback claim.

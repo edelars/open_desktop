@@ -1298,6 +1298,33 @@ Mac mini, SSH и JIT/native проверки не выполнялись. Нез
 ревью завершено без замечаний по коду и fixtures; найденное устаревшее описание
 в `docs/testing/INTERPRETER.md` исправлено перед закрытием ревью.
 
+#### S2-19k — bounded REP STOS с address-size 32
+
+Расширить существующий `Operation::RepStos` только на Long64/address-size 32:
+`F3 67 AA` STOSB, `F3 67 66 AB` STOSW, `F3 67 AB` STOSD и
+`F3 67 48 AB` STOSQ. Сохранить выбор ширины и только уже установленные
+normalization rules: `F3 66 67 AB` и `F3 67 48 66 AB` дают word,
+`F3 67 66 48 AB` — qword, `F3 48 67 AB` — dword. Для каждого старта
+использовать zero-extended EDI; одна итерация делает одну непрерывную
+width-sized запись AL/AX/EAX/RAX, затем обновляет EDI на ±width modulo 2^32
+по DF и уменьшает ECX. ECX=0 не обращается к destination и оставляет весь
+RCX/RDI неизменным; после успешного decrement ECX zero-extends в RCX.
+
+Текущая faulting запись не меняет CPU; предыдущие завершённые итерации
+сохраняются. Использовать общие REP completion/STOP/1024-success limit,
+tracked-definedness и retirement правила S2-19c. Отсутствующее отображение
+остаётся harness error. Это локальная политика, не hardware restart,
+приоритет fault или MMIO rollback claim. JIT/native не расширять.
+
+Реализация добавила core matrices по четырём ширинам и DF, pointer wrap и high
+halves, zero ECX, STOP/replay, budget, частичный store failure и iteration
+limit; точную negative prefix matrix; 11 literal schema-v2 cases с полными
+expected snapshots и генератором, который сериализует предзаданные значения.
+Fixture schema/profile не менялись. Целевые и полные workspace проверки
+пройдены; см. [отчёт](../reports/STAGE_2_REPORT.md#s2-19k--bounded-rep-stos-address-size-32).
+ISSUE-016/020/021 остаются открытыми, physical/Mac mini/SSH проверки
+выполняются только в общем финальном substage.
+
 ### S2-20. Точность исключений и exit state
 
 1. Свести для реализованных форм `#UD`, `#DE`, `#GP`, `#SS`, memory faults и traps только там, где они действительно определены профилем/адаптером.

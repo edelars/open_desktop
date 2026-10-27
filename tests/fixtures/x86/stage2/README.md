@@ -4001,6 +4001,24 @@ cargo test -p od-testkit --offline rep_stos_wdq
 cargo test -p od-runner --test fixture_v2 --offline rep_stos_wdq
 ```
 
+## Bounded REP STOS address-size-32 fixtures S2-19k
+
+Eleven literal schema-v2 fixtures cover `F3 67 AA` and the word/dword/qword
+`F3 67 AB` forms: successful cases for each width, a word DF=1 case,
+qword DF=1, qword EDI wrap from `0xfffffffc`, zero ECX with noncanonical
+high-half RCX/RDI, a byte store failure after one completed iteration,
+zero instruction budget, initial STOP, and the two accepted word/qword
+normalization cases. The full-state sidecar records GPR, RFLAGS/definedness,
+RIP and complete data memory, including partial ECX/EDI progress on failure.
+The generator serializes fixed hand-authored inputs and expected values only;
+it does not execute or derive instruction results. The profile and schema are
+unchanged. Native/JIT and physical acceptance remain deferred.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_stos_addr32.py --check
+cargo test -p od-testkit --offline rep_stos_address32_literal_fixtures_match_full_expected_answers
+```
+
 ## Bounded REP LODSB/W/D/Q fixtures S2-19c
 
 Thirty-six literal schema-v2 fixtures cover all four `F3 AC/AD` widths: eight
