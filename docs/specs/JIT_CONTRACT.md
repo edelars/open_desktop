@@ -639,6 +639,27 @@ and actual-RIP continuation; partial windows return `BoundaryReached` and
 invalid forms have no effects. See the
 [S3-20x report](../reports/STAGE_3_S3-20x_2026-10-27.md).
 
+#### S3-20y: RBP-base signed disp32 qword MOV
+
+Admit only singleton `48 8B/89 /r disp32`, ModRM `mod=10,r/m=101`, RBP base,
+data RAX..RBX, qword data, 64-bit EA and exact length seven. The decoder's
+`MemoryOperand` and `access_address_48` own displacement and effective-address
+semantics. The raw-byte gate distinguishes this from the existing
+RIP-relative `mod=00,r/m=101` form, whose `NextRip` base and `next_rip` remain
+unchanged. SIB, 67, other prefixes/bases, pairs and V3 are excluded.
+
+Direct V2/shared IR/interpreter coverage includes both operations, disp32
+MIN/-1/0/127/128/MAX, exact callback address/count, state/RAM parity and
+retirement. Equal displacement under RBP versus RIP-relative encoding must
+produce addresses based on RBP versus that instruction's `next_rip`. RBP
+noncanonical start/end is #SS, matching RBX control is #GP; these and backend
+failures do not commit architectural state. AddressOverflow remains a host
+diagnostic. Entry STOP/budget-zero make no callback; successful store+STOP
+retains its commit. Dispatcher composes the singleton, bare-NOP interpreter
+bridge and existing pair; budgets 0..4 and continuation from actual RIP do not
+repeat effects, and source windows 1..6 stop without effects. See the
+[S3-20y report](../reports/STAGE_3_S3-20y_2026-10-27.md).
+
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
 alignment, same/different ranges, and safe partial overlaps for load→store;

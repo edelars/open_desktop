@@ -1389,6 +1389,65 @@ mod tests {
     }
 
     #[test]
+    fn ir_checked_rbp_base_disp32_is_distinct_from_rip_relative_disp32() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for register in 0..4_u8 {
+                for displacement in [i32::MIN, -129, -1, 0, 127, 128, i32::MAX] {
+                    let mut source = vec![0x48, opcode, 0x80 | (register << 3) | 5];
+                    source.extend_from_slice(&displacement.to_le_bytes());
+                    let code = CodeView::new(0x5400, &source).unwrap();
+                    let (site, copied) = match operation {
+                        MemorySiteOperationV2::Load => {
+                            let ir = compile_ir_memory_load_block_v2(code, 0x5400).unwrap();
+                            let direct = compile_memory_load_block_v2(code, 0x5400).unwrap();
+                            assert_eq!(ir.site(), direct.site());
+                            (ir.site().clone(), ir.source_bytes().to_vec())
+                        }
+                        MemorySiteOperationV2::Store => {
+                            let ir = compile_ir_memory_store_block_v2(code, 0x5400).unwrap();
+                            let direct = compile_memory_store_block_v2(code, 0x5400).unwrap();
+                            assert_eq!(ir.site(), direct.site());
+                            (ir.site().clone(), ir.source_bytes().to_vec())
+                        }
+                    };
+                    assert_eq!(copied, source);
+                    assert_eq!(site.next_rip(), 0x5407);
+                    assert_eq!(site.operand().base, AddressBase::Register(Register::Rbp));
+                    assert_eq!(site.operand().index, None);
+                    assert_eq!(site.operand().scale, 1);
+                    assert_eq!(site.operand().displacement, i64::from(displacement));
+                    assert!(site.has_supported_profile());
+                    assert!(site.matches_source_bytes(&source, operation));
+
+                    let mut rip_source = vec![0x48, opcode, (register << 3) | 5];
+                    rip_source.extend_from_slice(&displacement.to_le_bytes());
+                    let rip_code = CodeView::new(0x5400, &rip_source).unwrap();
+                    let rip_site = match operation {
+                        MemorySiteOperationV2::Load => {
+                            compile_ir_memory_load_block_v2(rip_code, 0x5400)
+                                .unwrap()
+                                .site()
+                                .clone()
+                        }
+                        MemorySiteOperationV2::Store => {
+                            compile_ir_memory_store_block_v2(rip_code, 0x5400)
+                                .unwrap()
+                                .site()
+                                .clone()
+                        }
+                    };
+                    assert_eq!(rip_site.operand().base, AddressBase::NextRip);
+                    assert_ne!(site.operand().base, rip_site.operand().base);
+                    assert!(rip_site.matches_source_bytes(&rip_source, operation));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ir_checked_sib_singletons_match_decoded_metadata_for_all_registers_and_scales() {
         for (opcode, operation) in [
             (0x8b, MemorySiteOperationV2::Load),
@@ -1955,7 +2014,6 @@ mod tests {
             vec![0x48, 0x8b, 0x80, 0, 0, 0], // truncated disp32
             vec![0x48, 0x8b, 0x05],       // truncated RIP-relative disp32
             vec![0x48, 0x8b, 0x05, 0, 0, 0, 0, 0x90], // RIP-relative tail
-            vec![0x48, 0x8b, 0x85, 0, 0, 0, 0], // mod10 RBP base is unsupported
             vec![0x4a, 0x8b, 0x04, 0x00], // REX.X extended index
             vec![0x49, 0x8b, 0x04, 0x00], // REX.B extended base
             vec![0x67, 0x48, 0x8b, 0x00, 0x90], // address-size override tail
@@ -2199,12 +2257,11 @@ mod tests {
             }
 
             for bytes in [
-                vec![0x48, opcode, 0x45],             // missing disp8
-                vec![0x48, opcode, 0x85, 0, 0, 0, 0], // disp32 is excluded
-                vec![0x48, opcode, 0x44, 0],          // SIB form
-                vec![0x67, 0x48, opcode, 0x45, 0],    // addr32
-                vec![0x4c, opcode, 0x45, 0],          // extended data register
-                vec![0x48, opcode, 0x45, 0, 0x90],    // trailing byte
+                vec![0x48, opcode, 0x45],          // missing disp8
+                vec![0x48, opcode, 0x44, 0],       // SIB form
+                vec![0x67, 0x48, opcode, 0x45, 0], // addr32
+                vec![0x4c, opcode, 0x45, 0],       // extended data register
+                vec![0x48, opcode, 0x45, 0, 0x90], // trailing byte
             ] {
                 let code = CodeView::new(0x2810, &bytes).unwrap();
                 let result = match access {

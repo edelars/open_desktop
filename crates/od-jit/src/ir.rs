@@ -625,6 +625,11 @@ fn is_checked_memory_address(
                 && operand.index.is_none()
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
                 && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+            || instruction_length == 7
+                && operand.index.is_none()
+                && operand.scale == 1
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
+                && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
             || matches!(instruction_length, 4 | 5 | 8)
                 && operand.index.is_none()
                 && operand.scale == 1

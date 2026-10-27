@@ -1367,6 +1367,11 @@ fn is_checked_qword_memory_address(
                     operand.base,
                     od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                 )
+                || instruction.length == 7
+                    && matches!(
+                        operand.base,
+                        od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
+                    )
                 || matches!(instruction.length, 4 | 5 | 8)
                     && operand.index.is_none()
                     && operand.scale == 1
@@ -1457,6 +1462,11 @@ pub(crate) fn exact_direct_qword_memory_bytes(
         && bytes[2] >> 6 == 1
         && bytes[2] & 7 == 5
         && (bytes[2] >> 3) & 7 < 4)
+        || (bytes.len() == 7
+            && bytes[0..2] == [0x48, opcode]
+            && bytes[2] >> 6 == 2
+            && bytes[2] & 7 == 5
+            && (bytes[2] >> 3) & 7 < 4)
         || (bytes.len() == 4
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] >> 6 == 0
