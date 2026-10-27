@@ -63,7 +63,7 @@ RAX/RCX/RDX/RBX, без high-byte registers и памяти. Для ModR/M `mod`
 
 | Класс | Путь на текущем шаге | Условие дальнейшего включения |
 |---|---|---|
-| Любые memory operands, кроме точного первого `48 8B /r` load V2-среза ниже | Runner и V1 block/cache path не выбирают memory code. Для первого load доступен отдельный compiler-issued V2 artifact и отдельный host entry; host pointer access запрещён | Каждая новая форма отдельно проходит S2 semantic confirmation, checked access/commit implementation и собственную проверку |
+| Любые memory operands, кроме точных `48 8B /r` load и `48 89 /r` store V2-срезов ниже | Runner и V1 block/cache path не выбирают memory code. Для этих форм доступны отдельные compiler-issued V2 artifacts и host entries; прямой host pointer access запрещён | Каждая новая форма отдельно проходит S2 semantic confirmation, checked access/commit implementation и собственную проверку |
 | Остальные формы, уже принятые interpreter этапа 2 | Runner не допускает их к текущему legacy JIT. Interpreter fallback запланирован в S3-16 и не реализован текущим contract | Завершённая interpreter semantics конкретной формы и fallback с точным progress/state |
 | x87, SIMD, privilege/system, interrupts, unsupported/invalid decode | Runner не допускает эти формы к текущему legacy JIT; interpreter путь разрешён только если соответствующая форма уже реализована и запрошен явный fallback после S3-16 | Отдельные S2 contracts, CPU state mapping и сопоставимые внешние evidence для каждой формы |
 
@@ -72,7 +72,7 @@ RAX/RCX/RDX/RBX, без high-byte registers и памяти. Для ModR/M `mod`
 Ни native execution, ни память, ни исключения этапа 2 не наследуются этапом 3
 автоматически.
 
-### S3-19b / S3-20: один production V2 MOV load
+### S3-19b / S3-20: узкие production V2 MOV load/store slices
 
 S3-19a adds a standalone checked helper transport. S3-19b admits one production
 V2 block ending in one exact qword `MOV r64,[base]`: bytes `48 8B /r`, ModRM
@@ -88,16 +88,34 @@ entry commits the destination, next RIP, and one retirement; flags are
 preserved. On an architectural fault or checked-memory boundary/backend error,
 the destination, flags, RIP, and retirement remain unchanged. The host returns
 the complete fixed-width architectural fault payload separately from
-non-architectural `MemoryError` outcomes. `MOV RAX,[RAX]` is covered to verify
-that address calculation reads the old canonical RAX before the load commits.
-Native success, architectural-fault preservation, and boundary-error outcomes
-are also compared with `od_isa::execute::step` using independent state and RAM
-copies; the comparison includes the full CPU state and backend bytes/read count.
-The V2 context, adapter, and site table are invocation-local; no pointers or RAM
-contents enter a translation key. This one-instruction compiler path is not
-cached and has no general IR, multi-instruction block, or PC-map integration.
-Stores and all other memory forms remain unsupported. The physical Mac mini
-check is reserved for the final S3-21 gate after local Stage 3 work is complete.
+non-architectural `MemoryError` outcomes. `MOV RAX,[RAX]` verifies that address
+calculation reads old canonical RAX before the load commits.
+
+S3-20b adds only exact qword `MOV [base],r64`: bytes `48 89 /r`, ModRM
+`mod=00`, source and base RAX..RBX, with no SIB, displacement, segment, or
+address-size override. It shares the V2 decoder/artifact/emitter/helper path,
+but has a distinct compile flavor, site direction metadata, publication type,
+and unsafe store entry; the load entry rejects a store artifact before native
+entry. The checked helper captures the source value and address before one
+all-or-nothing `GuestMemory::write`. A write error leaves CPU state and RAM
+unchanged; success commits RIP and retirement only after the write returns, then
+observes STOP. `MOV [RAX],RAX` verifies source/address aliasing. Native success,
+architectural faults, and boundary/backend errors are compared with
+`od_isa::execute::step` on independent CPU/RAM copies, including full state and
+RAM bytes. Entry STOP, stop-RIP, and zero-budget guards are also verified to
+return before the store has any memory effect.
+
+The store entry is unsafe and may only be used with private synchronous
+ordinary RAM whose writes are all-or-nothing, with no MMIO, DMA, concurrent or
+delayed effects. Its backing must not be executable or alias cached guest code,
+and cannot become executable while the compiled block exists. No blanket
+`GuestMemory` implementation grants this capability. Code writes remain
+unsupported pending S3-23 invalidation. The V2 context, adapter, and site table
+are invocation-local; pointers and RAM contents do not enter a translation
+key. These one-instruction compiler paths are not cached and have no general
+IR, multi-instruction block, or PC-map integration. Other memory forms remain
+unsupported. The physical Mac mini check is reserved for final S3-21 after
+local Stage 3 work is complete.
 
 ## 4. Начальные runtime bounds
 

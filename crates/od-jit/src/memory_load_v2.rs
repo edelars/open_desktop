@@ -13,11 +13,11 @@ use crate::arm64::{
 };
 use crate::block::{CodeMemory, CodeView};
 use crate::runtime::{
-    LONG_MODE_GPR_OFFSET, LONG_MODE_RIP_OFFSET, MemoryLoadSiteV2,
+    LONG_MODE_GPR_OFFSET, LONG_MODE_RIP_OFFSET, MemorySiteOperationV2, MemorySiteV2,
     RUNTIME_CONTEXT_INITIAL_BUDGET_OFFSET, RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET,
     RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET, RUNTIME_CONTEXT_STOP_REQUESTED_OFFSET,
     RUNTIME_CONTEXT_STOP_RIP_ENABLED_OFFSET, RUNTIME_CONTEXT_STOP_RIP_OFFSET,
-    RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET, memory_load_site_helper_v2,
+    RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET, memory_site_helper_v2,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -28,38 +28,55 @@ pub enum MemoryLoadCompileErrorV2 {
     Encoding(EncodeError),
 }
 
-/// Compiler-issued V2 artifact. Its private fields are the provenance proof
-/// required by host publication; arbitrary bytes cannot be promoted to this.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MemoryLoadBlockV2 {
+struct MemoryArtifactV2 {
     code: EncodedCode,
-    site: MemoryLoadSiteV2,
+    site: MemorySiteV2,
     entry_rip: u64,
     source_bytes: [u8; 3],
     compile_flavor: crate::translation::CompileFlavor,
 }
 
-impl MemoryLoadBlockV2 {
-    pub fn code(&self) -> &EncodedCode {
-        &self.code
-    }
-
-    pub fn site(&self) -> &MemoryLoadSiteV2 {
-        &self.site
-    }
-
-    pub const fn entry_rip(&self) -> u64 {
-        self.entry_rip
-    }
-
-    pub const fn source_bytes(&self) -> &[u8; 3] {
-        &self.source_bytes
-    }
-
-    pub const fn compile_flavor(&self) -> crate::translation::CompileFlavor {
-        self.compile_flavor
-    }
+/// Compiler-issued load artifact. Arbitrary code bytes cannot be promoted to it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MemoryLoadBlockV2 {
+    artifact: MemoryArtifactV2,
 }
+
+/// Compiler-issued store artifact, kept distinct from load publication/API.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MemoryStoreBlockV2 {
+    artifact: MemoryArtifactV2,
+}
+
+macro_rules! impl_artifact_accessors {
+    ($type:ty) => {
+        impl $type {
+            pub fn code(&self) -> &EncodedCode {
+                &self.artifact.code
+            }
+
+            pub fn site(&self) -> &MemorySiteV2 {
+                &self.artifact.site
+            }
+
+            pub const fn entry_rip(&self) -> u64 {
+                self.artifact.entry_rip
+            }
+
+            pub const fn source_bytes(&self) -> &[u8; 3] {
+                &self.artifact.source_bytes
+            }
+
+            pub const fn compile_flavor(&self) -> crate::translation::CompileFlavor {
+                self.artifact.compile_flavor
+            }
+        }
+    };
+}
+
+impl_artifact_accessors!(MemoryLoadBlockV2);
+impl_artifact_accessors!(MemoryStoreBlockV2);
 
 /// Compile the exact checked-memory V2 profile from decoded guest bytes.
 ///
@@ -69,11 +86,34 @@ pub fn compile_memory_load_block_v2(
     code: CodeView<'_>,
     entry_rip: u64,
 ) -> Result<MemoryLoadBlockV2, MemoryLoadCompileErrorV2> {
+    Ok(MemoryLoadBlockV2 {
+        artifact: compile_memory_operation_v2(code, entry_rip, MemorySiteOperationV2::Load)?,
+    })
+}
+
+/// Compile the exact checked-memory V2 qword store profile.
+pub fn compile_memory_store_block_v2(
+    code: CodeView<'_>,
+    entry_rip: u64,
+) -> Result<MemoryStoreBlockV2, MemoryLoadCompileErrorV2> {
+    Ok(MemoryStoreBlockV2 {
+        artifact: compile_memory_operation_v2(code, entry_rip, MemorySiteOperationV2::Store)?,
+    })
+}
+
+fn compile_memory_operation_v2(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    access: MemorySiteOperationV2,
+) -> Result<MemoryArtifactV2, MemoryLoadCompileErrorV2> {
     let offset = entry_rip
         .checked_sub(code.base_rip())
         .and_then(|offset| usize::try_from(offset).ok())
         .filter(|offset| *offset < code.len())
         .ok_or(MemoryLoadCompileErrorV2::EntryOutsideCode)?;
+    if code.len() - offset != 3 {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
     let mut memory = CodeMemory::full_code(code);
     let decoded = long_decode::decode(&mut memory, entry_rip, AccessContext::default())
         .map_err(|_| MemoryLoadCompileErrorV2::Decode)?;
@@ -81,22 +121,38 @@ pub fn compile_memory_load_block_v2(
         .bytes()
         .get(offset..offset.saturating_add(3))
         .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
-    let [0x48, 0x8b, modrm] = bytes else {
+    let opcode = match access {
+        MemorySiteOperationV2::Load => 0x8b,
+        MemorySiteOperationV2::Store => 0x89,
+    };
+    let [0x48, actual_opcode, modrm] = bytes else {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     };
+    if *actual_opcode != opcode {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
     let modrm = *modrm;
     if decoded.length != 3 || modrm >> 6 != 0 || (modrm >> 3) & 7 >= 4 || modrm & 7 >= 4 {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
-    let Operation::Mov {
-        dst: Operand::Register(destination),
-        src: Operand::Memory(operand),
-    } = decoded.operation
-    else {
-        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    let (register, operand) = match (access, decoded.operation) {
+        (
+            MemorySiteOperationV2::Load,
+            Operation::Mov {
+                dst: Operand::Register(destination),
+                src: Operand::Memory(operand),
+            },
+        ) if destination.size() == od_isa::OperandSize::Qword => (destination.register(), operand),
+        (
+            MemorySiteOperationV2::Store,
+            Operation::Mov {
+                dst: Operand::Memory(operand),
+                src: Operand::Register(source),
+            },
+        ) if source.size() == od_isa::OperandSize::Qword => (source.register(), operand),
+        _ => return Err(MemoryLoadCompileErrorV2::UnsupportedForm),
     };
-    if destination.register() as u8 >= 4
-        || destination.size() != od_isa::OperandSize::Qword
+    if register as u8 >= 4
         || !matches!(
             operand.base,
             AddressBase::Register(Register::Rax | Register::Rcx | Register::Rdx | Register::Rbx)
@@ -110,31 +166,37 @@ pub fn compile_memory_load_block_v2(
                 Register::from_encoding(modrm & 7)
                     .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?,
             )
-        || destination.register() as u8 != ((modrm >> 3) & 7)
+        || register as u8 != ((modrm >> 3) & 7)
     {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
     let next_rip = entry_rip
         .checked_add(u64::from(decoded.length))
         .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
-    let site = MemoryLoadSiteV2 {
+    let site = MemorySiteV2 {
         instruction_index: 0,
         guest_rip: entry_rip,
         next_rip,
-        destination: destination.register() as u8,
+        operation: access,
+        destination: (access == MemorySiteOperationV2::Load).then_some(register as u8),
+        source: (access == MemorySiteOperationV2::Store).then_some(register as u8),
         operand,
     };
-    let code = emit_memory_load_v2(&site).map_err(MemoryLoadCompileErrorV2::Encoding)?;
-    Ok(MemoryLoadBlockV2 {
+    let code = emit_memory_operation_v2(&site).map_err(MemoryLoadCompileErrorV2::Encoding)?;
+    let compile_flavor = match access {
+        MemorySiteOperationV2::Load => crate::translation::CompileFlavor::S3_19bMemoryLoadV2,
+        MemorySiteOperationV2::Store => crate::translation::CompileFlavor::S3_20bMemoryStoreV2,
+    };
+    Ok(MemoryArtifactV2 {
         code,
         site,
         entry_rip,
-        source_bytes: [0x48, 0x8b, modrm],
-        compile_flavor: crate::translation::CompileFlavor::S3_19bMemoryLoadV2,
+        source_bytes: [0x48, opcode, modrm],
+        compile_flavor,
     })
 }
 
-fn emit_memory_load_v2(site: &MemoryLoadSiteV2) -> Result<EncodedCode, EncodeError> {
+fn emit_memory_operation_v2(site: &MemorySiteV2) -> Result<EncodedCode, EncodeError> {
     let mut encoder = Encoder::new();
     let budget_exit = encoder.new_label()?;
     let stop_exit = encoder.new_label()?;
@@ -202,7 +264,7 @@ fn emit_memory_load_v2(site: &MemoryLoadSiteV2) -> Result<EncodedCode, EncodeErr
 
     encoder.mov_x(xr(0)?, XRegOrZero::Reg(xr(19)?));
     encoder.movz_x(xr(1)?, site.instruction_index as u16, 0)?;
-    let helper = memory_load_site_helper_v2 as *const () as usize as u64;
+    let helper = memory_site_helper_v2 as *const () as usize as u64;
     encoder.movz_x(xr(16)?, helper as u16, 0)?;
     encoder.movk_x(xr(16)?, (helper >> 16) as u16, 1)?;
     encoder.movk_x(xr(16)?, (helper >> 32) as u16, 2)?;
@@ -210,16 +272,22 @@ fn emit_memory_load_v2(site: &MemoryLoadSiteV2) -> Result<EncodedCode, EncodeErr
     encoder.blr(xr(16)?);
     encoder.cbnz_w(WReg::new(0)?, helper_failure)?;
 
-    encoder.ldr_x(
-        XRegOrZero::Reg(xr(9)?),
-        HostAddressBase::Reg(xr(19)?),
-        RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET as u32,
-    )?;
-    encoder.str_x(
-        XRegOrZero::Reg(xr(9)?),
-        HostAddressBase::Reg(xr(20)?),
-        LONG_MODE_GPR_OFFSET as u32 + u32::from(site.destination) * 8,
-    )?;
+    if site.operation == MemorySiteOperationV2::Load {
+        encoder.ldr_x(
+            XRegOrZero::Reg(xr(9)?),
+            HostAddressBase::Reg(xr(19)?),
+            RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET as u32,
+        )?;
+        encoder.str_x(
+            XRegOrZero::Reg(xr(9)?),
+            HostAddressBase::Reg(xr(20)?),
+            LONG_MODE_GPR_OFFSET as u32
+                + u32::from(
+                    site.destination
+                        .ok_or(EncodeError::InvalidRegister(u8::MAX))?,
+                ) * 8,
+        )?;
+    }
     emit_imm64(&mut encoder, 9, site.next_rip)?;
     encoder.str_x(
         XRegOrZero::Reg(xr(9)?),
@@ -370,7 +438,7 @@ mod tests {
 
     #[test]
     fn compiles_only_the_exact_checked_qword_load_form() {
-        let bytes = [0x48, 0x8b, 0x00, 0x90];
+        let bytes = [0x48, 0x8b, 0x00];
         let code = CodeView::new(0x1000, &bytes).unwrap();
         let block = compile_memory_load_block_v2(code, 0x1000).unwrap();
         assert_eq!(block.entry_rip(), 0x1000);
@@ -407,6 +475,37 @@ mod tests {
     fn alias_load_rax_from_rax_is_admitted_without_host_side_address_math() {
         let code = CodeView::new(0x3000, &[0x48, 0x8b, 0x00]).unwrap();
         let block = compile_memory_load_block_v2(code, 0x3000).unwrap();
-        assert_eq!(block.site().destination(), 0);
+        assert_eq!(block.site().destination(), Some(0));
+    }
+
+    #[test]
+    fn compiles_only_the_exact_checked_qword_store_form() {
+        let bytes = [0x48, 0x89, 0x18]; // MOV [RAX], RBX
+        let code = CodeView::new(0x4000, &bytes).unwrap();
+        let block = compile_memory_store_block_v2(code, 0x4000).unwrap();
+        assert_eq!(block.source_bytes(), &bytes);
+        assert_eq!(block.site().operation(), MemorySiteOperationV2::Store);
+        assert_eq!(block.site().destination(), None);
+        assert_eq!(block.site().source(), Some(3));
+        assert_eq!(
+            block.compile_flavor(),
+            crate::translation::CompileFlavor::S3_20bMemoryStoreV2
+        );
+        assert!(!block.code().words().is_empty());
+
+        for bytes in [
+            vec![0x48, 0x89, 0x18, 0x90], // trailing instruction
+            vec![0x40, 0x48, 0x89, 0x18], // extra prefix
+            vec![0x48, 0x89, 0x1c],       // SIB
+            vec![0x48, 0x89, 0x58],       // displacement
+            vec![0x48, 0x89, 0x20],       // out-of-profile source register
+        ] {
+            let code = CodeView::new(0x5000, &bytes).unwrap();
+            assert!(matches!(
+                compile_memory_store_block_v2(code, 0x5000),
+                Err(MemoryLoadCompileErrorV2::UnsupportedForm)
+                    | Err(MemoryLoadCompileErrorV2::Decode)
+            ));
+        }
     }
 }

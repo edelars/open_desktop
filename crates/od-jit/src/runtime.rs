@@ -60,19 +60,29 @@ pub type BlockEntryV2 = unsafe extern "C" fn(*mut RuntimeContextV2) -> u32;
 /// It is not a `RuntimeExitTag`; the host decodes the invocation-local outcome.
 pub const RUNTIME_EXIT_V2_MEMORY_OPERATION: u32 = 9;
 
-/// Immutable per-block description for one verifier-approved memory load.
+/// The checked memory operation encoded by a V2 site.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemorySiteOperationV2 {
+    Load,
+    Store,
+}
+
+/// Immutable per-block description for one verifier-approved memory operation.
 /// The pointed-to representation is private to the same linked build; it is
 /// never passed as a C-layout record or retained by the translation key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MemoryLoadSiteV2 {
+pub struct MemorySiteV2 {
     pub(crate) instruction_index: u32,
     pub(crate) guest_rip: u64,
     pub(crate) next_rip: u64,
-    pub(crate) destination: u8,
+    pub(crate) operation: MemorySiteOperationV2,
+    /// Exactly one of source/destination is present for this MOV profile.
+    pub(crate) destination: Option<u8>,
+    pub(crate) source: Option<u8>,
     pub(crate) operand: MemoryOperand,
 }
 
-impl MemoryLoadSiteV2 {
+impl MemorySiteV2 {
     pub const fn instruction_index(self) -> u32 {
         self.instruction_index
     }
@@ -85,8 +95,16 @@ impl MemoryLoadSiteV2 {
         self.next_rip
     }
 
-    pub const fn destination(self) -> u8 {
+    pub const fn destination(self) -> Option<u8> {
         self.destination
+    }
+
+    pub const fn source(self) -> Option<u8> {
+        self.source
+    }
+
+    pub const fn operation(self) -> MemorySiteOperationV2 {
+        self.operation
     }
 }
 
@@ -98,7 +116,7 @@ impl MemoryLoadSiteV2 {
 pub struct RuntimeContextV2 {
     pub base: RuntimeContextV1,
     pub memory_adapter: *mut std::ffi::c_void,
-    pub memory_sites: *const MemoryLoadSiteV2,
+    pub memory_sites: *const MemorySiteV2,
     pub memory_site_count: u32,
     /// Output: site index used by the last helper call, or `u32::MAX`.
     pub last_memory_site: u32,
@@ -134,13 +152,13 @@ pub const RUNTIME_CONTEXT_V2_MEMORY_OUTCOME_OFFSET: usize =
 /// # Safety
 /// `context` must point to a live invocation-local `RuntimeContextV2` whose
 /// state, adapter, and immutable memory-site table remain valid for the call.
-pub unsafe extern "C" fn memory_load_site_helper_v2(
+pub unsafe extern "C" fn memory_site_helper_v2(
     context: *mut RuntimeContextV2,
     site_index: u32,
 ) -> u32 {
     use crate::memory_bridge::{
         CheckedMemoryOutcomeV1, MEMORY_HELPER_INVALID_ARGUMENT, MEMORY_HELPER_SUCCESS,
-        MEMORY_OP_READ, checked_memory_helper_v1, classify_error,
+        MEMORY_OP_READ, MEMORY_OP_WRITE, checked_memory_helper_v1, classify_error,
     };
 
     if context.is_null() {
@@ -170,7 +188,14 @@ pub unsafe extern "C" fn memory_load_site_helper_v2(
     if site.instruction_index != 0
         || site.next_rip.checked_sub(site.guest_rip) != Some(3)
         || state.rip != site.guest_rip
-        || site.destination >= 4
+        || match site.operation {
+            MemorySiteOperationV2::Load => {
+                !matches!(site.destination, Some(0..=3)) || site.source.is_some()
+            }
+            MemorySiteOperationV2::Store => {
+                !matches!(site.source, Some(0..=3)) || site.destination.is_some()
+            }
+        }
         || !matches!(
             site.operand.base,
             od_isa::long_decode::AddressBase::Register(
@@ -199,12 +224,23 @@ pub unsafe extern "C" fn memory_load_site_helper_v2(
     };
 
     let mut bytes = [0_u8; 8];
+    let operation = match site.operation {
+        MemorySiteOperationV2::Load => MEMORY_OP_READ,
+        MemorySiteOperationV2::Store => {
+            let Some(source) = site.source else {
+                context.last_memory_site = site_index;
+                return MEMORY_HELPER_INVALID_ARGUMENT;
+            };
+            bytes.copy_from_slice(&state.gpr[source as usize].to_le_bytes());
+            MEMORY_OP_WRITE
+        }
+    };
     // SAFETY: the adapter and outcome belong to this live invocation; bytes is
-    // an aligned writable staging buffer and all pointers are non-overlapping.
+    // an aligned buffer, and the checked helper only reads from it for writes.
     let status = unsafe {
         checked_memory_helper_v1(
             context.memory_adapter,
-            MEMORY_OP_READ,
+            operation,
             address,
             8,
             bytes.as_mut_ptr(),
@@ -213,7 +249,7 @@ pub unsafe extern "C" fn memory_load_site_helper_v2(
     };
     context.last_memory_site = site_index;
     context.last_memory_status = status;
-    if status == MEMORY_HELPER_SUCCESS {
+    if status == MEMORY_HELPER_SUCCESS && site.operation == MemorySiteOperationV2::Load {
         context.staged_load_value = u64::from_le_bytes(bytes);
     }
     status

@@ -12,14 +12,14 @@
 
 ## Записи
 
-### ISSUE-024 — checked memory lowering ограничен одним V2 MOV load
+### ISSUE-024 — checked memory lowering ограничен узкими V2 MOV slices
 
 - **Дата обнаружения:** 2026-10-27.
 - **Компонент:** `od-jit` checked memory bridge / generated block runtime (S3-19/S3-20).
-- **Статус:** открыта; реализован только один production V2 load профиля `48 8B /r`, ModRM `mod=00`, destination/base RAX..RBX. Store, прочие адресные формы, общий IR/PC-map/cache и multiblock интеграция остаются за пределами среза.
-- **Суть и последствия:** dedicated V2 compiler создает verified one-instruction artifact и отдельный host entry, который использует `MemoryOperand::access_address_48` и `CheckedMemoryHelperV1`, сохраняет staged-load commit и различает ArchitecturalFault от boundary/backend errors. Общий JIT всё ещё не исполняет остальные memory operands; V1 ABI и tag 6 остаются неизменными.
-- **Основание:** targeted `od-jit` tests подтверждают точную admission-границу; ARM64 native host tests для `RAX` alias/non-alias, fault payload/state preservation, internal backend error, budget, STOP и stop-RIP проходят локально. Success, architectural fault и Unmapped error сравниваются с `od_isa::execute::step` на независимых CPU/RAM snapshots с полным сравнением state, bytes и read count. См. [S3-19b/S3-20 contract](specs/JIT_CONTRACT.md#s3-19b--s3-20-один-production-v2-mov-load) и [plan](plans/STAGE_3.md#s3-19-подключить-checked-memory-bridge). Физическая проверка Mac mini отложена до финального S3-21 gate после локального Stage 3.
-- **Следующий шаг:** расширять memory lowering только отдельными проверенными формами, не меняя V1 admission; выполнить физическую проверку после завершения локального Stage 3.
+- **Статус:** открыта; реализованы exact production V2 load `48 8B /r` и отдельный unsafe store `48 89 /r`, оба только с ModRM `mod=00`, RAX..RBX base/register, qword и без SIB/displacement/добавочных bytes. Прочие адресные формы, общий IR/PC-map/cache и multiblock интеграция остаются за пределами среза.
+- **Суть и последствия:** общий dedicated V2 compiler/emitter/site/helper family создаёт разные private load/store artifacts и compile flavors. Load использует `MemoryOperand::access_address_48` и `CheckedMemoryHelperV1` со staged commit; store вызывает один checked all-or-nothing write и допускается только через unsafe host API с private synchronous ordinary RAM preconditions. Store artifact отклоняется load API; V1 ABI и tag 6 остаются неизменными. Code backing alias/executable writes не допускаются до S3-23.
+- **Основание:** targeted `od-jit` tests подтверждают точные admission boundaries; ARM64 native host tests для load/store alias, fault payload/state preservation, backend/boundary errors, guard ordering и late STOP проходят локально. Success/fault/backend-error cases сравниваются с `od_isa::execute::step` на независимых CPU/RAM snapshots, включая полное состояние и RAM bytes; store покрывает точные little-endian bytes и однократный commit. См. [S3-19b/S3-20 contract](specs/JIT_CONTRACT.md#s3-19b--s3-20-узкие-production-v2-mov-loadstore-slices) и [plan](plans/STAGE_3.md#s3-19-подключить-checked-memory-bridge). Физическая проверка Mac mini отложена до финального S3-21 gate после локального Stage 3.
+- **Следующий шаг:** расширять memory lowering только отдельными проверенными формами, сохранить code-write prohibition до S3-23 и выполнить физическую проверку после завершения локального Stage 3.
 
 ### ISSUE-020 — unresolved branch-target handoff between block builder and IR
 
