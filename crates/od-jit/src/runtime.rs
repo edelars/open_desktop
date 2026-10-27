@@ -192,6 +192,12 @@ impl MemorySiteV2 {
                         || (length == 7
                             && i32::try_from(self.operand.displacement).is_ok()
                             && base_is_low_gpr)
+                        || (length == 7
+                            && i32::try_from(self.operand.displacement).is_ok()
+                            && matches!(
+                                self.operand.base,
+                                od_isa::long_decode::AddressBase::NextRip
+                            ))
                 }
                 Some(5) => {
                     (length == 3 && self.operand.displacement == 0 && base_is_low_gpr)
@@ -225,6 +231,12 @@ impl MemorySiteV2 {
                         || (length == 7
                             && i32::try_from(self.operand.displacement).is_ok()
                             && base_is_low_gpr)
+                        || (length == 7
+                            && i32::try_from(self.operand.displacement).is_ok()
+                            && matches!(
+                                self.operand.base,
+                                od_isa::long_decode::AddressBase::NextRip
+                            ))
                         || (length == 8
                             && i32::try_from(self.operand.displacement).is_ok()
                             && matches!(
@@ -472,6 +484,8 @@ impl MemorySiteV2 {
                     || (data_register == 5 && mode == 1 && modrm & 7 < 4 && source.len() == 4)
                     || (data_register == 4 && mode == 2 && modrm & 7 < 4 && source.len() == 7)
                     || (data_register == 5 && mode == 2 && modrm & 7 < 4 && source.len() == 7)
+                    || (data_register == 4 && mode == 0 && modrm == 0x25 && source.len() == 7)
+                    || (data_register == 5 && mode == 0 && modrm == 0x2d && source.len() == 7)
                     || (data_register == 4 && mode == 1 && modrm == 0x64 && source.len() == 5)
                     || (data_register == 5 && mode == 1 && modrm == 0x6c && source.len() == 5)
                     || (data_register == 4 && mode == 2 && modrm == 0xa4 && source.len() == 8)

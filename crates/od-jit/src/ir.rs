@@ -729,6 +729,9 @@ fn is_scoped_memory_data_operand(
                     || (instruction_length == 7
                         && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
                         && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4))
+                    || (instruction_length == 7
+                        && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+                        && matches!(operand.base, AddressBase::NextRip))
             }
             5 => {
                 (instruction_length == 3
@@ -749,6 +752,9 @@ fn is_scoped_memory_data_operand(
                     || (instruction_length == 7
                         && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
                         && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4))
+                    || (instruction_length == 7
+                        && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+                        && matches!(operand.base, AddressBase::NextRip))
                     || (instruction_length == 4
                         && operand.displacement == 0
                         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp)))

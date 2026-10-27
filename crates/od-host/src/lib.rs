@@ -7684,6 +7684,384 @@ mod tests {
         assert_eq!(state.rip, 0x104);
         assert_eq!(&ram.bytes[0x20..0x28], &0x20_u64.to_le_bytes());
         assert_eq!(ram.writes, 1);
+        drop(store_published);
+        stop.store(0, Ordering::Release);
+
+        // Exact RIP-relative stack-data forms use the instruction's own
+        // NextRip even when they begin inside CodeView.
+        for (opcode, is_load) in [(0x8b_u8, true), (0x89_u8, false)] {
+            for data_register in [4_u8, 5] {
+                for displacement in [-32_i32, 0, 32] {
+                    let mut source_bytes = [0u8; 7];
+                    source_bytes[..3].copy_from_slice(&[0x48, opcode, data_register << 3 | 5]);
+                    source_bytes[3..].copy_from_slice(&displacement.to_le_bytes());
+                    let code_rip = 0x100_u64;
+                    let mut view_bytes = [0x90, 0x90, 0, 0, 0, 0, 0, 0, 0];
+                    view_bytes[2..].copy_from_slice(&source_bytes);
+                    let code = CodeView::new(code_rip - 2, &view_bytes).unwrap();
+                    let target = code_rip
+                        .wrapping_add(7)
+                        .wrapping_add_signed(i64::from(displacement));
+                    let wrong_view_base_target = code
+                        .base_rip()
+                        .wrapping_add(7)
+                        .wrapping_add_signed(i64::from(displacement));
+                    assert_ne!(target, wrong_view_base_target);
+                    let loaded = 0x0000_8000_0000_0000_u64 | u64::from(data_register);
+                    let mut initial = od_isa::LongModeState {
+                        rip: code_rip,
+                        rflags: 0x8d7,
+                        ..Default::default()
+                    };
+                    initial.gpr[0] = 0x1122_3344_5566_7788;
+                    initial.gpr[4] = 0x0000_8000_0000_0014;
+                    initial.gpr[5] = 0x0000_8000_0000_0015;
+                    let mut initial_ram = RipRam {
+                        bytes: [0x5a; 512],
+                        source: &source_bytes,
+                        code_rips: [code_rip, 0x180],
+                        reads: 0,
+                        writes: 0,
+                        read_error: None,
+                        write_error: None,
+                        stop_on_write: None,
+                    };
+                    if is_load {
+                        initial_ram.bytes[target as usize..target as usize + 8]
+                            .copy_from_slice(&loaded.to_le_bytes());
+                        initial.gpr[usize::from(data_register)] = 0x1357;
+                    } else {
+                        initial.gpr[usize::from(data_register)] = loaded;
+                    }
+                    let before_bytes = initial_ram.bytes;
+
+                    let mut direct_state = initial.clone();
+                    let mut direct_ram = initial_ram.clone();
+                    let direct_published = if is_load {
+                        let compiled =
+                            od_jit::memory_load_v2::compile_memory_load_block_v2(code, code_rip)
+                                .unwrap();
+                        PublishedCode::publish_memory_load_v2(&compiled).unwrap()
+                    } else {
+                        let compiled =
+                            od_jit::memory_load_v2::compile_memory_store_block_v2(code, code_rip)
+                                .unwrap();
+                        PublishedCode::publish_memory_store_v2(&compiled).unwrap()
+                    };
+                    let direct_result = if is_load {
+                        direct_published.execute_memory_load_v2(
+                            &mut direct_state,
+                            &mut direct_ram,
+                            AccessContext::default(),
+                            1,
+                            None,
+                            &stop,
+                        )
+                    } else {
+                        // SAFETY: source bytes and private data backing are disjoint snapshots.
+                        unsafe {
+                            direct_published.execute_memory_store_v2(
+                                &mut direct_state,
+                                &mut direct_ram,
+                                AccessContext::default(),
+                                1,
+                                None,
+                                &stop,
+                            )
+                        }
+                    }
+                    .unwrap();
+                    drop(direct_published);
+
+                    let ir_published = if is_load {
+                        let compiled =
+                            od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, code_rip)
+                                .unwrap();
+                        PublishedCode::publish_ir_memory_load_v2(&compiled).unwrap()
+                    } else {
+                        let compiled = od_jit::memory_load_v2::compile_ir_memory_store_block_v2(
+                            code, code_rip,
+                        )
+                        .unwrap();
+                        PublishedCode::publish_ir_memory_store_v2(&compiled).unwrap()
+                    };
+                    let mut ir_state = initial.clone();
+                    let mut ir_ram = initial_ram.clone();
+                    let ir_result = if is_load {
+                        ir_published.execute_ir_memory_load_v2(
+                            &mut ir_state,
+                            &mut ir_ram,
+                            AccessContext::default(),
+                            1,
+                            None,
+                            &stop,
+                        )
+                    } else {
+                        // SAFETY: same immutable source/private RAM separation as direct V2.
+                        unsafe {
+                            ir_published.execute_ir_memory_store_v2(
+                                &mut ir_state,
+                                &mut ir_ram,
+                                AccessContext::default(),
+                                1,
+                                None,
+                                &stop,
+                            )
+                        }
+                    }
+                    .unwrap();
+                    drop(ir_published);
+
+                    let mut interpreter_state = initial.clone();
+                    let mut interpreter_ram = initial_ram;
+                    let interpreted = od_isa::execute::step(
+                        &mut interpreter_state,
+                        &mut interpreter_ram,
+                        AccessContext::default(),
+                    )
+                    .unwrap();
+                    assert_eq!(interpreted, od_isa::execute::StepOutcome::Advanced);
+                    for result in [direct_result, ir_result] {
+                        assert_eq!(result.exit, MemoryOperationExecutionExitV2::Complete);
+                        assert_eq!(result.retired_instructions, 1);
+                        assert_eq!(result.remaining_budget, 0);
+                    }
+                    assert_eq!(direct_state, interpreter_state);
+                    assert_eq!(ir_state, interpreter_state);
+                    assert_eq!(direct_ram.bytes, interpreter_ram.bytes);
+                    assert_eq!(ir_ram.bytes, interpreter_ram.bytes);
+                    assert_eq!(direct_state.rip, code_rip + 7);
+                    assert_eq!(ir_state.rip, code_rip + 7);
+                    assert_eq!(
+                        (direct_ram.reads, direct_ram.writes),
+                        (usize::from(is_load), usize::from(!is_load))
+                    );
+                    assert_eq!(
+                        (ir_ram.reads, ir_ram.writes),
+                        (usize::from(is_load), usize::from(!is_load))
+                    );
+                    assert_eq!(
+                        (interpreter_ram.reads, interpreter_ram.writes),
+                        (usize::from(is_load), usize::from(!is_load))
+                    );
+                    if is_load {
+                        assert_eq!(interpreter_state.gpr[usize::from(data_register)], loaded);
+                        assert_eq!(interpreter_ram.bytes, before_bytes);
+                    } else {
+                        let mut expected = before_bytes;
+                        expected[target as usize..target as usize + 8]
+                            .copy_from_slice(&loaded.to_le_bytes());
+                        assert_eq!(interpreter_ram.bytes, expected);
+                    }
+                }
+            }
+        }
+
+        for data_register in [4_u8, 5] {
+            let code_rip = 0x100_u64;
+            let source_bytes = [0x48, 0x89, data_register << 3 | 5, 0x20, 0, 0, 0];
+            let code = CodeView::new(code_rip, &source_bytes).unwrap();
+            let compiled =
+                od_jit::memory_load_v2::compile_ir_memory_store_block_v2(code, code_rip).unwrap();
+            let published = PublishedCode::publish_ir_memory_store_v2(&compiled).unwrap();
+            let mut state = od_isa::LongModeState {
+                rip: code_rip,
+                ..Default::default()
+            };
+            let payload = 0x0000_8000_0000_0000_u64 | u64::from(data_register);
+            state.gpr[usize::from(data_register)] = payload;
+            let mut ram = RipRam {
+                bytes: [0x5a; 512],
+                source: &source_bytes,
+                code_rips: [code_rip, 0x180],
+                reads: 0,
+                writes: 0,
+                read_error: None,
+                write_error: None,
+                stop_on_write: Some(&stop),
+            };
+            stop.store(0, Ordering::Release);
+            // SAFETY: code is immutable and its data target is disjoint private RAM.
+            let result = unsafe {
+                published.execute_ir_memory_store_v2(
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                )
+            }
+            .unwrap();
+            assert_eq!(result.exit, MemoryOperationExecutionExitV2::StopRequested);
+            assert_eq!(
+                (result.retired_instructions, result.remaining_budget),
+                (1, 0)
+            );
+            assert_eq!(state.rip, code_rip + 7);
+            assert_eq!(
+                &ram.bytes[0x127..0x12f],
+                &payload.to_le_bytes(),
+                "committed RIP-relative RSP/RBP store payload"
+            );
+            assert_eq!(ram.writes, 1);
+            drop(published);
+            stop.store(0, Ordering::Release);
+        }
+
+        // A noncanonical NextRip-relative target is #GP for both stack data
+        // registers; it must fault before reaching the RAM callback.
+        for (opcode, is_load) in [(0x8b_u8, true), (0x89_u8, false)] {
+            for data_register in [4_u8, 5] {
+                let code_rip = 0x0000_7fff_ffff_fff0_u64;
+                let source_bytes = [0x48, opcode, data_register << 3 | 5, 0x40, 0, 0, 0];
+                let code = CodeView::new(code_rip, &source_bytes).unwrap();
+                let expected_fault = od_isa::memory::ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                };
+                let mut initial_state = od_isa::LongModeState {
+                    rip: code_rip,
+                    rflags: 0x8d7,
+                    ..Default::default()
+                };
+                initial_state.gpr[4] = 0x4455_6677_8899_aabb;
+                initial_state.gpr[5] = 0x1122_3344_5566_7788;
+                let make_ram = || RipRam {
+                    bytes: [0x5a; 512],
+                    source: &source_bytes,
+                    code_rips: [code_rip, code_rip + 0x100],
+                    reads: 0,
+                    writes: 0,
+                    read_error: None,
+                    write_error: None,
+                    stop_on_write: None,
+                };
+
+                let direct = if is_load {
+                    let compiled =
+                        od_jit::memory_load_v2::compile_memory_load_block_v2(code, code_rip)
+                            .unwrap();
+                    PublishedCode::publish_memory_load_v2(&compiled).unwrap()
+                } else {
+                    let compiled =
+                        od_jit::memory_load_v2::compile_memory_store_block_v2(code, code_rip)
+                            .unwrap();
+                    PublishedCode::publish_memory_store_v2(&compiled).unwrap()
+                };
+                let mut direct_state = initial_state.clone();
+                let direct_before = direct_state.clone();
+                let mut direct_ram = make_ram();
+                let direct_before_ram = direct_ram.bytes;
+                let direct_result = if is_load {
+                    direct.execute_memory_load_v2(
+                        &mut direct_state,
+                        &mut direct_ram,
+                        AccessContext::default(),
+                        1,
+                        None,
+                        &stop,
+                    )
+                } else {
+                    // SAFETY: source bytes are immutable and separate from private RAM.
+                    unsafe {
+                        direct.execute_memory_store_v2(
+                            &mut direct_state,
+                            &mut direct_ram,
+                            AccessContext::default(),
+                            1,
+                            None,
+                            &stop,
+                        )
+                    }
+                }
+                .unwrap();
+                drop(direct);
+                assert_eq!(
+                    direct_result.exit,
+                    MemoryOperationExecutionExitV2::GuestFault(expected_fault.clone())
+                );
+                assert_eq!(
+                    (
+                        direct_result.retired_instructions,
+                        direct_result.remaining_budget
+                    ),
+                    (0, 1)
+                );
+                assert_eq!(direct_state, direct_before);
+                assert_eq!(direct_ram.bytes, direct_before_ram);
+                assert_eq!((direct_ram.reads, direct_ram.writes), (0, 0));
+
+                let shared = if is_load {
+                    let compiled =
+                        od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, code_rip)
+                            .unwrap();
+                    PublishedCode::publish_ir_memory_load_v2(&compiled).unwrap()
+                } else {
+                    let compiled =
+                        od_jit::memory_load_v2::compile_ir_memory_store_block_v2(code, code_rip)
+                            .unwrap();
+                    PublishedCode::publish_ir_memory_store_v2(&compiled).unwrap()
+                };
+                let mut shared_state = initial_state.clone();
+                let shared_before = shared_state.clone();
+                let mut shared_ram = make_ram();
+                let shared_before_ram = shared_ram.bytes;
+                let shared_result = if is_load {
+                    shared.execute_ir_memory_load_v2(
+                        &mut shared_state,
+                        &mut shared_ram,
+                        AccessContext::default(),
+                        1,
+                        None,
+                        &stop,
+                    )
+                } else {
+                    // SAFETY: same immutable source/private RAM separation as direct V2.
+                    unsafe {
+                        shared.execute_ir_memory_store_v2(
+                            &mut shared_state,
+                            &mut shared_ram,
+                            AccessContext::default(),
+                            1,
+                            None,
+                            &stop,
+                        )
+                    }
+                }
+                .unwrap();
+                drop(shared);
+                assert_eq!(
+                    shared_result.exit,
+                    MemoryOperationExecutionExitV2::GuestFault(expected_fault.clone())
+                );
+                assert_eq!(
+                    (
+                        shared_result.retired_instructions,
+                        shared_result.remaining_budget
+                    ),
+                    (0, 1)
+                );
+                assert_eq!(shared_state, shared_before);
+                assert_eq!(shared_ram.bytes, shared_before_ram);
+                assert_eq!((shared_ram.reads, shared_ram.writes), (0, 0));
+
+                let mut interpreted_state = initial_state;
+                let mut interpreted_ram = make_ram();
+                assert_eq!(
+                    od_isa::execute::step(
+                        &mut interpreted_state,
+                        &mut interpreted_ram,
+                        AccessContext::default(),
+                    ),
+                    Ok(od_isa::execute::StepOutcome::Fault(expected_fault))
+                );
+                assert_eq!(interpreted_state, direct_before);
+                assert_eq!(interpreted_ram.bytes, direct_before_ram);
+                assert_eq!((interpreted_ram.reads, interpreted_ram.writes), (0, 0));
+            }
+        }
         stop.store(0, Ordering::Release);
     }
 
@@ -9337,6 +9715,308 @@ mod tests {
         assert_eq!(state.gpr[0], 0x1234_5678_9abc_def0);
         assert_eq!(state.gpr[1], 0x1234_5678_9abc_def0);
         assert_eq!((ram.reads, ram.writes), (2, 1));
+
+        for (data_register, modrm, payload) in [
+            (4_u8, 0x25_u8, 0x0000_8000_0000_0014_u64),
+            (5_u8, 0x2d_u8, 0x0000_8000_0000_0015_u64),
+        ] {
+            let displacement = (0x20_i64 - (BASE as i64 + 8)) as i32;
+            let mut stack_data_code = [0x90; 14];
+            stack_data_code[..8].copy_from_slice(&[
+                0x90,
+                0x48,
+                0x8b,
+                modrm,
+                displacement as u8,
+                (displacement >> 8) as u8,
+                (displacement >> 16) as u8,
+                (displacement >> 24) as u8,
+            ]);
+            stack_data_code[8..14].copy_from_slice(&[
+                0x48,
+                0x89,
+                0x03 | (data_register << 3), // store selected stack register via RBX
+                0x48,
+                0x8b,
+                0x0b,
+            ]);
+            let stack_data_view = CodeView::new(BASE, &stack_data_code).unwrap();
+            let stack_data_boundary =
+                FixtureExecutionBoundary::new(stack_data_view, stack_data_view.code_end()).unwrap();
+            for budget in 0..=4 {
+                let mut stack_state = initial_state();
+                let mut stack_ram = initial_ram(stack_data_code);
+                stack_ram.data[0x20..0x28].copy_from_slice(&payload.to_le_bytes());
+                let mut stack_executor = PublishedMemoryBlockExecutor;
+                // SAFETY: fixture code is immutable and separate from private synchronous RAM.
+                let stack_result = unsafe {
+                    od_jit::memory_dispatch::run_with_nop_fallback(
+                        stack_data_view,
+                        stack_data_boundary.clone(),
+                        &mut stack_state,
+                        &mut stack_ram,
+                        AccessContext::default(),
+                        budget,
+                        None,
+                        &stop,
+                        &mut stack_executor,
+                    )
+                }
+                .unwrap();
+                let mut expected_state = initial_state();
+                let mut expected_ram = initial_ram(stack_data_code);
+                expected_ram.data[0x20..0x28].copy_from_slice(&payload.to_le_bytes());
+                for _ in 0..budget {
+                    if expected_state.rip == stack_data_view.code_end() {
+                        break;
+                    }
+                    od_isa::execute::step(
+                        &mut expected_state,
+                        &mut expected_ram,
+                        AccessContext::default(),
+                    )
+                    .unwrap();
+                }
+                assert_eq!(
+                    stack_state, expected_state,
+                    "budget {budget}, data {data_register}"
+                );
+                assert_eq!(
+                    stack_ram, expected_ram,
+                    "budget {budget}, data {data_register}"
+                );
+                assert_eq!(
+                    stack_result.retired_native + stack_result.retired_interpreter,
+                    budget.min(4)
+                );
+                if budget == 4 {
+                    assert_eq!(
+                        (
+                            stack_result.retired_native,
+                            stack_result.retired_interpreter
+                        ),
+                        (3, 1)
+                    );
+                    assert_eq!(stack_state.rip, BASE + 14);
+                    assert_eq!(stack_state.gpr[usize::from(data_register)], payload);
+                    assert_eq!(stack_state.gpr[1], payload);
+                    assert_eq!((stack_ram.reads, stack_ram.writes), (2, 1));
+                    assert_eq!(
+                        &stack_ram.data[8..16],
+                        &payload.to_le_bytes(),
+                        "stack-data register {data_register}"
+                    );
+                }
+            }
+
+            let mut split_state = initial_state();
+            let mut split_ram = initial_ram(stack_data_code);
+            split_ram.data[0x20..0x28].copy_from_slice(&payload.to_le_bytes());
+            let mut split_executor = PublishedMemoryBlockExecutor;
+            // First call consumes NOP and the stack-data singleton; resume at the pair.
+            let first = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    stack_data_view,
+                    stack_data_boundary.clone(),
+                    &mut split_state,
+                    &mut split_ram,
+                    AccessContext::default(),
+                    2,
+                    None,
+                    &stop,
+                    &mut split_executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(split_state.rip, BASE + 8);
+            assert_eq!((first.retired_native, first.retired_interpreter), (1, 1));
+            assert_eq!(split_ram.reads, 1);
+            let resumed = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    stack_data_view,
+                    stack_data_boundary.clone(),
+                    &mut split_state,
+                    &mut split_ram,
+                    AccessContext::default(),
+                    2,
+                    None,
+                    &stop,
+                    &mut split_executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(split_state.rip, BASE + 14);
+            assert_eq!(split_state.gpr[1], payload);
+            assert_eq!(split_ram.reads, 2, "first stack-data read is not repeated");
+            assert_eq!(
+                (resumed.retired_native, resumed.retired_interpreter),
+                (2, 0)
+            );
+
+            let mut stop_split_state = initial_state();
+            let mut stop_split_ram = initial_ram(stack_data_code);
+            stop_split_ram.data[0x20..0x28].copy_from_slice(&payload.to_le_bytes());
+            let mut stop_split_executor = PublishedMemoryBlockExecutor;
+            let stopped = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    stack_data_view,
+                    stack_data_boundary.clone(),
+                    &mut stop_split_state,
+                    &mut stop_split_ram,
+                    AccessContext::default(),
+                    4,
+                    Some(BASE + 8),
+                    &stop,
+                    &mut stop_split_executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(stop_split_state.rip, BASE + 8);
+            assert_eq!(
+                (stopped.retired_native, stopped.retired_interpreter),
+                (1, 1)
+            );
+            assert_eq!(stop_split_ram.reads, 1);
+            let resumed = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    stack_data_view,
+                    stack_data_boundary,
+                    &mut stop_split_state,
+                    &mut stop_split_ram,
+                    AccessContext::default(),
+                    2,
+                    None,
+                    &stop,
+                    &mut stop_split_executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(stop_split_state.gpr[1], payload);
+            assert_eq!(
+                stop_split_ram.reads, 2,
+                "STOP-RIP resume does not replay load"
+            );
+            assert_eq!(
+                (resumed.retired_native, resumed.retired_interpreter),
+                (2, 0)
+            );
+        }
+
+        for (modrm, data_register) in [(0x25_u8, 4_usize), (0x2d_u8, 5_usize)] {
+            let displacement = (0x20_i64 - (BASE as i64 + 7)) as i32;
+            let mut bytes = [0_u8; 7];
+            bytes.copy_from_slice(&[
+                0x48,
+                0x8b,
+                modrm,
+                displacement as u8,
+                (displacement >> 8) as u8,
+                (displacement >> 16) as u8,
+                (displacement >> 24) as u8,
+            ]);
+            for window_len in 1..7 {
+                let partial = CodeView::new(BASE, &bytes[..window_len]).unwrap();
+                let partial_boundary =
+                    FixtureExecutionBoundary::new(partial, BASE + window_len as u64).unwrap();
+                let mut state = initial_state();
+                let before_state = state.clone();
+                let mut ram = initial_ram({
+                    let mut padded = [0_u8; 14];
+                    padded[..7].copy_from_slice(&bytes);
+                    padded
+                });
+                let mut executor = PublishedMemoryBlockExecutor;
+                let result = unsafe {
+                    od_jit::memory_dispatch::run_with_nop_fallback(
+                        partial,
+                        partial_boundary,
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                        1,
+                        None,
+                        &stop,
+                        &mut executor,
+                    )
+                }
+                .unwrap();
+                assert_eq!(
+                    result.exit,
+                    BoundedMemoryExit::BoundaryReached { rip: BASE },
+                    "data register {data_register}, window {window_len}"
+                );
+                assert_eq!(state, before_state);
+                assert_eq!((ram.reads, ram.writes), (0, 0));
+                assert_eq!(result.retired_native + result.retired_interpreter, 0);
+            }
+        }
+
+        for (data_register, modrm, second_instruction, payload) in [
+            (
+                4_usize,
+                0x25_u8,
+                [0x48, 0x8b, 0x04, 0x24],
+                0x0000_8000_0000_0014_u64,
+            ),
+            (
+                5_usize,
+                0x2d_u8,
+                [0x48, 0x8b, 0x45, 0x00],
+                0x0000_8000_0000_0015_u64,
+            ),
+        ] {
+            let displacement = (0x20_i64 - (BASE as i64 + 7)) as i32;
+            let mut fault_after_load_code = [0x90; 14];
+            fault_after_load_code[..7].copy_from_slice(&[
+                0x48,
+                0x8b,
+                modrm,
+                displacement as u8,
+                (displacement >> 8) as u8,
+                (displacement >> 16) as u8,
+                (displacement >> 24) as u8,
+            ]);
+            fault_after_load_code[7..11].copy_from_slice(&second_instruction);
+            let fault_after_load_view = CodeView::new(BASE, &fault_after_load_code).unwrap();
+            let fault_after_load_boundary =
+                FixtureExecutionBoundary::new(fault_after_load_view, BASE + 11).unwrap();
+            let mut fault_after_load_state = initial_state();
+            let mut fault_after_load_ram = initial_ram(fault_after_load_code);
+            fault_after_load_ram.data[0x20..0x28].copy_from_slice(&payload.to_le_bytes());
+            let mut fault_after_load_executor = PublishedMemoryBlockExecutor;
+            // SAFETY: immutable fixture source and disjoint private RAM remain valid throughout dispatch.
+            let fault_after_load = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    fault_after_load_view,
+                    fault_after_load_boundary,
+                    &mut fault_after_load_state,
+                    &mut fault_after_load_ram,
+                    AccessContext::default(),
+                    2,
+                    None,
+                    &stop,
+                    &mut fault_after_load_executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                fault_after_load.exit,
+                BoundedMemoryExit::GuestFault(od_isa::memory::ArchitecturalFault {
+                    vector: 12,
+                    error_code: Some(0),
+                    linear_address: None,
+                })
+            );
+            assert_eq!(fault_after_load.retired_native, 1);
+            assert_eq!(fault_after_load.retired_interpreter, 0);
+            assert_eq!(fault_after_load_state.rip, BASE + 7);
+            assert_eq!(fault_after_load_state.gpr[data_register], payload);
+            assert_eq!(
+                fault_after_load_ram.reads, 1,
+                "second access faults before callback"
+            );
+            assert_eq!(fault_after_load_ram.writes, 0);
+        }
 
         const DISP8_NOP_PAIR: [u8; 14] = [
             0x48, 0x8b, 0x43, 0x18, // MOV RAX,[RBX+24], RBX=8 => data +0x20

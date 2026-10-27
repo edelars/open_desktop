@@ -2062,6 +2062,24 @@ RBP-base, RSP-base and RIP-relative spellings remain distinct.
 
 See [S3-20aj evidence](../reports/STAGE_3_S3-20aj_2026-10-27.md).
 
+#### S3-20ak: RIP-relative qword MOV with RSP/RBP data
+
+The bounded shared-IR profile admits only singleton
+`48 8B/89 25 disp32` (RSP data) and `48 8B/89 2D disp32` (RBP data), exact
+length seven. ModRM is `mod=00,r/m=101`; SIB, prefixes, other data registers,
+pairs and V3 remain unsupported. The decoder's `MemoryOperand` and
+instruction-local `NextRip` continue to define the effective address.
+
+Direct V2, shared IR and interpreter agree on load/store state, RAM callbacks
+and retirement for a CodeView interior entry. Exact-profile noncanonical
+NextRip targets produce #GP before a memory callback. Loaded noncanonical
+stack-register values are valid data; if a later instruction uses that value
+as RSP/RBP base, #SS occurs on that instruction while the preceding load
+remains committed. The bounded dispatcher composes a bare NOP, either exact
+stack-data singleton and two following singleton memory operations, checks
+budgets 0..4, and resumes from the actual RIP without repeating a callback. See
+[S3-20ak evidence](../reports/STAGE_3_S3-20ak_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

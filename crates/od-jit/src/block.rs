@@ -1391,7 +1391,7 @@ fn is_rsp_memory_data_operand(
                     ) || matches!(
                         operand.base,
                         od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
-                    ))
+                    ) || matches!(operand.base, od_isa::long_decode::AddressBase::NextRip))
             }
             _ => false,
         }
@@ -1449,7 +1449,10 @@ fn is_rbp_memory_data_operand(
                 && matches!(
                     operand.base,
                     od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
-                )))
+                ))
+            || (instruction.length == 7
+                && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+                && matches!(operand.base, od_isa::long_decode::AddressBase::NextRip)))
 }
 
 fn is_checked_qword_memory_address(
@@ -1656,7 +1659,7 @@ pub(crate) fn exact_direct_qword_memory_bytes(
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] >> 6 == 0
             && bytes[2] & 0b111 == 5
-            && (bytes[2] >> 3) & 0b111 <= 3)
+            && matches!((bytes[2] >> 3) & 0b111, 0..=5))
 }
 
 pub(crate) fn exact_qword_address32_memory_bytes(

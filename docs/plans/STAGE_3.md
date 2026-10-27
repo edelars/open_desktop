@@ -182,6 +182,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20ag | RBP как data и RSP как base через exact no-index SIB | Только `48 8B/89 2C 24`, ModRM `mod=00/reg=RBP/rm=SIB`, SIB `0x24`, ровно 4 bytes |
 | [partial] | S3-20ai | RSP как data и RBP как base через direct disp8/disp32 | Только `48 8B/89 65 ib` или `48 8B/89 A5 id`, ModRM `mod=01/10,reg=RSP,rm=RBP`, ровно 4/7 bytes; `mod=00/rm=5` остаётся RIP-relative |
 | [partial] | S3-20aj | RSP/RBP как data через direct disp8/disp32 от RAX..RBX | Только `48 8B/89 /r disp8|disp32`, ModRM `mod=01/10`, `reg=RSP|RBP`, `rm=RAX..RBX`, ровно 4/7 bytes; без SIB |
+| [partial] | S3-20ak | RIP-relative qword MOV с RSP/RBP data через shared IR и bounded dispatch | Только `48 8B/89 25/2D disp32`, ModRM `mod=00,r/m=101`, `reg=RSP|RBP`, ровно 7 bytes; EA от NextRip текущей инструкции |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1511,6 +1512,24 @@ loaded noncanonical RSP/RBP is used as the next memory base. Partial byte
 windows and unsupported near matches stop without effects. The existing
 RBP-base and RIP-relative profiles remain separate. See the
 [S3-20aj report](../reports/STAGE_3_S3-20aj_2026-10-27.md).
+
+#### S3-20ak. RIP-relative qword MOV with RSP/RBP data
+
+Extend the exact singleton RIP-relative `48 8B/89 /r disp32` profile to
+`reg=RSP|RBP` only (`48 8B/89 25/2D disp32`, seven bytes). Preserve the
+decoded `MemoryOperand::NextRip` as the sole effective-address authority;
+do not widen any generic register predicate. Prefixes, SIB, pairs and V3 stay
+outside this slice.
+
+Direct V2/shared-IR/interpreter host parity verifies both operations at a
+CodeView interior entry and uses an independent entry `NextRip + disp32`
+target. Noncanonical RIP-relative targets are exact #GP faults before a RAM
+callback; a noncanonical value loaded into RSP/RBP is data and commits, while
+using it as the next RSP/RBP address raises #SS without repeating the first
+read. Bounded dispatch exercises NOP→RSP/RBP RIP-relative singleton→two
+following singleton memory operations, budgets 0..4, and continuation from
+the singleton's actual next RIP. See the
+[S3-20ak report](../reports/STAGE_3_S3-20ak_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

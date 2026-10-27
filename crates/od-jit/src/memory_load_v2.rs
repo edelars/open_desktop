@@ -2696,7 +2696,8 @@ mod tests {
     fn ir_rip_relative_singletons_reject_wrong_register_prefix_and_trailing_bytes() {
         for opcode in [0x8b, 0x89] {
             for bytes in [
-                vec![0x48, opcode, 0x25, 0, 0, 0, 0], // data register RSP
+                vec![0x48, opcode, 0x35, 0, 0, 0, 0], // unsupported data register RSI
+                vec![0x48, opcode, 0x3d, 0, 0, 0, 0], // unsupported data register RDI
                 vec![0x67, 0x48, opcode, 0x05, 0, 0, 0, 0],
                 vec![0x48, opcode, 0x05, 0, 0, 0, 0, 0x90],
             ] {
@@ -2708,6 +2709,89 @@ mod tests {
                 };
                 assert!(result.is_err(), "bytes={bytes:02x?}");
             }
+        }
+    }
+
+    #[test]
+    fn ir_rip_relative_rsp_rbp_data_keeps_exact_next_rip_profile() {
+        for (opcode, operation) in [
+            (0x8b_u8, MemorySiteOperationV2::Load),
+            (0x89_u8, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in [4_u8, 5] {
+                for displacement in [i32::MIN, -1, 0, 1, i32::MAX] {
+                    let modrm = data_register << 3 | 5;
+                    let mut instruction = vec![0x48, opcode, modrm];
+                    instruction.extend_from_slice(&displacement.to_le_bytes());
+                    let mut view_bytes = vec![0x90, 0x90];
+                    view_bytes.extend_from_slice(&instruction);
+                    let code = CodeView::new(0x5a00, &view_bytes).unwrap();
+                    let entry = 0x5a02;
+                    let (direct_site, shared_site, shared_bytes) = match operation {
+                        MemorySiteOperationV2::Load => (
+                            compile_memory_load_block_v2(code, entry)
+                                .unwrap()
+                                .site()
+                                .clone(),
+                            compile_ir_memory_load_block_v2(code, entry)
+                                .unwrap()
+                                .site()
+                                .clone(),
+                            compile_ir_memory_load_block_v2(code, entry)
+                                .unwrap()
+                                .source_bytes()
+                                .to_vec(),
+                        ),
+                        MemorySiteOperationV2::Store => (
+                            compile_memory_store_block_v2(code, entry)
+                                .unwrap()
+                                .site()
+                                .clone(),
+                            compile_ir_memory_store_block_v2(code, entry)
+                                .unwrap()
+                                .site()
+                                .clone(),
+                            compile_ir_memory_store_block_v2(code, entry)
+                                .unwrap()
+                                .source_bytes()
+                                .to_vec(),
+                        ),
+                    };
+                    assert_eq!(direct_site, shared_site);
+                    assert_eq!(shared_bytes, instruction);
+                    assert_eq!(shared_site.operand().base, AddressBase::NextRip);
+                    assert_eq!(shared_site.operand().index, None);
+                    assert_eq!(shared_site.operand().scale, 1);
+                    assert_eq!(shared_site.operand().displacement, i64::from(displacement));
+                    assert_eq!(shared_site.next_rip(), entry + 7);
+                    assert_eq!(
+                        shared_site.destination(),
+                        (operation == MemorySiteOperationV2::Load).then_some(data_register)
+                    );
+                    assert_eq!(
+                        shared_site.source(),
+                        (operation == MemorySiteOperationV2::Store).then_some(data_register)
+                    );
+                    assert!(shared_site.has_supported_profile());
+                    assert!(shared_site.matches_source_bytes(&instruction, operation));
+                }
+            }
+        }
+
+        for bytes in [
+            vec![0x48, 0x8b, 0x25, 0, 0, 0], // truncated disp32
+            vec![0x48, 0x89, 0x2d, 0, 0, 0],
+            vec![0x67, 0x48, 0x8b, 0x25, 0, 0, 0, 0],
+            vec![0x48, 0x89, 0x2d, 0, 0, 0, 0, 0x90], // trailing byte
+            vec![0x48, 0x8b, 0x24, 0x25, 0, 0, 0, 0], // SIB, not RIP-relative
+        ] {
+            let code = CodeView::new(0x5a00, &bytes).unwrap();
+            let result = if bytes[1] == 0x8b || bytes[2] == 0x8b {
+                compile_ir_memory_load_block_v2(code, 0x5a00).map(|_| ())
+            } else {
+                compile_ir_memory_store_block_v2(code, 0x5a00).map(|_| ())
+            };
+            assert!(result.is_err(), "unsupported bytes={bytes:02x?}");
         }
     }
 
