@@ -1929,6 +1929,24 @@ then faults #SS on the next `[RSP]` without repeating the first access. Partial
 source windows and non-profile forms stop before data access. See the
 [S3-20ad report](../reports/STAGE_3_S3-20ad_2026-10-27.md).
 
+#### S3-20ae: RSP as qword MOV data and signed-disp32 SIB base
+
+Admit only exact eight-byte singleton `48 8B/89 A4 24 id`: ModRM `mod=10`,
+reg/data RSP, r/m SIB, SIB exactly `0x24`, signed disp32 in bytes 4..7, qword
+data and 64-bit effective address. The decoder's `MemoryOperand` and
+`access_address_48` remain the sole address semantics. Generic GPR validation,
+frame layout, source storage, public ABI, pair and V3 profiles do not change.
+
+The effective address and store payload use entry RSP. A successful load
+commits the loaded RSP only after the read; subsequent instructions use that
+committed value. Architectural faults preserve the instruction state and
+retirement; address-overflow and backend errors remain host errors. STOP after
+a successful store leaves its full 64-bit payload committed. The dispatcher
+continues through the bare NOP bridge into the existing pair with exact
+native/interpreter retirement accounting and actual-RIP continuation. Partial
+source windows and non-profile forms stop before data effects. See the
+[S3-20ae report](../reports/STAGE_3_S3-20ae_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

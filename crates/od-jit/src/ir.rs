@@ -714,6 +714,9 @@ fn is_scoped_memory_data_operand(
                     || (instruction_length == 5
                         && (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement)
                         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp)))
+                    || (instruction_length == 8
+                        && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+                        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp)))
             }
             5 => {
                 (instruction_length == 3

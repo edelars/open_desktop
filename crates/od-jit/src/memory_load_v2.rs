@@ -1808,14 +1808,13 @@ mod tests {
             }
 
             for bytes in [
-                vec![0x48, opcode, 0x64, 0x24],             // truncated displacement
-                vec![0x48, opcode, 0x64, 0x25, 0],          // SIB no-base
-                vec![0x48, opcode, 0x64, 0x64, 0],          // scale without index
-                vec![0x48, opcode, 0x64, 0x2c, 0],          // index present
-                vec![0x48, opcode, 0xa4, 0x24, 0, 0, 0, 0], // disp32
-                vec![0x67, 0x48, opcode, 0x64, 0x24, 0],    // address-size override
-                vec![0x48, 0x67, opcode, 0x64, 0x24, 0],    // reordered prefix
-                vec![0x48, opcode, 0x64, 0x24, 0, 0x90],    // trailing instruction
+                vec![0x48, opcode, 0x64, 0x24],          // truncated displacement
+                vec![0x48, opcode, 0x64, 0x25, 0],       // SIB no-base
+                vec![0x48, opcode, 0x64, 0x64, 0],       // scale without index
+                vec![0x48, opcode, 0x64, 0x2c, 0],       // index present
+                vec![0x67, 0x48, opcode, 0x64, 0x24, 0], // address-size override
+                vec![0x48, 0x67, opcode, 0x64, 0x24, 0], // reordered prefix
+                vec![0x48, opcode, 0x64, 0x24, 0, 0x90], // trailing instruction
             ] {
                 let code = CodeView::new(0x5730, &bytes).unwrap();
                 let result = match operation {
@@ -1827,6 +1826,100 @@ mod tests {
                 assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
             }
         }
+    }
+
+    #[test]
+    fn ir_rsp_data_and_base_disp32_is_exact_full_source_0xa4_sib_form() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for displacement in [i32::MIN, -1, 0, i32::MAX] {
+                let displacement_bytes = displacement.to_le_bytes();
+                let source = [
+                    0x48,
+                    opcode,
+                    0xa4,
+                    0x24,
+                    displacement_bytes[0],
+                    displacement_bytes[1],
+                    displacement_bytes[2],
+                    displacement_bytes[3],
+                ];
+                let code = CodeView::new(0x5740, &source).unwrap();
+                let (ir_site, direct_site, ir_source) = match operation {
+                    MemorySiteOperationV2::Load => {
+                        let ir = compile_ir_memory_load_block_v2(code, 0x5740).unwrap();
+                        let direct = compile_memory_load_block_v2(code, 0x5740).unwrap();
+                        (
+                            ir.site().clone(),
+                            direct.site().clone(),
+                            ir.source_bytes().to_vec(),
+                        )
+                    }
+                    MemorySiteOperationV2::Store => {
+                        let ir = compile_ir_memory_store_block_v2(code, 0x5740).unwrap();
+                        let direct = compile_memory_store_block_v2(code, 0x5740).unwrap();
+                        (
+                            ir.site().clone(),
+                            direct.site().clone(),
+                            ir.source_bytes().to_vec(),
+                        )
+                    }
+                };
+                assert_eq!(ir_site, direct_site);
+                assert_eq!(ir_source, source);
+                assert_eq!(ir_site.destination().or(ir_site.source()), Some(4));
+                assert_eq!(ir_site.next_rip(), 0x5748);
+                assert_eq!(ir_site.operand().base, AddressBase::Register(Register::Rsp));
+                assert_eq!(ir_site.operand().index, None);
+                assert_eq!(ir_site.operand().scale, 1);
+                assert_eq!(ir_site.operand().displacement, i64::from(displacement));
+                assert!(ir_site.matches_source_bytes(&source, operation));
+            }
+
+            for partial_len in 1..8 {
+                let source = [0x48, opcode, 0xa4, 0x24, 0xff, 0xff, 0xff, 0x7f];
+                let code = CodeView::new(0x5740, &source[..partial_len]).unwrap();
+                let result = match operation {
+                    MemorySiteOperationV2::Load => compile_ir_memory_load_block_v2(code, 0x5740)
+                        .and_then(|_| compile_memory_load_block_v2(code, 0x5740).map(|_| ())),
+                    MemorySiteOperationV2::Store => compile_ir_memory_store_block_v2(code, 0x5740)
+                        .and_then(|_| compile_memory_store_block_v2(code, 0x5740).map(|_| ())),
+                };
+                assert!(result.is_err(), "partial len={partial_len}");
+            }
+
+            for source in [
+                [0x48, opcode, 0xa4, 0x25, 0, 0, 0, 0], // no base
+                [0x48, opcode, 0xa4, 0x64, 0, 0, 0, 0], // scale without index
+                [0x48, opcode, 0xa4, 0x2c, 0, 0, 0, 0], // index present
+                [0x67, 0x48, opcode, 0xa4, 0x24, 0, 0, 0],
+            ] {
+                let code = CodeView::new(0x5740, &source).unwrap();
+                let result = match operation {
+                    MemorySiteOperationV2::Load => compile_ir_memory_load_block_v2(code, 0x5740)
+                        .and_then(|_| compile_memory_load_block_v2(code, 0x5740).map(|_| ())),
+                    MemorySiteOperationV2::Store => compile_ir_memory_store_block_v2(code, 0x5740)
+                        .and_then(|_| compile_memory_store_block_v2(code, 0x5740).map(|_| ())),
+                };
+                assert!(result.is_err(), "unexpectedly admitted {source:02x?}");
+            }
+        }
+
+        let first = [0x48, 0x8b, 0xa4, 0x24, 0, 0, 0, 0x01];
+        let second = [0x48, 0x8b, 0xa4, 0x24, 0, 0, 0, 0x02];
+        let first_block =
+            compile_ir_memory_load_block_v2(CodeView::new(0x5740, &first).unwrap(), 0x5740)
+                .unwrap();
+        let second_block =
+            compile_ir_memory_load_block_v2(CodeView::new(0x5740, &second).unwrap(), 0x5740)
+                .unwrap();
+        assert_eq!(first_block.source_bytes(), &first);
+        assert_eq!(second_block.source_bytes(), &second);
+        assert_ne!(first_block.source_bytes(), second_block.source_bytes());
+        assert_eq!(first_block.site().operand().displacement, 0x0100_0000);
+        assert_eq!(second_block.site().operand().displacement, 0x0200_0000);
     }
 
     #[test]
@@ -1989,7 +2082,6 @@ mod tests {
                 vec![0x48, opcode, 0x84, 0x24, 0, 0, 0], // truncated disp32
                 vec![0x48, opcode, 0x84, 0x25, 0, 0, 0, 0], // no base
                 vec![0x48, opcode, 0x84, 0x2c, 0, 0, 0, 0], // index present
-                vec![0x48, opcode, 0xa4, 0x24, 0, 0, 0, 0], // RSP data
                 vec![0x48, opcode, 0x84, 0x24, 0, 0, 0, 0, 0x90], // trailing byte
                 vec![0x67, 0x48, opcode, 0x84, 0x24, 0, 0, 0, 0], // addr32
                 vec![0x48, 0x67, opcode, 0x84, 0x24, 0, 0, 0, 0], // reordered prefix
