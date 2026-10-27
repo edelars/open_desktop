@@ -412,6 +412,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.22 | Local-only bounded register PCMPGTW XMM diagnostic slice; signed word greater-than masks, native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.25 | Local-only bounded register PUNPCKHBW XMM diagnostic slice; high-byte interleave, native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.26 | Local-only bounded register PUNPCKLWD XMM diagnostic slice; low-word interleave, native/JIT closed | S2-34.1, S2-35.1 |
+| [x] | S2-35.28 | Local-only bounded register PUNPCKLDQ XMM diagnostic slice; low-dword interleave, native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
@@ -8563,3 +8564,26 @@ exception delivery and physical execution remain excluded. SSE2 and
 CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. S2-34, S2-35, global
 `S2-35 → S2-34`, and combined Mac mini/SSH acceptance remain open. Evidence is
 recorded in [STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).
+
+#### S2-35.28 — local-only bounded register `PUNPCKLDQ`
+
+Requires S2-34.1 raw x87/SSE state and mandatory-66 XMM decoding from S2-35.1.
+The bounded profile `s2-long-punpckldq-reg-v1` admits legacy
+`66 [one optional REX.R/B] 0F 62 /r`, ModR/M.mod=3 and XMM0–15. ModR/M.reg
+is the destination and ModR/M.r/m is the source. The result's four
+little-endian u32 elements are `[old_DEST[0], SRC[0], old_DEST[1], SRC[1]]`.
+The destination is fully overwritten; elements 2 and 3 of both inputs are
+ignored; byte order within each dword is unchanged.
+
+Coverage includes the literal dword sentinel, self-alias, upper-half
+independence, all byte values at each consumed position, walking bits, all
+16×16 XMM/REX.R/B combinations, full-state preservation and zero data-memory
+callbacks. Missing-state, truncation and STOP/budget atomicity, strict
+schema/decoder negatives including VEX `C5 F9 62 C1`, and a handwritten
+literal XMM8/XMM9 fixture cover boundaries. JIT and native execution remain
+denied. PUNPCKHDQ/qword, other unpack/pack/shuffle/shift operations, memory,
+MMX, extra prefixes, REX.W/X, VEX/EVEX execution, feature gates, exception
+delivery and physical execution remain excluded. SSE2 and CR0.EM=0, CR0.TS=0,
+CR4.OSFXSR=1 are assumptions only. S2-34, S2-35, global `S2-35 → S2-34`, and
+combined Mac mini/SSH acceptance remain open. Evidence is in
+[STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).

@@ -12617,3 +12617,47 @@ worktree `.git` pointer and two missing historical oracle-manifest links.
 re-review found no remaining code findings. These are local interpreter/profile results only;
 they do not close S2-34, S2-35, global `S2-35 → S2-34`, physical x86
 validation, or combined Mac mini/SSH acceptance.
+
+## S2-35.28 — local PUNPCKLDQ XMM register slice
+
+Added local-only profile `s2-long-punpckldq-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 62 /r`, ModR/M.mod=3 and XMM0–15. ModR/M.reg
+selects the destination and ModR/M.r/m selects the source. The operation
+interleaves the original low dwords as
+`[old_DEST[0], SRC[0], old_DEST[1], SRC[1]]`, preserving byte order within
+each little-endian dword and overwriting all of the destination. The upper
+two dwords of both inputs are ignored.
+
+The literal sentinel `DEST [03020100,07060504]` and
+`SRC [83828180,87868584]` produces
+`[03020100,83828180,07060504,87868584]`. Self-aliasing produces
+`[d0,d0,d1,d1]`. Tests cover upper-half independence, all 256 byte values at
+each of 16 consumed operand-byte positions, walking bits across both low
+halves, all 16×16 XMM/REX.R/B combinations, full-state preservation and zero
+guest data callbacks. Missing state, STOP/budget atomicity, base-encoding
+truncation, and strict decoder/schema negatives
+including VEX `C5 F9 62 C1` are covered. A handwritten literal XMM8/XMM9
+fixture executes in the interpreter with exact XMM8 snapshot
+`00010203808182830405060784858687`;
+JIT and native execution remain denied. SSE2 and CR0.EM=0, CR0.TS=0,
+CR4.OSFXSR=1 remain assumptions; this does not make a CPUID, exception,
+physical-execution or wider SIMD claim.
+
+Focused `cargo test -p od-isa punpckldq --offline` passed (4 tests), and
+`cargo test -p od-runner punpckldq_literal_cli_fixture_executes_and_keeps_jit_denied --offline`
+passed (1 test). After the native preflight correction described below,
+`cargo test --workspace --offline --quiet` passed all 1,743 tests. Host
+`cargo check --workspace --all-targets --offline` and the same check for
+`x86_64-unknown-linux-gnu` passed; the Linux-gated native-denial test was
+compile-checked but not executed on this Darwin host. `cargo fmt --all --
+--check` and `git diff --check` passed. `python3 tools/check_layout.py` reports
+the linked worktree `.git` pointer and two historical oracle manifest links
+already missing from the checkout. `graphify update .` completed with the
+existing `include/open_desktop/host_abi.h` extractor warning. Independent
+`gpt-6.1-sol` high-effort review found that the native runner lacked the early
+local-only guard for this profile; `LongPunpckldqRegV1` was added beside the
+other register-only profiles in `execute()`. The independent Linux denial
+test checks that this guard returns before native trace setup. Linux-target
+all-target compilation passed after the correction, and review/re-review
+found no remaining issues. S2-34, S2-35, global `S2-35 → S2-34`, physical x86
+validation, and combined Mac mini/SSH acceptance remain open.
