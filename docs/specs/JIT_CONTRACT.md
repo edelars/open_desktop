@@ -377,6 +377,33 @@ windows. The bounded dispatcher also composes a disp8 singleton → bare NOP
 interpreter fallback → existing pair. See the
 [S3-20m report](../reports/STAGE_3_S3-20m_2026-10-27.md).
 
+#### S3-20n: no-displacement SIB in shared IR and bounded dispatch
+
+The shared checked singleton profile additionally accepts exactly four-byte
+`48 8B/89 /r sib`: ModRM `mod=00,r/m=100`; data, base and index encodings
+RAX..RBX; qword operand and address sizes; and scale 1/2/4/8. SIB index
+`100` (no index), base `101` (no base), RSP/RBP/R8+, displacement forms,
+address override, other prefixes, and trailing bytes remain rejected. This is
+a separate raw-byte admission from direct-base disp8 (`mod=01`, also four
+bytes); the existing `MemorySiteV2` validator binds bytes to decoded base,
+index and scale, while the IR descriptor requires a four-byte instruction.
+
+The decoder-provided `MemoryOperand` and `access_address_48` remain the only
+effective-address source. No SIB address math or emitter was added. Native
+direct V2/shared IR/interpreter tests cover both directions across all data,
+base, index and scale encodings, including aliases and a zero-valued index.
+SIB cases check wrapping multiply/add, noncanonical start/end faults with no
+state or RAM commit, backend load/store errors as host errors, and exact
+architectural store-fault payloads without CPU/RAM/budget/retirement commit.
+STOP after a successful store preserves its committed bytes and one retirement.
+Bounded dispatch composes the
+SIB singleton with bare-NOP interpreter fallback and the existing pair across
+budgets 0..4. STOP after the SIB load returns at its actual RIP before NOP;
+clearing STOP resumes without repeating the access. Truncated source windows before the SIB byte return
+`BoundaryReached` without effects. Pair admissions and the unsafe private
+synchronous RAM contract are unchanged. See the
+[S3-20n report](../reports/STAGE_3_S3-20n_2026-10-27.md).
+
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
 alignment, same/different ranges, and safe partial overlaps for load→store;

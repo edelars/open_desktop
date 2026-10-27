@@ -618,14 +618,8 @@ pub fn compile_ir_memory_store_block_v2(
 ) -> Result<IrMemoryStoreBlockV2, MemoryLoadCompileErrorV2> {
     let (site, bytes) = checked_memory_metadata_v2(code, entry_rip, MemorySiteOperationV2::Store)?;
     if !crate::block::exact_direct_qword_memory_bytes(code, entry_rip, bytes.len() as u8, 0x89)
-        || site.operand().index.is_some()
-        || site.operand().address_size != od_isa::OperandSize::Qword
-        || !(matches!(site.operand().base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
-            && (i32::MIN as i64..=i32::MAX as i64).contains(&site.operand().displacement)
-            || matches!(
-                site.operand().base,
-                od_isa::long_decode::AddressBase::NextRip
-            ) && (i32::MIN as i64..=i32::MAX as i64).contains(&site.operand().displacement))
+        || !site.has_supported_profile()
+        || !site.matches_source_bytes(bytes, MemorySiteOperationV2::Store)
     {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
@@ -1359,11 +1353,94 @@ mod tests {
     }
 
     #[test]
-    fn ir_checked_direct_displacements_reject_sib_prefix_register_and_trailing_forms() {
+    fn ir_checked_sib_singletons_match_decoded_metadata_for_all_registers_and_scales() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data in 0..4_u8 {
+                for base in 0..4_u8 {
+                    for index in 0..4_u8 {
+                        for scale_bits in 0..4_u8 {
+                            let source = [
+                                0x48,
+                                opcode,
+                                (data << 3) | 4,
+                                (scale_bits << 6) | (index << 3) | base,
+                            ];
+                            let code = CodeView::new(0x5600, &source).unwrap();
+                            let (ir_site, ir_source, v2_site) = match operation {
+                                MemorySiteOperationV2::Load => {
+                                    let ir = compile_ir_memory_load_block_v2(code, 0x5600).unwrap();
+                                    let direct =
+                                        compile_memory_load_block_v2(code, 0x5600).unwrap();
+                                    (
+                                        ir.site().clone(),
+                                        ir.source_bytes().to_vec(),
+                                        direct.site().clone(),
+                                    )
+                                }
+                                MemorySiteOperationV2::Store => {
+                                    let ir =
+                                        compile_ir_memory_store_block_v2(code, 0x5600).unwrap();
+                                    let direct =
+                                        compile_memory_store_block_v2(code, 0x5600).unwrap();
+                                    (
+                                        ir.site().clone(),
+                                        ir.source_bytes().to_vec(),
+                                        direct.site().clone(),
+                                    )
+                                }
+                            };
+                            assert_eq!(ir_site, v2_site);
+                            assert_eq!(ir_source, source);
+                            assert_eq!(ir_site.guest_rip(), 0x5600);
+                            assert_eq!(ir_site.next_rip(), 0x5604);
+                            assert_eq!(
+                                ir_site.operand().base,
+                                AddressBase::Register(Register::from_encoding(base).unwrap())
+                            );
+                            assert_eq!(ir_site.operand().index, Register::from_encoding(index));
+                            assert_eq!(ir_site.operand().scale, 1_u8 << scale_bits);
+                            assert_eq!(ir_site.operand().displacement, 0);
+                        }
+                    }
+                }
+            }
+        }
+
+        for opcode in [0x8b, 0x89] {
+            for source in [
+                vec![0x48, opcode, 0x04],                   // truncated before SIB
+                vec![0x48, opcode, 0x04, 0x20],             // no-index
+                vec![0x48, opcode, 0x04, 0x05],             // no-base
+                vec![0x48, opcode, 0x04, 0x24],             // RSP index
+                vec![0x48, opcode, 0x04, 0x28],             // RSP base
+                vec![0x48, opcode, 0x44, 0x18],             // displaced SIB
+                vec![0x48, opcode, 0x84, 0x18, 0, 0, 0, 0], // disp32 SIB
+                vec![0x4a, opcode, 0x04, 0x18],             // extended index
+                vec![0x49, opcode, 0x04, 0x18],             // extended base
+                vec![0x48, opcode, 0x04, 0x18, 0x90],       // trailing byte
+                vec![0x67, 0x48, opcode, 0x04, 0x18],       // address override
+            ] {
+                let code = CodeView::new(0x5700, &source).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x5700)
+                        .and_then(|_| compile_memory_load_block_v2(code, 0x5700).map(|_| ()))
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x5700)
+                        .and_then(|_| compile_memory_store_block_v2(code, 0x5700).map(|_| ()))
+                };
+                assert!(result.is_err(), "unexpected admission: {source:02x?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ir_checked_direct_displacements_reject_prefix_register_and_trailing_forms() {
         for opcode in [0x8b, 0x89] {
             for bytes in [
                 vec![0x48, opcode, 0xc3],             // mod=11
-                vec![0x48, opcode, 0x04, 0x1b],       // SIB
                 vec![0x48, opcode, 0x44, 0x18],       // SIB with disp8
                 vec![0x67, 0x48, opcode, 0x43, 0x01], // address override
                 vec![0x48, opcode, 0x43, 0x01, 0x90], // trailing byte
@@ -1442,14 +1519,16 @@ mod tests {
     }
 
     #[test]
-    fn ir_checked_store_builder_rejects_sib_and_trailing_bytes() {
-        for bytes in [&[0x48, 0x89, 0x04, 0x18][..], &[0x48, 0x89, 0x03, 0x90][..]] {
-            let code = CodeView::new(0x1200, bytes).unwrap();
-            assert!(matches!(
-                compile_ir_memory_store_block_v2(code, 0x1200),
-                Err(MemoryLoadCompileErrorV2::UnsupportedForm)
-            ));
-        }
+    fn ir_checked_store_builder_accepts_sib_and_rejects_trailing_bytes() {
+        let code = CodeView::new(0x1200, &[0x48, 0x89, 0x04, 0x18]).unwrap();
+        let store = compile_ir_memory_store_block_v2(code, 0x1200).unwrap();
+        assert_eq!(store.source_bytes(), &[0x48, 0x89, 0x04, 0x18]);
+
+        let code = CodeView::new(0x1200, &[0x48, 0x89, 0x03, 0x90]).unwrap();
+        assert!(matches!(
+            compile_ir_memory_store_block_v2(code, 0x1200),
+            Err(MemoryLoadCompileErrorV2::UnsupportedForm)
+        ));
     }
 
     #[test]

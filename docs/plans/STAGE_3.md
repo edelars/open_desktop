@@ -160,6 +160,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20j / S3-26c / S3-20k / S3-26d | Один generated entry для ровно двух exact pairs: `48 89 03; 48 8B 0B` и `48 8B 03; 48 89 02` | Только private synchronous ordinary RAM; two guest commits; STOP/fault/budget continuation bounded; singleton APIs сохранены |
 | [partial] | S3-20l | RIP-relative qword MOV через shared IR и bounded memory dispatcher | Только singleton `48 8B/89 /r`, ModRM `mod=00,r/m=101`, disp32, data RAX..RBX; exact 7-byte source; no wider block/prefix/SIB |
 | [partial] | S3-20m | Direct-base signed disp8/disp32 MOV через shared IR и bounded dispatcher | Только singleton `48 8B/89 /r`, ModRM `mod=01/10`, base/data RAX..RBX, exact length 4/7; no SIB/prefix/wider block |
+| [partial] | S3-20n | No-displacement SIB MOV через shared IR и bounded dispatcher | Только `48 8B/89 /r sib`, ModRM `mod=00,r/m=100`, data/base/index RAX..RBX, scale 1/2/4/8, ровно 4 bytes |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1050,6 +1051,29 @@ source/base, noncanonical starts/ends, backend failures, successful STOP after
 store, and partial byte windows. Mixed dispatch composes a new disp8 singleton
 with the existing NOP fallback and pair. No pair or unsafe data-RAM contract
 changes. See the [S3-20m report](../reports/STAGE_3_S3-20m_2026-10-27.md).
+
+#### S3-20n. No-displacement SIB MOV in shared IR and bounded dispatch
+
+Shared checked singleton compilation additionally accepts exactly four-byte
+`48 8B/89 /r sib`: ModRM `mod=00,r/m=100`, data/base/index encodings
+RAX..RBX, qword operand/address sizes, and SIB scale 1/2/4/8. SIB index
+`100` (no index), base `101` (no base), other base/index encodings,
+displacement forms, `67`, other prefixes and trailing bytes remain rejected.
+The `MemorySiteV2` source validator binds ModRM/SIB to decoded operation,
+registers, base/index and scale. IR verification also requires the four-byte
+instruction range. Direct-base disp8 remains separately admitted by ModRM
+`mod=01`, so its four-byte length cannot be confused with SIB `mod=00`.
+
+The decoder-provided `MemoryOperand` and existing `access_address_48` remain
+the only effective-address semantics; no SIB address calculation was added.
+Native direct V2/shared-IR/interpreter tests enumerate both operations, all
+data/base/index registers and scales, including aliases and a zero-valued
+index. SIB-derived cases cover multiply/add wrapping, noncanonical start/end,
+backend errors and a committed store followed by STOP. Bounded dispatch
+composes SIB singleton → bare NOP interpreter fallback → existing pair across
+budgets 0..4 and partial pre-SIB byte windows. Pair admissions and the unsafe
+private synchronous RAM contract are unchanged. See the
+[S3-20n report](../reports/STAGE_3_S3-20n_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

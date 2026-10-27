@@ -326,9 +326,10 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                 require_active(active_instruction, operation_index)?;
                 if operand.size != od_isa::OperandSize::Qword
                     || operand.address_size != od_isa::OperandSize::Qword
-                    || operand.index.is_some()
-                    || operand.scale != 1
-                    || !is_checked_memory_address(operand)
+                    || !is_checked_memory_address(
+                        operand,
+                        instruction_length(program, active_instruction),
+                    )
                 {
                     return Err(VerifyError::InvalidCheckedLoadDescriptor {
                         operation: operation_index,
@@ -342,9 +343,10 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                 validate_gpr(*src, operation_index)?;
                 if operand.size != od_isa::OperandSize::Qword
                     || operand.address_size != od_isa::OperandSize::Qword
-                    || operand.index.is_some()
-                    || operand.scale != 1
-                    || !is_checked_memory_address(operand)
+                    || !is_checked_memory_address(
+                        operand,
+                        instruction_length(program, active_instruction),
+                    )
                 {
                     return Err(VerifyError::InvalidCheckedStoreDescriptor {
                         operation: operation_index,
@@ -570,11 +572,33 @@ fn validate_terminal_position(
     Ok(())
 }
 
-fn is_checked_memory_address(operand: &od_isa::long_decode::MemoryOperand) -> bool {
-    matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
-        && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
-        || matches!(operand.base, AddressBase::NextRip)
+fn instruction_length(program: &Program, active: Option<usize>) -> u64 {
+    active
+        .and_then(|index| program.guest_instructions.get(index))
+        .and_then(|instruction| instruction.next_rip.checked_sub(instruction.guest_rip))
+        .unwrap_or(0)
+}
+
+fn is_checked_memory_address(
+    operand: &od_isa::long_decode::MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    let supported_index = match operand.index {
+        Some(index) => {
+            matches!(index as u8, 0..=3)
+                && matches!(operand.scale, 1 | 2 | 4 | 8)
+                && instruction_length == 4
+                && operand.displacement == 0
+                && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+        }
+        None => operand.scale == 1,
+    };
+    supported_index
+        && (matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
             && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+            || matches!(operand.base, AddressBase::NextRip)
+                && operand.index.is_none()
+                && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement))
 }
 
 fn validate_gpr(register: GuestGpr, operation: usize) -> Result<(), VerifyError> {
