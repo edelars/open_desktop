@@ -3671,4 +3671,237 @@ mod tests {
         drop(handle);
         assert_eq!(backend.available_slots(), 1);
     }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn generated_checked_memory_probe_calls_fixed_width_helper() {
+        use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
+        use od_jit::memory_bridge::{
+            CheckedMemoryAdapter, CheckedMemoryHelperV1, CheckedMemoryOutcomeV1,
+            MEMORY_ERROR_BACKEND, MEMORY_HELPER_MEMORY_ERROR, MEMORY_HELPER_SUCCESS,
+            MEMORY_OP_READ,
+        };
+
+        struct Memory {
+            bytes: [u8; 16],
+            reads: usize,
+            writes: usize,
+            fail: bool,
+        }
+        impl GuestMemory for Memory {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                self.bytes
+                    .get(address as usize)
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                out: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                self.reads += 1;
+                if self.fail {
+                    return Err(MemoryError::Backend("probe".into()));
+                }
+                let start = address as usize;
+                let source =
+                    self.bytes
+                        .get(start..start + out.len())
+                        .ok_or(MemoryError::Unmapped {
+                            address,
+                            access: AccessKind::Read,
+                        })?;
+                out.copy_from_slice(source);
+                Ok(())
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                data: &[u8],
+            ) -> Result<(), MemoryError> {
+                self.writes += 1;
+                if self.fail {
+                    return Err(MemoryError::Backend("probe".into()));
+                }
+                let start = address as usize;
+                let destination =
+                    self.bytes
+                        .get_mut(start..start + data.len())
+                        .ok_or(MemoryError::Unmapped {
+                            address,
+                            access: AccessKind::Write,
+                        })?;
+                destination.copy_from_slice(data);
+                Ok(())
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                _: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                unreachable!()
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                _: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                unreachable!()
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                _: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                unreachable!()
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        fn emit_probe(helper: CheckedMemoryHelperV1) -> Vec<u8> {
+            let address = helper as usize as u64;
+            let mut encoder = Encoder::new();
+            let x16 = XReg::new(16).unwrap();
+            let x19 = XReg::new(19).unwrap();
+            let x20 = XReg::new(20).unwrap();
+            let x21 = XReg::new(21).unwrap();
+            let x30 = XReg::new(30).unwrap();
+            encoder
+                .stp_x(x19, x20, AddressBase::Sp, -16, PairIndexMode::PreIndex)
+                .unwrap();
+            encoder
+                .stp_x(x21, x30, AddressBase::Sp, -16, PairIndexMode::PreIndex)
+                .unwrap();
+            encoder.mov_x(x19, XRegOrZero::Reg(XReg::new(6).unwrap()));
+            encoder.mov_x(x20, XRegOrZero::Reg(XReg::new(7).unwrap()));
+            encoder.mov_x(x21, XRegOrZero::Reg(XReg::new(4).unwrap()));
+            encoder.movz_x(x16, address as u16, 0).unwrap();
+            encoder.movk_x(x16, (address >> 16) as u16, 1).unwrap();
+            encoder.movk_x(x16, (address >> 32) as u16, 2).unwrap();
+            encoder.movk_x(x16, (address >> 48) as u16, 3).unwrap();
+            encoder.blr(x16);
+            let failed = encoder.new_label().unwrap();
+            encoder.cbnz_w(WReg::new(0).unwrap(), failed).unwrap();
+            let x9 = XReg::new(9).unwrap();
+            let x10 = XReg::new(10).unwrap();
+            encoder
+                .ldr_x(XRegOrZero::Reg(x9), AddressBase::Reg(x21), 0)
+                .unwrap();
+            encoder
+                .str_x(XRegOrZero::Reg(x9), AddressBase::Reg(x19), 0)
+                .unwrap();
+            encoder
+                .ldr_x(XRegOrZero::Reg(x10), AddressBase::Reg(x20), 0)
+                .unwrap();
+            encoder
+                .adds_imm_x(XRegOrZero::Reg(x10), XRegOrSp::Reg(x10), 1)
+                .unwrap();
+            encoder
+                .str_x(XRegOrZero::Reg(x10), AddressBase::Reg(x20), 0)
+                .unwrap();
+            encoder.bind(failed).unwrap();
+            encoder
+                .ldp_x(x21, x30, AddressBase::Sp, 16, PairIndexMode::PostIndex)
+                .unwrap();
+            encoder
+                .ldp_x(x19, x20, AddressBase::Sp, 16, PairIndexMode::PostIndex)
+                .unwrap();
+            encoder.ret(XReg::new(30).unwrap());
+            encoder.finish().unwrap().to_le_bytes().unwrap()
+        }
+
+        type ProbeEntry = unsafe extern "C" fn(
+            *mut std::ffi::c_void,
+            u32,
+            u64,
+            u32,
+            *mut u8,
+            *mut CheckedMemoryOutcomeV1,
+            *mut u64,
+            *mut u64,
+        ) -> u32;
+
+        let _guard = jit_test_lock();
+        let code = emit_probe(od_jit::memory_bridge::checked_memory_helper_v1);
+        let published = PublishedCode::publish(&code).unwrap();
+        // SAFETY: `code` is a typed AAPCS64 wrapper with the helper's exact
+        // fixed-width signature and its mapping remains owned below.
+        let entry: ProbeEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+        let mut memory = Memory {
+            bytes: [0; 16],
+            reads: 0,
+            writes: 0,
+            fail: false,
+        };
+        memory.bytes[4..12].copy_from_slice(&0x8877_6655_4433_2211_u64.to_le_bytes());
+        let mut staged = [0xAA; 8];
+        let mut outcome = CheckedMemoryOutcomeV1::default();
+        let mut state = probe_state();
+        state.gpr[0] = 0xAAAA_BBBB_CCCC_DDDD;
+        let mut retired = 41;
+        let status = {
+            let mut adapter = CheckedMemoryAdapter::new(&mut memory, AccessContext::default());
+            // SAFETY: adapter and output buffers live across the synchronous call.
+            unsafe {
+                entry(
+                    adapter.as_opaque_ptr(),
+                    MEMORY_OP_READ,
+                    4,
+                    8,
+                    staged.as_mut_ptr(),
+                    &mut outcome,
+                    state.gpr.as_mut_ptr(),
+                    &mut retired,
+                )
+            }
+        };
+        assert_eq!(status, MEMORY_HELPER_SUCCESS);
+        assert_eq!(staged, 0x8877_6655_4433_2211_u64.to_le_bytes());
+        assert_eq!(state.gpr[0], 0x8877_6655_4433_2211);
+        assert_eq!(retired, 42);
+        assert_eq!(memory.reads, 1);
+
+        memory.fail = true;
+        staged = [0xAA; 8];
+        state = probe_state();
+        state.gpr[0] = 0xAAAA_BBBB_CCCC_DDDD;
+        let state_before = state.clone();
+        retired = 41;
+        let status = {
+            let mut adapter = CheckedMemoryAdapter::new(&mut memory, AccessContext::default());
+            // SAFETY: failure path uses valid invocation-local pointers.
+            unsafe {
+                entry(
+                    adapter.as_opaque_ptr(),
+                    MEMORY_OP_READ,
+                    4,
+                    8,
+                    staged.as_mut_ptr(),
+                    &mut outcome,
+                    state.gpr.as_mut_ptr(),
+                    &mut retired,
+                )
+            }
+        };
+        assert_eq!(status, MEMORY_HELPER_MEMORY_ERROR);
+        assert_eq!(outcome.error_kind, MEMORY_ERROR_BACKEND);
+        assert_eq!(staged, [0xAA; 8]);
+        assert_eq!(state, state_before);
+        assert_eq!(retired, 41);
+    }
 }

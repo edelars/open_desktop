@@ -72,6 +72,10 @@ RAX/RCX/RDX/RBX, без high-byte registers и памяти. Для ModR/M `mod`
 Ни native execution, ни память, ни исключения этапа 2 не наследуются этапом 3
 автоматически.
 
+S3-19a adds only a standalone checked helper transport; it does not change this
+memory-operand admission row. Generated blocks still have no memory lowering,
+guest-memory exit, fault replay, or production access to `GuestMemory`.
+
 ## 4. Начальные runtime bounds
 
 - Один гостевой vCPU; компиляция блоков последовательная.
@@ -743,6 +747,41 @@ generations or pointer-derived identities and does not establish production
 invalidation. Runtime budget, STOP, GPRs, and RFLAGS are not key inputs. No
 lookup container, cache, eviction, or reuse is implemented. Benchmarking key
 lookup structures is a separate S3-17 task; S3-17 remains open.
+
+### S3-19a: invocation-local checked memory helper ABI partial
+
+`od_jit::memory_bridge::CheckedMemoryAdapter` borrows one `&mut dyn
+GuestMemory` and its `AccessContext` for one synchronous invocation. Generated
+code receives only an opaque adapter pointer; no Rust enum, `String`, or trait
+object crosses the C boundary. `CheckedMemoryHelperV1` has fixed-width
+arguments and a `#[repr(C)] CheckedMemoryOutcomeV1`. Its raw status values are
+local to this helper: `0 Success`, `1 ArchitecturalFault`, `2 MemoryError`,
+`3 InvalidArgument`. They are not `RuntimeExitTag` values and must not be sent
+to `decode_block_result`. `RuntimeContextV1` is unchanged; tag 6 remains
+reserved-invalid.
+
+The admitted helper operations are fetch width 1 and integer read/write widths
+1, 2, 4, and 8. For read/fetch, caller-provided staging bytes change only on
+success, so a generated caller can publish a load candidate at its own commit
+point. Write invokes exactly one `GuestMemory::write`; architectural errors
+carry fixed vector/error-code/linear-address fields. `MemoryError` variants
+that are not architectural are status 2, with fixed `error_kind` values for
+unmapped, permission denied, address overflow, and backend failure; backend
+text is intentionally not transported. The caller is responsible for
+validating an operand address with the committed `MemoryOperand::access_address_48`
+contract before the helper call.
+
+An od-host native ARM64 test emits a standalone helper-call probe with the
+checked ARM64 encoder and invokes it through its own probe entry type. The
+generated probe commits a staged load candidate and retirement sentinel only
+after Success, and verifies both remain untouched on backend error. Bridge unit
+tests verify a single backend write and distinct architectural/boundary/backend
+error classes. The probe is not a generated guest block and does not validate
+guest state commit, architectural RIP/counters, guest-fault exit mapping, or
+production runtime integration.
+No memory instruction is admitted to the JIT by this partial slice. RMW/atomic,
+MMIO, REP, descriptor access, direct host-memory access, and S3-20 lowering
+remain outside the contract.
 
 ## 6. Host и этапная приёмка
 

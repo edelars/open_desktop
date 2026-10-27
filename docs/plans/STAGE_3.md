@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 26 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19a выполнена как partial slice, S3-19 остаётся открытой.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -146,6 +146,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-17 | Cache key и code dependencies | S3-04, S3-15 |
 | [ ] | S3-18 | Ограниченный block cache | S3-07, S3-17 |
 | [ ] | S3-19 | Checked memory/helper bridge | S3-08, S3-16; S2-04/08 |
+| [partial] | S3-19a | Invocation-local checked helper ABI и native probe | Узкий standalone slice внутри S3-19; production block exits остаются открыты |
 | [ ] | S3-20 | Memory lowering и partial registers | S3-19; interpreter соответствующих форм |
 | [ ] | S3-21 | Физическая проверка memory slice | S3-20; S2-09 и нужный native profile |
 | [ ] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
@@ -649,6 +650,29 @@ remain separate work.
 3. На первом пути все memory operations checked. Direct host-memory fast path рассматривать только отдельно после проверки ownership, mappings и замеров.
 
 **Готово:** helper success/fault/internal error сохраняют правильный state и exit reason, не обходят текущие ограничения CPU contract и ISSUE-012.
+
+#### S3-19a. Invocation-local helper ABI partial
+
+`od-jit::memory_bridge` добавляет invocation-local `CheckedMemoryAdapter` над
+`&mut dyn GuestMemory` и отдельный fixed-width `CheckedMemoryHelperV1`. Его
+status namespace — `0 Success`, `1 ArchitecturalFault`, `2 MemoryError`,
+`3 InvalidArgument`; он не является `RuntimeExitTag` и не меняет
+`RuntimeContextV1` (включая зарезервированный invalid tag 6). Error payload
+передаётся только фиксированными C-полями: architectural vector/error code/
+linear address либо уточнение boundary/backend ошибки; `MemoryError::Backend`
+text не пересекает ABI.
+
+Первый профиль разрешает fetch шириной 1 и integer read/write шириной 1/2/4/8.
+Read destination меняется только после успешного backend read; write вызывает
+один `GuestMemory::write`. Adapter не владеет CPU state/counters, не вычисляет
+effective address и не выполняет lowering. Native ARM64 od-host test строит
+probe через checked encoder, напрямую вызывает helper и проверяет success,
+staged load candidate/retirement sentinel commit только при success и отдельный
+backend-error status с сохранением этих sentinels при ошибке; unit tests bridge
+проверяют один backend write.
+`S3-19a` не реализует block exit/fault replay, production integration, MMU,
+MMIO, RMW/atomic, REP, descriptor accesses, direct host-memory access или
+lowering; полный S3-19 и S3-20 остаются открытыми.
 
 ### S3-20. Добавить memory lowering
 

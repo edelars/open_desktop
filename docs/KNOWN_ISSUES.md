@@ -12,6 +12,15 @@
 
 ## Записи
 
+### ISSUE-024 — checked memory helper ещё не подключён к generated guest blocks
+
+- **Дата обнаружения:** 2026-10-27.
+- **Компонент:** `od-jit` checked memory bridge / generated block runtime (S3-19).
+- **Статус:** открыта; S3-19a реализует только helper transport и standalone native probe. Production block exits, guest-fault mapping и memory lowering отсутствуют.
+- **Суть и последствия:** `CheckedMemoryAdapter` принимает fetch/read/write через `GuestMemory` и отделяет architectural fault от memory/boundary/backend error внутри отдельного fixed-width helper ABI. Он не вызывается из production generated guest block и не материализует CPU state, RIP или retirement counters. Поэтому текущий JIT по-прежнему не исполняет memory operands, а fault не имеет production block-exit representation.
+- **Основание:** `cargo test -p od-jit memory_bridge::tests --offline` прошёл четыре targeted tests; `cargo test -p od-host generated_checked_memory_probe_calls_fixed_width_helper --offline` прошёл generated ARM64 helper-call probe на ARM64/macOS host. Probe commits test load/counter sentinels only for Success and preserves them on backend error. См. [S3-19a contract](specs/JIT_CONTRACT.md#s3-19a-invocation-local-checked-memory-helper-abi-partial) и [plan](plans/STAGE_3.md#s3-19-подключить-checked-memory-bridge).
+- **Следующий шаг:** согласовать отдельно production representation для guest fault/commit и подключить helper invocation на generated block boundary; сохранить `RuntimeContextV1` tag 6 invalid до утверждения новой версии контракта. Затем выполнить S3-20 lowering и последующую проверку S3-21.
+
 ### ISSUE-020 — unresolved branch-target handoff between block builder and IR
 
 - **Дата обнаружения:** 2026-10-26.
