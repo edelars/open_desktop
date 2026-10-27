@@ -6852,3 +6852,23 @@ runner проверяет snapshots/RAM, retirements и закрытый JIT, Li
 test отвергает четыре формы до tracee. Mac mini/native физическая проверка
 остаётся объединённой в общем финальном substage. ISSUE-016/020/021 остаются
 открытыми; S2-18 и Stage 2 в целом остаются открытыми.
+
+#### S2-18m — non-REP SCAS с address-size 32
+
+Добавить только Long64 non-REP `67 AE`, `67 66 AF`, `67 AF`, `67 48 AF`.
+Чтение выполняется одним непрерывным width-sized доступом из zero-extend(EDI);
+побайтного wrap на 4 GiB нет. После успешного сравнения с аккумулятором
+обновить шесть арифметических flags/definedness по CMP, затем zero-extend RDI
+после `(EDI ± width) mod 2^32` по DF. RAX и прочие регистры сохраняются.
+Произвольные входные arithmetic flags/definedness для non-REP SCAS допустимы;
+REPE entry gate сюда не переносится. Ошибка чтения сохраняет полный state,
+flags-definedness и RAM; backend errors остаются HarnessError. Это один
+read-only профиль и он не закрывает ISSUE-016/020/021.
+
+Покрытие: 18,432 полных success states, 512 definedness вариантов, 96
+address-boundary cases, 96 ошибок чтения, 73 prefix rejects и 39 literal
+schema-v2 fixtures. Проверить TEST→SCAS success/fault, CLD/STD, бюджет/fetch,
+normalization, RCX=0 и прежние SCAS/REPE regressions. JIT остаётся закрытым;
+Linux-only native admission отклоняет четыре формы до tracee. Mac mini/native
+физическая проверка остаётся единой в общем финальном substage; S2-18 и Stage
+2 остаются открытыми до acceptance.

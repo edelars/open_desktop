@@ -1065,22 +1065,37 @@ fn step_tracked_with_stop(
         Operation::Scas { size } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && ((instruction.opcode.byte == 0xae
-                    && instruction.prefixes == Prefixes::default()
+                    && (instruction.prefixes == Prefixes::default()
+                        || instruction.prefixes
+                            == (Prefixes {
+                                address_override: true,
+                                ..Prefixes::default()
+                            }))
                     && size == OperandSize::Byte)
                     || (instruction.opcode.byte == 0xaf
-                        && instruction.prefixes == Prefixes::default()
+                        && (instruction.prefixes == Prefixes::default()
+                            || instruction.prefixes
+                                == (Prefixes {
+                                    address_override: true,
+                                    ..Prefixes::default()
+                                }))
                         && size == OperandSize::Dword)
                     || (instruction.opcode.byte == 0xaf
-                        && instruction.prefixes
+                        && (instruction.prefixes
                             == (Prefixes {
                                 operand_override: true,
                                 ..Prefixes::default()
                             })
+                            || instruction.prefixes
+                                == (Prefixes {
+                                    operand_override: true,
+                                    address_override: true,
+                                    ..Prefixes::default()
+                                }))
                         && size == OperandSize::Word)
                     || (instruction.opcode.byte == 0xaf
                         && instruction.prefixes.group1.is_none()
                         && instruction.prefixes.segment.is_none()
-                        && !instruction.prefixes.address_override
                         && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
                         && size == OperandSize::Qword))
         }
@@ -2689,7 +2704,7 @@ fn step_tracked_with_stop(
                 index: None,
                 scale: 1,
                 displacement: 0,
-                address_size: OperandSize::Qword,
+                address_size: instruction.address_size,
                 size,
             });
             let observed = match read_operand(state, memory, context, next_rip, destination) {
@@ -2706,13 +2721,24 @@ fn step_tracked_with_stop(
                 state.rflags,
             );
             state.rflags = flags;
-            let step = if state.rflags & (1 << 10) == 0 {
-                size.bytes() as u64
+            if instruction.address_size == OperandSize::Dword {
+                let index = state.gpr[Register::Rdi as usize] as u32;
+                let step = size.bytes() as u32;
+                let updated = if state.rflags & (1 << 10) == 0 {
+                    index.wrapping_add(step)
+                } else {
+                    index.wrapping_sub(step)
+                };
+                state.gpr[Register::Rdi as usize] = u64::from(updated);
             } else {
-                0u64.wrapping_sub(size.bytes() as u64)
-            };
-            state.gpr[Register::Rdi as usize] =
-                state.gpr[Register::Rdi as usize].wrapping_add(step);
+                let step = if state.rflags & (1 << 10) == 0 {
+                    size.bytes() as u64
+                } else {
+                    0u64.wrapping_sub(size.bytes() as u64)
+                };
+                state.gpr[Register::Rdi as usize] =
+                    state.gpr[Register::Rdi as usize].wrapping_add(step);
+            }
         }
         Operation::RepScas { size } => {
             let mut completed = 0;
@@ -57437,6 +57463,304 @@ mod tests {
             flags |= crate::OF;
         }
         flags
+    }
+
+    #[test]
+    fn scas_address32_definedness_masks_define_all_arithmetic_flags_after_success() {
+        let forms = [
+            (OperandSize::Byte, vec![0x67, 0xae]),
+            (OperandSize::Word, vec![0x67, 0x66, 0xaf]),
+            (OperandSize::Dword, vec![0x67, 0xaf]),
+            (OperandSize::Qword, vec![0x67, 0x48, 0xaf]),
+        ];
+        let arithmetic_bits = [
+            crate::CF,
+            crate::PF,
+            crate::AF,
+            crate::ZF,
+            crate::SF,
+            crate::OF,
+        ];
+        let mut cases = 0;
+        for (size, code) in forms {
+            for direction in [false, true] {
+                for definedness in 0..64u64 {
+                    let defined_arithmetic = arithmetic_bits
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| definedness & (1 << index) != 0)
+                        .fold(0, |mask, (_, flag)| mask | *flag);
+                    let normalized_raw_values = arithmetic_bits
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| definedness & (1 << index) != 0)
+                        .filter(|(index, _)| index % 2 == 0)
+                        .fold(0, |bits, (_, flag)| bits | *flag);
+                    let mut state = LongModeState::default();
+                    state.rip = 0x2000;
+                    state.gpr[Register::Rax as usize] = 0xfeed_face_1234_5600;
+                    state.gpr[Register::Rdi as usize] = 0x1234_5678_0000_1000;
+                    state.rflags = 2 | normalized_raw_values | if direction { 1 << 10 } else { 0 };
+                    let mut memory = Memory::at(&code, 0x2000);
+                    memory.data_base = 0x1000;
+                    memory.bytes[..size.bytes()].fill(0);
+                    memory.bytes[0] = 1;
+                    let mut rflags_defined =
+                        (crate::INTEGER_FLAGS & !crate::ARITHMETIC_FLAGS) | defined_arithmetic;
+                    let outcome = step_tracked_with_stop(
+                        &mut state,
+                        &mut memory,
+                        AccessContext::default(),
+                        &mut rflags_defined,
+                        &mut || false,
+                    );
+                    assert_eq!(outcome, Ok(StepOutcome::Advanced));
+                    assert_eq!(
+                        state.rflags,
+                        rep_scas_width_expected_flags(
+                            state.gpr[Register::Rax as usize],
+                            1,
+                            size,
+                            direction,
+                        )
+                    );
+                    assert_eq!(rflags_defined, crate::INTEGER_FLAGS);
+                    let updated = if direction {
+                        0x1000u32.wrapping_sub(size.bytes() as u32)
+                    } else {
+                        0x1000u32.wrapping_add(size.bytes() as u32)
+                    };
+                    assert_eq!(state.gpr[Register::Rdi as usize], u64::from(updated));
+                    assert_eq!(state.rip, 0x2000 + code.len() as u64);
+                    assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, size.bytes())]);
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 512);
+    }
+
+    #[test]
+    fn scas_address32_boundary_matrix_reads_one_contiguous_operand_and_wraps_rdi() {
+        const HIGH_HALVES: [u64; 3] = [0, 0x1234_5678_0000_0000, 0xffff_ffff_0000_0000];
+        const STARTS: [u32; 4] = [0, 0x1fff, 0xffff_fff8, 0xffff_ffff];
+        let forms = [
+            (OperandSize::Byte, vec![0x67, 0xae]),
+            (OperandSize::Word, vec![0x67, 0x66, 0xaf]),
+            (OperandSize::Dword, vec![0x67, 0xaf]),
+            (OperandSize::Qword, vec![0x67, 0x48, 0xaf]),
+        ];
+        let mut cases = 0;
+        for (size, code) in forms {
+            for direction in [false, true] {
+                for start in STARTS {
+                    for high_half in HIGH_HALVES {
+                        let mut state = LongModeState::default();
+                        state.rip = 0x2000;
+                        state.gpr[Register::Rax as usize] = 0xaaaa_bbbb_ccdd_0041;
+                        state.gpr[Register::Rcx as usize] = 0;
+                        state.gpr[Register::Rsi as usize] = u64::MAX;
+                        state.gpr[Register::Rdi as usize] = high_half | u64::from(start);
+                        state.rflags =
+                            2 | crate::PF | crate::ZF | if direction { 1 << 10 } else { 0 };
+                        let before_rax = state.gpr[Register::Rax as usize];
+                        let mut memory = Memory::at(&code, 0x2000);
+                        memory.data_base = u64::from(start);
+                        memory.bytes = vec![0x5a; size.bytes()];
+                        let before_bytes = memory.bytes.clone();
+                        let observed = memory
+                            .read_integer(u64::from(start), AccessContext::default(), size)
+                            .unwrap();
+                        memory.accesses.clear();
+                        let result = step(&mut state, &mut memory, AccessContext::default());
+                        assert_eq!(result, Ok(StepOutcome::Advanced));
+                        assert_eq!(state.gpr[Register::Rax as usize], before_rax);
+                        assert_eq!(state.gpr[Register::Rsi as usize], u64::MAX);
+                        assert_eq!(state.gpr[Register::Rcx as usize], 0);
+                        assert_eq!(
+                            state.rflags,
+                            rep_scas_width_expected_flags(before_rax, observed, size, direction)
+                        );
+                        let updated = if direction {
+                            start.wrapping_sub(size.bytes() as u32)
+                        } else {
+                            start.wrapping_add(size.bytes() as u32)
+                        };
+                        assert_eq!(state.gpr[Register::Rdi as usize], u64::from(updated));
+                        assert_eq!(state.rip, 0x2000 + code.len() as u64);
+                        assert_eq!(
+                            memory.accesses,
+                            [(AccessKind::Read, u64::from(start), size.bytes())]
+                        );
+                        assert_eq!(memory.bytes, before_bytes);
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 96);
+    }
+
+    #[test]
+    fn scas_address32_read_errors_preserve_full_state_and_flag_definedness() {
+        const HIGH_HALVES: [u64; 3] = [0, 0x1234_5678_0000_0000, 0xffff_ffff_0000_0000];
+        let forms = [
+            (OperandSize::Byte, vec![0x67, 0xae]),
+            (OperandSize::Word, vec![0x67, 0x66, 0xaf]),
+            (OperandSize::Dword, vec![0x67, 0xaf]),
+            (OperandSize::Qword, vec![0x67, 0x48, 0xaf]),
+        ];
+        let errors = [
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(4),
+                linear_address: Some(0x1000),
+            }),
+            MemoryError::Unmapped {
+                address: 0x1000,
+                access: AccessKind::Read,
+            },
+            MemoryError::PermissionDenied {
+                address: 0x1000,
+                access: AccessKind::Read,
+            },
+            MemoryError::Backend("injected SCAS address32 read error".into()),
+        ];
+        let mut cases = 0;
+        for (size, code) in forms {
+            for direction in [false, true] {
+                for high_half in HIGH_HALVES {
+                    for error in &errors {
+                        let mut state = LongModeState::default();
+                        state.rip = 0x2000;
+                        state.gpr[Register::Rax as usize] = 0xfeed_face_1234_5678;
+                        state.gpr[Register::Rdi as usize] = high_half | 0x1000;
+                        state.rflags =
+                            2 | crate::CF | crate::AF | if direction { 1 << 10 } else { 0 };
+                        let before_state = state.clone();
+                        let mut memory = Memory::at(&code, 0x2000);
+                        memory.data_base = 0x1000;
+                        memory.bytes = vec![0x5a; size.bytes()];
+                        memory.error = Some(error.clone());
+                        memory.error_kind = Some(AccessKind::Read);
+                        let before_memory = memory.bytes.clone();
+                        let mut rflags_defined = crate::INTEGER_FLAGS & !crate::AF;
+                        let before_defined = rflags_defined;
+                        let result = step_tracked_with_stop(
+                            &mut state,
+                            &mut memory,
+                            AccessContext::default(),
+                            &mut rflags_defined,
+                            &mut || false,
+                        );
+                        if let MemoryError::Architectural(fault) = error {
+                            assert_eq!(result, Ok(StepOutcome::Fault(fault.clone())));
+                        } else {
+                            assert_eq!(result, Err(error.clone()));
+                        }
+                        assert_eq!(state, before_state);
+                        assert_eq!(rflags_defined, before_defined);
+                        assert_eq!(memory.bytes, before_memory);
+                        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, size.bytes())]);
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 96);
+    }
+
+    #[test]
+    fn scas_address32_budget_stop_and_truncated_fetch_do_not_touch_data() {
+        let forms = [
+            (OperandSize::Byte, vec![0x67, 0xae]),
+            (OperandSize::Word, vec![0x67, 0x66, 0xaf]),
+            (OperandSize::Dword, vec![0x67, 0xaf]),
+            (OperandSize::Qword, vec![0x67, 0x48, 0xaf]),
+        ];
+        for (_size, code) in forms {
+            for (budget, stop_rip, expected_exit) in [
+                (0, None, RunExit::InstructionBudgetExhausted),
+                (1, Some(0x2000), RunExit::StopAddress),
+            ] {
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rax as usize] = u64::MAX;
+                state.gpr[Register::Rdi as usize] = 0xffff_ffff_0000_1000;
+                state.rflags = 2 | crate::CF | crate::AF | crate::ZF | (1 << 10);
+                let before = state.clone();
+                let mut memory = Memory::at(&code, 0x2000);
+                memory.data_base = 0x1000;
+                memory.bytes.fill(0x5a);
+                let before_memory = memory.bytes.clone();
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: budget,
+                        stop_rip,
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(result.exit, expected_exit);
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state, before);
+                assert_eq!(memory.bytes, before_memory);
+                assert!(memory.accesses.is_empty());
+            }
+
+            for available in 0..code.len() {
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rax as usize] = 0x1234_5678_9abc_def0;
+                state.gpr[Register::Rdi as usize] = 0xffff_ffff_0000_1000;
+                state.rflags = 2 | crate::PF | crate::ZF;
+                let before = state.clone();
+                let mut memory = Memory::at(&code[..available], 0x2000);
+                memory.data_base = 0x1000;
+                let before_memory = memory.bytes.clone();
+                let result = step(&mut state, &mut memory, AccessContext::default());
+                assert_eq!(
+                    result,
+                    Err(MemoryError::Unmapped {
+                        address: 0x2000 + available as u64,
+                        access: AccessKind::Fetch,
+                    }),
+                    "bytes={:02x?}, available={available}",
+                    code
+                );
+                assert_eq!(state, before);
+                assert_eq!(memory.bytes, before_memory);
+                assert!(memory.accesses.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn repe_scas_address32_remains_outside_the_supported_profile() {
+        for code in [&[0x67, 0xf3, 0xae][..], &[0xf3, 0x67, 0xaf][..]] {
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rax as usize] = 0x41;
+            state.gpr[Register::Rcx as usize] = 1;
+            state.gpr[Register::Rdi as usize] = 0x1000;
+            state.rflags = 2 | crate::PF | crate::ZF;
+            let before = state.clone();
+            let mut memory = Memory::at(code, 0x2000);
+            memory.data_base = 0x1000;
+            let before_memory = memory.bytes.clone();
+            let result = step(&mut state, &mut memory, AccessContext::default());
+            assert!(matches!(
+                result,
+                Ok(StepOutcome::Unsupported {
+                    opcode: 0xae | 0xaf
+                })
+            ));
+            assert_eq!(state, before);
+            assert_eq!(memory.bytes, before_memory);
+            assert!(memory.accesses.is_empty());
+        }
     }
 
     #[test]

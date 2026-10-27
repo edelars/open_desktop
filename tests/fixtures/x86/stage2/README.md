@@ -4185,6 +4185,27 @@ python3 -m unittest tests.cpu.test_stage2_stos_addr32_generator
 cargo test -p od-runner --test fixture_v2 stos_addr32_cli_fixtures_match_literal_full_state_and_keep_jit_closed --offline
 ```
 
+### S2-18m non-REP SCAS B/W/D/Q, address-size 32
+
+These 39 literal schema-v2 fixtures cover the four non-REP `67` SCAS widths,
+both DF directions, unmapped reads, zero budget, 32-bit RDI wrap, continuous
+reads across 4 GiB, prefix normalization, TEST and CLD/STD compositions. Each
+expected RDI, arithmetic flags/definedness, memory image, RIP, and retirement
+count is literal input; the generator serializes rows and hashes fixtures but
+does not use the interpreter as an oracle. The initial address is
+zero-extended EDI; the complete SCAS operand remains a contiguous read.
+
+The runner compares complete CPU/RAM snapshots, exact read HarnessError
+details, retirement, and JIT fail-closed behavior. A Linux-only native
+admission test rejects these forms before tracee execution. Neither that test
+on this macOS host nor a physical oracle run is claimed here.
+
+```sh
+python3 tests/cpu/generate_stage2_scas_addr32.py --check
+python3 -m unittest tests.cpu.test_stage2_scas_addr32_generator
+cargo test -p od-runner --test fixture_v2 scas_addr32_cli_fixtures_match_literal_full_state_and_keep_jit_closed --offline
+```
+
 
 ### S2-18j bare CLD/STD
 

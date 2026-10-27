@@ -4891,4 +4891,29 @@ mod tests {
             );
         }
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_18m_addr32_scas_forms_fail_native_admission_before_tracee_or_snapshot() {
+        for code in [
+            &[0x67, 0xae][..],       // SCASB, address-size 32
+            &[0x67, 0x66, 0xaf][..], // SCASW, address-size 32
+            &[0x67, 0xaf][..],       // SCASD, address-size 32
+            &[0x67, 0x48, 0xaf][..], // SCASQ, address-size 32
+        ] {
+            let loaded = fixture(code);
+            let mut actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            // The low EDI and the corresponding 64-bit address are both mapped;
+            // rejection is due to the unsupported instruction profile.
+            actual.gpr[7] = 0x0000_0000_0020_0004;
+            let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            let error = admission(&loaded.fixture, &mut decoder, &actual)
+                .expect_err("address-size-32 SCAS must remain outside native execution");
+            assert_eq!(
+                error,
+                "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist",
+                "unexpected admission error for {code:02x?}"
+            );
+        }
+    }
 }

@@ -1691,7 +1691,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 if rep_scas {
                     size = OperandSize::Byte;
                     Operation::RepScas { size }
-                } else if prefixes != Prefixes::default() {
+                } else if prefixes != Prefixes::default()
+                    && prefixes
+                        != (Prefixes {
+                            address_override: true,
+                            ..Prefixes::default()
+                        })
+                {
                     return Err(self.unsupported(opcode));
                 } else {
                     size = OperandSize::Byte;
@@ -1711,7 +1717,6 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 } else {
                     if prefixes.group1.is_some()
                         || prefixes.segment.is_some()
-                        || prefixes.address_override
                         || prefixes.rex.is_some_and(|rex| rex & 8 == 0)
                     {
                         return Err(self.unsupported(opcode));
@@ -6464,6 +6469,103 @@ mod tests {
         for rex in 0x40..=0x47 {
             cases.push(vec![0x67, rex, 0xab]);
             cases.push(vec![0x67, 0x66, rex, 0xab]);
+        }
+        assert_eq!(cases.len(), 73);
+        for bytes in cases {
+            assert!(
+                matches!(
+                    Memory::new(&bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "unexpected admission: {bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scas_address32_decodes_only_the_bounded_nonrep_forms() {
+        for (bytes, size) in [
+            (&[0x67, 0xae][..], OperandSize::Byte),
+            (&[0x67, 0x66, 0xaf][..], OperandSize::Word),
+            (&[0x67, 0xaf][..], OperandSize::Dword),
+            (&[0x67, 0x48, 0xaf][..], OperandSize::Qword),
+            (&[0x66, 0x67, 0xaf][..], OperandSize::Word),
+            (&[0x67, 0x48, 0x66, 0xaf][..], OperandSize::Word),
+            (&[0x48, 0x67, 0xaf][..], OperandSize::Dword),
+            (&[0x67, 0x66, 0x48, 0xaf][..], OperandSize::Qword),
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(instruction.length as usize, bytes.len(), "{bytes:02x?}");
+            assert_eq!(instruction.operand_size, size, "{bytes:02x?}");
+            assert_eq!(instruction.address_size, OperandSize::Dword, "{bytes:02x?}");
+            assert_eq!(
+                instruction.operation,
+                Operation::Scas { size },
+                "{bytes:02x?}"
+            );
+        }
+
+        for rex in (0x40..=0x4f).filter(|rex| rex & 8 != 0) {
+            for bytes in [vec![0x67, rex, 0xaf], vec![0x67, 0x66, rex, 0xaf]] {
+                let instruction = Memory::new(&bytes).decode().unwrap();
+                assert_eq!(instruction.operand_size, OperandSize::Qword, "{bytes:02x?}");
+                assert_eq!(instruction.address_size, OperandSize::Dword, "{bytes:02x?}");
+                assert_eq!(
+                    instruction.operation,
+                    Operation::Scas {
+                        size: OperandSize::Qword
+                    }
+                );
+            }
+        }
+
+        for bytes in [
+            &[0xae][..],
+            &[0x66, 0xaf][..],
+            &[0xaf][..],
+            &[0x48, 0xaf][..],
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(instruction.address_size, OperandSize::Qword, "{bytes:02x?}");
+            assert!(matches!(instruction.operation, Operation::Scas { .. }));
+        }
+    }
+
+    #[test]
+    fn scas_address32_rejects_the_explicit_prefix_boundary_matrix() {
+        let forms: [&[u8]; 4] = [
+            &[0x67, 0xae],
+            &[0x67, 0x66, 0xaf],
+            &[0x67, 0xaf],
+            &[0x67, 0x48, 0xaf],
+        ];
+        let prefixes: [&[u8]; 9] = [
+            &[0xf0],
+            &[0xf2],
+            &[0xf3],
+            &[0x26],
+            &[0x2e],
+            &[0x36],
+            &[0x3e],
+            &[0x64],
+            &[0x65],
+        ];
+        let mut cases = Vec::new();
+        for form in forms {
+            for prefix in prefixes {
+                cases.push([prefix, form].concat());
+            }
+        }
+        for form in forms {
+            cases.push([&[0x67][..], form].concat());
+        }
+        cases.push(vec![0x67, 0x66, 0xae]);
+        for rex in 0x40..=0x4f {
+            cases.push(vec![0x67, rex, 0xae]);
+        }
+        for rex in 0x40..=0x47 {
+            cases.push(vec![0x67, rex, 0xaf]);
+            cases.push(vec![0x67, 0x66, rex, 0xaf]);
         }
         assert_eq!(cases.len(), 73);
         for bytes in cases {

@@ -3726,6 +3726,124 @@ fn scas_all_widths_full_state_matrix_uses_independent_cmp_flags_and_one_read() {
 }
 
 #[test]
+fn scas_address32_full_state_matrix_uses_independent_cmp_flags_and_truncated_read() {
+    const FLAGS: [u64; 6] = [1, 4, 16, 64, 128, 2048];
+    const ARITHMETIC_MASK: u64 = 0x8d5;
+    const HIGH_HALVES: [u64; 3] = [0, 0x1234_5678_0000_0000, 0xffff_ffff_0000_0000];
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let forms = [
+        (OperandSize::Byte, vec![0x67, 0xae]),
+        (OperandSize::Word, vec![0x67, 0x66, 0xaf]),
+        (OperandSize::Dword, vec![0x67, 0xaf]),
+        (OperandSize::Qword, vec![0x67, 0x48, 0xaf]),
+    ];
+    let mut cases = 0;
+    for (size, code) in forms {
+        let mask = size.mask();
+        let sign = 1u64 << (size.bytes() * 8 - 1);
+        let pairs = [
+            (0, 0),
+            (1, 1),
+            (mask, mask),
+            (0, 1),
+            (1, 0),
+            (sign, 1),
+            (sign - 1, mask),
+            (mask, sign - 1),
+            (sign - 1, sign),
+            (sign, sign - 1),
+            (0x10 & mask, 1),
+            (1, 0x10 & mask),
+        ];
+        for (lhs, rhs) in pairs {
+            for direction in [false, true] {
+                for incoming in 0..64u64 {
+                    let result = lhs.wrapping_sub(rhs) & mask;
+                    let expected_arithmetic = (u64::from(lhs < rhs) * FLAGS[0])
+                        | (u64::from((result as u8).count_ones() % 2 == 0) * FLAGS[1])
+                        | (u64::from((lhs ^ rhs ^ result) & 0x10 != 0) * FLAGS[2])
+                        | (u64::from(result == 0) * FLAGS[3])
+                        | (u64::from(result & sign != 0) * FLAGS[4])
+                        | (u64::from((lhs ^ rhs) & (lhs ^ result) & sign != 0) * FLAGS[5]);
+                    let low_rdi = 0x0020_0004u64;
+                    for high_half in HIGH_HALVES {
+                        let start_rdi = high_half | low_rdi;
+                        let mut fixture = template.clone();
+                        fixture.memory[0].length = code.len() as u32;
+                        fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+                        fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                        fixture.memory[1].initial_bytes_hex = "5a".repeat(16);
+                        fixture.initial_state.rip = HexU64(0x0010_0000);
+                        fixture.initial_state.gpr[Register::Rax as usize] =
+                            HexU64(0xa5a5_5a5a_1234_5678 & !mask | lhs);
+                        fixture.initial_state.gpr[Register::Rdi as usize] = HexU64(start_rdi);
+                        fixture.initial_state.gpr[Register::Rsi as usize] = HexU64(u64::MAX);
+                        fixture.initial_state.gpr[Register::Rcx as usize] = HexU64(0);
+                        fixture.initial_state.rflags = HexU64(
+                            2 | if direction { 1 << 10 } else { 0 }
+                                | FLAGS
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(i, _)| incoming & (1 << i) != 0)
+                                    .fold(0, |bits, (_, flag)| bits | flag),
+                        );
+                        fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+                        let before = fixture.initial_state.to_cpu().unwrap();
+                        let mut state = before.clone();
+                        let mut memory = MovsbAccessLog {
+                            inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                            accesses: Vec::new(),
+                            mfences: Vec::new(),
+                            mfence_error: None,
+                        };
+                        memory
+                            .inner
+                            .write_integer(low_rdi, AccessContext::default(), size, rhs)
+                            .unwrap();
+                        let before_memory = memory.inner.snapshot();
+                        let mut expected = before.clone();
+                        expected.rflags = (before.rflags & !ARITHMETIC_MASK) | expected_arithmetic;
+                        let updated = if direction {
+                            (low_rdi as u32).wrapping_sub(size.bytes() as u32)
+                        } else {
+                            (low_rdi as u32).wrapping_add(size.bytes() as u32)
+                        };
+                        expected.gpr[Register::Rdi as usize] = u64::from(updated);
+                        expected.rip += code.len() as u64;
+                        let result_run = run(
+                            &mut state,
+                            &mut memory,
+                            config(1, fixture.stop_rip.map(HexU64::get)),
+                            || false,
+                        );
+                        assert_eq!(result_run.exit, RunExit::StopAddress);
+                        assert_eq!(result_run.instructions_executed, 1);
+                        assert_eq!(state, expected);
+                        assert_eq!(result_run.rflags_defined, 0x0cd7);
+                        assert_eq!(
+                            memory.accesses,
+                            (0..code.len())
+                                .map(|offset| {
+                                    (AccessKind::Fetch, 0x0010_0000 + offset as u64, 1)
+                                })
+                                .chain(std::iter::once((AccessKind::Read, low_rdi, size.bytes())))
+                                .collect::<Vec<_>>()
+                        );
+                        assert_eq!(memory.inner.snapshot(), before_memory);
+                        cases += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 18_432);
+}
+
+#[test]
 fn cmps_all_widths_full_state_matrix_uses_ordered_reads_and_independent_cmp_flags() {
     const FLAGS: [u64; 6] = [1, 4, 16, 64, 128, 2048];
     const ARITHMETIC_MASK: u64 = 0x8d5;
@@ -4411,11 +4529,10 @@ fn scas_prefix_boundaries_and_rex_normalization_are_exact() {
     .unwrap()
     .fixture;
     let forms: [&[u8]; 4] = [&[0xae], &[0x66, 0xaf], &[0xaf], &[0x48, 0xaf]];
-    let prefixes: [&[u8]; 10] = [
+    let prefixes: [&[u8]; 9] = [
         &[0xf0],
         &[0xf2],
         &[0xf3],
-        &[0x67],
         &[0x26],
         &[0x2e],
         &[0x36],
@@ -4439,7 +4556,7 @@ fn scas_prefix_boundaries_and_rex_normalization_are_exact() {
         vec![0x48, 0xae],
         vec![0x66, 0xae],
     ]);
-    assert_eq!(rejects.len(), 48);
+    assert_eq!(rejects.len(), 44);
     for code in rejects {
         let mut fixture = template.clone();
         fixture.memory[0].length = code.len() as u32;

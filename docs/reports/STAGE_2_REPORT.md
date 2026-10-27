@@ -10598,3 +10598,20 @@ ISSUE-016 and is not a hardware post-fault claim. A Linux-only native admission
 test rejects all four forms before tracee execution. JIT/native execution and
 physical acceptance remain closed/deferred. S2-18, ISSUE-016, ISSUE-020, and
 ISSUE-021 remain open.
+
+## S2-18m — non-REP address-size-32 SCAS fixtures (local)
+
+Added 39 literal schema-v2 fixtures for `67 AE`, `67 66 AF`, `67 AF`, and
+`67 48 AF`. They cover width/direction success, unmapped reads, zero budget,
+pointer wrap, continuous reads through 4 GiB, prefix normalization,
+TEST compositions, and CLD/STD compositions. Expected RDI, flags/definedness,
+RIP, memory, and retirement are literal fixture data; the generator only
+serializes those values. The runner checks full snapshots and exact read-error
+details and keeps JIT fail-closed. A Linux-only native admission test rejects
+the four forms before tracee execution.
+
+Core tests exercise unrestricted non-REP SCAS input flags/definedness, the
+full-state matrix, boundaries, read errors, and regressions. This local slice
+does not claim hardware fault snapshots, Linux native execution on this
+macOS host, or physical compatibility. Mac mini/native checks remain combined
+in the shared final acceptance stage. ISSUE-016/020/021 and S2-18 remain open.

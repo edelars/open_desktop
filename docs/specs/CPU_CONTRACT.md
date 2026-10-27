@@ -8079,3 +8079,30 @@ and injected backend failures remain HarnessError. This no-commit rule is a
 bounded local memory-model policy tracked by ISSUE-016, not a claim about
 hardware restart state or fault precedence. JIT/native admission remains
 closed pending shared final acceptance.
+
+### Local S2-18m non-REP address-size-32 SCAS contract
+
+The bounded Long64 profile accepts non-REP `67 AE` SCASB, `67 66 AF` SCASW,
+`67 AF` SCASD, and `67 48 AF` SCASQ. Effective REX.W determines AF width;
+a legacy prefix after REX discards that earlier REX, so `67 48 66 AF` is word
+and `67 66 48 AF` is qword. REP/REPNE, segment overrides, repeated `67`, and
+effective non-W REX on AF remain outside this SCAS profile. These are local
+profile boundaries, not universal #UD or precedence claims.
+
+The starting linear address is zero-extended EDI with flat ES. SCAS performs
+one continuous width-sized read from that address; bytes do not wrap
+individually at 4 GiB, so a qword at EDI=`ffffffff` reaches `1_0000_0006`.
+After a successful read, the accumulator is compared with memory using CMP
+semantics, all six arithmetic flags and their definedness are committed, and
+RDI becomes zero-extended `(EDI +/- width) mod 2^32` according to DF. Full RAX
+is preserved, including SCASD. RSI, RCX, DF, RAM, and unrelated state are
+preserved.
+
+Non-REP SCAS has no REPE entry-flags gate: all supported input arithmetic-flag
+values and definedness masks are accepted. A successful SCAS defines all six
+arithmetic flags. A failed read preserves the full pre-state, including
+RFLAGS definedness and the untruncated RDI; it does not retire. Backend read
+errors remain HarnessError and architectural faults remain guest faults under
+the local model. TEST→SCAS success defines AF; TEST→read-error keeps AF
+undefined. This local behavior does not claim hardware restart state or fault
+priority. JIT/native execution and physical acceptance remain deferred.

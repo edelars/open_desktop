@@ -9522,3 +9522,144 @@ fn local_x87_fcmovnbe_fixtures_check_full_state_producers_and_deny_jit() {
         assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
     }
 }
+
+#[test]
+fn scas_addr32_cli_fixtures_match_literal_full_state_and_keep_jit_closed() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_18m_scas_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 39);
+
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let expected_exit = answer["expected_exit"].as_str().unwrap();
+        let is_harness_error = expected_exit == "harness_error";
+        let (input, result) = run(&raw, "interpreter", if is_harness_error { 5 } else { 0 });
+        assert_eq!(input.fixture.case_id, case_id);
+
+        match expected_exit {
+            "stop_address" => {
+                assert_eq!(
+                    input.fixture.expected_exit,
+                    ExpectedExit::StopAddress,
+                    "{case_id}"
+                );
+                assert!(
+                    matches!(result.outcome, Outcome::StopAddress {}),
+                    "{case_id}"
+                );
+            }
+            "instruction_budget_exhausted" => {
+                assert_eq!(
+                    input.fixture.expected_exit,
+                    ExpectedExit::InstructionBudgetExhausted,
+                    "{case_id}"
+                );
+                assert!(
+                    matches!(result.outcome, Outcome::InstructionBudgetExhausted {}),
+                    "{case_id}"
+                );
+            }
+            "harness_error" => {
+                assert_eq!(
+                    input.fixture.expected_exit,
+                    ExpectedExit::HarnessError,
+                    "{case_id}"
+                );
+                let reason = match &result.outcome {
+                    Outcome::HarnessError { reason } => reason,
+                    other => panic!("{case_id}: expected HarnessError, got {other:?}"),
+                };
+                let error = &answer["harness_error"];
+                let kind = error["kind"].as_str().unwrap();
+                let access = error["access"].as_str().unwrap();
+                let address = error["address"].as_str().unwrap();
+                let address_value =
+                    u64::from_str_radix(address.trim_start_matches("0x"), 16).unwrap();
+                assert_eq!(kind, "Unmapped", "{case_id}");
+                assert_eq!(access, "Read", "{case_id}");
+                assert_eq!(
+                    reason,
+                    &format!(
+                        "fixture memory backend: {kind} {{ address: {address_value}, access: {access} }}"
+                    ),
+                    "{case_id}"
+                );
+            }
+            other => panic!("unexpected S2-18m exit {other} for {case_id}"),
+        }
+        assert_eq!(
+            count(&result),
+            answer["retired"].as_u64().unwrap(),
+            "{case_id}"
+        );
+
+        let observed = snapshot(&result);
+        let expected_gprs: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gprs, "{case_id}");
+        assert_eq!(
+            observed.state.rflags.get() & expected_defined.get(),
+            expected_flags.get() & expected_defined.get(),
+            "{case_id}"
+        );
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(observed.state.rip, expected_rip, "{case_id}");
+
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        assert_eq!(observed.memory.len(), expected_memory.len(), "{case_id}");
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}: {}",
+                region.region_id
+            );
+            if is_harness_error || expected_exit == "instruction_budget_exhausted" {
+                let initial = input
+                    .fixture
+                    .memory
+                    .iter()
+                    .find(|memory| memory.region_id == region.region_id)
+                    .unwrap();
+                assert_eq!(region.bytes_hex, initial.initial_bytes_hex, "{case_id}");
+            }
+        }
+        if (is_harness_error || expected_exit == "instruction_budget_exhausted")
+            && answer["retired"].as_u64() == Some(0)
+        {
+            assert_eq!(
+                observed.state.gpr, input.fixture.initial_state.gpr,
+                "{case_id}"
+            );
+            assert_eq!(
+                observed.state.rflags, input.fixture.initial_state.rflags,
+                "{case_id}"
+            );
+            assert_eq!(
+                observed.state.rip, input.fixture.initial_state.rip,
+                "{case_id}"
+            );
+        }
+
+        let (_, jit) = run(&raw, "jit", 4);
+        assert!(
+            matches!(jit.outcome, Outcome::Unsupported { .. }),
+            "{case_id}"
+        );
+        assert!(
+            matches!(jit.snapshot, Observation::Unavailable { .. }),
+            "{case_id}"
+        );
+        assert!(
+            matches!(jit.instructions_executed, Observation::Unavailable { .. }),
+            "{case_id}"
+        );
+    }
+}

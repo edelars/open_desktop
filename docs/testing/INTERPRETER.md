@@ -1127,3 +1127,26 @@ python3 tests/cpu/generate_stage2_stos_addr32.py --check
 python3 -m unittest tests.cpu.test_stage2_stos_addr32_generator
 cargo test -p od-runner --test fixture_v2 stos_addr32_cli_fixtures_match_literal_full_state_and_keep_jit_closed --offline
 ```
+
+## Non-REP SCAS address-size 32 — S2-18m
+
+The local Long64 interpreter profile covers `67 AE`, `67 66 AF`, `67 AF`, and
+`67 48 AF`. It truncates only the initial EDI address, reads one contiguous
+width-sized operand, compares with CMP semantics, commits all six arithmetic
+flags, then updates RDI modulo 2^32 using DF. Full RAX is preserved. Input
+arithmetic flags and definedness are unrestricted for non-REP SCAS; the REPE
+entry gate does not apply. Read errors preserve state, memory, flags, and flag
+definedness with zero retirement under the local model.
+
+The 39 literal fixtures cover width/direction, mapped/unmapped inputs, zero
+budget, pointer wrap, 4-GiB reads, prefix normalization, TEST and CLD/STD
+composition. The core suite separately checks full-state flags, definedness,
+single reads, and errors. The CLI checks exact snapshots/error details and
+JIT denial. The native admission test is Linux-only and was compile-checked
+but not run on this macOS host; no physical compatibility is claimed.
+
+```sh
+python3 tests/cpu/generate_stage2_scas_addr32.py --check
+python3 -m unittest tests/cpu/test_stage2_scas_addr32_generator.py
+cargo test -p od-runner --test fixture_v2 scas_addr32_cli_fixtures_match_literal_full_state_and_keep_jit_closed --offline
+```
