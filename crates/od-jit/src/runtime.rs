@@ -183,6 +183,12 @@ impl MemorySiteV2 {
                                 self.operand.base,
                                 od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                             ))
+                        || (length == 7
+                            && i32::try_from(self.operand.displacement).is_ok()
+                            && matches!(
+                                self.operand.base,
+                                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
+                            ))
                 }
                 _ => false,
             };
@@ -419,7 +425,8 @@ impl MemorySiteV2 {
                     || (data_register == 4 && mode == 0 && modrm == 0x24 && source.len() == 4)
                     || (data_register == 4 && mode == 1 && modrm == 0x64 && source.len() == 5)
                     || (data_register == 4 && mode == 2 && modrm == 0xa4 && source.len() == 8)
-                    || (data_register == 5 && mode == 1 && modrm == 0x6d && source.len() == 4))
+                    || (data_register == 5 && mode == 1 && modrm == 0x6d && source.len() == 4)
+                    || (data_register == 5 && mode == 2 && modrm == 0xad && source.len() == 7))
         {
             return false;
         }

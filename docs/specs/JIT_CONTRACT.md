@@ -1947,6 +1947,35 @@ native/interpreter retirement accounting and actual-RIP continuation. Partial
 source windows and non-profile forms stop before data effects. See the
 [S3-20ae report](../reports/STAGE_3_S3-20ae_2026-10-27.md).
 
+#### S3-20af: RBP as both qword MOV data and signed-disp32 base
+
+Admit only exact seven-byte singleton `48 8B/89 AD id`: ModRM
+`mod=10/reg=5/rm=5`, signed disp32 bytes 3..6, qword data and 64-bit EA.
+The decoded `MemoryOperand` and `access_address_48` remain the only address
+authority; the exact-data exception does not widen generic GPR predicates.
+The mod00/rm5 RIP-relative form remains distinct and computes from this
+instruction's NextRip. Pair, V3, frame layout and source storage are unchanged.
+
+Direct V2/shared IR/interpreter checks compare both operations and disp32
+MIN/-1/0/MAX against full state and RAM, callback address/count, and retirement.
+The address and store payload use entry RBP; load commits the returned value
+only after a successful access. Descriptor checks verify byte-six identity,
+decoder-derived displacement, RIP-next-RIP differentiation, exact instruction
+length, and reject partial windows 1..6 and malformed SIB/prefix variants.
+Actual decoded RBP-relative and NextRip operands are passed through
+`access_address_48`; both results are compared with independent formulas and
+asserted distinct. Host callbacks for byte-six values 1 and 2 target
+`0x01000040` and `0x02000040` from initial RBP 64.
+Bounded dispatcher continuation commits the first RBP load at its actual next
+RIP; a subsequent RBP-relative access to the loaded noncanonical value faults
+#SS without repeating the first read. Existing RBP-data-only, RBP-base-only,
+RSP-data and prior dual-register profiles remain covered. Exact-profile checks
+also preserve AddressOverflow and backend-error classification, and the
+macOS/ARM64 x19 canary covers success, zero budget and fault. A mixed
+singleton→NOP→pair sequence checks separate native/interpreter/native counts
+1/1/2 with actual-RIP continuation and no repeated first read. See the
+[S3-20af report](../reports/STAGE_3_S3-20af_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

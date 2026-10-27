@@ -1395,6 +1395,12 @@ fn is_rbp_memory_data_operand(
                 && matches!(
                     operand.base,
                     od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
+                ))
+            || (instruction.length == 7
+                && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+                && matches!(
+                    operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                 )))
 }
 
@@ -1545,7 +1551,7 @@ pub(crate) fn exact_direct_qword_memory_bytes(
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] >> 6 == 2
             && bytes[2] & 7 == 5
-            && (bytes[2] >> 3) & 7 < 4)
+            && ((bytes[2] >> 3) & 7 < 4 || bytes[2] == 0xad))
         || (bytes.len() == 4
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] >> 6 == 0

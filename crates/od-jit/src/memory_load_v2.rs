@@ -2650,12 +2650,11 @@ mod tests {
             }
 
             for bytes in [
-                vec![0x48, opcode, 0x6d],             // missing displacement
-                vec![0x48, opcode, 0x65, 0],          // RSP data with RBP base
-                vec![0x48, opcode, 0xad, 0, 0, 0, 0], // RBP data with disp32
-                vec![0x48, opcode, 0x6c, 0x24, 0],    // SIB form
-                vec![0x67, 0x48, opcode, 0x6d, 0],    // addr32
-                vec![0x48, opcode, 0x6d, 0, 0x90],    // trailing byte
+                vec![0x48, opcode, 0x6d],          // missing displacement
+                vec![0x48, opcode, 0x65, 0],       // RSP data with RBP base
+                vec![0x48, opcode, 0x6c, 0x24, 0], // SIB form
+                vec![0x67, 0x48, opcode, 0x6d, 0], // addr32
+                vec![0x48, opcode, 0x6d, 0, 0x90], // trailing byte
             ] {
                 let code = CodeView::new(0x2820, &bytes).unwrap();
                 let result = match access {
@@ -2667,6 +2666,158 @@ mod tests {
                     }
                 };
                 assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ir_rbp_data_and_base_disp32_is_exact_ad_form_and_distinct_from_rip_relative() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for displacement in [i32::MIN, -1, 0, i32::MAX] {
+                let displacement_bytes = displacement.to_le_bytes();
+                let source = [
+                    0x48,
+                    opcode,
+                    0xad,
+                    displacement_bytes[0],
+                    displacement_bytes[1],
+                    displacement_bytes[2],
+                    displacement_bytes[3],
+                ];
+                let code = CodeView::new(0x2830, &source).unwrap();
+                let (site, copied) = match operation {
+                    MemorySiteOperationV2::Load => {
+                        let ir = compile_ir_memory_load_block_v2(code, 0x2830).unwrap();
+                        let direct = compile_memory_load_block_v2(code, 0x2830).unwrap();
+                        assert_eq!(ir.site(), direct.site());
+                        (ir.site().clone(), ir.source_bytes().to_vec())
+                    }
+                    MemorySiteOperationV2::Store => {
+                        let ir = compile_ir_memory_store_block_v2(code, 0x2830).unwrap();
+                        let direct = compile_memory_store_block_v2(code, 0x2830).unwrap();
+                        assert_eq!(ir.site(), direct.site());
+                        (ir.site().clone(), ir.source_bytes().to_vec())
+                    }
+                };
+                assert_eq!(copied, source);
+                assert_eq!(site.next_rip(), 0x2837);
+                assert_eq!(site.operand().base, AddressBase::Register(Register::Rbp));
+                assert_eq!(site.operand().index, None);
+                assert_eq!(site.operand().scale, 1);
+                assert_eq!(site.operand().displacement, i64::from(displacement));
+                assert_eq!(site.destination().or(site.source()), Some(5));
+                assert!(site.matches_source_bytes(&source, operation));
+                let mut rbp_memory = CodeMemory::full_code(code);
+                let rbp_decoded =
+                    long_decode::decode(&mut rbp_memory, 0x2830, AccessContext::default()).unwrap();
+                let rbp_operand = match rbp_decoded.operation {
+                    Operation::Mov {
+                        dst: Operand::Memory(operand),
+                        ..
+                    }
+                    | Operation::Mov {
+                        src: Operand::Memory(operand),
+                        ..
+                    } => operand,
+                    _ => panic!("expected MOV memory operand"),
+                };
+                let mut address_state = od_isa::LongModeState::default();
+                address_state.gpr[5] = 0x3000;
+                let rbp_target = rbp_operand
+                    .access_address_48(&address_state, 0x2830 + u64::from(rbp_decoded.length))
+                    .unwrap();
+                assert_eq!(
+                    rbp_target,
+                    0x3000_u64.wrapping_add_signed(i64::from(displacement))
+                );
+
+                let rip_source = [
+                    0x48,
+                    opcode,
+                    0x2d, // same data register, mod00/rm101 means NextRip
+                    displacement_bytes[0],
+                    displacement_bytes[1],
+                    displacement_bytes[2],
+                    displacement_bytes[3],
+                ];
+                let rip_code = CodeView::new(0x2830, &rip_source).unwrap();
+                let mut memory = CodeMemory::full_code(rip_code);
+                let decoded =
+                    long_decode::decode(&mut memory, 0x2830, AccessContext::default()).unwrap();
+                let rip_operand = match decoded.operation {
+                    Operation::Mov {
+                        dst: Operand::Memory(operand),
+                        ..
+                    }
+                    | Operation::Mov {
+                        src: Operand::Memory(operand),
+                        ..
+                    } => operand,
+                    _ => panic!("expected MOV memory operand"),
+                };
+                assert_eq!(rip_operand.base, AddressBase::NextRip);
+                assert_eq!(rip_operand.displacement, i64::from(displacement));
+                let rip_target = rip_operand
+                    .access_address_48(&address_state, 0x2830 + u64::from(decoded.length))
+                    .unwrap();
+                assert_eq!(
+                    rip_target,
+                    0x2837_u64.wrapping_add_signed(i64::from(displacement))
+                );
+                assert_ne!(rbp_target, rip_target);
+            }
+
+            for high_byte in [1_u8, 2] {
+                let source = [0x48, opcode, 0xad, 0, 0, 0, high_byte];
+                let site = match operation {
+                    MemorySiteOperationV2::Load => compile_ir_memory_load_block_v2(
+                        CodeView::new(0x2830, &source).unwrap(),
+                        0x2830,
+                    )
+                    .unwrap()
+                    .site()
+                    .clone(),
+                    MemorySiteOperationV2::Store => compile_ir_memory_store_block_v2(
+                        CodeView::new(0x2830, &source).unwrap(),
+                        0x2830,
+                    )
+                    .unwrap()
+                    .site()
+                    .clone(),
+                };
+                assert_eq!(site.operand().displacement, i64::from(high_byte) << 24);
+            }
+
+            for partial_len in 1..7 {
+                let source = [0x48, opcode, 0xad, 0, 0, 0, 0];
+                let code = CodeView::new(0x2830, &source[..partial_len]).unwrap();
+                let result = match operation {
+                    MemorySiteOperationV2::Load => compile_ir_memory_load_block_v2(code, 0x2830)
+                        .and_then(|_| compile_memory_load_block_v2(code, 0x2830).map(|_| ())),
+                    MemorySiteOperationV2::Store => compile_ir_memory_store_block_v2(code, 0x2830)
+                        .and_then(|_| compile_memory_store_block_v2(code, 0x2830).map(|_| ())),
+                };
+                assert!(result.is_err(), "partial len={partial_len}");
+            }
+
+            for source in [
+                [0x48, opcode, 0xac, 0x24, 0, 0, 0], // SIB
+                [0x67, 0x48, opcode, 0xad, 0, 0, 0],
+                [0x48, 0x67, opcode, 0xad, 0, 0, 0],
+            ] {
+                let code = CodeView::new(0x2830, &source).unwrap();
+                let result = match operation {
+                    MemorySiteOperationV2::Load => {
+                        compile_ir_memory_load_block_v2(code, 0x2830).map(|_| ())
+                    }
+                    MemorySiteOperationV2::Store => {
+                        compile_ir_memory_store_block_v2(code, 0x2830).map(|_| ())
+                    }
+                };
+                assert!(result.is_err(), "unexpectedly admitted {source:02x?}");
             }
         }
     }
