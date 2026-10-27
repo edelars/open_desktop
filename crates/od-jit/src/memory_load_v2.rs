@@ -2599,6 +2599,123 @@ mod tests {
     }
 
     #[test]
+    fn ir_rsp_rbp_data_with_indexed_sib_keeps_exact_qword_profile() {
+        let displacement_cases: &[(u8, i32)] = &[
+            (0, 0),
+            (1, i8::MIN as i32),
+            (1, -1),
+            (1, 0),
+            (1, i8::MAX as i32),
+            (4, i32::MIN),
+            (4, -1),
+            (4, 0),
+            (4, i32::MAX),
+        ];
+        let base_index_cases = [(0_u8, 1_u8), (1, 1), (2, 3)];
+        for (opcode, operation) in [
+            (0x8b_u8, MemorySiteOperationV2::Load),
+            (0x89_u8, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in [4_u8, 5] {
+                for (base, index) in base_index_cases {
+                    for scale_bits in 0..4_u8 {
+                        for &(width, displacement) in displacement_cases {
+                            let mode = match width {
+                                0 => 0,
+                                1 => 1,
+                                4 => 2,
+                                _ => unreachable!(),
+                            };
+                            let modrm = (mode << 6) | (data_register << 3) | 4;
+                            let sib = (scale_bits << 6) | (index << 3) | base;
+                            let mut source = vec![0x48, opcode, modrm, sib];
+                            match width {
+                                0 => {}
+                                1 => source.push(displacement as u8),
+                                4 => source.extend_from_slice(&displacement.to_le_bytes()),
+                                _ => unreachable!(),
+                            }
+                            let code = CodeView::new(0x56a0, &source).unwrap();
+                            let (ir_site, direct_site, copied) = match operation {
+                                MemorySiteOperationV2::Load => {
+                                    let ir = compile_ir_memory_load_block_v2(code, 0x56a0).unwrap();
+                                    let direct =
+                                        compile_memory_load_block_v2(code, 0x56a0).unwrap();
+                                    (
+                                        ir.site().clone(),
+                                        direct.site().clone(),
+                                        ir.source_bytes().to_vec(),
+                                    )
+                                }
+                                MemorySiteOperationV2::Store => {
+                                    let ir =
+                                        compile_ir_memory_store_block_v2(code, 0x56a0).unwrap();
+                                    let direct =
+                                        compile_memory_store_block_v2(code, 0x56a0).unwrap();
+                                    (
+                                        ir.site().clone(),
+                                        direct.site().clone(),
+                                        ir.source_bytes().to_vec(),
+                                    )
+                                }
+                            };
+                            assert_eq!(ir_site, direct_site);
+                            assert_eq!(copied, source);
+                            assert_eq!(ir_site.next_rip(), 0x56a0 + source.len() as u64);
+                            assert_eq!(
+                                ir_site.destination(),
+                                (operation == MemorySiteOperationV2::Load).then_some(data_register)
+                            );
+                            assert_eq!(
+                                ir_site.source(),
+                                (operation == MemorySiteOperationV2::Store)
+                                    .then_some(data_register)
+                            );
+                            assert_eq!(
+                                ir_site.operand().base,
+                                AddressBase::Register(Register::from_encoding(base).unwrap())
+                            );
+                            assert_eq!(
+                                ir_site.operand().index,
+                                Some(Register::from_encoding(index).unwrap())
+                            );
+                            assert_eq!(ir_site.operand().scale, 1_u8 << scale_bits);
+                            assert_eq!(ir_site.operand().displacement, i64::from(displacement));
+                            assert!(ir_site.has_supported_profile());
+                            assert!(ir_site.matches_source_bytes(&source, operation));
+                        }
+                    }
+                }
+            }
+        }
+
+        for (opcode, operation) in [
+            (0x8b_u8, MemorySiteOperationV2::Load),
+            (0x89_u8, MemorySiteOperationV2::Store),
+        ] {
+            for bytes in [
+                vec![0x48, opcode, 0x24],             // truncated before SIB
+                vec![0x48, opcode, 0x24, 0x20],       // truncated disp8 form
+                vec![0x48, opcode, 0x24, 0x25],       // no base
+                vec![0x48, opcode, 0x24, 0x05],       // RBP base special
+                vec![0x4a, opcode, 0x24, 0x18],       // extended index
+                vec![0x49, opcode, 0x24, 0x18],       // extended base
+                vec![0x67, 0x48, opcode, 0x24, 0x18], // address override
+                vec![0x48, 0x67, opcode, 0x24, 0x18], // reordered prefix
+            ] {
+                let code = CodeView::new(0x56a0, &bytes).unwrap();
+                let result = match operation {
+                    MemorySiteOperationV2::Load => compile_ir_memory_load_block_v2(code, 0x56a0)
+                        .and_then(|_| compile_memory_load_block_v2(code, 0x56a0).map(|_| ())),
+                    MemorySiteOperationV2::Store => compile_ir_memory_store_block_v2(code, 0x56a0)
+                        .and_then(|_| compile_memory_store_block_v2(code, 0x56a0).map(|_| ())),
+                };
+                assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
+            }
+        }
+    }
+
+    #[test]
     fn ir_checked_direct_displacements_reject_prefix_register_and_trailing_forms() {
         for opcode in [0x8b, 0x89] {
             for bytes in [

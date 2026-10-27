@@ -870,7 +870,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
         [0x48, 0x8b, modrm, sib]
             if modrm >> 6 == 0
                 && modrm & 7 == 4
-                && (modrm >> 3) & 7 < 4
+                && (modrm >> 3) & 7 <= 5
                 && sib & 7 < 4
                 && (sib >> 3) & 7 < 4 =>
         {
@@ -882,7 +882,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
         [0x48, 0x89, modrm, sib]
             if modrm >> 6 == 0
                 && modrm & 7 == 4
-                && (modrm >> 3) & 7 < 4
+                && (modrm >> 3) & 7 <= 5
                 && sib & 7 < 4
                 && (sib >> 3) & 7 < 4 =>
         {
@@ -922,7 +922,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
         [0x48, 0x8b, modrm, sib, _disp]
             if modrm >> 6 == 1
                 && modrm & 7 == 4
-                && (modrm >> 3) & 7 < 4
+                && (modrm >> 3) & 7 <= 5
                 && sib & 7 < 4
                 && (sib >> 3) & 7 < 4 =>
         {
@@ -934,7 +934,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
         [0x48, 0x89, modrm, sib, _disp]
             if modrm >> 6 == 1
                 && modrm & 7 == 4
-                && (modrm >> 3) & 7 < 4
+                && (modrm >> 3) & 7 <= 5
                 && sib & 7 < 4
                 && (sib >> 3) & 7 < 4 =>
         {
@@ -962,7 +962,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
         [0x48, 0x8b, modrm, sib, _, _, _, _]
             if modrm >> 6 == 2
                 && modrm & 7 == 4
-                && (modrm >> 3) & 7 < 4
+                && (modrm >> 3) & 7 <= 5
                 && sib & 7 < 4
                 && (sib >> 3) & 7 < 4 =>
         {
@@ -974,7 +974,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
         [0x48, 0x89, modrm, sib, _, _, _, _]
             if modrm >> 6 == 2
                 && modrm & 7 == 4
-                && (modrm >> 3) & 7 < 4
+                && (modrm >> 3) & 7 <= 5
                 && sib & 7 < 4
                 && (sib >> 3) & 7 < 4 =>
         {

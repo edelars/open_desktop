@@ -183,6 +183,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20ai | RSP как data и RBP как base через direct disp8/disp32 | Только `48 8B/89 65 ib` или `48 8B/89 A5 id`, ModRM `mod=01/10,reg=RSP,rm=RBP`, ровно 4/7 bytes; `mod=00/rm=5` остаётся RIP-relative |
 | [partial] | S3-20aj | RSP/RBP как data через direct disp8/disp32 от RAX..RBX | Только `48 8B/89 /r disp8|disp32`, ModRM `mod=01/10`, `reg=RSP|RBP`, `rm=RAX..RBX`, ровно 4/7 bytes; без SIB |
 | [partial] | S3-20ak | RIP-relative qword MOV с RSP/RBP data через shared IR и bounded dispatch | Только `48 8B/89 25/2D disp32`, ModRM `mod=00,r/m=101`, `reg=RSP|RBP`, ровно 7 bytes; EA от NextRip текущей инструкции |
+| [partial] | S3-20al | RSP/RBP data через indexed SIB qword MOV | Только существующие 64-bit indexed SIB формы с ModRM `reg=RSP|RBP`, base/index RAX..RBX, scale 1/2/4/8; lengths 4/5/8 |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1530,6 +1531,17 @@ read. Bounded dispatch exercises NOP→RSP/RBP RIP-relative singleton→two
 following singleton memory operations, budgets 0..4, and continuation from
 the singleton's actual next RIP. See the
 [S3-20ak report](../reports/STAGE_3_S3-20ak_2026-10-27.md).
+
+#### S3-20al. RSP/RBP data through indexed 64-bit SIB
+
+Only the current 64-bit indexed-SIB singleton subset is extended: no
+displacement (`mod=00`), signed disp8 (`mod=01`) and signed disp32 (`mod=10`),
+with data register RSP or RBP, base/index RAX..RBX and scale 1/2/4/8. The
+existing decoder `MemoryOperand` remains the source of effective-address
+semantics. Direct V2, shared IR and the bounded dispatcher must admit the same
+exact profile; no pair, V3, address-size override or special SIB shape is
+included. Evidence and remaining host-owner limits are in the
+[S3-20al report](../reports/STAGE_3_S3-20al_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

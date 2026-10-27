@@ -1333,10 +1333,32 @@ pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
         && is_checked_qword_memory_address(instruction, operand)
 }
 
+fn is_indexed_qword_sib_data_operand(
+    instruction: Instruction,
+    operand: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    let displacement_valid = match instruction.length {
+        4 => operand.displacement == 0,
+        5 => (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement),
+        8 => (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement),
+        _ => false,
+    };
+    instruction.address_size == OperandSize::Qword
+        && operand.address_size == OperandSize::Qword
+        && operand.size == OperandSize::Qword
+        && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+        && operand.index.is_some_and(|register| (register as u8) < 4)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && displacement_valid
+}
+
 fn is_rsp_memory_data_operand(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
 ) -> bool {
+    if is_indexed_qword_sib_data_operand(instruction, operand) {
+        return true;
+    }
     instruction.address_size == OperandSize::Qword
         && operand.address_size == OperandSize::Qword
         && operand.size == OperandSize::Qword
@@ -1401,6 +1423,9 @@ fn is_rbp_memory_data_operand(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
 ) -> bool {
+    if is_indexed_qword_sib_data_operand(instruction, operand) {
+        return true;
+    }
     instruction.address_size == OperandSize::Qword
         && operand.address_size == OperandSize::Qword
         && operand.size == OperandSize::Qword
@@ -1635,6 +1660,21 @@ pub(crate) fn exact_direct_qword_memory_bytes(
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] == 0xac
             && bytes[3] == 0x24)
+        || (bytes.len() == 4
+            && bytes[0..2] == [0x48, opcode]
+            && matches!(bytes[2], 0x24 | 0x2c)
+            && bytes[3] & 7 < 4
+            && (bytes[3] >> 3) & 7 < 4)
+        || (bytes.len() == 5
+            && bytes[0..2] == [0x48, opcode]
+            && matches!(bytes[2], 0x64 | 0x6c)
+            && bytes[3] & 7 < 4
+            && (bytes[3] >> 3) & 7 < 4)
+        || (bytes.len() == 8
+            && bytes[0..2] == [0x48, opcode]
+            && matches!(bytes[2], 0xa4 | 0xac)
+            && bytes[3] & 7 < 4
+            && (bytes[3] >> 3) & 7 < 4)
         || (bytes.len() == 4
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] >> 6 == 1

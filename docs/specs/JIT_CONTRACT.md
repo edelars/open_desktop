@@ -2080,6 +2080,20 @@ stack-data singleton and two following singleton memory operations, checks
 budgets 0..4, and resumes from the actual RIP without repeating a callback. See
 [S3-20ak evidence](../reports/STAGE_3_S3-20ak_2026-10-27.md).
 
+#### S3-20al: stack-register data through indexed 64-bit SIB
+
+Shared IR, direct V2 and bounded dispatch admit RSP/RBP as the qword MOV data
+register only for existing indexed SIB forms with ModRM `r/m=100`, base and
+index RAX..RBX, and scale 1/2/4/8. The exact lengths are four bytes for no
+displacement, five for signed disp8, and eight for signed disp32; data register
+is RSP or RBP. The decoder's `MemoryOperand` and `access_address_48` remain the
+only effective-address semantics. No address-size override, special
+no-index/no-base SIB, extra prefix, pair or V3 form is added. Stack-register
+loads commit only after a successful access; stores consume the old full
+64-bit value. Noncanonical payloads are permitted as data, while later use as
+an RSP/RBP memory base faults at that later instruction. See the
+[S3-20al evidence](../reports/STAGE_3_S3-20al_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,
