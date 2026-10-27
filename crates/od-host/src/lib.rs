@@ -2478,7 +2478,10 @@ mod tests {
         pending_write_committed: bool,
         preflight_calls: usize,
         write_count: usize,
+        write_attempt_count: usize,
         fail_write: bool,
+        architectural_write_fault: Option<od_isa::memory::ArchitecturalFault>,
+        request_stop_on_architectural_fault: bool,
         request_stop_on_write: bool,
         stop_byte: Option<std::sync::Arc<AtomicU8>>,
         dirty_output: Option<*mut u32>,
@@ -2581,7 +2584,10 @@ mod tests {
                 pending_write_committed: false,
                 preflight_calls: 0,
                 write_count: 0,
+                write_attempt_count: 0,
                 fail_write: false,
+                architectural_write_fault: None,
+                request_stop_on_architectural_fault: false,
                 request_stop_on_write: false,
                 stop_byte: None,
                 dirty_output: None,
@@ -3442,11 +3448,20 @@ mod tests {
             source: &[u8],
         ) -> Result<(), MemoryError> {
             self.write_attempted = true;
+            self.write_attempt_count += 1;
             if self.preflight_rejection.is_some() {
                 return Err(MemoryError::PermissionDenied {
                     address,
                     access: od_isa::memory::AccessKind::Write,
                 });
+            }
+            if let Some(fault) = self.architectural_write_fault.take() {
+                if self.request_stop_on_architectural_fault {
+                    if let Some(stop) = &self.stop_byte {
+                        stop.store(1, Ordering::Release);
+                    }
+                }
+                return Err(MemoryError::Architectural(fault));
             }
             let plan = match self.pending {
                 Some(plan) => plan,
@@ -10186,6 +10201,334 @@ mod tests {
         assert_eq!(backend_owner.backings[1].bytes, before_bytes);
         assert_eq!(backend_owner.backings[1].version, before_version);
         assert_eq!(backend_owner.write_count, 0);
+    }
+
+    #[test]
+    fn active_code_v3_architectural_write_fault_matches_interpreter_and_is_atomic() {
+        use od_isa::memory::ArchitecturalFault;
+
+        let _guard = jit_test_lock();
+        let entry = 0x1000_u64;
+        let old = 0x1122_3344_5566_7788_u64;
+        let new = 0x8877_6655_4433_2211_u64;
+        let sentinel = 0xCAFE_BABE_1234_5678_u64;
+        let mut program = vec![0x48, 0xBA];
+        program.extend_from_slice(&old.to_le_bytes());
+        program.extend_from_slice(&[0x48, 0x89, 0x03]);
+        program.extend_from_slice(&[0x48, 0xB9]);
+        program.extend_from_slice(&sentinel.to_le_bytes());
+        let compiled = od_jit::memory_load_v2::compile_active_code_block_v3(
+            CodeView::new(entry, &program).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let mut arena = PublishedArenaBackend::new(2).unwrap();
+        let active = arena.publish_active_code_block_v3(&compiled).unwrap();
+        let make_owner = || {
+            let mut owner =
+                TrackedCodeFixture::new(&program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
+            owner.backings[0].bytes[..program.len()].copy_from_slice(&program);
+            owner.active_source_rip = entry + 10;
+            owner.active_source = (0, 10, 3);
+            owner
+        };
+        let mut initial = od_isa::LongModeState {
+            rip: entry,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        initial.gpr[0] = new;
+        initial.gpr[1] = 0xA5A5_5A5A_F0F0_0F0F;
+        initial.gpr[3] = 0x2000; // Valid mapped writable address; failure is injected by the owner.
+
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x7),
+            linear_address: Some(0x2000),
+        };
+        let mut native_owner = make_owner();
+        native_owner.architectural_write_fault = Some(fault.clone());
+        native_owner.request_stop_on_architectural_fault = true;
+        let original_native_bytes = native_owner.backings.clone();
+        let native_stop = Arc::new(AtomicU8::new(0));
+        native_owner.stop_byte = Some(native_stop.clone());
+        let mut native_state = initial.clone();
+        let mut notifications = 0usize;
+        let result = active
+            .execute_tracked_v3(
+                &mut native_state,
+                &mut native_owner,
+                AccessContext::default(),
+                3,
+                None,
+                &native_stop,
+                |_| notifications += 1,
+            )
+            .unwrap();
+
+        let mut interpreter_owner = make_owner();
+        interpreter_owner.architectural_write_fault = Some(fault.clone());
+        let mut interpreter_state = initial.clone();
+        assert_eq!(
+            od_isa::execute::step(
+                &mut interpreter_state,
+                &mut interpreter_owner,
+                AccessContext::default(),
+            ),
+            Ok(od_isa::execute::StepOutcome::Advanced),
+            "the MOV RDX prefix commits before the faulting store",
+        );
+        let interpreter_result = od_isa::execute::step(
+            &mut interpreter_state,
+            &mut interpreter_owner,
+            AccessContext::default(),
+        );
+        assert_eq!(
+            interpreter_result,
+            Ok(od_isa::execute::StepOutcome::Fault(fault.clone()))
+        );
+
+        assert_eq!(result.exit, ActiveCodeExecutionExitV3::GuestFault(fault));
+        assert_eq!(result.remaining_budget, 2);
+        assert_eq!(result.retired_instructions, 1);
+        assert_eq!(native_state.rip, entry + 10, "RIP stays at the store");
+        assert_eq!(native_state.gpr[2], old, "the completed prefix is retained");
+        assert_eq!(
+            native_state.gpr[1], initial.gpr[1],
+            "the tail is not retired"
+        );
+        assert_eq!(
+            native_state, interpreter_state,
+            "all CPU state matches interpreter"
+        );
+        assert_eq!(native_owner.write_attempt_count, 1);
+        assert_eq!(interpreter_owner.write_attempt_count, 1);
+        assert_eq!(native_owner.write_count, 0);
+        assert_eq!(interpreter_owner.write_count, 0);
+        assert_eq!(native_owner.backings, original_native_bytes);
+        assert_eq!(
+            native_owner.backings, interpreter_owner.backings,
+            "RAM and backing versions match the independent interpreter fixture"
+        );
+        assert_eq!(
+            notifications, 0,
+            "failed writes publish no cache invalidation"
+        );
+        assert_eq!(native_stop.load(Ordering::Acquire), 1);
+
+        // Budget and stop-RIP guards at the store boundary run before the helper.
+        for (budget, stop_rip, expected_exit, expected_remaining, expected_retired) in [
+            (1, None, ActiveCodeExecutionExitV3::BudgetExhausted, 0, 1),
+            (
+                3,
+                Some(entry + 10),
+                ActiveCodeExecutionExitV3::StopAddress,
+                2,
+                1,
+            ),
+        ] {
+            let mut owner = make_owner();
+            owner.architectural_write_fault = Some(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(7),
+                linear_address: Some(0x2000),
+            });
+            let mut state = initial.clone();
+            let result = active
+                .execute_tracked_v3(
+                    &mut state,
+                    &mut owner,
+                    AccessContext::default(),
+                    budget,
+                    stop_rip,
+                    &AtomicU8::new(0),
+                    |_| panic!("guarded instruction cannot notify"),
+                )
+                .unwrap();
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.remaining_budget, expected_remaining);
+            assert_eq!(result.retired_instructions, expected_retired);
+            assert_eq!(state.rip, entry + 10);
+            assert_eq!(state.gpr[2], old);
+            assert_eq!(state.gpr[1], initial.gpr[1]);
+            assert_eq!(owner.write_attempt_count, 0);
+            assert_eq!(owner.write_count, 0);
+        }
+    }
+
+    #[test]
+    fn active_code_v3_host_decoder_rejects_invalid_tags_accounting_and_fault_payloads() {
+        use od_jit::memory_bridge::{
+            CheckedMemoryOutcomeV1, MEMORY_HELPER_ARCHITECTURAL_FAULT,
+            MEMORY_HELPER_INVALID_ARGUMENT,
+        };
+        use od_jit::runtime::{
+            RuntimeContextV1, RuntimeContextV2, RuntimeContextV3, RuntimeExitV3,
+        };
+
+        let _guard = jit_test_lock();
+        let entry = 0x1000_u64;
+        let old = 0x1122_3344_5566_7788_u64;
+        let sentinel = 0xCAFE_BABE_1234_5678_u64;
+        let mut program = vec![0x48, 0xBA];
+        program.extend_from_slice(&old.to_le_bytes());
+        program.extend_from_slice(&[0x48, 0x89, 0x03]);
+        program.extend_from_slice(&[0x48, 0xB9]);
+        program.extend_from_slice(&sentinel.to_le_bytes());
+        let compiled = od_jit::memory_load_v2::compile_active_code_block_v3(
+            CodeView::new(entry, &program).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let metadata = ActiveCodeMetadataV3 {
+            entry_rip: entry,
+            source_bytes: *compiled.source_bytes(),
+            site: *compiled.site(),
+            compile_flavor: compiled.compile_flavor(),
+        };
+        let site = metadata.site;
+        let stop = AtomicU8::new(0);
+        let make_context = |state: &mut od_isa::LongModeState,
+                            initial_budget: u64,
+                            remaining_budget: u64,
+                            retired_instructions: u64,
+                            last_memory_site: u32,
+                            last_memory_status: u32,
+                            memory_outcome: CheckedMemoryOutcomeV1| {
+            RuntimeContextV3 {
+                memory: RuntimeContextV2 {
+                    base: RuntimeContextV1 {
+                        state,
+                        initial_budget,
+                        stop_rip_enabled: 0,
+                        reserved: 0,
+                        stop_rip: 0,
+                        stop_requested: (&stop as *const AtomicU8).cast(),
+                        remaining_budget,
+                        retired_instructions,
+                    },
+                    memory_adapter: std::ptr::null_mut(),
+                    memory_sites: &site,
+                    memory_site_count: 1,
+                    last_memory_site,
+                    last_memory_status,
+                    reserved: 0,
+                    staged_load_value: 0,
+                    memory_outcome,
+                },
+                code_dirty: 0,
+                reserved: 0,
+                total_initial_budget: initial_budget,
+            }
+        };
+
+        let mut state = od_isa::LongModeState {
+            rip: entry,
+            ..od_isa::LongModeState::default()
+        };
+        let mut context = make_context(
+            &mut state,
+            3,
+            3,
+            0,
+            u32::MAX,
+            MEMORY_HELPER_INVALID_ARGUMENT,
+            CheckedMemoryOutcomeV1 {
+                status: MEMORY_HELPER_INVALID_ARGUMENT,
+                ..CheckedMemoryOutcomeV1::default()
+            },
+        );
+        assert_eq!(
+            decode_active_code_v3_result(&metadata, 0xFFFF_FF00, &context),
+            Err(ActiveCodeExecutionErrorV3::InvalidExitTag(0xFFFF_FF00))
+        );
+
+        // SAFETY: the invocation record points at this live test state.
+        unsafe { (*context.memory.base.state).rip = entry + 10 };
+        context.memory.base.remaining_budget = 3;
+        context.memory.base.retired_instructions = 0;
+        assert_eq!(
+            decode_active_code_v3_result(
+                &metadata,
+                RuntimeExitV3::MemoryOperation as u32,
+                &context,
+            ),
+            Err(ActiveCodeExecutionErrorV3::InvalidAccounting),
+            "fault RIP with an unretired prefix is inconsistent"
+        );
+
+        context.memory.base.remaining_budget = 2;
+        context.memory.base.retired_instructions = 1;
+        context.memory.last_memory_site = 0;
+        context.memory.last_memory_status = MEMORY_HELPER_ARCHITECTURAL_FAULT;
+        context.memory.memory_outcome = CheckedMemoryOutcomeV1 {
+            status: MEMORY_HELPER_ARCHITECTURAL_FAULT,
+            fault_vector: 14,
+            has_error_code: 2,
+            ..CheckedMemoryOutcomeV1::default()
+        };
+        assert_eq!(
+            decode_active_code_v3_result(
+                &metadata,
+                RuntimeExitV3::MemoryOperation as u32,
+                &context,
+            ),
+            Err(ActiveCodeExecutionErrorV3::InvalidAccounting),
+            "an invalid optional-field presence flag is rejected"
+        );
+
+        context.memory.last_memory_status = 99;
+        context.memory.memory_outcome = CheckedMemoryOutcomeV1 {
+            status: 99,
+            ..CheckedMemoryOutcomeV1::default()
+        };
+        assert_eq!(
+            decode_active_code_v3_result(
+                &metadata,
+                RuntimeExitV3::MemoryOperation as u32,
+                &context,
+            ),
+            Err(ActiveCodeExecutionErrorV3::HelperBoundaryFailure { status: 99 }),
+            "unknown helper status remains a host boundary error"
+        );
+
+        context.memory.last_memory_status = MEMORY_HELPER_INVALID_ARGUMENT;
+        context.memory.memory_outcome = CheckedMemoryOutcomeV1 {
+            status: MEMORY_HELPER_INVALID_ARGUMENT,
+            ..CheckedMemoryOutcomeV1::default()
+        };
+        assert_eq!(
+            decode_active_code_v3_result(
+                &metadata,
+                RuntimeExitV3::MemoryOperation as u32,
+                &context,
+            ),
+            Err(ActiveCodeExecutionErrorV3::HelperBoundaryFailure {
+                status: MEMORY_HELPER_INVALID_ARGUMENT,
+            }),
+            "helper boundary failures remain host errors"
+        );
+
+        context.memory.last_memory_status = MEMORY_HELPER_ARCHITECTURAL_FAULT;
+        context.memory.memory_outcome.status = MEMORY_HELPER_ARCHITECTURAL_FAULT;
+        context.memory.memory_outcome.fault_vector = 14;
+        context.memory.memory_outcome.has_error_code = 0;
+        context.memory.memory_outcome.has_linear_address = 0;
+        assert_eq!(
+            decode_active_code_v3_result(
+                &metadata,
+                RuntimeExitV3::MemoryOperation as u32,
+                &context,
+            )
+            .unwrap()
+            .exit,
+            ActiveCodeExecutionExitV3::GuestFault(od_isa::memory::ArchitecturalFault {
+                vector: 14,
+                error_code: None,
+                linear_address: None,
+            }),
+            "optional architectural payload fields may be absent"
+        );
     }
 
     #[test]

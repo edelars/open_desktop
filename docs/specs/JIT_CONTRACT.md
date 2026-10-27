@@ -1181,6 +1181,29 @@ for general self-modifying code. General blocks, production MMU/writer
 integration, and complete S3-24 remain open. See the
 [S3-24a report](../reports/STAGE_3_S3-24a_2026-10-27.md).
 
+### S3-27a: precise architectural fault for the V3 active-code store partial
+
+For the exact V3 artifact above, a fixture can inject an existing
+`MemoryError::Architectural` from `GuestMemory::write` at a valid mapped
+destination. The checked helper transports the complete optional
+`ArchitecturalFault` payload through `CheckedMemoryOutcomeV1`; the host returns
+`GuestFault` while preserving the committed `MOV RDX,imm64` prefix, the store
+RIP, budget/retirement, all registers and flags, and unchanged RAM/backing
+versions. No notification is emitted. A STOP raised as the helper returns
+does not replace that fault. Budget and stop-RIP at the store boundary prevent
+the write helper from being called. Backend memory failures and helper
+boundary failures remain host errors; malformed exit tags, accounting, or
+fault presence flags are rejected by the host decoder without invoking native
+code.
+
+Independent fixture copies run the same prefix and faulting store through
+`od_isa::execute::step`; the fault payload, full CPU state, and RAM/backing
+versions are compared. Optional fault error-code and linear-address fields may
+be absent because `ArchitecturalFault` models each as `Option`. This is a
+bounded checked-store regression, not full S3-27 fault/PC-map coverage or a
+physical exception-delivery claim. Mac mini execution remains reserved for
+the final S3-21 gate. See the [S3-27a report](../reports/STAGE_3_S3-27a_2026-10-27.md).
+
 ### S3-19a: invocation-local checked memory helper ABI partial
 
 `od_jit::memory_bridge::CheckedMemoryAdapter` borrows one `&mut dyn

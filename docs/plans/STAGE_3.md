@@ -166,6 +166,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-23 | Инвалидация code dependencies | S3-18, S3-21, S3-22; полный writer/MMU integration |
 | [ ] | S3-24 | Self-modifying code в текущем блоке | S3-23 |
 | [partial] | S3-24a | Active native three-instruction artifact exits after committed store changes already executed prefix | One typed V3 slot/call; future-tail writes rejected; future-instruction SMC oracle and general blocks remain open |
+| [partial] | S3-27a | Exact V3 store architectural fault payload and precise prefix state | Fixture-injected #PF after checked write entry; host decoder negatives; full S3-27 fault/fetch/PC-map coverage remains open |
 | [ ] | S3-25 | Eviction, retirement и освобождение | S3-18, S3-24 |
 | [partial] | S3-25a | One-vCPU synchronous cache/arena handle lifetime and safe-point checks | Inactive entries only; active-code retirement, SMP, deferred queue not included |
 | [partial] | S3-25b | Capacity-two arena lifetime for one V3 artifact and one cached prefix | V3 slot survives cache clear/invalidation; stale source rejected; full retirement/SMP/deferred queue remain open |
