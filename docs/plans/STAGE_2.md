@@ -1492,6 +1492,42 @@ Mac mini или SSH execution.
 snapshots с CLI JIT denial. Итоговые проверки и границы зафиксированы в
 [отчёте S2-19p](../reports/STAGE_2_REPORT.md#s2-19p--bounded-repe-cmpswdq-address-size-32).
 
+#### S2-19q — bounded REPNE SCASB с address-size 32
+
+Добавить только Long64 `F2 67 AE` и `67 F2 AE`. Addr64 `F3 AE`, addr32
+`F3 67 AE`/`67 F3 AE` и весь текущий F3 профиль остаются неизменными. Остальные
+F2 SCAS/CMPS, AF/wide forms, дополнительные prefix, JIT и native закрыты.
+Decoder/executor принимают единственный нормализованный профиль.
+
+Определённость всех arithmetic flags обязательна до проверки ECX; concrete
+RFLAGS значения не gate-ятся, включая ECX=0. Count — ECX. Нулевой count не
+читает память и сохраняет RCX/RDI/RAX/flags/mask. Для каждой успешной итерации
+один byte read по zero-extended EDI, CMP(AL, byte), commit flags, EDI ± 1 по DF
+с modulo-32 wrap и zero-extended ECX-1. REPNE завершается при ECX=0 или ZF=1;
+STOP и limit проверяются после completion. STOP/limit оставляют RIP и retirement
+на instruction boundary; для переносимого возобновления нужен новый явный
+`RepContinuation` API. Старые entry points fail closed для новой формы.
+
+Token сохраняет original RFLAGS/definedness и ожидаемый checkpoint RAX/RCX/RDI/
+RFLAGS/mask/RIP/AccessContext. Вход валидирует checkpoint до callback/fetch;
+декодированное instruction identity проверяется до data read. Architectural
+fault восстанавливает исходные flags/mask, оставляя уже выполненный count/index
+прогресс, и очищает token; backend MemoryError сохраняет актуальный token.
+Token хранится только вызывающей стороной: частичный schema-v2 snapshot не
+восстанавливает continuation без token. Источник restart flags: Intel 64 and IA-32
+Architectures Software Developer's Manual, Combined Vol. 2B, REP/REPE/REPNE,
+§4-568 (rev. 093); это локальный execution profile, не полная модель #PF delivery.
+
+Покрыть независимой CMP-моделью обе DF и начальные ZF, count 0/1/many, high
+halves, ошибки state/instruction/mask/context до callbacks, faults first/after
+progress, host MemoryError, STOP/1024 continuation, prefix order, old API и
+literal schema-v2 snapshots. Testkit sidecar удерживает token между вызовами;
+одиночные fixtures стартуют с `None`. Обновить CPU contract, interpreter notes,
+fixture README и report. Без physical/Mac mini/SSH execution.
+
+**Результат:** реализация и проверки описываются фактически в
+[отчёте S2-19q](../reports/STAGE_2_REPORT.md#s2-19q--bounded-repne-scasb-addr32).
+
 ### S2-20. Точность исключений и exit state
 
 1. Свести для реализованных форм `#UD`, `#DE`, `#GP`, `#SS`, memory faults и traps только там, где они действительно определены профилем/адаптером.

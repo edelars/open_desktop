@@ -8069,6 +8069,43 @@ See the [S2-19p plan](../plans/STAGE_2.md#s2-19p--bounded-repe-cmpswdq-с-addres
 and [fixtures](../../tests/fixtures/x86/stage2/README.md#bounded-repe-cmpswdq-address-size-32-fixtures-s2-19p).
 ISSUE-020 remains open.
 
+### Local S2-19q bounded REPNE SCASB address-size-32 contract
+
+Only Long64 `F2 67 AE` and `67 F2 AE` are admitted. They normalize to one
+addr32 REPNE SCASB operation. Existing F3 forms remain unchanged; other F2
+SCAS/CMPS, wide AF, extra/repeated prefixes, JIT and native remain unsupported.
+The legacy `run`, `run_with_rflags_defined`, and single-step APIs fail closed
+for this form. Cross-run continuation is available only through
+`run_with_rep_continuation` and its opaque in-memory `RepContinuation` token.
+
+Before checking ECX or accessing data, the local gate requires all six
+arithmetic flags to be defined. Concrete RFLAGS values are not restricted.
+ECX=0 performs no data access and preserves full RCX/RDI/RAX/RFLAGS and the
+definedness mask, then retires once. Each successful nonzero iteration reads
+one byte from zero-extended EDI, compares AL minus that byte using the existing
+CMP implementation, commits the result flags, increments/decrements EDI modulo
+2^32 by DF, and zero-extends ECX-1. REPNE finishes when ECX reaches zero or ZF
+becomes one. Completion is checked before STOP and the 1024-read invocation
+limit.
+
+STOP/limit preserves the latest comparison flags and a token checkpoint at the
+REP RIP. Resume validates full relevant RAX/RCX/RDI/RFLAGS/definedness/context
+state before callbacks or instruction/data access, then validates normalized
+instruction identity after decode and before data read. A mismatch returns an
+input error without architectural mutation. Architectural fetch/data faults
+restore entry RFLAGS and definedness while retaining prior count/index progress
+and clear the token. Backend `MemoryError` keeps current state and token for
+retry. Completion clears the token. A fresh call with `None` explicitly starts
+a new boundary; partial schema-v2 snapshots do not persist the token.
+
+Intel SDM Combined Vol. 2B, REP/REPE/REPNE, p. 4-568 (revision 093) specifies
+the restart flag restoration basis. This implementation does not claim precise
+hardware fault delivery or #PF priority. Local API behavior is covered by
+independent CMP modeling, prefix-order acceptance, STOP/resume, stale token,
+fault rollback, and old-entry rejection tests. See the [S2-19q plan](../plans/STAGE_2.md#s2-19q--bounded-repne-scasb-с-address-size-32),
+[interpreter notes](../testing/INTERPRETER.md#repne-scasb-address-size-32--s2-19q),
+and [report](../reports/STAGE_2_REPORT.md#s2-19q--bounded-repne-scasb-addr32).
+
 ### Local S2-19d bounded REP MOVSB/W/D/Q contract
 
 The interpreter admits exact `F3 A4` MOVSB, `F3 66 A5` MOVSW, `F3 A5` MOVSD,

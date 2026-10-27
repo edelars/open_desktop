@@ -4,7 +4,8 @@ use crate::case::MemoryPermissions;
 use crate::memory::{FlatMemory, encode_bytes};
 use crate::v2::{ExpectedExit, Fixture, decode_bytes};
 use od_isa::execute::{
-    REP_ITERATION_WORK_LIMIT, RunConfig, RunExit, StepOutcome, run, run_with_rflags_defined, step,
+    REP_ITERATION_WORK_LIMIT, RunConfig, RunExit, StepOutcome, run, run_with_rep_continuation,
+    run_with_rflags_defined, step,
 };
 use od_isa::memory::{AccessContext, AccessKind, ArchitecturalFault, GuestMemory, MemoryError};
 use od_isa::{LongModeState, OperandSize, Register, RegisterView};
@@ -7462,6 +7463,106 @@ fn rep_cmps_wdq_addr32_literal_fixtures_match_full_expected_answers() {
             u64::from(input.expected_exit == ExpectedExit::StopAddress)
         };
         assert_eq!(result.instructions_executed, expected_retired, "{id}");
+    }
+}
+
+#[test]
+fn repne_scasb_addr32_testkit_sidecar_carries_token_across_runs() {
+    let mut input = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_19m_scasb32_zero_f3_67.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    input.memory[0].initial_bytes_hex = "f267ae".into();
+    input.memory[0].comparison_mask_hex = "ffffff".into();
+    input.memory[1].initial_bytes_hex = "4241".into();
+    input.memory[1].length = 2;
+    input.memory[1].comparison_mask_hex = "ffff".into();
+    input.stop_rip = None;
+    input.expected_exit = ExpectedExit::InstructionBudgetExhausted;
+    input.initial_state.rip = HexU64(0x0010_0000);
+    input.initial_state.gpr[0] = HexU64(0x41);
+    input.initial_state.gpr[1] = HexU64(2);
+    input.initial_state.gpr[7] = HexU64(0x0030_0000);
+    input.initial_state.rflags = HexU64(2);
+    let mut state = input.initial_state.to_cpu().unwrap();
+    let mut memory = FlatMemory::from_fixture(&input).unwrap();
+    let mut continuation = None;
+    let mut stop_calls = 0;
+    let first = run_with_rep_continuation(
+        &mut state,
+        &mut memory,
+        config(1, None),
+        od_isa::INTEGER_FLAGS,
+        &mut continuation,
+        || {
+            stop_calls += 1;
+            stop_calls == 2
+        },
+    )
+    .unwrap();
+    assert_eq!(first.exit, RunExit::StopRequested);
+    assert_eq!(state.gpr[Register::Rcx as usize], 1);
+    assert_eq!(state.gpr[Register::Rdi as usize], 0x0030_0001);
+    assert!(continuation.is_some());
+    let resumed = run_with_rep_continuation(
+        &mut state,
+        &mut memory,
+        config(1, None),
+        first.rflags_defined,
+        &mut continuation,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(resumed.exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rip, 0x0010_0003);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0);
+    assert_eq!(state.gpr[Register::Rdi as usize], 0x0030_0002);
+    assert_eq!(state.rflags, 0x46);
+    assert!(continuation.is_none());
+}
+
+#[test]
+fn repne_scasb_addr32_literal_fixtures_use_fresh_continuation_tokens() {
+    let dir = arithmetic_fixture_directory();
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(dir.join("s2_19q_repne_scasb_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 2);
+    for (id, answer) in answers {
+        let input =
+            Fixture::from_json(&std::fs::read(dir.join(format!("{id}.case.json"))).unwrap())
+                .unwrap()
+                .fixture;
+        let mut state = input.initial_state.to_cpu().unwrap();
+        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+        let mut continuation = None;
+        let result = run_with_rep_continuation(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            od_isa::INTEGER_FLAGS,
+            &mut continuation,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(result.exit, RunExit::StopAddress, "{id}");
+        assert_eq!(result.instructions_executed, 1, "{id}");
+        assert!(continuation.is_none(), "one-shot fixture completed: {id}");
+        let gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        assert_eq!(state.gpr, gpr.map(HexU64::get), "{id}");
+        let flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let defined: HexU64 = serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(state.rflags, flags.get(), "{id}");
+        assert_eq!(result.rflags_defined, defined.get(), "{id}");
+        assert_eq!(state.rip, rip.get(), "{id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in memory.snapshot() {
+            assert_eq!(region.bytes_hex, expected_memory[&region.region_id], "{id}");
+        }
     }
 }
 

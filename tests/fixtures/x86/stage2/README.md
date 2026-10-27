@@ -4461,3 +4461,12 @@ as contiguous width-sized spans after zero-extending ESI/EDI. Dual-unmapped
 fixtures verify only the bounded local ESI-first error outcome. They do not
 establish physical exception priority or MMIO rollback. JIT/native, Mac mini
 and physical x86 acceptance remain deferred; ISSUE-020 is open.
+
+### Bounded REPNE SCASB address-size-32 fixtures S2-19q
+
+Schema-v2 one-shot fixtures use the explicit continuation API with a fresh
+`None` token. They cover zero-count arbitrary flag values and successful byte
+comparisons using literal full-state expected answers. The token is intentionally
+not serialized by schema v2: callers retain it in memory between calls to
+resume a partial REP instruction. JIT/native remain denied; no physical, Mac
+mini or SSH execution is claimed.

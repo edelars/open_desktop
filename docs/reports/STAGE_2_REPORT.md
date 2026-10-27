@@ -10975,3 +10975,24 @@ passed. `tools/check_layout.py` was attempted and reports the managed worktree
 `.git` marker as an unmapped root file plus two pre-existing links to absent
 Stage 1/2 oracle manifest artifacts; no layout change was made. No native/JIT
 execution, physical x86, Mac mini or SSH testing was performed.
+
+## S2-19q — bounded REPNE SCASB addr32
+
+The Long64 decoder admits normalized `F2 67 AE` and `67 F2 AE` as the single
+addr32 REPNE SCASB operation. The additive `run_with_rep_continuation` API
+supports an opaque in-memory token while old entry points reject the form.
+Focused tests verify STOP/resume across equivalent prefix orderings,
+stale-state rejection before callbacks/accesses, old-entry rejection and an
+architectural fault after progress restoring original flags/definedness while
+retaining index/count progress.
+
+The local gate requires all arithmetic flags defined but places no condition on
+concrete flag values. Zero ECX avoids memory. Successful byte compares update
+AL-minus-memory flags and EDI/ECX modulo 32; REPNE completes at ECX=0 or ZF=1.
+Architectural faults restore entry RFLAGS/definedness and clear the token;
+backend errors preserve current state and token. Completion clears the token.
+Schema v2 remains unchanged and cannot persist continuation metadata. Intel
+SDM Combined Vol. 2B REP/REPE/REPNE p. 4-568 (revision 093) is cited for flag
+restart behavior; local fault handling does not claim physical #PF semantics.
+
+JIT/native changes and physical x86, Mac mini or SSH runs were not performed.

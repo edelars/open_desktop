@@ -6437,6 +6437,55 @@ fn rep_cmps_wdq_addr32_cli_fixtures_check_full_state_and_jit_denial() {
 }
 
 #[test]
+fn repne_scasb_addr32_cli_fixtures_check_literal_snapshots_and_keep_jit_closed() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_19q_repne_scasb_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 2);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (_, result) = run(&raw, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::StopAddress {}),
+            "{case_id}"
+        );
+        assert_eq!(count(&result), 1, "{case_id}");
+        let Observation::Available { value } = result.snapshot else {
+            panic!("full snapshot");
+        };
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        assert_eq!(value.state.gpr, expected_gpr, "{case_id}");
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(value.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(value.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(value.state.rip, expected_rip, "{case_id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &value.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+        let (_, jit_result) = run(&raw, "jit", 4);
+        assert!(
+            matches!(jit_result.outcome, Outcome::Unsupported { .. }),
+            "{case_id}"
+        );
+        assert!(matches!(
+            jit_result.snapshot,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
 fn rep_cmps_wdq_cli_fixtures_check_full_state_and_jit_denial() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

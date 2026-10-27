@@ -317,7 +317,7 @@ fn execute_fixture_v2(
     loaded: &od_testkit::v2::LoadedFixture,
     memory: &mut od_testkit::memory::FlatMemory,
 ) -> od_testkit::v2::RunResult {
-    use od_isa::execute::{RunConfig, RunExit, run};
+    use od_isa::execute::{RunConfig, RunExit, run, run_with_rep_continuation};
     use od_testkit::v2;
     use std::time::{Duration, Instant};
 
@@ -331,19 +331,39 @@ fn execute_fixture_v2(
     let mut timed_out = false;
     // A cooperative deadline is checked at the same instruction boundaries as
     // STOP, before budget/fetch. It cannot interrupt a stalled backend call.
-    let execution = run(
-        &mut state,
-        memory,
-        RunConfig {
-            instruction_budget: loaded.fixture.instruction_budget,
-            stop_rip: loaded.fixture.stop_rip.map(HexU64::get),
-            context: od_isa::memory::AccessContext::default(),
-        },
-        || {
-            timed_out = start.elapsed() >= limit;
-            timed_out
-        },
-    );
+    let config = RunConfig {
+        instruction_budget: loaded.fixture.instruction_budget,
+        stop_rip: loaded.fixture.stop_rip.map(HexU64::get),
+        context: od_isa::memory::AccessContext::default(),
+    };
+    let timeout = || {
+        timed_out = start.elapsed() >= limit;
+        timed_out
+    };
+    let entry_bytes = loaded.fixture.memory.iter().find_map(|region| {
+        let base = region.guest_address.get();
+        let offset = usize::try_from(state.rip.checked_sub(base)?).ok()?;
+        let bytes = od_testkit::v2::decode_bytes(&region.initial_bytes_hex).ok()?;
+        let end = offset.checked_add(3)?;
+        bytes.get(offset..end).map(<[u8]>::to_vec)
+    });
+    let execution = if entry_bytes
+        .as_deref()
+        .is_some_and(|bytes| bytes == [0xf2, 0x67, 0xae] || bytes == [0x67, 0xf2, 0xae])
+    {
+        let mut continuation = None;
+        run_with_rep_continuation(
+            &mut state,
+            memory,
+            config,
+            od_isa::INTEGER_FLAGS,
+            &mut continuation,
+            timeout,
+        )
+        .expect("fixture supplies a valid fresh REP continuation boundary")
+    } else {
+        run(&mut state, memory, config, timeout)
+    };
     let exception = match &execution.exit {
         RunExit::Fault(fault) => Some(od_testkit::result::ExceptionSnapshot {
             vector: fault.vector,
@@ -816,6 +836,39 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.0).unwrap();
         }
+    }
+
+    #[test]
+    fn v2_repne_entry_probe_is_overflow_safe_at_stop_and_budget_boundaries() {
+        let mut loaded = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_19q_scasb_zero_arbitrary_flags.case.json"
+        ))
+        .unwrap();
+        loaded.fixture.memory[0].guest_address = HexU64(0);
+        loaded.fixture.memory[0].permissions.execute = false;
+        loaded.fixture.initial_state.rip = HexU64(u64::MAX);
+        loaded.fixture.stop_rip = Some(HexU64(u64::MAX));
+        loaded.fixture.instruction_budget = 0;
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        let stop = execute_fixture_v2(&loaded, &mut memory);
+        assert!(matches!(stop.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            stop.instructions_executed,
+            Observation::Available { value: HexU64(0) }
+        );
+
+        loaded.fixture.stop_rip = None;
+        loaded.fixture.expected_exit = v2::ExpectedExit::InstructionBudgetExhausted;
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        let budget = execute_fixture_v2(&loaded, &mut memory);
+        assert!(matches!(
+            budget.outcome,
+            v2::Outcome::InstructionBudgetExhausted {}
+        ));
+        assert_eq!(
+            budget.instructions_executed,
+            Observation::Available { value: HexU64(0) }
+        );
     }
 
     #[test]

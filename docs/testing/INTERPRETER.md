@@ -733,6 +733,37 @@ See the [S2-19p CPU contract](../specs/CPU_CONTRACT.md#local-s2-19p-bounded-repe
 and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19p--bounded-repe-cmpswdq-address-size-32).
 Native/physical, Mac mini and SSH execution were not performed.
 
+## REPNE SCASB address-size 32 — S2-19q
+
+Only normalized `F2 67 AE` / `67 F2 AE` is admitted. Existing F3 byte and wide
+SCAS behavior is unchanged. REPNE's local entry gate requires all arithmetic
+flags defined but accepts any concrete values; this applies before ECX=0. A
+zero count avoids data reads and preserves full RCX/RDI/RAX/flags/mask.
+Successful iterations read one byte at zero-extended EDI, compute AL−byte CMP
+flags, and commit flags, modulo-32 DF-directed EDI and zero-extended ECX−1.
+REPNE ends on count zero or ZF=1. Completion takes priority over STOP and the
+1024-read limit.
+
+`run_with_rep_continuation` carries an opaque token between calls. It records
+the original flags/definedness and expected state checkpoint; stale state and
+context are rejected before callbacks/fetch. After decode, normalized
+instruction identity is validated before data access. Architectural fetch/data
+faults restore original flags/mask while retaining completed count/index
+progress and clear the token. Backend memory errors preserve the current token.
+Completion clears it. Old execution APIs reject the new instruction. Schema-v2
+fixtures are one-shot fresh calls with no serialized token; a partial fixture
+snapshot cannot be used as continuation state.
+
+Tests use an independent CMP model and cover both DF settings, initial flag
+values, count zero and nonzero, continuation, stale checkpoint and a later
+architectural fault. Intel SDM Combined Vol. 2B REP/REPE/REPNE p. 4-568, rev.
+093, is the source for the restart-flag rule. Local fault behavior is not a
+claim about hardware #PF delivery or priority. JIT/native/physical/Mac mini/SSH
+execution were not performed.
+
+See the [S2-19q CPU contract](../specs/CPU_CONTRACT.md#local-s2-19q-bounded-repne-scasb-address-size-32-contract)
+and [report](../reports/STAGE_2_REPORT.md#s2-19q--bounded-repne-scasb-addr32).
+
 ## REPE CMPSB — S2-19f local interpreter coverage
 
 Only exact `F3 A6` is admitted in Long64/address64. Even at RCX zero, entry

@@ -706,6 +706,8 @@ pub enum Operation {
     RepScas {
         size: OperandSize,
     },
+    /// Bounded Long64 REPNE SCASB with address-size 32; continuation is explicit.
+    RepneScasbAddr32,
     /// One bounded invocation of long-mode REPE CMPSB.
     RepCmps {
         size: OperandSize,
@@ -1318,6 +1320,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     prefixes.rex.is_none_or(|rex| rex & 8 != 0)
                 }
             };
+        let repne_scasb_addr32 = opcode.map == OpcodeMap::Primary
+            && opcode.byte == 0xae
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.address_override
+            && prefixes.segment.is_none()
+            && self.length == 3
+            && prefixes.rex.is_none()
+            && !prefixes.operand_override;
         let rep_cmps = opcode.map == OpcodeMap::Primary
             && matches!(opcode.byte, 0xa6 | 0xa7)
             && prefixes.group1 == Some(0xf3)
@@ -1356,6 +1366,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !rep_lods
                 && !rep_movs
                 && !rep_scas
+                && !repne_scasb_addr32
                 && !rep_cmps
                 && !locked_qword_memory_xadd_candidate)
         {
@@ -1735,7 +1746,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Primary, 0xae) => {
-                if rep_scas {
+                if repne_scasb_addr32 {
+                    size = OperandSize::Byte;
+                    Operation::RepneScasbAddr32
+                } else if rep_scas {
                     size = OperandSize::Byte;
                     Operation::RepScas { size }
                 } else if prefixes != Prefixes::default()
@@ -6111,6 +6125,31 @@ mod tests {
     }
 
     #[test]
+    fn repne_scasb_addr32_admits_only_two_normalized_prefix_orders() {
+        for bytes in [&[0xf2, 0x67, 0xae][..], &[0x67, 0xf2, 0xae][..]] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(instruction.operation, Operation::RepneScasbAddr32);
+            assert_eq!(instruction.address_size, OperandSize::Dword);
+            assert_eq!(instruction.length, 3);
+        }
+        for bytes in [
+            &[0xf2, 0xae][..],
+            &[0xf2, 0x67, 0x67, 0xae][..],
+            &[0xf2, 0x66, 0x67, 0xae][..],
+            &[0xf2, 0x48, 0x67, 0xae][..],
+            &[0xf2, 0x67, 0xf2, 0xae][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "unexpectedly admitted {bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn rep_scas_addr32_admits_only_wide_f3_af_prefix_groups() {
         for (bytes, size) in [
             (&[0xf3, 0x67, 0x66, 0xaf][..], OperandSize::Word),
@@ -6965,7 +7004,11 @@ mod tests {
         for form in forms {
             cases.push([&[0x67][..], form].concat());
         }
-        cases.retain(|bytes| bytes != &[0xf3, 0x67, 0xae]);
+        cases.retain(|bytes| {
+            bytes != &[0xf3, 0x67, 0xae]
+                && bytes != &[0xf2, 0x67, 0xae]
+                && bytes != &[0x67, 0xf2, 0xae]
+        });
         cases.push(vec![0x67, 0x66, 0xae]);
         for rex in 0x40..=0x4f {
             cases.push(vec![0x67, rex, 0xae]);
@@ -6974,7 +7017,7 @@ mod tests {
             cases.push(vec![0x67, rex, 0xaf]);
             cases.push(vec![0x67, 0x66, rex, 0xaf]);
         }
-        assert_eq!(cases.len(), 69);
+        assert_eq!(cases.len(), 68);
         for bytes in cases {
             assert!(
                 matches!(
