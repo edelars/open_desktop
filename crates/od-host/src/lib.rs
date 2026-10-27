@@ -542,6 +542,7 @@ struct ArenaSlot {
 
 struct ArenaInner {
     region: MappedRegion,
+    mapping_bytes: usize,
     slots: Vec<ArenaSlot>,
     free_slots: Vec<usize>,
 }
@@ -589,6 +590,7 @@ impl PublishedArenaBackend {
             return Ok(Self {
                 arena: Rc::new(RefCell::new(ArenaInner {
                     region,
+                    mapping_bytes: mapping_size,
                     slots,
                     free_slots,
                 })),
@@ -610,6 +612,11 @@ impl PublishedArenaBackend {
 
     pub fn available_slots(&self) -> usize {
         self.arena.borrow().free_slots.len()
+    }
+
+    /// Actual page-rounded MAP_JIT reservation size for benchmark reporting.
+    pub fn reserved_mapping_bytes(&self) -> usize {
+        self.arena.borrow().mapping_bytes
     }
 }
 

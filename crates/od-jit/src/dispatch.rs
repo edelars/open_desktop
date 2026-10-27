@@ -104,6 +104,15 @@ pub const MAX_MULTI_ENTRY_CACHE_BLOCKS: usize = 16;
 pub const MAX_MULTI_ENTRY_CACHE_CODE_BYTES: usize = 65_536;
 pub const MAX_MULTI_ENTRY_CACHE_METADATA_BYTES: usize = 512 * 1024;
 
+/// Replacement policy for bounded multi-entry caches. FIFO remains the
+/// default; LRU is opt-in for measurement and carries no performance claim.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CacheEvictionPolicy {
+    #[default]
+    Fifo,
+    Lru,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CacheConfigError {
     RequiresExactlyOneBlock { requested: usize },
@@ -141,7 +150,7 @@ trait CachedEntryStore<H> {
     ) -> Result<(), CacheError>;
     fn install(&mut self, entry: CachedEntry<H>) -> Result<usize, CacheError>;
     fn remove(&mut self, index: usize) -> Result<(), CacheError>;
-    fn record_hit(&mut self) -> Result<(), CacheError>;
+    fn record_hit(&mut self, index: usize) -> Result<(), CacheError>;
     fn record_miss(&mut self) -> Result<(), CacheError>;
     fn record_compile(&mut self) -> Result<(), CacheError>;
     fn record_publish(&mut self) -> Result<(), CacheError>;
@@ -155,6 +164,19 @@ trait CachedEntryStore<H> {
 pub struct SingleEntryBlockCache<H> {
     max_bytes: usize,
     entry: Option<CachedEntry<H>>,
+    counters: SingleEntryCacheCounters,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SingleEntryCacheCounters {
+    pub hits: u64,
+    pub misses: u64,
+    pub successful_compiles: u64,
+    pub successful_publications: u64,
+    pub replacements: u64,
+    pub resident_entries_high_water: usize,
+    pub resident_code_bytes_high_water: usize,
+    pub resident_logical_metadata_bytes_high_water: usize,
 }
 
 impl<H> SingleEntryBlockCache<H> {
@@ -173,6 +195,7 @@ impl<H> SingleEntryBlockCache<H> {
         Ok(Self {
             max_bytes,
             entry: None,
+            counters: SingleEntryCacheCounters::default(),
         })
     }
 
@@ -188,12 +211,34 @@ impl<H> SingleEntryBlockCache<H> {
         self.entry.as_ref().map_or(0, |entry| entry.logical_bytes)
     }
 
+    pub fn resident_code_bytes(&self) -> usize {
+        self.entry.as_ref().map_or(0, |entry| {
+            entry.block.emitted().code().words().len() * std::mem::size_of::<u32>()
+        })
+    }
+
+    pub const fn counters(&self) -> SingleEntryCacheCounters {
+        self.counters
+    }
+
     pub fn clear(&mut self) {
         self.entry = None;
     }
 
-    fn install(&mut self, entry: CachedEntry<H>) {
+    fn install(&mut self, entry: CachedEntry<H>) -> Result<(), CacheError> {
+        let metadata_bytes = cached_entry_metadata_size::<H>(&entry.key, &entry.block)?;
+        self.counters.resident_entries_high_water =
+            self.counters.resident_entries_high_water.max(1);
+        self.counters.resident_code_bytes_high_water = self
+            .counters
+            .resident_code_bytes_high_water
+            .max(entry.block.emitted().code().words().len() * std::mem::size_of::<u32>());
+        self.counters.resident_logical_metadata_bytes_high_water = self
+            .counters
+            .resident_logical_metadata_bytes_high_water
+            .max(metadata_bytes);
         self.entry = Some(entry);
+        Ok(())
     }
 }
 
@@ -239,12 +284,15 @@ impl<H> CachedEntryStore<H> for SingleEntryBlockCache<H> {
                 max: self.max_bytes,
             });
         }
+        if self.entry.is_some() {
+            Self::add_counter(&mut self.counters.replacements)?;
+        }
         self.clear();
         Ok(())
     }
 
     fn install(&mut self, entry: CachedEntry<H>) -> Result<usize, CacheError> {
-        SingleEntryBlockCache::install(self, entry);
+        SingleEntryBlockCache::install(self, entry)?;
         Ok(0)
     }
 
@@ -255,16 +303,23 @@ impl<H> CachedEntryStore<H> for SingleEntryBlockCache<H> {
         Ok(())
     }
 
-    fn record_hit(&mut self) -> Result<(), CacheError> {
-        Ok(())
+    fn record_hit(&mut self, _index: usize) -> Result<(), CacheError> {
+        Self::add_counter(&mut self.counters.hits)
     }
     fn record_miss(&mut self) -> Result<(), CacheError> {
-        Ok(())
+        Self::add_counter(&mut self.counters.misses)
     }
     fn record_compile(&mut self) -> Result<(), CacheError> {
-        Ok(())
+        Self::add_counter(&mut self.counters.successful_compiles)
     }
     fn record_publish(&mut self) -> Result<(), CacheError> {
+        Self::add_counter(&mut self.counters.successful_publications)
+    }
+}
+
+impl<H> SingleEntryBlockCache<H> {
+    fn add_counter(counter: &mut u64) -> Result<(), CacheError> {
+        *counter = counter.checked_add(1).ok_or(CacheError::CounterOverflow)?;
         Ok(())
     }
 }
@@ -278,6 +333,9 @@ pub struct MultiEntryCacheCounters {
     pub evictions: u64,
     pub resident_code_bytes: usize,
     pub resident_logical_metadata_bytes: usize,
+    pub resident_entries_high_water: usize,
+    pub resident_code_bytes_high_water: usize,
+    pub resident_logical_metadata_bytes_high_water: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -288,13 +346,14 @@ pub enum MultiEntryCacheConfigError {
     BackendCapacityTooSmall { requested: usize, available: usize },
 }
 
-/// Bounded FIFO cache for published blocks. A hit does not refresh insertion
-/// order. Limits account for emitted bytes and logical key/block/publication
-/// metadata, not allocator bookkeeping or process RSS.
+/// Bounded multi-entry cache for published blocks. The default policy is FIFO;
+/// an opt-in policy may refresh hit order. Limits account for emitted bytes
+/// and logical key/block/publication metadata, not allocator bookkeeping or RSS.
 pub struct MultiEntryBlockCache<H> {
     max_entries: usize,
     max_code_bytes: usize,
     max_metadata_bytes: usize,
+    eviction_policy: CacheEvictionPolicy,
     entries: Vec<CachedEntry<H>>,
     counters: MultiEntryCacheCounters,
 }
@@ -304,6 +363,20 @@ impl<H> MultiEntryBlockCache<H> {
         max_entries: usize,
         max_code_bytes: usize,
         max_metadata_bytes: usize,
+    ) -> Result<Self, MultiEntryCacheConfigError> {
+        Self::with_policy(
+            max_entries,
+            max_code_bytes,
+            max_metadata_bytes,
+            CacheEvictionPolicy::Fifo,
+        )
+    }
+
+    pub fn with_policy(
+        max_entries: usize,
+        max_code_bytes: usize,
+        max_metadata_bytes: usize,
+        eviction_policy: CacheEvictionPolicy,
     ) -> Result<Self, MultiEntryCacheConfigError> {
         if max_entries == 0 || max_entries > MAX_MULTI_ENTRY_CACHE_BLOCKS {
             return Err(MultiEntryCacheConfigError::InvalidEntryLimit {
@@ -327,6 +400,7 @@ impl<H> MultiEntryBlockCache<H> {
             max_entries,
             max_code_bytes,
             max_metadata_bytes,
+            eviction_policy,
             entries: Vec::with_capacity(max_entries),
             counters: MultiEntryCacheCounters::default(),
         })
@@ -340,6 +414,9 @@ impl<H> MultiEntryBlockCache<H> {
     }
     pub const fn max_metadata_bytes(&self) -> usize {
         self.max_metadata_bytes
+    }
+    pub const fn eviction_policy(&self) -> CacheEvictionPolicy {
+        self.eviction_policy
     }
     pub const fn counters(&self) -> MultiEntryCacheCounters {
         self.counters
@@ -460,6 +537,16 @@ impl<H> CachedEntryStore<H> for MultiEntryBlockCache<H> {
         self.counters.resident_code_bytes = code_bytes;
         self.counters.resident_logical_metadata_bytes = metadata_bytes;
         self.entries.push(entry);
+        self.counters.resident_entries_high_water = self
+            .counters
+            .resident_entries_high_water
+            .max(self.entries.len());
+        self.counters.resident_code_bytes_high_water =
+            self.counters.resident_code_bytes_high_water.max(code_bytes);
+        self.counters.resident_logical_metadata_bytes_high_water = self
+            .counters
+            .resident_logical_metadata_bytes_high_water
+            .max(metadata_bytes);
         Ok(self.entries.len() - 1)
     }
 
@@ -485,8 +572,13 @@ impl<H> CachedEntryStore<H> for MultiEntryBlockCache<H> {
         Ok(())
     }
 
-    fn record_hit(&mut self) -> Result<(), CacheError> {
-        Self::add_counter(&mut self.counters.hits)
+    fn record_hit(&mut self, index: usize) -> Result<(), CacheError> {
+        Self::add_counter(&mut self.counters.hits)?;
+        if self.eviction_policy == CacheEvictionPolicy::Lru && index < self.entries.len() {
+            let touched = self.entries.remove(index);
+            self.entries.push(touched);
+        }
+        Ok(())
     }
     fn record_miss(&mut self) -> Result<(), CacheError> {
         Self::add_counter(&mut self.counters.misses)
@@ -596,8 +688,8 @@ pub fn run_cached_controlled<B: CachedBlockBackend>(
     )
 }
 
-/// Run through the bounded FIFO cache. The configured entry count must fit
-/// the backend's simultaneously published-block capacity.
+/// Run through the bounded multi-entry cache. The configured entry count must
+/// fit the backend's simultaneously published-block capacity.
 pub fn run_multi_cached<B: MultiBlockCachedBackend>(
     code: CodeView<'_>,
     admission: &AdmittedInstructionBoundaries,
@@ -732,9 +824,10 @@ where
         .map_err(DispatchError::TranslationKey)?;
         validate_cached_snapshot(&key, code, dependencies)?;
 
-        let hit = cache.find(&key).is_some();
-        if hit {
-            cache.record_hit().map_err(DispatchError::Cache)?;
+        let hit_index = cache.find(&key);
+        let hit = hit_index.is_some();
+        if let Some(index) = hit_index {
+            cache.record_hit(index).map_err(DispatchError::Cache)?;
         } else {
             cache.record_miss().map_err(DispatchError::Cache)?;
         }
@@ -2641,6 +2734,48 @@ mod tests {
         assert_eq!(result.retired_instructions, 3);
         assert_eq!(loop_cache.counters().successful_publications, 1);
         assert_eq!(loop_cache.counters().hits, 2);
+    }
+
+    #[test]
+    fn opt_in_lru_refreshes_hit_order_while_new_constructor_remains_fifo() {
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            allow_multiple_live: true,
+            ..PublishedTracker::default()
+        }));
+        let mut backend = MockCachedBackend(tracker);
+        let mut lru = MultiEntryBlockCache::with_policy(
+            2,
+            4096,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            CacheEvictionPolicy::Lru,
+        )
+        .unwrap();
+        let a = [0x48, 0xB8, 0x11, 0, 0, 0, 0, 0, 0, 0];
+        let b = [0x48, 0xB8, 0x22, 0, 0, 0, 0, 0, 0, 0];
+        let c = [0x48, 0xB8, 0x33, 0, 0, 0, 0, 0, 0, 0];
+        run_multi_fixture(&a, 0x7200, &mut lru, &mut backend).unwrap();
+        run_multi_fixture(&b, 0x7200, &mut lru, &mut backend).unwrap();
+        run_multi_fixture(&a, 0x7200, &mut lru, &mut backend).unwrap();
+        run_multi_fixture(&c, 0x7200, &mut lru, &mut backend).unwrap();
+        run_multi_fixture(&a, 0x7200, &mut lru, &mut backend).unwrap();
+        assert_eq!(lru.eviction_policy(), CacheEvictionPolicy::Lru);
+        assert_eq!(lru.counters().successful_compiles, 3);
+        assert_eq!(lru.counters().successful_publications, 3);
+
+        let fifo_tracker = Rc::new(RefCell::new(PublishedTracker {
+            allow_multiple_live: true,
+            ..PublishedTracker::default()
+        }));
+        let mut fifo_backend = MockCachedBackend(fifo_tracker);
+        let mut fifo =
+            MultiEntryBlockCache::new(2, 4096, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES).unwrap();
+        assert_eq!(fifo.eviction_policy(), CacheEvictionPolicy::Fifo);
+        run_multi_fixture(&a, 0x7200, &mut fifo, &mut fifo_backend).unwrap();
+        run_multi_fixture(&b, 0x7200, &mut fifo, &mut fifo_backend).unwrap();
+        run_multi_fixture(&a, 0x7200, &mut fifo, &mut fifo_backend).unwrap();
+        run_multi_fixture(&c, 0x7200, &mut fifo, &mut fifo_backend).unwrap();
+        run_multi_fixture(&a, 0x7200, &mut fifo, &mut fifo_backend).unwrap();
+        assert_eq!(fifo.counters().successful_compiles, 4);
     }
 
     #[test]

@@ -168,10 +168,17 @@ logical key/block/PC-map metadata, с capacity check перед execution. Hits 
 обновляют FIFO order. Candidate over-limit отклоняется до eviction; подходящий
 miss вытесняет только неактивные старые handles между завершёнными calls и
 сбрасывает их до publication. Counters показывают hits/misses/compiles/
-publications/evictions/resident bytes. Limits и FIFO policy остаются
-предварительными и не являются performance claim; требуется repeat
-end-to-end FIFO-vs-LRU measurement. `SingleEntryBlockCache` API и обычные
-release-on-return executors не менялись.
+publications/evictions/resident bytes. LRU доступен как явная policy для
+измерения; `MultiEntryBlockCache::new` сохраняет FIFO. Limits и обе policy
+предварительны и не являются performance claim; требуется repeat end-to-end
+FIFO-vs-LRU measurement. `SingleEntryBlockCache::new` и обычные
+release-on-return executor contracts сохраняют прежнее поведение.
+
+`od-bench dispatch-cache` имеет implementation-only native mode для uncached
+publication, single-entry arena, FIFO(16) и opt-in LRU(16). Он требует exact
+frozen S3-17 fixture list/trace и проводит admission/oracle checks до timing.
+Долгий run ещё не выполнялся; эта часть не содержит performance result и не
+закрывает S3-18.
 
 S3-13 добавляет `block_compile::compile_block`: bounded block → typed lowering
 → allocation → runtime block emission. `NoNativePrefix` остаётся отдельным

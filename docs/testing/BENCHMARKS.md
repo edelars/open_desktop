@@ -158,6 +158,56 @@ compiler/revision/source fingerprint/profile и отдельный runtime
 cwd/repository-revision/dirty context. Measure report сохраняет SHA-256 точных
 trace JSON bytes и соответствующую build/runtime metadata самого измерения.
 
+### S3-18d1: native end-to-end dispatch/cache comparison (implementation only)
+
+`od-bench dispatch-cache` is opt-in and requires Apple Silicon macOS. It accepts
+only the frozen S3-17 case list and dispatcher trace (checked by exact SHA-256),
+loads all fixture-v1 inputs, validates full decode/admitted trace boundaries,
+and computes the interpreter oracle before timing. No substitutes or generated
+inputs are accepted. Scenario selection is deterministic and written into the
+report: the original 1010-case cold sweep, two/four repeated corpus sweeps,
+hot single-block sets of 1/8/16, a recorded multi-block fixture with at most 16
+distinct entries, the 17-key capacity edge, and hot-8/hot-16 sequences followed
+by a distinct cold insertion.
+
+The four variants are uncached `PublishedBlockExecutor`, one-entry cache over a
+16-slot arena, multi-entry FIFO(16), and opt-in LRU(16). `MultiEntryBlockCache::new`
+continues to select FIFO. Preflight, interpreter oracle, state reset and result
+validation are outside timed intervals; each timed call includes dispatch
+decode/key work, compile/publication misses, eviction and native execution.
+Each paired sample runs the same input sequence the same number of times across
+all variants. Per-variant calibration chooses one common repetitions count for
+the scenario; every measured sample must accumulate at least 200 ms or the
+entire run fails without writing a result. Samples rotate variant order and
+record elapsed nanoseconds, calls, sweeps, cache counters/high-water, median,
+min/max, IQR and paired ratios. The report also records arena slots, free slots,
+slot size and actual page-rounded mapping bytes. Output is written atomically.
+`corpus-cold-sweep` starts each measured sweep with an empty cache. The 17-key
+capacity sequence is warmed once and retained between timed sweeps to measure
+steady churn. Arena construction/destruction itself is outside timed intervals;
+the cold label refers to an empty code cache, not cold-process or full mapping
+lifecycle cost.
+
+The exact frozen inputs are `work/tmp/stage3/s3-17/cases.txt` and
+`work/tmp/stage3/s3-17/dispatch-trace.json`; their accepted SHA-256 values are
+`b9276b52556b3692552de074e83cd8aef0c777f29861bd19ab09c188e41615d3` and
+`bf8d5efe0c52a47cbb4682f67ea73a82e684d463733aff3be60fed0b280bd5b3`.
+After independent review, collect three separate release process runs:
+
+```sh
+for run in 1 2 3; do
+  cargo run --release -p od-bench --offline -- dispatch-cache \
+    --case-list work/tmp/stage3/s3-17/cases.txt \
+    --trace work/tmp/stage3/s3-17/dispatch-trace.json \
+    --process-run "$run" \
+    --output "work/tmp/stage3/s3-18/dispatch-cache-$run.json"
+done
+```
+
+This protocol is implemented but has not been run; no speed or policy conclusion
+is available. Full-corpus performance collection is a separate subtask and
+S3-18 remains open.
+
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse
 unique sequence, alternating hit/miss, stale mapping/backing/execute

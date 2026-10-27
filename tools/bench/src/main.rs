@@ -20,12 +20,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("missing command".into());
     };
     let mut input = None::<PathBuf>;
+    let mut case_list = None::<PathBuf>;
+    let mut trace_path = None::<PathBuf>;
     let mut output = None::<PathBuf>;
     let mut process_run = 1u8;
     while let Some(argument) = args.next() {
         match argument.as_str() {
-            "--case-list" | "--trace" => {
-                input = Some(args.next().ok_or("input option requires a path")?.into());
+            "--case-list" => {
+                let path: PathBuf = args.next().ok_or("--case-list requires a path")?.into();
+                case_list = Some(path.clone());
+                input = Some(path);
+            }
+            "--trace" => {
+                let path: PathBuf = args.next().ok_or("--trace requires a path")?.into();
+                trace_path = Some(path.clone());
+                input = Some(path);
             }
             "--output" => {
                 output = Some(args.next().ok_or("--output requires a path")?.into());
@@ -108,9 +117,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|error| format!("benchmark failed: {error:?}"))?;
             write_json(output.as_ref(), &report)?;
         }
+        "dispatch-cache" => {
+            let case_list = case_list.ok_or("dispatch-cache requires --case-list PATH")?;
+            let trace = trace_path.ok_or("dispatch-cache requires --trace PATH")?;
+            let output = output.ok_or("dispatch-cache requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let value = od_bench::dispatch_cache::run(&case_list, &trace, process_run)?;
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (case_list, trace, output);
+                return Err("dispatch-cache requires native Apple Silicon macOS execution".into());
+            }
+        }
         _ => {
             print_usage();
-            return Err("expected record, measure, or synthetic".into());
+            return Err("expected record, measure, synthetic, or dispatch-cache".into());
         }
     }
     Ok(())
@@ -131,7 +155,7 @@ fn write_json(
 
 fn print_usage() {
     eprintln!(
-        "Usage:\n  od-bench record --case-list PATH [--output trace.json]\n  od-bench measure --trace trace.json [--process-run 1..3] [--output report.json]\n  od-bench synthetic [--process-run 1..3] [--output report.json]\n\
+        "Usage:\n  od-bench record --case-list PATH [--output trace.json]\n  od-bench measure --trace trace.json [--process-run 1..3] [--output report.json]\n  od-bench synthetic [--process-run 1..3] [--output report.json]\n  od-bench dispatch-cache --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n\
          `record` requires macOS ARM64. `measure` rebuilds all keys before timing."
     );
 }

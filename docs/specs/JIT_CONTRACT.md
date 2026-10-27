@@ -304,7 +304,9 @@ The native fixture test compares cached and uncached results and reuses the
 resident owner. This subsection documents only the one-entry register-only
 path. A separate multi-entry cache partial is described below; it does not
 change the `SingleEntryBlockCache` API or memory-lowering/production MMU
-identity/invalidation scope. S3-18 remains open, as do
+identity/invalidation scope. A read-only one-entry telemetry snapshot reports
+hits, misses, successful compiles/publications and owner replacements; it does
+not change the existing constructor or execution behavior. S3-18 remains open, as do
 context/invalidation/retirement work in S3-22/23/25.
 
 ### S3-18b: bounded host publication arena partial
@@ -371,6 +373,19 @@ speedup, production-MMU invalidation, or memory-lowering claim is made. An
 end-to-end repeat measurement must compare FIFO with LRU for 16-key and full
 execution workloads before selecting a final policy/capacity. S3-18 remains
 open; S3-22/23/25 and physical S3-14/15 acceptance remain separate work.
+
+An S3-18d1 benchmark-only partial adds `od-bench dispatch-cache` on native
+Apple Silicon. It compares the uncached publisher, one-entry cache over a
+16-slot arena, FIFO(16), and opt-in LRU(16); the existing multi-entry
+constructor remains FIFO. The harness accepts only exact frozen S3-17 corpus
+and trace fingerprints, prepares decoder admission and interpreter oracles
+before timing, and records deterministic cold/repeat, hot-set, actual
+multi-block, capacity-edge, and cold-insertion scenarios. It uses a shared
+calibrated repetition count so variants in each paired sample execute equal
+operation counts, requires at least 200 ms per sample, validates the full
+observable register state/RIP/compared RFLAGS and dispatch counters, and writes
+JSON atomically. This harness has not been run; no cache policy or performance
+conclusion follows from its existence. S3-18 remains open.
 
 Compile result остаётся Rust-side: успешная компиляция даёт непубликованный
 код/metadata; неподдержанная форма классифицируется как `Unsupported`, а

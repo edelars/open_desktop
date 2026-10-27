@@ -571,9 +571,10 @@ and drop ordering, dependency changes, invalid snapshots, oversize candidates,
 publication errors, clear/drop lifetime and zero-budget/code-end priority. A
 native od-host fixture compares cached and uncached state/results and repeats a
 cache hit. This S3-18a subsection describes only the one-entry policy and does
-not integrate the separate host arena described below. Its counters are not
-cache telemetry; S3-18c adds multi-entry hit/miss/compile/publication/eviction
-and resident-byte counters. Memory lowering, production MMU
+not integrate the separate host arena described below. One-entry hit, miss,
+compile, publication and replacement counters are available for measurement;
+S3-18c adds multi-entry hit/miss/compile/publication/eviction and resident-byte
+counters. Memory lowering, production MMU
 identity/invalidation, and benchmark evidence remain absent. S3-18 stays open;
 S3-22/23/25 remain separate context, invalidation and retirement work.
 
@@ -622,6 +623,24 @@ claimed. S3-18 remains open.
 Future measurement must compare the 16-key workload against FIFO/LRU and
 end-to-end execution with repeat samples before choosing policy or capacity;
 the current implementation makes no optimality or speedup claim.
+
+**S3-18d1 implementation partial:** `od-bench dispatch-cache` adds an opt-in
+native Apple Silicon end-to-end harness for uncached publication, one-entry
+arena cache, FIFO(16), and LRU(16). It accepts only the exact frozen S3-17
+case-list/trace fingerprints, checks full fixture-v1 decode admission and
+recorded entry boundaries, and prepares the interpreter oracle before timing.
+Deterministic scenarios cover the 1010-case cold sweep, two/four warmed corpus
+repeats, hot 1/8/16 single-block sets, a recorded multi-block input, a 17-key
+capacity edge, and hot8/hot16 followed by a distinct insertion. Variants share
+the calibrated repetition count and therefore execute equal operation counts
+in paired samples; each sample must accumulate at least 200 ms or the run
+fails without a result. The JSON report records selected cases, 20 paired raw
+samples, per-sample counters/high-water, arena reservation size, summaries and
+paired ratios, and is written atomically. An opt-in LRU seam was added;
+`MultiEntryBlockCache::new` still selects FIFO. This implementation has not run
+the long comparison and makes no policy or speed claim. S3-18 remains open
+pending independent review and three process-level measurements; S3-22/23/25
+remain separate work.
 
 ### S3-19. Подключить checked memory bridge
 

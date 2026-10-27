@@ -1275,6 +1275,9 @@ pub struct RecordedVisit {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod record;
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod dispatch_cache;
+
 pub fn run_suite(
     suite: &BenchmarkSuite,
     config: BenchmarkConfig,
