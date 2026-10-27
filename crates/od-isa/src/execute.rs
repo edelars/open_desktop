@@ -156,6 +156,14 @@ fn step_tracked_with_stop(
             opcode: instruction.opcode.byte,
         });
     }
+    if matches!(instruction.operation, Operation::RepCmps { .. })
+        && (state.rflags & crate::ARITHMETIC_FLAGS != (crate::PF | crate::ZF)
+            || *rflags_defined & crate::ARITHMETIC_FLAGS != crate::ARITHMETIC_FLAGS)
+    {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
     if matches!(instruction.operation, Operation::VerwGdt)
         && (context.privilege != PrivilegeLevel::Ring3
             || state.gdtr.is_none()
@@ -1043,6 +1051,17 @@ fn step_tracked_with_stop(
         Operation::RepScas { size } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0xae
+                && instruction.length == 2
+                && instruction.prefixes
+                    == (Prefixes {
+                        group1: Some(0xf3),
+                        ..Prefixes::default()
+                    })
+                && size == OperandSize::Byte
+        }
+        Operation::RepCmps { size } => {
+            instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0xa6
                 && instruction.length == 2
                 && instruction.prefixes
                     == (Prefixes {
@@ -2639,6 +2658,65 @@ fn step_tracked_with_stop(
                 state.gpr[Register::Rcx as usize] -= 1;
                 completed += 1;
                 // Completion or a mismatch terminates REPE before STOP/limit.
+                if state.gpr[Register::Rcx as usize] == 0 || state.rflags & crate::ZF == 0 {
+                    break;
+                }
+                if stop_requested() {
+                    return Ok(StepOutcome::StopRequested);
+                }
+                if completed == REP_ITERATION_WORK_LIMIT {
+                    return Ok(StepOutcome::RepIterationBudgetExhausted);
+                }
+            }
+        }
+        Operation::RepCmps { size } => {
+            let mut completed = 0;
+            while state.gpr[Register::Rcx as usize] != 0 {
+                let source = Operand::Memory(MemoryOperand {
+                    base: AddressBase::Register(Register::Rsi),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size: OperandSize::Qword,
+                    size,
+                });
+                let first = match read_operand(state, memory, context, next_rip, source) {
+                    Ok(value) => value,
+                    Err(MemoryError::Architectural(fault)) => {
+                        return Ok(StepOutcome::Fault(fault));
+                    }
+                    Err(error) => return Err(error),
+                };
+                let destination = Operand::Memory(MemoryOperand {
+                    base: AddressBase::Register(Register::Rdi),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size: OperandSize::Qword,
+                    size,
+                });
+                let second = match read_operand(state, memory, context, next_rip, destination) {
+                    Ok(value) => value,
+                    Err(MemoryError::Architectural(fault)) => {
+                        return Ok(StepOutcome::Fault(fault));
+                    }
+                    Err(error) => return Err(error),
+                };
+                let (_, flags) =
+                    arithmetic_result(size, ArithmeticKind::Cmp, first, second, state.rflags);
+                state.rflags = flags;
+                let step = if state.rflags & (1 << 10) == 0 {
+                    1
+                } else {
+                    u64::MAX
+                };
+                state.gpr[Register::Rsi as usize] =
+                    state.gpr[Register::Rsi as usize].wrapping_add(step);
+                state.gpr[Register::Rdi as usize] =
+                    state.gpr[Register::Rdi as usize].wrapping_add(step);
+                state.gpr[Register::Rcx as usize] -= 1;
+                completed += 1;
+                // Completion or mismatch terminates REPE before STOP/limit.
                 if state.gpr[Register::Rcx as usize] == 0 || state.rflags & crate::ZF == 0 {
                     break;
                 }
@@ -55426,6 +55504,206 @@ mod tests {
             }
         }
     }
+    fn rep_cmpsb_expected_flags(first: u8, second: u8, df: bool) -> u64 {
+        let result = first.wrapping_sub(second);
+        let mut flags = 2 | if df { 1 << 10 } else { 0 };
+        if first < second {
+            flags |= crate::CF;
+        }
+        if (first ^ second ^ result) & 0x10 != 0 {
+            flags |= crate::AF;
+        }
+        if result.count_ones() % 2 == 0 {
+            flags |= crate::PF;
+        }
+        if result == 0 {
+            flags |= crate::ZF;
+        }
+        if result & 0x80 != 0 {
+            flags |= crate::SF;
+        }
+        if ((first ^ second) & (first ^ result) & 0x80) != 0 {
+            flags |= crate::OF;
+        }
+        flags
+    }
+
+    #[test]
+    fn rep_cmpsb_all_single_comparison_states_match_independent_cmp_model() {
+        for first in 0u16..=255 {
+            for second in 0u16..=255 {
+                for df in [false, true] {
+                    let mut state = LongModeState::default();
+                    state.rip = 0x2000;
+                    state.gpr[Register::Rcx as usize] = 1;
+                    state.gpr[Register::Rsi as usize] = 0x1000;
+                    state.gpr[Register::Rdi as usize] = 0x1001;
+                    state.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                    let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+                    memory.bytes = vec![first as u8, second as u8];
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced),
+                        "src={first:#04x}, dst={second:#04x}, DF={df}"
+                    );
+                    assert_eq!(state.rip, 0x2002);
+                    assert_eq!(state.gpr[Register::Rcx as usize], 0);
+                    assert_eq!(
+                        state.gpr[Register::Rsi as usize],
+                        if df { 0x0fff } else { 0x1001 }
+                    );
+                    assert_eq!(
+                        state.gpr[Register::Rdi as usize],
+                        if df { 0x1000 } else { 0x1002 }
+                    );
+                    assert_eq!(
+                        state.rflags,
+                        rep_cmpsb_expected_flags(first as u8, second as u8, df)
+                    );
+                    assert_eq!(
+                        memory.accesses,
+                        [(AccessKind::Read, 0x1000, 1), (AccessKind::Read, 0x1001, 1)]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rep_cmpsb_termination_and_admission_gates_are_exact() {
+        let paths = [
+            (1u64, None),
+            (2, None),
+            (2, Some(1)),
+            (3, None),
+            (3, Some(1)),
+            (3, Some(2)),
+            (4, None),
+            (4, Some(1)),
+            (4, Some(2)),
+            (4, Some(3)),
+        ];
+        let mut cases = 0;
+        for source_byte in [0x00u8, 0x01, 0x7f, 0x80, 0x41, 0xff, 0x55, 0xaa] {
+            for df in [false, true] {
+                for (count, mismatch_at) in paths {
+                    let start = if df { 0x1000 + count - 1 } else { 0x1000 };
+                    let compared = mismatch_at.unwrap_or(count);
+                    let mut state = LongModeState::default();
+                    state.rip = 0x2000;
+                    state.gpr[Register::Rcx as usize] = count;
+                    state.gpr[Register::Rsi as usize] = start;
+                    state.gpr[Register::Rdi as usize] = 0x1008 + if df { count - 1 } else { 0 };
+                    state.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                    let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+                    memory.bytes = vec![source_byte; 16];
+                    let src_start = state.gpr[Register::Rsi as usize];
+                    let dst_start = state.gpr[Register::Rdi as usize];
+                    if let Some(position) = mismatch_at {
+                        let address = if df {
+                            dst_start - (position - 1)
+                        } else {
+                            dst_start + position - 1
+                        };
+                        memory.bytes[(address - 0x1000) as usize] = source_byte.wrapping_add(1);
+                    }
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced)
+                    );
+                    assert_eq!(state.gpr[Register::Rcx as usize], count - compared);
+                    assert_eq!(
+                        state.gpr[Register::Rsi as usize],
+                        if df {
+                            src_start - compared
+                        } else {
+                            src_start + compared
+                        }
+                    );
+                    assert_eq!(
+                        state.gpr[Register::Rdi as usize],
+                        if df {
+                            dst_start - compared
+                        } else {
+                            dst_start + compared
+                        }
+                    );
+                    assert_eq!(state.rip, 0x2002);
+                    assert_eq!(
+                        state.rflags,
+                        rep_cmpsb_expected_flags(
+                            source_byte,
+                            if mismatch_at.is_some() {
+                                source_byte.wrapping_add(1)
+                            } else {
+                                source_byte
+                            },
+                            df,
+                        )
+                    );
+                    assert_eq!(memory.accesses.len(), compared as usize * 2);
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 160);
+
+        let flag_bits = [
+            crate::CF,
+            crate::PF,
+            crate::AF,
+            crate::ZF,
+            crate::SF,
+            crate::OF,
+        ];
+        let mut rejected = 0;
+        for value_pattern in 0u8..64 {
+            let value = flag_bits
+                .iter()
+                .enumerate()
+                .filter(|(bit, _)| value_pattern & (1 << bit) != 0)
+                .fold(0, |flags, (_, bit)| flags | bit);
+            for defined_pattern in 0u8..64 {
+                let defined = flag_bits
+                    .iter()
+                    .enumerate()
+                    .filter(|(bit, _)| defined_pattern & (1 << bit) != 0)
+                    .fold(0, |flags, (_, bit)| flags | bit);
+                for df in [false, true] {
+                    for count in [0, 3] {
+                        if value == (crate::PF | crate::ZF) && defined == crate::ARITHMETIC_FLAGS {
+                            continue;
+                        }
+                        let mut state = LongModeState::default();
+                        state.rip = 0x2000;
+                        state.gpr[Register::Rcx as usize] = count;
+                        state.gpr[Register::Rsi as usize] = 0x0000_8000_0000_0000;
+                        state.gpr[Register::Rdi as usize] = 0x0000_8000_0000_0000;
+                        state.rflags = 2 | value | if df { 1 << 10 } else { 0 };
+                        let before = state.clone();
+                        let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+                        let mut tracked = defined;
+                        assert_eq!(
+                            step_tracked_with_stop(
+                                &mut state,
+                                &mut memory,
+                                AccessContext::default(),
+                                &mut tracked,
+                                &mut || false
+                            ),
+                            Ok(StepOutcome::Unsupported { opcode: 0xa6 })
+                        );
+                        assert_eq!(state, before);
+                        assert!(memory.accesses.is_empty());
+                        assert_eq!(tracked, defined);
+                        rejected += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(rejected, 16_380);
+    }
+
     fn rep_scasb_expected_flags(accumulator: u8, observed: u8, df: bool) -> u64 {
         let result = accumulator.wrapping_sub(observed);
         let mut flags = 2 | if df { 1 << 10 } else { 0 };
@@ -55448,6 +55726,500 @@ mod tests {
             flags |= crate::OF;
         }
         flags
+    }
+
+    #[test]
+    fn rep_cmpsb_fault_matrix_commits_only_complete_equal_iterations() {
+        let errors = [
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(4),
+                linear_address: Some(0x1000),
+            }),
+            MemoryError::Unmapped {
+                address: 0x1000,
+                access: AccessKind::Read,
+            },
+            MemoryError::PermissionDenied {
+                address: 0x1000,
+                access: AccessKind::Read,
+            },
+            MemoryError::Backend("injected CMPS read failure".into()),
+        ];
+        let mut cases = 0;
+        for df in [false, true] {
+            for completed in 0..=2usize {
+                for destination_fault in [false, true] {
+                    for error in &errors {
+                        let mut state = LongModeState::default();
+                        state.rip = 0x2000;
+                        state.gpr[Register::Rcx as usize] = 3;
+                        state.gpr[Register::Rsi as usize] = if df {
+                            0x1002 + completed as u64
+                        } else {
+                            0x1000
+                        };
+                        state.gpr[Register::Rdi as usize] = if df {
+                            0x1006 + completed as u64
+                        } else {
+                            0x1004
+                        };
+                        state.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                        let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+                        memory.bytes = vec![0x41; 0x10];
+                        memory.error = Some(match error {
+                            MemoryError::Architectural(fault) => {
+                                MemoryError::Architectural(fault.clone())
+                            }
+                            MemoryError::Unmapped { .. } => MemoryError::Unmapped {
+                                address: 0x1000,
+                                access: AccessKind::Read,
+                            },
+                            MemoryError::PermissionDenied { .. } => MemoryError::PermissionDenied {
+                                address: 0x1000,
+                                access: AccessKind::Read,
+                            },
+                            MemoryError::Backend(message) => MemoryError::Backend(message.clone()),
+                            other => other.clone(),
+                        });
+                        memory.error_kind = Some(AccessKind::Read);
+                        memory.fail_after_reads =
+                            Some(completed * 2 + usize::from(destination_fault));
+                        let result = run(
+                            &mut state,
+                            &mut memory,
+                            RunConfig {
+                                instruction_budget: 1,
+                                stop_rip: None,
+                                context: AccessContext::default(),
+                            },
+                            || false,
+                        );
+                        let step = completed as u64;
+                        assert_eq!(state.gpr[Register::Rcx as usize], 3 - step);
+                        assert_eq!(
+                            state.gpr[Register::Rsi as usize],
+                            if df { 0x1002 } else { 0x1000 + step }
+                        );
+                        assert_eq!(
+                            state.gpr[Register::Rdi as usize],
+                            if df { 0x1006 } else { 0x1004 + step }
+                        );
+                        assert_eq!(
+                            state.rflags,
+                            2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 }
+                        );
+                        assert_eq!(state.rip, 0x2000);
+                        assert_eq!(result.instructions_executed, 0);
+                        assert_eq!(
+                            memory.accesses.len(),
+                            completed * 2 + if destination_fault { 2 } else { 1 }
+                        );
+                        assert_eq!(
+                            memory.accesses.last().unwrap().1,
+                            if destination_fault {
+                                state.gpr[Register::Rdi as usize]
+                            } else {
+                                state.gpr[Register::Rsi as usize]
+                            }
+                        );
+                        match (error, &result.exit) {
+                            (MemoryError::Architectural(expected), RunExit::Fault(actual)) => {
+                                assert_eq!(actual.vector, expected.vector);
+                                assert_eq!(actual.error_code, expected.error_code);
+                            }
+                            (
+                                MemoryError::Unmapped { .. },
+                                RunExit::MemoryError(MemoryError::Unmapped { .. }),
+                            ) => {}
+                            (
+                                MemoryError::PermissionDenied { .. },
+                                RunExit::MemoryError(MemoryError::PermissionDenied { .. }),
+                            ) => {}
+                            (
+                                MemoryError::Backend(expected),
+                                RunExit::MemoryError(MemoryError::Backend(actual)),
+                            ) => assert_eq!(actual, expected),
+                            (expected, actual) => panic!("{expected:?} => {actual:?}"),
+                        }
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 48);
+    }
+
+    #[test]
+    fn rep_cmpsb_second_read_fault_replay_rereads_both_operands() {
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.gpr[Register::Rcx as usize] = 1;
+        state.gpr[Register::Rsi as usize] = 0x1000;
+        state.gpr[Register::Rdi as usize] = 0x1001;
+        state.rflags = 2 | crate::PF | crate::ZF;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+        memory.bytes = vec![0x41, 0x41];
+        memory.error = Some(MemoryError::Backend("second read failed".into()));
+        memory.error_kind = Some(AccessKind::Read);
+        memory.fail_after_reads = Some(1);
+        let failed = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert!(matches!(
+            failed.exit,
+            RunExit::MemoryError(MemoryError::Backend(_))
+        ));
+        assert_eq!(failed.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(
+            memory.accesses,
+            [(AccessKind::Read, 0x1000, 1), (AccessKind::Read, 0x1001, 1)]
+        );
+
+        // Alter the source after the partial access. Replay must issue source
+        // then destination again and compute flags from the new source value.
+        memory.error = None;
+        memory.error_kind = None;
+        memory.fail_after_reads = None;
+        memory.bytes[0] = 0x42;
+        let replayed = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(replayed.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(replayed.instructions_executed, 1);
+        assert_eq!(
+            memory.accesses,
+            [
+                (AccessKind::Read, 0x1000, 1),
+                (AccessKind::Read, 0x1001, 1),
+                (AccessKind::Read, 0x1000, 1),
+                (AccessKind::Read, 0x1001, 1),
+            ]
+        );
+        assert_eq!(state.gpr[Register::Rcx as usize], 0);
+        assert_eq!(state.gpr[Register::Rsi as usize], 0x1001);
+        assert_eq!(state.gpr[Register::Rdi as usize], 0x1002);
+        assert_eq!(state.rflags, rep_cmpsb_expected_flags(0x42, 0x41, false));
+        assert_eq!(state.rip, 0x2002);
+    }
+
+    #[test]
+    fn rep_cmpsb_zero_count_alias_restart_and_work_boundaries() {
+        for df in [false, true] {
+            let mut empty = LongModeState::default();
+            empty.rip = 0x2000;
+            empty.gpr[Register::Rcx as usize] = 0;
+            empty.gpr[Register::Rsi as usize] = 0x0000_8000_0000_0000;
+            empty.gpr[Register::Rdi as usize] = 0xffff_8000_0000_0000;
+            empty.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+            let before = empty.clone();
+            let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+            assert_eq!(
+                step(&mut empty, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            let mut expected = before;
+            expected.rip += 2;
+            assert_eq!(empty, expected);
+            assert!(memory.accesses.is_empty());
+        }
+
+        // Identical and overlapping operands still issue two ordered reads.
+        for (source, destination, expected_accesses) in [
+            (
+                0x1000,
+                0x1000,
+                vec![(AccessKind::Read, 0x1000, 1), (AccessKind::Read, 0x1000, 1)],
+            ),
+            (
+                0x1000,
+                0x1001,
+                vec![
+                    (AccessKind::Read, 0x1000, 1),
+                    (AccessKind::Read, 0x1001, 1),
+                    (AccessKind::Read, 0x1001, 1),
+                    (AccessKind::Read, 0x1002, 1),
+                ],
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rcx as usize] = if source == destination { 1 } else { 2 };
+            state.gpr[Register::Rsi as usize] = source;
+            state.gpr[Register::Rdi as usize] = destination;
+            state.rflags = 2 | crate::PF | crate::ZF;
+            let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+            memory.bytes = vec![0x41; 8];
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(memory.accesses, expected_accesses);
+        }
+
+        for df in [false, true] {
+            for committed_before_stop in [1u64, 2] {
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rcx as usize] = 4;
+                state.gpr[Register::Rsi as usize] = if df { 0x1003 } else { 0x1000 };
+                state.gpr[Register::Rdi as usize] = if df { 0x2003 } else { 0x2000 };
+                state.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+                memory.bytes = vec![0x41; 0x1010];
+                let mut calls = 0;
+                let partial = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    || {
+                        calls += 1;
+                        calls > committed_before_stop
+                    },
+                );
+                assert_eq!(partial.exit, RunExit::StopRequested);
+                assert_eq!(partial.instructions_executed, 0);
+                assert_eq!(state.gpr[Register::Rcx as usize], 4 - committed_before_stop);
+                assert_eq!(state.rip, 0x2000);
+                let resumed = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(resumed.exit, RunExit::InstructionBudgetExhausted);
+                assert_eq!(resumed.instructions_executed, 1);
+                assert_eq!(state.gpr[Register::Rcx as usize], 0);
+                assert_eq!(state.rip, 0x2002);
+            }
+        }
+
+        for df in [false, true] {
+            for count in [1023u64, 1024, 1025] {
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rcx as usize] = count;
+                state.gpr[Register::Rsi as usize] = if df { 0x1000 + 1024 } else { 0x1000 };
+                state.gpr[Register::Rdi as usize] = if df { 0x1000 + 3072 } else { 0x1000 + 2048 };
+                state.rflags = 2 | crate::PF | crate::ZF | if df { 1 << 10 } else { 0 };
+                let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+                memory.bytes = vec![0x41; 4096];
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x2002),
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                let completed = count.min(1024);
+                assert_eq!(state.gpr[Register::Rcx as usize], count - completed);
+                assert_eq!(state.rip, if count <= 1024 { 0x2002 } else { 0x2000 });
+                assert_eq!(
+                    result.exit,
+                    if count <= 1024 {
+                        RunExit::StopAddress
+                    } else {
+                        RunExit::RepIterationBudgetExhausted
+                    }
+                );
+            }
+        }
+
+        // A mismatch on comparison 1024 completes before the work limit.
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.gpr[Register::Rcx as usize] = 1025;
+        state.gpr[Register::Rsi as usize] = 0x1000;
+        state.gpr[Register::Rdi as usize] = 0x1800;
+        state.rflags = 2 | crate::PF | crate::ZF;
+        let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+        memory.bytes = vec![0x41; 0x1000];
+        memory.bytes[0x800 + 1023] = 0x42;
+        let mut stop_checks = 0;
+        let mismatch = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || {
+                stop_checks += 1;
+                stop_checks == 1025
+            },
+        );
+        assert_eq!(mismatch.exit, RunExit::StopRequested);
+        assert_eq!(mismatch.instructions_executed, 1);
+        assert_eq!(state.gpr[Register::Rcx as usize], 1);
+        assert_eq!(state.rip, 0x2002);
+        assert_eq!(state.rflags & crate::ZF, 0);
+
+        // A continuing equal element at the 1024 boundary checks STOP before
+        // the local limit and leaves the REP instruction replayable.
+        state.rip = 0x2000;
+        state.gpr[Register::Rcx as usize] = 1025;
+        state.gpr[Register::Rsi as usize] = 0x1000;
+        state.gpr[Register::Rdi as usize] = 0x1800;
+        state.rflags = 2 | crate::PF | crate::ZF;
+        let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+        memory.bytes = vec![0x41; 0x1000];
+        let mut checks = 0;
+        let stopped_at_limit = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || {
+                checks += 1;
+                checks == 1025
+            },
+        );
+        assert_eq!(stopped_at_limit.exit, RunExit::StopRequested);
+        assert_eq!(stopped_at_limit.instructions_executed, 0);
+        assert_eq!(state.gpr[Register::Rcx as usize], 1);
+        assert_eq!(state.rip, 0x2000);
+
+        // u64::MAX is bounded by successful iterations, not count underflow.
+        state.rip = 0x2000;
+        state.gpr[Register::Rcx as usize] = u64::MAX;
+        state.gpr[Register::Rsi as usize] = 0x1000;
+        state.gpr[Register::Rdi as usize] = 0x1800;
+        state.rflags = 2 | crate::PF | crate::ZF;
+        let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+        memory.bytes = vec![0x41; 0x1000];
+        let bounded = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(bounded.exit, RunExit::RepIterationBudgetExhausted);
+        assert_eq!(state.gpr[Register::Rcx as usize], u64::MAX - 1024);
+        assert_eq!(state.rip, 0x2000);
+
+        // DF-directed pointer wrap commits after one complete alias compare;
+        // the next source read uses the wrapped canonical high-half address.
+        state.rip = 0x2000;
+        state.gpr[Register::Rcx as usize] = 2;
+        state.gpr[Register::Rsi as usize] = 0;
+        state.gpr[Register::Rdi as usize] = 0;
+        state.rflags = 2 | crate::PF | crate::ZF | (1 << 10);
+        let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+        memory.data_base = 0;
+        memory.bytes = vec![0x41];
+        let wrapped = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert!(matches!(
+            wrapped.exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                address: u64::MAX,
+                access: AccessKind::Read
+            })
+        ));
+        assert_eq!(state.gpr[Register::Rcx as usize], 1);
+        assert_eq!(state.gpr[Register::Rsi as usize], u64::MAX);
+        assert_eq!(state.gpr[Register::Rdi as usize], u64::MAX);
+        assert_eq!(state.rip, 0x2000);
+
+        let mut edge = LongModeState::default();
+        edge.rip = 0x2000;
+        edge.gpr[Register::Rcx as usize] = 2;
+        edge.gpr[Register::Rsi as usize] = 0x1fff;
+        edge.gpr[Register::Rdi as usize] = 0x1fff;
+        edge.rflags = 2 | crate::PF | crate::ZF;
+        let mut edge_memory = Memory::at(&[0xf3, 0xa6], 0x2000);
+        edge_memory.data_base = 0x1fff;
+        edge_memory.bytes = vec![0x41];
+        let page_end = run(
+            &mut edge,
+            &mut edge_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert!(matches!(
+            page_end.exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                address: 0x2000,
+                access: AccessKind::Read
+            })
+        ));
+        assert_eq!(edge.gpr[Register::Rcx as usize], 1);
+        assert_eq!(edge.gpr[Register::Rsi as usize], 0x2000);
+        assert_eq!(edge.gpr[Register::Rdi as usize], 0x2000);
+        assert_eq!(edge_memory.accesses.len(), 3);
+
+        let mut truncated = LongModeState::default();
+        truncated.rip = 0x2000;
+        truncated.gpr[Register::Rcx as usize] = 1;
+        truncated.rflags = 2 | crate::PF | crate::ZF;
+        let before = truncated.clone();
+        let mut short_code = Memory::at(&[0xf3], 0x2000);
+        let fetch = run(
+            &mut truncated,
+            &mut short_code,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert!(matches!(
+            fetch.exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                address: 0x2001,
+                access: AccessKind::Fetch
+            })
+        ));
+        assert_eq!(truncated, before);
+        assert!(short_code.accesses.is_empty());
     }
 
     #[test]

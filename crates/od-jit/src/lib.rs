@@ -394,6 +394,7 @@ mod tests {
             &[0xdd, 0x18],
             &[0xdb, 0x38],
             &[0xf3, 0xae],
+            &[0xf3, 0xa6],
         ] {
             assert!(matches!(compile(code), Err(JitError::Decode(_))));
         }

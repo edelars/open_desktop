@@ -702,6 +702,10 @@ pub enum Operation {
     RepScas {
         size: OperandSize,
     },
+    /// One bounded invocation of long-mode REPE CMPSB.
+    RepCmps {
+        size: OperandSize,
+    },
     /// Long-mode 16- or 64-bit PUSH immediate; `value` is extended to the stack width.
     PushImmediate {
         value: u64,
@@ -909,6 +913,10 @@ impl Instruction {
                 undefined: 0,
             },
             Operation::RepScas { .. } => FlagEffects {
+                defined: crate::ARITHMETIC_FLAGS,
+                undefined: 0,
+            },
+            Operation::RepCmps { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -1266,6 +1274,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     group1: Some(0xf3),
                     ..Prefixes::default()
                 });
+        let rep_cmpsb = opcode.map == OpcodeMap::Primary
+            && opcode.byte == 0xa6
+            && self.length == 2
+            && prefixes
+                == (Prefixes {
+                    group1: Some(0xf3),
+                    ..Prefixes::default()
+                });
         if !known
             || (prefixes.group1.is_some()
                 && !rep_stosb
@@ -1273,6 +1289,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !rep_lods
                 && !rep_movs
                 && !rep_scasb
+                && !rep_cmpsb
                 && !locked_qword_memory_xadd_candidate)
         {
             return Err(self.unsupported(opcode));
@@ -1669,24 +1686,29 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::Scas { size }
             }
             (OpcodeMap::Primary, 0xa6 | 0xa7) => {
-                if prefixes.group1.is_some()
-                    || prefixes.segment.is_some()
-                    || prefixes.address_override
-                    || (opcode.byte == 0xa6 && prefixes != Prefixes::default())
-                    || (opcode.byte == 0xa7 && prefixes.rex.is_some_and(|rex| rex & 8 == 0))
-                {
-                    return Err(self.unsupported(opcode));
-                }
-                size = if opcode.byte == 0xa6 {
-                    OperandSize::Byte
-                } else if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
-                    OperandSize::Qword
-                } else if prefixes.operand_override {
-                    OperandSize::Word
+                if rep_cmpsb {
+                    size = OperandSize::Byte;
+                    Operation::RepCmps { size }
                 } else {
-                    OperandSize::Dword
-                };
-                Operation::Cmps { size }
+                    if prefixes.group1.is_some()
+                        || prefixes.segment.is_some()
+                        || prefixes.address_override
+                        || (opcode.byte == 0xa6 && prefixes != Prefixes::default())
+                        || (opcode.byte == 0xa7 && prefixes.rex.is_some_and(|rex| rex & 8 == 0))
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                    size = if opcode.byte == 0xa6 {
+                        OperandSize::Byte
+                    } else if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                        OperandSize::Qword
+                    } else if prefixes.operand_override {
+                        OperandSize::Word
+                    } else {
+                        OperandSize::Dword
+                    };
+                    Operation::Cmps { size }
+                }
             }
             (OpcodeMap::Primary, 0x9c) => {
                 // In 64-bit mode REX.W selects qword and overrides 66H;
@@ -5915,8 +5937,8 @@ mod tests {
         for rex in 0x40..=0x4f {
             rejected.push(vec![0xf3, rex, 0xae]);
         }
-        rejected.extend([vec![0xf2, 0xae], vec![0xf3, 0xaf], vec![0xf3, 0xa6]]);
-        assert_eq!(rejected.len(), 30);
+        rejected.extend([vec![0xf2, 0xae], vec![0xf3, 0xaf]]);
+        assert_eq!(rejected.len(), 29);
         for bytes in rejected {
             assert!(
                 matches!(
@@ -5924,6 +5946,36 @@ mod tests {
                     Err(DecodeError::Unsupported { .. })
                 ),
                 "unexpected admission: {bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rep_cmpsb_admits_only_exact_f3_a6() {
+        assert_eq!(
+            Memory::new(&[0xf3, 0xa6]).decode().unwrap().operation,
+            Operation::RepCmps {
+                size: OperandSize::Byte
+            }
+        );
+        let mut rejected = Vec::new();
+        for prefix in [
+            0xf0, 0xf2, 0xf3, 0x66, 0x67, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65,
+        ] {
+            rejected.push(vec![prefix, 0xf3, 0xa6]);
+        }
+        for rex in 0x40..=0x4f {
+            rejected.push(vec![0xf3, rex, 0xa6]);
+        }
+        rejected.extend([vec![0xf2, 0xa6], vec![0xf3, 0xa7], vec![0xf2, 0xa7]]);
+        assert_eq!(rejected.len(), 30);
+        for bytes in rejected {
+            assert!(
+                matches!(
+                    Memory::new(&bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
             );
         }
     }

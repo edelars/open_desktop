@@ -1,0 +1,79 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_19f_rep_cmpsb_all_equal_df0",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten F3 A6 bytes and literal state, flag, and memory answers; tests/cpu/generate_stage2_rep_cmpsb.py serializes constants only. No assembler, oracle, or execution engine is used.",
+    "specification": "Intel SDM revision 093, Vol.2B CMPS and REP/REPE entries; CMPSB compares DS:[RSI] with ES:[RDI], adjusts both indices by DF, and REPE continues while ZF is set.",
+    "specification_version": "Intel SDM Vol.2B revision 093 (253667-093US); project S2-19f F3 A6 REP CMPSB"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667741",
+      "0x0000000000000003",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000300000",
+      "0x0000000000300100",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000046"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 2,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "f3a6",
+      "comparison_mask_hex": "ffff"
+    },
+    {
+      "region_id": "source",
+      "guest_address": "0x0000000000300000",
+      "length": 3,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "414141",
+      "comparison_mask_hex": "ffffff"
+    },
+    {
+      "region_id": "destination",
+      "guest_address": "0x0000000000300100",
+      "length": 3,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "414141",
+      "comparison_mask_hex": "ffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100002",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

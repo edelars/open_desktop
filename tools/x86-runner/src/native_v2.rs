@@ -553,8 +553,11 @@ fn admission_with_tracee_memory(
 ) -> Result<FlagEffects, String> {
     let instruction = long_decode::decode(decoder, actual.rip, AccessContext::default())
         .map_err(|e| format!("native instruction outside admitted decode slice: {e:?}"))?;
-    if matches!(instruction.operation, Operation::RepScas { .. }) {
-        return Err("REP SCAS is outside the native execution profile".into());
+    if matches!(
+        instruction.operation,
+        Operation::RepScas { .. } | Operation::RepCmps { .. }
+    ) {
+        return Err("REP string comparison is outside the native execution profile".into());
     }
     if matches!(
         instruction.operation,

@@ -7906,3 +7906,39 @@ the 1023/1024/1025 work-limit boundaries, mismatch at iteration 1024, STOP vs
 limit priority, zero count, invalid next pointer, and exactly 24 literal v2
 fixtures. No physical, native, or JIT execution is claimed. ISSUE-016,
 ISSUE-019, ISSUE-020 and ISSUE-021 remain open.
+
+### Local S2-19f bounded `F3 A6` REPE CMPSB contract
+
+The interpreter admits only exact bytes `F3 A6` in Long64/address-size 64.
+Before any data access, including at RCX zero, it requires arithmetic values
+exactly `PF|ZF` (`0x44`) and all arithmetic flags defined (`0x8d5`). This is a
+local entry/restart profile restriction, not an architectural requirement for
+REPE CMPS. Either DF value is admitted. Rejected gate state is unchanged, with
+no data read or retirement. Other prefix combinations are unsupported; this
+does not claim #UD priority. Existing `F3 AE` semantics are unchanged.
+
+At RCX zero, RSI/RDI are not checked or read; flags are preserved, RIP advances
+by two, and the instruction retires once. Otherwise each iteration reads one
+byte from flat `DS:[RSI]`, then one byte from flat `ES:[RDI]`, and computes
+`source - destination` with existing CMP semantics. Only after both reads
+succeed does the iteration commit arithmetic flags, wrapping RSI/RDI by ±1
+according to DF, and decrement RCX. Source-first ordering is the local policy
+and does not establish a dual-invalid hardware exception winner (ISSUE-020).
+There is no claim of rollback for MMIO/backend side effects.
+
+RCX zero or ZF clear completes before STOP and the local limit of 1024
+successful iterations. A matching continuation checks STOP before the limit.
+On either read error, the current flags, indices, and count are not committed;
+a successful first read remains visible in the access trace if the second fails.
+Earlier equal iterations persist. Fault, STOP, and work-limit exits keep RIP at
+the REP instruction and retire zero; replay performs both reads again without
+hidden source state. All other registers, non-arithmetic flags, and RAM are
+preserved. Missing mappings and backend errors remain harness errors.
+
+Local evidence covers 131,072 independent byte-comparison states, 160
+termination paths, 16,380 rejected value/definedness/count/DF combinations,
+48 injected source/destination read failures, alias/overlap and STOP/replay,
+limit and boundary behavior, and 31 literal schema-v2 fixtures. The generator
+serializes fixed answers only. JIT and native admission remain closed; no
+physical, Mini, or SSH execution is claimed. ISSUE-020 tracks the unknown
+dual-fault winner.

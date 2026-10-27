@@ -10415,3 +10415,47 @@ TEST fixture whose AF value also failed the concrete value gate. All were
 corrected; re-review found no remaining concrete findings. The eight focused
 ISA tests, 24-fixture test, five JIT denial tests, two new generator tests, and
 the final full workspace checks passed. ISSUE-016/019/020/021 remain open.
+
+## S2-19f — exact `F3 A6` REPE CMPSB (bounded local profile)
+
+The Long64/address64 interpreter now admits only exact `F3 A6`. Before any
+data read, including at RCX zero, entry requires arithmetic values `PF|ZF`
+(`0x44`) and full arithmetic definedness (`0x8d5`); DF is accepted either way.
+This is a local entry/restart restriction, not an architectural REPE CMPS
+requirement. With zero count it avoids RSI/RDI validation and data access,
+preserves flags, advances RIP by two, and retires once.
+
+Each nonzero iteration reads source DS:[RSI], then destination ES:[RDI], and
+uses the existing CMP calculation for source minus destination. Only after both
+reads succeed does it commit flags, wrapping RSI/RDI by DF and RCX decrement.
+Completion/mismatch precedes STOP and the 1024-success limit; STOP precedes
+the limit. A first-read failure skips the second access. A second-read failure
+leaves its first read visible but commits none of the current iteration. Prior
+equal iterations persist and retry rereads both values; no pending source is
+stored. This source-first order is local policy only, recorded in ISSUE-020;
+MMIO rollback is not claimed. Mappings/backend errors remain harness errors.
+
+The independent Rust matrix covers 131,072 source×destination×DF results,
+160 count/mismatch termination paths, 16,380 value/definedness/count/DF
+rejections, 48 injected read failures, four STOP/replay cases, six limit cases,
+mismatch at iteration 1024, STOP/limit priority, RCX max, aliases/overlap,
+zero count with invalid pointers, budget zero, page edge, wrap, noncanonical
+first operands and truncated fetch. Exactly 31 schema-v2 fixtures carry
+handwritten complete literal answers; the generator serializes them without
+computing CPU results. Fixture tests compare complete interpreter snapshots and
+require JIT `Unsupported` without fallback. Native admission explicitly rejects
+REP comparisons. No native, Mac mini, SSH, or physical check was run.
+
+Focused local verification passed: the six `od-isa` REP CMPSB tests, the
+31-case testkit full-state fixture comparison, the CLI full-state/JIT-denial
+comparison, five `od-jit` tests, both generator tests, and the 96-test Python
+CPU harness/generator suite. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and
+`cargo test --workspace --offline -- --quiet` passed: 1,322 Rust tests passed,
+zero failed (764 od-isa, 227 od-testkit, 101 runner unit, 210 runner fixture,
+and all remaining workspace tests). Graphify was updated after the source and
+documentation changes. The Linux native path was not run; no native, Mini, SSH
+or physical execution was performed. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-19f-bounded-f3-a6-repe-cmpsb-contract),
+[plan](../plans/STAGE_2.md#s2-19f--exact-f3-a6-repe-cmpsb-ограниченный-локальный-контракт),
+[interpreter coverage](../testing/INTERPRETER.md#repe-cmpsb--s2-19f-local-interpreter-coverage),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#bounded-repe-cmpsb-fixtures-s2-19f).

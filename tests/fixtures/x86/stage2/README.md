@@ -4061,3 +4061,30 @@ python3 tests/cpu/generate_stage2_rep_scasb.py --check
 cargo test -p od-isa --offline rep_scasb
 cargo test -p od-testkit --offline rep_scasb_literal_fixtures_match_full_expected_answers
 ```
+
+## Bounded REPE CMPSB fixtures S2-19f
+
+Exactly 31 schema-v2 fixtures record literal full-state outcomes for exact
+`F3 A6`: zero count with DF=0/1 and invalid pointers; count-one equal/mismatch
+for both directions; mismatch at positions 1/2/3 and all-equal count three for
+both directions; unmapped source and destination after 0/1/2 equal iterations;
+noncanonical first source/destination; count 1025 for both directions;
+instruction budget zero; CMP RAX,RAX composition success and first/second
+read failure; TEST RAX,RAX rejection with concrete PF|ZF but undefined AF; and
+same/overlap aliases. The generator serializes only handwritten bytes and
+predetermined full register, flags/definedness, RIP, and memory snapshots.
+
+Interpreter coverage independently checks 131,072 source×destination×DF flag
+results, 160 termination paths, all 16,380 entry-gate rejection combinations,
+48 injected failures, access ordering, no current-iteration commit, aliases,
+STOP/replay, work-limit boundaries, RCX maximum and pointer boundaries. The
+RSI-first ordering is local only and does not identify hardware dual-fault
+priority; MMIO rollback is not claimed. JIT fixtures are required to remain
+Unsupported with no interpreter fallback. No native, Mini, SSH, or physical
+execution is claimed; ISSUE-020 remains open.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_cmpsb.py --check
+cargo test -p od-testkit --offline rep_cmpsb_literal_fixtures_match_full_expected_answers
+cargo test -p od-runner --test fixture_v2 rep_cmpsb_cli_fixtures_check_full_state_and_jit_denial
+```

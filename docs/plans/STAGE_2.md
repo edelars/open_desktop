@@ -1,8 +1,9 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-18i добавило non-REP CMPS B/W/D/Q; его
-dual-invalid fault winner открыт как ISSUE-020. Реализация этого среза не
-выполняет общий финальный Mac mini/SSH/native/physical acceptance.
+Последнее локальное подзадание S2-19f добавило exact `F3 A6` REPE CMPSB;
+его RSI-first dual-fault policy описана в ISSUE-020 и не устанавливает
+hardware priority. Этот срез не выполняет общий финальный Mac mini/SSH/native/
+physical acceptance.
 
 **Дата:** 23 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–j add local-only FS/GS-base, selector, descriptor-load, VERW/GDT and exact GS/FS.base composition cases; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 S2-22h load fixtures and two S2-22i/j composition fixtures are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b UD2 fixture are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Stage 2 remains open under broader roadmap criteria. ISSUE-011/012/013/014/015/016/017/018 remain open; acceptance criteria are unchanged.
 
@@ -1102,6 +1103,46 @@ first access; count1025 × DF; budget-zero; CMP→REP success/fault; TEST→REP
 reject с undefined AF при concrete PF/ZF. Generator только сериализует
 hand-authored bytes и snapshots; schema/profile не меняются. ISSUE-016/019/020/
 021 остаются открытыми до общей финальной acceptance.
+
+#### S2-19f — exact `F3 A6` REPE CMPSB (ограниченный локальный контракт)
+
+Добавить только exact bytes `F3 A6` в Long64/address64. Это local profile
+restriction, не claim что другие архитектурные CMPS формы invalid. До любого
+data access, включая `RCX=0`, admission требует concrete arithmetic values
+exactly `PF|ZF` (`0x44`) и full definedness `ARITHMETIC_FLAGS` (`0x8d5`). Оба
+значения DF разрешены. Gate failure возвращает Unsupported без доступа,
+state change или retirement. `F3 AE` и существующие REP операции сохранить.
+
+При нулевом RCX не проверять RSI/RDI и не выполнять reads; сохранить flags,
+прибавить два к RIP, retire один раз. Иначе читать один byte source
+`DS:[RSI]`, затем один byte destination `ES:[RDI]`, и сравнивать source minus
+destination существующим CMP. RSI-first выбран только как local policy; ISSUE-020
+не подтверждает dual-invalid hardware priority. Только после обоих reads
+commit flags, wrap-обновить RSI/RDI на ±1 по pre-iteration DF и decrement RCX.
+RCX=0 или ZF=0 завершают до STOP и work limit; matching continuation проверяет
+STOP перед пределом 1024 успешных итераций. Fault сохраняет первый read на
+dual-site отказе, но не коммитит текущие flags/pointers/count; предыдущие
+полностью завершённые равные итерации остаются. Fault/STOP/limit оставляют RIP
+на REP и retire=0. Replay заново выполняет оба чтения, без hidden source state.
+MMIO rollback не заявляется; ошибки map/backend не синтезируются в guest fault.
+
+Покрытие включает 131,072 сравнений и независимую CMP oracle, 160 путей
+завершения, 16,380 отказов value/definedness/count/DF, 48 injected read faults,
+STOP/replay, 1023/1024/1025 limits, mismatch на шаге 1024, RCX max, same/overlap
+aliases, zero count с invalid pointers, budget=0, fetch/page/canonical/wrap края.
+Добавить ровно 31 literal schema-v2 fixture: zero count × DF; count-one
+equal/mismatch × DF; mismatch positions 1/2/3 × DF; all equal × DF; source и
+destination unmapped после 0/1/2 равных элементов; noncanonical source/dest;
+limit 1025 × DF; budget zero; CMP RAX,RAX композиция success/first/second
+fault; TEST RAX,RAX gate reject при concrete PF|ZF и undefined AF; same/overlap
+alias positives. Generator сериализует только фиксированные expected values.
+Не менять schema/profile, не расширять JIT/native и не использовать Mini, SSH
+или physical execution в этом срезе.
+
+Результат локальной реализации, fixture snapshots и выполненные проверки
+зафиксированы в [отчёте этапа](../reports/STAGE_2_REPORT.md#s2-19f--exact-f3-a6-repe-cmpsb-bounded-local-profile).
+Статус: локальная реализация и проверка завершены; 31 fixture сравнивается по
+полному состоянию, JIT остаётся закрыт. Общая физическая acceptance не выполнялась.
 
 ### S2-20. Точность исключений и exit state
 

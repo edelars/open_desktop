@@ -537,6 +537,29 @@ native and physical execution are deferred. Source-first ordering remains a
 local policy under [ISSUE-021](../KNOWN_ISSUES.md#issue-021--не-подтверждён-победитель-dual-fault-для-rep-movs-rsirdi).
 ISSUE-016 and ISSUE-020 remain open.
 
+## REPE CMPSB — S2-19f local interpreter coverage
+
+Only exact `F3 A6` is admitted in Long64/address64. Even at RCX zero, entry
+requires arithmetic values exactly PF|ZF and full arithmetic definedness;
+this is a local restart restriction. Zero count avoids both address checks and
+reads, preserves flags, and retires once. For nonzero count, DS:[RSI] is read
+before ES:[RDI]; source minus destination uses the existing CMP semantics.
+Flags, both wrapping indices, and RCX commit only after both reads succeed.
+Either error leaves the current iteration uncommitted, while a second-read
+error retains the successful first-read trace. Earlier equal progress remains
+replayable from the REP start without hidden source state. No MMIO rollback or
+hardware dual-fault priority is claimed; ISSUE-020 records the local RSI-first
+policy.
+
+Coverage includes 131,072 independent byte CMP cases, 160 termination paths,
+16,380 value/definedness/count/DF gate rejects, 48 injected source/destination
+faults, both DF directions, aliases/overlap, STOP/replay, limit and STOP
+priority, mismatch at iteration 1024, RCX maximum, zero count with invalid
+pointers, budget zero, and wrapping/noncanonical behavior. Thirty-one literal
+schema-v2 fixtures cover those representative boundaries and compositions;
+the generator serializes predetermined complete answers. JIT/native remain
+denied and there is no physical or Mac mini acceptance claim.
+
 
 ## Local S2-31aq signed-infinity m32 stores
 
