@@ -682,6 +682,12 @@ fn build_block_with_profile(
                         guest_rip,
                         decoded.length,
                         0x89,
+                    )
+                    || exact_qword_indexed_no_base_sib_disp32_memory_bytes(
+                        code,
+                        guest_rip,
+                        decoded.length,
+                        0x89,
                     ))
         } else if profile == BlockBuildProfile::CheckedQwordLoad {
             instructions.is_empty()
@@ -707,6 +713,12 @@ fn build_block_with_profile(
                         0x8b,
                     )
                     || exact_qword_address32_absolute_sib_disp32_memory_bytes(
+                        code,
+                        guest_rip,
+                        decoded.length,
+                        0x8b,
+                    )
+                    || exact_qword_indexed_no_base_sib_disp32_memory_bytes(
                         code,
                         guest_rip,
                         decoded.length,
@@ -1385,6 +1397,20 @@ fn is_indexed_qword_sib_data_operand(
         && displacement_valid
 }
 
+fn is_indexed_no_base_qword_sib_data_operand(
+    instruction: Instruction,
+    operand: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    instruction.length == 8
+        && instruction.address_size == OperandSize::Qword
+        && operand.address_size == OperandSize::Qword
+        && operand.size == OperandSize::Qword
+        && matches!(operand.base, od_isa::long_decode::AddressBase::None)
+        && operand.index.is_some_and(|register| (register as u8) < 4)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && i32::try_from(operand.displacement).is_ok()
+}
+
 fn is_address32_direct_stack_data_operand(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
@@ -1482,6 +1508,9 @@ fn is_rsp_memory_data_operand(
     if is_indexed_qword_sib_data_operand(instruction, operand) {
         return true;
     }
+    if is_indexed_no_base_qword_sib_data_operand(instruction, operand) {
+        return true;
+    }
     if is_address32_direct_stack_data_operand(instruction, operand) {
         return true;
     }
@@ -1572,6 +1601,9 @@ fn is_rbp_memory_data_operand(
     operand: od_isa::long_decode::MemoryOperand,
 ) -> bool {
     if is_indexed_qword_sib_data_operand(instruction, operand) {
+        return true;
+    }
+    if is_indexed_no_base_qword_sib_data_operand(instruction, operand) {
         return true;
     }
     if is_address32_direct_stack_data_operand(instruction, operand) {
@@ -1803,10 +1835,17 @@ fn is_checked_qword_memory_address(
                     && operand.scale == 1
                     && instruction.length == 8
                     && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement);
+            let indexed_no_base_sib_disp32 =
+                matches!(operand.base, od_isa::long_decode::AddressBase::None)
+                    && operand.index.is_some_and(|index| (index as u8) < 4)
+                    && matches!(operand.scale, 1 | 2 | 4 | 8)
+                    && instruction.length == 8
+                    && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement);
             !instruction.prefixes.address_override
                 && (register_base && (direct_form || indexed_form)
                     || rip_relative
-                    || absolute_sib_disp32)
+                    || absolute_sib_disp32
+                    || indexed_no_base_sib_disp32)
         }
         _ => false,
     }
@@ -2088,6 +2127,34 @@ pub(crate) fn exact_qword_address32_absolute_sib_disp32_memory_bytes(
         && bytes[3] & 7 == 4
         && (bytes[3] >> 3) & 7 <= 5
         && bytes[4] == 0x25
+}
+
+pub(crate) fn exact_qword_indexed_no_base_sib_disp32_memory_bytes(
+    code: CodeView<'_>,
+    guest_rip: u64,
+    length: u8,
+    opcode: u8,
+) -> bool {
+    if length != 8 {
+        return false;
+    }
+    let Some(offset) = guest_rip
+        .checked_sub(code.base_rip)
+        .and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    let Some(bytes) = code.bytes.get(offset..offset.saturating_add(8)) else {
+        return false;
+    };
+    let sib = bytes[3];
+    bytes[0] == 0x48
+        && bytes[1] == opcode
+        && bytes[2] >> 6 == 0
+        && bytes[2] & 7 == 4
+        && (bytes[2] >> 3) & 7 <= 5
+        && sib & 7 == 5
+        && (sib >> 3) & 7 < 4
 }
 
 fn address32_checked_displacement_matches_length(length: u8, displacement: i64) -> bool {

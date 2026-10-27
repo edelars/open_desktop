@@ -687,7 +687,8 @@ fn is_checked_memory_address(
                 && (matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
                     || matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
                     || matches!(instruction_length, 5 | 8)
-                        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp)))
+                        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
+                    || instruction_length == 8 && matches!(operand.base, AddressBase::None))
         }
         None => operand.scale == 1,
     };
@@ -723,6 +724,11 @@ fn is_checked_memory_address(
                 && matches!(operand.base, AddressBase::None)
                 && operand.index.is_none()
                 && operand.scale == 1
+                && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+            || instruction_length == 8
+                && matches!(operand.base, AddressBase::None)
+                && operand.index.is_some_and(|index| (index as u8) < 4)
+                && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement))
 }
 
@@ -745,6 +751,7 @@ fn is_scoped_memory_data_operand(
     operand.size == od_isa::OperandSize::Qword
         && ((operand.address_size == od_isa::OperandSize::Qword
             && (is_indexed_qword_sib_data_operand(operand, instruction_length)
+                || is_indexed_no_base_qword_sib_data_operand(operand, instruction_length)
                 || (operand.index.is_none()
                     && operand.scale == 1
                     && match data_register {
@@ -875,6 +882,18 @@ fn is_scoped_memory_data_operand(
             || is_address32_rsp_sib_stack_base_operand(operand, instruction_length)
             || is_address32_rbp_direct_stack_base_operand(operand, instruction_length)
             || is_address32_absolute_sib_stack_data_operand(operand, instruction_length))
+}
+
+fn is_indexed_no_base_qword_sib_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    instruction_length == 8
+        && matches!(operand.base, AddressBase::None)
+        && operand.index.is_some_and(|index| (index as u8) < 4)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && operand.size == od_isa::OperandSize::Qword
+        && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
 }
 
 fn is_address32_absolute_sib_stack_data_operand(

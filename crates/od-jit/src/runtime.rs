@@ -250,12 +250,21 @@ impl MemorySiteV2 {
             && self.operand.scale == 1
             && length == 8
             && i32::try_from(self.operand.displacement).is_ok();
+        let indexed_no_base_sib_disp32_data_profile = self.operand.address_size
+            == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Qword
+            && matches!(self.operand.base, od_isa::long_decode::AddressBase::None)
+            && self.operand.index.is_some_and(|index| (index as u8) < 4)
+            && matches!(self.operand.scale, 1 | 2 | 4 | 8)
+            && length == 8
+            && i32::try_from(self.operand.displacement).is_ok();
         let scoped_data_profile = address32_direct_data_profile
             || address32_indexed_sib_data_profile
             || address32_rsp_sib_base_data_profile
             || address32_rbp_direct_base_data_profile
             || address32_absolute_sib_disp32_data_profile
             || absolute_sib_disp32_data_profile
+            || indexed_no_base_sib_disp32_data_profile
             || (self.operand.address_size == od_isa::OperandSize::Qword
                 && self.operand.size == od_isa::OperandSize::Qword
                 && (indexed_sib_data_profile
@@ -453,8 +462,10 @@ impl MemorySiteV2 {
             od_isa::long_decode::AddressBase::None => {
                 (self.operand.address_size == od_isa::OperandSize::Qword && length == 8
                     || self.operand.address_size == od_isa::OperandSize::Dword && length == 9)
-                    && self.operand.index.is_none()
-                    && self.operand.scale == 1
+                    && (self.operand.index.is_none() && self.operand.scale == 1
+                        || self.operand.address_size == od_isa::OperandSize::Qword
+                            && self.operand.index.is_some_and(|index| (index as u8) < 4)
+                            && matches!(self.operand.scale, 1 | 2 | 4 | 8))
                     && i32::try_from(self.operand.displacement).is_ok()
             }
         };
@@ -602,7 +613,8 @@ impl MemorySiteV2 {
             | (od_isa::long_decode::AddressBase::Register(_), Some(_), 8) => {
                 i32::try_from(self.operand.displacement).is_ok()
             }
-            (od_isa::long_decode::AddressBase::None, None, 8 | 9) => {
+            (od_isa::long_decode::AddressBase::None, None, 8 | 9)
+            | (od_isa::long_decode::AddressBase::None, Some(_), 8) => {
                 i32::try_from(self.operand.displacement).is_ok()
             }
             _ => return false,
@@ -771,6 +783,27 @@ impl MemorySiteV2 {
                 && self.operand.scale == 1
                 && i32::try_from(self.operand.displacement).is_ok();
         }
+        if mode == 0
+            && modrm & 7 == 4
+            && source.len() == 8
+            && source[3] & 7 == 5
+            && (source[3] >> 3) & 7 < 4
+        {
+            let site_register = match expected_operation {
+                MemorySiteOperationV2::Load => self.destination,
+                MemorySiteOperationV2::Store => self.source,
+            };
+            let sib = source[3];
+            return data_register <= 5
+                && site_register == Some(data_register)
+                && self.next_rip.checked_sub(self.guest_rip) == Some(8)
+                && self.operand.address_size == od_isa::OperandSize::Qword
+                && self.operand.size == od_isa::OperandSize::Qword
+                && matches!(self.operand.base, od_isa::long_decode::AddressBase::None)
+                && self.operand.index == od_isa::Register::from_encoding((sib >> 3) & 7)
+                && self.operand.scale == 1_u8 << (sib >> 6)
+                && i32::try_from(self.operand.displacement).is_ok();
+        }
         if mode == 3
             || data_register > 5
             || data_register >= 4
@@ -790,7 +823,19 @@ impl MemorySiteV2 {
                     || (data_register == 4 && mode == 2 && modrm == 0xa4 && source.len() == 8)
                     || (data_register == 5 && mode == 2 && modrm == 0xac && source.len() == 8)
                     || (data_register == 5 && mode == 1 && modrm == 0x6d && source.len() == 4)
-                    || (data_register == 5 && mode == 2 && modrm == 0xad && source.len() == 7))
+                    || (data_register == 5 && mode == 2 && modrm == 0xad && source.len() == 7)
+                    || (data_register == 4
+                        && mode == 0
+                        && modrm == 0x24
+                        && source.len() == 8
+                        && source[3] & 7 == 5
+                        && (source[3] >> 3) & 7 < 4)
+                    || (data_register == 5
+                        && mode == 0
+                        && modrm == 0x2c
+                        && source.len() == 8
+                        && source[3] & 7 == 5
+                        && (source[3] >> 3) & 7 < 4))
         {
             return false;
         }
