@@ -1238,6 +1238,22 @@ resident mapping. Результат: [S3-25a report](../reports/STAGE_3_S3-25a_
 
 **Готово:** одна документированная команда воспроизводит correctness принятого среза; mismatch сохраняется и сокращается. 1000 cases — минимальный объём этого плана, а не доказательство всей ISA.
 
+#### S3-34a. Двухоперационный IR memory differential corpus
+
+Для двух уже принятых S3-20j/S3-20k последовательностей добавлен bounded
+`od-host` integration corpus. Три фиксированных seed дают 2,400 уникальных
+полных успешных входов (400 на последовательность и seed); каждый выполняется
+дважды native entry и interpreter на независимых CPU/RAM копиях. Проверяются
+полное состояние, RAM, exit/budget/retirement и порядок/число callbacks.
+Входы варьируют qword state, alignment, совпадающие/разные ranges и безопасные
+частичные overlaps там, где форма последовательности допускает два адреса.
+Отдельные named случаи охватывают guest fault, STOP, budget и continuation;
+comparator corruption check проверяет GPR, RIP, byte памяти, retirement и
+пропущенный fault. Это локальное ARM64 evidence и частичный этап S3-34: reducer,
+остальные native subsets, lifecycle suites и физическая проверка сюда не входят.
+Физический S3-21 для этого corpus: `not_run`. См.
+[S3-34a report](../reports/STAGE_3_S3-34a_2026-10-27.md).
+
 ### S3-35. Измерить холодное исполнение
 
 1. Измерить полный первый запуск при пустом code cache: необходимые decode/IR/lowering/allocation/publication/lookup/execution, с явно указанной стоимостью initialization.

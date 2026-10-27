@@ -43,6 +43,27 @@
 
 ## Протокол и доказательства
 
+### Bounded S3-34a two-site memory corpus
+
+For the two exact V2 memory sequences in the JIT contract, run
+`cargo test -p od-host --test memory_corpus`. On local macOS ARM64 this runs
+2,400 unique successful inputs (three fixed seeds × 400 per sequence), with
+two native-entry and interpreter executions per input on independent full
+CPU/RAM snapshots. Inputs vary qword state, destination registers, address
+alignment, same/different regions, and safe partial overlap in load→store.
+Checks include full state and RAM, exit/budget/retirement, and memory callback
+order/count. Four separately named tests cover comparator corruption, mismatch
+diagnostic serialization, guest fault, STOP, budget exhaustion, and second-site
+continuation from the actual committed CPU/RAM result of the first
+budget-limited entry. The test is
+platform-gated and is not a physical x86 oracle or Mac mini check; those remain
+separate suites and must be reported as `not_run` until executed.
+
+On mismatch the test emits seed and case ID and writes JSON containing the
+original sequence/register/flags/address/RAM input and both serialized
+observations under the system temporary directory. A failed file write is
+included in the panic output.
+
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git
 revision, build fingerprint, host/OS/toolchain, fixtures/corpus fingerprint,

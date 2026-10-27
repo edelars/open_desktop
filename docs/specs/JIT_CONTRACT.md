@@ -332,6 +332,20 @@ aliases, MMIO, atomic operations, concurrent access, and arbitrary multi-site
 blocks. No performance claim is made. Evidence is in the
 [two-sequence report](../reports/STAGE_3_S3-20j_2026-10-27.md).
 
+S3-34a adds a bounded host-side differential corpus for these two exact
+sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
+alignment, same/different ranges, and safe partial overlaps for load→store;
+store→load retains its artifact-defined same-range accesses. Each generated
+input runs twice through the native entry and interpreter on independent
+snapshots. Comparison includes complete `LongModeState`, RAM bytes, retirement,
+budget, exit, and data callback order/count. Fixed seeds, uniqueness checks,
+JSON mismatch capture, and comparator corruption checks are local ARM64 test
+evidence only. Named fault, STOP, budget, and continuation cases remain outside
+the generated-success count. This does not widen either two-site artifact
+shape, establish physical Mac mini equivalence, or imply performance; S3-21
+remains `not_run` for this slice. See the
+[S3-34a report](../reports/STAGE_3_S3-34a_2026-10-27.md).
+
 ## 4. Начальные runtime bounds
 
 - Один гостевой vCPU; компиляция блоков последовательная.
