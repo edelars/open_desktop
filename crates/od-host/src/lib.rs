@@ -1738,6 +1738,99 @@ impl od_jit::dispatch::CachedBlockBackend for PublishedBlockExecutor {
     }
 }
 
+/// Publishes, executes, and releases one checked-memory artifact per bounded
+/// memory-dispatch step. It never keeps executable mappings across iterations.
+#[derive(Default)]
+pub struct PublishedMemoryBlockExecutor;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PublishedMemoryBlockError {
+    Publish(ExecutableMemoryError),
+    Execute(MemoryOperationExecutionErrorV2),
+}
+
+unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for PublishedMemoryBlockExecutor {
+    type Error = PublishedMemoryBlockError;
+
+    unsafe fn execute_one_memory_block(
+        &mut self,
+        block: &od_jit::memory_dispatch::BoundedMemoryArtifact,
+        state: &mut od_isa::LongModeState,
+        memory: &mut dyn od_isa::memory::GuestMemory,
+        access_context: od_isa::memory::AccessContext,
+        incoming_budget: u64,
+        stop_rip: Option<u64>,
+        stop_requested: &AtomicU8,
+    ) -> Result<od_jit::memory_dispatch::MemoryBlockReport, Self::Error> {
+        use od_jit::memory_dispatch::{MemoryBlockExit, MemoryBlockReport};
+
+        let (published, result) = match block {
+            od_jit::memory_dispatch::BoundedMemoryArtifact::Pair(compiled) => {
+                let published = PublishedCode::publish_ir_memory_two_site_v2(compiled)
+                    .map_err(PublishedMemoryBlockError::Publish)?;
+                // SAFETY: forwarded from this trait's caller contract.
+                let result = unsafe {
+                    published.execute_ir_memory_two_site_v2(
+                        state,
+                        memory,
+                        access_context,
+                        incoming_budget,
+                        stop_rip,
+                        stop_requested,
+                    )
+                };
+                (published, result)
+            }
+            od_jit::memory_dispatch::BoundedMemoryArtifact::Load(compiled) => {
+                let published = PublishedCode::publish_ir_memory_load_v2(compiled)
+                    .map_err(PublishedMemoryBlockError::Publish)?;
+                let result = published.execute_ir_memory_load_v2(
+                    state,
+                    memory,
+                    access_context,
+                    incoming_budget,
+                    stop_rip,
+                    stop_requested,
+                );
+                (published, result)
+            }
+            od_jit::memory_dispatch::BoundedMemoryArtifact::Store(compiled) => {
+                let published = PublishedCode::publish_ir_memory_store_v2(compiled)
+                    .map_err(PublishedMemoryBlockError::Publish)?;
+                // SAFETY: forwarded from this trait's caller contract.
+                let result = unsafe {
+                    published.execute_ir_memory_store_v2(
+                        state,
+                        memory,
+                        access_context,
+                        incoming_budget,
+                        stop_rip,
+                        stop_requested,
+                    )
+                };
+                (published, result)
+            }
+        };
+        let result = result.map_err(PublishedMemoryBlockError::Execute)?;
+        let report = MemoryBlockReport {
+            exit: match result.exit {
+                MemoryOperationExecutionExitV2::Complete => MemoryBlockExit::Complete,
+                MemoryOperationExecutionExitV2::CodeInvalidated => MemoryBlockExit::CodeInvalidated,
+                MemoryOperationExecutionExitV2::BudgetExhausted => MemoryBlockExit::BudgetExhausted,
+                MemoryOperationExecutionExitV2::StopRequested => MemoryBlockExit::StopRequested,
+                MemoryOperationExecutionExitV2::StopAddress => MemoryBlockExit::StopAddress,
+                MemoryOperationExecutionExitV2::GuestFault(fault) => {
+                    MemoryBlockExit::GuestFault(fault)
+                }
+            },
+            remaining_budget: result.remaining_budget,
+            retired_instructions: result.retired_instructions,
+        };
+        drop(published);
+        Ok(report)
+    }
+}
+
 pub const ARENA_SLOT_BYTES: usize = od_jit::block_compile::MAX_EMITTED_BLOCK_BYTES;
 pub const MAX_PUBLISHED_ARENA_BLOCKS: usize = 16;
 
@@ -14459,5 +14552,940 @@ mod tests {
         assert_eq!(stopped_ram.fetch_boundary_calls, 1);
         assert_eq!(stopped_ram.calls, calls_after_pair);
         drop(published);
+    }
+
+    #[test]
+    fn bounded_memory_dispatch_continues_across_two_pairs_and_exact_budgets() {
+        use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
+        let _guard = jit_test_lock();
+
+        const BASE: u64 = 0x1200;
+        const CODE: [u8; 12] = [
+            0x48, 0x8b, 0x03, 0x48, 0x89, 0x02, // MOV RAX,[RBX]; MOV [RDX],RAX
+            0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b, // MOV [RBX],RAX; MOV RCX,[RBX]
+        ];
+
+        #[derive(Clone)]
+        struct Ram {
+            bytes: [u8; 128],
+            reads: usize,
+            writes: usize,
+            fail_write: bool,
+        }
+        impl GuestMemory for Ram {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                let offset = address
+                    .checked_sub(BASE)
+                    .and_then(|n| usize::try_from(n).ok());
+                offset
+                    .and_then(|n| CODE.get(n).copied())
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                out: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                self.reads += 1;
+                let start = usize::try_from(address).map_err(|_| MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })?;
+                let source =
+                    self.bytes
+                        .get(start..start + out.len())
+                        .ok_or(MemoryError::Unmapped {
+                            address,
+                            access: AccessKind::Read,
+                        })?;
+                out.copy_from_slice(source);
+                Ok(())
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                input: &[u8],
+            ) -> Result<(), MemoryError> {
+                self.writes += 1;
+                if self.fail_write {
+                    return Err(MemoryError::Architectural(
+                        od_isa::memory::ArchitecturalFault {
+                            vector: 14,
+                            error_code: Some(2),
+                            linear_address: Some(address),
+                        },
+                    ));
+                }
+                let start = usize::try_from(address).map_err(|_| MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })?;
+                let destination = self.bytes.get_mut(start..start + input.len()).ok_or(
+                    MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Write,
+                    },
+                )?;
+                destination.copy_from_slice(input);
+                Ok(())
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        let initial_state = || od_isa::LongModeState {
+            rip: BASE,
+            gpr: [0x8877, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            ..od_isa::LongModeState::default()
+        };
+        let initial_ram = || {
+            let mut ram = Ram {
+                bytes: [0; 128],
+                reads: 0,
+                writes: 0,
+                fail_write: false,
+            };
+            ram.bytes[16..24].copy_from_slice(&0x1234_5678_9abc_def0u64.to_le_bytes());
+            ram
+        };
+        struct FailSecondBlock {
+            inner: PublishedMemoryBlockExecutor,
+            calls: usize,
+        }
+        unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for FailSecondBlock {
+            type Error = PublishedMemoryBlockError;
+
+            unsafe fn execute_one_memory_block(
+                &mut self,
+                block: &od_jit::memory_dispatch::BoundedMemoryArtifact,
+                state: &mut od_isa::LongModeState,
+                memory: &mut dyn GuestMemory,
+                access_context: AccessContext,
+                incoming_budget: u64,
+                stop_rip: Option<u64>,
+                stop_requested: &AtomicU8,
+            ) -> Result<od_jit::memory_dispatch::MemoryBlockReport, Self::Error> {
+                self.calls += 1;
+                if self.calls == 2 {
+                    return Err(PublishedMemoryBlockError::Publish(
+                        ExecutableMemoryError::AllocationFailed,
+                    ));
+                }
+                // SAFETY: this wrapper forwards its caller's contract.
+                unsafe {
+                    self.inner.execute_one_memory_block(
+                        block,
+                        state,
+                        memory,
+                        access_context,
+                        incoming_budget,
+                        stop_rip,
+                        stop_requested,
+                    )
+                }
+            }
+        }
+        let stop = AtomicU8::new(0);
+        for budget in 1..=4 {
+            let mut native_state = initial_state();
+            let mut native_ram = initial_ram();
+            let mut executor = PublishedMemoryBlockExecutor;
+            // SAFETY: each fresh Ram is private synchronous ordinary data RAM;
+            // the immutable code slice is disjoint and alive through the call.
+            let native = unsafe {
+                od_jit::memory_dispatch::run(
+                    CodeView::new(BASE, &CODE).unwrap(),
+                    od_jit::memory_dispatch::FixtureExecutionBoundary::new(
+                        CodeView::new(BASE, &CODE).unwrap(),
+                        BASE + CODE.len() as u64,
+                    )
+                    .unwrap(),
+                    &mut native_state,
+                    &mut native_ram,
+                    AccessContext::default(),
+                    budget,
+                    None,
+                    &stop,
+                    &mut executor,
+                )
+            }
+            .unwrap_or_else(|error| panic!("native dispatch budget {budget}: {error:?}"));
+
+            let mut interpreted_state = initial_state();
+            let mut interpreted_ram = initial_ram();
+            let interpreted = od_isa::execute::run(
+                &mut interpreted_state,
+                &mut interpreted_ram,
+                od_isa::execute::RunConfig {
+                    instruction_budget: budget,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(native_state, interpreted_state, "budget {budget}");
+            assert_eq!(native_ram.bytes, interpreted_ram.bytes, "budget {budget}");
+            assert_eq!(
+                native.retired_instructions, interpreted.instructions_executed,
+                "budget {budget}"
+            );
+            assert_eq!(
+                native.remaining_budget,
+                budget - interpreted.instructions_executed,
+                "budget {budget}"
+            );
+            assert_eq!(native_ram.reads, interpreted_ram.reads, "budget {budget}");
+            assert_eq!(native_ram.writes, interpreted_ram.writes, "budget {budget}");
+            if budget < 4 {
+                assert_eq!(
+                    native.exit,
+                    od_jit::memory_dispatch::BoundedMemoryExit::BudgetExhausted
+                );
+            } else {
+                assert_eq!(
+                    native.exit,
+                    od_jit::memory_dispatch::BoundedMemoryExit::BoundaryReached {
+                        rip: BASE + CODE.len() as u64,
+                    }
+                );
+            }
+        }
+
+        let mut state = initial_state();
+        let mut ram = initial_ram();
+        let mut executor = FailSecondBlock {
+            inner: PublishedMemoryBlockExecutor,
+            calls: 0,
+        };
+        // SAFETY: same disjoint immutable code/private synchronous RAM setup as above.
+        let failure = unsafe {
+            od_jit::memory_dispatch::run(
+                CodeView::new(BASE, &CODE).unwrap(),
+                od_jit::memory_dispatch::FixtureExecutionBoundary::new(
+                    CodeView::new(BASE, &CODE).unwrap(),
+                    BASE + CODE.len() as u64,
+                )
+                .unwrap(),
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                4,
+                None,
+                &stop,
+                &mut executor,
+            )
+        };
+        assert_eq!(
+            failure,
+            Err(od_jit::memory_dispatch::BoundedMemoryError::Executor(
+                PublishedMemoryBlockError::Publish(ExecutableMemoryError::AllocationFailed),
+            ))
+        );
+        assert_eq!(state.rip, BASE + 6);
+        assert_eq!((ram.reads, ram.writes), (1, 1));
+        assert_eq!(&ram.bytes[0..8], &0x1234_5678_9abc_def0u64.to_le_bytes());
+    }
+
+    #[test]
+    fn bounded_memory_dispatch_resumes_faults_and_honors_boundary_guards() {
+        use od_isa::memory::{AccessContext, ArchitecturalFault};
+        let _guard = jit_test_lock();
+
+        const BASE: u64 = 0x1300;
+        const PAIR: [u8; 6] = [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02];
+        struct Ram {
+            bytes: [u8; 128],
+            reads: usize,
+            writes: usize,
+            fail_write: bool,
+            stop_on_read: Option<Arc<AtomicU8>>,
+            stop_on_write: Option<Arc<AtomicU8>>,
+        }
+        impl od_isa::memory::GuestMemory for Ram {
+            fn fetch(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+            ) -> Result<u8, od_isa::memory::MemoryError> {
+                let offset = address
+                    .checked_sub(BASE)
+                    .and_then(|n| usize::try_from(n).ok());
+                offset.and_then(|n| PAIR.get(n).copied()).ok_or(
+                    od_isa::memory::MemoryError::Unmapped {
+                        address,
+                        access: od_isa::memory::AccessKind::Fetch,
+                    },
+                )
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                out: &mut [u8],
+            ) -> Result<(), od_isa::memory::MemoryError> {
+                self.reads += 1;
+                let start = usize::try_from(address).map_err(|_| {
+                    od_isa::memory::MemoryError::Unmapped {
+                        address,
+                        access: od_isa::memory::AccessKind::Read,
+                    }
+                })?;
+                let source = self
+                    .bytes
+                    .get(start..start.saturating_add(out.len()))
+                    .ok_or(od_isa::memory::MemoryError::Unmapped {
+                        address,
+                        access: od_isa::memory::AccessKind::Read,
+                    })?;
+                out.copy_from_slice(source);
+                if let Some(stop) = &self.stop_on_read {
+                    stop.store(1, Ordering::Release);
+                }
+                Ok(())
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                input: &[u8],
+            ) -> Result<(), od_isa::memory::MemoryError> {
+                self.writes += 1;
+                if self.fail_write {
+                    return Err(od_isa::memory::MemoryError::Architectural(
+                        ArchitecturalFault {
+                            vector: 14,
+                            error_code: Some(2),
+                            linear_address: Some(address),
+                        },
+                    ));
+                }
+                let start = usize::try_from(address).map_err(|_| {
+                    od_isa::memory::MemoryError::Unmapped {
+                        address,
+                        access: od_isa::memory::AccessKind::Write,
+                    }
+                })?;
+                let destination = self
+                    .bytes
+                    .get_mut(start..start.saturating_add(input.len()))
+                    .ok_or(od_isa::memory::MemoryError::Unmapped {
+                        address,
+                        access: od_isa::memory::AccessKind::Write,
+                    })?;
+                destination.copy_from_slice(input);
+                if let Some(stop) = &self.stop_on_write {
+                    stop.store(1, Ordering::Release);
+                }
+                Ok(())
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, od_isa::memory::MemoryError> {
+                Err(od_isa::memory::MemoryError::Unmapped {
+                    address,
+                    access: od_isa::memory::AccessKind::Write,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, od_isa::memory::MemoryError> {
+                Err(od_isa::memory::MemoryError::Unmapped {
+                    address,
+                    access: od_isa::memory::AccessKind::Write,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, od_isa::memory::MemoryError> {
+                Err(od_isa::memory::MemoryError::Unmapped {
+                    address,
+                    access: od_isa::memory::AccessKind::Write,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), od_isa::memory::MemoryError> {
+                Ok(())
+            }
+        }
+        let make_ram = || {
+            let mut ram = Ram {
+                bytes: [0; 128],
+                reads: 0,
+                writes: 0,
+                fail_write: false,
+                stop_on_read: None,
+                stop_on_write: None,
+            };
+            ram.bytes[16..24].copy_from_slice(&0x55aa_u64.to_le_bytes());
+            ram
+        };
+        let make_state = || od_isa::LongModeState {
+            rip: BASE,
+            gpr: [0, 0, 32, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            ..od_isa::LongModeState::default()
+        };
+        let code = CodeView::new(BASE, &PAIR).unwrap();
+        struct CountingExecutor {
+            inner: PublishedMemoryBlockExecutor,
+            calls: usize,
+        }
+        unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for CountingExecutor {
+            type Error = PublishedMemoryBlockError;
+            unsafe fn execute_one_memory_block(
+                &mut self,
+                block: &od_jit::memory_dispatch::BoundedMemoryArtifact,
+                state: &mut od_isa::LongModeState,
+                memory: &mut dyn od_isa::memory::GuestMemory,
+                access_context: AccessContext,
+                incoming_budget: u64,
+                stop_rip: Option<u64>,
+                stop_requested: &AtomicU8,
+            ) -> Result<od_jit::memory_dispatch::MemoryBlockReport, Self::Error> {
+                self.calls += 1;
+                // SAFETY: this wrapper forwards the exact caller contract.
+                unsafe {
+                    self.inner.execute_one_memory_block(
+                        block,
+                        state,
+                        memory,
+                        access_context,
+                        incoming_budget,
+                        stop_rip,
+                        stop_requested,
+                    )
+                }
+            }
+        }
+        let stop = Arc::new(AtomicU8::new(0));
+
+        let mut state = make_state();
+        let before_state = state.clone();
+        let mut ram = make_ram();
+        let before_ram = ram.bytes;
+        let mut counting = CountingExecutor {
+            inner: PublishedMemoryBlockExecutor,
+            calls: 0,
+        };
+        stop.store(1, Ordering::Release);
+        let stopped_before_entry = unsafe {
+            od_jit::memory_dispatch::run(
+                code,
+                od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, BASE + 6).unwrap(),
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                4,
+                None,
+                &stop,
+                &mut counting,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            stopped_before_entry.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::StopRequested
+        );
+        assert_eq!(stopped_before_entry.retired_instructions, 0);
+        assert_eq!(counting.calls, 0);
+        assert_eq!(state, before_state);
+        assert_eq!(ram.bytes, before_ram);
+        assert_eq!((ram.reads, ram.writes), (0, 0));
+
+        let stop_rip_wins = unsafe {
+            od_jit::memory_dispatch::run(
+                code,
+                od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, BASE + 6).unwrap(),
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                4,
+                Some(BASE),
+                &stop,
+                &mut counting,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            stop_rip_wins.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::StopAddress
+        );
+        assert_eq!(counting.calls, 0);
+        stop.store(0, Ordering::Release);
+
+        for (bytes, stop_on_read, expected_reads, expected_writes) in [
+            (PAIR, true, 1, 0),
+            ([0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b], false, 0, 1),
+        ] {
+            let code = CodeView::new(BASE, &bytes).unwrap();
+            let mut state = make_state();
+            let mut ram = make_ram();
+            let local_stop = Arc::new(AtomicU8::new(0));
+            if stop_on_read {
+                ram.stop_on_read = Some(local_stop.clone());
+            } else {
+                ram.stop_on_write = Some(local_stop.clone());
+            }
+            let mut executor = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run(
+                    code,
+                    od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, BASE + 6).unwrap(),
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    4,
+                    None,
+                    &local_stop,
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                result.exit,
+                od_jit::memory_dispatch::BoundedMemoryExit::StopRequested
+            );
+            assert_eq!(result.retired_instructions, 1);
+            assert_eq!(state.rip, BASE + 3);
+            assert_eq!((ram.reads, ram.writes), (expected_reads, expected_writes));
+            if stop_on_read {
+                assert_eq!(state.gpr[0], 0x55aa);
+                assert_eq!(&ram.bytes[16..24], &0x55aa_u64.to_le_bytes());
+            } else {
+                assert_eq!(state.gpr[0], 0);
+                assert_eq!(&ram.bytes[16..24], &0u64.to_le_bytes());
+            }
+        }
+
+        let mut state = make_state();
+        let mut ram = make_ram();
+        let code = CodeView::new(BASE, &PAIR).unwrap();
+        let mut executor = PublishedMemoryBlockExecutor;
+        // SAFETY: RAM is private and synchronous; source is a separate immutable array.
+        let first = unsafe {
+            od_jit::memory_dispatch::run(
+                code,
+                od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, BASE + 6).unwrap(),
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            first.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::BudgetExhausted
+        );
+        assert_eq!(state.rip, BASE + 3);
+        assert_eq!((ram.reads, ram.writes), (1, 0));
+        let mut executor = PublishedMemoryBlockExecutor;
+        // Resume from actual committed state; the first load is not repeated.
+        let resumed = unsafe {
+            od_jit::memory_dispatch::run(
+                code,
+                od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, BASE + 6).unwrap(),
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(resumed.retired_instructions, 1);
+        assert_eq!(state.rip, BASE + 6);
+        assert_eq!((ram.reads, ram.writes), (1, 1));
+
+        for (stop_rip, expected_retired, expected_calls) in
+            [(BASE + 3, 1, (1, 0)), (BASE + 6, 2, (1, 1))]
+        {
+            let mut state = make_state();
+            let mut ram = make_ram();
+            let mut executor = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run(
+                    code,
+                    od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, BASE + 6).unwrap(),
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    4,
+                    Some(stop_rip),
+                    &stop,
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                result.exit,
+                od_jit::memory_dispatch::BoundedMemoryExit::StopAddress
+            );
+            assert_eq!(result.retired_instructions, expected_retired);
+            assert_eq!((ram.reads, ram.writes), expected_calls);
+        }
+
+        const TWO_PAIRS: [u8; 12] = [
+            0x48, 0x8b, 0x03, 0x48, 0x89, 0x02, 0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b,
+        ];
+        let code = CodeView::new(BASE, &TWO_PAIRS).unwrap();
+        let mut state = make_state();
+        let mut ram = make_ram();
+        ram.stop_on_write = Some(stop.clone());
+        let mut executor = CountingExecutor {
+            inner: PublishedMemoryBlockExecutor,
+            calls: 0,
+        };
+        let stopped_after_pair = unsafe {
+            od_jit::memory_dispatch::run(
+                code,
+                od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, BASE + 12).unwrap(),
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                4,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            stopped_after_pair.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::StopRequested
+        );
+        assert_eq!(stopped_after_pair.retired_instructions, 2);
+        assert_eq!(state.rip, BASE + 6);
+        assert_eq!(executor.calls, 1);
+        assert_eq!((ram.reads, ram.writes), (1, 1));
+        assert_eq!(&ram.bytes[32..40], &0x55aa_u64.to_le_bytes());
+
+        stop.store(0, Ordering::Release);
+        ram.stop_on_write = None;
+        let mut executor = CountingExecutor {
+            inner: PublishedMemoryBlockExecutor,
+            calls: 0,
+        };
+        let resumed_after_stop = unsafe {
+            od_jit::memory_dispatch::run(
+                code,
+                od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, BASE + 12).unwrap(),
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            resumed_after_stop.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::BoundaryReached { rip: BASE + 12 }
+        );
+        assert_eq!(resumed_after_stop.retired_instructions, 2);
+        assert_eq!(executor.calls, 1);
+        assert_eq!(state.rip, BASE + 12);
+        assert_eq!((ram.reads, ram.writes), (2, 2));
+        assert_eq!(ram.bytes[16..24], ram.bytes[32..40]);
+
+        let mut boundary_state = make_state();
+        let mut boundary_ram = make_ram();
+        let mut executor = PublishedMemoryBlockExecutor;
+        let boundary_result = unsafe {
+            od_jit::memory_dispatch::run(
+                code,
+                od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, BASE + 3).unwrap(),
+                &mut boundary_state,
+                &mut boundary_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            boundary_result.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::BoundaryReached { rip: BASE + 3 }
+        );
+        assert_eq!(boundary_result.retired_instructions, 1);
+        assert_eq!(boundary_state.rip, BASE + 3);
+        assert_eq!((boundary_ram.reads, boundary_ram.writes), (1, 0));
+
+        let mut state = make_state();
+        let mut ram = make_ram();
+        ram.fail_write = true;
+        let before = ram.bytes;
+        let mut executor = PublishedMemoryBlockExecutor;
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(2),
+            linear_address: Some(32),
+        };
+        let result = unsafe {
+            od_jit::memory_dispatch::run(
+                code,
+                od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, BASE + 6).unwrap(),
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                4,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            result.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::GuestFault(fault)
+        );
+        assert_eq!(result.retired_instructions, 1);
+        assert_eq!(state.rip, BASE + 3);
+        assert_eq!(state.gpr[0], 0x55aa);
+        assert_eq!(ram.bytes, before);
+        assert_eq!((ram.reads, ram.writes), (1, 1));
+        ram.fail_write = false;
+        let mut executor = PublishedMemoryBlockExecutor;
+        let resumed = unsafe {
+            od_jit::memory_dispatch::run(
+                code,
+                od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, BASE + 6).unwrap(),
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(resumed.retired_instructions, 1);
+        assert_eq!((ram.reads, ram.writes), (1, 2));
+        assert_eq!(&ram.bytes[32..40], &0x55aa_u64.to_le_bytes());
+
+        for partial_len in [1, 2] {
+            let mut partial_state = make_state();
+            let before_state = partial_state.clone();
+            let mut partial_ram = make_ram();
+            let before_ram = partial_ram.bytes;
+            let mut executor = PublishedMemoryBlockExecutor;
+            let partial = unsafe {
+                od_jit::memory_dispatch::run(
+                    code,
+                    od_jit::memory_dispatch::FixtureExecutionBoundary::new(
+                        code,
+                        BASE + partial_len,
+                    )
+                    .unwrap(),
+                    &mut partial_state,
+                    &mut partial_ram,
+                    AccessContext::default(),
+                    2,
+                    None,
+                    &stop,
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                partial.exit,
+                od_jit::memory_dispatch::BoundedMemoryExit::BoundaryReached { rip: BASE }
+            );
+            assert_eq!(partial.retired_instructions, 0);
+            assert_eq!(partial.blocks_executed, 0);
+            assert_eq!(partial_state, before_state);
+            assert_eq!(partial_ram.bytes, before_ram);
+            assert_eq!((partial_ram.reads, partial_ram.writes), (0, 0));
+        }
+
+        const STORE_LOAD: [u8; 6] = [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b];
+        let partial_code = CodeView::new(BASE, &STORE_LOAD).unwrap();
+        let mut partial_state = make_state();
+        let mut partial_ram = make_ram();
+        let mut executor = PublishedMemoryBlockExecutor;
+        let partial = unsafe {
+            od_jit::memory_dispatch::run(
+                partial_code,
+                od_jit::memory_dispatch::FixtureExecutionBoundary::new(partial_code, BASE + 4)
+                    .unwrap(),
+                &mut partial_state,
+                &mut partial_ram,
+                AccessContext::default(),
+                3,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            partial.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::BoundaryReached { rip: BASE + 3 }
+        );
+        assert_eq!(partial.retired_instructions, 1);
+        assert_eq!(partial_state.rip, BASE + 3);
+        assert_eq!((partial_ram.reads, partial_ram.writes), (0, 1));
+        assert_eq!(
+            &partial_ram.bytes[16..24],
+            &partial_state.gpr[0].to_le_bytes()
+        );
+
+        let unsupported_code = [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02, 0x90];
+        let code = CodeView::new(BASE, &unsupported_code).unwrap();
+        let mut state = make_state();
+        let mut ram = make_ram();
+        let mut executor = PublishedMemoryBlockExecutor;
+        let unsupported = unsafe {
+            od_jit::memory_dispatch::run(
+                code,
+                od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, BASE + 7).unwrap(),
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                4,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            unsupported.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::Unsupported { rip: BASE + 6 }
+        );
+        assert_eq!(unsupported.retired_instructions, 2);
+        assert_eq!(state.rip, BASE + 6);
+        assert_eq!((ram.reads, ram.writes), (1, 1));
+
+        let invalid_code = [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02, 0x0f, 0x0b];
+        let code = CodeView::new(BASE, &invalid_code).unwrap();
+        let mut state = make_state();
+        let mut ram = make_ram();
+        let mut executor = PublishedMemoryBlockExecutor;
+        let invalid = unsafe {
+            od_jit::memory_dispatch::run(
+                code,
+                od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, BASE + 8).unwrap(),
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                4,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            invalid.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::Invalid { rip: BASE + 6 }
+        );
+        assert_eq!(invalid.retired_instructions, 2);
+        assert_eq!(state.rip, BASE + 6);
+        assert_eq!((ram.reads, ram.writes), (1, 1));
+
+        for (tail, boundary, expected) in [
+            (
+                &[0x0f][..],
+                BASE + 1,
+                od_jit::memory_dispatch::BoundedMemoryExit::BoundaryReached { rip: BASE },
+            ),
+            (
+                &[0x0f, 0x0b][..],
+                BASE + 2,
+                od_jit::memory_dispatch::BoundedMemoryExit::Invalid { rip: BASE },
+            ),
+        ] {
+            let code = CodeView::new(BASE, tail).unwrap();
+            let mut state = make_state();
+            let before_state = state.clone();
+            let mut ram = make_ram();
+            let before_ram = ram.bytes;
+            let mut executor = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run(
+                    code,
+                    od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, boundary).unwrap(),
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    2,
+                    None,
+                    &stop,
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(result.exit, expected);
+            assert_eq!(result.retired_instructions, 0);
+            assert_eq!(result.blocks_executed, 0);
+            assert_eq!(state, before_state);
+            assert_eq!(ram.bytes, before_ram);
+            assert_eq!((ram.reads, ram.writes), (0, 0));
+        }
     }
 }

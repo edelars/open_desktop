@@ -465,6 +465,26 @@ unadmitted target, runtime unsupported exit и zero progress. Native od-host
 integration test покрывает последовательные mappings и положительный
 self-loop на macOS ARM64.
 
+Ограниченный checked-memory continuation добавлен отдельно в
+`od_jit::memory_dispatch::run` и `od_host::PublishedMemoryBlockExecutor`.
+Он работает только с двумя принятыми two-site artifact sequences и singleton
+MOV qword load/store продолжениями, по immutable borrowed `CodeView` и явной
+fixture execution boundary. Общий budget уменьшается по фактическому retirement;
+STOP/stop-RIP, архитектурный second-site fault и host publication failure
+сохраняют точный prefix state. Host executor освобождает каждый mapping до
+следующей итерации. Unsafe caller contract сохраняет private synchronous RAM,
+all-or-nothing write, no-MMIO/no-alias/no-concurrency требования; он не
+подменяет capability. `od-machine` пока не содержит production owner, поэтому
+owner-backed VMHost/MMU integration и owner-supplied code fetch остаются
+открытыми. Явная fixture boundary — byte-window limit, не guest fetch; полный
+code-fetch fault delivery остаётся непокрытым до owner integration. Две focused native differential проверки
+сравнивают independent interpreter snapshots, budgets 1..=4, intra-pair и
+inter-pair stop, data fault/resume without duplicate read, partial byte windows
+at A+1/A+2/A+4, complete unsupported/invalid versus genuinely truncated decode,
+cooperative STOP before entry/inside both pairs/after the final callback with
+resume from actual RIP, unsupported tail и host error после первого committed
+block. См. [memory-dispatch report](../reports/STAGE_3_S3-15_2026-10-27.md#bounded-checked-memory-dispatcher-partial).
+
 Следующий локальный CLI partial добавляет opt-in fixture-v1 engine
 `jit-dispatch` и отдельный сериализуемый backend `jit_ir_dispatch`. Runner
 повторно связывает полный decode с immutable fixture bytes, проверяет entry

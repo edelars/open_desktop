@@ -1012,6 +1012,40 @@ for 10 manual plus 1000 generated inputs, seed `0x5eedcafe`, and two repeats
 manifest marks `physical_x86=not_run`. Physical triple comparison remains
 pending.
 
+#### S3-15 checked-memory borrowed dispatcher partial
+
+`od_jit::memory_dispatch::run` is a separate uncached synchronous dispatcher
+for only the two exact checked qword memory pairs and their admitted singleton
+load/store forms. It borrows an immutable `CodeView` and takes an explicit
+`FixtureExecutionBoundary`, which is a byte-window limit and may split an
+instruction; supported pairs compile as one artifact only when all six bytes
+fit, otherwise the current complete instruction compiles as a singleton. It
+continues from actual
+`LongModeState.rip` and forwards the remaining instruction budget to every
+host execution. Stop-RIP and cooperative STOP are checked before boundary
+handling, and a zero budget does not compile or publish another artifact.
+Compile/lowering rejection is `Unsupported`, never a guest fault. Reaching a
+byte-window end or encountering a partial instruction returns
+`BoundaryReached { rip }` without compiling or executing past the limit. This
+is not a guest fetch fault or guest halt. Complete one-byte unsupported
+instructions and complete invalid encodings retain separate `Unsupported` and
+`Invalid` outcomes even when they end the byte window. Production code-fetch
+fault delivery requires the future owner-supplied fetch integration.
+
+`od_host::PublishedMemoryBlockExecutor` publishes, runs, decodes, and drops
+exactly one mapping per artifact before returning to the dispatcher. The
+dispatcher accepts only exact compiler-issued artifact types, preserves a
+committed prefix on later architectural or host errors, and never caches code.
+Its unsafe caller contract requires immutable non-aliasing code bytes and
+private synchronous ordinary data RAM with all-or-nothing writes, no MMIO,
+executable/code aliases, DMA, concurrency, re-entry, or unwind. `GuestMemory`
+does not prove those ownership properties. There is no production RAM/MMU
+owner in `od-machine` yet; VMHost owner integration and owner-supplied code
+fetch remain open. This does not cover a guest fault on the next code fetch,
+general S3-15, interpreter fallback,
+physical x86 comparison, cache/invalidation, or performance acceptance. See
+the [bounded memory dispatcher report](../reports/STAGE_3_S3-15_2026-10-27.md#bounded-checked-memory-dispatcher-partial).
+
 ### S3-16: exact bare NOP fallback partial
 
 The local Rust API `S0_09NopAdmission` / `run_with_nop_fallback` admits only a
