@@ -174,6 +174,9 @@ impl MemorySiteV2 {
                                 self.operand.base,
                                 od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                             ))
+                        || (length == 4
+                            && i8::try_from(self.operand.displacement).is_ok()
+                            && base_is_low_gpr)
                         || (length == 8
                             && i32::try_from(self.operand.displacement).is_ok()
                             && matches!(
@@ -186,6 +189,9 @@ impl MemorySiteV2 {
                                 self.operand.base,
                                 od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                             ))
+                        || (length == 7
+                            && i32::try_from(self.operand.displacement).is_ok()
+                            && base_is_low_gpr)
                 }
                 Some(5) => {
                     (length == 3 && self.operand.displacement == 0 && base_is_low_gpr)
@@ -195,6 +201,9 @@ impl MemorySiteV2 {
                                 self.operand.base,
                                 od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                             ))
+                        || (length == 4
+                            && i8::try_from(self.operand.displacement).is_ok()
+                            && base_is_low_gpr)
                         || (length == 4
                             && self.operand.displacement == 0
                             && matches!(
@@ -213,6 +222,9 @@ impl MemorySiteV2 {
                                 self.operand.base,
                                 od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                             ))
+                        || (length == 7
+                            && i32::try_from(self.operand.displacement).is_ok()
+                            && base_is_low_gpr)
                         || (length == 8
                             && i32::try_from(self.operand.displacement).is_ok()
                             && matches!(
@@ -456,6 +468,10 @@ impl MemorySiteV2 {
                     || (data_register == 4 && mode == 1 && modrm == 0x65 && source.len() == 4)
                     || (data_register == 4 && mode == 2 && modrm == 0xa5 && source.len() == 7)
                     || (data_register == 5 && mode == 0 && modrm == 0x2c && source.len() == 4)
+                    || (data_register == 4 && mode == 1 && modrm & 7 < 4 && source.len() == 4)
+                    || (data_register == 5 && mode == 1 && modrm & 7 < 4 && source.len() == 4)
+                    || (data_register == 4 && mode == 2 && modrm & 7 < 4 && source.len() == 7)
+                    || (data_register == 5 && mode == 2 && modrm & 7 < 4 && source.len() == 7)
                     || (data_register == 4 && mode == 1 && modrm == 0x64 && source.len() == 5)
                     || (data_register == 5 && mode == 1 && modrm == 0x6c && source.len() == 5)
                     || (data_register == 4 && mode == 2 && modrm == 0xa4 && source.len() == 8)

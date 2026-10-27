@@ -2040,6 +2040,28 @@ disp32 byte-six host check ties differing source bytes to independently
 expected addresses. See the
 [S3-20ai report](../reports/STAGE_3_S3-20ai_2026-10-27.md).
 
+#### S3-20aj: RSP/RBP data with a low-GPR direct displacement
+
+The exact singleton forms are `48 8B/89 /r disp8` (length 4) and
+`48 8B/89 /r disp32` (length 7), with ModRM `mod=01/10`, data register RSP or
+RBP (`reg=4/5`), and base RAX..RBX (`rm=0..3`). SIB, address/prefix variants,
+other bases/data registers, pairs and V3 are not admitted. The decoder's
+`MemoryOperand` remains the effective-address authority; shared IR and runtime
+metadata must bind the exact bytes and decoded operand without broadening
+generic GPR validation.
+
+Loads update only the selected stack data register after a successful read;
+stores use the old data-register value and commit before a callback STOP.
+Noncanonical values are valid data, while using one later as an RSP/RBP base
+produces #SS at that next instruction. Noncanonical low-GPR effective
+addresses produce #GP before a backend callback. The bounded fixture dispatcher
+continues from actual RIP through budget/STOP splits and the opt-in bare-NOP
+interpreter step, without repeating effects. Partial byte windows return the
+fixture boundary result without publication or memory access. Existing
+RBP-base, RSP-base and RIP-relative spellings remain distinct.
+
+See [S3-20aj evidence](../reports/STAGE_3_S3-20aj_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

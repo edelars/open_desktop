@@ -2075,6 +2075,99 @@ mod tests {
     }
 
     #[test]
+    fn ir_rsp_rbp_data_with_low_direct_base_displacements_is_exact() {
+        let bases = [Register::Rax, Register::Rcx, Register::Rdx, Register::Rbx];
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in [4_u8, 5] {
+                for (mode, length, values) in [
+                    (1_u8, 4_usize, vec![i8::MIN as i32, -1, 0, i8::MAX as i32]),
+                    (2_u8, 7_usize, vec![i32::MIN, -1, 0, i32::MAX, 128]),
+                ] {
+                    for base in bases {
+                        for displacement in &values {
+                            let modrm = mode << 6 | data_register << 3 | base as u8;
+                            let disp_bytes = displacement.to_le_bytes();
+                            let mut source = vec![0x48, opcode, modrm];
+                            source.extend_from_slice(&disp_bytes[..length - 3]);
+                            let code = CodeView::new(0x5750, &source).unwrap();
+                            let (site, direct_site, copied) = match operation {
+                                MemorySiteOperationV2::Load => {
+                                    let ir = compile_ir_memory_load_block_v2(code, 0x5750).unwrap();
+                                    let direct =
+                                        compile_memory_load_block_v2(code, 0x5750).unwrap();
+                                    (
+                                        ir.site().clone(),
+                                        direct.site().clone(),
+                                        ir.source_bytes().to_vec(),
+                                    )
+                                }
+                                MemorySiteOperationV2::Store => {
+                                    let ir =
+                                        compile_ir_memory_store_block_v2(code, 0x5750).unwrap();
+                                    let direct =
+                                        compile_memory_store_block_v2(code, 0x5750).unwrap();
+                                    (
+                                        ir.site().clone(),
+                                        direct.site().clone(),
+                                        ir.source_bytes().to_vec(),
+                                    )
+                                }
+                            };
+                            assert_eq!(site, direct_site);
+                            assert_eq!(copied, source);
+                            assert_eq!(site.operand().base, AddressBase::Register(base));
+                            assert_eq!(site.operand().index, None);
+                            assert_eq!(site.operand().scale, 1);
+                            assert_eq!(site.operand().displacement, i64::from(*displacement));
+                            assert_eq!(site.next_rip(), 0x5750 + length as u64);
+                            assert_eq!(
+                                site.destination(),
+                                (operation == MemorySiteOperationV2::Load).then_some(data_register)
+                            );
+                            assert_eq!(
+                                site.source(),
+                                (operation == MemorySiteOperationV2::Store)
+                                    .then_some(data_register)
+                            );
+                            assert!(site.matches_source_bytes(&source, operation));
+                        }
+                    }
+                }
+            }
+        }
+        for (opcode, reg) in [(0x8b_u8, 4_u8), (0x89, 5)] {
+            for (mode, length) in [(1_u8, 4_usize), (2, 7)] {
+                let mut invalid = vec![0x48, opcode, mode << 6 | reg << 3 | 4];
+                invalid.resize(length, 0);
+                let code = CodeView::new(0x5750, &invalid).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x5750).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x5750).map(|_| ())
+                };
+                assert!(result.is_err(), "SIB unexpectedly admitted {invalid:02x?}");
+            }
+        }
+        for bytes in [
+            vec![0x67, 0x48, 0x8b, 0x60, 0],
+            vec![0x48, 0x67, 0x89, 0xa8, 0, 0, 0, 0],
+            vec![0x48, 0x8b, 0x70, 0],
+            vec![0x48, 0x89, 0xb0, 0, 0, 0, 0],
+        ] {
+            let code = CodeView::new(0x5750, &bytes).unwrap();
+            let result = if bytes[1] == 0x8b || bytes[2] == 0x8b {
+                compile_ir_memory_load_block_v2(code, 0x5750).map(|_| ())
+            } else {
+                compile_ir_memory_store_block_v2(code, 0x5750).map(|_| ())
+            };
+            assert!(result.is_err(), "unsupported form admitted {bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn ir_rsp_data_and_base_disp8_is_exact_signed_0x64_sib_form() {
         for (opcode, operation) in [
             (0x8b, MemorySiteOperationV2::Load),

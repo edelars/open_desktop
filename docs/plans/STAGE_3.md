@@ -181,6 +181,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20af | RBP одновременно data и base в qword MOV через signed disp32 | Только `48 8B/89 AD id`, ModRM `mod=10/reg=RBP/rm=RBP`, ровно 7 bytes; адрес и store payload используют старый RBP |
 | [partial] | S3-20ag | RBP как data и RSP как base через exact no-index SIB | Только `48 8B/89 2C 24`, ModRM `mod=00/reg=RBP/rm=SIB`, SIB `0x24`, ровно 4 bytes |
 | [partial] | S3-20ai | RSP как data и RBP как base через direct disp8/disp32 | Только `48 8B/89 65 ib` или `48 8B/89 A5 id`, ModRM `mod=01/10,reg=RSP,rm=RBP`, ровно 4/7 bytes; `mod=00/rm=5` остаётся RIP-relative |
+| [partial] | S3-20aj | RSP/RBP как data через direct disp8/disp32 от RAX..RBX | Только `48 8B/89 /r disp8|disp32`, ModRM `mod=01/10`, `reg=RSP|RBP`, `rm=RAX..RBX`, ровно 4/7 bytes; без SIB |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1491,6 +1492,25 @@ actual RIP and uses a successfully loaded RSP in the next `[RSP]` access;
 budget splits and STOP do not repeat the first effect. Partial and forbidden
 forms have no effects. See the
 [S3-20ai report](../reports/STAGE_3_S3-20ai_2026-10-27.md).
+
+#### S3-20aj. RSP/RBP data with a low-GPR direct displacement
+
+Add singleton `48 8B/89 /r disp8` (length 4) and
+`48 8B/89 /r disp32` (length 7), with ModRM `mod=01/10`, data field RSP or
+RBP, and direct base RAX..RBX. SIB, prefixes, other data/base registers, pairs
+and V3 remain outside this slice. Effective-address semantics continue to
+come from the decoded `MemoryOperand`; generic guest-register admission is not
+widened.
+
+Direct V2, shared IR and interpreter parity cover all four bases, both data
+registers and both widths. Noncanonical data remains valid until used as an
+address; noncanonical low-GPR effective addresses raise #GP before callback.
+Stores commit before callback STOP. Bounded dispatch covers actual-RIP budget
+and STOP continuation, singleton→NOP→pair composition, and later #SS when a
+loaded noncanonical RSP/RBP is used as the next memory base. Partial byte
+windows and unsupported near matches stop without effects. The existing
+RBP-base and RIP-relative profiles remain separate. See the
+[S3-20aj report](../reports/STAGE_3_S3-20aj_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

@@ -1359,6 +1359,12 @@ fn is_rsp_memory_data_operand(
                     || (i8::try_from(operand.displacement).is_ok()
                         && matches!(
                             operand.base,
+                            od_isa::long_decode::AddressBase::Register(register)
+                                if (register as u8) < 4
+                        ))
+                    || (i8::try_from(operand.displacement).is_ok()
+                        && matches!(
+                            operand.base,
                             od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                         ))
             }
@@ -1378,10 +1384,14 @@ fn is_rsp_memory_data_operand(
             }
             7 => {
                 i32::try_from(operand.displacement).is_ok()
-                    && matches!(
+                    && (matches!(
+                        operand.base,
+                        od_isa::long_decode::AddressBase::Register(register)
+                            if (register as u8) < 4
+                    ) || matches!(
                         operand.base,
                         od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
-                    )
+                    ))
             }
             _ => false,
         }
@@ -1410,10 +1420,14 @@ fn is_rbp_memory_data_operand(
                 ))
             || (instruction.length == 4
                 && (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement)
-                && matches!(
+                && (matches!(
+                    operand.base,
+                    od_isa::long_decode::AddressBase::Register(register)
+                        if (register as u8) < 4
+                ) || matches!(
                     operand.base,
                     od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
-                ))
+                )))
             || (instruction.length == 5
                 && (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement)
                 && matches!(
@@ -1422,10 +1436,14 @@ fn is_rbp_memory_data_operand(
                 ))
             || (instruction.length == 7
                 && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
-                && matches!(
+                && (matches!(
+                    operand.base,
+                    od_isa::long_decode::AddressBase::Register(register)
+                        if (register as u8) < 4
+                ) || matches!(
                     operand.base,
                     od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
-                ))
+                )))
             || (instruction.length == 8
                 && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
                 && matches!(
@@ -1614,6 +1632,16 @@ pub(crate) fn exact_direct_qword_memory_bytes(
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] == 0xac
             && bytes[3] == 0x24)
+        || (bytes.len() == 4
+            && bytes[0..2] == [0x48, opcode]
+            && bytes[2] >> 6 == 1
+            && bytes[2] & 7 < 4
+            && matches!((bytes[2] >> 3) & 7, 4 | 5))
+        || (bytes.len() == 7
+            && bytes[0..2] == [0x48, opcode]
+            && bytes[2] >> 6 == 2
+            && bytes[2] & 7 < 4
+            && matches!((bytes[2] >> 3) & 7, 4 | 5))
         || (bytes.len() >= 3
             && bytes[0..2] == [0x48, opcode]
             && (bytes[2] & 0b111 <= 3
