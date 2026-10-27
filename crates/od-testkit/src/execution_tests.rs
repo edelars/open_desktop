@@ -3960,6 +3960,247 @@ fn cmps_all_widths_full_state_matrix_uses_ordered_reads_and_independent_cmp_flag
 }
 
 #[test]
+fn cmps_addr32_full_state_matrix_truncates_both_indices_and_uses_independent_cmp_flags() {
+    const FLAGS: [u64; 6] = [1, 4, 16, 64, 128, 2048];
+    const ARITHMETIC_MASK: u64 = 0x8d5;
+    const HIGH_HALVES: [u64; 3] = [0, 0x1234_5678_0000_0000, 0xffff_ffff_0000_0000];
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let forms = [
+        (OperandSize::Byte, vec![0x67, 0xa6]),
+        (OperandSize::Word, vec![0x67, 0x66, 0xa7]),
+        (OperandSize::Dword, vec![0x67, 0xa7]),
+        (OperandSize::Qword, vec![0x67, 0x48, 0xa7]),
+    ];
+    let mut cases = 0;
+    for (size, code) in forms {
+        let mask = size.mask();
+        let sign = 1u64 << (size.bytes() * 8 - 1);
+        let pairs = [
+            (0, 0),
+            (1, 1),
+            (mask, mask),
+            (0, 1),
+            (1, 0),
+            (sign, 1),
+            (sign - 1, mask),
+            (mask, sign - 1),
+            (sign - 1, sign),
+            (sign, sign - 1),
+            (0x10, 1),
+            (1, 0x10),
+        ];
+        for direction in [false, true] {
+            for (lhs, rhs) in pairs {
+                for incoming in 0..64u64 {
+                    let value = lhs.wrapping_sub(rhs) & mask;
+                    let expected_arithmetic = (u64::from(lhs < rhs) * FLAGS[0])
+                        | (u64::from((value as u8).count_ones() % 2 == 0) * FLAGS[1])
+                        | (u64::from((lhs ^ rhs ^ value) & 0x10 != 0) * FLAGS[2])
+                        | (u64::from(value == 0) * FLAGS[3])
+                        | (u64::from(value & sign != 0) * FLAGS[4])
+                        | (u64::from((lhs ^ rhs) & (lhs ^ value) & sign != 0) * FLAGS[5]);
+                    for source_high in HIGH_HALVES {
+                        for destination_high in HIGH_HALVES {
+                            let mut fixture = template.clone();
+                            fixture.memory[0].length = code.len() as u32;
+                            fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+                            fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                            fixture.memory[1].initial_bytes_hex = "5a".repeat(16);
+                            fixture.initial_state.rip = HexU64(0x0010_0000);
+                            fixture.initial_state.gpr[Register::Rsi as usize] =
+                                HexU64(source_high | 0x0020_0000);
+                            fixture.initial_state.gpr[Register::Rdi as usize] =
+                                HexU64(destination_high | 0x0020_0008);
+                            fixture.initial_state.rflags = HexU64(
+                                2 | if direction { 1 << 10 } else { 0 }
+                                    | FLAGS
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(index, _)| incoming & (1 << index) != 0)
+                                        .fold(0, |bits, (_, flag)| bits | flag),
+                            );
+                            fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+                            let before = fixture.initial_state.to_cpu().unwrap();
+                            let mut state = before.clone();
+                            let mut memory = MovsbAccessLog {
+                                inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                                accesses: Vec::new(),
+                                mfences: Vec::new(),
+                                mfence_error: None,
+                            };
+                            memory
+                                .inner
+                                .write_integer(0x0020_0000, AccessContext::default(), size, lhs)
+                                .unwrap();
+                            memory
+                                .inner
+                                .write_integer(0x0020_0008, AccessContext::default(), size, rhs)
+                                .unwrap();
+                            let before_memory = memory.inner.snapshot();
+                            let mut expected = before.clone();
+                            expected.rflags =
+                                (before.rflags & !ARITHMETIC_MASK) | expected_arithmetic;
+                            let source_low = 0x0020_0000u32;
+                            let destination_low = 0x0020_0008u32;
+                            let step = size.bytes() as u32;
+                            let (source_index, destination_index) = if direction {
+                                (
+                                    source_low.wrapping_sub(step),
+                                    destination_low.wrapping_sub(step),
+                                )
+                            } else {
+                                (
+                                    source_low.wrapping_add(step),
+                                    destination_low.wrapping_add(step),
+                                )
+                            };
+                            expected.gpr[Register::Rsi as usize] = u64::from(source_index);
+                            expected.gpr[Register::Rdi as usize] = u64::from(destination_index);
+                            expected.rip += code.len() as u64;
+                            let run_result = run(
+                                &mut state,
+                                &mut memory,
+                                config(1, fixture.stop_rip.map(HexU64::get)),
+                                || false,
+                            );
+                            assert_eq!(run_result.exit, RunExit::StopAddress);
+                            assert_eq!(run_result.instructions_executed, 1);
+                            assert_eq!(state, expected);
+                            assert_eq!(run_result.rflags_defined, 0x0cd7);
+                            assert_eq!(
+                                memory.accesses,
+                                (0..code.len())
+                                    .map(|offset| {
+                                        (AccessKind::Fetch, 0x0010_0000 + offset as u64, 1)
+                                    })
+                                    .chain([
+                                        (AccessKind::Read, 0x0020_0000, size.bytes()),
+                                        (AccessKind::Read, 0x0020_0008, size.bytes()),
+                                    ])
+                                    .collect::<Vec<_>>()
+                            );
+                            assert_eq!(memory.inner.snapshot(), before_memory);
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 55_296);
+}
+
+#[test]
+fn cmps_addr32_boundary_matrix_keeps_each_operand_contiguous_and_wraps_both_indices() {
+    const HIGH_HALVES: [(u64, u64); 3] = [
+        (0, 0),
+        (0x1234_5678_0000_0000, 0),
+        (0, 0xffff_ffff_0000_0000),
+    ];
+    const BOUNDARIES: [u32; 4] = [0, 0x1fff, 0xffff_fffc, 0xffff_ffff];
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let forms = [
+        (OperandSize::Byte, vec![0x67, 0xa6]),
+        (OperandSize::Word, vec![0x67, 0x66, 0xa7]),
+        (OperandSize::Dword, vec![0x67, 0xa7]),
+        (OperandSize::Qword, vec![0x67, 0x48, 0xa7]),
+    ];
+    let mut cases = 0;
+    for (size, code) in forms {
+        for direction in [false, true] {
+            let mut configurations = Vec::new();
+            for boundary in BOUNDARIES {
+                configurations.push((boundary, 0x0020_0008));
+                configurations.push((0x0020_0000, boundary));
+            }
+            for (source_address, destination_address) in configurations {
+                for (source_high, destination_high) in HIGH_HALVES {
+                    let mut fixture = template.clone();
+                    fixture.memory[0].length = code.len() as u32;
+                    fixture.memory[0].initial_bytes_hex = encode_bytes(&code);
+                    fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                    let source = &mut fixture.memory[1];
+                    source.guest_address = HexU64(u64::from(source_address));
+                    source.length = size.bytes() as u32;
+                    source.initial_bytes_hex = "55".repeat(size.bytes());
+                    source.comparison_mask_hex = "ff".repeat(size.bytes());
+                    let mut destination = source.clone();
+                    destination.region_id = "destination".into();
+                    destination.guest_address = HexU64(u64::from(destination_address));
+                    fixture.memory.push(destination);
+                    fixture.initial_state.rip = HexU64(0x0010_0000);
+                    fixture.initial_state.gpr[Register::Rsi as usize] =
+                        HexU64(source_high | u64::from(source_address));
+                    fixture.initial_state.gpr[Register::Rdi as usize] =
+                        HexU64(destination_high | u64::from(destination_address));
+                    fixture.initial_state.rflags = HexU64(2 | if direction { 1 << 10 } else { 0 });
+                    fixture.stop_rip = Some(HexU64(0x0010_0000 + code.len() as u64));
+                    let mut state = fixture.initial_state.to_cpu().unwrap();
+                    let mut memory = MovsbAccessLog {
+                        inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                        accesses: Vec::new(),
+                        mfences: Vec::new(),
+                        mfence_error: None,
+                    };
+                    let before_memory = memory.inner.snapshot();
+                    let mut expected = state.clone();
+                    let stride = size.bytes() as u32;
+                    let next_source = if direction {
+                        source_address.wrapping_sub(stride)
+                    } else {
+                        source_address.wrapping_add(stride)
+                    };
+                    let next_destination = if direction {
+                        destination_address.wrapping_sub(stride)
+                    } else {
+                        destination_address.wrapping_add(stride)
+                    };
+                    expected.gpr[Register::Rsi as usize] = u64::from(next_source);
+                    expected.gpr[Register::Rdi as usize] = u64::from(next_destination);
+                    expected.rflags = 2 | (1 << 6) | (1 << 2) | if direction { 1 << 10 } else { 0 };
+                    expected.rip += code.len() as u64;
+                    let result = run(
+                        &mut state,
+                        &mut memory,
+                        config(1, fixture.stop_rip.map(HexU64::get)),
+                        || false,
+                    );
+                    assert_eq!(result.exit, RunExit::StopAddress);
+                    assert_eq!(result.instructions_executed, 1);
+                    assert_eq!(state, expected);
+                    assert_eq!(result.rflags_defined, 0x0cd7);
+                    assert_eq!(
+                        memory.accesses,
+                        (0..code.len())
+                            .map(|offset| { (AccessKind::Fetch, 0x0010_0000 + offset as u64, 1) })
+                            .chain([
+                                (AccessKind::Read, u64::from(source_address), size.bytes(),),
+                                (
+                                    AccessKind::Read,
+                                    u64::from(destination_address),
+                                    size.bytes(),
+                                ),
+                            ])
+                            .collect::<Vec<_>>()
+                    );
+                    assert_eq!(memory.inner.snapshot(), before_memory);
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 192);
+}
+
+#[test]
 fn cmps_read_failures_preserve_state_and_stop_at_the_failing_operand() {
     let template = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_18e_stosb_df0.case.json"
@@ -4104,11 +4345,10 @@ fn cmps_prefix_profile_aliasing_and_canonical_fault_boundaries_are_exact() {
     .unwrap()
     .fixture;
     let forms: [&[u8]; 4] = [&[0xa6], &[0x66, 0xa7], &[0xa7], &[0x48, 0xa7]];
-    let prefixes: [&[u8]; 10] = [
+    let prefixes: [&[u8]; 9] = [
         &[0xf0],
         &[0xf2],
         &[0xf3],
-        &[0x67],
         &[0x26],
         &[0x2e],
         &[0x36],
@@ -4132,7 +4372,7 @@ fn cmps_prefix_profile_aliasing_and_canonical_fault_boundaries_are_exact() {
         vec![0x48, 0xa6],
         vec![0x66, 0xa6],
     ]);
-    assert_eq!(rejects.len(), 48);
+    assert_eq!(rejects.len(), 44);
     for code in rejects {
         let mut fixture = template.clone();
         fixture.memory[0].length = code.len() as u32;

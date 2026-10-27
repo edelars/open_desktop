@@ -157,7 +157,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-15 | Bit operations и прочие integer формы профиля | S2-14 |
 | [ ] | S2-16 | Условия, переходы, SETcc/CMOVcc | S2-11 |
 | [ ] | S2-17 | Стек, CALL/RET и косвенные переходы | S2-16 |
-| [ ] | S2-18 | Строковые операции без REP; S2-18a–j локально покрывают MOVS/STOS/LODS/SCAS/CMPS bounded формы и CLD/STD; общая приёмка открыта | S2-17 |
+| [ ] | S2-18 | Строковые операции без REP; S2-18a–n локально покрывают MOVS/STOS/LODS/SCAS/CMPS bounded формы и CLD/STD; общая приёмка открыта | S2-17 |
 | [ ] | S2-19 | REP и точный частичный прогресс; S2-19a–d реализуют bounded REP STOS/LODS/MOVS с partial progress, остальные REP формы и общая приёмка открыты | S2-18 |
 | [ ] | S2-20 | Исключения, приоритеты и fault state | S2-14, S2-19 |
 | [ ] | S2-21 | Нужные однопроцессорные atomic/fence формы | S2-20 |
@@ -6872,3 +6872,30 @@ normalization, RCX=0 и прежние SCAS/REPE regressions. JIT остаётс
 Linux-only native admission отклоняет четыре формы до tracee. Mac mini/native
 физическая проверка остаётся единой в общем финальном substage; S2-18 и Stage
 2 остаются открытыми до acceptance.
+
+#### S2-18n — non-REP CMPS с address-size 32
+
+Добавить только Long64 non-REP `67 A6`, `67 66 A7`, `67 A7` и `67 48 A7`.
+Начальные адреса — zero-extend(ESI) и zero-extend(EDI); выполнить два
+непрерывных width-sized чтения в порядке flat DS:[ESI], затем flat ES:[EDI].
+Отдельные байты операнда не оборачиваются на границе 4 GiB. После двух
+успешных чтений вычислить `memory[ESI] - memory[EDI]`, зафиксировать CMP flags
+и zero-extended `(ESI/EDI +/- width) mod 2^32` по DF. Ошибка любого чтения не
+коммитит CPU state; ошибка второго сохраняет первое чтение в локальном trace.
+Missing mapping и backend errors остаются HarnessError. ESI-first — только
+локальная политика; dual-invalid hardware priority и MMIO rollback не
+утверждаются (ISSUE-020).
+
+Покрытие: 63 literal schema-v2 fixtures: 8 success, 8 unmapped, 4 budget-zero,
+16 pointer wraps, 6 непрерывных чтений через 4 GiB, 2 prefix normalizations,
+3 `TEST+CMPSB`, 8 `CLD/STD`, 4 alias и 4 dual-unmapped cases. Независимо
+зафиксировать полный GPR/RFLAGS/definedness/RIP/memory/retirement snapshot и
+адрес первой ошибки. Проверить fixture generation/freshness и runner snapshots;
+не использовать interpreter как oracle. Core regression matrices дополнительно
+проверяют 55,296 success states, 512 flag-definedness states, 576 read failures,
+192 boundaries, 72 aliases, 36 overlaps, 128 dual-invalid error combinations
+(четыре пары ошибок × четыре ширины × два значения DF × две старшие части RSI ×
+две старшие части RDI), and retries that reread changed source RAM after a second-read
+failure. JIT/native admission остаётся закрытой.
+Physical/Mac mini acceptance не выполняется здесь; ISSUE-016/020/021 и S2-18
+остаются открытыми.

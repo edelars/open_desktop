@@ -8106,3 +8106,33 @@ errors remain HarnessError and architectural faults remain guest faults under
 the local model. TEST→SCAS success defines AF; TEST→read-error keeps AF
 undefined. This local behavior does not claim hardware restart state or fault
 priority. JIT/native execution and physical acceptance remain deferred.
+
+### Local S2-18n non-REP address-size-32 CMPS contract
+
+The bounded Long64 profile covers non-REP `67 A6` CMPSB, `67 66 A7` CMPSW,
+`67 A7` CMPSD, and `67 48 A7` CMPSQ. The effective address size zero-extends
+ESI and EDI for the two implicit flat accesses. Each operand is one contiguous
+width-sized read, including a read that crosses 4 GiB; its bytes do not wrap
+individually. The operation reads DS:[ESI] first and ES:[EDI] second, computes
+`memory[ESI] - memory[EDI]`, then commits CMP flags and zero-extended
+`(ESI/EDI +/- width) mod 2^32` according to DF. RSI/RDI upper halves therefore
+become zero only on successful retirement. RAX, RCX, RAM, and unrelated state
+are preserved.
+
+If the first read fails, the second is not attempted. If the second read
+fails, the first read remains observable in the local access trace, while no
+CPU state or retirement is committed. Missing mappings and backend errors
+remain HarnessError; architectural faults remain guest faults under the local
+model. The ESI-first order is a bounded local policy and does not establish
+hardware priority when both operands are invalid. No MMIO rollback is claimed.
+TEST→CMPS success defines all arithmetic flags; a read error retains TEST's
+undefined AF. The 63 literal schema-v2 fixtures cover success, independent
+and dual unmapped reads, zero budget, pointer wraps, continuous 4 GiB reads,
+normalization, TEST, CLD/STD, aliases, and dual-invalid local ordering. JIT,
+native, Mac mini, and physical acceptance remain deferred; ISSUE-020 stays
+open. Core regressions additionally cover 55,296 successful full-state cases,
+512 flag-definedness masks, 576 injected read failures, 192 boundaries, 72
+aliases, 36 overlaps, and 128 dual-invalid combinations (four distinct
+source/destination error pairs × four widths × both DF values × two high-half
+choices for each pointer). Retry coverage changes source RAM after a second-read
+failure and checks that both operands are re-read.

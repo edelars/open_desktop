@@ -1158,8 +1158,22 @@ fn step_tracked_with_stop(
                 && ((instruction.opcode.byte == 0xa6
                     && instruction.prefixes == Prefixes::default()
                     && size == OperandSize::Byte)
+                    || (instruction.opcode.byte == 0xa6
+                        && instruction.prefixes
+                            == (Prefixes {
+                                address_override: true,
+                                ..Prefixes::default()
+                            })
+                        && size == OperandSize::Byte)
                     || (instruction.opcode.byte == 0xa7
                         && instruction.prefixes == Prefixes::default()
+                        && size == OperandSize::Dword)
+                    || (instruction.opcode.byte == 0xa7
+                        && instruction.prefixes
+                            == (Prefixes {
+                                address_override: true,
+                                ..Prefixes::default()
+                            })
                         && size == OperandSize::Dword)
                     || (instruction.opcode.byte == 0xa7
                         && instruction.prefixes
@@ -1169,9 +1183,23 @@ fn step_tracked_with_stop(
                             })
                         && size == OperandSize::Word)
                     || (instruction.opcode.byte == 0xa7
+                        && instruction.prefixes
+                            == (Prefixes {
+                                address_override: true,
+                                operand_override: true,
+                                ..Prefixes::default()
+                            })
+                        && size == OperandSize::Word)
+                    || (instruction.opcode.byte == 0xa7
                         && instruction.prefixes.group1.is_none()
                         && instruction.prefixes.segment.is_none()
                         && !instruction.prefixes.address_override
+                        && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                        && size == OperandSize::Qword)
+                    || (instruction.opcode.byte == 0xa7
+                        && instruction.prefixes.group1.is_none()
+                        && instruction.prefixes.segment.is_none()
+                        && instruction.prefixes.address_override
                         && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
                         && size == OperandSize::Qword))
         }
@@ -2856,7 +2884,7 @@ fn step_tracked_with_stop(
                 index: None,
                 scale: 1,
                 displacement: 0,
-                address_size: OperandSize::Qword,
+                address_size: instruction.address_size,
                 size,
             });
             let first = match read_operand(state, memory, context, next_rip, source) {
@@ -2869,7 +2897,7 @@ fn step_tracked_with_stop(
                 index: None,
                 scale: 1,
                 displacement: 0,
-                address_size: OperandSize::Qword,
+                address_size: instruction.address_size,
                 size,
             });
             let second = match read_operand(state, memory, context, next_rip, destination) {
@@ -2880,15 +2908,34 @@ fn step_tracked_with_stop(
             let (_, flags) =
                 arithmetic_result(size, ArithmeticKind::Cmp, first, second, state.rflags);
             state.rflags = flags;
-            let step = if state.rflags & (1 << 10) == 0 {
-                size.bytes() as u64
+            if instruction.address_size == OperandSize::Dword {
+                let step = size.bytes() as u32;
+                let source_index = state.gpr[Register::Rsi as usize] as u32;
+                let destination_index = state.gpr[Register::Rdi as usize] as u32;
+                let (source_index, destination_index) = if state.rflags & (1 << 10) == 0 {
+                    (
+                        source_index.wrapping_add(step),
+                        destination_index.wrapping_add(step),
+                    )
+                } else {
+                    (
+                        source_index.wrapping_sub(step),
+                        destination_index.wrapping_sub(step),
+                    )
+                };
+                state.gpr[Register::Rsi as usize] = u64::from(source_index);
+                state.gpr[Register::Rdi as usize] = u64::from(destination_index);
             } else {
-                0u64.wrapping_sub(size.bytes() as u64)
-            };
-            state.gpr[Register::Rsi as usize] =
-                state.gpr[Register::Rsi as usize].wrapping_add(step);
-            state.gpr[Register::Rdi as usize] =
-                state.gpr[Register::Rdi as usize].wrapping_add(step);
+                let step = if state.rflags & (1 << 10) == 0 {
+                    size.bytes() as u64
+                } else {
+                    0u64.wrapping_sub(size.bytes() as u64)
+                };
+                state.gpr[Register::Rsi as usize] =
+                    state.gpr[Register::Rsi as usize].wrapping_add(step);
+                state.gpr[Register::Rdi as usize] =
+                    state.gpr[Register::Rdi as usize].wrapping_add(step);
+            }
         }
         Operation::PushMemory { source } => {
             // Resolve and read the complete source with the pre-instruction
@@ -5525,6 +5572,7 @@ mod tests {
         bytes: Vec<u8>,
         accesses: Vec<(AccessKind, u64, usize)>,
         contexts: Vec<(AccessKind, AccessContext)>,
+        read_errors: Vec<MemoryError>,
         error: Option<MemoryError>,
         error_kind: Option<AccessKind>,
         fail_after_reads: Option<usize>,
@@ -5547,6 +5595,7 @@ mod tests {
                 bytes: (0..32).collect(),
                 accesses: vec![],
                 contexts: vec![],
+                read_errors: vec![],
                 error: None,
                 error_kind: None,
                 fail_after_reads: None,
@@ -5571,6 +5620,11 @@ mod tests {
                 .filter(|(access, _, _)| *access == AccessKind::Read)
                 .count()
                 .saturating_sub(usize::from(kind == AccessKind::Read));
+            if kind == AccessKind::Read
+                && let Some(error) = self.read_errors.get(reads_before)
+            {
+                return Err(error.clone());
+            }
             if let Some(error) = &self.error {
                 if self.error_kind.is_none_or(|access| access == kind)
                     && (kind != AccessKind::Read
@@ -57538,6 +57592,676 @@ mod tests {
             }
         }
         assert_eq!(cases, 512);
+    }
+
+    #[test]
+    fn cmps_address32_definedness_masks_define_all_arithmetic_flags_after_both_reads() {
+        let forms = [
+            (OperandSize::Byte, vec![0x67, 0xa6]),
+            (OperandSize::Word, vec![0x67, 0x66, 0xa7]),
+            (OperandSize::Dword, vec![0x67, 0xa7]),
+            (OperandSize::Qword, vec![0x67, 0x48, 0xa7]),
+        ];
+        let arithmetic_bits = [
+            crate::CF,
+            crate::PF,
+            crate::AF,
+            crate::ZF,
+            crate::SF,
+            crate::OF,
+        ];
+        let mut cases = 0;
+        for (size, code) in forms {
+            for direction in [false, true] {
+                for definedness in 0..64u64 {
+                    let defined_arithmetic = arithmetic_bits
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| definedness & (1 << index) != 0)
+                        .fold(0, |mask, (_, flag)| mask | *flag);
+                    let raw_flags = arithmetic_bits
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| definedness & (1 << index) != 0)
+                        .filter(|(index, _)| index % 2 == 0)
+                        .fold(0, |bits, (_, flag)| bits | *flag);
+                    let mut state = LongModeState::default();
+                    state.rip = 0x2000;
+                    state.gpr[Register::Rsi as usize] = 0x1234_5678_0000_1000;
+                    state.gpr[Register::Rdi as usize] = 0xffff_ffff_0000_1010;
+                    state.gpr[Register::Rcx as usize] = 0;
+                    state.rflags = 2 | raw_flags | if direction { crate::DF } else { 0 };
+                    let mut memory = Memory::at(&code, 0x2000);
+                    memory.data_base = 0x1000;
+                    memory.bytes[..size.bytes()].fill(0xff);
+                    memory.bytes[16..16 + size.bytes()].fill(0x01);
+                    let mut rflags_defined =
+                        (crate::INTEGER_FLAGS & !crate::ARITHMETIC_FLAGS) | defined_arithmetic;
+                    let outcome = step_tracked_with_stop(
+                        &mut state,
+                        &mut memory,
+                        AccessContext::default(),
+                        &mut rflags_defined,
+                        &mut || false,
+                    );
+                    assert_eq!(outcome, Ok(StepOutcome::Advanced));
+                    let lhs = size.mask();
+                    let rhs = 0x0101_0101_0101_0101 & size.mask();
+                    let result = lhs.wrapping_sub(rhs) & size.mask();
+                    let sign = 1u64 << (size.bytes() * 8 - 1);
+                    let expected_flags = 2
+                        | if lhs < rhs { crate::CF } else { 0 }
+                        | if (result as u8).count_ones() % 2 == 0 {
+                            crate::PF
+                        } else {
+                            0
+                        }
+                        | if (lhs ^ rhs ^ result) & 0x10 != 0 {
+                            crate::AF
+                        } else {
+                            0
+                        }
+                        | if result == 0 { crate::ZF } else { 0 }
+                        | if result & sign != 0 { crate::SF } else { 0 }
+                        | if (lhs ^ rhs) & (lhs ^ result) & sign != 0 {
+                            crate::OF
+                        } else {
+                            0
+                        }
+                        | if direction { crate::DF } else { 0 };
+                    assert_eq!(state.rflags, expected_flags);
+                    assert_eq!(rflags_defined, crate::INTEGER_FLAGS);
+                    let stride = size.bytes() as u32;
+                    let expected_source = if direction {
+                        0x1000u32.wrapping_sub(stride)
+                    } else {
+                        0x1000u32.wrapping_add(stride)
+                    };
+                    let expected_destination = if direction {
+                        0x1010u32.wrapping_sub(stride)
+                    } else {
+                        0x1010u32.wrapping_add(stride)
+                    };
+                    assert_eq!(
+                        state.gpr[Register::Rsi as usize],
+                        u64::from(expected_source)
+                    );
+                    assert_eq!(
+                        state.gpr[Register::Rdi as usize],
+                        u64::from(expected_destination)
+                    );
+                    assert_eq!(state.rip, 0x2000 + code.len() as u64);
+                    assert_eq!(
+                        memory.accesses,
+                        [
+                            (AccessKind::Read, 0x1000, size.bytes()),
+                            (AccessKind::Read, 0x1010, size.bytes()),
+                        ]
+                    );
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 512);
+    }
+
+    #[test]
+    fn cmps_address32_read_failures_keep_the_first_read_and_commit_no_state() {
+        const HIGH_HALVES: [u64; 3] = [0, 0x1234_5678_0000_0000, 0xffff_ffff_0000_0000];
+        let forms = [
+            (OperandSize::Byte, vec![0x67, 0xa6]),
+            (OperandSize::Word, vec![0x67, 0x66, 0xa7]),
+            (OperandSize::Dword, vec![0x67, 0xa7]),
+            (OperandSize::Qword, vec![0x67, 0x48, 0xa7]),
+        ];
+        let mut cases = 0;
+        for (size, code) in forms {
+            for direction in [false, true] {
+                for source_high in HIGH_HALVES {
+                    for destination_high in HIGH_HALVES {
+                        for failed_site in 0..2 {
+                            for error_kind in 0..4 {
+                                let address = if failed_site == 0 { 0x1000 } else { 0x1010 };
+                                let error = match error_kind {
+                                    0 => MemoryError::Architectural(ArchitecturalFault {
+                                        vector: 14,
+                                        error_code: Some(4),
+                                        linear_address: Some(address),
+                                    }),
+                                    1 => MemoryError::Unmapped {
+                                        address,
+                                        access: AccessKind::Read,
+                                    },
+                                    2 => MemoryError::PermissionDenied {
+                                        address,
+                                        access: AccessKind::Read,
+                                    },
+                                    _ => MemoryError::Backend("injected CMPS addr32 error".into()),
+                                };
+                                let mut state = LongModeState::default();
+                                state.rip = 0x2000;
+                                state.gpr[Register::Rsi as usize] = source_high | 0x1000;
+                                state.gpr[Register::Rdi as usize] = destination_high | 0x1010;
+                                state.gpr[Register::Rcx as usize] = 0;
+                                state.rflags = 2
+                                    | crate::CF
+                                    | crate::AF
+                                    | crate::ZF
+                                    | if direction { crate::DF } else { 0 };
+                                let before_state = state.clone();
+                                let mut memory = Memory::at(&code, 0x2000);
+                                memory.data_base = 0x1000;
+                                memory.bytes = (0..32).collect();
+                                memory.error = Some(error.clone());
+                                memory.error_kind = Some(AccessKind::Read);
+                                memory.fail_after_reads = Some(failed_site);
+                                let before_memory = memory.bytes.clone();
+                                let mut rflags_defined = crate::INTEGER_FLAGS & !crate::AF;
+                                let before_defined = rflags_defined;
+                                let result = step_tracked_with_stop(
+                                    &mut state,
+                                    &mut memory,
+                                    AccessContext::default(),
+                                    &mut rflags_defined,
+                                    &mut || false,
+                                );
+                                if let MemoryError::Architectural(fault) = &error {
+                                    assert_eq!(result, Ok(StepOutcome::Fault(fault.clone())));
+                                } else {
+                                    assert_eq!(result, Err(error.clone()));
+                                }
+                                assert_eq!(state, before_state);
+                                assert_eq!(rflags_defined, before_defined);
+                                assert_eq!(memory.bytes, before_memory);
+                                let expected_accesses = if failed_site == 0 {
+                                    vec![(AccessKind::Read, 0x1000, size.bytes())]
+                                } else {
+                                    vec![
+                                        (AccessKind::Read, 0x1000, size.bytes()),
+                                        (AccessKind::Read, 0x1010, size.bytes()),
+                                    ]
+                                };
+                                assert_eq!(memory.accesses, expected_accesses);
+                                cases += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 576);
+    }
+
+    #[test]
+    fn cmps_address32_alias_reads_twice_and_can_retry_after_a_second_read_fault() {
+        const HIGH_HALVES: [u64; 3] = [0, 0x1234_5678_0000_0000, 0xffff_ffff_0000_0000];
+        let forms = [
+            (OperandSize::Byte, vec![0x67, 0xa6]),
+            (OperandSize::Word, vec![0x67, 0x66, 0xa7]),
+            (OperandSize::Dword, vec![0x67, 0xa7]),
+            (OperandSize::Qword, vec![0x67, 0x48, 0xa7]),
+        ];
+        let mut cases = 0;
+        for (size, code) in &forms {
+            for direction in [false, true] {
+                for source_high in HIGH_HALVES {
+                    for destination_high in HIGH_HALVES {
+                        let mut state = LongModeState::default();
+                        state.rip = 0x2000;
+                        state.gpr[Register::Rsi as usize] = source_high | 0x1000;
+                        state.gpr[Register::Rdi as usize] = destination_high | 0x1000;
+                        state.gpr[Register::Rcx as usize] = 0;
+                        state.rflags = 2 | crate::CF | if direction { crate::DF } else { 0 };
+                        let mut memory = Memory::at(&code, 0x2000);
+                        memory.data_base = 0x1000;
+                        memory.bytes.fill(0x5a);
+                        let outcome = step(&mut state, &mut memory, AccessContext::default());
+                        assert_eq!(outcome, Ok(StepOutcome::Advanced));
+                        assert_eq!(
+                            state.rflags,
+                            2 | crate::PF | crate::ZF | if direction { crate::DF } else { 0 }
+                        );
+                        let stride = size.bytes() as u32;
+                        let updated = if direction {
+                            0x1000u32.wrapping_sub(stride)
+                        } else {
+                            0x1000u32.wrapping_add(stride)
+                        };
+                        assert_eq!(state.gpr[Register::Rsi as usize], u64::from(updated));
+                        assert_eq!(state.gpr[Register::Rdi as usize], u64::from(updated));
+                        assert_eq!(state.rip, 0x2000 + code.len() as u64);
+                        assert_eq!(
+                            memory.accesses,
+                            [
+                                (AccessKind::Read, 0x1000, size.bytes()),
+                                (AccessKind::Read, 0x1000, size.bytes()),
+                            ]
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 72);
+
+        for (size, code) in &forms {
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rsi as usize] = 0xffff_ffff_0000_1000;
+            state.gpr[Register::Rdi as usize] = 0x1234_5678_0000_1000;
+            state.rflags = 2 | crate::AF | crate::ZF;
+            let before_state = state.clone();
+            let mut memory = Memory::at(&code, 0x2000);
+            memory.data_base = 0x1000;
+            memory.bytes.fill(0x5a);
+            memory.error = Some(MemoryError::Backend("second aliased read fault".into()));
+            memory.error_kind = Some(AccessKind::Read);
+            memory.fail_after_reads = Some(1);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Err(MemoryError::Backend("second aliased read fault".into()))
+            );
+            assert_eq!(state, before_state);
+            assert_eq!(
+                memory.accesses,
+                [
+                    (AccessKind::Read, 0x1000, size.bytes()),
+                    (AccessKind::Read, 0x1000, size.bytes()),
+                ]
+            );
+            memory.error = None;
+            memory.error_kind = None;
+            memory.fail_after_reads = None;
+            memory.accesses.clear();
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(
+                memory.accesses,
+                [
+                    (AccessKind::Read, 0x1000, size.bytes()),
+                    (AccessKind::Read, 0x1000, size.bytes()),
+                ]
+            );
+            assert_eq!(state.rip, before_state.rip + code.len() as u64);
+        }
+    }
+
+    #[test]
+    fn cmps_address32_dual_invalid_error_pairs_observe_the_local_source_first_policy() {
+        const HIGH_HALVES: [u64; 2] = [0x1234_5678_0000_0000, 0xffff_ffff_0000_0000];
+        let error_pairs = [
+            (
+                MemoryError::Unmapped {
+                    address: 0x1000,
+                    access: AccessKind::Read,
+                },
+                MemoryError::Unmapped {
+                    address: 0x2000,
+                    access: AccessKind::Read,
+                },
+            ),
+            (
+                MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(4),
+                    linear_address: Some(0x1000),
+                }),
+                MemoryError::Unmapped {
+                    address: 0x2000,
+                    access: AccessKind::Read,
+                },
+            ),
+            (
+                MemoryError::PermissionDenied {
+                    address: 0x1000,
+                    access: AccessKind::Read,
+                },
+                MemoryError::Backend("unreached second backend failure".into()),
+            ),
+            (
+                MemoryError::Backend("first backend failure".into()),
+                MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(4),
+                    linear_address: Some(0x2000),
+                }),
+            ),
+        ];
+        let forms = [
+            (OperandSize::Byte, vec![0x67, 0xa6]),
+            (OperandSize::Word, vec![0x67, 0x66, 0xa7]),
+            (OperandSize::Dword, vec![0x67, 0xa7]),
+            (OperandSize::Qword, vec![0x67, 0x48, 0xa7]),
+        ];
+        let mut cases = 0;
+        for (size, code) in &forms {
+            for (source_error, destination_error) in &error_pairs {
+                for direction in [false, true] {
+                    for source_high in HIGH_HALVES {
+                        for destination_high in HIGH_HALVES {
+                            let mut state = LongModeState::default();
+                            state.rip = 0x2000;
+                            state.gpr[Register::Rsi as usize] = source_high | 0x1000;
+                            state.gpr[Register::Rdi as usize] = destination_high | 0x2000;
+                            state.rflags =
+                                2 | crate::CF | crate::ZF | if direction { crate::DF } else { 0 };
+                            let before = state.clone();
+                            let mut memory = Memory::at(code, 0x2000);
+                            memory.data_base = 0x3000;
+                            memory.read_errors =
+                                vec![source_error.clone(), destination_error.clone()];
+                            let before_bytes = memory.bytes.clone();
+                            let result = step(&mut state, &mut memory, AccessContext::default());
+                            if let MemoryError::Architectural(fault) = source_error {
+                                assert_eq!(result, Ok(StepOutcome::Fault(fault.clone())));
+                            } else {
+                                assert_eq!(result, Err(source_error.clone()));
+                            }
+                            assert_eq!(state, before);
+                            assert_eq!(memory.bytes, before_bytes);
+                            assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, size.bytes())]);
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 128);
+    }
+
+    #[test]
+    fn cmps_address32_retry_after_second_fault_reloads_changed_source_and_destination() {
+        let forms = [
+            (OperandSize::Byte, vec![0x67, 0xa6]),
+            (OperandSize::Word, vec![0x67, 0x66, 0xa7]),
+            (OperandSize::Dword, vec![0x67, 0xa7]),
+            (OperandSize::Qword, vec![0x67, 0x48, 0xa7]),
+        ];
+        for (size, code) in forms {
+            for direction in [false, true] {
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rsi as usize] = 0xffff_ffff_0000_1000;
+                state.gpr[Register::Rdi as usize] = 0x1234_5678_0000_1010;
+                state.gpr[Register::Rcx as usize] = 0;
+                state.rflags = 2 | crate::ZF | if direction { crate::DF } else { 0 };
+                let before_state = state.clone();
+                let mut memory = Memory::at(&code, 0x2000);
+                memory.data_base = 0x1000;
+                memory.bytes.fill(0);
+                memory.error = Some(MemoryError::Backend("second read transient failure".into()));
+                memory.error_kind = Some(AccessKind::Read);
+                memory.fail_after_reads = Some(1);
+                let mut rflags_defined = crate::INTEGER_FLAGS;
+                let before_defined = rflags_defined;
+                assert_eq!(
+                    step_tracked_with_stop(
+                        &mut state,
+                        &mut memory,
+                        AccessContext::default(),
+                        &mut rflags_defined,
+                        &mut || false,
+                    ),
+                    Err(MemoryError::Backend("second read transient failure".into()))
+                );
+                assert_eq!(state, before_state);
+                assert_eq!(rflags_defined, before_defined);
+                assert_eq!(
+                    memory.accesses,
+                    [
+                        (AccessKind::Read, 0x1000, size.bytes()),
+                        (AccessKind::Read, 0x1010, size.bytes()),
+                    ]
+                );
+
+                // The failed attempt did not commit its CMP result. Change the
+                // source and retry: both operands must be fetched again and
+                // the new unequal values must determine the committed flags.
+                memory.bytes[0] = 1;
+                memory.error = None;
+                memory.error_kind = None;
+                memory.fail_after_reads = None;
+                memory.accesses.clear();
+                assert_eq!(
+                    step_tracked_with_stop(
+                        &mut state,
+                        &mut memory,
+                        AccessContext::default(),
+                        &mut rflags_defined,
+                        &mut || false,
+                    ),
+                    Ok(StepOutcome::Advanced)
+                );
+                assert_eq!(
+                    state.rflags,
+                    rep_cmps_wdq_expected_flags(1, 0, size, direction)
+                );
+                assert_eq!(state.rflags & crate::ZF, 0);
+                assert_eq!(rflags_defined, crate::INTEGER_FLAGS);
+                let stride = size.bytes() as u32;
+                let expected_source = if direction {
+                    0x1000u32.wrapping_sub(stride)
+                } else {
+                    0x1000u32.wrapping_add(stride)
+                };
+                let expected_destination = if direction {
+                    0x1010u32.wrapping_sub(stride)
+                } else {
+                    0x1010u32.wrapping_add(stride)
+                };
+                assert_eq!(
+                    state.gpr[Register::Rsi as usize],
+                    u64::from(expected_source)
+                );
+                assert_eq!(
+                    state.gpr[Register::Rdi as usize],
+                    u64::from(expected_destination)
+                );
+                assert_eq!(state.rip, 0x2000 + code.len() as u64);
+                assert_eq!(
+                    memory.accesses,
+                    [
+                        (AccessKind::Read, 0x1000, size.bytes()),
+                        (AccessKind::Read, 0x1010, size.bytes()),
+                    ]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cmps_address32_partial_overlaps_read_both_full_prestate_operands() {
+        let forms = [
+            (OperandSize::Word, vec![0x67, 0x66, 0xa7]),
+            (OperandSize::Dword, vec![0x67, 0xa7]),
+            (OperandSize::Qword, vec![0x67, 0x48, 0xa7]),
+        ];
+        let pairs = [
+            (OperandSize::Word, vec![(0x1008, 0x1009), (0x1009, 0x1008)]),
+            (
+                OperandSize::Dword,
+                vec![
+                    (0x1008, 0x1009),
+                    (0x1009, 0x1008),
+                    (0x1008, 0x100b),
+                    (0x100b, 0x1008),
+                ],
+            ),
+            (
+                OperandSize::Qword,
+                (1..=6)
+                    .flat_map(|offset| [(0x1008, 0x1008 + offset), (0x1008 + offset, 0x1008)])
+                    .collect(),
+            ),
+        ];
+        let mut cases = 0;
+        for (size, code) in forms {
+            let (_, overlaps) = pairs
+                .iter()
+                .find(|(candidate, _)| *candidate == size)
+                .unwrap();
+            for direction in [false, true] {
+                for &(source_address, destination_address) in overlaps {
+                    let mut state = LongModeState::default();
+                    state.rip = 0x2000;
+                    state.gpr[Register::Rsi as usize] = 0xffff_ffff_0000_0000 | source_address;
+                    state.gpr[Register::Rdi as usize] = 0x1234_5678_0000_0000 | destination_address;
+                    state.rflags = 2 | crate::AF | if direction { crate::DF } else { 0 };
+                    let before = state.clone();
+                    let mut memory = Memory::at(&code, 0x2000);
+                    memory.data_base = 0x1000;
+                    memory.bytes = (0..64)
+                        .map(|index| (index as u8).wrapping_mul(17))
+                        .collect();
+                    let before_bytes = memory.bytes.clone();
+                    let source_index = (source_address - 0x1000) as usize;
+                    let destination_index = (destination_address - 0x1000) as usize;
+                    let lhs = (0..size.bytes()).fold(0u64, |value, offset| {
+                        value | (u64::from(memory.bytes[source_index + offset]) << (offset * 8))
+                    });
+                    let rhs = (0..size.bytes()).fold(0u64, |value, offset| {
+                        value
+                            | (u64::from(memory.bytes[destination_index + offset]) << (offset * 8))
+                    });
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced)
+                    );
+                    assert_eq!(
+                        state.rflags,
+                        rep_cmps_wdq_expected_flags(lhs, rhs, size, direction)
+                    );
+                    let stride = size.bytes() as u32;
+                    let expected_source = if direction {
+                        (source_address as u32).wrapping_sub(stride)
+                    } else {
+                        (source_address as u32).wrapping_add(stride)
+                    };
+                    let expected_destination = if direction {
+                        (destination_address as u32).wrapping_sub(stride)
+                    } else {
+                        (destination_address as u32).wrapping_add(stride)
+                    };
+                    assert_eq!(
+                        state.gpr[Register::Rsi as usize],
+                        u64::from(expected_source)
+                    );
+                    assert_eq!(
+                        state.gpr[Register::Rdi as usize],
+                        u64::from(expected_destination)
+                    );
+                    assert_eq!(
+                        state.gpr[Register::Rcx as usize],
+                        before.gpr[Register::Rcx as usize]
+                    );
+                    assert_eq!(state.rip, before.rip + code.len() as u64);
+                    assert_eq!(memory.bytes, before_bytes);
+                    assert_eq!(
+                        memory.accesses,
+                        [
+                            (AccessKind::Read, u64::from(source_address), size.bytes()),
+                            (
+                                AccessKind::Read,
+                                u64::from(destination_address),
+                                size.bytes()
+                            ),
+                        ]
+                    );
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 36);
+    }
+
+    #[test]
+    fn cmps_address32_budget_stop_and_truncated_fetch_precede_data_access() {
+        let forms = [
+            (OperandSize::Byte, vec![0x67, 0xa6]),
+            (OperandSize::Word, vec![0x67, 0x66, 0xa7]),
+            (OperandSize::Dword, vec![0x67, 0xa7]),
+            (OperandSize::Qword, vec![0x67, 0x48, 0xa7]),
+        ];
+        for (_size, code) in forms {
+            for (budget, stop_rip, expected_exit) in [
+                (0, None, RunExit::InstructionBudgetExhausted),
+                (1, Some(0x2000), RunExit::StopAddress),
+            ] {
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rsi as usize] = 0xffff_ffff_0000_1000;
+                state.gpr[Register::Rdi as usize] = 0x1234_5678_0000_1010;
+                state.gpr[Register::Rcx as usize] = 0;
+                state.rflags = 2 | crate::CF | crate::ZF | crate::DF;
+                let before = state.clone();
+                let mut memory = Memory::at(&code, 0x2000);
+                memory.data_base = 0x1000;
+                let before_memory = memory.bytes.clone();
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: budget,
+                        stop_rip,
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(result.exit, expected_exit);
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state, before);
+                assert_eq!(memory.bytes, before_memory);
+                assert!(memory.accesses.is_empty());
+            }
+
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rsi as usize] = 0x1000;
+            state.gpr[Register::Rdi as usize] = 0x1010;
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x2000);
+            memory.data_base = 0x1000;
+            let before_memory = memory.bytes.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || true,
+            );
+            assert_eq!(result.exit, RunExit::StopRequested);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(memory.bytes, before_memory);
+            assert!(memory.accesses.is_empty());
+
+            for available in 0..code.len() {
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.gpr[Register::Rsi as usize] = 0xffff_ffff_0000_1000;
+                state.gpr[Register::Rdi as usize] = 0xffff_ffff_0000_1010;
+                let before = state.clone();
+                let mut memory = Memory::at(&code[..available], 0x2000);
+                memory.data_base = 0x1000;
+                let before_memory = memory.bytes.clone();
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Err(MemoryError::Unmapped {
+                        address: 0x2000 + available as u64,
+                        access: AccessKind::Fetch,
+                    }),
+                    "code={code:02x?}, available={available}"
+                );
+                assert_eq!(state, before);
+                assert_eq!(memory.bytes, before_memory);
+                assert!(memory.accesses.is_empty());
+            }
+        }
     }
 
     #[test]

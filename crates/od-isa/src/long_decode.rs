@@ -1747,8 +1747,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 } else {
                     if prefixes.group1.is_some()
                         || prefixes.segment.is_some()
-                        || prefixes.address_override
-                        || (opcode.byte == 0xa6 && prefixes != Prefixes::default())
+                        || (opcode.byte == 0xa6
+                            && prefixes != Prefixes::default()
+                            && prefixes
+                                != (Prefixes {
+                                    address_override: true,
+                                    ..Prefixes::default()
+                                }))
                         || (opcode.byte == 0xa7 && prefixes.rex.is_some_and(|rex| rex & 8 == 0))
                     {
                         return Err(self.unsupported(opcode));
@@ -6182,6 +6187,83 @@ mod tests {
                     "non-W REX was admitted: {bytes:02x?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn non_rep_cmps_admits_addr32_widths_and_rejects_the_prefix_boundary() {
+        for (bytes, size) in [
+            (&[0x67, 0xa6][..], OperandSize::Byte),
+            (&[0x67, 0x66, 0xa7][..], OperandSize::Word),
+            (&[0x67, 0xa7][..], OperandSize::Dword),
+            (&[0x67, 0x48, 0xa7][..], OperandSize::Qword),
+            (&[0x67, 0x48, 0x66, 0xa7][..], OperandSize::Word),
+            (&[0x67, 0x66, 0x48, 0xa7][..], OperandSize::Qword),
+            (&[0x48, 0x67, 0xa7][..], OperandSize::Dword),
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::Cmps { size },
+                "{bytes:02x?}"
+            );
+            assert_eq!(instruction.address_size, OperandSize::Dword, "{bytes:02x?}");
+        }
+        for rex in 0x48..=0x4f {
+            let bytes = [0x67, rex, 0xa7];
+            assert_eq!(
+                Memory::new(&bytes).decode().unwrap().operation,
+                Operation::Cmps {
+                    size: OperandSize::Qword
+                },
+                "{bytes:02x?}"
+            );
+        }
+
+        let forms = [
+            vec![0x67, 0xa6],
+            vec![0x67, 0x66, 0xa7],
+            vec![0x67, 0xa7],
+            vec![0x67, 0x48, 0xa7],
+        ];
+        let mut rejected = Vec::new();
+        for form in &forms {
+            for prefix in [0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
+                rejected.push([vec![prefix], form.clone()].concat());
+            }
+            rejected.push([vec![0x67], form.clone()].concat());
+        }
+        rejected.push(vec![0x67, 0x66, 0xa6]);
+        for rex in 0x40..=0x4f {
+            rejected.push(vec![0x67, rex, 0xa6]);
+        }
+        for rex in 0x40..=0x47 {
+            rejected.push(vec![0x67, rex, 0xa7]);
+            rejected.push(vec![0x67, 0x66, rex, 0xa7]);
+        }
+        assert_eq!(rejected.len(), 73);
+        for bytes in rejected {
+            assert!(
+                matches!(
+                    Memory::new(&bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+
+        for bytes in [
+            vec![0x67, 0xf3, 0xa6],
+            vec![0x67, 0xf3, 0x66, 0xa7],
+            vec![0x67, 0xf3, 0xa7],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(&bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "REP address-size32 escaped its bounded profile: {bytes:02x?}"
+            );
         }
     }
 

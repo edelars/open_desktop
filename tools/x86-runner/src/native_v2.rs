@@ -2442,6 +2442,28 @@ mod tests {
     }
 
     #[test]
+    fn cmps_addr32_four_widths_are_rejected_by_pre_tracee_admission() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2");
+        for fixture_name in [
+            "s2_18n_pos_b_df0.case.json",
+            "s2_18n_pos_w_df0.case.json",
+            "s2_18n_pos_d_df0.case.json",
+            "s2_18n_pos_q_df0.case.json",
+        ] {
+            let loaded =
+                Fixture::from_json(&std::fs::read(directory.join(fixture_name)).unwrap()).unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            assert_eq!(
+                admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+                "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist",
+                "{fixture_name} must be rejected by the native allowlist before tracee execution"
+            );
+        }
+    }
+
+    #[test]
     fn popfq_fixtures_admit_only_readable_stack_and_profile_flag_inputs() {
         let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/x86/stage2");

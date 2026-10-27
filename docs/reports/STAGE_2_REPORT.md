@@ -10615,3 +10615,44 @@ full-state matrix, boundaries, read errors, and regressions. This local slice
 does not claim hardware fault snapshots, Linux native execution on this
 macOS host, or physical compatibility. Mac mini/native checks remain combined
 in the shared final acceptance stage. ISSUE-016/020/021 and S2-18 remain open.
+
+## S2-18n — non-REP address-size-32 CMPS (local fixture slice)
+
+Added 63 literal schema-v2 fixture cases for the bounded Long64 non-REP
+address-size-32 CMPS encodings. Coverage is 8 positives, 8 single-operand
+unmapped outcomes, 4 zero-budget boundaries, 16 pointer-wrap cases, 6 continuous
+reads crossing 4 GiB, 2 prefix normalizations, 3 TEST compositions, 8 CLD/STD
+compositions, 4 aliases and 4 dual-unmapped cases. Complete expected GPRs,
+RFLAGS/definedness, RIP, memory and retirements are stored in the expected-data
+file; `s2_18n_cmps_addr32_manifest.json` records fixture hashes. The explicit
+file inventory is `work/s2-18n-files.json`.
+
+The local behavior is ESI-first: a first-read error skips the second access; a
+second-read error keeps the first read in the trace but commits no CMPS CPU
+state. Address-size-32 indexes zero-extend for the access, update modulo 2^32,
+and zero-extend into RSI/RDI after success. Each operand read is a continuous
+width-sized span across 4 GiB. The four dual-unmapped fixtures only preserve
+this local ordering and do not establish hardware priority; no MMIO rollback is
+claimed. ISSUE-020 remains open, as do ISSUE-016/021. JIT/native and physical
+x86/Mac mini acceptance were not performed.
+
+The generator and its two Python freshness/shape tests passed locally. The
+focused runner check `cargo test -p od-runner --test fixture_v2
+cmps_addr32_cli_fixtures_match_all_literal_snapshots_and_keep_jit_closed
+--offline` passed (1/1), including all 63 generated S2-18n cases, exact read
+errors, full snapshots and JIT denial. A Linux native admission test covers the
+four exact encodings before tracee execution; it type-checks for
+`x86_64-unknown-linux-gnu`, but could not be linked or executed on this macOS
+host. Separate physical acceptance was not performed.
+Core behavior tests then passed: the 55,296 full-state success matrix, 512
+definedness cases, 576 read failures, 192 boundary cases, 72 aliases, 36
+overlaps, 128 dual-invalid combinations (four source/destination error pairs ×
+four widths × two DF values × two RSI high halves × two RDI high halves), and
+retry tests that mutate source RAM after a second-read failure. Core tests also
+cover budget zero, STOP, `stop_rip`, truncated fetch, `RCX=0`, and existing
+64-bit/REP regressions. `cargo test -q -p od-isa --offline` passed (807/807),
+`cargo test -q -p od-testkit --offline` passed (232/232),
+`cargo test -q -p od-runner --test fixture_v2 cmps_cli_fixtures --offline`
+passed (1/1), as did `cargo fmt --all -- --check` and
+`cargo check --workspace --all-targets --offline`. Physical/Mac mini acceptance
+was not performed.

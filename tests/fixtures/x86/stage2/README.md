@@ -4224,3 +4224,27 @@ python3 tests/cpu/generate_stage2_cld_std.py --check
 python3 -m unittest tests/cpu/test_stage2_cld_std_generator.py
 cargo test -p od-runner --test fixture_v2 cld_std_cli_fixtures_match_literal_full_state_and_jit_denial --offline
 ```
+
+### S2-18n non-REP CMPS with address-size 32
+
+Exactly 63 literal schema-v2 fixtures cover `67 A6` CMPSB, `67 66 A7` CMPSW,
+`67 A7` CMPSD, and `67 48 A7` CMPSQ: eight successes, eight single-operand
+unmapped outcomes, four zero-budget cases, sixteen ESI/EDI wrap cases, six
+continuous reads across 4 GiB, two prefix normalizations, three TEST
+compositions, eight CLD/STD compositions, four aliases, and four dual-unmapped
+cases. Full GPR, flags/definedness, RIP, memory and retirement expectations are
+recorded in `s2_18n_cmps_addr32_expected.json`; the fixture SHA-256 list is in
+`s2_18n_cmps_addr32_manifest.json`, with the explicit file inventory at
+`work/s2-18n-files.json`.
+
+The two ordering cases are `48 67 A7` (earlier REX.W is discarded, CMPSD) and
+`67 66 48 A7` (effective REX.W, CMPSQ). The dual-invalid local reproduction is
+`s2_18n_dual_unmapped_b.case.json`; `_w`, `_d`, and `_q` cover the remaining
+widths.
+
+`generate_stage2_cmps_addr32.py` serializes handwritten expected-state inputs;
+it does not run the interpreter to produce expected results. Operands are read
+as contiguous width-sized spans after zero-extending ESI/EDI. Dual-unmapped
+fixtures verify only the bounded local ESI-first error outcome. They do not
+establish physical exception priority or MMIO rollback. JIT/native, Mac mini
+and physical x86 acceptance remain deferred; ISSUE-020 is open.

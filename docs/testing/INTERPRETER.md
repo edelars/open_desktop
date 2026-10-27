@@ -959,6 +959,18 @@ FST/FSTP confirms the loaded value converts to binary64 normal while carrying
 DE forward. Binary32/64 subnormal store results remain unsupported. See the
 [S2-31az contract](../specs/CPU_CONTRACT.md#local-s2-31az-admit-sticky-de-m32-m64-fstfstp).
 
+
+## Local S2-18n address-size-32 CMPS fixture method
+
+The 63 schema-v2 fixtures use handwritten encodings, ESI/EDI inputs, memory
+bytes, and expected snapshots. `tests/cpu/generate_stage2_cmps_addr32.py`
+serializes those values and writes their explicit file list to
+`work/s2-18n-files.json`; it does not invoke the interpreter as an oracle.
+The cases record continuous operand reads across 4 GiB and 32-bit pointer
+wrap separately. Dual-unmapped fixtures expect the local ESI-first error only;
+they do not establish hardware fault priority or MMIO rollback. See the
+[S2-18n contract](../specs/CPU_CONTRACT.md#local-s2-18n-non-rep-address-size-32-cmps-contract).
+
 ## Local S2-30ch indexed FCMOVU
 
 The Long64 interpreter admits exact unprefixed DA D8..DF only. It reuses the
