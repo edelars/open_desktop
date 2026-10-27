@@ -14,8 +14,8 @@ use crate::runtime::{
     LONG_MODE_RIP_OFFSET, RAW_HELPER_CONTRACT_FAILURE_V1, RUNTIME_CONTEXT_INITIAL_BUDGET_OFFSET,
     RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET, RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET,
     RUNTIME_CONTEXT_STATE_OFFSET, RUNTIME_CONTEXT_STOP_REQUESTED_OFFSET,
-    RUNTIME_CONTEXT_STOP_RIP_ENABLED_OFFSET, RUNTIME_CONTEXT_STOP_RIP_OFFSET, RuntimeExitTag,
-    arithmetic_flags_helper_adapter,
+    RUNTIME_CONTEXT_STOP_RIP_ENABLED_OFFSET, RUNTIME_CONTEXT_STOP_RIP_OFFSET,
+    RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET, RuntimeExitTag, arithmetic_flags_helper_adapter,
 };
 use crate::statepoints::{
     GuestBoundaryPoint, GuestRipBoundary, GuestRipSource, HostCodeRange, PcMap, PcMapError,
@@ -61,6 +61,26 @@ pub struct EmittedCheckedStoreBlockV2 {
     code: EncodedCode,
     pc_map: PcMap,
     entry_rip: u64,
+}
+
+/// Isolated entry for the exact S3-20j store-then-load profile.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmittedStoreThenLoadBlockV2 {
+    code: EncodedCode,
+    pc_map: PcMap,
+    entry_rip: u64,
+}
+
+impl EmittedStoreThenLoadBlockV2 {
+    pub fn code(&self) -> &EncodedCode {
+        &self.code
+    }
+    pub fn pc_map(&self) -> &PcMap {
+        &self.pc_map
+    }
+    pub const fn entry_rip(&self) -> u64 {
+        self.entry_rip
+    }
 }
 
 impl EmittedCheckedStoreBlockV2 {
@@ -722,6 +742,401 @@ pub fn emit_checked_store_runtime_block_v2(
         pc_map,
         entry_rip: instruction.guest_rip,
     })
+}
+
+/// Emit one entry for exactly `MOV [RBX], RAX; MOV RCX, [RBX]`. The two
+/// helpers and commits remain in guest order; the second instruction is also
+/// a legal continuation entry when the canonical RIP already names it.
+pub fn emit_store_then_load_runtime_block_v2(
+    program: &Program,
+    allocation: &Allocation<'_>,
+) -> Result<EmittedStoreThenLoadBlockV2, BlockEmitterError> {
+    ir::verify(program).map_err(BlockEmitterError::InvalidProgram)?;
+    if !std::ptr::eq(program, allocation.program()) {
+        return Err(BlockEmitterError::AllocationProgramMismatch);
+    }
+    if program.guest_instructions.len() != 2
+        || !matches!(program.operations.as_slice(), [
+            Operation::BeginInstruction { index: 0 },
+            Operation::CheckedStore { src: GuestGpr(0), operand: store_operand },
+            Operation::CommitInstruction { index: 0 },
+            Operation::BeginInstruction { index: 1 },
+            Operation::CheckedLoad { dst: load_temp, operand: load_operand },
+            Operation::WriteGpr { register: GuestGpr(1), src, width: IntWidth::W64 },
+            Operation::CommitInstruction { index: 1 },
+            Operation::Exit { kind: ExitKind::BlockComplete, target_rip },
+        ] if src == load_temp
+            && *target_rip == program.guest_instructions[1].next_rip
+            && supported_store_then_load_operands(*store_operand, *load_operand)
+        )
+    {
+        return Err(BlockEmitterError::UnsupportedShape {
+            instruction_index: 0,
+        });
+    }
+    if allocation.frame().reserved_prefix_bytes < 144 {
+        return Err(BlockEmitterError::InsufficientFramePrefix {
+            required: 144,
+            actual: allocation.frame().reserved_prefix_bytes,
+        });
+    }
+    let frame = allocation.frame();
+    if frame.alignment != 16
+        || frame.frame_bytes % frame.alignment != 0
+        || frame.frame_bytes > MAX_RUNTIME_FRAME_BYTES
+    {
+        return Err(BlockEmitterError::FrameTooLarge);
+    }
+    let pair_count =
+        usize::try_from(frame.frame_bytes / 16).map_err(|_| BlockEmitterError::FrameTooLarge)?;
+    let [store, load] = program.guest_instructions.as_slice() else {
+        return Err(BlockEmitterError::UnsupportedShape {
+            instruction_index: 0,
+        });
+    };
+    let mut encoder = Encoder::new();
+    let epilogue = encoder.new_label()?;
+    let run_store = encoder.new_label()?;
+    let run_load = encoder.new_label()?;
+    let store_failed = encoder.new_label()?;
+    let load_failed = encoder.new_label()?;
+    let success = encoder.new_label()?;
+    let mut returns = Vec::<ReturnStub>::new();
+    let mut ranges = Vec::<StatePointRange>::new();
+    let mut boundaries = Vec::<GuestBoundaryPoint>::new();
+
+    let service_start = code_offset(&encoder)?;
+    emit_prologue(&mut encoder, pair_count)?;
+    for (a, b, offset) in [(19, 20, 104), (21, 22, 120)] {
+        encoder.stp_x(
+            xreg(a)?,
+            xreg(b)?,
+            AddressBase::Sp,
+            offset,
+            PairIndexMode::Offset,
+        )?;
+    }
+    emit_runtime_frame_setup(&mut encoder)?;
+    push_range_with_source(
+        &mut ranges,
+        service_start,
+        code_offset(&encoder)?,
+        GuestRipSource::CanonicalState,
+        None,
+        StatePhase::Service,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+
+    // The same generated entry supports initial execution and continuation at
+    // the load boundary, but rejects every other canonical RIP.
+    let entry_check = code_offset(&encoder)?;
+    emit_state_load(&mut encoder, LONG_MODE_RIP_OFFSET as u32, xreg(15)?)?;
+    emit_u64(&mut encoder, xreg(14)?, store.guest_rip)?;
+    encoder.subs_x(XRegOrZero::Zero, xreg(15)?, XRegOrZero::Reg(xreg(14)?));
+    encoder.b_cond(Condition::Equal, run_store)?;
+    emit_u64(&mut encoder, xreg(14)?, load.guest_rip)?;
+    encoder.subs_x(XRegOrZero::Zero, xreg(15)?, XRegOrZero::Reg(xreg(14)?));
+    encoder.b_cond(Condition::Equal, run_load)?;
+    let bad_entry = new_exit_stub(
+        &mut encoder,
+        &mut returns,
+        RuntimeExitTag::NeedInterpreter as u32,
+        store.guest_rip,
+        None,
+        SnapshotAdmissibility::CanonicalBoundary,
+    )?;
+    encoder.b(bad_entry)?;
+    push_range_with_source(
+        &mut ranges,
+        entry_check,
+        code_offset(&encoder)?,
+        GuestRipSource::CanonicalState,
+        None,
+        StatePhase::BeforeInstruction,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+
+    encoder.bind(run_store)?;
+    let store_guard = code_offset(&encoder)?;
+    emit_instruction_guards(&mut encoder, &mut returns, store.guest_rip, 0)?;
+    push_range(
+        &mut ranges,
+        store_guard,
+        code_offset(&encoder)?,
+        store.guest_rip,
+        Some(0),
+        StatePhase::BeforeInstruction,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+    emit_checked_memory_site_call(
+        &mut encoder,
+        &mut ranges,
+        allocation,
+        1,
+        0,
+        store.guest_rip,
+        store_failed,
+    )?;
+    let store_commit = code_offset(&encoder)?;
+    emit_u64(&mut encoder, xreg(13)?, store.next_rip)?;
+    emit_saved_pointer_load(&mut encoder, FRAME_STAGING_RIP_POINTER, xreg(16)?)?;
+    encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
+    emit_commit(&mut encoder, 0, pair_count)?;
+    push_range(
+        &mut ranges,
+        store_commit,
+        code_offset(&encoder)?,
+        store.guest_rip,
+        Some(0),
+        StatePhase::CommitInProgress,
+        SnapshotAdmissibility::InadmissibleDuringCommit,
+    );
+    boundaries.push(GuestBoundaryPoint {
+        host_offset: code_offset(&encoder)?,
+        rip: GuestRipBoundary::Fixed(store.next_rip),
+        instruction_index: 0,
+        committed_instructions: 1,
+        phase: StatePhase::Committed,
+    });
+    let after_store = code_offset(&encoder)?;
+    encoder.b(run_load)?;
+    push_range(
+        &mut ranges,
+        after_store,
+        code_offset(&encoder)?,
+        store.next_rip,
+        Some(0),
+        StatePhase::Committed,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+
+    encoder.bind(run_load)?;
+    let load_guard = code_offset(&encoder)?;
+    emit_instruction_guards(&mut encoder, &mut returns, load.guest_rip, 1)?;
+    push_range(
+        &mut ranges,
+        load_guard,
+        code_offset(&encoder)?,
+        load.guest_rip,
+        Some(1),
+        StatePhase::BeforeInstruction,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+    emit_checked_memory_site_call(
+        &mut encoder,
+        &mut ranges,
+        allocation,
+        4,
+        1,
+        load.guest_rip,
+        load_failed,
+    )?;
+    let load_commit = code_offset(&encoder)?;
+    emit_saved_pointer_load(&mut encoder, FRAME_RUNTIME_CONTEXT_POINTER, xreg(16)?)?;
+    encoder.ldr_x(
+        XRegOrZero::Reg(xreg(13)?),
+        AddressBase::Reg(xreg(16)?),
+        RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET as u32,
+    )?;
+    encoder.str_x(
+        XRegOrZero::Reg(xreg(13)?),
+        AddressBase::Sp,
+        FRAME_STAGING_GPRS + 8,
+    )?;
+    emit_u64(&mut encoder, xreg(13)?, load.next_rip)?;
+    emit_saved_pointer_load(&mut encoder, FRAME_STAGING_RIP_POINTER, xreg(16)?)?;
+    encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
+    emit_commit(&mut encoder, 1, pair_count)?;
+    push_range(
+        &mut ranges,
+        load_commit,
+        code_offset(&encoder)?,
+        load.guest_rip,
+        Some(1),
+        StatePhase::CommitInProgress,
+        SnapshotAdmissibility::InadmissibleDuringCommit,
+    );
+    boundaries.push(GuestBoundaryPoint {
+        host_offset: code_offset(&encoder)?,
+        rip: GuestRipBoundary::Fixed(load.next_rip),
+        instruction_index: 1,
+        committed_instructions: 2,
+        phase: StatePhase::Committed,
+    });
+    let skip_stubs = code_offset(&encoder)?;
+    encoder.b(success)?;
+    push_range(
+        &mut ranges,
+        skip_stubs,
+        code_offset(&encoder)?,
+        load.next_rip,
+        Some(1),
+        StatePhase::Committed,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+
+    for (label, tag, rip, index, snapshot) in [
+        (
+            store_failed,
+            crate::runtime::RUNTIME_EXIT_V2_MEMORY_OPERATION,
+            GuestRipSource::Fixed(store.guest_rip),
+            Some(0),
+            SnapshotAdmissibility::ReplayCurrentInstruction,
+        ),
+        (
+            load_failed,
+            crate::runtime::RUNTIME_EXIT_V2_MEMORY_OPERATION,
+            GuestRipSource::Fixed(load.guest_rip),
+            Some(1),
+            SnapshotAdmissibility::ReplayCurrentInstruction,
+        ),
+    ] {
+        let start = code_offset(&encoder)?;
+        encoder.bind(label)?;
+        emit_u64(&mut encoder, xreg(0)?, u64::from(tag))?;
+        encoder.b(epilogue)?;
+        push_range_with_source(
+            &mut ranges,
+            start,
+            code_offset(&encoder)?,
+            rip,
+            index,
+            StatePhase::Exit,
+            snapshot,
+        );
+    }
+    let success_start = code_offset(&encoder)?;
+    encoder.bind(success)?;
+    emit_u64(&mut encoder, xreg(0)?, RuntimeExitTag::BlockComplete as u64)?;
+    encoder.b(epilogue)?;
+    push_range(
+        &mut ranges,
+        success_start,
+        code_offset(&encoder)?,
+        load.next_rip,
+        Some(1),
+        StatePhase::Exit,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+
+    for stub in &returns {
+        let start = code_offset(&encoder)?;
+        encoder.bind(stub.label)?;
+        emit_u64(&mut encoder, xreg(0)?, u64::from(stub.raw_tag))?;
+        encoder.b(epilogue)?;
+        push_range_with_source(
+            &mut ranges,
+            start,
+            code_offset(&encoder)?,
+            stub.guest_rip,
+            stub.instruction_index,
+            StatePhase::Exit,
+            stub.snapshot,
+        );
+    }
+    let epilogue_start = code_offset(&encoder)?;
+    encoder.bind(epilogue)?;
+    for (a, b, offset) in [(19, 20, 104), (21, 22, 120)] {
+        encoder.ldp_x(
+            xreg(a)?,
+            xreg(b)?,
+            AddressBase::Sp,
+            offset,
+            PairIndexMode::Offset,
+        )?;
+    }
+    emit_epilogue(&mut encoder, pair_count)?;
+    push_range_with_source(
+        &mut ranges,
+        epilogue_start,
+        code_offset(&encoder)?,
+        GuestRipSource::CanonicalState,
+        None,
+        StatePhase::Service,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+
+    let code = encoder.finish()?;
+    let pc_map = PcMap::new(code.to_le_bytes()?.len(), 2, ranges, boundaries)
+        .map_err(BlockEmitterError::PcMap)?;
+    Ok(EmittedStoreThenLoadBlockV2 {
+        code,
+        pc_map,
+        entry_rip: store.guest_rip,
+    })
+}
+
+fn supported_store_then_load_operands(
+    store: od_isa::long_decode::MemoryOperand,
+    load: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    use od_isa::OperandSize;
+    use od_isa::long_decode::AddressBase;
+    [store, load].into_iter().all(|operand| {
+        operand.base == AddressBase::Register(od_isa::Register::Rbx)
+            && operand.index.is_none()
+            && operand.scale == 1
+            && operand.displacement == 0
+            && operand.address_size == OperandSize::Qword
+            && operand.size == OperandSize::Qword
+    })
+}
+
+fn emit_checked_memory_site_call(
+    encoder: &mut Encoder,
+    ranges: &mut Vec<StatePointRange>,
+    allocation: &Allocation<'_>,
+    operation: usize,
+    site: u16,
+    rip: u64,
+    failure: crate::arm64::Label,
+) -> Result<(), BlockEmitterError> {
+    let boundary = HelperBoundaryPosition::BeforeOperation(operation);
+    allocation
+        .helper_boundary(boundary)
+        .map_err(|_| BlockEmitterError::MissingHelperBoundary { operation })?;
+    let pending = code_offset(encoder)?;
+    allocation.emit_save_before_helper(encoder, boundary)?;
+    emit_saved_pointer_load(encoder, FRAME_RUNTIME_CONTEXT_POINTER, xreg(19)?)?;
+    encoder.mov_x(xreg(0)?, XRegOrZero::Reg(xreg(19)?));
+    emit_u64(encoder, xreg(1)?, u64::from(site))?;
+    emit_u64(
+        encoder,
+        xreg(16)?,
+        crate::runtime::memory_site_helper_store_load_v2 as *const () as usize as u64,
+    )?;
+    let call = code_offset(encoder)?;
+    encoder.blr(xreg(16)?);
+    push_range(
+        ranges,
+        pending,
+        call,
+        rip,
+        Some(u32::from(site)),
+        StatePhase::PendingEffects,
+        SnapshotAdmissibility::ReplayCurrentInstruction,
+    );
+    push_range(
+        ranges,
+        call,
+        code_offset(encoder)?,
+        rip,
+        Some(u32::from(site)),
+        StatePhase::HelperCall,
+        SnapshotAdmissibility::InadmissibleAfterEffect,
+    );
+    let check = code_offset(encoder)?;
+    encoder.cbnz_w(crate::arm64::WReg::new(0)?, failure)?;
+    push_range(
+        ranges,
+        check,
+        code_offset(encoder)?,
+        rip,
+        Some(u32::from(site)),
+        StatePhase::AfterHelper,
+        SnapshotAdmissibility::InadmissibleAfterEffect,
+    );
+    Ok(())
 }
 
 /// Emit a test-only/custom-helper block. Such a block cannot be called by the

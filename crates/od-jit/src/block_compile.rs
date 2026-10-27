@@ -10,6 +10,7 @@ use crate::block::{
 use crate::block_emitter::{
     BlockEmitterError, EmittedCheckedLoadBlockV2, EmittedCheckedStoreBlockV2, EmittedRuntimeBlock,
     emit_checked_load_runtime_block_v2, emit_checked_store_runtime_block_v2, emit_runtime_block,
+    emit_store_then_load_runtime_block_v2,
 };
 use crate::ir::Operation;
 use crate::lowering::{self, LoweredProgram, LoweringError, LoweringOutcome};
@@ -143,6 +144,51 @@ pub(crate) fn compile_checked_store_block_v2(
     };
     let allocation = allocate_block(&lowered, CHECKED_STORE_FRAME_PREFIX_BYTES_V2)?;
     let emitted = emit_checked_store_runtime_block_v2(&lowered.program, &allocation)
+        .map_err(BlockCompileError::Emitter)?;
+    let actual = emitted
+        .code()
+        .to_le_bytes()
+        .map_err(|error| BlockCompileError::Emitter(BlockEmitterError::Encoding(error)))?
+        .len();
+    if actual > MAX_EMITTED_BLOCK_BYTES {
+        return Err(BlockCompileError::EmittedCodeTooLarge {
+            actual,
+            max: MAX_EMITTED_BLOCK_BYTES,
+        });
+    }
+    Ok(emitted)
+}
+
+pub(crate) fn compile_checked_store_then_load_block_v2(
+    code: CodeView<'_>,
+    entry_rip: u64,
+) -> Result<crate::block_emitter::EmittedStoreThenLoadBlockV2, BlockCompileError> {
+    let built = block::build_checked_qword_store_then_load_block(
+        code,
+        entry_rip,
+        AccessContext::default(),
+        BlockLimits::default(),
+    )
+    .map_err(BlockCompileError::Build)?;
+    let lowered = match lowering::lower(&built).map_err(BlockCompileError::Lowering)? {
+        LoweringOutcome::Program(lowered) => lowered,
+        LoweringOutcome::NoNativePrefix { .. } => {
+            return Err(BlockCompileError::Emitter(
+                BlockEmitterError::UnsupportedShape {
+                    instruction_index: 0,
+                },
+            ));
+        }
+    };
+    if lowered.program.guest_instructions.len() != 2 {
+        return Err(BlockCompileError::Emitter(
+            BlockEmitterError::UnsupportedShape {
+                instruction_index: lowered.program.guest_instructions.len(),
+            },
+        ));
+    }
+    let allocation = allocate_block(&lowered, CHECKED_STORE_FRAME_PREFIX_BYTES_V2)?;
+    let emitted = emit_store_then_load_runtime_block_v2(&lowered.program, &allocation)
         .map_err(BlockCompileError::Emitter)?;
     let actual = emitted
         .code()

@@ -25,6 +25,7 @@ pub struct PublishedCode {
     memory_operation_metadata_v2: Option<MemoryOperationMetadataV2>,
     checked_load_ir_metadata_v2: Option<CheckedLoadIrMetadataV2>,
     checked_store_ir_metadata_v2: Option<CheckedLoadIrMetadataV2>,
+    checked_store_then_load_metadata_v2: Option<StoreThenLoadMetadataV2>,
 }
 
 struct BlockMetadata {
@@ -48,6 +49,15 @@ struct CheckedLoadIrMetadataV2 {
     site: od_jit::runtime::MemorySiteV2,
     source_bytes: [u8; 8],
     source_len: u8,
+    compile_flavor: od_jit::translation::CompileFlavor,
+    pc_map: od_jit::statepoints::PcMap,
+}
+
+#[derive(Clone)]
+struct StoreThenLoadMetadataV2 {
+    entry_rip: u64,
+    sites: [od_jit::runtime::MemorySiteV2; 2],
+    source_bytes: [u8; 6],
     compile_flavor: od_jit::translation::CompileFlavor,
     pc_map: od_jit::statepoints::PcMap,
 }
@@ -377,6 +387,110 @@ impl PublishedCode {
         Ok(published)
     }
 
+    pub fn publish_ir_memory_store_then_load_v2(
+        block: &od_jit::memory_load_v2::IrMemoryStoreThenLoadBlockV2,
+    ) -> Result<Self, ExecutableMemoryError> {
+        let [store, load] = block.sites();
+        if block.compile_flavor() != od_jit::translation::CompileFlavor::S3_26cIrStoreThenLoadV2
+            || block.pc_map().instruction_count() != 2
+            || block.source_bytes() != &[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]
+            || store.instruction_index() != 0
+            || store.operation() != od_jit::runtime::MemorySiteOperationV2::Store
+            || store.guest_rip() != block.entry_rip()
+            || store.source() != Some(0)
+            || !store.matches_source_bytes_for_index(
+                &block.source_bytes()[..3],
+                od_jit::runtime::MemorySiteOperationV2::Store,
+                0,
+            )
+            || load.instruction_index() != 1
+            || load.operation() != od_jit::runtime::MemorySiteOperationV2::Load
+            || load.guest_rip() != store.next_rip()
+            || load.destination() != Some(1)
+            || !load.matches_source_bytes_for_index(
+                &block.source_bytes()[3..],
+                od_jit::runtime::MemorySiteOperationV2::Load,
+                1,
+            )
+            || load.next_rip() != block.entry_rip().checked_add(6).unwrap_or(0)
+            || block.pc_map().ranges().iter().any(|range| {
+                range.phase == od_jit::statepoints::StatePhase::AfterHelper
+                    && range.snapshot
+                        == od_jit::statepoints::SnapshotAdmissibility::ReplayCurrentInstruction
+            })
+        {
+            return Err(ExecutableMemoryError::InvalidBlockArtifact);
+        }
+        let code = block
+            .code()
+            .to_le_bytes()
+            .map_err(|_| ExecutableMemoryError::AllocationFailed)?;
+        if usize::try_from(block.pc_map().code_len()).ok() != Some(code.len()) {
+            return Err(ExecutableMemoryError::InvalidBlockArtifact);
+        }
+        let mut published = Self::publish_with_metadata(&code, None, None)?;
+        published.checked_store_then_load_metadata_v2 = Some(StoreThenLoadMetadataV2 {
+            entry_rip: block.entry_rip(),
+            sites: *block.sites(),
+            source_bytes: *block.source_bytes(),
+            compile_flavor: block.compile_flavor(),
+            pc_map: block.pc_map().clone(),
+        });
+        Ok(published)
+    }
+
+    /// Run the exact checked store-then-load artifact against synchronous,
+    /// private, ordinary RAM. It follows the direct checked-store contract in
+    /// [`Self::execute_ir_memory_store_v2`].
+    ///
+    /// # Safety
+    /// `memory` must be private, synchronous ordinary RAM. Its eight-byte
+    /// `GuestMemory::write` must be all-or-nothing: on error it leaves all
+    /// bytes unchanged, and on success the full write is visible before it
+    /// returns. Both accesses must avoid MMIO, delayed/asynchronous effects,
+    /// executable or code backing, and any alias of executable/code bytes,
+    /// including this artifact's source. No other thread, vCPU, DMA engine,
+    /// or external observer may concurrently access or modify the backing.
+    /// The backend must not re-enter this runtime or panic/unwind through the
+    /// helper boundary. Keep all references alive until this synchronous
+    /// invocation returns; `state` and `memory` must remain exclusively
+    /// borrowed, while the atomic `stop_requested` flag may be shared for
+    /// cooperative STOP. The published entry and its metadata remain pinned
+    /// by `self`.
+    pub unsafe fn execute_ir_memory_store_then_load_v2(
+        &self,
+        state: &mut od_isa::LongModeState,
+        memory: &mut dyn od_isa::memory::GuestMemory,
+        access_context: od_isa::memory::AccessContext,
+        initial_budget: u64,
+        stop_rip: Option<u64>,
+        stop_requested: &std::sync::atomic::AtomicU8,
+    ) -> Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2> {
+        let metadata = self
+            .checked_store_then_load_metadata_v2
+            .as_ref()
+            .ok_or(MemoryOperationExecutionErrorV2::NotV2MemoryBlock)?;
+        validate_store_then_load_metadata(metadata)?;
+        let start = metadata.sites[0].guest_rip();
+        let continuation = metadata.sites[1].guest_rip();
+        if state.rip != start && state.rip != continuation {
+            return Err(MemoryOperationExecutionErrorV2::EntryRipMismatch {
+                expected: start,
+                actual: state.rip,
+            });
+        }
+        execute_store_then_load_v2_at(
+            self.as_ptr(),
+            metadata,
+            state,
+            memory,
+            access_context,
+            initial_budget,
+            stop_rip,
+            stop_requested,
+        )
+    }
+
     /// Execute the checked IR store under the same private synchronous RAM
     /// safety preconditions as the direct V2 store entry.
     ///
@@ -667,6 +781,7 @@ impl PublishedCode {
                 memory_operation_metadata_v2,
                 checked_load_ir_metadata_v2: None,
                 checked_store_ir_metadata_v2: None,
+                checked_store_then_load_metadata_v2: None,
             });
         }
 
@@ -691,6 +806,11 @@ impl PublishedCode {
             })
             .or_else(|| {
                 self.checked_store_ir_metadata_v2
+                    .as_ref()
+                    .map(|metadata| &metadata.pc_map)
+            })
+            .or_else(|| {
+                self.checked_store_then_load_metadata_v2
                     .as_ref()
                     .map(|metadata| &metadata.pc_map)
             })
@@ -801,6 +921,234 @@ fn execute_memory_operation_v2_at(
     // SAFETY: context points only to valid invocation-local V2 data.
     let raw = unsafe { entry(&mut context) };
     decode_memory_operation_v2_result(metadata, raw, &context)
+}
+
+fn execute_store_then_load_v2_at(
+    code_ptr: *const u8,
+    metadata: &StoreThenLoadMetadataV2,
+    state: &mut od_isa::LongModeState,
+    memory: &mut dyn od_isa::memory::GuestMemory,
+    access_context: od_isa::memory::AccessContext,
+    initial_budget: u64,
+    stop_rip: Option<u64>,
+    stop_requested: &std::sync::atomic::AtomicU8,
+) -> Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2> {
+    let mut adapter = od_jit::memory_bridge::CheckedMemoryAdapter::new(memory, access_context);
+    let mut context = od_jit::runtime::RuntimeContextV2 {
+        base: od_jit::runtime::RuntimeContextV1 {
+            state,
+            initial_budget,
+            stop_rip_enabled: u32::from(stop_rip.is_some()),
+            reserved: 0,
+            stop_rip: stop_rip.unwrap_or(0),
+            stop_requested: (stop_requested as *const std::sync::atomic::AtomicU8).cast(),
+            remaining_budget: initial_budget,
+            retired_instructions: 0,
+        },
+        memory_adapter: adapter.as_opaque_ptr(),
+        memory_sites: metadata.sites.as_ptr(),
+        memory_site_count: 2,
+        last_memory_site: u32::MAX,
+        last_memory_status: od_jit::memory_bridge::MEMORY_HELPER_INVALID_ARGUMENT,
+        reserved: 0,
+        staged_load_value: 0,
+        memory_outcome: od_jit::memory_bridge::CheckedMemoryOutcomeV1::default(),
+    };
+    context.memory_outcome.status = od_jit::memory_bridge::MEMORY_HELPER_INVALID_ARGUMENT;
+    let entry: od_jit::runtime::BlockEntryV2 = unsafe { std::mem::transmute(code_ptr) };
+    let raw = unsafe { entry(&mut context) };
+    decode_store_then_load_v2_result(metadata, raw, &context)
+}
+
+fn validate_store_then_load_metadata(
+    metadata: &StoreThenLoadMetadataV2,
+) -> Result<(), MemoryOperationExecutionErrorV2> {
+    let [store, load] = metadata.sites;
+    if metadata.compile_flavor != od_jit::translation::CompileFlavor::S3_26cIrStoreThenLoadV2
+        || metadata.source_bytes != [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]
+        || store.instruction_index() != 0
+        || store.guest_rip() != metadata.entry_rip
+        || store.next_rip() != load.guest_rip()
+        || store.operation() != od_jit::runtime::MemorySiteOperationV2::Store
+        || store.source() != Some(0)
+        || !store.matches_source_bytes_for_index(
+            &metadata.source_bytes[..3],
+            od_jit::runtime::MemorySiteOperationV2::Store,
+            0,
+        )
+        || load.instruction_index() != 1
+        || load.operation() != od_jit::runtime::MemorySiteOperationV2::Load
+        || load.destination() != Some(1)
+        || !load.matches_source_bytes_for_index(
+            &metadata.source_bytes[3..],
+            od_jit::runtime::MemorySiteOperationV2::Load,
+            1,
+        )
+        || load.next_rip() != metadata.entry_rip.checked_add(6).unwrap_or(0)
+        || metadata.pc_map.instruction_count() != 2
+    {
+        return Err(MemoryOperationExecutionErrorV2::InvalidMetadata);
+    }
+    Ok(())
+}
+
+fn decode_store_then_load_v2_result(
+    metadata: &StoreThenLoadMetadataV2,
+    raw: u32,
+    context: &od_jit::runtime::RuntimeContextV2,
+) -> Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2> {
+    use od_jit::memory_bridge::{
+        MEMORY_ERROR_NONE, MEMORY_HELPER_ARCHITECTURAL_FAULT, MEMORY_HELPER_INVALID_ARGUMENT,
+        MEMORY_HELPER_MEMORY_ERROR, MEMORY_HELPER_SUCCESS,
+    };
+    let [store, load] = metadata.sites;
+    let base = &context.base;
+    let rip = unsafe { (*base.state).rip };
+    let committed = rip == load.guest_rip()
+        && base.retired_instructions == 1
+        && base.initial_budget > 0
+        && base.remaining_budget == base.initial_budget - 1;
+    let untouched = rip == store.guest_rip()
+        && base.retired_instructions == 0
+        && base.remaining_budget == base.initial_budget;
+    let before_load = rip == load.guest_rip()
+        && base.retired_instructions == 0
+        && base.remaining_budget == base.initial_budget;
+    let store_helper_started = untouched && base.initial_budget > 0;
+    let load_helper_started = committed || (before_load && base.initial_budget > 0);
+    match raw {
+        0 => {
+            let from_store = context.last_memory_site == 1
+                && rip == load.next_rip()
+                && base.retired_instructions == 2
+                && base.initial_budget >= 2
+                && base.remaining_budget == base.initial_budget - 2;
+            let from_continuation = context.last_memory_site == 1
+                && rip == load.next_rip()
+                && base.retired_instructions == 1
+                && base.initial_budget > 0
+                && base.remaining_budget == base.initial_budget - 1;
+            if context.last_memory_status != MEMORY_HELPER_SUCCESS
+                || context.memory_outcome.status != MEMORY_HELPER_SUCCESS
+                || (!from_store && !from_continuation)
+            {
+                return Err(MemoryOperationExecutionErrorV2::InvalidAccounting);
+            }
+            Ok(MemoryOperationExecutionResultV2 {
+                exit: MemoryOperationExecutionExitV2::Complete,
+                remaining_budget: base.remaining_budget,
+                retired_instructions: base.retired_instructions,
+            })
+        }
+        1 => {
+            if context.last_memory_site == u32::MAX
+                && context.last_memory_status == MEMORY_HELPER_INVALID_ARGUMENT
+                && (untouched || before_load)
+                || context.last_memory_site == 0
+                    && context.last_memory_status == MEMORY_HELPER_SUCCESS
+                    && committed
+                    && base.remaining_budget == 0
+            {
+                Ok(MemoryOperationExecutionResultV2 {
+                    exit: MemoryOperationExecutionExitV2::BudgetExhausted,
+                    remaining_budget: base.remaining_budget,
+                    retired_instructions: base.retired_instructions,
+                })
+            } else {
+                Err(MemoryOperationExecutionErrorV2::InvalidAccounting)
+            }
+        }
+        3 => {
+            let valid = if context.last_memory_site == 0 {
+                committed
+            } else {
+                context.last_memory_site == u32::MAX && (untouched || before_load)
+            };
+            if !valid {
+                return Err(MemoryOperationExecutionErrorV2::InvalidAccounting);
+            }
+            let exit = if raw == 2 {
+                MemoryOperationExecutionExitV2::StopAddress
+            } else {
+                MemoryOperationExecutionExitV2::StopRequested
+            };
+            Ok(MemoryOperationExecutionResultV2 {
+                exit,
+                remaining_budget: base.remaining_budget,
+                retired_instructions: base.retired_instructions,
+            })
+        }
+        9 => {
+            let helper_site = context.last_memory_site;
+            if helper_site > 1
+                || context.memory_outcome.status != context.last_memory_status
+                || (helper_site == 0 && !store_helper_started)
+                || (helper_site == 1 && !load_helper_started)
+            {
+                return Err(MemoryOperationExecutionErrorV2::InvalidAccounting);
+            }
+            match context.last_memory_status {
+                MEMORY_HELPER_ARCHITECTURAL_FAULT => {
+                    let outcome = context.memory_outcome;
+                    if outcome.error_kind != MEMORY_ERROR_NONE
+                        || outcome.has_error_code > 1
+                        || outcome.has_linear_address > 1
+                        || outcome.fault_vector > u8::MAX.into()
+                    {
+                        return Err(MemoryOperationExecutionErrorV2::InvalidOutcome);
+                    }
+                    Ok(MemoryOperationExecutionResultV2 {
+                        exit: MemoryOperationExecutionExitV2::GuestFault(
+                            od_isa::memory::ArchitecturalFault {
+                                vector: outcome.fault_vector as u8,
+                                error_code: (outcome.has_error_code != 0)
+                                    .then_some(outcome.error_code),
+                                linear_address: (outcome.has_linear_address != 0)
+                                    .then_some(outcome.linear_address),
+                            },
+                        ),
+                        remaining_budget: base.remaining_budget,
+                        retired_instructions: base.retired_instructions,
+                    })
+                }
+                MEMORY_HELPER_MEMORY_ERROR => {
+                    let outcome = context.memory_outcome;
+                    if !(od_jit::memory_bridge::MEMORY_ERROR_UNMAPPED
+                        ..=od_jit::memory_bridge::MEMORY_ERROR_BACKEND)
+                        .contains(&outcome.error_kind)
+                    {
+                        return Err(MemoryOperationExecutionErrorV2::InvalidOutcome);
+                    }
+                    Err(MemoryOperationExecutionErrorV2::MemoryError(
+                        MemoryOperationMemoryErrorV2 {
+                            kind: outcome.error_kind,
+                            address: outcome.error_address,
+                            length: outcome.error_length,
+                        },
+                    ))
+                }
+                status => Err(MemoryOperationExecutionErrorV2::HelperBoundaryFailure { status }),
+            }
+        }
+        4 => {
+            if context.last_memory_site == u32::MAX
+                && context.last_memory_status == MEMORY_HELPER_INVALID_ARGUMENT
+                && (untouched || before_load)
+                || context.last_memory_site == 0
+                    && context.last_memory_status == MEMORY_HELPER_SUCCESS
+                    && committed
+            {
+                Ok(MemoryOperationExecutionResultV2 {
+                    exit: MemoryOperationExecutionExitV2::StopAddress,
+                    remaining_budget: base.remaining_budget,
+                    retired_instructions: base.retired_instructions,
+                })
+            } else {
+                Err(MemoryOperationExecutionErrorV2::InvalidAccounting)
+            }
+        }
+        other => Err(MemoryOperationExecutionErrorV2::InvalidExitTag(other)),
+    }
 }
 
 fn execute_block_at(
@@ -12879,5 +13227,532 @@ mod tests {
             assert_eq!(interpreter_ram.writes, 1);
             assert_eq!(&interpreter_ram.bytes[16..24], &make_ram().bytes[16..24]);
         }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn ir_two_memory_entry_preserves_order_partial_commit_and_continuation() {
+        use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
+
+        #[derive(Clone)]
+        struct Ram {
+            bytes: [u8; 64],
+            calls: Vec<&'static str>,
+            fail_write: Option<MemoryError>,
+            fail_read: Option<MemoryError>,
+            stop_on_write: Option<usize>,
+        }
+        impl GuestMemory for Ram {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                if (0x9e00..0x9e06).contains(&address) {
+                    return Ok([0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b][(address - 0x9e00) as usize]);
+                }
+                self.bytes
+                    .get(address as usize)
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                out: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                self.calls.push("read");
+                if let Some(error) = self.fail_read.take() {
+                    return Err(error);
+                }
+                let start = address as usize;
+                let source =
+                    self.bytes
+                        .get(start..start + out.len())
+                        .ok_or(MemoryError::Unmapped {
+                            address,
+                            access: AccessKind::Read,
+                        })?;
+                out.copy_from_slice(source);
+                Ok(())
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                data: &[u8],
+            ) -> Result<(), MemoryError> {
+                self.calls.push("write");
+                if let Some(error) = self.fail_write.take() {
+                    return Err(error);
+                }
+                let start = address as usize;
+                let destination =
+                    self.bytes
+                        .get_mut(start..start + data.len())
+                        .ok_or(MemoryError::Unmapped {
+                            address,
+                            access: AccessKind::Write,
+                        })?;
+                destination.copy_from_slice(data);
+                if let Some(flag) = self.stop_on_write {
+                    unsafe { &*(flag as *const AtomicU8) }.store(1, Ordering::Release);
+                }
+                Ok(())
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                _: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                unreachable!()
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                _: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                unreachable!()
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                _: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                unreachable!()
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+        fn ram() -> Ram {
+            let mut bytes = [0; 64];
+            bytes[16..24].copy_from_slice(&0x1111_2222_3333_4444u64.to_le_bytes());
+            Ram {
+                bytes,
+                calls: Vec::new(),
+                fail_write: None,
+                fail_read: None,
+                stop_on_write: None,
+            }
+        }
+        fn state() -> od_isa::LongModeState {
+            let mut state = od_isa::LongModeState {
+                rip: 0x9e00,
+                rflags: 0x246,
+                ..Default::default()
+            };
+            state.gpr[0] = 0xaabb_ccdd_1234_5678;
+            state.gpr[1] = 0xdead_beef_cafe_babe;
+            state.gpr[3] = 16;
+            state
+        }
+        let _guard = jit_test_lock();
+        let source = [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b];
+        let block = od_jit::memory_load_v2::compile_ir_memory_store_then_load_block_v2(
+            od_jit::block::CodeView::new(0x9e00, &source).unwrap(),
+            0x9e00,
+        )
+        .unwrap();
+        let published = PublishedCode::publish_ir_memory_store_then_load_v2(&block).unwrap();
+        let stop = AtomicU8::new(0);
+
+        let mut rejected_state = state();
+        let mut rejected_ram = ram();
+        assert!(matches!(
+            published.execute_block(&mut rejected_state, 2, None, &stop),
+            Err(BlockExecutionError::NotRuntimeBlock)
+        ));
+        assert!(matches!(
+            published.execute_ir_memory_load_v2(
+                &mut rejected_state,
+                &mut rejected_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+            ),
+            Err(MemoryOperationExecutionErrorV2::NotV2MemoryBlock)
+        ));
+        assert!(matches!(
+            unsafe {
+                published.execute_ir_memory_store_v2(
+                    &mut rejected_state,
+                    &mut rejected_ram,
+                    AccessContext::default(),
+                    2,
+                    None,
+                    &stop,
+                )
+            },
+            Err(MemoryOperationExecutionErrorV2::NotV2MemoryBlock)
+        ));
+        assert!(matches!(
+            published.execute_memory_load_v2(
+                &mut rejected_state,
+                &mut rejected_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+            ),
+            Err(MemoryOperationExecutionErrorV2::NotV2MemoryBlock)
+        ));
+        assert!(matches!(
+            unsafe {
+                published.execute_memory_store_v2(
+                    &mut rejected_state,
+                    &mut rejected_ram,
+                    AccessContext::default(),
+                    2,
+                    None,
+                    &stop,
+                )
+            },
+            Err(MemoryOperationExecutionErrorV2::NotV2MemoryBlock)
+        ));
+        assert!(rejected_ram.calls.is_empty());
+
+        let mut native_state = state();
+        let mut native_ram = ram();
+        let mut interp_state = state();
+        let mut interp_ram = ram();
+        let result = unsafe {
+            published.execute_ir_memory_store_then_load_v2(
+                &mut native_state,
+                &mut native_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+            )
+        };
+        assert!(
+            result.is_ok(),
+            "pair execution error={result:?}, callbacks={:?}",
+            native_ram.calls
+        );
+        let result = result.unwrap();
+        assert_eq!(result.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(result.retired_instructions, 2);
+        assert_eq!(native_state.gpr[1], native_state.gpr[0]);
+        assert_eq!(native_ram.calls, ["write", "read"]);
+        assert_eq!(
+            od_isa::execute::step(&mut interp_state, &mut interp_ram, AccessContext::default()),
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        );
+        assert_eq!(
+            od_isa::execute::step(&mut interp_state, &mut interp_ram, AccessContext::default()),
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        );
+        assert_eq!(native_state, interp_state);
+        assert_eq!(native_ram.bytes, interp_ram.bytes);
+
+        let fault = od_isa::memory::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(2),
+            linear_address: Some(16),
+        };
+        let mut store_fault_ram = ram();
+        store_fault_ram.fail_write = Some(MemoryError::Architectural(fault.clone()));
+        let mut store_fault_state = state();
+        let before = store_fault_state.clone();
+        let store_fault = unsafe {
+            published.execute_ir_memory_store_then_load_v2(
+                &mut store_fault_state,
+                &mut store_fault_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            store_fault.exit,
+            MemoryOperationExecutionExitV2::GuestFault(fault.clone())
+        );
+        assert_eq!(store_fault.retired_instructions, 0);
+        assert_eq!(store_fault_state, before);
+        assert_eq!(store_fault_ram.calls, ["write"]);
+        assert_eq!(&store_fault_ram.bytes[16..24], &ram().bytes[16..24]);
+        let mut store_fault_interpreter_ram = ram();
+        store_fault_interpreter_ram.fail_write = Some(MemoryError::Architectural(fault.clone()));
+        let mut store_fault_interpreter_state = state();
+        assert_eq!(
+            od_isa::execute::step(
+                &mut store_fault_interpreter_state,
+                &mut store_fault_interpreter_ram,
+                AccessContext::default()
+            ),
+            Ok(od_isa::execute::StepOutcome::Fault(fault.clone()))
+        );
+        assert_eq!(store_fault_interpreter_state, store_fault_state);
+        assert_eq!(store_fault_interpreter_ram.bytes, store_fault_ram.bytes);
+
+        let mut load_fault_ram = ram();
+        load_fault_ram.fail_read = Some(MemoryError::Architectural(fault.clone()));
+        let mut load_fault_state = state();
+        let old_rcx = load_fault_state.gpr[1];
+        let load_fault = unsafe {
+            published.execute_ir_memory_store_then_load_v2(
+                &mut load_fault_state,
+                &mut load_fault_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            load_fault.exit,
+            MemoryOperationExecutionExitV2::GuestFault(fault.clone())
+        );
+        assert_eq!(load_fault.retired_instructions, 1);
+        assert_eq!(load_fault.remaining_budget, 1);
+        assert_eq!(load_fault_state.rip, 0x9e03);
+        assert_eq!(load_fault_state.gpr[1], old_rcx);
+        assert_eq!(load_fault_ram.calls, ["write", "read"]);
+        assert_eq!(&load_fault_ram.bytes[16..24], &state().gpr[0].to_le_bytes());
+        let mut load_fault_interpreter_ram = ram();
+        load_fault_interpreter_ram.fail_read = Some(MemoryError::Architectural(fault.clone()));
+        let mut load_fault_interpreter_state = state();
+        assert_eq!(
+            od_isa::execute::step(
+                &mut load_fault_interpreter_state,
+                &mut load_fault_interpreter_ram,
+                AccessContext::default()
+            ),
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        );
+        assert_eq!(
+            od_isa::execute::step(
+                &mut load_fault_interpreter_state,
+                &mut load_fault_interpreter_ram,
+                AccessContext::default()
+            ),
+            Ok(od_isa::execute::StepOutcome::Fault(fault.clone()))
+        );
+        assert_eq!(load_fault_interpreter_state, load_fault_state);
+        assert_eq!(load_fault_interpreter_ram.bytes, load_fault_ram.bytes);
+        let mut repeated_arch_ram = load_fault_ram.clone();
+        repeated_arch_ram.fail_read = Some(MemoryError::Architectural(fault.clone()));
+        let mut repeated_arch_state = load_fault_state.clone();
+        let repeated_arch_before = repeated_arch_state.clone();
+        let repeated_arch_fault = unsafe {
+            published.execute_ir_memory_store_then_load_v2(
+                &mut repeated_arch_state,
+                &mut repeated_arch_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            repeated_arch_fault.exit,
+            MemoryOperationExecutionExitV2::GuestFault(fault.clone())
+        );
+        assert_eq!(repeated_arch_fault.retired_instructions, 0);
+        assert_eq!(repeated_arch_fault.remaining_budget, 1);
+        assert_eq!(repeated_arch_state, repeated_arch_before);
+        assert_eq!(repeated_arch_ram.calls, ["write", "read", "read"]);
+
+        let mut repeated_backend_ram = load_fault_ram.clone();
+        repeated_backend_ram.fail_read =
+            Some(MemoryError::Backend("injected second load error".into()));
+        let mut repeated_backend_state = load_fault_state.clone();
+        let repeated_backend_before = repeated_backend_state.clone();
+        let repeated_backend_fault = unsafe {
+            published.execute_ir_memory_store_then_load_v2(
+                &mut repeated_backend_state,
+                &mut repeated_backend_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+        };
+        assert!(matches!(
+            repeated_backend_fault,
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_BACKEND,
+                    ..
+                }
+            ))
+        ));
+        assert_eq!(repeated_backend_state, repeated_backend_before);
+        assert_eq!(repeated_backend_ram.calls, ["write", "read", "read"]);
+        assert_eq!(
+            &repeated_backend_ram.bytes[16..24],
+            &state().gpr[0].to_le_bytes()
+        );
+        // Re-entering at the load RIP never repeats the already committed store.
+        load_fault_ram.fail_read = None;
+        let resumed = unsafe {
+            published.execute_ir_memory_store_then_load_v2(
+                &mut load_fault_state,
+                &mut load_fault_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(resumed.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(resumed.retired_instructions, 1);
+        assert_eq!(load_fault_ram.calls, ["write", "read", "read"]);
+
+        let raised = AtomicU8::new(0);
+        let mut stopped_ram = ram();
+        stopped_ram.stop_on_write = Some(&raised as *const AtomicU8 as usize);
+        let mut stopped_state = state();
+        let stopped = unsafe {
+            published.execute_ir_memory_store_then_load_v2(
+                &mut stopped_state,
+                &mut stopped_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &raised,
+            )
+        }
+        .unwrap();
+        assert_eq!(stopped.exit, MemoryOperationExecutionExitV2::StopRequested);
+        assert_eq!(stopped_state.rip, 0x9e03);
+        assert_eq!(stopped.retired_instructions, 1);
+        assert_eq!(stopped_ram.calls, ["write"]);
+        assert_eq!(&stopped_ram.bytes[16..24], &state().gpr[0].to_le_bytes());
+
+        let mut load_stop_rip_state = state();
+        let mut load_stop_rip_ram = ram();
+        let load_stop_rip = unsafe {
+            published.execute_ir_memory_store_then_load_v2(
+                &mut load_stop_rip_state,
+                &mut load_stop_rip_ram,
+                AccessContext::default(),
+                1,
+                Some(0x9e03),
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            load_stop_rip.exit,
+            MemoryOperationExecutionExitV2::StopAddress
+        );
+        assert_eq!(load_stop_rip.retired_instructions, 1);
+        assert_eq!(load_stop_rip.remaining_budget, 0);
+        assert_eq!(load_stop_rip_state.rip, 0x9e03);
+        assert_eq!(load_stop_rip_ram.calls, ["write"]);
+
+        let stop_and_rip = AtomicU8::new(0);
+        let mut stop_and_rip_ram = ram();
+        stop_and_rip_ram.stop_on_write = Some(&stop_and_rip as *const AtomicU8 as usize);
+        let mut stop_and_rip_state = state();
+        let stop_and_rip_result = unsafe {
+            published.execute_ir_memory_store_then_load_v2(
+                &mut stop_and_rip_state,
+                &mut stop_and_rip_ram,
+                AccessContext::default(),
+                2,
+                Some(0x9e03),
+                &stop_and_rip,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            stop_and_rip_result.exit,
+            MemoryOperationExecutionExitV2::StopAddress
+        );
+        assert_eq!(stop_and_rip_result.retired_instructions, 1);
+        assert_eq!(stop_and_rip_state.rip, 0x9e03);
+        assert_eq!(stop_and_rip_ram.calls, ["write"]);
+
+        for (budget, stop_rip, expected) in [
+            (0, None, MemoryOperationExecutionExitV2::BudgetExhausted),
+            (2, Some(0x9e00), MemoryOperationExecutionExitV2::StopAddress),
+        ] {
+            let mut s = state();
+            let before = s.clone();
+            let mut m = ram();
+            let result = unsafe {
+                published.execute_ir_memory_store_then_load_v2(
+                    &mut s,
+                    &mut m,
+                    AccessContext::default(),
+                    budget,
+                    stop_rip,
+                    &stop,
+                )
+            }
+            .unwrap();
+            assert_eq!(result.exit, expected);
+            assert_eq!(s, before);
+            assert!(m.calls.is_empty());
+        }
+        let stopped_before = AtomicU8::new(1);
+        let mut entry_stop_state = state();
+        let entry_stop_before = entry_stop_state.clone();
+        let mut entry_stop_ram = ram();
+        let entry_stop = unsafe {
+            published.execute_ir_memory_store_then_load_v2(
+                &mut entry_stop_state,
+                &mut entry_stop_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stopped_before,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            entry_stop.exit,
+            MemoryOperationExecutionExitV2::StopRequested
+        );
+        assert_eq!(entry_stop_state, entry_stop_before);
+        assert!(entry_stop_ram.calls.is_empty());
+        let mut budget_state = state();
+        let mut budget_ram = ram();
+        let first = unsafe {
+            published.execute_ir_memory_store_then_load_v2(
+                &mut budget_state,
+                &mut budget_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(first.exit, MemoryOperationExecutionExitV2::BudgetExhausted);
+        assert_eq!(first.retired_instructions, 1);
+        assert_eq!(budget_state.rip, 0x9e03);
+        assert_eq!(budget_ram.calls, ["write"]);
+        let second = unsafe {
+            published.execute_ir_memory_store_then_load_v2(
+                &mut budget_state,
+                &mut budget_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(second.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(second.retired_instructions, 1);
+        assert_eq!(budget_ram.calls, ["write", "read"]);
     }
 }

@@ -324,11 +324,6 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
             }
             Operation::CheckedLoad { dst, operand } => {
                 require_active(active_instruction, operation_index)?;
-                if program.guest_instructions.len() != 1 || active_instruction != Some(0) {
-                    return Err(VerifyError::CheckedLoadInstructionMismatch {
-                        operation: operation_index,
-                    });
-                }
                 if operand.size != od_isa::OperandSize::Qword
                     || operand.address_size != od_isa::OperandSize::Qword
                     || operand.index.is_some()
@@ -344,11 +339,7 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
             }
             Operation::CheckedStore { src, operand } => {
                 require_active(active_instruction, operation_index)?;
-                if program.guest_instructions.len() != 1 || active_instruction != Some(0) {
-                    return Err(VerifyError::CheckedStoreInstructionMismatch {
-                        operation: operation_index,
-                    });
-                }
+                let active = active_instruction.expect("require_active checked above");
                 validate_gpr(*src, operation_index)?;
                 if operand.size != od_isa::OperandSize::Qword
                     || operand.address_size != od_isa::OperandSize::Qword
@@ -363,7 +354,7 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                 }
                 if !matches!(
                     program.operations.get(operation_index + 1),
-                    Some(Operation::CommitInstruction { index: 0 })
+                    Some(Operation::CommitInstruction { index }) if *index == active
                 ) {
                     return Err(VerifyError::CheckedStoreCommitOrder {
                         operation: operation_index,
@@ -417,9 +408,14 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                         actual: *index,
                     });
                 }
-                let store_position = program.operations[..operation_index]
+                let instruction_begin = program.operations[..operation_index]
                     .iter()
-                    .rposition(|operation| matches!(operation, Operation::CheckedStore { .. }));
+                    .rposition(|operation| matches!(operation, Operation::BeginInstruction { .. }))
+                    .unwrap_or(0);
+                let store_position = program.operations[instruction_begin..operation_index]
+                    .iter()
+                    .rposition(|operation| matches!(operation, Operation::CheckedStore { .. }))
+                    .map(|position| instruction_begin + position);
                 if store_position.is_some_and(|position| position + 1 != operation_index) {
                     return Err(VerifyError::CheckedStoreCommitOrder {
                         operation: store_position.unwrap_or(operation_index),
@@ -735,6 +731,80 @@ mod tests {
             ],
             code_end: 0x3003,
         }
+    }
+
+    fn checked_store_then_load_program() -> Program {
+        let operand = MemoryOperand {
+            base: AddressBase::Register(od_isa::Register::Rbx),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: od_isa::OperandSize::Qword,
+            size: od_isa::OperandSize::Qword,
+        };
+        Program {
+            guest_instructions: vec![
+                GuestInstruction {
+                    guest_rip: 0x4000,
+                    next_rip: 0x4003,
+                },
+                GuestInstruction {
+                    guest_rip: 0x4003,
+                    next_rip: 0x4006,
+                },
+            ],
+            operations: vec![
+                Operation::BeginInstruction { index: 0 },
+                Operation::CheckedStore {
+                    src: GuestGpr(0),
+                    operand,
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::BeginInstruction { index: 1 },
+                Operation::CheckedLoad {
+                    dst: TempId(0),
+                    operand,
+                },
+                Operation::WriteGpr {
+                    register: GuestGpr(1),
+                    src: TempId(0),
+                    width: IntWidth::W64,
+                },
+                Operation::CommitInstruction { index: 1 },
+                Operation::Exit {
+                    kind: ExitKind::BlockComplete,
+                    target_rip: 0x4006,
+                },
+            ],
+            code_end: 0x4006,
+        }
+    }
+
+    #[test]
+    fn two_memory_effects_are_bound_to_separate_commits_and_keep_store_order() {
+        let program = checked_store_then_load_program();
+        assert_eq!(verify(&program), Ok(()));
+        let mut missing_store_commit = program.clone();
+        missing_store_commit.operations.remove(2);
+        assert!(matches!(
+            verify(&missing_store_commit),
+            Err(VerifyError::CheckedStoreCommitOrder { .. })
+        ));
+        let mut effect_before_store_commit = program.clone();
+        effect_before_store_commit.operations.swap(2, 3);
+        assert!(verify(&effect_before_store_commit).is_err());
+        let mut early_load_commit = program.clone();
+        early_load_commit.operations.swap(5, 6);
+        assert!(matches!(
+            verify(&early_load_commit),
+            Err(VerifyError::CheckedLoadWithoutWrite { .. })
+        ));
+        let mut wrong_commit_index = program;
+        wrong_commit_index.operations[6] = Operation::CommitInstruction { index: 0 };
+        assert!(matches!(
+            verify(&wrong_commit_index),
+            Err(VerifyError::CommitIndexMismatch { .. })
+        ));
     }
 
     #[test]

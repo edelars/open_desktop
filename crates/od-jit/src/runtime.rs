@@ -115,6 +115,10 @@ impl MemorySiteV2 {
     /// host admission, and the runtime helper. Displacement semantics remain
     /// those of the decoder; this checks only the selected signed-width range.
     pub fn has_supported_profile(self) -> bool {
+        self.has_supported_profile_for_index(0)
+    }
+
+    pub(crate) fn has_supported_profile_for_index(self, expected_index: u32) -> bool {
         let length = match self.next_rip.checked_sub(self.guest_rip) {
             Some(length) => length,
             None => return false,
@@ -140,7 +144,7 @@ impl MemorySiteV2 {
             }
             od_isa::long_decode::AddressBase::None => false,
         };
-        if self.instruction_index != 0
+        if self.instruction_index != expected_index
             || !register_profile
             || !base_is_supported
             || self.operand.index.is_some_and(|index| {
@@ -216,7 +220,18 @@ impl MemorySiteV2 {
         source: &[u8],
         expected_operation: MemorySiteOperationV2,
     ) -> bool {
-        if !self.has_supported_profile() || self.operation != expected_operation {
+        self.matches_source_bytes_for_index(source, expected_operation, 0)
+    }
+
+    pub fn matches_source_bytes_for_index(
+        self,
+        source: &[u8],
+        expected_operation: MemorySiteOperationV2,
+        expected_index: u32,
+    ) -> bool {
+        if !self.has_supported_profile_for_index(expected_index)
+            || self.operation != expected_operation
+        {
             return false;
         }
         let opcode = match expected_operation {
@@ -396,9 +411,9 @@ pub const RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET: usize =
 pub const RUNTIME_CONTEXT_V2_MEMORY_OUTCOME_OFFSET: usize =
     std::mem::offset_of!(RuntimeContextV2, memory_outcome);
 
-/// Trusted Rust helper used only by verified V2 memory-load blocks. The
-/// generated code passes a site index; effective address validation remains
-/// in `MemoryOperand::access_address_48` and memory access remains checked.
+/// Trusted singleton helper used by verified V2 checked-memory blocks. It
+/// retains the legacy site-index-zero contract; effective address validation
+/// remains in `MemoryOperand::access_address_48` and memory access is checked.
 ///
 /// # Safety
 /// `context` must point to a live invocation-local `RuntimeContextV2` whose
@@ -406,6 +421,36 @@ pub const RUNTIME_CONTEXT_V2_MEMORY_OUTCOME_OFFSET: usize =
 pub unsafe extern "C" fn memory_site_helper_v2(
     context: *mut RuntimeContextV2,
     site_index: u32,
+) -> u32 {
+    unsafe { memory_site_helper_v2_impl(context, site_index, 0) }
+}
+
+/// Helper reserved for the exact S3-20j two-instruction artifact. Table index
+/// and instruction index must both be 0 or 1; the singleton V2 helper retains
+/// its original index-zero contract.
+///
+/// # Safety
+/// `context` must point to a live, aligned, exclusively borrowed
+/// `RuntimeContextV2`. Its state, adapter, and immutable two-entry site table
+/// must all be valid and remain alive for the entire synchronous call. The
+/// adapter must provide exclusive access to private ordinary RAM: accesses
+/// must not be MMIO, delayed, asynchronous, concurrent, DMA-visible, or
+/// executable/code aliases, and it must not re-enter or unwind through this
+/// helper. The context outputs must remain writable and unaliased until return.
+pub unsafe extern "C" fn memory_site_helper_store_load_v2(
+    context: *mut RuntimeContextV2,
+    site_index: u32,
+) -> u32 {
+    if site_index > 1 {
+        return crate::memory_bridge::MEMORY_HELPER_INVALID_ARGUMENT;
+    }
+    unsafe { memory_site_helper_v2_impl(context, site_index, site_index) }
+}
+
+unsafe fn memory_site_helper_v2_impl(
+    context: *mut RuntimeContextV2,
+    site_index: u32,
+    expected_instruction_index: u32,
 ) -> u32 {
     use crate::memory_bridge::{
         CheckedMemoryOutcomeV1, MEMORY_HELPER_INVALID_ARGUMENT, MEMORY_HELPER_SUCCESS,
@@ -436,7 +481,9 @@ pub unsafe extern "C" fn memory_site_helper_v2(
     let site = unsafe { *context.memory_sites.add(site_index as usize) };
     // SAFETY: the state pointer is kept live by the V2 host wrapper.
     let state = unsafe { &*context.base.state };
-    if !site.has_supported_profile() || state.rip != site.guest_rip {
+    if !site.has_supported_profile_for_index(expected_instruction_index)
+        || state.rip != site.guest_rip
+    {
         context.last_memory_site = site_index;
         return MEMORY_HELPER_INVALID_ARGUMENT;
     }

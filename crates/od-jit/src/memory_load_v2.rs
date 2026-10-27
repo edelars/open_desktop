@@ -65,6 +65,36 @@ pub struct IrMemoryStoreBlockV2 {
     pc_map: crate::statepoints::PcMap,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IrMemoryStoreThenLoadBlockV2 {
+    code: EncodedCode,
+    entry_rip: u64,
+    source_bytes: [u8; 6],
+    sites: [MemorySiteV2; 2],
+    pc_map: crate::statepoints::PcMap,
+}
+
+impl IrMemoryStoreThenLoadBlockV2 {
+    pub fn code(&self) -> &EncodedCode {
+        &self.code
+    }
+    pub const fn entry_rip(&self) -> u64 {
+        self.entry_rip
+    }
+    pub fn source_bytes(&self) -> &[u8; 6] {
+        &self.source_bytes
+    }
+    pub fn sites(&self) -> &[MemorySiteV2; 2] {
+        &self.sites
+    }
+    pub fn pc_map(&self) -> &crate::statepoints::PcMap {
+        &self.pc_map
+    }
+    pub const fn compile_flavor(&self) -> crate::translation::CompileFlavor {
+        crate::translation::CompileFlavor::S3_26cIrStoreThenLoadV2
+    }
+}
+
 impl IrMemoryStoreBlockV2 {
     pub fn code(&self) -> &EncodedCode {
         &self.artifact.code
@@ -609,6 +639,48 @@ pub fn compile_ir_memory_store_block_v2(
     })
 }
 
+/// Compile exactly `48 89 03 48 8B 0B` as one checked store-then-load entry.
+pub fn compile_ir_memory_store_then_load_block_v2(
+    code: CodeView<'_>,
+    entry_rip: u64,
+) -> Result<IrMemoryStoreThenLoadBlockV2, MemoryLoadCompileErrorV2> {
+    if entry_rip != code.base_rip()
+        || code.len() != 6
+        || code.bytes() != [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]
+    {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
+    let second_rip = entry_rip
+        .checked_add(3)
+        .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    let store_view = CodeView::new(entry_rip, &code.bytes()[..3])
+        .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    let load_view = CodeView::new(second_rip, &code.bytes()[3..])
+        .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    let (mut store, _) =
+        checked_memory_metadata_v2(store_view, entry_rip, MemorySiteOperationV2::Store)?;
+    let (mut load, _) =
+        checked_memory_metadata_v2(load_view, second_rip, MemorySiteOperationV2::Load)?;
+    if store.source() != Some(0)
+        || store.operand().base != od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+        || load.destination() != Some(1)
+        || load.operand().base != od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+    {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
+    store.instruction_index = 0;
+    load.instruction_index = 1;
+    let emitted = crate::block_compile::compile_checked_store_then_load_block_v2(code, entry_rip)
+        .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    Ok(IrMemoryStoreThenLoadBlockV2 {
+        code: emitted.code().clone(),
+        entry_rip,
+        source_bytes: [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b],
+        sites: [store, load],
+        pc_map: emitted.pc_map().clone(),
+    })
+}
+
 fn checked_load_metadata_v2(
     code: CodeView<'_>,
     entry_rip: u64,
@@ -1009,6 +1081,77 @@ mod tests {
     use super::*;
     use od_isa::Register;
     use od_isa::long_decode::AddressBase;
+
+    #[test]
+    fn ir_store_then_load_is_one_typed_two_site_entry() {
+        let bytes = [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b];
+        let block = compile_ir_memory_store_then_load_block_v2(
+            CodeView::new(0x2000, &bytes).unwrap(),
+            0x2000,
+        )
+        .unwrap();
+        assert_eq!(
+            block.compile_flavor(),
+            crate::translation::CompileFlavor::S3_26cIrStoreThenLoadV2
+        );
+        assert_eq!(block.source_bytes(), &bytes);
+        assert_eq!(block.sites()[0].instruction_index(), 0);
+        assert_eq!(block.sites()[0].operation(), MemorySiteOperationV2::Store);
+        assert_eq!(block.sites()[0].guest_rip(), 0x2000);
+        assert_eq!(block.sites()[1].instruction_index(), 1);
+        assert_eq!(block.sites()[1].operation(), MemorySiteOperationV2::Load);
+        assert_eq!(block.sites()[1].guest_rip(), 0x2003);
+        assert_eq!(block.pc_map().instruction_count(), 2);
+        assert_eq!(block.pc_map().boundaries().len(), 2);
+        assert!(block.pc_map().ranges().iter().any(|r| {
+            r.phase == crate::statepoints::StatePhase::Service
+                && r.guest_rip == crate::statepoints::GuestRipSource::CanonicalState
+        }));
+        assert!(
+            block
+                .pc_map()
+                .ranges()
+                .iter()
+                .any(|r| r.phase == crate::statepoints::StatePhase::HelperCall
+                    && r.instruction_index == Some(0))
+        );
+        assert!(
+            block
+                .pc_map()
+                .ranges()
+                .iter()
+                .any(|r| r.phase == crate::statepoints::StatePhase::HelperCall
+                    && r.instruction_index == Some(1))
+        );
+        assert!(block.pc_map().ranges().iter().any(|r| {
+            r.phase == crate::statepoints::StatePhase::Exit
+                && r.guest_rip == crate::statepoints::GuestRipSource::Fixed(0x2000)
+                && r.instruction_index == Some(0)
+                && r.snapshot == crate::statepoints::SnapshotAdmissibility::ReplayCurrentInstruction
+        }));
+        assert!(block.pc_map().ranges().iter().any(|r| {
+            r.phase == crate::statepoints::StatePhase::Exit
+                && r.guest_rip == crate::statepoints::GuestRipSource::Fixed(0x2003)
+                && r.instruction_index == Some(1)
+                && r.snapshot == crate::statepoints::SnapshotAdmissibility::ReplayCurrentInstruction
+        }));
+        assert!(
+            block
+                .pc_map()
+                .ranges()
+                .iter()
+                .filter(|r| r.phase == crate::statepoints::StatePhase::AfterHelper)
+                .all(|r| r.snapshot
+                    == crate::statepoints::SnapshotAdmissibility::InadmissibleAfterEffect)
+        );
+        assert!(
+            compile_ir_memory_store_then_load_block_v2(
+                CodeView::new(0x2000, &[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0f]).unwrap(),
+                0x2000,
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn ir_checked_load_uses_distinct_v2_artifact_and_pc_map() {

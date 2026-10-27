@@ -17,6 +17,7 @@ enum BlockBuildProfile {
     S0_09,
     CheckedQwordLoad,
     CheckedQwordStore,
+    CheckedQwordStoreThenLoad,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -484,6 +485,23 @@ pub(crate) fn build_checked_qword_store_block(
     )
 }
 
+/// Build the one reviewed two-instruction checked-memory profile. Admission
+/// requires the exact `MOV [RBX], RAX; MOV RCX, [RBX]` byte sequence.
+pub(crate) fn build_checked_qword_store_then_load_block(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    context: AccessContext,
+    limits: BlockLimits,
+) -> Result<BuildOutcome, BuildError> {
+    build_block_with_profile(
+        code,
+        entry_rip,
+        context,
+        limits,
+        BlockBuildProfile::CheckedQwordStoreThenLoad,
+    )
+}
+
 fn build_block_with_profile(
     code: CodeView<'_>,
     entry_rip: u64,
@@ -602,7 +620,28 @@ fn build_block_with_profile(
             });
         }
 
-        let admitted = if profile == BlockBuildProfile::CheckedQwordStore {
+        let guest_offset = code.offset(guest_rip).ok_or(BuildError::EntryOutsideCode {
+            entry_rip: guest_rip,
+            base_rip: code.base_rip,
+            code_end: code.code_end,
+        })?;
+        let admitted = if profile == BlockBuildProfile::CheckedQwordStoreThenLoad {
+            match instructions.len() {
+                0 => {
+                    is_checked_qword_store_form(decoded)
+                        && exact_direct_qword_memory_bytes(code, guest_rip, decoded.length, 0x89)
+                        && code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                            == Some(&[0x48, 0x89, 0x03][..])
+                }
+                1 => {
+                    is_checked_qword_load_form(decoded)
+                        && exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
+                        && code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                            == Some(&[0x48, 0x8b, 0x0b][..])
+                }
+                _ => false,
+            }
+        } else if profile == BlockBuildProfile::CheckedQwordStore {
             instructions.is_empty()
                 && is_checked_qword_store_form(decoded)
                 && exact_direct_qword_memory_bytes(code, guest_rip, decoded.length, 0x89)
@@ -684,7 +723,12 @@ fn build_block_with_profile(
             end_rip: next_rip,
         });
 
-        if profile != BlockBuildProfile::S0_09 {
+        let complete_bounded_profile = match profile {
+            BlockBuildProfile::CheckedQwordStoreThenLoad => instructions.len() == 2,
+            BlockBuildProfile::CheckedQwordLoad | BlockBuildProfile::CheckedQwordStore => true,
+            BlockBuildProfile::S0_09 => false,
+        };
+        if complete_bounded_profile {
             return Ok(finish(
                 entry_rip,
                 code.code_end,
@@ -797,6 +841,52 @@ mod tests {
         let bytes = mov_rax_imm(1);
         let no_block = no_block(build(&bytes, 0x2000, 0x200a, BlockLimits::default()).unwrap());
         assert_eq!(no_block.stop_reason, BlockStopReason::BufferEnd);
+    }
+
+    #[test]
+    fn exact_store_then_load_profile_builds_two_instructions_only() {
+        let code = CodeView::new(0x4000, &[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b, 0x90]).unwrap();
+        let outcome = build_checked_qword_store_then_load_block(
+            code,
+            0x4000,
+            AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        let built = block(outcome);
+        assert_eq!(built.instructions.len(), 2);
+        assert_eq!(built.instructions[0].guest_rip, 0x4000);
+        assert_eq!(built.instructions[0].next_rip, 0x4003);
+        assert_eq!(built.instructions[1].guest_rip, 0x4003);
+        assert_eq!(built.instructions[1].next_rip, 0x4006);
+        assert_eq!(built.stop_reason, BlockStopReason::InstructionLimit);
+
+        let bytes = &[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0f][..];
+        {
+            let outcome = build_checked_qword_store_then_load_block(
+                CodeView::new(0x4000, bytes).unwrap(),
+                0x4000,
+                AccessContext::default(),
+                BlockLimits::default(),
+            )
+            .unwrap();
+            let BuildOutcome::Block(block) = outcome else {
+                panic!("first store should be decoded");
+            };
+            assert_eq!(block.instructions.len(), 1);
+        }
+        let outcome = build_checked_qword_store_then_load_block(
+            CodeView::new(
+                0x4000,
+                &[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b, 0x48, 0x89, 0x03],
+            )
+            .unwrap(),
+            0x4000,
+            AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(block(outcome).instructions.len(), 2);
     }
 
     #[test]

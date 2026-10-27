@@ -86,13 +86,15 @@ fn lower_with_admission(
     };
 
     let deferred = deferred_error(&block.stop_reason);
-    if block.instructions.iter().any(|instruction| {
+    let has_memory = block.instructions.iter().any(|instruction| {
         block::is_checked_qword_load_form(instruction.decoded)
             || block::is_checked_qword_store_form(instruction.decoded)
-    }) && (block.instructions.len() != 1
-        || !(block::is_checked_qword_load_form(block.instructions[0].decoded)
-            || block::is_checked_qword_store_form(block.instructions[0].decoded)))
-    {
+    });
+    let single_memory = block.instructions.len() == 1
+        && (block::is_checked_qword_load_form(block.instructions[0].decoded)
+            || block::is_checked_qword_store_form(block.instructions[0].decoded));
+    let exact_store_then_load = exact_checked_store_then_load(block);
+    if has_memory && !single_memory && !exact_store_then_load {
         return Err(LoweringError::InvalidDecodedForm {
             guest_rip: block.entry_rip,
         });
@@ -304,6 +306,46 @@ fn lower_with_admission(
     }))
 }
 
+fn exact_checked_store_then_load(block: &crate::block::BasicBlock) -> bool {
+    if block.instructions.len() != 2 {
+        return false;
+    }
+    let [store, load] = block.instructions.as_slice() else {
+        return false;
+    };
+    if store.next_rip.checked_sub(store.guest_rip) != Some(3)
+        || load.next_rip.checked_sub(load.guest_rip) != Some(3)
+        || store.next_rip != load.guest_rip
+    {
+        return false;
+    }
+    matches!(
+        store.decoded.operation,
+        DecodedOperation::Mov {
+            dst: Operand::Memory(operand),
+            src: Operand::Register(source),
+        } if operand.base == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            && source.register() == od_isa::Register::Rax
+            && source.size() == od_isa::OperandSize::Qword
+            && operand.index.is_none()
+            && operand.displacement == 0
+            && operand.address_size == od_isa::OperandSize::Qword
+            && operand.size == od_isa::OperandSize::Qword
+    ) && matches!(
+        load.decoded.operation,
+        DecodedOperation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Memory(operand),
+        } if destination.register() == od_isa::Register::Rcx
+            && destination.size() == od_isa::OperandSize::Qword
+            && operand.base == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            && operand.index.is_none()
+            && operand.displacement == 0
+            && operand.address_size == od_isa::OperandSize::Qword
+            && operand.size == od_isa::OperandSize::Qword
+    )
+}
+
 #[derive(Clone)]
 enum Terminal {
     Branch {
@@ -486,6 +528,45 @@ mod tests {
 
     fn mov_rax(value: u64) -> Vec<u8> {
         [vec![0x48, 0xb8], value.to_le_bytes().to_vec()].concat()
+    }
+
+    #[test]
+    fn lowers_exact_store_then_load_as_two_committed_memory_effects() {
+        let outcome = block::build_checked_qword_store_then_load_block(
+            CodeView::new(BASE, &[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]).unwrap(),
+            BASE,
+            AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        let lowered = match lower(&outcome).unwrap() {
+            LoweringOutcome::Program(program) => program,
+            other => panic!("expected program, got {other:?}"),
+        };
+        assert_eq!(lowered.program.guest_instructions.len(), 2);
+        assert!(matches!(
+            lowered.program.operations.as_slice(),
+            [
+                Operation::BeginInstruction { index: 0 },
+                Operation::CheckedStore {
+                    src: GuestGpr(0),
+                    ..
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::BeginInstruction { index: 1 },
+                Operation::CheckedLoad { .. },
+                Operation::WriteGpr {
+                    register: GuestGpr(1),
+                    width: IntWidth::W64,
+                    ..
+                },
+                Operation::CommitInstruction { index: 1 },
+                Operation::Exit {
+                    kind: ExitKind::BlockComplete,
+                    target_rip: 0x1006
+                },
+            ]
+        ));
     }
 
     #[test]
