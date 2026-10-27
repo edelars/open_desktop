@@ -7904,6 +7904,38 @@ Local implementation and limitations are recorded in the
 [S2-19k plan](../plans/STAGE_2.md#s2-19k-bounded-rep-stos-с-address-size-32) and
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19k--bounded-rep-stos-address-size-32).
 
+### Local S2-19l bounded REP MOVS address-size-32 contract
+
+The bounded Long64 interpreter additionally admits `F3 67 A4` MOVSB,
+`F3 67 66 A5` MOVSW, `F3 67 A5` MOVSD and effective REX.W `F3 67 48 A5` MOVSQ.
+The already documented normalized 66/REX prefix ordering remains available for
+A5. Other newly prefixed forms remain unsupported; this local boundary is not a
+claim that all excluded encodings architecturally raise #UD. No JIT/native
+admission or fixture schema/profile change is included.
+
+REP count uses ECX. ECX=0 avoids all data-address validation/access and preserves
+full RCX/RSI/RDI. Each active iteration reads one contiguous width-sized element
+from zero-extended ESI, then performs one all-or-error write to zero-extended
+EDI. A transfer does not split or wrap its byte range at 4 GiB. Only after the
+store succeeds are ESI and EDI updated modulo 2^32 according to DF and ECX
+decremented with zero-extension into RCX. The faulting iteration does not commit
+register state or destination bytes; earlier iterations remain visible. Overlap
+observes the current RAM contents at each subsequent source read.
+
+Completion takes precedence over STOP and the 1024-success local work limit;
+STOP takes precedence over that limit. Full completion retires once. Fault, STOP,
+and limit leave RIP at REP and retire zero. Tracked continuation preserves the
+definedness mask; ordinary `run()` remains a fresh entry. Missing mappings are
+harness errors. Source-first access order is a local policy, not a hardware
+priority assertion for dual-invalid source/destination addresses; ISSUE-021
+remains open. No MMIO rollback, JIT/native behavior, physical behavior, or
+hardware restart-state claim is made.
+
+Implementation evidence is recorded in the
+[S2-19l plan](../plans/STAGE_2.md#s2-19l-bounded-rep-movs-с-address-size-32),
+[interpreter notes](../testing/INTERPRETER.md#rep-movs-with-address-size-32--s2-19l),
+and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19l--bounded-rep-movs-address-size-32).
+
 ### Local S2-19d bounded REP MOVSB/W/D/Q contract
 
 The interpreter admits exact `F3 A4` MOVSB, `F3 66 A5` MOVSW, `F3 A5` MOVSD,

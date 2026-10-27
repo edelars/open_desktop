@@ -1335,27 +1335,54 @@ fn step_tracked_with_stop(
         }
         Operation::RepMovs { size } => {
             instruction.opcode.map == OpcodeMap::Primary
-                && ((instruction.opcode.byte == 0xa4
-                    && instruction.length == 2
-                    && instruction.prefixes
-                        == (Prefixes {
-                            group1: Some(0xf3),
-                            ..Prefixes::default()
-                        })
-                    && size == OperandSize::Byte)
-                    || (instruction.opcode.byte == 0xa5
-                        && instruction.prefixes.group1 == Some(0xf3)
-                        && instruction.prefixes.segment.is_none()
-                        && !instruction.prefixes.address_override
-                        && instruction.prefixes.rex.map_or(true, |rex| rex & 8 != 0)
-                        && ((instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
-                            && size == OperandSize::Qword)
-                            || (instruction.prefixes.rex.is_none()
-                                && instruction.prefixes.operand_override
-                                && size == OperandSize::Word)
-                            || (instruction.prefixes.rex.is_none()
-                                && !instruction.prefixes.operand_override
-                                && size == OperandSize::Dword))))
+                && instruction.prefixes.group1 == Some(0xf3)
+                && instruction.prefixes.segment.is_none()
+                && if instruction.address_size == OperandSize::Dword {
+                    if instruction.opcode.byte == 0xa4 {
+                        instruction.length == 3
+                            && !instruction.prefixes.operand_override
+                            && instruction.prefixes.rex.is_none()
+                            && size == OperandSize::Byte
+                    } else if instruction.opcode.byte == 0xa5 {
+                        match (
+                            instruction.length,
+                            instruction.prefixes.operand_override,
+                            instruction.prefixes.rex,
+                            size,
+                        ) {
+                            (3, false, None, OperandSize::Dword)
+                            | (4, false, None, OperandSize::Dword)
+                            | (4, true, None, OperandSize::Word)
+                            | (5, true, None, OperandSize::Word) => true,
+                            (4, false, Some(0x48..=0x4f), OperandSize::Qword)
+                            | (5, true, Some(0x48..=0x4f), OperandSize::Qword) => true,
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    }
+                } else if instruction.address_size == OperandSize::Qword {
+                    (instruction.opcode.byte == 0xa4
+                        && instruction.length == 2
+                        && instruction.prefixes
+                            == (Prefixes {
+                                group1: Some(0xf3),
+                                ..Prefixes::default()
+                            })
+                        && size == OperandSize::Byte)
+                        || (instruction.opcode.byte == 0xa5
+                            && instruction.prefixes.rex.map_or(true, |rex| rex & 8 != 0)
+                            && ((instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+                                && size == OperandSize::Qword)
+                                || (instruction.prefixes.rex.is_none()
+                                    && instruction.prefixes.operand_override
+                                    && size == OperandSize::Word)
+                                || (instruction.prefixes.rex.is_none()
+                                    && !instruction.prefixes.operand_override
+                                    && size == OperandSize::Dword)))
+                } else {
+                    false
+                }
         }
         Operation::PopMemory { destination } => {
             instruction.opcode.map == OpcodeMap::Primary
@@ -2629,13 +2656,21 @@ fn step_tracked_with_stop(
         }
         Operation::RepMovs { size } => {
             let mut completed = 0;
-            while state.gpr[Register::Rcx as usize] != 0 {
+            let address_size = instruction.address_size;
+            let count = |state: &LongModeState| {
+                if address_size == OperandSize::Dword {
+                    state.gpr[Register::Rcx as usize] as u32 as u64
+                } else {
+                    state.gpr[Register::Rcx as usize]
+                }
+            };
+            while count(state) != 0 {
                 let source = Operand::Memory(MemoryOperand {
                     base: AddressBase::Register(Register::Rsi),
                     index: None,
                     scale: 1,
                     displacement: 0,
-                    address_size: OperandSize::Qword,
+                    address_size,
                     size,
                 });
                 let destination = Operand::Memory(MemoryOperand {
@@ -2643,7 +2678,7 @@ fn step_tracked_with_stop(
                     index: None,
                     scale: 1,
                     displacement: 0,
-                    address_size: OperandSize::Qword,
+                    address_size,
                     size,
                 });
                 let value = match read_operand(state, memory, context, next_rip, source) {
@@ -2658,18 +2693,33 @@ fn step_tracked_with_stop(
                 {
                     return report_memory_error(error);
                 }
-                let step = if state.rflags & (1 << 10) == 0 {
-                    size.bytes() as u64
+                if address_size == OperandSize::Dword {
+                    let step = size.bytes() as u32;
+                    let update = |value: u64| {
+                        let index = value as u32;
+                        u64::from(if state.rflags & (1 << 10) == 0 {
+                            index.wrapping_add(step)
+                        } else {
+                            index.wrapping_sub(step)
+                        })
+                    };
+                    state.gpr[Register::Rsi as usize] = update(state.gpr[Register::Rsi as usize]);
+                    state.gpr[Register::Rdi as usize] = update(state.gpr[Register::Rdi as usize]);
+                    state.gpr[Register::Rcx as usize] = u64::from((count(state) as u32) - 1);
                 } else {
-                    0u64.wrapping_sub(size.bytes() as u64)
-                };
-                state.gpr[Register::Rsi as usize] =
-                    state.gpr[Register::Rsi as usize].wrapping_add(step);
-                state.gpr[Register::Rdi as usize] =
-                    state.gpr[Register::Rdi as usize].wrapping_add(step);
-                state.gpr[Register::Rcx as usize] -= 1;
+                    let step = if state.rflags & (1 << 10) == 0 {
+                        size.bytes() as u64
+                    } else {
+                        0u64.wrapping_sub(size.bytes() as u64)
+                    };
+                    state.gpr[Register::Rsi as usize] =
+                        state.gpr[Register::Rsi as usize].wrapping_add(step);
+                    state.gpr[Register::Rdi as usize] =
+                        state.gpr[Register::Rdi as usize].wrapping_add(step);
+                    state.gpr[Register::Rcx as usize] -= 1;
+                }
                 completed += 1;
-                if state.gpr[Register::Rcx as usize] == 0 {
+                if count(state) == 0 {
                     break;
                 }
                 if stop_requested() {
@@ -58972,7 +59022,7 @@ mod tests {
         ];
         let mut cases = Vec::new();
         for form in &forms {
-            for prefix in [0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
+            for prefix in [0xf0, 0xf2, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
                 let mut bytes = vec![prefix];
                 bytes.extend(form);
                 cases.push(bytes);
@@ -58991,7 +59041,7 @@ mod tests {
             cases.push(vec![0x67, rex, 0xa5]);
             cases.push(vec![0x67, 0x66, rex, 0xa5]);
         }
-        assert_eq!(cases.len(), 73);
+        assert_eq!(cases.len(), 69);
         let unique: std::collections::HashSet<_> = cases.iter().collect();
         assert_eq!(unique.len(), cases.len());
 

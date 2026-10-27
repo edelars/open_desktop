@@ -573,6 +573,30 @@ STOP, and normalized operand-size order. Their generator serializes fixed
 expected snapshots. `od-isa` tests separately exercise count/width/direction
 matrices, no-access zero count, and no-commit on the current failed store.
 
+## REP MOVS with address-size 32 — S2-19l
+
+S2-19l admits the four bounded address-size-32 MOVS widths. ECX selects the
+count, ESI/EDI addresses are zero-extended for each access, and successful
+element progress updates both pointers modulo 2^32 and zero-extends the
+decremented ECX into RCX. ECX=0 preserves full RCX/RSI/RDI and avoids accesses.
+Each element is one width-sized source read followed by an all-or-error
+destination write; bytes within an element do not wrap at 4 GiB. Prior
+iterations persist across a fault, overlap sees current RAM on every iteration,
+and a failed current destination write does not commit that element's pointers
+or count. Completion, STOP, tracked resume, and the 1024-success work limit
+retain existing REP ordering. Partial exits keep the REP RIP and retire zero.
+
+The interpreter suite checks 12,288 address-size-32 width/DF/count/flag states
+alongside the existing 12,288 address-size-64 states, plus 36 address-size-32
+overlap cases and ECX boundaries 0, 1, 1023, 1024, 1025, and `0xffffffff`.
+Twelve literal schema-v2 fixtures record complete input/output snapshots,
+including high-half aliases, zero count, pointer wrap, source/destination
+faults, budget/STOP boundaries, and normalized prefixes. The generator only
+serializes fixed expected data. CLI tests assert full snapshots and JIT denial;
+native admission has an explicit pre-tracee rejection. ISSUE-021 keeps the
+source-first policy local; dual-invalid hardware priority is unverified.
+Physical, Mac mini, and SSH checks remain deferred to shared final acceptance.
+
 ## REPE CMPSB — S2-19f local interpreter coverage
 
 Only exact `F3 A6` is admitted in Long64/address64. Even at RCX zero, entry

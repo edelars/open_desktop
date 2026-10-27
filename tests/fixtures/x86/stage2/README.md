@@ -4089,6 +4089,34 @@ cargo test -p od-testkit --offline rep_movs
 cargo test -p od-runner --test fixture_v2 --offline rep_movs_cli_fixtures_check_full_state_and_jit_denial
 ```
 
+## Bounded REP MOVSB/W/D/Q address-size-32 fixtures S2-19l
+
+Twelve literal schema-v2 cases cover all four address-size-32 widths, DF=1,
+zero-extended ESI/EDI high-half aliases, ECX=0 preserving full RCX/RSI/RDI,
+qword pointer wrap, source and destination faults after one committed element,
+zero instruction budget, initial STOP, and normalized 66/REX order. Expected
+sidecars include all GPRs, flags and definedness, RIP, and every memory region.
+The generator serializes fixed row values and never derives expected results
+from instruction semantics. Fixture schema/profile are unchanged.
+
+The interpreter checks 12,288 address-size-32 full states with exact alternating
+source-read/destination-write traces; combined with S2-19d this is 24,576 state
+cases. Separate coverage includes 192 injected address-size-32 read/write
+faults with retry, 36 overlapping transfers whose source observes prior writes,
+ECX values 0/1/1023/1024/1025/`0xffffffff`, partial-progress limit/STOP tracked
+resume, TEST-produced undefined AF preservation, and malformed-prefix rejects.
+The runner checks every full fixture snapshot and explicitly denies JIT; the
+native runner test rejects all twelve before starting a tracee on its supported
+Linux x86-64 test target. ISSUE-021 remains open for unverified hardware
+dual-invalid priority.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_movs_addr32.py --check
+python3 tests/cpu/test_stage2_rep_movs_addr32_generator.py
+cargo test -p od-testkit --offline rep_movs_addr32
+cargo test -p od-runner --test fixture_v2 --offline rep_movs_addr32
+```
+
 ## Bounded REPE SCASB fixtures S2-19e
 
 Exactly 24 literal schema-v2 fixtures cover exact `F3 AE` progress: zero count

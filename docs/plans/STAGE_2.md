@@ -159,7 +159,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-16 | Условия, переходы, SETcc/CMOVcc | S2-11 |
 | [ ] | S2-17 | Стек, CALL/RET и косвенные переходы | S2-16 |
 | [ ] | S2-18 | Строковые операции без REP; S2-18a–n локально покрывают MOVS/STOS/LODS/SCAS/CMPS bounded формы и CLD/STD; общая приёмка открыта | S2-17 |
-| [ ] | S2-19 | REP и точный частичный прогресс; S2-19a–h реализуют bounded REP формы в локальных границах, S2-19i проверяет явное продолжение после лимита; остальные формы и общая приёмка открыты | S2-18 |
+| [ ] | S2-19 | REP и точный частичный прогресс; S2-19a–l покрывают bounded формы и продолжение в локальных границах; остальные формы и общая приёмка открыты | S2-18 |
 | [ ] | S2-20 | Исключения, приоритеты и fault state | S2-14, S2-19 |
 | [ ] | S2-21 | Нужные однопроцессорные atomic/fence формы | S2-20 |
 | [ ] | S2-22 | Сегменты и права доступа | S2-20 |
@@ -1324,6 +1324,34 @@ Fixture schema/profile не менялись. Целевые и полные wor
 пройдены; см. [отчёт](../reports/STAGE_2_REPORT.md#s2-19k--bounded-rep-stos-address-size-32).
 ISSUE-016/020/021 остаются открытыми, physical/Mac mini/SSH проверки
 выполняются только в общем финальном substage.
+
+#### S2-19l — bounded REP MOVS с address-size 32
+
+Расширить только Long64 REP MOVSB/W/D/Q формы `F3 67 A4`, `F3 67 66 A5`,
+`F3 67 A5` и effective REX.W `F3 67 48 A5`. Сохранить только уже описанные
+правила нормализации: misplaced/effective REX с 66 и порядок `66` относительно
+67/REX выбирают ширину по действующему REX.W; иные префиксы остаются
+Unsupported. Декодер и interpreter используют существующий `Operation::RepMovs`;
+профиль/schema v2 не меняются. JIT/native admission остаются закрытыми.
+
+Count берётся из ECX. При ECX=0 полностью сохраняются RCX, RSI и RDI и не
+проверяются адреса. Иначе каждая итерация делает один непрерывный width-sized
+read из zero-extended ESI, затем один all-or-error write в zero-extended EDI.
+Размер доступа не переносится через 4 GiB по модулю. После успешного write оба
+индекса обновляются modulo 2^32 по DF, а ECX decrement zero-extends в RCX.
+Текущая faulting итерация не коммитится; завершённые ранее остаются видимыми,
+overlap читает изменённую RAM каждой следующей итерацией. Completion выигрывает
+у STOP и 1024-success limit; STOP выигрывает у limit. Частичный outcome оставляет
+RIP на REP и retirement=0. Tracked-entry API сохраняет mask; обычный `run()`
+остаётся fresh-entry. Отсутствие mapping остаётся harness error. Source-first —
+local policy, не аппаратное утверждение приоритета; ISSUE-021 остаётся открытой.
+
+Локальная проверка включает адрес-размерные decode/reject cases, width/DF/count
+матрицы, high halves и aliases, overlap propagation, exact access order, 1023/
+1024/1025/max ECX, limit resume и двенадцать literal schema-v2 fixtures с
+полными snapshots. Генератор сериализует предзаданные значения и не вычисляет
+ожидания из семантики инструкции. ISSUE-016/020/021 остаются открытыми; общий
+workspace acceptance и физическая проверка — отдельные критерии.
 
 ### S2-20. Точность исключений и exit state
 

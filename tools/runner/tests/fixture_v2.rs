@@ -5134,6 +5134,103 @@ fn rep_movs_cli_fixtures_check_full_state_and_jit_denial() {
 }
 
 #[test]
+fn rep_movs_addr32_cli_fixtures_check_full_state_and_jit_denial() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_19l_rep_movs_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 12);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let expected_input = Fixture::from_json(&raw).unwrap();
+        let harness = expected_input.fixture.expected_exit == ExpectedExit::HarnessError;
+        let (input, result) = run(&raw, "interpreter", if harness { 5 } else { 0 });
+        assert_eq!(input.fixture.case_id, case_id);
+        match input.fixture.expected_exit {
+            ExpectedExit::StopAddress => assert!(
+                matches!(result.outcome, Outcome::StopAddress {}),
+                "{case_id}"
+            ),
+            ExpectedExit::InstructionBudgetExhausted => assert!(
+                matches!(result.outcome, Outcome::InstructionBudgetExhausted {}),
+                "{case_id}"
+            ),
+            ExpectedExit::HarnessError => assert!(
+                matches!(result.outcome, Outcome::HarnessError { .. }),
+                "{case_id}"
+            ),
+            _ => panic!("unexpected outcome for {case_id}"),
+        }
+        let retired = if input.fixture.expected_exit == ExpectedExit::StopAddress
+            && input.fixture.stop_rip != Some(input.fixture.initial_state.rip)
+        {
+            1
+        } else {
+            0
+        };
+        assert_eq!(count(&result), retired, "{case_id}");
+        let (_, jit_result) = run(&raw, "jit", 4);
+        assert!(
+            matches!(jit_result.outcome, Outcome::Unsupported { .. }),
+            "{case_id}"
+        );
+        assert!(
+            matches!(&jit_result.instructions_executed, Observation::Unavailable { reason } if reason == "engine was not executed"),
+            "{case_id}"
+        );
+        assert!(
+            matches!(jit_result.snapshot, Observation::Unavailable { .. }),
+            "{case_id}"
+        );
+        let observed = snapshot(&result);
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gpr, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(observed.state.rip, expected_rip, "{case_id}");
+        if let Some(fault) = answer.get("fault") {
+            let reason = match &result.outcome {
+                Outcome::HarnessError { reason } => reason,
+                _ => unreachable!(),
+            };
+            let access_name = if fault["access"] == "read" {
+                "Read"
+            } else {
+                "Write"
+            };
+            let address = u64::from_str_radix(
+                fault["address"].as_str().unwrap().trim_start_matches("0x"),
+                16,
+            )
+            .unwrap();
+            assert!(
+                reason.contains(&format!("access: {access_name}")),
+                "{case_id}: {reason}"
+            );
+            assert!(
+                reason.contains(&format!("address: {address}")),
+                "{case_id}: {reason}"
+            );
+            assert!(reason.contains("Unmapped"), "{case_id}: {reason}");
+        }
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}"
+            );
+        }
+    }
+}
+
+#[test]
 fn rep_lods_jit_remains_fail_closed_without_fallback() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
@@ -6344,7 +6441,7 @@ fn movs_addr32_cli_fixtures_match_literal_snapshots_and_keep_jit_closed() {
 }
 
 #[test]
-fn movs_addr32_rejects_73_prefix_variants_as_unsupported_end_to_end() {
+fn movs_addr32_rejects_69_prefix_variants_as_unsupported_end_to_end() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
     let base = fs::read(directory.join("s2_18o_pos_b_df0.case.json")).unwrap();
@@ -6355,10 +6452,9 @@ fn movs_addr32_rejects_73_prefix_variants_as_unsupported_end_to_end() {
         &[0x67, 0xa5],
         &[0x67, 0x48, 0xa5],
     ];
-    let prefixes: [&[u8]; 9] = [
+    let prefixes: [&[u8]; 8] = [
         &[0xf0],
         &[0xf2],
-        &[0xf3],
         &[0x26],
         &[0x2e],
         &[0x36],
@@ -6385,7 +6481,7 @@ fn movs_addr32_rejects_73_prefix_variants_as_unsupported_end_to_end() {
         cases.push(vec![0x67, rex, 0xa5]);
         cases.push(vec![0x67, 0x66, rex, 0xa5]);
     }
-    assert_eq!(cases.len(), 73);
+    assert_eq!(cases.len(), 69);
 
     for (index, bytes) in cases.into_iter().enumerate() {
         let mut fixture: serde_json::Value = serde_json::from_slice(&base).unwrap();

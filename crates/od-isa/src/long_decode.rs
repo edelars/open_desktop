@@ -1262,15 +1262,31 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && matches!(opcode.byte, 0xa4 | 0xa5)
             && prefixes.group1 == Some(0xf3)
             && prefixes.segment.is_none()
-            && !prefixes.address_override
-            && (opcode.byte == 0xa4
-                && self.length == 2
-                && prefixes
-                    == (Prefixes {
-                        group1: Some(0xf3),
-                        ..Prefixes::default()
-                    })
-                || opcode.byte == 0xa5 && prefixes.rex.is_none_or(|rex| rex & 8 != 0));
+            && (if prefixes.address_override {
+                opcode.byte == 0xa4
+                    && !prefixes.operand_override
+                    && prefixes.rex.is_none()
+                    && self.length == 3
+                    || opcode.byte == 0xa5
+                        && prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                        && match (self.length, prefixes.operand_override, prefixes.rex) {
+                            (3, false, None) => true,
+                            (4, false, None) => true,
+                            (4, true, None) | (4, false, Some(0x48..=0x4f)) => true,
+                            (5, true, None) => true,
+                            (5, true, Some(0x48..=0x4f)) => true,
+                            _ => false,
+                        }
+            } else {
+                (opcode.byte == 0xa4
+                    && self.length == 2
+                    && prefixes
+                        == (Prefixes {
+                            group1: Some(0xf3),
+                            ..Prefixes::default()
+                        }))
+                    || (opcode.byte == 0xa5 && prefixes.rex.is_none_or(|rex| rex & 8 != 0))
+            });
         let rep_scas = opcode.map == OpcodeMap::Primary
             && matches!(opcode.byte, 0xae | 0xaf)
             && prefixes.group1 == Some(0xf3)
@@ -6285,10 +6301,9 @@ mod tests {
             &[0xf3, 0xa5],
             &[0xf3, 0x48, 0xa5],
         ];
-        let prefixes: [&[u8]; 10] = [
+        let prefixes: [&[u8]; 9] = [
             &[0xf0],
             &[0xf2],
-            &[0x67],
             &[0x26],
             &[0x2e],
             &[0x36],
@@ -6331,7 +6346,7 @@ mod tests {
             );
             rejected += 1;
         }
-        assert_eq!(rejected, 48);
+        assert_eq!(rejected, 44);
     }
 
     #[test]
@@ -6403,6 +6418,58 @@ mod tests {
             assert!(
                 matches!(
                     Memory::new(&bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rep_movs_address32_decodes_only_bounded_widths_and_normalizations() {
+        for (bytes, size) in [
+            (&[0xf3, 0x67, 0xa4][..], OperandSize::Byte),
+            (&[0xf3, 0x67, 0x66, 0xa5][..], OperandSize::Word),
+            (&[0xf3, 0x67, 0xa5][..], OperandSize::Dword),
+            (&[0xf3, 0x67, 0x48, 0xa5][..], OperandSize::Qword),
+            (&[0xf3, 0x66, 0x67, 0xa5][..], OperandSize::Word),
+            (&[0xf3, 0x67, 0x48, 0x66, 0xa5][..], OperandSize::Word),
+            (&[0xf3, 0x67, 0x66, 0x48, 0xa5][..], OperandSize::Qword),
+            (&[0xf3, 0x48, 0x67, 0xa5][..], OperandSize::Dword),
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::RepMovs { size },
+                "{bytes:02x?}"
+            );
+            assert_eq!(instruction.address_size, OperandSize::Dword, "{bytes:02x?}");
+        }
+        for rex in 0x48..=0x4f {
+            let bytes = [0xf3, 0x67, rex, 0xa5];
+            assert_eq!(
+                Memory::new(&bytes).decode().unwrap().operation,
+                Operation::RepMovs {
+                    size: OperandSize::Qword
+                },
+                "{bytes:02x?}"
+            );
+        }
+
+        let rejected: &[&[u8]] = &[
+            &[0xf2, 0x67, 0xa4],
+            &[0xf0, 0xf3, 0x67, 0xa4],
+            &[0x26, 0xf3, 0x67, 0xa4],
+            &[0xf3, 0x67, 0x66, 0xa4],
+            &[0xf3, 0x67, 0x40, 0xa4],
+            &[0xf3, 0x67, 0x40, 0xa5],
+            &[0xf3, 0x67, 0x47, 0xa5],
+            &[0xf3, 0x67, 0x66, 0x66, 0xa5],
+        ];
+        for bytes in rejected {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
                     Err(DecodeError::Unsupported { .. })
                 ),
                 "{bytes:02x?}"

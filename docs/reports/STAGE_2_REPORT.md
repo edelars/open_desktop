@@ -10807,3 +10807,39 @@ test passed (1/1), and the Python generator tests passed (2/2).
 fixture freshness, `git diff --check`, and Graphify update passed. No physical,
 Mac mini, SSH, JIT or native checks were run. ISSUE-016/020/021 remain open;
 this slice makes no hardware restart, fault-priority, or MMIO rollback claim.
+
+## S2-19l — bounded REP MOVS address-size-32
+
+Extended the existing `Operation::RepMovs` interpreter slice to bounded
+Long64/address-size-32 `F3 67 A4`, `F3 67 66 A5`, `F3 67 A5`, and effective
+REX.W `F3 67 48 A5`. Previously documented 66/REX prefix normalization remains
+available. Execution selects ECX and zero-extended ESI/EDI, preserves all of
+RCX/RSI/RDI for ECX=0, and performs one width-sized source read then one
+all-or-error destination write per element. Successful elements update both
+indices modulo 2^32 and zero-extend decremented ECX into RCX. Failed current
+iterations do not commit indices/count or destination memory; earlier
+iterations remain visible and overlap observes current RAM. Existing completion,
+STOP, tracked definedness, retirement and 1024-success work-limit ordering is
+preserved. JIT/native admission and fixture schema/profile were not expanded.
+
+Local evidence includes 12,288 address-size-32 cases in the complete-state and
+alternating-access matrix (24,576 cases including address-size-64 regressions),
+192 address-size-32 injected source/write faults with replay, 36 sequential
+overlap cases, ECX=0/1/1023/1024/1025/`0xffffffff` boundaries, STOP/limit
+tracked resume, and TEST-produced undefined-AF preservation through a partial
+REP resume. Twelve literal schema-v2 fixtures contain full input and output
+snapshots; their generator serializes literal rows only. The runner CLI fixture
+check passed for all twelve cases and denied JIT without fallback. Native code
+now rejects REP MOVS before its allowlist/tracee path, but that Linux x86-64-only
+test module is unavailable on the current macOS host; no native execution was
+performed. The original non-REP MOVS address-size-32 negative matrices were
+updated only to remove prefix cases newly admitted by this substage.
+
+Verification passed: all 1,414 workspace tests, `cargo check --workspace
+--all-targets --offline`, `cargo fmt --all -- --check`, fixture freshness,
+generator tests (2/2), runner CLI snapshots/JIT denial, TEST/undefined-AF
+continuation and `git diff --check`. Graphify was updated. Physical x86, Mac
+mini, SSH and native runner acceptance were not run. ISSUE-021 remains open for
+the unverified hardware winner when both MOVS addresses are invalid; the
+source-first rule remains a local policy. ISSUE-016/020 remain open, and this
+slice makes no MMIO rollback or hardware restart-state claim.

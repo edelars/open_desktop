@@ -3,7 +3,9 @@ use crate::HexU64;
 use crate::case::MemoryPermissions;
 use crate::memory::{FlatMemory, encode_bytes};
 use crate::v2::{ExpectedExit, Fixture, decode_bytes};
-use od_isa::execute::{REP_ITERATION_WORK_LIMIT, RunConfig, RunExit, StepOutcome, run, step};
+use od_isa::execute::{
+    REP_ITERATION_WORK_LIMIT, RunConfig, RunExit, StepOutcome, run, run_with_rflags_defined, step,
+};
 use od_isa::memory::{AccessContext, AccessKind, ArchitecturalFault, GuestMemory, MemoryError};
 use od_isa::{LongModeState, OperandSize, Register, RegisterView};
 
@@ -7531,15 +7533,19 @@ fn rep_movs_wdq_complete_state_matrix_and_alternating_access_order() {
     .unwrap()
     .fixture;
     let widths = [
-        (OperandSize::Byte, vec![0xf3, 0xa4]),
-        (OperandSize::Word, vec![0xf3, 0x66, 0xa5]),
-        (OperandSize::Dword, vec![0xf3, 0xa5]),
-        (OperandSize::Qword, vec![0xf3, 0x48, 0xa5]),
+        (OperandSize::Byte, vec![0xf3, 0xa4], false),
+        (OperandSize::Word, vec![0xf3, 0x66, 0xa5], false),
+        (OperandSize::Dword, vec![0xf3, 0xa5], false),
+        (OperandSize::Qword, vec![0xf3, 0x48, 0xa5], false),
+        (OperandSize::Byte, vec![0xf3, 0x67, 0xa4], true),
+        (OperandSize::Word, vec![0xf3, 0x67, 0x66, 0xa5], true),
+        (OperandSize::Dword, vec![0xf3, 0x67, 0xa5], true),
+        (OperandSize::Qword, vec![0xf3, 0x67, 0x48, 0xa5], true),
     ];
     let flag_bits = [0, 2, 4, 6, 7, 11];
     let destination_base = 0x0030_0000;
     let mut cases = 0;
-    for (width, code) in &widths {
+    for (width, code, addr32) in &widths {
         let size = width.bytes() as usize;
         let mask = width.mask();
         let sign = 1u64 << (size * 8 - 1);
@@ -7578,7 +7584,11 @@ fn rep_movs_wdq_complete_state_matrix_and_alternating_access_order() {
                             initial_bytes_hex: "a5".repeat(size * 4),
                             comparison_mask_hex: "ff".repeat(size * 4),
                         });
-                        input.initial_state.gpr[Register::Rcx as usize] = HexU64(count);
+                        input.initial_state.gpr[Register::Rcx as usize] = HexU64(if *addr32 {
+                            0xfeed_beef_0000_0000 | count
+                        } else {
+                            count
+                        });
                         let src_start = if df {
                             0x0020_0000 + 2 * size as u64
                         } else {
@@ -7589,8 +7599,10 @@ fn rep_movs_wdq_complete_state_matrix_and_alternating_access_order() {
                         } else {
                             destination_base
                         };
-                        input.initial_state.gpr[Register::Rsi as usize] = HexU64(src_start);
-                        input.initial_state.gpr[Register::Rdi as usize] = HexU64(dst_start);
+                        input.initial_state.gpr[Register::Rsi as usize] =
+                            HexU64(src_start | if *addr32 { 0xaaaa_bbbb_0000_0000 } else { 0 });
+                        input.initial_state.gpr[Register::Rdi as usize] =
+                            HexU64(dst_start | if *addr32 { 0xcccc_dddd_0000_0000 } else { 0 });
                         input.initial_state.rflags = HexU64(
                             0x2 | if df { 1 << 10 } else { 0 }
                                 | flag_bits
@@ -7614,7 +7626,11 @@ fn rep_movs_wdq_complete_state_matrix_and_alternating_access_order() {
                             config(1, input.stop_rip.map(HexU64::get)),
                             || false,
                         );
-                        assert_eq!(result.exit, RunExit::StopAddress);
+                        assert_eq!(
+                            result.exit,
+                            RunExit::StopAddress,
+                            "code={code:02x?} addr32={addr32}"
+                        );
                         assert_eq!(result.instructions_executed, 1);
                         let step = if df {
                             0u64.wrapping_sub(size as u64)
@@ -7622,15 +7638,29 @@ fn rep_movs_wdq_complete_state_matrix_and_alternating_access_order() {
                             size as u64
                         };
                         let mut expected = before;
-                        expected.gpr[Register::Rcx as usize] = 0;
-                        expected.gpr[Register::Rsi as usize] =
-                            src_start.wrapping_add(step.wrapping_mul(count));
-                        expected.gpr[Register::Rdi as usize] =
-                            dst_start.wrapping_add(step.wrapping_mul(count));
+                        if count != 0 {
+                            expected.gpr[Register::Rcx as usize] = 0;
+                            expected.gpr[Register::Rsi as usize] = if *addr32 {
+                                u64::from(
+                                    (src_start as u32)
+                                        .wrapping_add((step.wrapping_mul(count)) as u32),
+                                )
+                            } else {
+                                src_start.wrapping_add(step.wrapping_mul(count))
+                            };
+                            expected.gpr[Register::Rdi as usize] = if *addr32 {
+                                u64::from(
+                                    (dst_start as u32)
+                                        .wrapping_add((step.wrapping_mul(count)) as u32),
+                                )
+                            } else {
+                                dst_start.wrapping_add(step.wrapping_mul(count))
+                            };
+                        }
                         expected.rip = input.stop_rip.unwrap().get();
                         assert_eq!(
                             state, expected,
-                            "{width:?} DF={df} seed={seed:#x} count={count} flags={pattern}"
+                            "{width:?} addr32={addr32} DF={df} seed={seed:#x} count={count} flags={pattern}"
                         );
                         let expected_accesses: Vec<_> = (0..count)
                             .flat_map(|k| {
@@ -7671,7 +7701,7 @@ fn rep_movs_wdq_complete_state_matrix_and_alternating_access_order() {
             }
         }
     }
-    assert_eq!(cases, 12_288);
+    assert_eq!(cases, 24_576);
 }
 
 #[test]
@@ -7687,6 +7717,10 @@ fn rep_movs_faults_preserve_only_fully_transferred_iterations() {
         (OperandSize::Word, vec![0xf3, 0x66, 0xa5]),
         (OperandSize::Dword, vec![0xf3, 0xa5]),
         (OperandSize::Qword, vec![0xf3, 0x48, 0xa5]),
+        (OperandSize::Byte, vec![0xf3, 0x67, 0xa4]),
+        (OperandSize::Word, vec![0xf3, 0x67, 0x66, 0xa5]),
+        (OperandSize::Dword, vec![0xf3, 0x67, 0xa5]),
+        (OperandSize::Qword, vec![0xf3, 0x67, 0x48, 0xa5]),
     ];
     let failures = [
         MemoryError::Architectural(ArchitecturalFault {
@@ -7706,6 +7740,7 @@ fn rep_movs_faults_preserve_only_fully_transferred_iterations() {
     ];
     let mut cases = 0;
     for (width, code) in widths {
+        let addr32 = code.get(1) == Some(&0x67);
         let size = width.bytes() as usize;
         for df in [false, true] {
             for successes in 0..=2u64 {
@@ -7738,9 +7773,15 @@ fn rep_movs_faults_preserve_only_fully_transferred_iterations() {
                         });
                         let src = if df { 0x0020_0030 } else { 0x0020_0000 };
                         let dst = if df { 0x0030_0030 } else { 0x0030_0000 };
-                        input.initial_state.gpr[Register::Rcx as usize] = HexU64(successes + 1);
-                        input.initial_state.gpr[Register::Rsi as usize] = HexU64(src);
-                        input.initial_state.gpr[Register::Rdi as usize] = HexU64(dst);
+                        input.initial_state.gpr[Register::Rcx as usize] = HexU64(if addr32 {
+                            0xfeed_beef_0000_0000 | (successes + 1)
+                        } else {
+                            successes + 1
+                        });
+                        input.initial_state.gpr[Register::Rsi as usize] =
+                            HexU64(src | if addr32 { 0xaaaa_bbbb_0000_0000 } else { 0 });
+                        input.initial_state.gpr[Register::Rdi as usize] =
+                            HexU64(dst | if addr32 { 0xcccc_dddd_0000_0000 } else { 0 });
                         input.initial_state.rflags = HexU64(if df { 0x0cd7 } else { 0x08d7 });
                         let offset = if df {
                             0u64.wrapping_sub(size as u64 * successes)
@@ -7799,14 +7840,32 @@ fn rep_movs_faults_preserve_only_fully_transferred_iterations() {
                             size as u64
                         };
                         let mut expected = before;
-                        expected.gpr[Register::Rcx as usize] = 1;
-                        expected.gpr[Register::Rsi as usize] =
-                            src.wrapping_add(step.wrapping_mul(successes));
-                        expected.gpr[Register::Rdi as usize] =
-                            dst.wrapping_add(step.wrapping_mul(successes));
+                        if addr32 && successes == 0 {
+                            expected.gpr[Register::Rcx as usize] = 0xfeed_beef_0000_0001;
+                        } else {
+                            expected.gpr[Register::Rcx as usize] = 1;
+                        }
+                        if successes != 0 {
+                            expected.gpr[Register::Rsi as usize] = if addr32 {
+                                u64::from(
+                                    (src as u32)
+                                        .wrapping_add((step.wrapping_mul(successes)) as u32),
+                                )
+                            } else {
+                                src.wrapping_add(step.wrapping_mul(successes))
+                            };
+                            expected.gpr[Register::Rdi as usize] = if addr32 {
+                                u64::from(
+                                    (dst as u32)
+                                        .wrapping_add((step.wrapping_mul(successes)) as u32),
+                                )
+                            } else {
+                                dst.wrapping_add(step.wrapping_mul(successes))
+                            };
+                        }
                         assert_eq!(
                             state, expected,
-                            "{width:?} DF={df} successes={successes} site={site:?} failure={failure:?}"
+                            "{width:?} addr32={addr32} DF={df} successes={successes} site={site:?} failure={failure:?}"
                         );
                         let mut expected_log = Vec::new();
                         for k in 0..successes {
@@ -7838,13 +7897,44 @@ fn rep_movs_faults_preserve_only_fully_transferred_iterations() {
                             memory.inner.snapshot()[2].bytes_hex,
                             encode_bytes(&expected_destination)
                         );
+                        let before_retry = state.clone();
+                        let retry = run(
+                            &mut state,
+                            &mut memory,
+                            config(1, Some(0x0010_0000 + code.len() as u64)),
+                            || false,
+                        );
+                        assert_eq!(retry.exit, RunExit::StopAddress);
+                        assert_eq!(retry.instructions_executed, 1);
+                        assert_eq!(state.gpr[Register::Rcx as usize], 0);
+                        let next = |value: u64| {
+                            if addr32 {
+                                u64::from(if df {
+                                    (value as u32).wrapping_sub(size as u32)
+                                } else {
+                                    (value as u32).wrapping_add(size as u32)
+                                })
+                            } else if df {
+                                value.wrapping_sub(size as u64)
+                            } else {
+                                value.wrapping_add(size as u64)
+                            }
+                        };
+                        assert_eq!(
+                            state.gpr[Register::Rsi as usize],
+                            next(before_retry.gpr[Register::Rsi as usize])
+                        );
+                        assert_eq!(
+                            state.gpr[Register::Rdi as usize],
+                            next(before_retry.gpr[Register::Rdi as usize])
+                        );
                         cases += 1;
                     }
                 }
             }
         }
     }
-    assert_eq!(cases, 192);
+    assert_eq!(cases, 384);
 }
 
 #[test]
@@ -7862,90 +7952,396 @@ fn rep_movs_overlap_uses_sequential_source_first_transfers() {
         (OperandSize::Qword, vec![0xf3, 0x48, 0xa5]),
     ];
     let mut cases = 0;
-    for (width, code) in widths {
+    for (width, base_code) in widths {
         let size = width.bytes() as usize;
         let mut offsets = vec![0isize, size as isize, -(size as isize)];
         if width != OperandSize::Byte {
             offsets.extend([1, -1]);
         }
-        for df in [false, true] {
-            for delta in &offsets {
-                let mut input = template.clone();
-                input.memory[0].length = code.len() as u32;
-                input.memory[0].initial_bytes_hex = encode_bytes(&code);
-                input.memory[0].comparison_mask_hex = "ff".repeat(code.len());
-                input.memory[1].guest_address = HexU64(0x0020_0000);
-                input.memory[1].length = 64;
-                let initial: Vec<u8> = (0..64)
-                    .map(|i| (i as u8).wrapping_mul(13).wrapping_add(7))
-                    .collect();
-                input.memory[1].initial_bytes_hex = encode_bytes(&initial);
-                input.memory[1].comparison_mask_hex = "ff".repeat(64);
-                input.memory[1].permissions = MemoryPermissions {
-                    read: true,
-                    write: true,
-                    execute: false,
-                };
-                input.memory.truncate(2);
-                let src_offset = 24usize;
-                let dst_offset = (src_offset as isize + *delta) as usize;
-                input.initial_state.gpr[Register::Rcx as usize] = HexU64(3);
-                input.initial_state.gpr[Register::Rsi as usize] = HexU64(
-                    0x0020_0000 + src_offset as u64 + if df { (2 * size) as u64 } else { 0 },
-                );
-                input.initial_state.gpr[Register::Rdi as usize] = HexU64(
-                    0x0020_0000 + dst_offset as u64 + if df { (2 * size) as u64 } else { 0 },
-                );
-                input.initial_state.rflags = HexU64(if df { 0x0cd7 } else { 0x08d7 });
-                let mut expected = initial.clone();
-                for k in 0..3usize {
-                    let displacement = if df {
-                        -(k as isize) * size as isize
-                    } else {
-                        k as isize * size as isize
+        for addr32 in [false, true] {
+            let code = if addr32 {
+                match width {
+                    OperandSize::Byte => vec![0xf3, 0x67, 0xa4],
+                    OperandSize::Word => vec![0xf3, 0x67, 0x66, 0xa5],
+                    OperandSize::Dword => vec![0xf3, 0x67, 0xa5],
+                    OperandSize::Qword => vec![0xf3, 0x67, 0x48, 0xa5],
+                }
+            } else {
+                base_code.clone()
+            };
+            for df in [false, true] {
+                for delta in &offsets {
+                    let mut input = template.clone();
+                    input.memory[0].length = code.len() as u32;
+                    input.memory[0].initial_bytes_hex = encode_bytes(&code);
+                    input.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                    input.memory[1].guest_address = HexU64(0x0020_0000);
+                    input.memory[1].length = 64;
+                    let initial: Vec<u8> = (0..64)
+                        .map(|i| (i as u8).wrapping_mul(13).wrapping_add(7))
+                        .collect();
+                    input.memory[1].initial_bytes_hex = encode_bytes(&initial);
+                    input.memory[1].comparison_mask_hex = "ff".repeat(64);
+                    input.memory[1].permissions = MemoryPermissions {
+                        read: true,
+                        write: true,
+                        execute: false,
                     };
-                    let source = (src_offset as isize
-                        + if df { 2 * size as isize } else { 0 }
-                        + displacement) as usize;
-                    let destination = (dst_offset as isize
-                        + if df { 2 * size as isize } else { 0 }
-                        + displacement) as usize;
-                    let element = expected[source..source + size].to_vec();
-                    expected[destination..destination + size].copy_from_slice(&element);
+                    input.memory.truncate(2);
+                    let src_offset = 24usize;
+                    let dst_offset = (src_offset as isize + *delta) as usize;
+                    input.initial_state.gpr[Register::Rcx as usize] =
+                        HexU64(if addr32 { 0xfeed_beef_0000_0003 } else { 3 });
+                    input.initial_state.gpr[Register::Rsi as usize] = HexU64(
+                        (0x0020_0000 + src_offset as u64 + if df { (2 * size) as u64 } else { 0 })
+                            | if addr32 { 0xaaaa_bbbb_0000_0000 } else { 0 },
+                    );
+                    input.initial_state.gpr[Register::Rdi as usize] = HexU64(
+                        (0x0020_0000 + dst_offset as u64 + if df { (2 * size) as u64 } else { 0 })
+                            | if addr32 { 0xcccc_dddd_0000_0000 } else { 0 },
+                    );
+                    input.initial_state.rflags = HexU64(if df { 0x0cd7 } else { 0x08d7 });
+                    let mut expected = initial.clone();
+                    for k in 0..3usize {
+                        let displacement = if df {
+                            -(k as isize) * size as isize
+                        } else {
+                            k as isize * size as isize
+                        };
+                        let source = (src_offset as isize
+                            + if df { 2 * size as isize } else { 0 }
+                            + displacement) as usize;
+                        let destination = (dst_offset as isize
+                            + if df { 2 * size as isize } else { 0 }
+                            + displacement) as usize;
+                        let element = expected[source..source + size].to_vec();
+                        expected[destination..destination + size].copy_from_slice(&element);
+                    }
+                    let mut state = input.initial_state.to_cpu().unwrap();
+                    let mut memory = MovsbAccessLog {
+                        inner: FlatMemory::from_fixture(&input).unwrap(),
+                        accesses: Vec::new(),
+                        mfences: Vec::new(),
+                        mfence_error: None,
+                    };
+                    let result = run(&mut state, &mut memory, config(1, None), || false);
+                    assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+                    assert_eq!(result.instructions_executed, 1);
+                    assert_eq!(
+                        memory.inner.snapshot()[1].bytes_hex,
+                        encode_bytes(&expected),
+                        "{width:?} DF={df} delta={delta}"
+                    );
+                    let accesses: Vec<_> = memory
+                        .accesses
+                        .iter()
+                        .copied()
+                        .filter(|(k, _, _)| matches!(k, AccessKind::Read | AccessKind::Write))
+                        .collect();
+                    assert_eq!(accesses.len(), 6);
+                    for pair in accesses.chunks_exact(2) {
+                        assert_eq!(pair[0].0, AccessKind::Read);
+                        assert_eq!(pair[1].0, AccessKind::Write);
+                        assert_eq!(pair[0].2, size);
+                        assert_eq!(pair[1].2, size);
+                    }
+                    cases += 1;
                 }
-                let mut state = input.initial_state.to_cpu().unwrap();
-                let mut memory = MovsbAccessLog {
-                    inner: FlatMemory::from_fixture(&input).unwrap(),
-                    accesses: Vec::new(),
-                    mfences: Vec::new(),
-                    mfence_error: None,
-                };
-                let result = run(&mut state, &mut memory, config(1, None), || false);
-                assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
-                assert_eq!(result.instructions_executed, 1);
-                assert_eq!(
-                    memory.inner.snapshot()[1].bytes_hex,
-                    encode_bytes(&expected),
-                    "{width:?} DF={df} delta={delta}"
-                );
-                let accesses: Vec<_> = memory
-                    .accesses
-                    .iter()
-                    .copied()
-                    .filter(|(k, _, _)| matches!(k, AccessKind::Read | AccessKind::Write))
-                    .collect();
-                assert_eq!(accesses.len(), 6);
-                for pair in accesses.chunks_exact(2) {
-                    assert_eq!(pair[0].0, AccessKind::Read);
-                    assert_eq!(pair[1].0, AccessKind::Write);
-                    assert_eq!(pair[0].2, size);
-                    assert_eq!(pair[1].2, size);
-                }
-                cases += 1;
             }
         }
     }
-    assert_eq!(cases, 36);
+    assert_eq!(cases, 72);
+}
+
+#[test]
+fn rep_movs_addr32_ecx_limits_completion_and_tracked_resume() {
+    let directory = arithmetic_fixture_directory();
+    let template = Fixture::from_json(
+        &std::fs::read(directory.join("s2_19a_rep_stosb_one.case.json")).unwrap(),
+    )
+    .unwrap()
+    .fixture;
+    let code = [0xf3, 0x67, 0xa4];
+    let limit = REP_ITERATION_WORK_LIMIT as u32;
+    for count in [0u32, 1, limit - 1, limit, limit + 1, u32::MAX] {
+        let mut input = template.clone();
+        input.memory[0].length = code.len() as u32;
+        input.memory[0].initial_bytes_hex = encode_bytes(&code);
+        input.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+        input.memory[1].guest_address = HexU64(0x0020_0000);
+        input.memory[1].length = (limit as usize + 1) as u32;
+        input.memory[1].initial_bytes_hex = "5a".repeat(limit as usize + 1);
+        input.memory[1].comparison_mask_hex = "ff".repeat(limit as usize + 1);
+        input.memory[1].permissions = MemoryPermissions {
+            read: true,
+            write: false,
+            execute: false,
+        };
+        input.memory.push(crate::case::MemoryRegionSpec {
+            region_id: "destination".into(),
+            guest_address: HexU64(0x0030_0000),
+            length: limit + 1,
+            permissions: MemoryPermissions {
+                read: true,
+                write: true,
+                execute: false,
+            },
+            initial_bytes_hex: "a5".repeat(limit as usize + 1),
+            comparison_mask_hex: "ff".repeat(limit as usize + 1),
+        });
+        input.initial_state.gpr[Register::Rcx as usize] =
+            HexU64(0xfeed_beef_0000_0000 | u64::from(count));
+        input.initial_state.gpr[Register::Rsi as usize] = HexU64(0xaaaa_bbbb_0020_0000);
+        input.initial_state.gpr[Register::Rdi as usize] = HexU64(0xcccc_dddd_0030_0000);
+        let mut state = input.initial_state.to_cpu().unwrap();
+        let mut memory = MovsbAccessLog {
+            inner: FlatMemory::from_fixture(&input).unwrap(),
+            accesses: Vec::new(),
+            mfences: Vec::new(),
+            mfence_error: None,
+        };
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(1, Some(0x0010_0000 + code.len() as u64)),
+            || false,
+        );
+        let completed = count.min(limit);
+        if count <= limit {
+            assert_eq!(result.exit, RunExit::StopAddress, "ECX={count}");
+            assert_eq!(result.instructions_executed, 1, "ECX={count}");
+            assert_eq!(state.rip, 0x0010_0000 + code.len() as u64, "ECX={count}");
+        } else {
+            assert_eq!(
+                result.exit,
+                RunExit::RepIterationBudgetExhausted,
+                "ECX={count}"
+            );
+            assert_eq!(result.instructions_executed, 0, "ECX={count}");
+            assert_eq!(state.rip, 0x0010_0000, "ECX={count}");
+        }
+        assert_eq!(
+            state.gpr[Register::Rcx as usize],
+            if count == 0 {
+                0xfeed_beef_0000_0000
+            } else {
+                u64::from(count - completed)
+            }
+        );
+        assert_eq!(
+            state.gpr[Register::Rsi as usize],
+            if count == 0 {
+                0xaaaa_bbbb_0020_0000
+            } else {
+                0x0020_0000 + u64::from(completed)
+            }
+        );
+        assert_eq!(
+            state.gpr[Register::Rdi as usize],
+            if count == 0 {
+                0xcccc_dddd_0030_0000
+            } else {
+                0x0030_0000 + u64::from(completed)
+            }
+        );
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+        assert_eq!(
+            memory.inner.snapshot()[1].bytes_hex,
+            "5a".repeat(limit as usize + 1)
+        );
+        let expected_destination = format!(
+            "{}{}",
+            "5a".repeat(completed as usize),
+            "a5".repeat(limit as usize + 1 - completed as usize)
+        );
+        assert_eq!(memory.inner.snapshot()[2].bytes_hex, expected_destination);
+        let expected_accesses: Vec<_> = (0..completed)
+            .flat_map(|offset| {
+                [
+                    (AccessKind::Read, 0x0020_0000 + u64::from(offset), 1),
+                    (AccessKind::Write, 0x0030_0000 + u64::from(offset), 1),
+                ]
+            })
+            .collect();
+        let actual_accesses: Vec<_> = memory
+            .accesses
+            .iter()
+            .copied()
+            .filter(|(kind, _, _)| matches!(kind, AccessKind::Read | AccessKind::Write))
+            .collect();
+        assert_eq!(actual_accesses, expected_accesses);
+
+        if count == limit + 1 {
+            let resumed = run_with_rflags_defined(
+                &mut state,
+                &mut memory,
+                config(1, Some(0x0010_0000 + code.len() as u64)),
+                result.rflags_defined,
+                || false,
+            )
+            .unwrap();
+            assert_eq!(resumed.exit, RunExit::StopAddress);
+            assert_eq!(resumed.instructions_executed, 1);
+            assert_eq!(state.gpr[Register::Rcx as usize], 0);
+            assert_eq!(
+                state.gpr[Register::Rsi as usize],
+                0x0020_0000 + u64::from(limit + 1)
+            );
+            assert_eq!(
+                state.gpr[Register::Rdi as usize],
+                0x0030_0000 + u64::from(limit + 1)
+            );
+        }
+    }
+}
+
+#[test]
+fn rep_movs_addr32_stop_and_resume_preserves_tracked_state() {
+    let code = [0xf3, 0x67, 0xa4];
+    let directory = arithmetic_fixture_directory();
+    let mut input = Fixture::from_json(
+        &std::fs::read(directory.join("s2_19a_rep_stosb_one.case.json")).unwrap(),
+    )
+    .unwrap()
+    .fixture;
+    input.memory[0].length = code.len() as u32;
+    input.memory[0].initial_bytes_hex = encode_bytes(&code);
+    input.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+    input.memory[1].guest_address = HexU64(0x0020_0000);
+    input.memory[1].initial_bytes_hex = "1122".into();
+    input.memory[1].comparison_mask_hex = "ffff".into();
+    input.memory[1].length = 2;
+    input.memory[1].permissions = MemoryPermissions {
+        read: true,
+        write: false,
+        execute: false,
+    };
+    input.memory.push(crate::case::MemoryRegionSpec {
+        region_id: "destination".into(),
+        guest_address: HexU64(0x0030_0000),
+        length: 2,
+        permissions: MemoryPermissions {
+            read: true,
+            write: true,
+            execute: false,
+        },
+        initial_bytes_hex: "a5a5".into(),
+        comparison_mask_hex: "ffff".into(),
+    });
+    let mut memory = FlatMemory::from_fixture(&input).unwrap();
+    let mut state = LongModeState::default();
+    state.rip = 0x0010_0000;
+    state.gpr[Register::Rcx as usize] = 0xfeed_beef_0000_0002;
+    state.gpr[Register::Rsi as usize] = 0xaaaa_bbbb_0020_0000;
+    state.gpr[Register::Rdi as usize] = 0xcccc_dddd_0030_0000;
+    state.rflags = 0x08d7;
+    let mut stop_checks = 0;
+    let partial = od_isa::execute::run_with_rflags_defined(
+        &mut state,
+        &mut memory,
+        config(1, None),
+        0x02,
+        || {
+            stop_checks += 1;
+            stop_checks >= 2
+        },
+    )
+    .unwrap();
+    assert_eq!(partial.exit, RunExit::StopRequested);
+    assert_eq!(partial.instructions_executed, 0);
+    assert_eq!(partial.rflags_defined, 0x02);
+    assert_eq!(state.rip, 0x0010_0000);
+    assert_eq!(state.gpr[Register::Rcx as usize], 1);
+    assert_eq!(state.gpr[Register::Rsi as usize], 0x0020_0001);
+    assert_eq!(state.gpr[Register::Rdi as usize], 0x0030_0001);
+    assert_eq!(memory.snapshot()[2].bytes_hex, "11a5");
+
+    let resumed = run_with_rflags_defined(
+        &mut state,
+        &mut memory,
+        config(1, Some(0x0010_0003)),
+        partial.rflags_defined,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(resumed.exit, RunExit::StopAddress);
+    assert_eq!(resumed.instructions_executed, 1);
+    assert_eq!(resumed.rflags_defined, 0x02);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0);
+    assert_eq!(state.gpr[Register::Rsi as usize], 0x0020_0002);
+    assert_eq!(state.gpr[Register::Rdi as usize], 0x0030_0002);
+    assert_eq!(state.rip, 0x0010_0003);
+    assert_eq!(memory.snapshot()[2].bytes_hex, "1122");
+}
+
+#[test]
+fn test_undefined_af_is_preserved_through_addr32_rep_limit_and_resume() {
+    let code = [0x48, 0x85, 0xc0, 0xf3, 0x67, 0xa4];
+    let directory = arithmetic_fixture_directory();
+    let mut input = Fixture::from_json(
+        &std::fs::read(directory.join("s2_19a_rep_stosb_one.case.json")).unwrap(),
+    )
+    .unwrap()
+    .fixture;
+    input.memory[0].length = code.len() as u32;
+    input.memory[0].initial_bytes_hex = encode_bytes(&code);
+    input.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+    input.memory[1].guest_address = HexU64(0x0020_0000);
+    input.memory[1].length = 1025;
+    input.memory[1].initial_bytes_hex = "5a".repeat(1025);
+    input.memory[1].comparison_mask_hex = "ff".repeat(1025);
+    input.memory[1].permissions = MemoryPermissions {
+        read: true,
+        write: false,
+        execute: false,
+    };
+    input.memory.push(crate::case::MemoryRegionSpec {
+        region_id: "destination".into(),
+        guest_address: HexU64(0x0030_0000),
+        length: 1025,
+        permissions: MemoryPermissions {
+            read: true,
+            write: true,
+            execute: false,
+        },
+        initial_bytes_hex: "a5".repeat(1025),
+        comparison_mask_hex: "ff".repeat(1025),
+    });
+    let mut state = input.initial_state.to_cpu().unwrap();
+    state.gpr[Register::Rax as usize] = 0;
+    state.gpr[Register::Rcx as usize] = 0xfeed_beef_0000_0401;
+    state.gpr[Register::Rsi as usize] = 0xaaaa_bbbb_0020_0000;
+    state.gpr[Register::Rdi as usize] = 0xcccc_dddd_0030_0000;
+    let mut memory = FlatMemory::from_fixture(&input).unwrap();
+    let partial = run_with_rflags_defined(
+        &mut state,
+        &mut memory,
+        config(2, None),
+        od_isa::INTEGER_FLAGS,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(partial.exit, RunExit::RepIterationBudgetExhausted);
+    assert_eq!(partial.instructions_executed, 1);
+    assert_eq!(partial.rflags_defined, 0x0cc7);
+    assert_eq!(state.rip, 0x0010_0003);
+    assert_eq!(state.gpr[Register::Rcx as usize], 1);
+    assert_eq!(state.gpr[Register::Rsi as usize], 0x0020_0400);
+    assert_eq!(state.gpr[Register::Rdi as usize], 0x0030_0400);
+
+    let resumed = run_with_rflags_defined(
+        &mut state,
+        &mut memory,
+        config(1, Some(0x0010_0006)),
+        partial.rflags_defined,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(resumed.exit, RunExit::StopAddress);
+    assert_eq!(resumed.instructions_executed, 1);
+    assert_eq!(resumed.rflags_defined, 0x0cc7);
+    assert_eq!(state.rip, 0x0010_0006);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0);
 }
 
 #[test]

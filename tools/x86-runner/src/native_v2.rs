@@ -559,6 +559,9 @@ fn admission_with_tracee_memory(
     ) {
         return Err("REP string comparison is outside the native execution profile".into());
     }
+    if matches!(instruction.operation, Operation::RepMovs { .. }) {
+        return Err("REP MOVS is outside the native execution profile".into());
+    }
     if matches!(
         instruction.operation,
         Operation::Fninit
@@ -2483,6 +2486,30 @@ mod tests {
                 "{fixture_name} must be rejected by the native allowlist before tracee execution"
             );
         }
+    }
+
+    #[test]
+    fn rep_movs_addr32_fixtures_are_rejected_before_native_tracee_execution() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !name.starts_with("s2_19l_rep_movs_addr32_") || !name.ends_with(".case.json") {
+                continue;
+            }
+            let loaded = Fixture::from_json(&std::fs::read(&path).unwrap()).unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            assert_eq!(
+                admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+                "REP MOVS is outside the native execution profile",
+                "{name}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 12);
     }
 
     #[test]
