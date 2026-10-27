@@ -175,6 +175,26 @@ faults, backend/permission errors, guard no-effects, and late STOP after one
 successful store. See [the S3-20d report](../reports/STAGE_3_S3-20d_2026-10-27.md).
 Physical Mac mini execution remains reserved for the final S3-21 gate.
 
+#### S3-20e: bounded RIP-relative disp32 forms
+
+The existing V2 qword MOV load/store compiler additionally admits only
+`48 8B/89 /r` with ModRM `mod=00, r/m=101`, a RAX..RBX data register, exactly
+four displacement bytes, and a total instruction length of seven bytes.
+`long_decode::decode` provides `AddressBase::NextRip`, signed displacement,
+and the instruction's `next_rip`; the source bytes and decoded site remain
+bound in immutable artifact metadata. Other prefixes, truncation, trailing
+bytes, and other register encodings are rejected.
+
+The trusted helper requires `state.rip == site.guest_rip` and obtains the
+address only through `MemoryOperand::access_address_48(state, site.next_rip)`.
+It does not rebase the site or independently calculate a RIP-relative target.
+Load staging and store's private synchronous ordinary-RAM unsafe contract,
+including the prohibition on executable/code aliases, are unchanged. Local
+native/interpreter differential coverage includes all four data registers,
+eight displacement boundaries, and identical source bytes at two guest RIPs.
+Physical Mac mini execution remains reserved for the final S3-21 gate; see the
+[S3-20e report](../reports/STAGE_3_S3-20e_2026-10-27.md).
+
 ## 4. Начальные runtime bounds
 
 - Один гостевой vCPU; компиляция блоков последовательная.

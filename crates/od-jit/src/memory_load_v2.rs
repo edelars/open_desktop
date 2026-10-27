@@ -454,7 +454,10 @@ mod tests {
             vec![0x48, 0x8b, 0x44, 0x00], // mod=01 displacement
             vec![0x48, 0x8b, 0x40],       // truncated disp8
             vec![0x48, 0x8b, 0x80, 0, 0, 0], // truncated disp32
-            vec![0x48, 0x8b, 0x05, 0, 0, 0, 0], // RIP-relative
+            vec![0x48, 0x8b, 0x05],       // truncated RIP-relative disp32
+            vec![0x48, 0x8b, 0x05, 0, 0, 0, 0, 0x90], // RIP-relative tail
+            vec![0x48, 0x8b, 0x45, 0],    // mod01 RBP base is unsupported
+            vec![0x48, 0x8b, 0x85, 0, 0, 0, 0], // mod10 RBP base is unsupported
             vec![0x4a, 0x8b, 0x04, 0x00], // REX.X extended index
             vec![0x49, 0x8b, 0x04, 0x00], // REX.B extended base
             vec![0x67, 0x48, 0x8b, 0x00], // address-size override
@@ -643,6 +646,48 @@ mod tests {
                     disp8_artifact.site.next_rip(),
                     disp32_artifact.site.next_rip()
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn admits_only_exact_rip_relative_mod00_disp32_sites() {
+        for (opcode, is_load) in [(0x8b, true), (0x89, false)] {
+            for register in 0..4_u8 {
+                for displacement in [i32::MIN, -8, -7, -1, 0, 1, 8, i32::MAX] {
+                    let mut instruction = vec![0x48, opcode, (register << 3) | 5];
+                    instruction.extend_from_slice(&displacement.to_le_bytes());
+                    let mut view_bytes = vec![0x90, 0x90];
+                    view_bytes.extend_from_slice(&instruction);
+                    let code = CodeView::new(0x6000, &view_bytes).unwrap();
+                    let entry_rip = 0x6002;
+                    let artifact = if is_load {
+                        compile_memory_load_block_v2(code, entry_rip)
+                            .unwrap()
+                            .artifact
+                    } else {
+                        compile_memory_store_block_v2(code, entry_rip)
+                            .unwrap()
+                            .artifact
+                    };
+                    assert_eq!(artifact.source_len, 7);
+                    assert_eq!(&artifact.source_bytes[..7], instruction.as_slice());
+                    assert_eq!(artifact.site.guest_rip(), entry_rip);
+                    assert_eq!(artifact.site.next_rip(), entry_rip + 7);
+                    assert_eq!(artifact.site.operand.base, AddressBase::NextRip);
+                    assert_eq!(artifact.site.operand.index, None);
+                    assert_eq!(artifact.site.operand.scale, 1);
+                    assert_eq!(artifact.site.operand.displacement, i64::from(displacement));
+                    assert!(artifact.site.has_supported_profile());
+                    assert!(artifact.site.matches_source_bytes(
+                        &artifact.source_bytes[..7],
+                        if is_load {
+                            MemorySiteOperationV2::Load
+                        } else {
+                            MemorySiteOperationV2::Store
+                        }
+                    ));
+                }
             }
         }
     }

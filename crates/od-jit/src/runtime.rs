@@ -127,21 +127,22 @@ impl MemorySiteV2 {
                 matches!(self.source, Some(0..=3)) && self.destination.is_none()
             }
         };
-        let base_register = match self.operand.base {
-            od_isa::long_decode::AddressBase::Register(register) => register,
-            od_isa::long_decode::AddressBase::None | od_isa::long_decode::AddressBase::NextRip => {
-                return false;
-            }
-        };
-        if self.instruction_index != 0
-            || !register_profile
-            || !matches!(
-                base_register,
+        let base_is_supported = match self.operand.base {
+            od_isa::long_decode::AddressBase::Register(register) => matches!(
+                register,
                 od_isa::Register::Rax
                     | od_isa::Register::Rcx
                     | od_isa::Register::Rdx
                     | od_isa::Register::Rbx
-            )
+            ),
+            od_isa::long_decode::AddressBase::NextRip => {
+                self.operand.index.is_none() && length == 7
+            }
+            od_isa::long_decode::AddressBase::None => false,
+        };
+        if self.instruction_index != 0
+            || !register_profile
+            || !base_is_supported
             || self.operand.index.is_some_and(|index| {
                 !matches!(
                     index,
@@ -157,10 +158,22 @@ impl MemorySiteV2 {
             return false;
         }
 
-        let displacement_is_valid = match (self.operand.index, length) {
-            (None, 3) | (Some(_), 4) => self.operand.displacement == 0,
-            (None, 4) | (Some(_), 5) => i8::try_from(self.operand.displacement).is_ok(),
-            (None, 7) | (Some(_), 8) => i32::try_from(self.operand.displacement).is_ok(),
+        let displacement_is_valid = match (self.operand.base, self.operand.index, length) {
+            (od_isa::long_decode::AddressBase::NextRip, None, 7) => {
+                i32::try_from(self.operand.displacement).is_ok()
+            }
+            (od_isa::long_decode::AddressBase::Register(_), None, 3)
+            | (od_isa::long_decode::AddressBase::Register(_), Some(_), 4) => {
+                self.operand.displacement == 0
+            }
+            (od_isa::long_decode::AddressBase::Register(_), None, 4)
+            | (od_isa::long_decode::AddressBase::Register(_), Some(_), 5) => {
+                i8::try_from(self.operand.displacement).is_ok()
+            }
+            (od_isa::long_decode::AddressBase::Register(_), None, 7)
+            | (od_isa::long_decode::AddressBase::Register(_), Some(_), 8) => {
+                i32::try_from(self.operand.displacement).is_ok()
+            }
             _ => return false,
         };
         let expected_scale = if self.operand.index.is_some() {
@@ -194,10 +207,12 @@ impl MemorySiteV2 {
         if mode == 3 || (modrm >> 3) & 7 >= 4 {
             return false;
         }
-        let displacement_bytes = match mode {
-            0 => 0,
-            1 => 1,
-            2 => 4,
+        let rip_relative = mode == 0 && modrm & 7 == 5;
+        let displacement_bytes = match (mode, rip_relative) {
+            (0, true) => 4,
+            (0, false) => 0,
+            (1, _) => 1,
+            (2, _) => 4,
             _ => return false,
         };
         let has_sib = modrm & 7 == 4;
@@ -215,17 +230,14 @@ impl MemorySiteV2 {
         if register != Some((modrm >> 3) & 7) {
             return false;
         }
-        let decoded_base = match self.operand.base {
-            od_isa::long_decode::AddressBase::Register(register) => register,
-            od_isa::long_decode::AddressBase::None | od_isa::long_decode::AddressBase::NextRip => {
-                return false;
-            }
-        };
         if has_sib {
             let sib = source[3];
             let base = sib & 7;
             let index = (sib >> 3) & 7;
             let scale = 1_u8 << (sib >> 6);
+            let od_isa::long_decode::AddressBase::Register(decoded_base) = self.operand.base else {
+                return false;
+            };
             base < 4
                 && index < 4
                 && od_isa::Register::from_encoding(base) == Some(decoded_base)
@@ -233,10 +245,17 @@ impl MemorySiteV2 {
                 && self.operand.scale == scale
         } else {
             let base = modrm & 7;
-            base < 4
-                && od_isa::Register::from_encoding(base) == Some(decoded_base)
-                && self.operand.index.is_none()
-                && self.operand.scale == 1
+            match (mode, base, self.operand.base) {
+                (0, 5, od_isa::long_decode::AddressBase::NextRip) => {
+                    self.operand.index.is_none() && self.operand.scale == 1 && source.len() == 7
+                }
+                (0..=2, 0..=3, od_isa::long_decode::AddressBase::Register(decoded_base)) => {
+                    od_isa::Register::from_encoding(base) == Some(decoded_base)
+                        && self.operand.index.is_none()
+                        && self.operand.scale == 1
+                }
+                _ => false,
+            }
         }
     }
 }

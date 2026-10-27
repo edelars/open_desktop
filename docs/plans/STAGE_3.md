@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-22a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-22a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -152,6 +152,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20b | Production V2 MOV qword store с private-RAM unsafe entry | Точный `48 89 /r`, source/base RAX..RBX; остальные stores и executable aliases запрещены |
 | [partial] | S3-20c | Один-byte SIB extension для V2 MOV qword load/store | ModRM `mod=00,r/m=100`; base/index/data RAX..RBX, scale 1/2/4/8, no displacement |
 | [partial] | S3-20d | Signed disp8/disp32 для direct и SIB V2 MOV load/store | ModRM `mod=00/01/10`; source lengths 3/4/7 direct и 4/5/8 SIB; прочие address forms отвергаются |
+| [partial] | S3-20e | RIP-relative disp32 для V2 MOV load/store | Только `mod=00,r/m=101`, ровно 7 bytes, qword и data register RAX..RBX |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Caller-owned frozen snapshot; production mode/MMU lease and compile/publication race remain open |
@@ -779,6 +780,26 @@ faults, boundary/permission/backend errors, no-effect guards и поздний S
 после одного store. Результат описан в
 [S3-20d report](../reports/STAGE_3_S3-20d_2026-10-27.md). Mac mini gate остаётся
 только финальным S3-21.
+
+#### S3-20e. RIP-relative V2 MOV
+
+Добавлен узкий RIP-relative профиль для qword `48 8B/89 /r`: ModRM
+`mod=00,r/m=101`, data register RAX..RBX, signed disp32 и ровно семь байтов
+инструкции. `long_decode::decode` остаётся единственным декодером; immutable
+site связывает все source bytes, decoded `MemoryOperand` и `next_rip`.
+Runtime принимает только state с `RIP == site.guest_rip` и вызывает
+`MemoryOperand::access_address_48(state, site.next_rip)`; emitter не вычисляет
+адрес и host path не перебазирует instruction.
+
+Compiler coverage проверяет обе операции, все четыре data registers и
+`i32::MIN/-8/-7/-1/0/1/8/i32::MAX`, включая site после двух байтов внутри
+CodeView. Native/interpreter differential проверяет те же байты на двух
+guest RIP для всех пар operation/register/displacement, сравнивая полный CPU
+state и RAM; случаи вне fixture RAM или с store в executable code не коммитят
+изменения. Поддержка не распространяется на другие RIP формы, prefixes,
+trailing bytes или общую IR/cache интеграцию. Результат и фактические проверки
+записаны в [S3-20e report](../reports/STAGE_3_S3-20e_2026-10-27.md). Mac mini
+проверка остаётся только финальным S3-21 gate после локальной работы Stage 3.
 
 ### S3-20. Добавить memory lowering
 
