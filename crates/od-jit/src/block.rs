@@ -1273,14 +1273,13 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && instruction.opcode.byte == 0x8b
         && instruction.operand_size == OperandSize::Qword
         && instruction.address_size == OperandSize::Qword
-        && (instruction.length == 3 || instruction.length == 7)
+        && matches!(instruction.length, 3 | 4 | 7)
         && (destination.register() as u8) < 4
         && destination.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
         && operand.address_size == OperandSize::Qword
         && (matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
-            && instruction.length == 3
-            && operand.displacement == 0
+            && direct_checked_displacement_matches_length(instruction.length, operand.displacement)
             || matches!(operand.base, od_isa::long_decode::AddressBase::NextRip)
                 && instruction.length == 7
                 && operand.displacement >= i32::MIN as i64
@@ -1307,14 +1306,13 @@ pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
         && instruction.opcode.byte == 0x89
         && instruction.operand_size == OperandSize::Qword
         && instruction.address_size == OperandSize::Qword
-        && (instruction.length == 3 || instruction.length == 7)
+        && matches!(instruction.length, 3 | 4 | 7)
         && (source.register() as u8) < 4
         && source.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
         && operand.address_size == OperandSize::Qword
         && (matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
-            && instruction.length == 3
-            && operand.displacement == 0
+            && direct_checked_displacement_matches_length(instruction.length, operand.displacement)
             || matches!(operand.base, od_isa::long_decode::AddressBase::NextRip)
                 && instruction.length == 7
                 && operand.displacement >= i32::MIN as i64
@@ -1345,16 +1343,31 @@ pub(crate) fn exact_direct_qword_memory_bytes(
     else {
         return false;
     };
-    (bytes.len() == 3
+    let direct_mode = match bytes.len() {
+        3 => bytes.get(2).is_some_and(|modrm| modrm >> 6 == 0),
+        4 => bytes.get(2).is_some_and(|modrm| modrm >> 6 == 1),
+        7 => bytes.get(2).is_some_and(|modrm| modrm >> 6 == 2),
+        _ => false,
+    };
+    (bytes.len() >= 3
         && bytes[0..2] == [0x48, opcode]
-        && bytes[2] >> 6 == 0
         && bytes[2] & 0b111 <= 3
-        && (bytes[2] >> 3) & 0b111 <= 3)
+        && (bytes[2] >> 3) & 0b111 <= 3
+        && direct_mode)
         || (bytes.len() == 7
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] >> 6 == 0
             && bytes[2] & 0b111 == 5
             && (bytes[2] >> 3) & 0b111 <= 3)
+}
+
+fn direct_checked_displacement_matches_length(length: u8, displacement: i64) -> bool {
+    match length {
+        3 => displacement == 0,
+        4 => (i8::MIN as i64..=i8::MAX as i64).contains(&displacement),
+        7 => (i32::MIN as i64..=i32::MAX as i64).contains(&displacement),
+        _ => false,
+    }
 }
 
 enum TargetClassification {

@@ -572,7 +572,7 @@ fn validate_terminal_position(
 
 fn is_checked_memory_address(operand: &od_isa::long_decode::MemoryOperand) -> bool {
     matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
-        && operand.displacement == 0
+        && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
         || matches!(operand.base, AddressBase::NextRip)
             && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
 }

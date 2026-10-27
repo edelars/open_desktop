@@ -356,6 +356,27 @@ entry. This remains a fixture profile and does not provide `od-machine`
 ownership, MMU translation, or a performance result. See the
 [S3-20l report](../reports/STAGE_3_S3-20l_2026-10-27.md).
 
+#### S3-20m: direct-base signed disp8/disp32 in shared IR and dispatch
+
+The checked singleton profile adds only `48 8B/89 /r disp8` with ModRM
+`mod=01`, exact four-byte source, or `48 8B/89 /r disp32` with ModRM `mod=10`,
+exact seven-byte source. The data/destination/source register and direct base
+register each must be RAX..RBX. SIB (`r/m=100`), RIP-relative, `67`, any extra
+prefix, register form and trailing bytes remain outside this profile. The
+decoder's `MemoryOperand` carries the signed displacement unchanged; the host
+uses the existing `access_address_48` and checked helper, without duplicating
+EA arithmetic or address validation.
+
+Builder raw-byte checks bind ModRM mode/length to the decoded operand range;
+IR descriptor, compiler-issued source/site metadata, host validation and
+`memory_dispatch::compile_at` enforce the same singleton shape. Native tests
+compare direct V2/shared IR/interpreter over disp8 and disp32 endpoints,
+including destination/base and source/base aliasing, canonical start/end
+faults, backend errors, wraparound, STOP after successful store and truncated
+windows. The bounded dispatcher also composes a disp8 singleton → bare NOP
+interpreter fallback → existing pair. See the
+[S3-20m report](../reports/STAGE_3_S3-20m_2026-10-27.md).
+
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
 alignment, same/different ranges, and safe partial overlaps for load→store;
