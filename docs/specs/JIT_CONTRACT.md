@@ -1059,6 +1059,44 @@ defined self-modifying-code sequence; the fixture demonstrates the bounded
 notification/redispatch prerequisite only. See the
 [S3-23e report](../reports/STAGE_3_S3-23e_2026-10-27.md).
 
+### S3-24a: active native block prefix invalidation partial
+
+`ActiveCodeBlockV3` is a separate compiler-issued artifact, compile flavor,
+arena metadata/slot handle, and `BlockEntryV3` ABI. It admits exactly 23 bytes
+containing three instructions decoded individually by `long_decode::decode`:
+`48 BA imm64; 48 89 03; 48 B9 imm64`. V3 does not wrap or call a V2 entry;
+it owns the instruction guards, sequential RIP/budget/retirement commits,
+dirty exit, and tail. Only the lower-level checked-store helper call primitive
+is shared. Load/store V2 entries and the V1 runtime/tag 6 remain isolated.
+
+After stop-RIP, STOP, and initial-budget entry guards, the host validates the
+complete 23-byte source lease before executing any generated instruction. A
+stale source returns a boundary error without changing CPU state or RAM,
+including when budget would later stop before the store. The store owner then
+preflights the full qword destination, active source, tail, permissions, and
+next backing version before mutation. Its invocation-local
+dirty output is bound for the synchronous call and set immediately after a
+successful all-or-nothing write when the destination intersects the already
+executed prefix. No fallible step follows byte mutation. On success the store
+commits RIP `entry+13`, decrements budget, retires once, and returns
+`CodeInvalidated` before executing the native `MOV RCX,imm64` tail. The host
+decodes the result, releases its arena borrow, then applies the committed
+notification while the typed V3 handle still pins the mapping. Cache entry
+drops can therefore reclaim their arena slots before the next lookup. STOP
+raised during the write does not suppress this dirty exit. An unrelated store
+completes all three instructions. A store into the store instruction or the
+not-yet-executed tail is rejected before writing, including through fixture
+aliases.
+
+If the store faults, the first instruction remains committed and state stays
+at the store RIP; no bytes/version change. Entry guards preserve stop-RIP,
+STOP, then budget priority. A change to the already executed prefix is a
+bounded fixture scenario; it does not define behavior for modifying a future
+instruction or replace the architectural store/control-transfer requirement
+for general self-modifying code. General blocks, production MMU/writer
+integration, and complete S3-24 remain open. See the
+[S3-24a report](../reports/STAGE_3_S3-24a_2026-10-27.md).
+
 ### S3-19a: invocation-local checked memory helper ABI partial
 
 `od_jit::memory_bridge::CheckedMemoryAdapter` borrows one `&mut dyn

@@ -163,6 +163,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-23e | Region-scoped executable-write notification and redispatch | Separate store entry invalidates cached prefix/tail and aliases before next lookup; no active native tail or S3-24 claim |
 | [ ] | S3-23 | Инвалидация code dependencies | S3-18, S3-21, S3-22; полный writer/MMU integration |
 | [ ] | S3-24 | Self-modifying code в текущем блоке | S3-23 |
+| [partial] | S3-24a | Active native three-instruction artifact exits after committed store changes already executed prefix | One typed V3 slot/call; future-tail writes rejected; future-instruction SMC oracle and general blocks remain open |
 | [ ] | S3-25 | Eviction, retirement и освобождение | S3-18, S3-24 |
 | [partial] | S3-25a | One-vCPU synchronous cache/arena handle lifetime and safe-point checks | Inactive entries only; active-code retirement, SMP, deferred queue not included |
 | [ ] | S3-26 | Порядок side effects и memory classes | S3-19, S3-24 |
@@ -979,7 +980,9 @@ commit и interpreter state/RAM parity, затем заново dispatch-ит ta
 2. После committed write, затрагивающего активные code dependencies, выйти с правильным guest state/RIP и продолжить через проверку актуального кода.
 3. Проверить, что store выполнен ровно один раз, instruction count не удваивается, stale host tail не исполняется и переход через alias тоже учитывается.
 
-**Готово:** результат совпадает с определённой для теста x86 семантикой и interpreter; native fixture соблюдает необходимые архитектурные правила синхронизации изменённого кода. Undefined self-modifying sequence не используется как oracle. Само удаление cache entry без остановки активного stale tail тест не проходит.
+**S3-24 остаётся открытым.** S3-24a добавляет один compiler-issued 23-byte native artifact с тремя decoder-validated instructions: `MOV RDX,imm64; MOV [RBX],RAX; MOV RCX,imm64`. Один typed V3 arena entry выполняет все три в одном generated call, но при успешной записи в уже исполненный prefix synchronously sets an invocation-local dirty marker, commits store RIP/budget/retirement once, and returns `CodeInvalidated` before stale native tail. The owner applies the reserved backing version/notification after result decoding and before the active handle is released. A later dispatch executes the tail from current bytes; re-entry observes the changed prefix. An unrelated destination completes the full three-instruction artifact. The store instruction itself may not overlap; future-tail targets are rejected, including aliases.
+
+Fault after the prefix preserves RIP at the store and the committed prefix; budget/STOP boundaries, STOP raised during a successful write, alias writes, and backend failure are covered. This is a bounded already-executed-prefix case; it does not establish semantics for modifying a not-yet-executed instruction, general multi-instruction compilation, production MMU/writers, or full S3-24. See [S3-24a report](../reports/STAGE_3_S3-24a_2026-10-27.md).
 
 ### S3-25. Реализовать eviction и безопасное освобождение
 

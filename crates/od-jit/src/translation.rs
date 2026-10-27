@@ -150,6 +150,8 @@ pub enum CompileFlavor {
     S3_19bMemoryLoadV2,
     /// Uncached first V2 checked `MOV [mem], r64` compiler profile.
     S3_20bMemoryStoreV2,
+    /// Bounded active-code three-instruction fixture block with V3 exits.
+    S3_24aActiveCodeV3,
 }
 
 /// Caller-owned identity/version metadata for one guest mapping span.

@@ -332,6 +332,43 @@ pub struct RuntimeContextV2 {
     pub memory_outcome: crate::memory_bridge::CheckedMemoryOutcomeV1,
 }
 
+/// Invocation record for the bounded active-code S3-24a artifact. This is a
+/// distinct entry ABI; its V2 memory payload is only the nested checked-store
+/// transport, never an entry point accepted by the V2 APIs.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RuntimeContextV3 {
+    pub memory: RuntimeContextV2,
+    /// Set synchronously by the tracked owner after a committed write overlaps
+    /// already executed bytes in the active artifact.
+    pub code_dirty: u32,
+    pub reserved: u32,
+    /// Original invocation budget, retained while nested V2 code uses the
+    /// remaining budget to guard the current instruction.
+    pub total_initial_budget: u64,
+}
+
+pub const RUNTIME_CONTEXT_V3_CODE_DIRTY_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV3, code_dirty);
+pub const RUNTIME_CONTEXT_V3_TOTAL_INITIAL_BUDGET_OFFSET: usize =
+    std::mem::offset_of!(RuntimeContextV3, total_initial_budget);
+
+/// Distinct native entry type for verifier-issued active-code artifacts.
+pub type BlockEntryV3 = unsafe extern "C" fn(*mut RuntimeContextV3) -> u32;
+
+/// Exit namespace for the S3-24a entry. Values are private to this typed V3
+/// artifact and are never passed through V1 or V2 result decoders.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeExitV3 {
+    Complete = 0,
+    BudgetExhausted = 1,
+    StopRequested = 3,
+    StopAddress = 4,
+    CodeInvalidated = 10,
+    MemoryOperation = 9,
+}
+
 pub const RUNTIME_CONTEXT_V2_BASE_OFFSET: usize = std::mem::offset_of!(RuntimeContextV2, base);
 pub const RUNTIME_CONTEXT_V2_MEMORY_ADAPTER_OFFSET: usize =
     std::mem::offset_of!(RuntimeContextV2, memory_adapter);

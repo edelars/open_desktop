@@ -16,7 +16,8 @@ use crate::runtime::{
     RUNTIME_CONTEXT_INITIAL_BUDGET_OFFSET, RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET,
     RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET, RUNTIME_CONTEXT_STOP_REQUESTED_OFFSET,
     RUNTIME_CONTEXT_STOP_RIP_ENABLED_OFFSET, RUNTIME_CONTEXT_STOP_RIP_OFFSET,
-    RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET, memory_site_helper_v2,
+    RUNTIME_CONTEXT_V2_STAGED_LOAD_VALUE_OFFSET, RUNTIME_CONTEXT_V3_CODE_DIRTY_OFFSET,
+    RuntimeExitV3, memory_site_helper_v2,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -25,6 +26,12 @@ pub enum MemoryLoadCompileErrorV2 {
     Decode,
     UnsupportedForm,
     Encoding(EncodeError),
+}
+
+impl From<EncodeError> for MemoryLoadCompileErrorV2 {
+    fn from(error: EncodeError) -> Self {
+        Self::Encoding(error)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +54,396 @@ pub struct MemoryLoadBlockV2 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MemoryStoreBlockV2 {
     artifact: MemoryArtifactV2,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ActiveCodeArtifactV3 {
+    code: EncodedCode,
+    entry_rip: u64,
+    source_bytes: [u8; 23],
+    site: MemorySiteV2,
+    completed_prefix_value: u64,
+    tail_value: u64,
+    compile_flavor: crate::translation::CompileFlavor,
+}
+
+/// A verifier-issued active-code fixture artifact for exactly three decoded
+/// instructions: `MOV RDX, imm64; MOV [RBX], RAX; MOV RCX, imm64`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActiveCodeBlockV3 {
+    artifact: ActiveCodeArtifactV3,
+}
+
+impl ActiveCodeBlockV3 {
+    pub fn code(&self) -> &EncodedCode {
+        &self.artifact.code
+    }
+    pub fn site(&self) -> &MemorySiteV2 {
+        &self.artifact.site
+    }
+    pub const fn entry_rip(&self) -> u64 {
+        self.artifact.entry_rip
+    }
+    pub fn source_bytes(&self) -> &[u8; 23] {
+        &self.artifact.source_bytes
+    }
+    pub const fn completed_prefix_value(&self) -> u64 {
+        self.artifact.completed_prefix_value
+    }
+    pub const fn tail_value(&self) -> u64 {
+        self.artifact.tail_value
+    }
+    pub const fn compile_flavor(&self) -> crate::translation::CompileFlavor {
+        self.artifact.compile_flavor
+    }
+}
+
+/// Compile the exact S3-24a 23-byte source block using three independent
+/// decoder records. The returned type cannot be published as a V1 or V2 entry.
+pub fn compile_active_code_block_v3(
+    code: CodeView<'_>,
+    entry_rip: u64,
+) -> Result<ActiveCodeBlockV3, MemoryLoadCompileErrorV2> {
+    if entry_rip != code.base_rip() || code.len() != 23 {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
+    let source: [u8; 23] = code
+        .bytes()
+        .try_into()
+        .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    if source[..2] != [0x48, 0xBA]
+        || source[10..13] != [0x48, 0x89, 0x03]
+        || source[13..15] != [0x48, 0xB9]
+    {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
+    let prefix = decode_active_code_instruction(&source[..10], entry_rip)?;
+    let store_rip = entry_rip
+        .checked_add(10)
+        .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    let store = decode_active_code_instruction(&source[10..13], store_rip)?;
+    let tail_rip = entry_rip
+        .checked_add(13)
+        .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    let tail = decode_active_code_instruction(&source[13..], tail_rip)?;
+    if prefix.length != 10 || store.length != 3 || tail.length != 10 {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
+    entry_rip
+        .checked_add(23)
+        .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    let prefix_value = match prefix.operation {
+        Operation::MovImmediate {
+            dst: Operand::Register(dst),
+            value,
+        } if dst.register() == od_isa::Register::Rdx
+            && dst.size() == od_isa::OperandSize::Qword =>
+        {
+            value
+        }
+        _ => return Err(MemoryLoadCompileErrorV2::UnsupportedForm),
+    };
+    let (register, operand) = match store.operation {
+        Operation::Mov {
+            dst: Operand::Memory(operand),
+            src: Operand::Register(src),
+        } if src.register() == od_isa::Register::Rax
+            && src.size() == od_isa::OperandSize::Qword =>
+        {
+            (src.register(), operand)
+        }
+        _ => return Err(MemoryLoadCompileErrorV2::UnsupportedForm),
+    };
+    let tail_value = match tail.operation {
+        Operation::MovImmediate {
+            dst: Operand::Register(dst),
+            value,
+        } if dst.register() == od_isa::Register::Rcx
+            && dst.size() == od_isa::OperandSize::Qword =>
+        {
+            value
+        }
+        _ => return Err(MemoryLoadCompileErrorV2::UnsupportedForm),
+    };
+    let next_rip = store_rip
+        .checked_add(u64::from(store.length))
+        .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    let site = MemorySiteV2 {
+        // The nested checked-store helper has a one-site table; instruction
+        // index is therefore local to this runtime site table.
+        instruction_index: 0,
+        guest_rip: store_rip,
+        next_rip,
+        operation: MemorySiteOperationV2::Store,
+        destination: None,
+        source: Some(register as u8),
+        operand,
+    };
+    if !site.has_supported_profile()
+        || site.operand().base != od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+        || site.operand().index.is_some()
+        || site.operand().displacement != 0
+        || !site.matches_source_bytes(&source[10..13], MemorySiteOperationV2::Store)
+    {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
+    let code = emit_active_code_block_v3(&site, entry_rip, prefix_value, tail_value)?;
+    Ok(ActiveCodeBlockV3 {
+        artifact: ActiveCodeArtifactV3 {
+            code,
+            entry_rip,
+            source_bytes: source,
+            site,
+            completed_prefix_value: prefix_value,
+            tail_value,
+            compile_flavor: crate::translation::CompileFlavor::S3_24aActiveCodeV3,
+        },
+    })
+}
+
+fn decode_active_code_instruction(
+    bytes: &[u8],
+    rip: u64,
+) -> Result<od_isa::long_decode::Instruction, MemoryLoadCompileErrorV2> {
+    let view = CodeView::new(rip, bytes).map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    let mut memory = CodeMemory::full_code(view);
+    long_decode::decode(&mut memory, rip, AccessContext::default())
+        .map_err(|_| MemoryLoadCompileErrorV2::Decode)
+}
+
+fn emit_active_code_block_v3(
+    site: &MemorySiteV2,
+    entry_rip: u64,
+    prefix_value: u64,
+    tail_value: u64,
+) -> Result<EncodedCode, MemoryLoadCompileErrorV2> {
+    let mut encoder = Encoder::new();
+    let stop_address = encoder.new_label()?;
+    let stop_requested = encoder.new_label()?;
+    let budget = encoder.new_label()?;
+    let helper_failure = encoder.new_label()?;
+    let code_invalidated = encoder.new_label()?;
+    let stop_after_tail = encoder.new_label()?;
+    let complete = encoder.new_label()?;
+
+    // Keep the canonical context, state and stop pointer across the checked
+    // helper. x19-x23 are callee-saved; the inner call preserves them too.
+    encoder.stp_x(
+        xr(19)?,
+        xr(20)?,
+        HostAddressBase::Sp,
+        -16,
+        PairIndexMode::PreIndex,
+    )?;
+    encoder.stp_x(
+        xr(21)?,
+        xr(22)?,
+        HostAddressBase::Sp,
+        -16,
+        PairIndexMode::PreIndex,
+    )?;
+    encoder.stp_x(
+        xr(23)?,
+        xr(30)?,
+        HostAddressBase::Sp,
+        -16,
+        PairIndexMode::PreIndex,
+    )?;
+    encoder.mov_x(xr(19)?, XRegOrZero::Reg(xr(0)?));
+    // RuntimeContextV3 begins with RuntimeContextV2, whose first member is V1.
+    encoder.ldr_x(XRegOrZero::Reg(xr(20)?), HostAddressBase::Reg(xr(19)?), 0)?;
+
+    emit_v3_instruction_guard(
+        &mut encoder,
+        entry_rip,
+        stop_address,
+        stop_requested,
+        budget,
+    )?;
+    emit_imm64(&mut encoder, 9, prefix_value)?;
+    encoder.str_x(
+        XRegOrZero::Reg(xr(9)?),
+        HostAddressBase::Reg(xr(20)?),
+        LONG_MODE_GPR_OFFSET as u32 + 2 * 8,
+    )?;
+    emit_imm64(&mut encoder, 9, site.guest_rip())?;
+    encoder.str_x(
+        XRegOrZero::Reg(xr(9)?),
+        HostAddressBase::Reg(xr(20)?),
+        LONG_MODE_RIP_OFFSET as u32,
+    )?;
+    decrement_remaining_and_retire(&mut encoder, 1)?;
+
+    // The store is one checked access through the shared V2 helper-call
+    // primitive. All V3 guards and architectural commit sequencing stay here.
+    // Site RIP is the committed prefix boundary; stop-address / STOP / budget
+    // are rechecked in the mandated order before accessing memory.
+    emit_v3_instruction_guard(
+        &mut encoder,
+        site.guest_rip(),
+        stop_address,
+        stop_requested,
+        budget,
+    )?;
+    emit_checked_memory_site_call_v2(&mut encoder, site.instruction_index())?;
+    encoder.cbnz_w(WReg::new(0)?, helper_failure)?;
+    emit_imm64(&mut encoder, 9, site.next_rip())?;
+    encoder.str_x(
+        XRegOrZero::Reg(xr(9)?),
+        HostAddressBase::Reg(xr(20)?),
+        LONG_MODE_RIP_OFFSET as u32,
+    )?;
+    decrement_remaining_and_retire(&mut encoder, 2)?;
+    encoder.ldr_x(
+        XRegOrZero::Reg(xr(9)?),
+        HostAddressBase::Reg(xr(19)?),
+        RUNTIME_CONTEXT_V3_CODE_DIRTY_OFFSET as u32,
+    )?;
+    encoder.cbnz_x(XRegOrZero::Reg(xr(9)?), code_invalidated)?;
+    encoder.ldarb_w(WReg::new(9)?, HostAddressBase::Reg(xr(21)?));
+    encoder.cbnz_w(WReg::new(9)?, stop_requested)?;
+
+    emit_v3_instruction_guard(
+        &mut encoder,
+        site.next_rip(),
+        stop_address,
+        stop_requested,
+        budget,
+    )?;
+    emit_imm64(&mut encoder, 9, tail_value)?;
+    encoder.str_x(
+        XRegOrZero::Reg(xr(9)?),
+        HostAddressBase::Reg(xr(20)?),
+        LONG_MODE_GPR_OFFSET as u32 + 1 * 8,
+    )?;
+    emit_imm64(&mut encoder, 9, entry_rip + 23)?;
+    encoder.str_x(
+        XRegOrZero::Reg(xr(9)?),
+        HostAddressBase::Reg(xr(20)?),
+        LONG_MODE_RIP_OFFSET as u32,
+    )?;
+    decrement_remaining_and_retire(&mut encoder, 3)?;
+    encoder.ldarb_w(WReg::new(9)?, HostAddressBase::Reg(xr(21)?));
+    encoder.cbnz_w(WReg::new(9)?, stop_after_tail)?;
+    encoder.b(complete)?;
+
+    encoder.bind(code_invalidated)?;
+    emit_return_v3(&mut encoder, RuntimeExitV3::CodeInvalidated as u16)?;
+    encoder.bind(helper_failure)?;
+    emit_return_v3(&mut encoder, RuntimeExitV3::MemoryOperation as u16)?;
+    encoder.bind(stop_address)?;
+    emit_return_v3(&mut encoder, RuntimeExitV3::StopAddress as u16)?;
+    encoder.bind(stop_requested)?;
+    emit_return_v3(&mut encoder, RuntimeExitV3::StopRequested as u16)?;
+    encoder.bind(budget)?;
+    emit_return_v3(&mut encoder, RuntimeExitV3::BudgetExhausted as u16)?;
+    encoder.bind(stop_after_tail)?;
+    emit_return_v3(&mut encoder, RuntimeExitV3::StopRequested as u16)?;
+    encoder.bind(complete)?;
+    emit_return_v3(&mut encoder, RuntimeExitV3::Complete as u16)?;
+    encoder.finish().map_err(MemoryLoadCompileErrorV2::Encoding)
+}
+
+fn emit_v3_instruction_guard(
+    encoder: &mut Encoder,
+    rip: u64,
+    stop_address: crate::arm64::Label,
+    stop_requested: crate::arm64::Label,
+    budget: crate::arm64::Label,
+) -> Result<(), EncodeError> {
+    encoder.ldr_x(
+        XRegOrZero::Reg(xr(9)?),
+        HostAddressBase::Reg(xr(19)?),
+        (crate::runtime::RUNTIME_CONTEXT_V2_BASE_OFFSET + RUNTIME_CONTEXT_STOP_RIP_ENABLED_OFFSET)
+            as u32,
+    )?;
+    let no_stop_address = encoder.new_label()?;
+    encoder.cbz_x(XRegOrZero::Reg(xr(9)?), no_stop_address)?;
+    encoder.ldr_x(
+        XRegOrZero::Reg(xr(9)?),
+        HostAddressBase::Reg(xr(20)?),
+        LONG_MODE_RIP_OFFSET as u32,
+    )?;
+    encoder.ldr_x(
+        XRegOrZero::Reg(xr(10)?),
+        HostAddressBase::Reg(xr(19)?),
+        (crate::runtime::RUNTIME_CONTEXT_V2_BASE_OFFSET + RUNTIME_CONTEXT_STOP_RIP_OFFSET) as u32,
+    )?;
+    // Compare canonical RIP directly with the stop address.
+    let _ = rip; // Host validation guarantees the expected RIP at each boundary.
+    encoder.subs_x(XRegOrZero::Zero, xr(9)?, XRegOrZero::Reg(xr(10)?));
+    encoder.b_cond(crate::arm64::Condition::Equal, stop_address)?;
+    encoder.bind(no_stop_address)?;
+    encoder.ldr_x(
+        XRegOrZero::Reg(xr(21)?),
+        HostAddressBase::Reg(xr(19)?),
+        (crate::runtime::RUNTIME_CONTEXT_V2_BASE_OFFSET + RUNTIME_CONTEXT_STOP_REQUESTED_OFFSET)
+            as u32,
+    )?;
+    let no_stop_flag = encoder.new_label()?;
+    encoder.cbz_x(XRegOrZero::Reg(xr(21)?), no_stop_flag)?;
+    encoder.ldarb_w(WReg::new(9)?, HostAddressBase::Reg(xr(21)?));
+    encoder.cbnz_w(WReg::new(9)?, stop_requested)?;
+    encoder.bind(no_stop_flag)?;
+    encoder.ldr_x(
+        XRegOrZero::Reg(xr(9)?),
+        HostAddressBase::Reg(xr(19)?),
+        (crate::runtime::RUNTIME_CONTEXT_V2_BASE_OFFSET + RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET)
+            as u32,
+    )?;
+    encoder.cbz_x(XRegOrZero::Reg(xr(9)?), budget)?;
+    Ok(())
+}
+
+fn decrement_remaining_and_retire(encoder: &mut Encoder, retired: u16) -> Result<(), EncodeError> {
+    encoder.ldr_x(
+        XRegOrZero::Reg(xr(9)?),
+        HostAddressBase::Reg(xr(19)?),
+        (crate::runtime::RUNTIME_CONTEXT_V2_BASE_OFFSET + RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET)
+            as u32,
+    )?;
+    encoder.subs_imm_x(XRegOrZero::Reg(xr(9)?), XRegOrSp::Reg(xr(9)?), 1)?;
+    encoder.str_x(
+        XRegOrZero::Reg(xr(9)?),
+        HostAddressBase::Reg(xr(19)?),
+        (crate::runtime::RUNTIME_CONTEXT_V2_BASE_OFFSET + RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET)
+            as u32,
+    )?;
+    encoder.movz_x(xr(9)?, retired, 0)?;
+    encoder.str_x(
+        XRegOrZero::Reg(xr(9)?),
+        HostAddressBase::Reg(xr(19)?),
+        (crate::runtime::RUNTIME_CONTEXT_V2_BASE_OFFSET
+            + RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET) as u32,
+    )?;
+    Ok(())
+}
+
+fn emit_return_v3(encoder: &mut Encoder, tag: u16) -> Result<(), EncodeError> {
+    encoder.movz_x(xr(0)?, tag, 0)?;
+    encoder.ldp_x(
+        xr(23)?,
+        xr(30)?,
+        HostAddressBase::Sp,
+        16,
+        PairIndexMode::PostIndex,
+    )?;
+    encoder.ldp_x(
+        xr(21)?,
+        xr(22)?,
+        HostAddressBase::Sp,
+        16,
+        PairIndexMode::PostIndex,
+    )?;
+    encoder.ldp_x(
+        xr(19)?,
+        xr(20)?,
+        HostAddressBase::Sp,
+        16,
+        PairIndexMode::PostIndex,
+    )?;
+    encoder.ret(xr(30)?);
+    Ok(())
 }
 
 macro_rules! impl_artifact_accessors {
@@ -244,14 +641,7 @@ fn emit_memory_operation_v2(site: &MemorySiteV2) -> Result<EncodedCode, EncodeEr
     encoder.cbz_x(XRegOrZero::Reg(xr(9)?), budget_exit)?;
     encoder.bind(success)?;
 
-    encoder.mov_x(xr(0)?, XRegOrZero::Reg(xr(19)?));
-    encoder.movz_x(xr(1)?, site.instruction_index as u16, 0)?;
-    let helper = memory_site_helper_v2 as *const () as usize as u64;
-    encoder.movz_x(xr(16)?, helper as u16, 0)?;
-    encoder.movk_x(xr(16)?, (helper >> 16) as u16, 1)?;
-    encoder.movk_x(xr(16)?, (helper >> 32) as u16, 2)?;
-    encoder.movk_x(xr(16)?, (helper >> 48) as u16, 3)?;
-    encoder.blr(xr(16)?);
+    emit_checked_memory_site_call_v2(&mut encoder, site.instruction_index)?;
     encoder.cbnz_w(WReg::new(0)?, helper_failure)?;
 
     if site.operation == MemorySiteOperationV2::Load {
@@ -379,6 +769,24 @@ fn emit_memory_operation_v2(site: &MemorySiteV2) -> Result<EncodedCode, EncodeEr
         crate::runtime::RUNTIME_EXIT_V2_MEMORY_OPERATION as u16,
     )?;
     encoder.finish()
+}
+
+/// Shared low-level call primitive. It only transports the V2 context/site to
+/// the checked helper and returns its raw helper status in w0; callers retain
+/// ownership of guards, architectural commits, retirement and exits.
+fn emit_checked_memory_site_call_v2(
+    encoder: &mut Encoder,
+    site_index: u32,
+) -> Result<(), EncodeError> {
+    encoder.mov_x(xr(0)?, XRegOrZero::Reg(xr(19)?));
+    encoder.movz_x(xr(1)?, site_index as u16, 0)?;
+    let helper = memory_site_helper_v2 as *const () as usize as u64;
+    encoder.movz_x(xr(16)?, helper as u16, 0)?;
+    encoder.movk_x(xr(16)?, (helper >> 16) as u16, 1)?;
+    encoder.movk_x(xr(16)?, (helper >> 32) as u16, 2)?;
+    encoder.movk_x(xr(16)?, (helper >> 48) as u16, 3)?;
+    encoder.blr(xr(16)?);
+    Ok(())
 }
 
 fn emit_return(encoder: &mut Encoder, tag: u16) -> Result<(), EncodeError> {
@@ -862,6 +1270,92 @@ mod tests {
             let code = CodeView::new(0x5000, &bytes).unwrap();
             assert!(matches!(
                 compile_memory_store_block_v2(code, 0x5000),
+                Err(MemoryLoadCompileErrorV2::UnsupportedForm)
+                    | Err(MemoryLoadCompileErrorV2::Decode)
+            ));
+        }
+    }
+
+    #[test]
+    fn active_code_v3_compiles_only_exact_three_instruction_source() {
+        let prefix_value = 0x1122_3344_5566_7788_u64;
+        let tail_value = 0xCAFE_BABE_1234_5678_u64;
+        let mut bytes = vec![0x48, 0xBA]; // MOV RDX, imm64
+        bytes.extend_from_slice(&prefix_value.to_le_bytes());
+        bytes.extend_from_slice(&[0x48, 0x89, 0x03]); // MOV [RBX], RAX
+        bytes.extend_from_slice(&[0x48, 0xB9]); // MOV RCX, imm64
+        bytes.extend_from_slice(&tail_value.to_le_bytes());
+        let code = CodeView::new(0xA000, &bytes).unwrap();
+        let artifact = compile_active_code_block_v3(code, 0xA000).unwrap();
+        assert_eq!(artifact.entry_rip(), 0xA000);
+        assert_eq!(artifact.source_bytes().as_slice(), bytes);
+        assert_eq!(artifact.completed_prefix_value(), prefix_value);
+        assert_eq!(artifact.tail_value(), tail_value);
+        assert_eq!(artifact.site().guest_rip(), 0xA00A);
+        assert_eq!(artifact.site().next_rip(), 0xA00D);
+        assert_eq!(artifact.site().source(), Some(0));
+        assert_eq!(
+            artifact.compile_flavor(),
+            crate::translation::CompileFlavor::S3_24aActiveCodeV3
+        );
+        assert!(!artifact.code().words().is_empty());
+
+        for malformed in [
+            bytes[..22].to_vec(),
+            [bytes.as_slice(), &[0x90]].concat(),
+            {
+                let mut bad = bytes.clone();
+                bad[1] = 0xB8; // prefix no longer writes RDX
+                bad
+            },
+            {
+                let mut bad = bytes.clone();
+                bad[12] = 0x00; // store no longer has the approved /r form
+                bad
+            },
+            {
+                let mut bad = bytes.clone();
+                bad[14] = 0xB8; // tail no longer writes RCX
+                bad
+            },
+            {
+                let mut bad = bytes.clone();
+                bad[0] = 0x4A; // unused REX.X is outside the exact source form
+                bad
+            },
+            {
+                let mut bad = bytes.clone();
+                bad[0] = 0x4C; // unused REX.R is outside the exact source form
+                bad
+            },
+            {
+                let mut bad = bytes.clone();
+                bad[0] = 0x4E; // combined unused REX.R/X is rejected too
+                bad
+            },
+            {
+                let mut bad = bytes.clone();
+                bad[10] = 0x4E; // store's unused REX.R/X bits are rejected
+                bad
+            },
+            {
+                let mut bad = bytes.clone();
+                bad[13] = 0x4A; // tail's unused REX.X is outside the profile
+                bad
+            },
+            {
+                let mut bad = bytes.clone();
+                bad[13] = 0x4C; // tail's unused REX.R is outside the profile
+                bad
+            },
+            {
+                let mut bad = bytes.clone();
+                bad[13] = 0x4E; // combined unused tail REX.R/X is rejected
+                bad
+            },
+        ] {
+            assert!(matches!(
+                compile_active_code_block_v3(CodeView::new(0xA000, &malformed).unwrap(), 0xA000),
                 Err(MemoryLoadCompileErrorV2::UnsupportedForm)
                     | Err(MemoryLoadCompileErrorV2::Decode)
             ));

@@ -40,6 +40,14 @@ struct MemoryOperationMetadataV2 {
     compile_flavor: od_jit::translation::CompileFlavor,
 }
 
+#[derive(Clone, Copy)]
+struct ActiveCodeMetadataV3 {
+    entry_rip: u64,
+    source_bytes: [u8; 23],
+    site: od_jit::runtime::MemorySiteV2,
+    compile_flavor: od_jit::translation::CompileFlavor,
+}
+
 /// Compatibility name for the published executable mapping API.
 pub type ExecutableMemory = PublishedCode;
 
@@ -668,6 +676,35 @@ pub enum MemoryOperationExecutionErrorV2 {
     HelperBoundaryFailure { status: u32 },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ActiveCodeExecutionExitV3 {
+    Complete,
+    BudgetExhausted,
+    StopRequested,
+    StopAddress,
+    CodeInvalidated,
+    GuestFault(od_isa::memory::ArchitecturalFault),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActiveCodeExecutionResultV3 {
+    pub exit: ActiveCodeExecutionExitV3,
+    pub remaining_budget: u64,
+    pub retired_instructions: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ActiveCodeExecutionErrorV3 {
+    InvalidHandle,
+    InvalidMetadata,
+    EntryRipMismatch { expected: u64, actual: u64 },
+    InvalidAccounting,
+    InvalidExitTag(u32),
+    MemoryError(MemoryOperationMemoryErrorV2),
+    HelperBoundaryFailure { status: u32 },
+    Preflight(TrackedCodeStorePreflightError),
+}
+
 /// Compatibility names retained for callers that use the load-only V2 API.
 pub type MemoryLoadExecutionExitV2 = MemoryOperationExecutionExitV2;
 pub type MemoryLoadExecutionResultV2 = MemoryOperationExecutionResultV2;
@@ -795,6 +832,119 @@ fn decode_memory_operation_v2_result(
         exit: result,
         remaining_budget: base.remaining_budget,
         retired_instructions: base.retired_instructions,
+    })
+}
+
+fn decode_active_code_v3_result(
+    metadata: &ActiveCodeMetadataV3,
+    raw: u32,
+    context: &od_jit::runtime::RuntimeContextV3,
+) -> Result<ActiveCodeExecutionResultV3, ActiveCodeExecutionErrorV3> {
+    use od_jit::runtime::RuntimeExitV3;
+    let state_rip = unsafe { (*context.memory.base.state).rip };
+    let initial = context.total_initial_budget;
+    let (expected_retired, expected_remaining) = if state_rip == metadata.entry_rip {
+        (0, initial)
+    } else if state_rip == metadata.entry_rip + 10 {
+        (
+            1,
+            initial
+                .checked_sub(1)
+                .ok_or(ActiveCodeExecutionErrorV3::InvalidAccounting)?,
+        )
+    } else if state_rip == metadata.entry_rip + 13 {
+        (
+            2,
+            initial
+                .checked_sub(2)
+                .ok_or(ActiveCodeExecutionErrorV3::InvalidAccounting)?,
+        )
+    } else if state_rip == metadata.entry_rip + 23 {
+        (
+            3,
+            initial
+                .checked_sub(3)
+                .ok_or(ActiveCodeExecutionErrorV3::InvalidAccounting)?,
+        )
+    } else {
+        return Err(ActiveCodeExecutionErrorV3::InvalidAccounting);
+    };
+    if context.memory.base.retired_instructions != expected_retired
+        || context.memory.base.remaining_budget != expected_remaining
+    {
+        return Err(ActiveCodeExecutionErrorV3::InvalidAccounting);
+    }
+    let exit = match raw {
+        raw if raw == RuntimeExitV3::Complete as u32 => {
+            if state_rip != metadata.entry_rip + 23 || expected_retired != 3 {
+                return Err(ActiveCodeExecutionErrorV3::InvalidAccounting);
+            }
+            ActiveCodeExecutionExitV3::Complete
+        }
+        raw if raw == RuntimeExitV3::BudgetExhausted as u32 => {
+            if expected_remaining != 0 {
+                return Err(ActiveCodeExecutionErrorV3::InvalidAccounting);
+            }
+            ActiveCodeExecutionExitV3::BudgetExhausted
+        }
+        raw if raw == RuntimeExitV3::StopRequested as u32 => {
+            ActiveCodeExecutionExitV3::StopRequested
+        }
+        raw if raw == RuntimeExitV3::StopAddress as u32 => ActiveCodeExecutionExitV3::StopAddress,
+        raw if raw == RuntimeExitV3::CodeInvalidated as u32 => {
+            if state_rip != metadata.entry_rip + 13
+                || expected_retired != 2
+                || context.code_dirty != 1
+            {
+                return Err(ActiveCodeExecutionErrorV3::InvalidAccounting);
+            }
+            ActiveCodeExecutionExitV3::CodeInvalidated
+        }
+        raw if raw == RuntimeExitV3::MemoryOperation as u32 => {
+            if state_rip != metadata.entry_rip + 10 || expected_retired != 1 {
+                return Err(ActiveCodeExecutionErrorV3::InvalidAccounting);
+            }
+            let nested_metadata = MemoryOperationMetadataV2 {
+                entry_rip: metadata.site.guest_rip(),
+                site: metadata.site,
+                source_bytes: {
+                    let mut bytes = [0; 8];
+                    bytes[..3].copy_from_slice(&metadata.source_bytes[10..13]);
+                    bytes
+                },
+                source_len: 3,
+                compile_flavor: od_jit::translation::CompileFlavor::S3_20bMemoryStoreV2,
+            };
+            let mut nested_context = context.memory;
+            nested_context.base.initial_budget = nested_context.base.remaining_budget;
+            nested_context.base.retired_instructions = 0;
+            match decode_memory_operation_v2_result(
+                &nested_metadata,
+                od_jit::runtime::RUNTIME_EXIT_V2_MEMORY_OPERATION,
+                &nested_context,
+            )
+            .map_err(|error| match error {
+                MemoryOperationExecutionErrorV2::MemoryError(memory) => {
+                    ActiveCodeExecutionErrorV3::MemoryError(memory)
+                }
+                MemoryOperationExecutionErrorV2::HelperBoundaryFailure { status } => {
+                    ActiveCodeExecutionErrorV3::HelperBoundaryFailure { status }
+                }
+                _ => ActiveCodeExecutionErrorV3::InvalidAccounting,
+            })? {
+                MemoryOperationExecutionResultV2 {
+                    exit: MemoryOperationExecutionExitV2::GuestFault(fault),
+                    ..
+                } => ActiveCodeExecutionExitV3::GuestFault(fault),
+                _ => return Err(ActiveCodeExecutionErrorV3::InvalidAccounting),
+            }
+        }
+        other => return Err(ActiveCodeExecutionErrorV3::InvalidExitTag(other)),
+    };
+    Ok(ActiveCodeExecutionResultV3 {
+        exit,
+        remaining_budget: context.memory.base.remaining_budget,
+        retired_instructions: context.memory.base.retired_instructions,
     })
 }
 
@@ -944,6 +1094,7 @@ struct ArenaSlot {
     generation: u64,
     metadata: Option<BlockMetadata>,
     memory_operation_metadata_v2: Option<MemoryOperationMetadataV2>,
+    active_code_metadata_v3: Option<ActiveCodeMetadataV3>,
 }
 
 struct ArenaInner {
@@ -977,6 +1128,12 @@ pub struct PublishedArenaMemoryStore {
     _block: PublishedArenaBlock,
 }
 
+/// Typed handle for a V3 active-code artifact. It cannot enter the V1 or V2
+/// publication/execution APIs.
+pub struct PublishedArenaActiveCodeV3 {
+    _block: PublishedArenaBlock,
+}
+
 impl PublishedArenaBackend {
     pub fn new(max_blocks: usize) -> Result<Self, PublishedArenaError> {
         if max_blocks == 0 || max_blocks > MAX_PUBLISHED_ARENA_BLOCKS {
@@ -997,6 +1154,7 @@ impl PublishedArenaBackend {
                 generation: 0,
                 metadata: None,
                 memory_operation_metadata_v2: None,
+                active_code_metadata_v3: None,
             });
             let mut free_slots = Vec::with_capacity(max_blocks);
             free_slots.extend((0..max_blocks).rev());
@@ -1024,13 +1182,16 @@ impl PublishedArenaBackend {
     }
 
     /// Maximum cache entries after reserving currently published typed V2
-    /// store slots in this same arena.
+    /// store and V3 active-code slots in this same arena.
     pub fn cached_block_capacity(&self) -> usize {
         let arena = self.arena.borrow();
         let reserved = arena
             .slots
             .iter()
-            .filter(|slot| slot.memory_operation_metadata_v2.is_some())
+            .filter(|slot| {
+                slot.memory_operation_metadata_v2.is_some()
+                    || slot.active_code_metadata_v3.is_some()
+            })
             .count();
         arena.slots.len().saturating_sub(reserved)
     }
@@ -1056,7 +1217,10 @@ impl Drop for PublishedArenaBlock {
         if slot.generation == self.generation {
             let block_metadata = slot.metadata.take();
             let memory_metadata = slot.memory_operation_metadata_v2.take();
-            let occupied = block_metadata.is_some() || memory_metadata.is_some();
+            let active_code_metadata = slot.active_code_metadata_v3.take();
+            let occupied = block_metadata.is_some()
+                || memory_metadata.is_some()
+                || active_code_metadata.is_some();
             if !occupied {
                 return;
             }
@@ -1121,6 +1285,26 @@ pub unsafe trait TrackedExecutableCodeOwner: od_isa::memory::GuestMemory {
         Option<TrackedCodeStorePreflightError>,
         bool,
     );
+
+    /// Validate the complete immutable source lease before the first guest
+    /// instruction executes. This check must not stage a write or mutate RAM.
+    fn validate_active_code_source_v3(
+        &mut self,
+        complete_region: TrackedCodeRegionV2<'_>,
+    ) -> Result<(), TrackedCodeStorePreflightError>;
+
+    /// Check that an active V3 artifact's not-yet-executed suffix does not
+    /// overlap the staged write. The executed prefix remains separately
+    /// eligible for a bounded `CodeInvalidated` exit.
+    fn validate_active_code_tail_v3(
+        &mut self,
+        complete_region: TrackedCodeRegionV2<'_>,
+        executed_prefix_length: usize,
+    );
+
+    /// Bind an invocation-local dirty output. The pointer stays valid until
+    /// this synchronous generated call and host result decode finish.
+    fn bind_code_dirty_output_v3(&mut self, output: Option<*mut u32>);
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1240,7 +1424,6 @@ impl PublishedArenaMemoryStore {
                 retired_instructions: 0,
             });
         }
-
         owner.preflight_code_store(
             &metadata.site,
             &metadata.source_bytes[..source_len],
@@ -1302,6 +1485,183 @@ impl PublishedArenaMemoryStore {
             result.exit = MemoryOperationExecutionExitV2::CodeInvalidated;
         }
         Ok(result)
+    }
+}
+
+impl PublishedArenaActiveCodeV3 {
+    /// Execute one verified three-instruction active-code artifact and apply
+    /// its backing notification only after the generated call/result decode.
+    pub fn execute_tracked_v3(
+        &self,
+        state: &mut od_isa::LongModeState,
+        owner: &mut dyn TrackedExecutableCodeOwner,
+        access_context: od_isa::memory::AccessContext,
+        initial_budget: u64,
+        stop_rip: Option<u64>,
+        stop_requested: &std::sync::atomic::AtomicU8,
+        mut notify: impl FnMut(od_jit::dispatch::CodeInvalidation),
+    ) -> Result<ActiveCodeExecutionResultV3, ActiveCodeExecutionErrorV3> {
+        let arena = self._block.arena.borrow();
+        let slot = arena
+            .slots
+            .get(self._block.slot_index)
+            .filter(|slot| slot.generation == self._block.generation)
+            .ok_or(ActiveCodeExecutionErrorV3::InvalidHandle)?;
+        let metadata = slot
+            .active_code_metadata_v3
+            .as_ref()
+            .ok_or(ActiveCodeExecutionErrorV3::InvalidMetadata)?;
+        if metadata.compile_flavor != od_jit::translation::CompileFlavor::S3_24aActiveCodeV3
+            || metadata.site.operation() != od_jit::runtime::MemorySiteOperationV2::Store
+            || metadata.site.instruction_index() != 0
+            || metadata.site.guest_rip() != metadata.entry_rip + 10
+            || metadata.site.next_rip() != metadata.entry_rip + 13
+            || &metadata.source_bytes[..2] != &[0x48, 0xBA]
+            || &metadata.source_bytes[10..13] != &[0x48, 0x89, 0x03]
+            || &metadata.source_bytes[13..15] != &[0x48, 0xB9]
+            || !metadata.site.matches_source_bytes(
+                &metadata.source_bytes[10..13],
+                od_jit::runtime::MemorySiteOperationV2::Store,
+            )
+        {
+            return Err(ActiveCodeExecutionErrorV3::InvalidMetadata);
+        }
+        if state.rip != metadata.entry_rip {
+            return Err(ActiveCodeExecutionErrorV3::EntryRipMismatch {
+                expected: metadata.entry_rip,
+                actual: state.rip,
+            });
+        }
+        if stop_rip == Some(state.rip) {
+            return Ok(active_code_result(
+                ActiveCodeExecutionExitV3::StopAddress,
+                initial_budget,
+                0,
+            ));
+        }
+        if stop_requested.load(Ordering::Acquire) != 0 {
+            return Ok(active_code_result(
+                ActiveCodeExecutionExitV3::StopRequested,
+                initial_budget,
+                0,
+            ));
+        }
+        if initial_budget == 0 {
+            return Ok(active_code_result(
+                ActiveCodeExecutionExitV3::BudgetExhausted,
+                0,
+                0,
+            ));
+        }
+        let code_offset = self
+            ._block
+            .slot_index
+            .checked_mul(ARENA_SLOT_BYTES)
+            .ok_or(ActiveCodeExecutionErrorV3::InvalidMetadata)?;
+
+        let region = TrackedCodeRegionV2 {
+            guest_rip: metadata.entry_rip,
+            source_bytes: &metadata.source_bytes[..13],
+        };
+        owner
+            .validate_active_code_source_v3(TrackedCodeRegionV2 {
+                guest_rip: metadata.entry_rip,
+                source_bytes: &metadata.source_bytes,
+            })
+            .map_err(ActiveCodeExecutionErrorV3::Preflight)?;
+        owner.preflight_code_store(
+            &metadata.site,
+            &metadata.source_bytes[10..13],
+            Some(region),
+            state,
+            access_context,
+        );
+        owner.validate_active_code_tail_v3(
+            TrackedCodeRegionV2 {
+                guest_rip: metadata.entry_rip,
+                source_bytes: &metadata.source_bytes,
+            },
+            13,
+        );
+
+        let sites = [metadata.site];
+        let mut context = od_jit::runtime::RuntimeContextV3 {
+            memory: od_jit::runtime::RuntimeContextV2 {
+                base: od_jit::runtime::RuntimeContextV1 {
+                    state,
+                    initial_budget,
+                    stop_rip_enabled: u32::from(stop_rip.is_some()),
+                    reserved: 0,
+                    stop_rip: stop_rip.unwrap_or(0),
+                    stop_requested: (stop_requested as *const std::sync::atomic::AtomicU8).cast(),
+                    remaining_budget: initial_budget,
+                    retired_instructions: 0,
+                },
+                memory_adapter: std::ptr::null_mut(),
+                memory_sites: sites.as_ptr(),
+                memory_site_count: 1,
+                last_memory_site: u32::MAX,
+                last_memory_status: od_jit::memory_bridge::MEMORY_HELPER_INVALID_ARGUMENT,
+                reserved: 0,
+                staged_load_value: 0,
+                memory_outcome: od_jit::memory_bridge::CheckedMemoryOutcomeV1::default(),
+            },
+            code_dirty: 0,
+            reserved: 0,
+            total_initial_budget: initial_budget,
+        };
+        context.memory.memory_outcome.status =
+            od_jit::memory_bridge::MEMORY_HELPER_INVALID_ARGUMENT;
+        let dirty_output = &mut context.code_dirty as *mut u32;
+        owner.bind_code_dirty_output_v3(Some(dirty_output));
+
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let result = {
+            let code_ptr = unsafe { arena.region.ptr().as_ptr().add(code_offset) };
+            let mut adapter =
+                od_jit::memory_bridge::CheckedMemoryAdapter::new(owner, access_context);
+            context.memory.memory_adapter = adapter.as_opaque_ptr();
+            // SAFETY: only this typed handle reaches the V3 entry; its arena
+            // slot and metadata, state, memory adapter and site table outlive
+            // generated execution and result decoding.
+            let entry: od_jit::runtime::BlockEntryV3 = unsafe { std::mem::transmute(code_ptr) };
+            // SAFETY: context members and owner dirty output are invocation-local.
+            let raw = unsafe { entry(&mut context) };
+            let decoded = decode_active_code_v3_result(metadata, raw, &context);
+            drop(adapter);
+            decoded
+        };
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let result: Result<_, ActiveCodeExecutionErrorV3> = {
+            let _ = (&context, metadata, code_offset);
+            Err(ActiveCodeExecutionErrorV3::InvalidMetadata)
+        };
+
+        owner.bind_code_dirty_output_v3(None);
+        // Release the arena borrow before notification can invalidate cached
+        // entries. Their handle drops must be able to reclaim slots now; `self`
+        // still pins the mapping for this typed V3 invocation.
+        drop(arena);
+        let (change, preflight_rejection, _) = owner.finish_code_store();
+        if let Some(change) = change {
+            notify(change);
+        }
+        if let Some(rejection) = preflight_rejection {
+            return Err(ActiveCodeExecutionErrorV3::Preflight(rejection));
+        }
+        result
+    }
+}
+
+fn active_code_result(
+    exit: ActiveCodeExecutionExitV3,
+    remaining_budget: u64,
+    retired_instructions: u64,
+) -> ActiveCodeExecutionResultV3 {
+    ActiveCodeExecutionResultV3 {
+        exit,
+        remaining_budget,
+        retired_instructions,
     }
 }
 
@@ -1368,6 +1728,7 @@ impl PublishedArenaBackend {
             slot.generation = generation;
             slot.metadata = None;
             slot.memory_operation_metadata_v2 = Some(metadata);
+            slot.active_code_metadata_v3 = None;
             // SAFETY: the checked slot range belongs to this arena; the source
             // vector is owned independently and cannot alias the MAP_JIT mapping.
             unsafe { write_mapping_bytes(slot_base, &code) };
@@ -1382,6 +1743,83 @@ impl PublishedArenaBackend {
             });
         }
 
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            let _ = (code, metadata);
+            Err(PublishedArenaError::Mapping(
+                ExecutableMemoryError::UnsupportedPlatform,
+            ))
+        }
+    }
+
+    /// Publish only the compiler-issued S3-24a three-instruction V3 artifact.
+    pub fn publish_active_code_block_v3(
+        &mut self,
+        block: &od_jit::memory_load_v2::ActiveCodeBlockV3,
+    ) -> Result<PublishedArenaActiveCodeV3, PublishedArenaError> {
+        if block.compile_flavor() != od_jit::translation::CompileFlavor::S3_24aActiveCodeV3
+            || block.source_bytes().len() != 23
+            || block.site().operation() != od_jit::runtime::MemorySiteOperationV2::Store
+        {
+            return Err(PublishedArenaError::InvalidBlockMetadata);
+        }
+        let code = block
+            .code()
+            .to_le_bytes()
+            .map_err(|_| PublishedArenaError::InvalidBlockMetadata)?;
+        if code.is_empty() || code.len() > ARENA_SLOT_BYTES {
+            return Err(PublishedArenaError::BlockTooLarge {
+                actual: code.len(),
+                max: ARENA_SLOT_BYTES,
+            });
+        }
+        let metadata = ActiveCodeMetadataV3 {
+            entry_rip: block.entry_rip(),
+            source_bytes: *block.source_bytes(),
+            site: *block.site(),
+            compile_flavor: block.compile_flavor(),
+        };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let mut arena = self.arena.borrow_mut();
+            let slot_index = *arena
+                .free_slots
+                .last()
+                .ok_or(PublishedArenaError::CapacityFull)?;
+            let generation = arena.slots[slot_index]
+                .generation
+                .checked_add(1)
+                .ok_or(PublishedArenaError::GenerationExhausted)?;
+            let offset = slot_index
+                .checked_mul(ARENA_SLOT_BYTES)
+                .ok_or(PublishedArenaError::SizeOverflow)?;
+            let end = offset
+                .checked_add(code.len())
+                .ok_or(PublishedArenaError::SizeOverflow)?;
+            if end > arena.region.len {
+                return Err(PublishedArenaError::SizeOverflow);
+            }
+            let slot_base = unsafe { arena.region.ptr().as_ptr().add(offset) };
+            let slot_base = NonNull::new(slot_base).ok_or(PublishedArenaError::SizeOverflow)?;
+            arena.free_slots.pop();
+            let slot = &mut arena.slots[slot_index];
+            slot.generation = generation;
+            slot.metadata = None;
+            slot.memory_operation_metadata_v2 = None;
+            slot.active_code_metadata_v3 = Some(metadata);
+            // SAFETY: the checked slot range is owned by this arena and the
+            // immutable compiler output cannot alias the executable mapping.
+            unsafe { write_mapping_bytes(slot_base, &code) };
+            drop(arena);
+            return Ok(PublishedArenaActiveCodeV3 {
+                _block: PublishedArenaBlock {
+                    arena: self.arena.clone(),
+                    owner_id: self.owner_id.clone(),
+                    slot_index,
+                    generation,
+                },
+            });
+        }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
             let _ = (code, metadata);
@@ -1452,6 +1890,7 @@ impl od_jit::dispatch::CachedBlockBackend for PublishedArenaBackend {
             slot.generation = generation;
             slot.metadata = Some(metadata);
             slot.memory_operation_metadata_v2 = None;
+            slot.active_code_metadata_v3 = None;
             // SAFETY: the checked slot range belongs to this arena; the source
             // `code` vector cannot alias the MAP_JIT mapping.
             unsafe { write_mapping_bytes(slot_base, &code) };
@@ -1918,6 +2357,7 @@ mod tests {
         RUNTIME_CONTEXT_REMAINING_BUDGET_OFFSET, RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET,
         RuntimeContextV1, RuntimeExitTag,
     };
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize};
 
     static JIT_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -1971,6 +2411,7 @@ mod tests {
         fail_write: bool,
         request_stop_on_write: bool,
         stop_byte: Option<std::sync::Arc<AtomicU8>>,
+        dirty_output: Option<*mut u32>,
     }
 
     impl TrackedCodeFixture {
@@ -2073,6 +2514,7 @@ mod tests {
                 fail_write: false,
                 request_stop_on_write: false,
                 stop_byte: None,
+                dirty_output: None,
             }
         }
 
@@ -2229,6 +2671,13 @@ mod tests {
             self.pending = Some(plan);
             self.pending_write_committed = true;
             self.write_count += 1;
+            if plan.intersects_code_region {
+                if let Some(output) = self.dirty_output {
+                    // SAFETY: bound only for this synchronous generated call;
+                    // caller unbinds after return and result decoding.
+                    unsafe { *output = 1 };
+                }
+            }
             if self.request_stop_on_write {
                 if let Some(stop) = &self.stop_byte {
                     stop.store(1, Ordering::Release);
@@ -2464,6 +2913,76 @@ mod tests {
             };
             let (change, intersects_code_region) = self.finish_guest_write();
             (change, preflight_rejection, intersects_code_region)
+        }
+
+        fn validate_active_code_source_v3(
+            &mut self,
+            complete_region: TrackedCodeRegionV2<'_>,
+        ) -> Result<(), TrackedCodeStorePreflightError> {
+            let (backing, offset) = self
+                .mapping_at(
+                    complete_region.guest_rip,
+                    complete_region.source_bytes.len(),
+                )
+                .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+            if self.backings[backing]
+                .bytes
+                .get(offset..offset + complete_region.source_bytes.len())
+                != Some(complete_region.source_bytes)
+            {
+                return Err(TrackedCodeStorePreflightError::ActiveSourceMismatch);
+            }
+            Ok(())
+        }
+
+        fn validate_active_code_tail_v3(
+            &mut self,
+            complete_region: TrackedCodeRegionV2<'_>,
+            executed_prefix_length: usize,
+        ) {
+            let validate = (|| {
+                if executed_prefix_length > complete_region.source_bytes.len() {
+                    return Err(TrackedCodeStorePreflightError::ActiveSourceMismatch);
+                }
+                let (backing, region_offset) = self
+                    .mapping_at(
+                        complete_region.guest_rip,
+                        complete_region.source_bytes.len(),
+                    )
+                    .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                if self.backings[backing]
+                    .bytes
+                    .get(region_offset..region_offset + complete_region.source_bytes.len())
+                    != Some(complete_region.source_bytes)
+                {
+                    return Err(TrackedCodeStorePreflightError::ActiveSourceMismatch);
+                }
+                let tail_start = region_offset
+                    .checked_add(executed_prefix_length)
+                    .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                let tail_end = region_offset
+                    .checked_add(complete_region.source_bytes.len())
+                    .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                if let Some(plan) = self.pending {
+                    let target_end = plan
+                        .offset
+                        .checked_add(8)
+                        .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
+                    if plan.backing == backing && plan.offset < tail_end && tail_start < target_end
+                    {
+                        return Err(TrackedCodeStorePreflightError::ActiveSourceOverlap);
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(error) = validate {
+                self.pending = None;
+                self.preflight_rejection = Some(error);
+            }
+        }
+
+        fn bind_code_dirty_output_v3(&mut self, output: Option<*mut u32>) {
+            self.dirty_output = output;
         }
     }
 
@@ -7697,6 +8216,598 @@ mod tests {
         assert_eq!(alias_state.gpr[2], new);
         assert_eq!(jit_cache.counters().successful_publications, 7);
         drop(store);
+    }
+
+    #[test]
+    fn active_code_v3_exits_on_dirty_prefix_and_finishes_unrelated_store_in_one_entry() {
+        let _guard = jit_test_lock();
+        let entry = 0x1000_u64;
+        let old = 0x1122_3344_5566_7788_u64;
+        let new = 0x8877_6655_4433_2211_u64;
+        let sentinel = 0xCAFE_BABE_1234_5678_u64;
+        let old_rcx = 0xA5A5_5A5A_F0F0_0F0F_u64;
+        let mut program = vec![0x48, 0xBA]; // MOV RDX, OLD
+        program.extend_from_slice(&old.to_le_bytes());
+        program.extend_from_slice(&[0x48, 0x89, 0x03]); // MOV [RBX], RAX
+        program.extend_from_slice(&[0x48, 0xB9]); // MOV RCX, SENTINEL
+        program.extend_from_slice(&sentinel.to_le_bytes());
+        assert_eq!(program.len(), 23);
+        let mut jit_owner =
+            TrackedCodeFixture::new(&program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
+        let mut interpreter_owner =
+            TrackedCodeFixture::new(&program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
+        for owner in [&mut jit_owner, &mut interpreter_owner] {
+            owner.backings[0].bytes[..program.len()].copy_from_slice(&program);
+            owner.active_source_rip = entry + 10;
+            owner.active_source = (0, 10, 3);
+        }
+        let compiled = od_jit::memory_load_v2::compile_active_code_block_v3(
+            CodeView::new(entry, &program).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let mut arena = PublishedArenaBackend::new(6).unwrap();
+        let active = arena.publish_active_code_block_v3(&compiled).unwrap();
+        let mut cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            4,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        run_tracked_code_block(&jit_owner, entry, &mut cache, &mut arena);
+        run_tracked_code_block(&jit_owner, entry + 13, &mut cache, &mut arena);
+        run_tracked_code_block(&jit_owner, 0x4000, &mut cache, &mut arena);
+        assert_eq!(cache.resident_entries(), 3);
+
+        let initial = od_isa::LongModeState {
+            rip: entry,
+            rflags: 0xA55,
+            gpr: {
+                let mut gpr = [0_u64; 16];
+                gpr[0] = new;
+                gpr[1] = old_rcx;
+                gpr[3] = entry + 2; // overwrite only the completed imm64 prefix
+                gpr
+            },
+            ..od_isa::LongModeState::default()
+        };
+        let mut interpreted = initial.clone();
+        let prefix_step = od_isa::execute::step(
+            &mut interpreted,
+            &mut interpreter_owner,
+            AccessContext::default(),
+        );
+        assert!(matches!(
+            prefix_step,
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        ));
+        assert_eq!(interpreted.rip, entry + 10);
+        assert_eq!(interpreted.gpr[2], old);
+        interpreter_owner.begin_interpreter_write_scope(entry + 10, 3);
+        let store_step = od_isa::execute::step(
+            &mut interpreted,
+            &mut interpreter_owner,
+            AccessContext::default(),
+        );
+        let (interpreter_change, _) = interpreter_owner.finish_guest_write();
+        interpreter_owner.end_interpreter_write_scope();
+        assert!(matches!(
+            store_step,
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        ));
+        assert_eq!(interpreted.rip, entry + 13);
+        assert_eq!(interpreter_owner.write_count, 1);
+        assert_eq!(
+            &interpreter_owner.backings[0].bytes[2..10],
+            &new.to_le_bytes()
+        );
+
+        let mut native_state = initial.clone();
+        let mut invalidated = 0;
+        let native = active
+            .execute_tracked_v3(
+                &mut native_state,
+                &mut jit_owner,
+                AccessContext::default(),
+                3,
+                None,
+                &AtomicU8::new(0),
+                |change| invalidated += cache.invalidate(change),
+            )
+            .unwrap();
+        assert_eq!(native.exit, ActiveCodeExecutionExitV3::CodeInvalidated);
+        assert_eq!(native.remaining_budget, 1);
+        assert_eq!(native.retired_instructions, 2);
+        assert_eq!(native_state, interpreted);
+        assert_eq!(
+            jit_owner.backings[0].bytes,
+            interpreter_owner.backings[0].bytes
+        );
+        assert_eq!(
+            jit_owner.backings[0].version,
+            interpreter_owner.backings[0].version
+        );
+        assert_eq!(jit_owner.write_count, 1);
+        assert_eq!(invalidated, 2, "prefix and tail entries are stale");
+        assert_eq!(cache.resident_entries(), 1, "unrelated C remains cached");
+        assert_eq!(
+            arena.available_slots(),
+            4,
+            "invalidated handles reclaim slots"
+        );
+        assert_eq!(
+            interpreter_change,
+            Some(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                backing: TrackedCodeFixture::id(2),
+                current_version: od_jit::translation::BackingVersion::new(TrackedCodeFixture::nz(
+                    2
+                )),
+            })
+        );
+
+        // Redispatch from the committed tail executes it from fresh code state.
+        let (fresh_tail, resumed) = run_tracked_code_block_with_state(
+            &jit_owner,
+            entry + 13,
+            native_state.clone(),
+            &mut cache,
+            &mut arena,
+        );
+        assert_eq!(fresh_tail.retired_instructions, 1);
+        assert_eq!(
+            arena.available_slots(),
+            3,
+            "fresh tail reuses a released slot"
+        );
+        let tail_step = od_isa::execute::step(
+            &mut interpreted,
+            &mut interpreter_owner,
+            AccessContext::default(),
+        );
+        assert!(matches!(
+            tail_step,
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        ));
+        assert_eq!(resumed.gpr[1], sentinel);
+        assert_eq!(resumed, interpreted);
+
+        // Re-entry also recompiles the changed prefix and reads NEW.
+        let mut reentry = resumed.clone();
+        reentry.rip = entry;
+        let (fresh_prefix, reentered) =
+            run_tracked_code_block_with_state(&jit_owner, entry, reentry, &mut cache, &mut arena);
+        let mut interpreter_reentry = interpreted.clone();
+        interpreter_reentry.rip = entry;
+        let reentry_step = od_isa::execute::step(
+            &mut interpreter_reentry,
+            &mut interpreter_owner,
+            AccessContext::default(),
+        );
+        assert!(matches!(
+            reentry_step,
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        ));
+        assert_eq!(fresh_prefix.retired_instructions, 1);
+        assert_eq!(
+            arena.available_slots(),
+            2,
+            "re-entry reuses another released slot"
+        );
+        assert_eq!(reentered.gpr[2], new);
+        assert_eq!(reentered, interpreter_reentry);
+
+        // An unrelated store in the same generated entry reaches the tail.
+        let mut unrelated_owner =
+            TrackedCodeFixture::new(&program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
+        unrelated_owner.backings[0].bytes[..program.len()].copy_from_slice(&program);
+        unrelated_owner.active_source_rip = entry + 10;
+        unrelated_owner.active_source = (0, 10, 3);
+        let mut unrelated_state = initial;
+        unrelated_state.gpr[3] = 0x2000;
+        let mut unrelated_interpreter_state = unrelated_state.clone();
+        let mut unrelated_interpreter_owner =
+            TrackedCodeFixture::new(&program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
+        unrelated_interpreter_owner.backings[0].bytes[..program.len()].copy_from_slice(&program);
+        unrelated_interpreter_owner.active_source_rip = entry + 10;
+        unrelated_interpreter_owner.active_source = (0, 10, 3);
+        assert!(matches!(
+            od_isa::execute::step(
+                &mut unrelated_interpreter_state,
+                &mut unrelated_interpreter_owner,
+                AccessContext::default(),
+            ),
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        ));
+        unrelated_interpreter_owner.begin_interpreter_write_scope(entry + 10, 3);
+        assert!(matches!(
+            od_isa::execute::step(
+                &mut unrelated_interpreter_state,
+                &mut unrelated_interpreter_owner,
+                AccessContext::default(),
+            ),
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        ));
+        let _ = unrelated_interpreter_owner.finish_guest_write();
+        unrelated_interpreter_owner.end_interpreter_write_scope();
+        assert!(matches!(
+            od_isa::execute::step(
+                &mut unrelated_interpreter_state,
+                &mut unrelated_interpreter_owner,
+                AccessContext::default(),
+            ),
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        ));
+        let unrelated = active
+            .execute_tracked_v3(
+                &mut unrelated_state,
+                &mut unrelated_owner,
+                AccessContext::default(),
+                3,
+                None,
+                &AtomicU8::new(0),
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(unrelated.exit, ActiveCodeExecutionExitV3::Complete);
+        assert_eq!(unrelated.remaining_budget, 0);
+        assert_eq!(unrelated.retired_instructions, 3);
+        assert_eq!(unrelated_state.rip, entry + 23);
+        assert_eq!(unrelated_state.gpr[2], old);
+        assert_eq!(unrelated_state.gpr[1], sentinel);
+        assert_eq!(unrelated_owner.write_count, 1);
+        assert_eq!(unrelated_state, unrelated_interpreter_state);
+        assert_eq!(
+            unrelated_owner.write_count,
+            unrelated_interpreter_owner.write_count
+        );
+        for (native_backing, interpreted_backing) in unrelated_owner
+            .backings
+            .iter()
+            .zip(&unrelated_interpreter_owner.backings)
+        {
+            assert_eq!(native_backing.bytes, interpreted_backing.bytes);
+            assert_eq!(native_backing.version, interpreted_backing.version);
+        }
+    }
+
+    #[test]
+    fn active_code_v3_guards_faults_aliases_and_committed_stop_are_precise() {
+        let _guard = jit_test_lock();
+        let entry = 0x1000_u64;
+        let old = 0x1122_3344_5566_7788_u64;
+        let new = 0x8877_6655_4433_2211_u64;
+        let sentinel = 0xCAFE_BABE_1234_5678_u64;
+        let mut program = vec![0x48, 0xBA];
+        program.extend_from_slice(&old.to_le_bytes());
+        program.extend_from_slice(&[0x48, 0x89, 0x03]);
+        program.extend_from_slice(&[0x48, 0xB9]);
+        program.extend_from_slice(&sentinel.to_le_bytes());
+        let compiled = od_jit::memory_load_v2::compile_active_code_block_v3(
+            CodeView::new(entry, &program).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let mut arena = PublishedArenaBackend::new(4).unwrap();
+        let active = arena.publish_active_code_block_v3(&compiled).unwrap();
+        let make_owner = || {
+            let mut owner =
+                TrackedCodeFixture::new(&program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
+            owner.backings[0].bytes[..program.len()].copy_from_slice(&program);
+            owner.active_source_rip = entry + 10;
+            owner.active_source = (0, 10, 3);
+            owner
+        };
+        let mut initial = od_isa::LongModeState {
+            rip: entry,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        initial.gpr[0] = new;
+        initial.gpr[1] = 0xA5A5_5A5A_F0F0_0F0F;
+        initial.gpr[3] = entry + 2;
+
+        let mut stale_state = initial.clone();
+        stale_state.rip = entry + 1;
+        let mut untouched_owner = make_owner();
+        assert_eq!(
+            active.execute_tracked_v3(
+                &mut stale_state,
+                &mut untouched_owner,
+                AccessContext::default(),
+                3,
+                None,
+                &AtomicU8::new(0),
+                |_| {},
+            ),
+            Err(ActiveCodeExecutionErrorV3::EntryRipMismatch {
+                expected: entry,
+                actual: entry + 1,
+            })
+        );
+        assert_eq!(untouched_owner.write_count, 0);
+
+        // A changed source lease is rejected before the prefix can execute,
+        // regardless of whether the budget would later stop at the store.
+        for budget in [1, 3] {
+            let mut stale_owner = make_owner();
+            stale_owner.backings[0].bytes[0] ^= 1;
+            let stale_bytes = stale_owner.backings[0].bytes.clone();
+            let stale_version = stale_owner.backings[0].version;
+            let mut stale_state = initial.clone();
+            let before_state = stale_state.clone();
+            assert_eq!(
+                active.execute_tracked_v3(
+                    &mut stale_state,
+                    &mut stale_owner,
+                    AccessContext::default(),
+                    budget,
+                    None,
+                    &AtomicU8::new(0),
+                    |_| {},
+                ),
+                Err(ActiveCodeExecutionErrorV3::Preflight(
+                    TrackedCodeStorePreflightError::ActiveSourceMismatch
+                ))
+            );
+            assert_eq!(stale_state, before_state);
+            assert_eq!(stale_owner.backings[0].bytes, stale_bytes);
+            assert_eq!(stale_owner.backings[0].version, stale_version);
+            assert_eq!(stale_owner.write_count, 0);
+        }
+
+        for (budget, stop_rip, stop_requested, expected_exit, expected_rip, expected_retired) in [
+            (
+                0,
+                None,
+                0,
+                ActiveCodeExecutionExitV3::BudgetExhausted,
+                entry,
+                0,
+            ),
+            (
+                3,
+                Some(entry),
+                0,
+                ActiveCodeExecutionExitV3::StopAddress,
+                entry,
+                0,
+            ),
+            (
+                3,
+                None,
+                1,
+                ActiveCodeExecutionExitV3::StopRequested,
+                entry,
+                0,
+            ),
+            (
+                1,
+                None,
+                0,
+                ActiveCodeExecutionExitV3::BudgetExhausted,
+                entry + 10,
+                1,
+            ),
+            (
+                3,
+                Some(entry + 10),
+                0,
+                ActiveCodeExecutionExitV3::StopAddress,
+                entry + 10,
+                1,
+            ),
+        ] {
+            let mut owner = make_owner();
+            let mut state = initial.clone();
+            let before = state.clone();
+            let stop = AtomicU8::new(stop_requested);
+            let result = active
+                .execute_tracked_v3(
+                    &mut state,
+                    &mut owner,
+                    AccessContext::default(),
+                    budget,
+                    stop_rip,
+                    &stop,
+                    |_| {},
+                )
+                .unwrap();
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.retired_instructions, expected_retired);
+            assert_eq!(state.rip, expected_rip);
+            if expected_retired == 0 {
+                assert_eq!(state, before);
+                assert_eq!(owner.write_count, 0);
+            } else {
+                assert_eq!(
+                    state.gpr[2], old,
+                    "committed prefix survives later boundary"
+                );
+                assert_eq!(state.gpr[1], initial.gpr[1], "tail stays unexecuted");
+                assert_eq!(owner.write_count, 0);
+            }
+        }
+
+        // A successful write through an alias of the completed prefix dirties
+        // the active block and exits before its native tail.
+        let mut alias_owner = make_owner();
+        let mut alias_state = initial.clone();
+        alias_state.gpr[3] = 0x5002;
+        let alias_result = active
+            .execute_tracked_v3(
+                &mut alias_state,
+                &mut alias_owner,
+                AccessContext::default(),
+                3,
+                None,
+                &AtomicU8::new(0),
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(
+            alias_result.exit,
+            ActiveCodeExecutionExitV3::CodeInvalidated
+        );
+        assert_eq!(alias_result.retired_instructions, 2);
+        assert_eq!(alias_state.gpr[1], initial.gpr[1]);
+        assert_eq!(&alias_owner.backings[0].bytes[2..10], &new.to_le_bytes());
+
+        // STOP raised synchronously by the successful write cannot skip the
+        // dirty exit; host invalidation still runs before the next dispatch.
+        let mut stop_owner = make_owner();
+        stop_owner.request_stop_on_write = true;
+        let stop = Arc::new(AtomicU8::new(0));
+        stop_owner.stop_byte = Some(stop.clone());
+        let mut stop_state = initial.clone();
+        let stop_result = active
+            .execute_tracked_v3(
+                &mut stop_state,
+                &mut stop_owner,
+                AccessContext::default(),
+                3,
+                None,
+                &stop,
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(stop_result.exit, ActiveCodeExecutionExitV3::CodeInvalidated);
+        assert_eq!(stop.load(Ordering::Acquire), 1);
+        assert_eq!(stop_state.rip, entry + 13);
+        assert_eq!(stop_state.gpr[1], initial.gpr[1]);
+
+        // Noncanonical address faults after the MOV RDX prefix, preserving the
+        // faulting store RIP and no-write state; interpreter gives same fault.
+        let mut fault_owner = make_owner();
+        let mut interpreter_owner = make_owner();
+        let mut fault_state = initial.clone();
+        fault_state.gpr[3] = 0x0000_8000_0000_0000;
+        let mut interpreter_state = fault_state.clone();
+        let prefix = od_isa::execute::step(
+            &mut interpreter_state,
+            &mut interpreter_owner,
+            AccessContext::default(),
+        );
+        assert!(matches!(prefix, Ok(od_isa::execute::StepOutcome::Advanced)));
+        let interpreter_fault = od_isa::execute::step(
+            &mut interpreter_state,
+            &mut interpreter_owner,
+            AccessContext::default(),
+        );
+        let native_fault = active
+            .execute_tracked_v3(
+                &mut fault_state,
+                &mut fault_owner,
+                AccessContext::default(),
+                3,
+                None,
+                &AtomicU8::new(0),
+                |_| {},
+            )
+            .unwrap();
+        let expected_fault = match interpreter_fault {
+            Ok(od_isa::execute::StepOutcome::Fault(fault)) => fault,
+            other => panic!("expected architectural fault, got {other:?}"),
+        };
+        assert_eq!(
+            native_fault.exit,
+            ActiveCodeExecutionExitV3::GuestFault(expected_fault)
+        );
+        assert_eq!(native_fault.remaining_budget, 2);
+        assert_eq!(native_fault.retired_instructions, 1);
+        assert_eq!(fault_state.rip, entry + 10);
+        assert_eq!(fault_state, interpreter_state);
+        assert_eq!(fault_owner.write_count, 0);
+        assert_eq!(
+            fault_owner.backings[0].bytes,
+            interpreter_owner.backings[0].bytes
+        );
+        assert_eq!(
+            fault_owner.backings[0].version,
+            interpreter_owner.backings[0].version
+        );
+
+        // The dirty exit takes priority after the store commits even when
+        // that store exhausts the instruction budget.
+        let mut budget_owner = make_owner();
+        let mut budget_state = initial.clone();
+        let budget_result = active
+            .execute_tracked_v3(
+                &mut budget_state,
+                &mut budget_owner,
+                AccessContext::default(),
+                2,
+                None,
+                &AtomicU8::new(0),
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(
+            budget_result.exit,
+            ActiveCodeExecutionExitV3::CodeInvalidated
+        );
+        assert_eq!(budget_result.remaining_budget, 0);
+        assert_eq!(budget_result.retired_instructions, 2);
+        assert_eq!(budget_state.rip, entry + 13);
+        assert_eq!(budget_owner.write_count, 1);
+
+        // The owner rejects attempts to overwrite the not-yet-executed tail,
+        // including through the fixture's executable alias.
+        for tail_target in [entry + 15, 0x500F] {
+            let mut tail_owner = make_owner();
+            let before_bytes = tail_owner.backings[0].bytes.clone();
+            let before_version = tail_owner.backings[0].version;
+            let mut tail_state = initial.clone();
+            tail_state.gpr[3] = tail_target;
+            let before_state = tail_state.clone();
+            assert_eq!(
+                active.execute_tracked_v3(
+                    &mut tail_state,
+                    &mut tail_owner,
+                    AccessContext::default(),
+                    3,
+                    None,
+                    &AtomicU8::new(0),
+                    |_| {},
+                ),
+                Err(ActiveCodeExecutionErrorV3::Preflight(
+                    TrackedCodeStorePreflightError::ActiveSourceOverlap
+                ))
+            );
+            assert_eq!(tail_state.rip, entry + 10);
+            assert_eq!(tail_state.gpr[2], old);
+            assert_eq!(tail_state.gpr[1], before_state.gpr[1]);
+            assert_eq!(tail_owner.backings[0].bytes, before_bytes);
+            assert_eq!(tail_owner.backings[0].version, before_version);
+            assert_eq!(tail_owner.write_count, 0);
+        }
+
+        // A backend write failure is returned as a host memory error after the
+        // committed prefix; no bytes, version, or write count change.
+        let mut backend_owner = make_owner();
+        backend_owner.fail_write = true;
+        let before_bytes = backend_owner.backings[1].bytes.clone();
+        let before_version = backend_owner.backings[1].version;
+        let mut backend_state = initial.clone();
+        let backend_result = active.execute_tracked_v3(
+            &mut backend_state,
+            &mut backend_owner,
+            AccessContext::default(),
+            3,
+            None,
+            &AtomicU8::new(0),
+            |_| {},
+        );
+        assert!(matches!(
+            backend_result,
+            Err(ActiveCodeExecutionErrorV3::MemoryError(_))
+                | Err(ActiveCodeExecutionErrorV3::HelperBoundaryFailure { .. })
+        ));
+        assert_eq!(backend_state.rip, entry + 10);
+        assert_eq!(backend_state.gpr[2], old);
+        assert_eq!(backend_state.gpr[1], initial.gpr[1]);
+        assert_eq!(backend_owner.backings[1].bytes, before_bytes);
+        assert_eq!(backend_owner.backings[1].version, before_version);
+        assert_eq!(backend_owner.write_count, 0);
     }
 
     #[test]
