@@ -2399,6 +2399,68 @@ mod tests {
     }
 
     #[test]
+    fn ir_rbp_rbp_disp8_has_exact_dual_register_descriptor() {
+        for (opcode, access) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for displacement in [i8::MIN, -1, 0, i8::MAX] {
+                let bytes = [0x48, opcode, 0x6d, displacement as u8];
+                let code = CodeView::new(0x2820, &bytes).unwrap();
+                let (site, source) = match access {
+                    MemorySiteOperationV2::Load => {
+                        let ir = compile_ir_memory_load_block_v2(code, 0x2820).unwrap();
+                        let direct = compile_memory_load_block_v2(code, 0x2820).unwrap();
+                        assert_eq!(ir.site(), direct.site());
+                        (ir.site().clone(), ir.source_bytes().to_vec())
+                    }
+                    MemorySiteOperationV2::Store => {
+                        let ir = compile_ir_memory_store_block_v2(code, 0x2820).unwrap();
+                        let direct = compile_memory_store_block_v2(code, 0x2820).unwrap();
+                        assert_eq!(ir.site(), direct.site());
+                        (ir.site().clone(), ir.source_bytes().to_vec())
+                    }
+                };
+                assert_eq!(source, bytes);
+                assert_eq!(site.guest_rip(), 0x2820);
+                assert_eq!(site.next_rip(), 0x2824);
+                assert_eq!(site.operand().base, AddressBase::Register(Register::Rbp));
+                assert_eq!(site.operand().index, None);
+                assert_eq!(site.operand().scale, 1);
+                assert_eq!(site.operand().displacement, i64::from(displacement));
+                assert_eq!(
+                    match access {
+                        MemorySiteOperationV2::Load => site.destination(),
+                        MemorySiteOperationV2::Store => site.source(),
+                    },
+                    Some(5)
+                );
+                assert!(site.matches_source_bytes(&bytes, access));
+            }
+
+            for bytes in [
+                vec![0x48, opcode, 0x6d],             // missing displacement
+                vec![0x48, opcode, 0x65, 0],          // RSP data with RBP base
+                vec![0x48, opcode, 0xad, 0, 0, 0, 0], // RBP data with disp32
+                vec![0x48, opcode, 0x6c, 0x24, 0],    // SIB form
+                vec![0x67, 0x48, opcode, 0x6d, 0],    // addr32
+                vec![0x48, opcode, 0x6d, 0, 0x90],    // trailing byte
+            ] {
+                let code = CodeView::new(0x2820, &bytes).unwrap();
+                let result = match access {
+                    MemorySiteOperationV2::Load => {
+                        compile_ir_memory_load_block_v2(code, 0x2820).map(|_| ())
+                    }
+                    MemorySiteOperationV2::Store => {
+                        compile_ir_memory_store_block_v2(code, 0x2820).map(|_| ())
+                    }
+                };
+                assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
+            }
+        }
+    }
+
+    #[test]
     fn ir_address32_sib_no_displacement_has_exact_qword_descriptor() {
         for (opcode, access) in [
             (0x8b, MemorySiteOperationV2::Load),

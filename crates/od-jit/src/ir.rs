@@ -344,6 +344,7 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                     if !is_scoped_memory_data_operand(
                         *operand,
                         instruction_length(program, active_instruction),
+                        src.0,
                     ) {
                         return Err(VerifyError::InvalidGpr {
                             operation: operation_index,
@@ -404,7 +405,7 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
             } => {
                 require_active(active_instruction, operation_index)?;
                 if register.0 == 4 || register.0 == 5 {
-                    let valid_rsp_load = matches!(
+                    let valid_scoped_data_load = matches!(
                         program.operations.get(operation_index.wrapping_sub(1)),
                         Some(Operation::CheckedLoad {
                             dst: loaded_value,
@@ -413,10 +414,11 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                             if *loaded_value == *src
                                 && is_scoped_memory_data_operand(
                                 *operand,
-                                instruction_length(program, active_instruction)
+                                instruction_length(program, active_instruction),
+                                register.0,
                             )
                     );
-                    if !valid_rsp_load {
+                    if !valid_scoped_data_load {
                         return Err(VerifyError::InvalidGpr {
                             operation: operation_index,
                             register: register.0,
@@ -689,17 +691,37 @@ fn validate_gpr(register: GuestGpr, operation: usize) -> Result<(), VerifyError>
     }
 }
 
-fn is_scoped_memory_data_operand(operand: MemoryOperand, instruction_length: u64) -> bool {
-    instruction_length == 3
-        && operand.address_size == od_isa::OperandSize::Qword
+fn is_scoped_memory_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+    data_register: u8,
+) -> bool {
+    operand.address_size == od_isa::OperandSize::Qword
         && operand.size == od_isa::OperandSize::Qword
         && operand.index.is_none()
         && operand.scale == 1
-        && operand.displacement == 0
-        && matches!(
-            operand.base,
-            AddressBase::Register(register) if (register as u8) < 4
-        )
+        && match data_register {
+            4 => {
+                instruction_length == 3
+                    && operand.displacement == 0
+                    && matches!(
+                        operand.base,
+                        AddressBase::Register(register) if (register as u8) < 4
+                    )
+            }
+            5 => {
+                (instruction_length == 3
+                    && operand.displacement == 0
+                    && matches!(
+                        operand.base,
+                        AddressBase::Register(register) if (register as u8) < 4
+                    ))
+                    || (instruction_length == 4
+                        && (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement)
+                        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp)))
+            }
+            _ => false,
+        }
 }
 
 fn validate_flags(flags: FlagEffect, operation: usize) -> Result<(), VerifyError> {

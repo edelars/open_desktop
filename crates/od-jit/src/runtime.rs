@@ -134,21 +134,36 @@ impl MemorySiteV2 {
             Some(length) => length,
             None => return false,
         };
-        let scoped_data_profile = length == 3
-            && self.operand.address_size == od_isa::OperandSize::Qword
+        let data_register = match self.operation {
+            MemorySiteOperationV2::Load => self.destination,
+            MemorySiteOperationV2::Store => self.source,
+        };
+        let base_is_low_gpr = matches!(
+            self.operand.base,
+            od_isa::long_decode::AddressBase::Register(
+                od_isa::Register::Rax
+                    | od_isa::Register::Rcx
+                    | od_isa::Register::Rdx
+                    | od_isa::Register::Rbx
+            )
+        );
+        let scoped_data_profile = self.operand.address_size == od_isa::OperandSize::Qword
             && self.operand.size == od_isa::OperandSize::Qword
             && self.operand.index.is_none()
             && self.operand.scale == 1
-            && self.operand.displacement == 0
-            && matches!(
-                self.operand.base,
-                od_isa::long_decode::AddressBase::Register(
-                    od_isa::Register::Rax
-                        | od_isa::Register::Rcx
-                        | od_isa::Register::Rdx
-                        | od_isa::Register::Rbx
-                )
-            );
+            && match data_register {
+                Some(4) => length == 3 && self.operand.displacement == 0 && base_is_low_gpr,
+                Some(5) => {
+                    (length == 3 && self.operand.displacement == 0 && base_is_low_gpr)
+                        || (length == 4
+                            && i8::try_from(self.operand.displacement).is_ok()
+                            && matches!(
+                                self.operand.base,
+                                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
+                            ))
+                }
+                _ => false,
+            };
         let register_profile = match self.operation {
             MemorySiteOperationV2::Load => {
                 self.destination.is_some_and(|register| {
@@ -377,7 +392,9 @@ impl MemorySiteV2 {
         let data_register = (modrm >> 3) & 7;
         if mode == 3
             || data_register > 5
-            || data_register >= 4 && !(mode == 0 && modrm & 7 < 4 && source.len() == 3)
+            || data_register >= 4
+                && !((mode == 0 && modrm & 7 < 4 && source.len() == 3)
+                    || (data_register == 5 && mode == 1 && modrm == 0x6d && source.len() == 4))
         {
             return false;
         }

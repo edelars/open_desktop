@@ -1868,6 +1868,27 @@ The private frame uniformly stages six GPRs RAX..RBP at `SP+56..103`, flags at
 beyond it. RuntimeContext and C ABI layouts are unchanged. See the
 [S3-20aa report](../reports/STAGE_3_S3-20aa_2026-10-27.md).
 
+#### S3-20ab: RBP as qword MOV data and signed disp8 base
+
+Admit only exact singleton `48 8B/89 6D ib`: ModRM `mod=01`, `reg=RBP`,
+`r/m=RBP`, signed disp8, qword data, 64-bit effective address and four source
+bytes. The existing decoder `MemoryOperand` and `access_address_48` remain the
+sole source of address semantics. Generic GPR validation is unchanged, and no
+disp32, SIB, prefix, other register combination, pair, V3 or frame-layout
+change is included. Existing RBP-data-only, RBP-base-only and RSP-data forms
+remain exact separate profiles.
+
+For `MOV RBP,[RBP+disp8]`, address calculation reads entry RBP and commits the
+loaded destination only after a successful access. For `MOV [RBP+disp8],RBP`,
+both effective address and full qword payload come from old RBP. Direct V2,
+shared IR, interpreter and bounded-dispatch tests cover signed displacement
+boundaries and complete state/RAM/callback/retirement parity. A current
+noncanonical address faults as #SS without callback or architectural commit.
+After a successful load of a noncanonical RBP, a later RBP-based instruction
+faults at its own RIP while retaining the earlier commit; budget and callback
+STOP continuation do not repeat the first access. See the
+[S3-20ab report](../reports/STAGE_3_S3-20ab_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,
