@@ -12380,6 +12380,54 @@ fn punpcklqdq_literal_cli_fixture_executes_and_keeps_jit_denied() {
 }
 
 #[test]
+fn punpckhqdq_literal_cli_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_31_punpckhqdq_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPunpckhqdqRegV1
+    );
+    for rejected in [
+        "0f6dc1", // PUNPCKHQDQ has no bare MMX form.
+        "f2660f6dc1",
+        "f3660f6dc1",
+        "67660f6dc1",
+        "f0660f6dc1",
+        "66480f6dc1",
+        "66420f6dc1",
+        "660f6d01",
+        "660f6d",
+        "c5f96dc1",
+        "c4e1796dc1",
+        "62f17d086dc1",
+    ] {
+        let mut invalid = loaded.fixture.clone();
+        invalid.memory[0].initial_bytes_hex = rejected.to_string();
+        invalid.memory[0].length = (rejected.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(invalid.memory[0].length as usize);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + u64::from(invalid.memory[0].length),
+        ));
+        assert!(invalid.to_json().is_err(), "schema admitted {rejected}");
+    }
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PUNPCKHQDQ snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[8],
+        "08090a0b0c0d0e0f88898a8b8c8d8e8f"
+    );
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[9],
+        "808182838485868788898a8b8c8d8e8f"
+    );
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
 fn pcmpeqw_literal_cli_fixture_executes_and_keeps_jit_denied() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_19_pcmpeqw_register.case.json");

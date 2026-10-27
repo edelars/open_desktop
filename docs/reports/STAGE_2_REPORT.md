@@ -12733,3 +12733,34 @@ completed; it reported the existing `include/open_desktop/host_abi.h` extractor
 warning. These results establish only the local interpreter/profile behavior;
 S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation, and the deferred
 combined Mac mini/SSH acceptance remain open.
+
+## S2-35.31 — local PUNPCKHQDQ XMM register slice
+
+Added the local-only profile `s2-long-punpckhqdq-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 6D /r`, ModR/M.mod=3 and XMM0–15. ModR/M.reg
+selects the destination and ModR/M.r/m selects the source. The complete
+destination becomes the little-endian u64 qwords `[old_DEST[1], SRC[1]]`; both
+input low qwords are ignored. PUNPCKHQDQ has no MMX form, so a missing
+mandatory `66` is rejected.
+
+The test sentinel uses destination high qword `0f0e0d0c0b0a0908` and source
+high qword `8f8e8d8c8b8a8988`, producing exactly those qwords in the
+destination. Tests cover self-aliasing, all 256 values in every consumed byte,
+all 128 walking high-half bits, low-half independence, the full 16×16 XMM/REX
+matrix, complete state preservation, missing state, truncation, STOP/budget
+atomicity, and zero data-memory callbacks. Decoder and schema negatives include
+missing `66`, extra/unsupported prefixes, memory form, REX.W/X, and VEX/EVEX.
+A handwritten literal XMM8/XMM9 fixture runs in the interpreter; JIT and native
+execution are explicitly denied.
+
+`cargo test -p od-isa punpckhqdq --offline` passed (4 tests), and the focused
+`od-runner` fixture test passed (1). `cargo test --workspace --all-targets
+--offline --quiet`, host and `x86_64-unknown-linux-gnu` workspace all-target
+checks, and `cargo fmt --all -- --check` passed. Independent `gpt-6.1-sol`
+medium-effort review found no functional defects; it noted two stale test labels,
+which were corrected. `graphify update .` completed with the existing
+`include/open_desktop/host_abi.h` extractor warning. Native Linux-gated behavior
+was compile-checked on this Darwin host but not executed. These results establish
+only local interpreter/profile behavior; S2-34, S2-35, global
+`S2-35 → S2-34`, physical x86 validation, and combined Mac mini/SSH acceptance
+remain open.

@@ -9404,3 +9404,17 @@ CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1; it does not implement feature/control gates.
 MMX, memory, other prefixes, REX.W/X, VEX/EVEX, JIT/native execution, guest
 exception delivery and physical acceptance are excluded. Parent S2-34, S2-35
 and the global S2-35 → S2-34 dependency remain open.
+
+
+## Local register-only PUNPCKHQDQ slice — S2-35.31
+
+The profile `s2-long-punpckhqdq-reg-v1` admits legacy
+`66 [one optional REX.R/B] 0F 6D /r` with ModR/M.mod=3. ModR/M.reg selects the
+destination XMM register and r/m selects the source. The destination becomes
+the two little-endian u64 qwords `[old_DEST[1], SRC[1]]`; low qwords are ignored.
+PUNPCKHQDQ has no MMX form, so bare `0F 6D /r` is rejected. The profile assumes
+SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1; feature/control gates, memory, MMX,
+other prefixes, REX.W/X, VEX/EVEX, JIT/native execution, guest exception
+delivery and physical acceptance are excluded. S2-34, S2-35, and global
+S2-35 → S2-34 remain open. See the
+[S2-35.31 plan](../plans/STAGE_2.md#s2-3531--local-only-bounded-register-punpckhqdq).

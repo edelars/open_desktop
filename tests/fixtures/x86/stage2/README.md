@@ -5124,3 +5124,13 @@ all 128 destination bits are replaced. PUNPCKLQDQ has no MMX form, so bare
 `0F 6C /r` without mandatory `66` is rejected. Interpreter execution is
 supported while JIT/native execution remains denied; SSE2 and CR0/CR4
 preconditions are assumptions only.
+
+
+### S2-35.31 local register PUNPCKHQDQ diagnostic profile
+
+`s2_35_31_punpckhqdq_register.case.json` is a handwritten literal XMM8,XMM9
+fixture for `s2-long-punpckhqdq-reg-v1`: `66 45 0F 6D C1`. The destination
+receives its original high qword followed by the source high qword, and its low
+qword is ignored. PUNPCKHQDQ has no MMX form, so bare `0F 6D /r` without the
+mandatory `66` is rejected. Interpreter execution is supported; JIT/native
+execution remains denied.
