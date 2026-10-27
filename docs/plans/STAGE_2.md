@@ -157,7 +157,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-15 | Bit operations и прочие integer формы профиля | S2-14 |
 | [ ] | S2-16 | Условия, переходы, SETcc/CMOVcc | S2-11 |
 | [ ] | S2-17 | Стек, CALL/RET и косвенные переходы | S2-16 |
-| [ ] | S2-18 | Строковые операции без REP; S2-18a–f локально покрывают только MOVSB/MOVSW/MOVSD/MOVSQ, STOSB и LODS B/W/D/Q; остальные формы и общая приёмка открыты | S2-17 |
+| [ ] | S2-18 | Строковые операции без REP; S2-18a–j локально покрывают MOVS/STOS/LODS/SCAS/CMPS bounded формы и CLD/STD; общая приёмка открыта | S2-17 |
 | [ ] | S2-19 | REP и точный частичный прогресс; S2-19a–d реализуют bounded REP STOS/LODS/MOVS с partial progress, остальные REP формы и общая приёмка открыты | S2-18 |
 | [ ] | S2-20 | Исключения, приоритеты и fault state | S2-14, S2-19 |
 | [ ] | S2-21 | Нужные однопроцессорные atomic/fence формы | S2-20 |
@@ -6796,3 +6796,15 @@ invalid destination, C1/ES/B/FCW rejects. Preserve the historical repeat and
 both TEST producers. Compare full state and memory, deny JIT, and update
 ISSUE-019 with local results. Mac mini, SSH, native and physical checks remain
 for the shared final acceptance substage.
+
+
+#### S2-18j — bare CLD/STD (локальный профиль)
+
+Только Long64 primary-map bare FC/FD, длина 1, без префиксов, ModR/M и
+immediate. CLD очищает только DF, STD устанавливает только DF; каждый
+успешный шаг увеличивает RIP на один и retire на один. Не обращается к
+данным, GPR, segment/x87 или guest pointers. `FlagEffects` определяет только
+DF и сохраняет остальные definedness bits. Все одиночные префиксы отвергаются
+как вне профиля; это admission boundary, не утверждение о #UD или precedence.
+`D9 FC` остаётся FRNDINT. Native/JIT/physical acceptance не входят; S2-18
+остаётся открытой.

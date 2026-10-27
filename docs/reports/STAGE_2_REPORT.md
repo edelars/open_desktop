@@ -10531,3 +10531,23 @@ and 229 `od-testkit` tests). Graphify was refreshed. Final independent review
 found no concrete code or fixture correctness defects. No native execution,
 physical, Mini, or SSH acceptance was performed; ISSUE-020 remains open for the
 unverified hardware dual-fault winner.
+
+
+## S2-18j — bare CLD/STD interpreter slice
+
+Implemented exact bare Long64 primary-map `FC`/`FD`: DF-only update, RIP+1,
+one retirement, and preservation of other flags, definedness, GPR and x87 state.
+Prefixed encodings are outside the profile. `D9 FC` remains FRNDINT. Focused
+local unit checks cover 256 full-state combinations, 256 definedness subsets,
+54 single-prefix rejects, switching, budget/stop/fetch boundaries and absence
+of data accesses. This is bounded interpreter coverage only; S2-18 remains
+open; JIT is checked fail-closed, and no native, physical, Mini or SSH execution is claimed.
+
+S2-18j verification: `python3 -m unittest discover -s tests/cpu -p 'test_*.py'`
+passed 102 tests; `python3 tests/cpu/generate_stage2_cld_std.py --check`,
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+and `cargo test --workspace --offline` passed (1,345 passed, 0 failed). The
+focused fixture CLI check passed and confirms full snapshots plus JIT denial
+without fallback. Graphify was refreshed and `git diff --check` passed. A
+Linux-only native admission test was added but not run on this macOS host; no
+Native, Mini, SSH or physical execution was performed.

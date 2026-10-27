@@ -4141,3 +4141,22 @@ python3 tests/cpu/generate_stage2_rep_cmps_wdq.py --check
 python3 -m unittest tests/cpu/test_stage2_rep_cmps_wdq_generator.py
 cargo test -p od-runner --test fixture_v2 rep_cmps_wdq_cli_fixtures_check_full_state_and_jit_denial --offline
 ```
+
+
+### S2-18j bare CLD/STD
+
+Bare `FC` and `FD` are covered in the local interpreter profile with DF as their
+only defined flag effect. Prefix variants are rejected as profile admission
+failures. `D9 FC` continues to identify the x87 FRNDINT encoding. The 32 local cases
+cover initial DF, zero budget, TEST-definedness, five non-REP consumers, three
+REP consumers, CMP→REPE SCAS/CMPS, and unmapped consumer
+faults. Literal expected CPU/definedness/memory answers are in
+`s2_18j_cld_std_expected.json`; the generator serializes constants only. JIT
+is checked fail-closed by the CLI test. Native admission has a dedicated
+test but is not executed on this macOS host; no physical acceptance is claimed.
+
+```sh
+python3 tests/cpu/generate_stage2_cld_std.py --check
+python3 -m unittest tests/cpu/test_stage2_cld_std_generator.py
+cargo test -p od-runner --test fixture_v2 cld_std_cli_fixtures_match_literal_full_state_and_jit_denial --offline
+```

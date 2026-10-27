@@ -5484,6 +5484,96 @@ fn scas_cli_fixtures_match_literal_full_state_and_status() {
 }
 
 #[test]
+fn cld_std_cli_fixtures_match_literal_full_state_and_jit_denial() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(&fs::read(directory.join("s2_18j_cld_std_expected.json")).unwrap())
+            .unwrap();
+    assert_eq!(answers.len(), 32);
+    for (case_id, answer) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let cli_exit =
+            match serde_json::from_slice::<serde_json::Value>(&raw).unwrap()["expected_exit"]
+                .as_str()
+                .unwrap()
+            {
+                "harness_error" => 5,
+                "unsupported" => 4,
+                _ => 0,
+            };
+        let (input, result) = run(&raw, "interpreter", cli_exit);
+        match input.fixture.expected_exit {
+            ExpectedExit::StopAddress => {
+                assert!(
+                    matches!(result.outcome, Outcome::StopAddress {}),
+                    "{case_id}"
+                );
+            }
+            ExpectedExit::InstructionBudgetExhausted => {
+                assert!(
+                    matches!(result.outcome, Outcome::InstructionBudgetExhausted {}),
+                    "{case_id}"
+                );
+            }
+            ExpectedExit::HarnessError => {
+                assert!(
+                    matches!(result.outcome, Outcome::HarnessError { .. }),
+                    "{case_id}"
+                );
+            }
+            ExpectedExit::Unsupported => {
+                assert!(
+                    matches!(result.outcome, Outcome::Unsupported { .. }),
+                    "{case_id}"
+                );
+            }
+            other => panic!("{case_id}: unexpected expected_exit {other:?}"),
+        }
+        let observed = snapshot(&result);
+        let expected_gprs: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let expected_instructions: HexU64 =
+            serde_json::from_value(answer["instructions_executed"].clone()).unwrap();
+        assert_eq!(observed.state.gpr, expected_gprs, "{case_id}");
+        assert_eq!(observed.state.rflags, expected_flags, "{case_id}");
+        assert_eq!(observed.state.rip, expected_rip, "{case_id}");
+        assert_eq!(observed.rflags_defined, expected_defined, "{case_id}");
+        assert_eq!(count(&result), expected_instructions.get(), "{case_id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in &observed.memory {
+            assert_eq!(
+                region.bytes_hex, expected_memory[&region.region_id],
+                "{case_id}: {}",
+                region.region_id
+            );
+        }
+        if matches!(input.fixture.expected_exit, ExpectedExit::StopAddress) {
+            let (_, jit_result) = run(&raw, "jit", 4);
+            assert!(
+                matches!(jit_result.outcome, Outcome::Unsupported { .. }),
+                "{case_id}: JIT remains closed"
+            );
+            assert!(
+                matches!(jit_result.snapshot, Observation::Unavailable { .. }),
+                "{case_id}: no interpreter fallback"
+            );
+            assert!(
+                matches!(
+                    jit_result.instructions_executed,
+                    Observation::Unavailable { .. }
+                ),
+                "{case_id}: no JIT retirement count"
+            );
+        }
+    }
+}
+
+#[test]
 fn rep_cmpsb_cli_fixtures_check_full_state_and_jit_denial() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

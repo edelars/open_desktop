@@ -21,12 +21,13 @@ const AF: u64 = 1 << 4;
 const ZF: u64 = 1 << 6;
 const SF: u64 = 1 << 7;
 const OF: u64 = 1 << 11;
+const DF: u64 = 1 << 10;
 const ARITHMETIC_FLAGS: u64 = CF | PF | AF | ZF | SF | OF;
 /// RFLAGS bits admitted and observed by the current long-mode integer profile:
 /// the six status flags, DF, and the architecturally fixed bit 1.
-pub const INTEGER_FLAGS: u64 = ARITHMETIC_FLAGS | (1 << 10) | 2;
+pub const INTEGER_FLAGS: u64 = ARITHMETIC_FLAGS | DF | 2;
 /// Profile flags writable by the implemented long-mode `POPFQ` slice.
-pub const POPFQ_INTEGER_FLAGS: u64 = ARITHMETIC_FLAGS | (1 << 10);
+pub const POPFQ_INTEGER_FLAGS: u64 = ARITHMETIC_FLAGS | DF;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]

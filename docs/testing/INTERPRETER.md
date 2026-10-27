@@ -1071,3 +1071,17 @@ state and typed fault answers; the CLI asserts JIT denial for every fixture. A
 Linux-only test asserts native admission denial for all fixtures and was not
 executed on this macOS host. No native execution, physical, Mini or SSH
 acceptance is claimed.
+
+## CLD/STD — S2-18j local interpreter coverage
+
+Bare primary-map `FC`/`FD` only: clear/set DF, advance RIP by one and retire
+once. Every other RFLAGS bit and definedness bit is preserved, and the
+instructions perform no data access, pointer validation or x87/segment check.
+All single-prefix forms are outside this bounded admission profile. Local unit
+coverage includes 256 complete-state cases, 256 definedness subsets, 54
+prefix rejects, switching, budget/stop/fetch boundaries and one-byte fetch.
+`D9 FC` remains FRNDINT. The 32 literal fixtures have fresh generated inputs,
+and the CLI full-state check confirms JIT denial without fallback. Validation
+passed: 102 Python CPU tests, workspace check and 1,345 workspace tests. Native
+admission denial is covered by a Linux-only unit test not run on this macOS host;
+no physical support is claimed and S2-18 remains open.

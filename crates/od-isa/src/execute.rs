@@ -960,6 +960,12 @@ fn step_tracked_with_stop(
                 && instruction.operand_size == source.size
                 && matches!(source.size, OperandSize::Word | OperandSize::Qword)
         }
+        Operation::ClearDirectionFlag | Operation::SetDirectionFlag => {
+            instruction.opcode.map == OpcodeMap::Primary
+                && matches!(instruction.opcode.byte, 0xfc | 0xfd)
+                && instruction.length == 1
+                && instruction.prefixes == Prefixes::default()
+        }
         Operation::Movs { size } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && ((instruction.opcode.byte == 0xa4
@@ -1680,6 +1686,12 @@ fn step_tracked_with_stop(
         return Ok(StepOutcome::Advanced);
     }
     match instruction.operation {
+        Operation::ClearDirectionFlag => {
+            state.rflags &= !crate::DF;
+        }
+        Operation::SetDirectionFlag => {
+            state.rflags |= crate::DF;
+        }
         Operation::Fnop => {
             state
                 .x87
@@ -58113,6 +58125,265 @@ mod tests {
         assert_eq!(rejected, 65_520);
         assert_eq!(rejected - byte_rejected, 49_140);
         assert_eq!(byte_rejected, 16_380);
+    }
+
+    #[test]
+    fn bare_cld_std_preserve_complete_state_except_df_and_retire_once() {
+        for opcode in [0xfc, 0xfd] {
+            for initial_df in [false, true] {
+                for arithmetic in 0..64_u64 {
+                    let arithmetic_flag_bits = [
+                        crate::CF,
+                        crate::PF,
+                        crate::AF,
+                        crate::ZF,
+                        crate::SF,
+                        crate::OF,
+                    ];
+                    let arithmetic_flags =
+                        arithmetic_flag_bits
+                            .iter()
+                            .enumerate()
+                            .fold(0, |flags, (index, bit)| {
+                                flags
+                                    | if arithmetic & (1 << index) != 0 {
+                                        *bit
+                                    } else {
+                                        0
+                                    }
+                            });
+                    let mut state = LongModeState::default();
+                    state.rip = 0x2000;
+                    state.rflags = (0x005a_a5a5_5a5a_0002 & !(crate::ARITHMETIC_FLAGS | crate::DF))
+                        | arithmetic_flags
+                        | if initial_df { crate::DF } else { 0 };
+                    state.gpr = std::array::from_fn(|index| {
+                        0x1020_3040_5060_7000_u64.wrapping_add(index as u64 * 0x1111)
+                    });
+                    let before = state.clone();
+                    let mut memory = Memory::at(&[opcode], 0x2000);
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced),
+                        "opcode={opcode:02x} initial_df={initial_df} arithmetic={arithmetic:02x}"
+                    );
+                    let mut expected = before;
+                    expected.rflags = if opcode == 0xfc {
+                        expected.rflags & !crate::DF
+                    } else {
+                        expected.rflags | crate::DF
+                    };
+                    expected.rip += 1;
+                    assert_eq!(state, expected);
+                    assert!(
+                        memory.accesses.is_empty(),
+                        "CLD/STD must not access guest data"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bare_cld_std_definedness_preserves_all_non_df_subsets() {
+        for opcode in [0xfc, 0xfd] {
+            for defined_subset in 0..128_u64 {
+                let defined_flag_bits = [
+                    crate::CF,
+                    crate::PF,
+                    crate::AF,
+                    crate::ZF,
+                    crate::SF,
+                    crate::OF,
+                    crate::DF,
+                ];
+                let subset = defined_flag_bits
+                    .iter()
+                    .enumerate()
+                    .fold(0, |flags, (index, bit)| {
+                        flags
+                            | if defined_subset & (1 << index) != 0 {
+                                *bit
+                            } else {
+                                0
+                            }
+                    });
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.rflags = 0x0cd7 | crate::DF;
+                let mut defined = subset;
+                let before_defined = defined;
+                let mut memory = Memory::at(&[opcode], 0x2000);
+                assert_eq!(
+                    step_tracked(
+                        &mut state,
+                        &mut memory,
+                        AccessContext::default(),
+                        &mut defined
+                    ),
+                    Ok(StepOutcome::Advanced)
+                );
+                assert_eq!(
+                    defined,
+                    before_defined | crate::DF,
+                    "opcode={opcode:02x} defined_subset={defined_subset:07b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cld_std_boundaries_prefixes_and_switching() {
+        for opcode in [0xfc, 0xfd] {
+            for prefix in [
+                0xf0, 0xf2, 0xf3, 0x66, 0x67, 0x2e, 0x36, 0x3e, 0x26, 0x64, 0x65,
+            ] {
+                let mut memory = Memory::at(&[prefix, opcode], 0x2000);
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Unsupported { opcode })
+                );
+            }
+            for rex in 0x40..=0x4f {
+                let mut memory = Memory::at(&[rex, opcode], 0x2000);
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Unsupported { opcode })
+                );
+            }
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.rflags = 2 | crate::CF | crate::ZF;
+        let mut memory = Memory::at(&[0xfc, 0xfd, 0xfc, 0xfd], 0x2000);
+        for (offset, expected_df) in [(1, false), (2, true), (3, false), (4, true)] {
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(state.rip, 0x2000 + offset);
+            assert_eq!(state.rflags & crate::DF != 0, expected_df);
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0xfc], 0x2000);
+        let budget_result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 0,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(budget_result.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(budget_result.instructions_executed, 0);
+        assert_eq!(budget_result.rflags_defined, crate::INTEGER_FLAGS);
+        assert_eq!(state, before);
+
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0xfc], 0x2000);
+        let stop_result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x2000),
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(stop_result.exit, RunExit::StopAddress);
+        assert_eq!(stop_result.instructions_executed, 0);
+        assert_eq!(stop_result.rflags_defined, crate::INTEGER_FLAGS);
+        assert_eq!(state, before);
+
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0xfc], 0x2000);
+        let cooperative_stop = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || true,
+        );
+        assert_eq!(cooperative_stop.exit, RunExit::StopRequested);
+        assert_eq!(cooperative_stop.instructions_executed, 0);
+        assert_eq!(cooperative_stop.rflags_defined, crate::INTEGER_FLAGS);
+        assert_eq!(state, before);
+
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        let mut memory = Memory::at(&[0xfc], 0x2000);
+        memory.fetch_error = Some((0x2000, MemoryError::Backend("injected fetch fault".into())));
+        let before = state.clone();
+        let fetch_result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert!(matches!(fetch_result.exit, RunExit::MemoryError(_)));
+        assert_eq!(fetch_result.instructions_executed, 0);
+        assert_eq!(fetch_result.rflags_defined, crate::INTEGER_FLAGS);
+        assert_eq!(state, before);
+
+        for (opcode, expected_df) in [(0xfc, false), (0xfd, true)] {
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rsi as usize] = 0x0000_8000_0000_0000;
+            state.gpr[Register::Rdi as usize] = 0xffff_ffff_ffff_ffff;
+            state.x87 = Some(X87State::fixture_seed());
+            let mut memory = Memory::at(&[opcode], 0x2000);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(state.rflags & crate::DF != 0, expected_df);
+            assert_eq!(state.rip, 0x2001);
+            assert_eq!(memory.accesses, []);
+        }
+
+        for (opcode, expected_df) in [(0xfc, false), (0xfd, true)] {
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rsi as usize] = 0x0000_8000_0000_0000;
+            state.rflags |= crate::DF;
+            let mut memory = Memory::at(&[opcode, 0xac], 0x2000);
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 2,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert!(matches!(result.exit, RunExit::Fault(_)));
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state.rip, 0x2001);
+            assert_eq!(state.rflags & crate::DF != 0, expected_df);
+        }
     }
 
     #[test]

@@ -4826,4 +4826,22 @@ mod tests {
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
     }
+
+    #[test]
+    fn s2_18j_cld_std_fixtures_remain_outside_native_admission() {
+        for bytes in [
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_18j_cld_df0.case.json")
+                .as_slice(),
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_18j_std_df0.case.json")
+                .as_slice(),
+        ] {
+            let loaded = Fixture::from_json(bytes).unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            assert!(
+                admission(&loaded.fixture, &mut decoder, &actual).is_err(),
+                "CLD/STD must fail native admission before tracee execution"
+            );
+        }
+    }
 }
