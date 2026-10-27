@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-22a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-22a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -151,6 +151,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20 | Memory lowering и partial registers; сейчас только проверенные MOV qword load/store slices | S3-19; interpreter соответствующих форм |
 | [partial] | S3-20b | Production V2 MOV qword store с private-RAM unsafe entry | Точный `48 89 /r`, source/base RAX..RBX; остальные stores и executable aliases запрещены |
 | [partial] | S3-20c | Один-byte SIB extension для V2 MOV qword load/store | ModRM `mod=00,r/m=100`; base/index/data RAX..RBX, scale 1/2/4/8, no displacement |
+| [partial] | S3-20d | Signed disp8/disp32 для direct и SIB V2 MOV load/store | ModRM `mod=00/01/10`; source lengths 3/4/7 direct и 4/5/8 SIB; прочие address forms отвергаются |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Caller-owned frozen snapshot; production mode/MMU lease and compile/publication race remain open |
@@ -752,6 +753,32 @@ backend boundary error и отсутствие эффектов при STOP/stop
 Invalid/truncated/tail/displacement/no-index/no-base/extended/prefix формы
 отвергаются. Срез описан в [S3-20c report](../reports/STAGE_3_S3-20c_2026-10-27.md).
 Физическая проверка Mac mini остаётся отложенной до финального S3-21 gate.
+
+#### S3-20d. Signed displacement в direct и SIB V2 MOV
+
+Обе qword операции `48 8B/89 /r` допускают ModRM `mod=00`, signed disp8 при
+`mod=01` и signed disp32 при `mod=10`, с существующей direct-base или
+однобайтовой SIB формой. Точные длины без SIB: 3/4/7 bytes; с SIB: 4/5/8
+bytes. Base, index и data register ограничены RAX..RBX; scale SIB — 1/2/4/8.
+Mod11, RIP-relative, base-less, no-index, RSP/RBP/R8+, любые иные prefixes,
+address-size override и trailing bytes отвергаются.
+
+`long_decode::decode` остаётся единственным декодером и задаёт `MemoryOperand`,
+signed displacement и `next_rip`. Immutable artifact identity хранит полный
+bounded source `[u8; 8]` и длину. Общий `MemorySiteV2` validator проверяет
+decoded site shape и согласованность raw ModRM/SIB/source length, не вычисляя
+EA и не дублируя sign extension. Runtime использует прежний
+`MemoryOperand::access_address_48` для wrapping, canonical48 и access-range
+правил. ABI, V1, checked helper, load/store safety и commit ordering прежние.
+
+Локальные native differential tests перебирают допустимые base/index/data/scale
+и mod формы для load/store, включая disp8 `-128/-1/0/1/127` и disp32 min/max
+с соседями. Проверяются одинаковые адреса у эквивалентных disp8/disp32 при
+разных `next_rip`, aliases, wrap-to-canonical, final noncanonical и endpoint
+faults, boundary/permission/backend errors, no-effect guards и поздний STOP
+после одного store. Результат описан в
+[S3-20d report](../reports/STAGE_3_S3-20d_2026-10-27.md). Mac mini gate остаётся
+только финальным S3-21.
 
 ### S3-20. Добавить memory lowering
 

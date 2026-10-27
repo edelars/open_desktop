@@ -146,6 +146,35 @@ displacement, no-index, no-base, extended-register, and extra-prefix forms are
 rejected. The physical Mac mini check remains deferred to the final S3-21 gate;
 see [the S3-20c report](../reports/STAGE_3_S3-20c_2026-10-27.md).
 
+#### S3-20d: bounded signed displacement forms
+
+S3-20d extends the same two qword MOV operations to ModRM `mod=01` signed
+disp8 and `mod=10` signed disp32, both with or without the supported SIB byte.
+For direct-base addressing, exact lengths are 3/4/7 bytes for mod00/01/10;
+with SIB they are 4/5/8 bytes. Mod00 remains the existing no-displacement
+profile. The source buffer is fixed at eight bytes and carries an explicit
+length; the next RIP is derived from `long_decode::decode`'s instruction length.
+
+A shared `MemorySiteV2` shape/source validator is used by compilation, host
+metadata admission, and the trusted helper. It checks operation, width,
+register/base/index/scale, ModRM/SIB shape, instruction length, and that the
+decoded signed displacement fits the selected width. It does not re-sign-extend
+raw bytes or compute an effective address. The decoded `MemoryOperand` remains
+the sole source for displacement semantics, wrapping, canonical48, and full
+access-range checks through `access_address_48`. Mod11, RIP-relative and
+base-less addressing, no-index SIB, RSP/RBP/R8+, other prefixes/overrides, and
+any trailing bytes remain rejected. Load staging, store unsafe private-RAM
+requirements, helper ABI, fault payloads, commit ordering, and STOP handling
+are unchanged.
+
+Local ARM64 differential tests enumerate all valid addressing/register/scale
+combinations for both operations and all three ModRM modes. They cover disp8
+`-128/-1/0/1/127`, disp32 min/max and neighbors, equivalent disp8/disp32
+addresses with distinct next RIPs, canonical wrap and noncanonical/endpoint
+faults, backend/permission errors, guard no-effects, and late STOP after one
+successful store. See [the S3-20d report](../reports/STAGE_3_S3-20d_2026-10-27.md).
+Physical Mac mini execution remains reserved for the final S3-21 gate.
+
 ## 4. Начальные runtime bounds
 
 - Один гостевой vCPU; компиляция блоков последовательная.

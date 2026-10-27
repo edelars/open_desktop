@@ -3,8 +3,7 @@
 //! This deliberately accepts only one decoded `MOV r64, [base]` instruction
 //! in the exact `48 8B /r` encoding profile. It does not extend V1 admission.
 
-use od_isa::Register;
-use od_isa::long_decode::{self, AddressBase, Operand, Operation};
+use od_isa::long_decode::{self, Operand, Operation};
 use od_isa::memory::AccessContext;
 
 use crate::arm64::{
@@ -33,7 +32,7 @@ struct MemoryArtifactV2 {
     code: EncodedCode,
     site: MemorySiteV2,
     entry_rip: u64,
-    source_bytes: [u8; 4],
+    source_bytes: [u8; 8],
     source_len: u8,
     compile_flavor: crate::translation::CompileFlavor,
 }
@@ -69,7 +68,7 @@ macro_rules! impl_artifact_accessors {
                 &self.artifact.source_bytes[..usize::from(self.artifact.source_len)]
             }
 
-            pub const fn source_bytes_storage(&self) -> ([u8; 4], u8) {
+            pub const fn source_bytes_storage(&self) -> ([u8; 8], u8) {
                 (self.artifact.source_bytes, self.artifact.source_len)
             }
 
@@ -117,7 +116,7 @@ fn compile_memory_operation_v2(
         .filter(|offset| *offset < code.len())
         .ok_or(MemoryLoadCompileErrorV2::EntryOutsideCode)?;
     let instruction_bytes_len = code.len() - offset;
-    if !(3..=4).contains(&instruction_bytes_len) {
+    if !(3..=8).contains(&instruction_bytes_len) {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
     let mut memory = CodeMemory::full_code(code);
@@ -127,16 +126,7 @@ fn compile_memory_operation_v2(
         .bytes()
         .get(offset..offset.saturating_add(instruction_bytes_len))
         .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
-    let opcode = match access {
-        MemorySiteOperationV2::Load => 0x8b,
-        MemorySiteOperationV2::Store => 0x89,
-    };
-    if bytes.len() < 3 || bytes[0] != 0x48 || bytes[1] != opcode {
-        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
-    }
-    let modrm = bytes[2];
-    if decoded.length as usize != instruction_bytes_len || modrm >> 6 != 0 || (modrm >> 3) & 7 >= 4
-    {
+    if decoded.length as usize != instruction_bytes_len {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
     let (register, operand) = match (access, decoded.operation) {
@@ -156,58 +146,6 @@ fn compile_memory_operation_v2(
         ) if source.size() == od_isa::OperandSize::Qword => (source.register(), operand),
         _ => return Err(MemoryLoadCompileErrorV2::UnsupportedForm),
     };
-    let decoded_base = match operand.base {
-        AddressBase::Register(base) => base,
-        AddressBase::None | AddressBase::NextRip => {
-            return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
-        }
-    };
-    let raw_rm = modrm & 7;
-    let raw_base = if raw_rm == 4 {
-        if bytes.len() != 4 || decoded.length != 4 {
-            return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
-        }
-        let sib = bytes[3];
-        let base = sib & 7;
-        let index = (sib >> 3) & 7;
-        let scale = 1_u8 << (sib >> 6);
-        if base >= 4 || index >= 4 {
-            return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
-        }
-        if operand.index != Register::from_encoding(index)
-            || operand.scale != scale
-            || Register::from_encoding(base) != Some(decoded_base)
-        {
-            return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
-        }
-        base
-    } else {
-        if bytes.len() != 3 || raw_rm >= 4 || operand.index.is_some() || operand.scale != 1 {
-            return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
-        }
-        raw_rm
-    };
-    if register as u8 >= 4
-        || !matches!(
-            decoded_base,
-            Register::Rax | Register::Rcx | Register::Rdx | Register::Rbx
-        )
-        || operand.index.is_some_and(|index| {
-            !matches!(
-                index,
-                Register::Rax | Register::Rcx | Register::Rdx | Register::Rbx
-            )
-        })
-        || operand.displacement != 0
-        || operand.address_size != od_isa::OperandSize::Qword
-        || operand.size != od_isa::OperandSize::Qword
-        || decoded_base
-            != Register::from_encoding(raw_base).ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?
-        || !matches!(operand.scale, 1 | 2 | 4 | 8)
-        || register as u8 != ((modrm >> 3) & 7)
-    {
-        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
-    }
     let next_rip = entry_rip
         .checked_add(u64::from(decoded.length))
         .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
@@ -220,21 +158,21 @@ fn compile_memory_operation_v2(
         source: (access == MemorySiteOperationV2::Store).then_some(register as u8),
         operand,
     };
+    if !site.matches_source_bytes(bytes, access) {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
     let code = emit_memory_operation_v2(&site).map_err(MemoryLoadCompileErrorV2::Encoding)?;
     let compile_flavor = match access {
         MemorySiteOperationV2::Load => crate::translation::CompileFlavor::S3_19bMemoryLoadV2,
         MemorySiteOperationV2::Store => crate::translation::CompileFlavor::S3_20bMemoryStoreV2,
     };
+    let mut source_bytes = [0; 8];
+    source_bytes[..bytes.len()].copy_from_slice(bytes);
     Ok(MemoryArtifactV2 {
         code,
         site,
         entry_rip,
-        source_bytes: [
-            0x48,
-            opcode,
-            modrm,
-            if bytes.len() == 4 { bytes[3] } else { 0 },
-        ],
+        source_bytes,
         source_len: bytes.len() as u8,
         compile_flavor,
     })
@@ -479,6 +417,8 @@ fn xr(number: u8) -> Result<XReg, EncodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use od_isa::Register;
+    use od_isa::long_decode::AddressBase;
 
     #[test]
     fn compiles_only_the_exact_checked_qword_load_form() {
@@ -501,17 +441,25 @@ mod tests {
     fn rejects_prefixes_displacements_and_out_of_profile_registers() {
         for bytes in [
             vec![0x40, 0x8b, 0x00],
-            vec![0x48, 0x8b, 0x40, 0x00],
             vec![0x48, 0x8b, 0x20],
-            vec![0x48, 0x8b, 0x04],             // truncated SIB
-            vec![0x48, 0x8b, 0x04, 0x24],       // RSP index is unsupported
-            vec![0x48, 0x8b, 0x04, 0x28],       // RBP base requires disp32
-            vec![0x48, 0x8b, 0x04, 0x20],       // no-index SIB
-            vec![0x48, 0x8b, 0x04, 0x05],       // no-base SIB requires disp32
-            vec![0x48, 0x8b, 0x44, 0x00],       // mod=01 displacement
-            vec![0x4a, 0x8b, 0x04, 0x00],       // REX.X extended index
-            vec![0x49, 0x8b, 0x04, 0x00],       // REX.B extended base
+            vec![0x48, 0x8b, 0xc0],       // register-register mod=11
+            vec![0x48, 0x8b, 0x04],       // truncated SIB
+            vec![0x48, 0x8b, 0x04, 0x24], // RSP index is unsupported
+            vec![0x48, 0x8b, 0x04, 0x28], // RBP base requires disp32
+            vec![0x48, 0x8b, 0x04, 0x20], // no-index SIB
+            vec![0x48, 0x8b, 0x04, 0x05], // no-base SIB requires disp32
+            vec![0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0], // no-base SIB
+            vec![0x48, 0x8b, 0x44, 0x20, 1], // no-index SIB with disp8
+            vec![0x48, 0x8b, 0x84, 0x20, 1, 0, 0, 0], // no-index SIB with disp32
+            vec![0x48, 0x8b, 0x44, 0x00], // mod=01 displacement
+            vec![0x48, 0x8b, 0x40],       // truncated disp8
+            vec![0x48, 0x8b, 0x80, 0, 0, 0], // truncated disp32
+            vec![0x48, 0x8b, 0x05, 0, 0, 0, 0], // RIP-relative
+            vec![0x4a, 0x8b, 0x04, 0x00], // REX.X extended index
+            vec![0x49, 0x8b, 0x04, 0x00], // REX.B extended base
+            vec![0x67, 0x48, 0x8b, 0x00], // address-size override
             vec![0x48, 0x8b, 0x04, 0x00, 0x90], // ignored tail
+            vec![0x48, 0x8b, 0x40, 0x00, 0x90], // disp8 form with tail
         ] {
             let code = CodeView::new(0x2000, &bytes).unwrap();
             assert!(
@@ -561,6 +509,157 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn admits_supported_direct_and_sib_displacement_shapes_for_both_operations() {
+        for (opcode, is_load) in [(0x8b, true), (0x89, false)] {
+            for mode in 0..=2_u8 {
+                for data_register in 0..4_u8 {
+                    for base in 0..4_u8 {
+                        for addressing in 0..=1_u8 {
+                            let mut bytes = vec![0x48, opcode];
+                            let rm = if addressing == 0 { base } else { 4 };
+                            bytes.push((mode << 6) | (data_register << 3) | rm);
+                            if addressing == 1 {
+                                bytes.push((2 << 6) | (1 << 3) | base); // scale 4, index RCX
+                            }
+                            let displacement = match mode {
+                                0 => 0_i32,
+                                1 => -1,
+                                2 => 1,
+                                _ => unreachable!(),
+                            };
+                            match mode {
+                                0 => {}
+                                1 => bytes.push(displacement as i8 as u8),
+                                2 => bytes.extend_from_slice(&displacement.to_le_bytes()),
+                                _ => unreachable!(),
+                            }
+                            let code = CodeView::new(0x5100, &bytes).unwrap();
+                            let artifact = if is_load {
+                                compile_memory_load_block_v2(code, 0x5100).unwrap().artifact
+                            } else {
+                                compile_memory_store_block_v2(code, 0x5100)
+                                    .unwrap()
+                                    .artifact
+                            };
+                            assert_eq!(
+                                &artifact.source_bytes[..artifact.source_len as usize],
+                                bytes
+                            );
+                            assert_eq!(artifact.source_len as usize, bytes.len());
+                            assert_eq!(artifact.site.operand.displacement, i64::from(displacement));
+                            assert_eq!(artifact.site.next_rip(), 0x5100 + bytes.len() as u64);
+                            assert!(artifact.site.matches_source_bytes(
+                                &artifact.source_bytes[..artifact.source_len as usize],
+                                if is_load {
+                                    MemorySiteOperationV2::Load
+                                } else {
+                                    MemorySiteOperationV2::Store
+                                }
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn signed_displacement_boundaries_and_equivalent_widths_use_decoder_metadata() {
+        for is_load in [true, false] {
+            for use_sib in [false, true] {
+                for displacement in [-128_i32, -1, 0, 1, 127] {
+                    let bytes = displacement_form(is_load, use_sib, 1, displacement);
+                    let code = CodeView::new(0x5200, &bytes).unwrap();
+                    let artifact = if is_load {
+                        compile_memory_load_block_v2(code, 0x5200).unwrap().artifact
+                    } else {
+                        compile_memory_store_block_v2(code, 0x5200)
+                            .unwrap()
+                            .artifact
+                    };
+                    assert_eq!(artifact.site.operand.displacement, i64::from(displacement));
+                    assert_eq!(
+                        &artifact.source_bytes[..artifact.source_len as usize],
+                        bytes
+                    );
+                }
+                for displacement in [i32::MIN, i32::MIN + 1, -1, 0, 1, i32::MAX - 1, i32::MAX] {
+                    let bytes = displacement_form(is_load, use_sib, 2, displacement);
+                    let code = CodeView::new(0x5300, &bytes).unwrap();
+                    let artifact = if is_load {
+                        compile_memory_load_block_v2(code, 0x5300).unwrap().artifact
+                    } else {
+                        compile_memory_store_block_v2(code, 0x5300)
+                            .unwrap()
+                            .artifact
+                    };
+                    assert_eq!(artifact.site.operand.displacement, i64::from(displacement));
+                    assert_eq!(
+                        &artifact.source_bytes[..artifact.source_len as usize],
+                        bytes
+                    );
+                }
+
+                let disp8 = displacement_form(is_load, use_sib, 1, -1);
+                let disp32 = displacement_form(is_load, use_sib, 2, -1);
+                let disp8_code = CodeView::new(0x5400, &disp8).unwrap();
+                let disp32_code = CodeView::new(0x5400, &disp32).unwrap();
+                let disp8_artifact = if is_load {
+                    compile_memory_load_block_v2(disp8_code, 0x5400)
+                        .unwrap()
+                        .artifact
+                } else {
+                    compile_memory_store_block_v2(disp8_code, 0x5400)
+                        .unwrap()
+                        .artifact
+                };
+                let disp32_artifact = if is_load {
+                    compile_memory_load_block_v2(disp32_code, 0x5400)
+                        .unwrap()
+                        .artifact
+                } else {
+                    compile_memory_store_block_v2(disp32_code, 0x5400)
+                        .unwrap()
+                        .artifact
+                };
+                let state = od_isa::LongModeState {
+                    gpr: [100, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    ..od_isa::LongModeState::default()
+                };
+                assert_eq!(
+                    disp8_artifact
+                        .site
+                        .operand
+                        .effective_address(&state, disp8_artifact.site.next_rip()),
+                    disp32_artifact
+                        .site
+                        .operand
+                        .effective_address(&state, disp32_artifact.site.next_rip())
+                );
+                assert_ne!(
+                    disp8_artifact.site.next_rip(),
+                    disp32_artifact.site.next_rip()
+                );
+            }
+        }
+    }
+
+    fn displacement_form(is_load: bool, use_sib: bool, mode: u8, displacement: i32) -> Vec<u8> {
+        let opcode = if is_load { 0x8b } else { 0x89 };
+        let rm = if use_sib { 4 } else { 0 };
+        let mut bytes = vec![0x48, opcode, (mode << 6) | rm];
+        if use_sib {
+            bytes.push((1 << 6) | (1 << 3)); // scale 2, index RCX, base RAX
+        }
+        match mode {
+            1 => bytes.push(displacement as i8 as u8),
+            2 => bytes.extend_from_slice(&displacement.to_le_bytes()),
+            _ => unreachable!(),
+        }
+        bytes
     }
 
     #[test]

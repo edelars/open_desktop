@@ -110,6 +110,135 @@ impl MemorySiteV2 {
     pub const fn operand(self) -> MemoryOperand {
         self.operand
     }
+
+    /// Validate the bounded decoded metadata profile shared by V2 compilation,
+    /// host admission, and the runtime helper. Displacement semantics remain
+    /// those of the decoder; this checks only the selected signed-width range.
+    pub fn has_supported_profile(self) -> bool {
+        let length = match self.next_rip.checked_sub(self.guest_rip) {
+            Some(length) => length,
+            None => return false,
+        };
+        let register_profile = match self.operation {
+            MemorySiteOperationV2::Load => {
+                matches!(self.destination, Some(0..=3)) && self.source.is_none()
+            }
+            MemorySiteOperationV2::Store => {
+                matches!(self.source, Some(0..=3)) && self.destination.is_none()
+            }
+        };
+        let base_register = match self.operand.base {
+            od_isa::long_decode::AddressBase::Register(register) => register,
+            od_isa::long_decode::AddressBase::None | od_isa::long_decode::AddressBase::NextRip => {
+                return false;
+            }
+        };
+        if self.instruction_index != 0
+            || !register_profile
+            || !matches!(
+                base_register,
+                od_isa::Register::Rax
+                    | od_isa::Register::Rcx
+                    | od_isa::Register::Rdx
+                    | od_isa::Register::Rbx
+            )
+            || self.operand.index.is_some_and(|index| {
+                !matches!(
+                    index,
+                    od_isa::Register::Rax
+                        | od_isa::Register::Rcx
+                        | od_isa::Register::Rdx
+                        | od_isa::Register::Rbx
+                )
+            })
+            || self.operand.address_size != od_isa::OperandSize::Qword
+            || self.operand.size != od_isa::OperandSize::Qword
+        {
+            return false;
+        }
+
+        let displacement_is_valid = match (self.operand.index, length) {
+            (None, 3) | (Some(_), 4) => self.operand.displacement == 0,
+            (None, 4) | (Some(_), 5) => i8::try_from(self.operand.displacement).is_ok(),
+            (None, 7) | (Some(_), 8) => i32::try_from(self.operand.displacement).is_ok(),
+            _ => return false,
+        };
+        let expected_scale = if self.operand.index.is_some() {
+            matches!(self.operand.scale, 1 | 2 | 4 | 8)
+        } else {
+            self.operand.scale == 1
+        };
+        displacement_is_valid && expected_scale
+    }
+
+    /// Validate that immutable source bytes encode this decoded site in the
+    /// narrow qword MOV profile. The decoder remains the only authority for
+    /// displacement interpretation; raw displacement bytes are not re-decoded.
+    pub fn matches_source_bytes(
+        self,
+        source: &[u8],
+        expected_operation: MemorySiteOperationV2,
+    ) -> bool {
+        if !self.has_supported_profile() || self.operation != expected_operation {
+            return false;
+        }
+        let opcode = match expected_operation {
+            MemorySiteOperationV2::Load => 0x8b,
+            MemorySiteOperationV2::Store => 0x89,
+        };
+        if source.len() < 3 || source[0] != 0x48 || source[1] != opcode {
+            return false;
+        }
+        let modrm = source[2];
+        let mode = modrm >> 6;
+        if mode == 3 || (modrm >> 3) & 7 >= 4 {
+            return false;
+        }
+        let displacement_bytes = match mode {
+            0 => 0,
+            1 => 1,
+            2 => 4,
+            _ => return false,
+        };
+        let has_sib = modrm & 7 == 4;
+        let expected_length = 3 + usize::from(has_sib) + displacement_bytes;
+        if source.len() != expected_length
+            || self.next_rip.checked_sub(self.guest_rip) != Some(expected_length as u64)
+        {
+            return false;
+        }
+
+        let register = match expected_operation {
+            MemorySiteOperationV2::Load => self.destination,
+            MemorySiteOperationV2::Store => self.source,
+        };
+        if register != Some((modrm >> 3) & 7) {
+            return false;
+        }
+        let decoded_base = match self.operand.base {
+            od_isa::long_decode::AddressBase::Register(register) => register,
+            od_isa::long_decode::AddressBase::None | od_isa::long_decode::AddressBase::NextRip => {
+                return false;
+            }
+        };
+        if has_sib {
+            let sib = source[3];
+            let base = sib & 7;
+            let index = (sib >> 3) & 7;
+            let scale = 1_u8 << (sib >> 6);
+            base < 4
+                && index < 4
+                && od_isa::Register::from_encoding(base) == Some(decoded_base)
+                && self.operand.index == od_isa::Register::from_encoding(index)
+                && self.operand.scale == scale
+        } else {
+            let base = modrm & 7;
+            base < 4
+                && od_isa::Register::from_encoding(base) == Some(decoded_base)
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+        }
+    }
 }
 
 /// V2 call record. Its first member preserves the V1 control prefix, while
@@ -189,48 +318,7 @@ pub unsafe extern "C" fn memory_site_helper_v2(
     let site = unsafe { *context.memory_sites.add(site_index as usize) };
     // SAFETY: the state pointer is kept live by the V2 host wrapper.
     let state = unsafe { &*context.base.state };
-    let decoded_memory_form_matches = match (
-        site.next_rip.checked_sub(site.guest_rip),
-        site.operand.index,
-    ) {
-        (Some(3), None) => site.operand.scale == 1,
-        (Some(4), Some(_)) => matches!(site.operand.scale, 1 | 2 | 4 | 8),
-        _ => false,
-    };
-    if site.instruction_index != 0
-        || !matches!(site.next_rip.checked_sub(site.guest_rip), Some(3 | 4))
-        || !decoded_memory_form_matches
-        || state.rip != site.guest_rip
-        || match site.operation {
-            MemorySiteOperationV2::Load => {
-                !matches!(site.destination, Some(0..=3)) || site.source.is_some()
-            }
-            MemorySiteOperationV2::Store => {
-                !matches!(site.source, Some(0..=3)) || site.destination.is_some()
-            }
-        }
-        || !matches!(
-            site.operand.base,
-            od_isa::long_decode::AddressBase::Register(
-                od_isa::Register::Rax
-                    | od_isa::Register::Rcx
-                    | od_isa::Register::Rdx
-                    | od_isa::Register::Rbx
-            )
-        )
-        || site.operand.index.is_some_and(|index| {
-            !matches!(
-                index,
-                od_isa::Register::Rax
-                    | od_isa::Register::Rcx
-                    | od_isa::Register::Rdx
-                    | od_isa::Register::Rbx
-            )
-        })
-        || site.operand.displacement != 0
-        || site.operand.address_size != od_isa::OperandSize::Qword
-        || site.operand.size != od_isa::OperandSize::Qword
-    {
+    if !site.has_supported_profile() || state.rip != site.guest_rip {
         context.last_memory_site = site_index;
         return MEMORY_HELPER_INVALID_ARGUMENT;
     }
