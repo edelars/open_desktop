@@ -5084,3 +5084,14 @@ otherwise `00`; alternating sentinels make operand direction and signedness
 visible. Interpreter execution is supported; JIT/native execution is denied.
 PCMPGTQ needs SSE4.2 and is excluded; there is no feature-gate or
 exception-delivery claim.
+
+### S2-35.22 local register PCMPGTW diagnostic profile
+
+`s2_35_22_pcmpgtw_register.case.json` is a handwritten literal XMM8,XMM9
+fixture for strict `s2-long-pcmpgtw-reg-v1`: `66 45 0F 65 C1`. Eight signed
+little-endian word lanes emit `FFFF` iff the destination word is greater than
+the source word, otherwise `0000`; mixed sentinels distinguish word-lane
+comparison from byte comparison and show operand direction. Interpreter
+execution is supported; JIT/native execution is denied. SSE2 and CR0/CR4
+preconditions are assumptions only; no feature-gate or exception-delivery
+claim is made.

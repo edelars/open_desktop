@@ -409,6 +409,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.2 | Local-only PADDB XMM register diagnostic slice; requires S2-34.1 state and reviewed S2-35.1 mandatory-66 register decoder | S2-34.1, S2-35.1 review |
 | [x] | S2-35.20 | Local-only bounded register PCMPEQD XMM diagnostic slice; dword equality masks, native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.21 | Local-only bounded register PCMPGTB XMM diagnostic slice; signed byte greater-than masks, native/JIT closed | S2-34.1, S2-35.1 |
+| [x] | S2-35.22 | Local-only bounded register PCMPGTW XMM diagnostic slice; signed word greater-than masks, native/JIT closed | S2-34.1, S2-35.1 |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
@@ -8351,3 +8352,39 @@ for `include/open_desktop/host_abi.h`. The cross-target check reports existing
 dead-code warnings in `od-host` and `od-runner`. Independent `gpt-6.1-sol`
 medium review passed with no findings. These are local interpreter/profile results only and do not close S2-34, S2-35, global `S2-35 → S2-34`,
 physical x86 validation, or deferred Mac mini/SSH acceptance.
+
+#### S2-35.22 — local-only bounded register `PCMPGTW`
+
+Requires S2-34.1 raw x87/SSE state and mandatory-66 XMM decoding from S2-35.1.
+Exact profile `s2-long-pcmpgtw-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F 65 /r` with ModR/M.mod=3. ModR/M.reg is the
+destination and ModR/M.r/m the source, extended to XMM0–15. Each of eight
+little-endian word lanes becomes `FFFF` iff signed_i16(destination) is
+strictly greater than signed_i16(source), otherwise `0000`. Coverage includes
+all 65,536 lhs words against signed boundary rhs values and their in-range
+neighbors, plus each lhs against its signed predecessor, itself, and successor
+using an independent i32 oracle. Explicit cases test operand direction,
+strictness/equality and word-vs-byte distinctions (`0100>00ff`, `0080>007f`),
+mixed lanes, the complete 16×16 XMM/REX matrix, full-state/flags/MXCSR
+preservation, and zero data callbacks. Missing state, truncation, STOP/budget
+atomicity, strict schema/decoder negatives including VEX `C5 F9 65 C1`, and a
+literal XMM8/XMM9 fixture with JIT/native denial are covered. PCMPGTD/Q, other
+comparisons, MMX, memory, extra prefixes, REX.W/X, VEX/EVEX, gates, exceptions,
+and native/JIT/physical execution remain out of scope. SSE2 and CR0/CR4
+preconditions are assumptions only. S2-34, S2-35 and global `S2-35 → S2-34`
+remain open; Mac mini/SSH acceptance remains deferred.
+
+S2-35.22 implementation check (2026-10-27): focused `od-isa` PCMPGTW tests
+passed (3), including decoder boundaries, per-lhs signed-neighbor oracle,
+mixed lanes, register matrix, preservation and atomic failures. The literal
+high-XMM runner fixture/schema/JIT-denial test passed (1). Full
+`cargo test --workspace --offline --quiet` passed 1,717 tests. Workspace
+all-target offline check and `x86_64-unknown-linux-gnu` all-target compile
+check passed; the Linux-gated native-denial test was compile-checked but not
+executed on the Darwin host. `cargo fmt --all -- --check` and `git diff --check`
+passed. `graphify update .` completed and reported the existing
+`include/open_desktop/host_abi.h` extractor warning. Independent
+`gpt-6.1-sol` medium review and re-review passed with no remaining findings.
+These are local interpreter/profile results only; they do not close S2-34,
+S2-35, global `S2-35 → S2-34`, physical x86 validation, or deferred combined
+Mac mini/SSH acceptance.

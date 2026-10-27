@@ -12401,3 +12401,42 @@ and `od-runner`. This is local interpreter/profile evidence only and leaves
 S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation, and deferred
 Mac mini/SSH acceptance open. Independent `gpt-6.1-sol` medium review passed
 with no findings.
+
+## S2-35.22 — local PCMPGTW XMM register slice
+
+Added strict `s2-long-pcmpgtw-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 65 /r`, ModR/M.mod=3, with ModR/M.reg as the
+XMM destination and ModR/M.r/m as source. Eight independent little-endian i16
+lanes write `FFFF` only when signed destination is strictly greater than
+signed source; otherwise they write `0000`. Only destination XMM and RIP change.
+SSE2/CR0/CR4 preconditions are assumptions; no feature-gate or exception
+delivery claim is made. PCMPGTD/Q, memory/MMX, other comparisons, extra
+prefixes, REX.W/X, VEX/EVEX, native/JIT and physical execution are excluded.
+
+Coverage compares all 65,536 lhs values against signed boundary rhs values and
+their in-range neighbors, then against each lhs's in-range signed predecessor,
+equal value and successor using an independent i32 oracle. Explicit
+destination/source and strict/equality cases, word-vs-byte sentinels
+(`0100>00ff`, `0080>007f`), mixed lanes, the full 16×16 XMM/REX matrix,
+complete state/flags/MXCSR preservation, and zero data callbacks are checked.
+Missing state, truncation and STOP/budget failures are atomic. Strict
+schema/decoder negatives include VEX `C5 F9 65 C1`. A handwritten literal
+XMM8/XMM9 fixture verifies mixed output, interpreter execution, and JIT/native
+denial.
+
+Focused `od-isa` PCMPGTW tests passed (3), including signed-boundary/neighbor
+coverage, decoding and atomicity; the literal runner fixture/schema/JIT-denial
+test passed (1). `cargo test --workspace --offline --quiet` passed 1,717
+tests. `cargo check --workspace --all-targets --offline` and
+`cargo check --workspace --all-targets --offline --target
+x86_64-unknown-linux-gnu` passed. The Linux-gated native-denial test was
+compile-checked but not executed on the Darwin host. `cargo fmt --all --
+--check` and `git diff --check` passed. `graphify update .` completed and
+reported the pre-existing `include/open_desktop/host_abi.h` extractor warning.
+Independent `gpt-6.1-sol` medium review found a missing per-lhs neighbor matrix;
+after adding predecessor/equality/successor comparisons, re-review passed with
+no remaining findings.
+
+This is local interpreter/profile evidence only. S2-34, S2-35, global
+`S2-35 → S2-34`, physical x86 validation, and deferred combined Mac mini/SSH
+acceptance remain open.
