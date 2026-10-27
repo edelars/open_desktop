@@ -2121,6 +2121,20 @@ load commits only on success; later noncanonical RSP/RBP stack-base uses raise
 #SS after that first retirement. The [S3-20an report](../reports/STAGE_3_S3-20an_2026-10-27.md)
 records the current fixture evidence and remaining owner/MMU limitation.
 
+#### S3-20ao: address32 no-index SIB qword MOV with stack data
+
+Admit only singleton `67 48 8B/89 /r 24 [disp8|disp32]` with ModRM
+`mod=00/01/10,r/m=100` and SIB exactly `0x24`. The old guest RSP supplies
+the low-32-bit effective-address base, with no index and scale one. The data
+register may be RAX through RBP. Instruction lengths are 5/6/9 bytes, address
+size is Dword, and transfer size is Qword. Direct V2, shared IR and bounded
+dispatch use the same exact byte/decoded-operand profile; other SIB encodings,
+prefixes, pairs and V3 stay outside this slice. The decoder's `MemoryOperand`
+and `access_address_48` remain the sole authority for address calculation.
+Full qword values, including RSP data, are preserved independently of the
+low-32-bit address calculation. See
+[S3-20ao evidence](../reports/STAGE_3_S3-20ao_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

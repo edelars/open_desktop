@@ -186,8 +186,24 @@ impl MemorySiteV2 {
                 9 => i32::try_from(self.operand.displacement).is_ok(),
                 _ => false,
             };
+        let address32_rsp_sib_base_data_profile = self.operand.address_size
+            == od_isa::OperandSize::Dword
+            && self.operand.size == od_isa::OperandSize::Qword
+            && matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+            )
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && match length {
+                5 => self.operand.displacement == 0,
+                6 => i8::try_from(self.operand.displacement).is_ok(),
+                9 => i32::try_from(self.operand.displacement).is_ok(),
+                _ => false,
+            };
         let scoped_data_profile = address32_direct_data_profile
             || address32_indexed_sib_data_profile
+            || address32_rsp_sib_base_data_profile
             || (self.operand.address_size == od_isa::OperandSize::Qword
                 && self.operand.size == od_isa::OperandSize::Qword
                 && (indexed_sib_data_profile
@@ -334,6 +350,14 @@ impl MemorySiteV2 {
                         && (length == 4 && self.operand.displacement == 0
                             || length == 5 && i8::try_from(self.operand.displacement).is_ok()
                             || length == 8 && i32::try_from(self.operand.displacement).is_ok())
+                    || self.operand.address_size == od_isa::OperandSize::Dword
+                        && register == od_isa::Register::Rsp
+                        && matches!(length, 5 | 6 | 9)
+                        && self.operand.index.is_none()
+                        && self.operand.scale == 1
+                        && (length == 5 && self.operand.displacement == 0
+                            || length == 6 && i8::try_from(self.operand.displacement).is_ok()
+                            || length == 9 && i32::try_from(self.operand.displacement).is_ok())
             }
             od_isa::long_decode::AddressBase::NextRip => {
                 self.operand.index.is_none() && length == 7
@@ -396,7 +420,17 @@ impl MemorySiteV2 {
                     )
                 })
                 && matches!(self.operand.scale, 1 | 2 | 4 | 8);
-            return supported_base && (direct || indexed);
+            let rsp_no_index_sib = matches!(length, 5 | 6 | 9)
+                && matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                )
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && (length == 5 && self.operand.displacement == 0
+                    || length == 6 && i8::try_from(self.operand.displacement).is_ok()
+                    || length == 9 && i32::try_from(self.operand.displacement).is_ok());
+            return (supported_base || rsp_no_index_sib) && (direct || indexed || rsp_no_index_sib);
         }
 
         let displacement_is_valid = match (self.operand.base, self.operand.index, length) {
@@ -476,6 +510,26 @@ impl MemorySiteV2 {
                 let Some(&sib) = source.get(4) else {
                     return false;
                 };
+                if sib == 0x24 {
+                    return matches!((source.len(), mode), (5, 0) | (6, 1) | (9, 2))
+                        && data_register <= 5
+                        && site_register == Some(data_register)
+                        && self.next_rip.checked_sub(self.guest_rip) == Some(source.len() as u64)
+                        && self.operand.address_size == od_isa::OperandSize::Dword
+                        && self.operand.size == od_isa::OperandSize::Qword
+                        && matches!(
+                            self.operand.base,
+                            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                        )
+                        && self.operand.index.is_none()
+                        && self.operand.scale == 1
+                        && match source.len() {
+                            5 => self.operand.displacement == 0,
+                            6 => i8::try_from(self.operand.displacement).is_ok(),
+                            9 => i32::try_from(self.operand.displacement).is_ok(),
+                            _ => false,
+                        };
+                }
                 let sib_base = sib & 7;
                 let sib_index = (sib >> 3) & 7;
                 let scale = 1_u8 << (sib >> 6);
