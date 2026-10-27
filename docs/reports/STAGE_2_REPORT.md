@@ -12540,3 +12540,43 @@ passed with no remaining findings.
 This is local interpreter/profile evidence only. S2-34, S2-35, global
 `S2-35 → S2-34`, physical x86 validation, and deferred Mac mini/SSH acceptance
 remain open.
+
+## S2-35.26 — local PUNPCKLWD XMM register slice
+
+Added local-only profile `s2-long-punpcklwd-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 61 /r`, with ModR/M.mod=3, ModR/M.reg as the
+destination, ModR/M.r/m as the source, and XMM0–15. The low four little-endian
+u16 words are interleaved from snapshots of the original destination and
+source. Each word's byte order is preserved, all destination words are
+overwritten, and input words 4–7 are ignored. SSE2 and CR0.EM=0, CR0.TS=0,
+CR4.OSFXSR=1 remain assumptions; the profile makes no CPUID, exception,
+physical-execution, JIT, or native-execution claim.
+
+Coverage includes the `0100,0302,0504,0706` / `8180,8382,8584,8786` word
+sentinel, self-alias, all byte values at all 16 consumed operand positions,
+high-word independence, walking bits, all 16×16 XMM/REX.R/B combinations,
+complete architectural-state preservation, and zero data-memory callbacks.
+Missing state, truncation, STOP/budget atomicity, strict schema/decoder
+negatives including VEX `C5 F9 61 C1`, and a handwritten literal XMM8/XMM9
+fixture cover boundary and profile behavior. The fixture asserts the exact
+interleaved XMM8 result and JIT denial; the native runner's early local-only
+guard also rejects the profile before mapping or tracing.
+
+Focused `cargo test -p od-isa punpcklwd --offline` passed (3 tests), and
+`cargo test -p od-runner punpcklwd_literal_cli_fixture_executes_and_keeps_jit_denied --offline`
+passed (1). `cargo test --workspace --offline --quiet` passed 1,733 tests.
+`cargo check --workspace --all-targets --offline` and the same check for
+`x86_64-unknown-linux-gnu` passed. The Linux-only native-denial assertion was
+compiled by the Linux-target all-target check but not executed on this Darwin
+host. `cargo fmt --all -- --check` and `git diff --check` passed.
+`python3 tools/check_layout.py` reports only the linked worktree `.git`
+pointer and two missing historical oracle-manifest links. Graphify updated
+the code graph; its existing extractor warning for
+`include/open_desktop/host_abi.h` remains.
+
+Independent `gpt-6.1-sol` medium review found a missing native early-deny
+entry for the new profile and a missing results section in this report. Both
+were corrected, and final re-review passed with no remaining findings.
+These are local interpreter/profile results only and do not close S2-34,
+S2-35, global `S2-35 → S2-34`, physical x86 validation, or deferred combined
+Mac mini/SSH acceptance.

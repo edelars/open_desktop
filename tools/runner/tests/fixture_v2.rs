@@ -12217,6 +12217,45 @@ fn punpckhbw_literal_cli_fixture_executes_and_keeps_jit_denied() {
 }
 
 #[test]
+fn punpcklwd_literal_cli_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_26_punpcklwd_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPunpcklwdRegV1
+    );
+    for rejected in [
+        "0f61c1",        // missing mandatory 66
+        "6648 0f61c1",   // REX.W
+        "6642 0f61c1",   // REX.X
+        "664045 0f61c1", // multiple REX bytes
+        "660f6101",      // memory ModRM
+        "c5f961c1",      // VEX
+    ] {
+        let rejected = rejected.replace(' ', "");
+        let mut invalid = loaded.fixture.clone();
+        invalid.memory[0].initial_bytes_hex = rejected.clone();
+        invalid.memory[0].length = (rejected.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(invalid.memory[0].length as usize);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + u64::from(invalid.memory[0].length),
+        ));
+        assert!(invalid.to_json().is_err(), "schema admitted {rejected}");
+    }
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PUNPCKLWD snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[8],
+        "00018081020382830405848506078687"
+    );
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
 fn pcmpeqw_literal_cli_fixture_executes_and_keeps_jit_denied() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_19_pcmpeqw_register.case.json");
