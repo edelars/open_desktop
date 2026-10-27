@@ -8161,3 +8161,41 @@ Linux x86_64 `od-x86-runner` all-target compile check, formatting, and
 not run on Linux. `graphify update .` completed. These results establish local
 interpreter/profile behavior only; they do not close S2-34, S2-35, global
 S2-35 → S2-34, or deferred Mac mini/SSH acceptance.
+
+The S2-35.16 independent review found that the PSUBD profile reached native
+trace setup before it was rejected. The early local-only guard now rejects
+PSUBD before tracee setup; its Linux-gated assertion was compiled by the
+S2-35.16 x86_64 Linux all-target check.
+
+#### S2-35.16 — local-only bounded register `PADDQ`
+
+Requires S2-34.1 raw x87/SSE state, mandatory-66 XMM decoding from S2-35.1,
+and the reviewed qword-independent layout pattern established by S2-35.14.
+Exact profile `s2-long-paddq-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F D4 /r` with ModR/M.mod=3. ModR/M.reg is the XMM
+destination and ModR/M.r/m is the source, extended to XMM0–15. Each of two
+little-endian u64 lanes computes `(DEST + SRC) mod 2^64` independently; carry
+cannot cross between lanes. Cover all 16×16 register pairs, deterministic raw
+u64 vectors against an independent u128 masked reference, walking-one/zero
+patterns, carry chains through bit 63 and between-lane isolation, complete
+state preservation except destination XMM and RIP, and no guest data-memory
+callbacks. Missing x87/SSE state, truncation, STOP/budget atomicity, strict
+schema/decoder rejection, a handwritten literal XMM8/XMM9 fixture, and
+JIT/native denial are covered. Bare MMX, PSUBQ/other widths, saturation,
+memory operands, extra prefixes, REX.W/X, VEX/EVEX and physical execution
+remain excluded. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only;
+there is no CPUID or exception-delivery claim. S2-34, S2-35 and global
+`S2-35 → S2-34` remain open. Mac mini/SSH acceptance remains deferred to the
+final combined substage.
+
+S2-35.16 implementation check (2026-10-27): focused PADDQ interpreter and
+strict-decoder tests passed (3); the handwritten XMM8/XMM9 fixture passed its
+CLI interpreter/JIT-denial check (1). The sibling PADDQ/PSUBD/PADDD fixture
+runner checks passed (11). `cargo test --workspace --offline`, workspace
+all-target offline check, Linux x86_64 workspace all-target compile check,
+`cargo fmt --all -- --check`, `git diff --check`, and `graphify update .`
+passed. PADDQ and PSUBD Linux-only early native-denial assertions compiled in
+the cross-target check but were not executed on this macOS host. The evidence
+is local interpreter/profile coverage only; it does not close S2-34, S2-35,
+global `S2-35 → S2-34`, physical x86 validation, or deferred Mac mini/SSH
+acceptance.

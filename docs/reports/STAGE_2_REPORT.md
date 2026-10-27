@@ -12212,3 +12212,33 @@ prefixes, REX.W/X, VEX/EVEX and physical execution remain outside the profile.
 SSE2 and CR0/CR4 preconditions are assumptions only; no CPUID or exception
 claim is made. S2-34, S2-35, and global S2-35 → S2-34 remain open; Mac mini/SSH
 acceptance remains deferred.
+
+## S2-35.16 — local PADDQ XMM register slice
+
+Added the exact local profile `s2-long-paddq-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F D4 /r`, ModR/M.mod=3, XMM0–15. ModR/M.reg is
+the destination and ModR/M.r/m is the source. Two little-endian u64 lanes add
+independently modulo 2^64. The tests cover all 16×16 register pairs, deterministic
+raw-u64 values checked against an independent u128 masked reference, walking
+bits and carry chains through bit 63, lane isolation, complete state preservation
+except destination XMM/RIP, and zero data callbacks. Strict decoder/schema
+rejections, missing state and atomic truncation/STOP/budget paths are covered.
+A handwritten literal XMM8/XMM9 fixture executes in the interpreter; JIT stays
+unsupported. The native runner rejects PADDQ as a local-only profile before
+tracee setup. The same review corrected PSUBD to use the early local-only native
+guard; its Linux-gated test asserts the deterministic Unsupported result.
+
+Focused PADDQ interpreter/decoder tests passed (3), and the literal fixture
+runner check passed (1). The full `cargo test --workspace --offline` passed,
+as did `cargo check --workspace --all-targets --offline`. After the PADDQ and
+PSUBD early native-guard changes, the focused SSE fixture runner filter passed
+11 tests and `cargo check --workspace --all-targets --target
+x86_64-unknown-linux-gnu --offline` passed, compiling the Linux-gated native
+denial checks. Formatting, `git diff --check`, and `graphify update .` passed.
+Linux native-denial tests were compile-checked only; this macOS host could not
+execute them. No Mac mini/SSH or physical x86 validation was run. Evidence is
+local interpreter/profile evidence only; parent S2-34, parent S2-35 and global
+`S2-35 → S2-34` remain open.
+
+See the [S2-35.16 plan](../plans/STAGE_2.md#s2-3516--local-only-bounded-register-paddq)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3516-local-register-paddq-diagnostic-profile).

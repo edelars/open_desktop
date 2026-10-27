@@ -5024,3 +5024,12 @@ independent little-endian u32 lanes modulo 2^32. Expected XMM8 is
 `fefffffffffffffffeffff7f00000000`; other XMM registers, x87 state, MXCSR,
 GPRs, flags, and memory are unchanged. JIT and native x86 execution remain
 unsupported. This fixture is local interpreter evidence only.
+
+### S2-35.16 local register PADDQ diagnostic profile
+
+`s2_35_16_paddq_register.case.json` is a handwritten literal XMM8,XMM9 fixture
+for strict `s2-long-paddq-reg-v1`: `66 45 0F D4 C1`. Its two little-endian
+u64 lanes add independently modulo 2^64; lane 0 wraps to zero and lane 1
+carries through bit 63. Other XMM registers, x87 state, MXCSR, GPRs, flags, and
+memory are unchanged. JIT and native x86 execution remain unsupported. This is
+local interpreter evidence only.
