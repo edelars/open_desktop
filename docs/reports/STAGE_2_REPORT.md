@@ -10696,3 +10696,27 @@ acceptance substage. Independent Sol review completed with no remaining
 findings. `cargo test --workspace --offline` passed all 1,391 tests;
 `cargo check --workspace --all-targets --offline`, formatting, and diff checks
 also passed.
+
+## S2-19i — tracked continuation after the REP work limit
+
+Added six schema-v2 fixtures for `TEST RAX,RAX` followed by REP STOSB, LODSB,
+or MOVSB, each with DF=0/1 and initial `RCX=1025`. The first invocation
+completes TEST and 1024 REP iterations, leaving the REP instruction at RIP and
+one element remaining. The expected-data sidecar contains literal full-state
+and memory snapshots for that partial result and for the final result after an
+explicit continuation. The fixture schema/profile and fresh-entry behavior of
+`run()` are unchanged. A resumed call must pass the preceding
+`RunResult.rflags_defined` to `run_with_rflags_defined`; the six compositions
+retain TEST's `0x0cc7` definedness mask, including undefined AF.
+
+The generator freshness/shape checks passed (`2/2`), and the focused runner
+test `test_rep_iteration_limit_fixtures_resume_with_literal_definedness_snapshots`
+passed for all six fixtures. It checks the command-line partial snapshot, then
+executes both API calls and compares the resumed full GPR, flags, definedness,
+RIP and mapped memory with the sidecar. `cargo fmt --all -- --check` and
+`git diff --check` passed. No hardware restart-state, dual-fault
+priority, JIT/native, or physical acceptance is claimed. ISSUE-016/020/021
+remain open.
+`python3 tools/check_layout.py` was also run and reports the pre-existing
+managed-worktree `.git` marker plus two absent oracle manifests linked by this
+report; no layout changes were made.

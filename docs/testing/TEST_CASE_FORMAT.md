@@ -627,3 +627,14 @@ instruction only on complete success. `rep_iteration_budget_exhausted` and
 mapping does not imply `#PF`; partial store progress is observable only when
 the fixture runner returns a snapshot, while injected/unit checks may inspect
 local memory after harness failure.
+
+## S2-19i tracked REP continuation snapshots
+
+Tracked continuation adds no schema-v2 fixture fields and does not change the
+fixture digest contract. The six `s2_19i_rep_restart_*` cases use the existing
+`rep_iteration_budget_exhausted` expected exit for the first run. Their
+`s2_19i_rep_restart_expected.json` sidecar stores complete literal snapshots
+for that partial run and the final explicitly resumed run. Resume is a runner
+test action: it supplies the prior `RunResult.rflags_defined` to
+`od_isa::execute::run_with_rflags_defined`. Ordinary fixtures and
+`od_isa::execute::run()` continue to start as fresh executions.

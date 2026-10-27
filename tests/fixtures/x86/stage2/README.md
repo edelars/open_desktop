@@ -743,6 +743,25 @@ cargo test -p od-testkit --offline rep_stosb
 cargo test -p od-x86-runner --offline rep_stosb_native_admission
 ```
 
+## Tracked REP restart fixtures S2-19i
+
+Six schema-v2 fixtures compose `TEST RAX,RAX` with REP STOSB, LODSB, and MOVSB
+for DF=0/1 at count 1025. Each first run retires TEST and reaches the
+1024-iteration limit with one REP iteration remaining. The unchanged fixture
+schema records that partial outcome; `s2_19i_rep_restart_expected.json` stores
+literal full-state and memory snapshots for both the partial run and the
+explicitly resumed final iteration. The generator serializes fixed input and
+expected values only. `run()` continues to mean a fresh entry; the runner test
+passes the first result's flag-definedness mask to the explicit tracked-entry
+API to verify the final snapshot. No hardware restart/fault-priority or
+JIT/native/physical claim is made. ISSUE-016/020/021 remain open.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_restart.py --check
+python3 tests/cpu/test_stage2_rep_restart_generator.py
+cargo test -p od-runner --test fixture_v2 test_rep_iteration_limit_fixtures_resume_with_literal_definedness_snapshots --offline
+```
+
 ## Divide-error exit fixtures S2-20a
 
 Two local-only schema v2 fixtures use literal `F6 F3` (`DIV BL`) bytes and

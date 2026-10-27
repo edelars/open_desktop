@@ -55,14 +55,60 @@ pub struct RunResult {
     pub rflags_defined: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RunInputError {
+    InvalidRflagsDefined { value: u64 },
+}
+
 pub fn run(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     config: RunConfig,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
+    // Preserve the historical fresh-entry behavior. Callers that resume a
+    // tracked execution can pass the preceding result's mask explicitly.
+    run_execution_loop(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        &mut stop_requested,
+    )
+}
+
+/// Continue an execution while carrying the caller's explicit RFLAGS
+/// definedness snapshot. Use the `rflags_defined` value returned by the prior
+/// call; this function does not infer execution history from guest state.
+pub fn run_with_rflags_defined(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    initial_rflags_defined: u64,
+    mut stop_requested: impl FnMut() -> bool,
+) -> Result<RunResult, RunInputError> {
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return Err(RunInputError::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    Ok(run_execution_loop(
+        state,
+        memory,
+        config,
+        initial_rflags_defined,
+        &mut stop_requested,
+    ))
+}
+
+fn run_execution_loop(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    mut rflags_defined: u64,
+    stop_requested: &mut impl FnMut() -> bool,
+) -> RunResult {
     let mut retired = 0;
-    let mut rflags_defined = crate::INTEGER_FLAGS;
     loop {
         // The harness address is checked first; STOP then budget are checked
         // before fetch at every instruction boundary. A fault does not retire.
@@ -78,7 +124,7 @@ pub fn run(
                 memory,
                 config.context,
                 &mut rflags_defined,
-                &mut stop_requested,
+                stop_requested,
             ) {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
                     retired += 1;
@@ -60942,6 +60988,724 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tracked_run_validates_masks_before_stop_or_fetch_and_preserves_entry_masks() {
+        let config = RunConfig {
+            instruction_budget: 0,
+            stop_rip: None,
+            context: AccessContext::default(),
+        };
+        for invalid in [
+            !crate::INTEGER_FLAGS,
+            crate::INTEGER_FLAGS | (1 << 63),
+            1 << 1 | (1 << 8),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x90], 0x2000);
+            let memory_before = memory.bytes.clone();
+            memory.fetch_error = Some((0x2000, MemoryError::Backend("must not fetch".into())));
+            let mut called = false;
+            assert_eq!(
+                run_with_rflags_defined(&mut state, &mut memory, config, invalid, || {
+                    called = true;
+                    true
+                }),
+                Err(RunInputError::InvalidRflagsDefined { value: invalid })
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.bytes, memory_before);
+            assert!(memory.accesses.is_empty());
+            assert!(!called);
+        }
+
+        for defined in 0..64_u64 {
+            let mask = [
+                crate::CF,
+                crate::PF,
+                crate::AF,
+                crate::ZF,
+                crate::SF,
+                crate::OF,
+            ]
+            .into_iter()
+            .enumerate()
+            .fold(crate::DF | 2, |mask, (index, bit)| {
+                mask | if defined & (1 << index) != 0 { bit } else { 0 }
+            });
+            for gate in [0_u8, 1, 2] {
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                let stop_rip = (gate == 0).then_some(0x2000);
+                let budget = if gate == 1 { 0 } else { 1 };
+                let mut memory = Memory::at(&[0xfc], 0x2000);
+                let mut called = false;
+                let result = run_with_rflags_defined(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: budget,
+                        stop_rip,
+                        context: AccessContext::default(),
+                    },
+                    mask,
+                    || {
+                        called = true;
+                        gate == 2
+                    },
+                )
+                .unwrap();
+                assert_eq!(result.rflags_defined, mask);
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(called, gate != 0);
+                assert_eq!(state.rip, 0x2000);
+            }
+        }
+
+        let mut left = LongModeState::default();
+        let mut right = left.clone();
+        left.rip = 0x2000;
+        right.rip = 0x2000;
+        let mut left_memory = Memory::at(&[0xfc], 0x2000);
+        let mut right_memory = Memory::at(&[0xfc], 0x2000);
+        let config = RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        };
+        assert_eq!(
+            run(&mut left, &mut left_memory, config, || false),
+            run_with_rflags_defined(
+                &mut right,
+                &mut right_memory,
+                config,
+                crate::INTEGER_FLAGS,
+                || false,
+            )
+            .unwrap()
+        );
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn tracked_resume_keeps_test_undefined_af_through_rep_work_limit() {
+        for kind in 0..3 {
+            for width in [1_u64, 2, 4, 8] {
+                let opcode = match kind {
+                    0 => {
+                        if width == 1 {
+                            0xaa
+                        } else {
+                            0xab
+                        }
+                    }
+                    1 => {
+                        if width == 1 {
+                            0xac
+                        } else {
+                            0xad
+                        }
+                    }
+                    _ => {
+                        if width == 1 {
+                            0xa4
+                        } else {
+                            0xa5
+                        }
+                    }
+                };
+                let mut rep = vec![0xf3];
+                match width {
+                    2 => rep.push(0x66),
+                    8 => rep.push(0x48),
+                    _ => {}
+                }
+                rep.push(opcode);
+                for df in [false, true] {
+                    let mut code = vec![0x85, 0xc0]; // TEST EAX,EAX
+                    code.extend_from_slice(&rep);
+                    let mut state = LongModeState::default();
+                    state.rip = 0x2000;
+                    state.rflags = 2 | if df { crate::DF } else { 0 };
+                    state.gpr[Register::Rax as usize] = 0x55;
+                    state.gpr[Register::Rcx as usize] = 1025;
+                    state.gpr[Register::Rsi as usize] = if df { 0xb000 } else { 0x5000 };
+                    state.gpr[Register::Rdi as usize] = if df { 0xb000 } else { 0x5000 };
+                    let mut memory = Memory::at(&code, 0x2000);
+                    memory.data_base = 0x4000;
+                    memory.bytes = vec![0x41; 0x9000];
+                    let initial_state = state.clone();
+                    let initial_bytes = memory.bytes.clone();
+                    let first = run(
+                        &mut state,
+                        &mut memory,
+                        RunConfig {
+                            instruction_budget: 2,
+                            stop_rip: None,
+                            context: AccessContext::default(),
+                        },
+                        || false,
+                    );
+                    assert_eq!(first.exit, RunExit::RepIterationBudgetExhausted);
+                    assert_eq!(first.rflags_defined & crate::AF, 0);
+                    assert_eq!(state.gpr[Register::Rcx as usize], 1);
+                    let after_1024 = state.clone();
+                    let resumed = run_with_rflags_defined(
+                        &mut state,
+                        &mut memory,
+                        RunConfig {
+                            instruction_budget: 1,
+                            stop_rip: None,
+                            context: AccessContext::default(),
+                        },
+                        first.rflags_defined,
+                        || false,
+                    )
+                    .unwrap();
+                    assert_eq!(resumed.rflags_defined & crate::AF, 0);
+                    assert_eq!(state.gpr[Register::Rcx as usize], 0);
+                    assert_eq!(resumed.instructions_executed, 1);
+                    assert_eq!(resumed.exit, RunExit::InstructionBudgetExhausted);
+                    assert_ne!(state, after_1024);
+                    let expected_pointer = if df {
+                        0xb000 - 1025 * width
+                    } else {
+                        0x5000 + 1025 * width
+                    };
+                    match kind {
+                        0 => assert_eq!(state.gpr[Register::Rdi as usize], expected_pointer),
+                        1 => assert_eq!(state.gpr[Register::Rsi as usize], expected_pointer),
+                        _ => {
+                            assert_eq!(state.gpr[Register::Rsi as usize], expected_pointer);
+                            assert_eq!(state.gpr[Register::Rdi as usize], expected_pointer);
+                        }
+                    }
+
+                    // Independently drive the same instruction boundary with
+                    // the tracked step API, carrying the produced mask across
+                    // the work-limit return. This checks the complete machine
+                    // and memory result as well as the memory side-effect log.
+                    let mut reference = initial_state;
+                    let mut reference_mask = crate::INTEGER_FLAGS;
+                    let mut reference_memory = Memory::at(&code, 0x2000);
+                    reference_memory.data_base = 0x4000;
+                    reference_memory.bytes = initial_bytes;
+                    assert_eq!(
+                        step_tracked(
+                            &mut reference,
+                            &mut reference_memory,
+                            AccessContext::default(),
+                            &mut reference_mask,
+                        ),
+                        Ok(StepOutcome::Advanced)
+                    );
+                    assert_eq!(
+                        step_tracked(
+                            &mut reference,
+                            &mut reference_memory,
+                            AccessContext::default(),
+                            &mut reference_mask,
+                        ),
+                        Ok(StepOutcome::RepIterationBudgetExhausted)
+                    );
+                    assert_eq!(reference_mask, first.rflags_defined);
+                    assert_eq!(
+                        step_tracked(
+                            &mut reference,
+                            &mut reference_memory,
+                            AccessContext::default(),
+                            &mut reference_mask,
+                        ),
+                        Ok(StepOutcome::Advanced)
+                    );
+                    assert_eq!(reference, state);
+                    assert_eq!(reference_mask, resumed.rflags_defined);
+                    assert_eq!(reference_memory.bytes, memory.bytes);
+                    assert_eq!(reference_memory.accesses, memory.accesses);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tracked_resume_preserves_undefined_af_after_rep_stop_and_memory_faults() {
+        let mut stopped = LongModeState::default();
+        stopped.rip = 0x2000;
+        stopped.gpr[Register::Rax as usize] = 0x5a;
+        stopped.gpr[Register::Rcx as usize] = 3;
+        stopped.gpr[Register::Rdi as usize] = 0x1000;
+        let mut stopped_memory = Memory::at(&[0x85, 0xc0, 0xf3, 0xaa], 0x2000);
+        let mut polls = 0;
+        let stopped_result = run(
+            &mut stopped,
+            &mut stopped_memory,
+            RunConfig {
+                instruction_budget: 2,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || {
+                polls += 1;
+                polls == 3
+            },
+        );
+        assert_eq!(stopped_result.exit, RunExit::StopRequested);
+        assert_eq!(stopped_result.instructions_executed, 1);
+        assert_eq!(stopped_result.rflags_defined & crate::AF, 0);
+        assert_eq!(stopped.gpr[Register::Rcx as usize], 2);
+        assert_eq!(stopped.gpr[Register::Rdi as usize], 0x1001);
+        assert_eq!(stopped_memory.accesses.len(), 1);
+        let resumed = run_with_rflags_defined(
+            &mut stopped,
+            &mut stopped_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            stopped_result.rflags_defined,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(resumed.rflags_defined & crate::AF, 0);
+        assert_eq!(stopped.gpr[Register::Rcx as usize], 0);
+        assert_eq!(stopped.gpr[Register::Rdi as usize], 0x1003);
+        assert_eq!(stopped_memory.accesses.len(), 3);
+
+        for (rep_opcode, error_kind) in [
+            (0xaa, AccessKind::Write),
+            (0xac, AccessKind::Read),
+            (0xa4, AccessKind::Read),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rax as usize] = 0x5a;
+            state.gpr[Register::Rcx as usize] = 1;
+            state.gpr[Register::Rsi as usize] = 0x1000;
+            state.gpr[Register::Rdi as usize] = 0x1008;
+            let mut memory = Memory::at(&[0x85, 0xc0, 0xf3, rep_opcode], 0x2000);
+            memory.error = Some(MemoryError::Backend("injected REP access failure".into()));
+            memory.error_kind = Some(error_kind);
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 2,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert!(matches!(result.exit, RunExit::MemoryError(_)));
+            assert_eq!(result.rflags_defined & crate::AF, 0);
+            assert_eq!(state.rip, 0x2002);
+            assert_eq!(state.gpr[Register::Rcx as usize], 1);
+            memory.error = None;
+            if rep_opcode == 0xa4 {
+                // A destination-fault retry must observe the source's current value.
+                memory.bytes[0] = 0x37;
+            }
+            let retry = run_with_rflags_defined(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                result.rflags_defined,
+                || false,
+            )
+            .unwrap();
+            assert_eq!(retry.rflags_defined & crate::AF, 0);
+            assert_eq!(state.gpr[Register::Rcx as usize], 0);
+            if rep_opcode == 0xac {
+                assert_eq!(
+                    state.gpr[Register::Rax as usize] & 0xff,
+                    u64::from(memory.bytes[0])
+                );
+            }
+            if rep_opcode == 0xa4 {
+                assert_eq!(memory.bytes[8], 0x37);
+                assert_eq!(
+                    memory
+                        .accesses
+                        .iter()
+                        .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                        .count(),
+                    2
+                );
+            }
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.gpr[Register::Rax as usize] = 0;
+        state.gpr[Register::Rcx as usize] = 1;
+        state.gpr[Register::Rsi as usize] = 0x1000;
+        state.gpr[Register::Rdi as usize] = 0x1008;
+        let mut memory = Memory::at(&[0x85, 0xc0, 0xf3, 0xa4], 0x2000);
+        memory.error = Some(MemoryError::Backend("injected destination failure".into()));
+        memory.error_kind = Some(AccessKind::Write);
+        let result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 2,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        memory.error = None;
+        memory.bytes[0] = 0x92;
+        let retry = run_with_rflags_defined(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            result.rflags_defined,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(retry.rflags_defined & crate::AF, 0);
+        assert_eq!(memory.bytes[8], 0x92);
+        assert_eq!(
+            memory
+                .accesses
+                .iter()
+                .filter(|(kind, _, _)| *kind == AccessKind::Read)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn tracked_resume_cmp_defines_flags_and_repe_still_rejects_undefined_af() {
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.gpr[Register::Rax as usize] = 7;
+        state.gpr[Register::Rbx as usize] = 3;
+        let mut producer_memory = Memory::at(&[0x85, 0xc0], 0x2000); // TEST EAX,EAX
+        let produced = run(
+            &mut state,
+            &mut producer_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(produced.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(produced.rflags_defined & crate::AF, 0);
+
+        let mut cmp_memory = Memory::at(&[0x39, 0xd8], 0x2002); // CMP EAX,EBX
+        state.rip = 0x2002;
+        let compared = run_with_rflags_defined(
+            &mut state,
+            &mut cmp_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            produced.rflags_defined,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(
+            compared.rflags_defined & crate::ARITHMETIC_FLAGS,
+            crate::ARITHMETIC_FLAGS
+        );
+
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.rflags = 2 | crate::PF | crate::ZF;
+        let mask = crate::INTEGER_FLAGS & !crate::AF;
+        let mut memory = Memory::at(&[0xf3, 0xa6], 0x2000); // REPE CMPSB
+        let result = run_with_rflags_defined(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            mask,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xa6 });
+        assert_eq!(result.rflags_defined, mask);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn tracked_resume_stop_and_fault_matrix_matches_continuous_string_execution() {
+        let make_case = |kind: u8, width: u64, df: bool| {
+            let opcode = match kind {
+                0 => {
+                    if width == 1 {
+                        0xaa
+                    } else {
+                        0xab
+                    }
+                }
+                1 => {
+                    if width == 1 {
+                        0xac
+                    } else {
+                        0xad
+                    }
+                }
+                _ => {
+                    if width == 1 {
+                        0xa4
+                    } else {
+                        0xa5
+                    }
+                }
+            };
+            let mut code = vec![0x85, 0xc0, 0xf3]; // TEST EAX,EAX; REP
+            match width {
+                2 => code.push(0x66),
+                8 => code.push(0x48),
+                _ => {}
+            }
+            code.push(opcode);
+            let source = if df { 0x9000 } else { 0x5000 };
+            let destination = if df { 0xa000 } else { 0x6000 };
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.rflags = 2 | if df { crate::DF } else { 0 };
+            state.gpr[Register::Rax as usize] = 0x8877_6655_4433_2211;
+            state.gpr[Register::Rcx as usize] = 3;
+            state.gpr[Register::Rsi as usize] = source;
+            state.gpr[Register::Rdi as usize] = destination;
+            let mut memory = Memory::at(&code, 0x2000);
+            memory.data_base = 0x4000;
+            memory.bytes = (0..0x8000).map(|index| (index * 37) as u8).collect();
+            (state, memory, code, source, destination)
+        };
+
+        for kind in 0..3 {
+            for width in [1_u64, 2, 4, 8] {
+                for df in [false, true] {
+                    let (initial, continuous_memory, _, _, _) = make_case(kind, width, df);
+                    let mut continuous = initial.clone();
+                    let mut continuous_memory = continuous_memory;
+                    let continuous_result = run(
+                        &mut continuous,
+                        &mut continuous_memory,
+                        RunConfig {
+                            instruction_budget: 2,
+                            stop_rip: None,
+                            context: AccessContext::default(),
+                        },
+                        || false,
+                    );
+                    assert_eq!(continuous_result.exit, RunExit::InstructionBudgetExhausted);
+                    assert_eq!(continuous_result.rflags_defined & crate::AF, 0);
+
+                    let (mut stopped, mut stopped_memory, _, _, _) = make_case(kind, width, df);
+                    let mut polls = 0;
+                    let stop_result = run(
+                        &mut stopped,
+                        &mut stopped_memory,
+                        RunConfig {
+                            instruction_budget: 2,
+                            stop_rip: None,
+                            context: AccessContext::default(),
+                        },
+                        || {
+                            polls += 1;
+                            polls == 3
+                        },
+                    );
+                    assert_eq!(stop_result.exit, RunExit::StopRequested);
+                    assert_eq!(stop_result.rflags_defined, continuous_result.rflags_defined);
+                    let resumed = run_with_rflags_defined(
+                        &mut stopped,
+                        &mut stopped_memory,
+                        RunConfig {
+                            instruction_budget: 1,
+                            stop_rip: None,
+                            context: AccessContext::default(),
+                        },
+                        stop_result.rflags_defined,
+                        || false,
+                    )
+                    .unwrap();
+                    assert_eq!(resumed.rflags_defined, continuous_result.rflags_defined);
+                    assert_eq!(stopped, continuous);
+                    assert_eq!(stopped_memory.bytes, continuous_memory.bytes);
+                    assert_eq!(stopped_memory.accesses, continuous_memory.accesses);
+
+                    let fault_kinds: &[AccessKind] = match kind {
+                        0 => &[AccessKind::Write],
+                        1 => &[AccessKind::Read],
+                        _ => &[AccessKind::Read, AccessKind::Write],
+                    };
+                    for &fault_kind in fault_kinds {
+                        let (mut faulted, mut fault_memory, _, source, destination) =
+                            make_case(kind, width, df);
+                        fault_memory.error =
+                            Some(MemoryError::Backend("injected REP restart fault".into()));
+                        fault_memory.error_kind = Some(fault_kind);
+                        let fault_result = run(
+                            &mut faulted,
+                            &mut fault_memory,
+                            RunConfig {
+                                instruction_budget: 2,
+                                stop_rip: None,
+                                context: AccessContext::default(),
+                            },
+                            || false,
+                        );
+                        assert!(matches!(fault_result.exit, RunExit::MemoryError(_)));
+                        assert_eq!(fault_result.rflags_defined & crate::AF, 0);
+                        assert_eq!(faulted.gpr[Register::Rcx as usize], 3);
+                        fault_memory.error = None;
+                        if kind == 2 && fault_kind == AccessKind::Write {
+                            let source_offset = (source - fault_memory.data_base) as usize;
+                            fault_memory.bytes[source_offset..source_offset + width as usize]
+                                .fill(0x6d);
+                        }
+
+                        let (mut expected, mut expected_memory, _, _, _) =
+                            make_case(kind, width, df);
+                        // Start from the original TEST boundary with the same
+                        // current RAM image, so the reference independently
+                        // recreates the flags mask and uninterrupted REP result.
+                        expected_memory.bytes = fault_memory.bytes.clone();
+                        let expected_result = run(
+                            &mut expected,
+                            &mut expected_memory,
+                            RunConfig {
+                                instruction_budget: 2,
+                                stop_rip: None,
+                                context: AccessContext::default(),
+                            },
+                            || false,
+                        );
+                        assert_eq!(expected_result.rflags_defined, fault_result.rflags_defined);
+
+                        let resumed = run_with_rflags_defined(
+                            &mut faulted,
+                            &mut fault_memory,
+                            RunConfig {
+                                instruction_budget: 1,
+                                stop_rip: None,
+                                context: AccessContext::default(),
+                            },
+                            fault_result.rflags_defined,
+                            || false,
+                        )
+                        .unwrap();
+                        assert_eq!(resumed.rflags_defined, expected_result.rflags_defined);
+                        assert_eq!(faulted, expected);
+                        assert_eq!(fault_memory.bytes, expected_memory.bytes);
+                        if kind == 2 && fault_kind == AccessKind::Write {
+                            let destination_offset =
+                                (destination - fault_memory.data_base) as usize;
+                            assert_eq!(
+                                &fault_memory.bytes
+                                    [destination_offset..destination_offset + width as usize],
+                                &vec![0x6d; width as usize]
+                            );
+                            assert_eq!(
+                                fault_memory
+                                    .accesses
+                                    .iter()
+                                    .filter(|(access, _, _)| *access == AccessKind::Read)
+                                    .count(),
+                                4
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tracked_resume_preserves_mask_across_guest_page_fault() {
+        let code = [0x85, 0xc0, 0xf3, 0xaa]; // TEST EAX,EAX; REP STOSB
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.gpr[Register::Rax as usize] = 0x5a;
+        state.gpr[Register::Rcx as usize] = 2;
+        state.gpr[Register::Rdi as usize] = 0x1000;
+        let mut memory = Memory::at(&code, 0x2000);
+        memory.error = Some(MemoryError::Architectural(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(2),
+            linear_address: Some(0x1000),
+        }));
+        memory.error_kind = Some(AccessKind::Write);
+        let fault = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 2,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(
+            fault.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(2),
+                linear_address: Some(0x1000),
+            })
+        );
+        assert_eq!(fault.instructions_executed, 1);
+        assert_eq!(fault.rflags_defined & crate::AF, 0);
+        assert_eq!(state.rip, 0x2002);
+        assert_eq!(state.gpr[Register::Rcx as usize], 2);
+
+        memory.error = None;
+        let resumed = run_with_rflags_defined(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            fault.rflags_defined,
+            || false,
+        )
+        .unwrap();
+        let mut expected = LongModeState::default();
+        expected.rip = 0x2000;
+        expected.gpr[Register::Rax as usize] = 0x5a;
+        expected.gpr[Register::Rcx as usize] = 2;
+        expected.gpr[Register::Rdi as usize] = 0x1000;
+        let mut expected_memory = Memory::at(&code, 0x2000);
+        let expected_result = run(
+            &mut expected,
+            &mut expected_memory,
+            RunConfig {
+                instruction_budget: 2,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(resumed.rflags_defined, expected_result.rflags_defined);
+        assert_eq!(state, expected);
+        assert_eq!(memory.bytes, expected_memory.bytes);
     }
 
     #[test]

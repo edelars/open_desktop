@@ -7803,8 +7803,9 @@ over the 1024-successful-store local work limit. STOP, limit, or a fault leaves
 RIP on the REP instruction and retires zero; earlier successful memory and
 index/count progress remain committed. The one-instruction retirement budget
 still counts the whole completed REP once. RAX, RSI, RFLAGS and in-run flag
-definedness are preserved. A new `run()` resets definedness, so cross-run
-definedness preservation is not claimed. No bulk memory operation or RSI access
+definedness are preserved. A fresh `run()` resets definedness; intentional
+cross-run continuation can preserve its returned mask through the explicit
+tracked-entry API described by S2-19i. No bulk memory operation or RSI access
 is performed. ISSUE-016 and ISSUE-020 remain open; JIT/native and physical
 execution are deferred.
 
@@ -7833,9 +7834,9 @@ change.
 
 The bounded-memory backend reports missing mappings as harness errors; the
 interpreter does not synthesize `#PF`. This local contract makes no MMIO
-rollback claim. Flag definedness is covered within one `run()` only; a new
-`run()` reinitializes definedness, so cross-run metadata preservation is not
-claimed. The 12,288-state completion matrix, 96 injected errors, STOP/replay
+rollback claim. Fresh `run()` calls reinitialize definedness; intentional
+cross-run continuation is available through the explicit S2-19i tracked-entry
+API. The 12,288-state completion matrix, 96 injected errors, STOP/replay
 and limit checks, pointer/mapping edges, TEST→REP definedness, 48 prefix
 rejections and exactly 36 literal schema-v2 fixtures are documented in the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19c--bounded-f3-acad-rep-lodsbwdq-local).
@@ -7866,11 +7867,31 @@ again because no pending value is kept. Previous successful transfers persist.
 This source-first ordering is a local policy, not a confirmed winner for two
 simultaneously invalid addresses; see ISSUE-021. No MMIO rollback or SMP
 atomicity claim is made. RAX, flags/definedness and DF are unchanged within one
-run; a new `run()` reinitializes flag definedness, so cross-run metadata
-preservation is not claimed. Missing mappings remain harness errors, not
+run; fresh `run()` calls reinitialize flag definedness. Intentional cross-run
+continuation is covered by the explicit S2-19i tracked-entry API. Missing mappings remain harness errors, not
 synthesized `#PF`.
 
 Local evidence is defined by the [S2-19d plan](../plans/STAGE_2.md#s2-19d--f3-a4a5-rep-movsbwdq-ограниченный-локальный-контракт); native and physical acceptance remains deferred to the shared final acceptance.
+
+### Local S2-19i tracked continuation after REP work limit
+
+`run()` remains the fresh-entry API and initializes integer RFLAGS
+definedness to `INTEGER_FLAGS` on every call. `run_with_rflags_defined()` is an
+explicit tracked-entry API: it accepts only a mask contained in
+`INTEGER_FLAGS`, rejects invalid masks before STOP/fetch/access, and returns
+the updated mask in `RunResult`. Passing that returned mask to a subsequent
+call preserves metadata across an intentional continuation. This does not
+change schema-v2 fixture format or infer definedness from concrete RFLAGS.
+
+Six schema-v2 fixtures compose `TEST RAX,RAX` with REP STOSB, LODSB, or MOVSB
+for DF=0/1 and count 1025. The first invocation retires TEST, completes the
+1024-successful-iteration work limit, leaves RIP at REP with `RCX=1`, and
+returns the TEST mask (`0x0cc7`, AF undefined). The sidecar records literal
+partial and final snapshots. A second invocation passes the first result's
+mask explicitly and completes the last iteration once, preserving the
+undefined-AF metadata. These local tests establish API continuation behavior
+for the bounded interpreter, not hardware restart state, fault priority, or
+JIT/native/physical support. ISSUE-016, ISSUE-020 and ISSUE-021 remain open.
 
 ### Local S2-19e bounded `F3 AE` REPE SCASB contract
 

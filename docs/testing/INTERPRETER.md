@@ -525,8 +525,9 @@ transfers remain committed; replay rereads the current source. Zero count makes
 no data accesses. Completion precedes STOP and the 1024-success local limit;
 STOP precedes the limit. Fault/STOP/limit preserve the REP-start RIP and retire
 zero instructions. RAX, flags/definedness, DF and unrelated state remain
-unchanged within a run. A new `run()` reinitializes definedness. Missing
-mapping/backend errors remain harness errors rather than synthetic #PFs, and
+unchanged within a run. Fresh `run()` calls reinitialize definedness;
+intentional continuation can carry the returned mask through the explicit
+S2-19i API. Missing mapping/backend errors remain harness errors rather than synthetic #PFs, and
 this does not claim MMIO rollback or SMP atomicity.
 
 Local evidence includes 12,288 full-state completions with alternating ordered
@@ -1034,9 +1035,9 @@ remain admission failures. Per-iteration width writes commit before DF-directed
 wrapping RDI and RCX updates. Zero count performs no access; completion precedes
 STOP, STOP precedes the 1024-successful-store work limit, and partial/faulted
 execution leaves RIP at the REP start with successful earlier stores retained.
-The retirement budget counts the full instruction once. Definedness remains
-unchanged within one `run()`; a new run resets it. JIT/native admission remains
-closed.
+The retirement budget counts the full instruction once. `run()` remains a
+fresh entry and initializes definedness on each call; explicit tracked
+continuation is covered by S2-19i. JIT/native admission remains closed.
 
 Local evidence includes the full 12,288-state completion matrix, prefix and
 byte regressions, literal schema-v2 fixtures, replay/fault/limit cases, and
@@ -1060,8 +1061,9 @@ then the 1024-successful-read work limit. Completed REP retires once; partial
 STOP/limit/fault keeps RIP at REP start and current REP retirement zero. Prior
 successful values and index/count progress persist; replay starts at the next
 source element. Missing mappings remain harness errors, not synthesized guest
-page faults, and no MMIO rollback is claimed. Definedness is checked only
-within one `run()` because a new run reinitializes its metadata.
+page faults, and no MMIO rollback is claimed. `run()` remains a fresh entry and
+reinitializes definedness; S2-19i covers continuation through the explicit
+tracked-entry API.
 
 Local evidence includes the 12,288-state completion matrix, 96 injected read
 errors, 16 STOP/replay states plus initial STOP and STOP at the limit boundary, 24 limit boundaries, bounded
@@ -1070,6 +1072,19 @@ prefix rejects and 36 full-state literal fixtures. Non-REP LODS and REP STOS
 regressions remain covered. Native/JIT and physical execution remain deferred;
 ISSUE-016 and ISSUE-020 remain open. See the [CPU contract](../specs/CPU_CONTRACT.md)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+## Tracked REP continuation — S2-19i
+
+The fixture-v2 schema remains unchanged. Six literal cases run TEST before
+REP STOSB, LODSB, or MOVSB with DF=0/1 and `RCX=1025`. The first call retires
+TEST, performs 1024 REP iterations, and exposes the partial state with RIP at
+REP, `RCX=1`, and `rflags_defined=0x0cc7`. The expected-data sidecar records
+both this partial snapshot and the final snapshot after resuming with the
+first result's definedness mask. `run()` is still the fresh-entry API; callers
+that intentionally continue may pass the returned mask to
+`run_with_rflags_defined()`. This is local interpreter API evidence and does
+not establish hardware restart state or fault priority. ISSUE-016/020/021 stay
+open; JIT/native and physical acceptance remain deferred.
 ## REPE CMPSW/D/Q — S2-19h local interpreter coverage
 
 This extends exact S2-19f `F3 A6` byte support to `F3 66 A7` word, `F3 A7`

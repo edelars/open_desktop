@@ -6443,6 +6443,135 @@ fn rep_iteration_work_limit_has_a_distinct_cli_outcome_and_restart_snapshot() {
 }
 
 #[test]
+fn test_rep_iteration_limit_fixtures_resume_with_literal_definedness_snapshots() {
+    use od_isa::execute::{self, RunConfig, RunExit};
+    use od_isa::memory::AccessContext;
+    use od_testkit::memory::FlatMemory;
+
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(directory.join("s2_19i_rep_restart_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 6);
+
+    for (case_id, expected) in answers {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, cli_result) = run(&raw, "interpreter", 0);
+        assert_eq!(
+            cli_result.outcome,
+            Outcome::RepIterationBudgetExhausted {},
+            "{case_id}"
+        );
+        assert_eq!(count(&cli_result), 1, "{case_id}");
+        let cli_snapshot = snapshot(&cli_result);
+        let partial = &expected["partial"];
+        let expected_partial_gpr: [HexU64; 16] =
+            serde_json::from_value(partial["gpr"].clone()).unwrap();
+        assert_eq!(cli_snapshot.state.gpr, expected_partial_gpr, "{case_id}");
+        let expected_partial_rflags: HexU64 =
+            serde_json::from_value(partial["rflags"].clone()).unwrap();
+        let partial_defined: HexU64 =
+            serde_json::from_value(partial["rflags_defined"].clone()).unwrap();
+        assert_eq!(
+            cli_snapshot.state.rflags.get() & partial_defined.get(),
+            expected_partial_rflags.get() & partial_defined.get(),
+            "{case_id}"
+        );
+        assert_eq!(cli_snapshot.rflags_defined, partial_defined, "{case_id}");
+        assert_eq!(
+            cli_snapshot.state.rip,
+            serde_json::from_value(partial["rip"].clone()).unwrap(),
+            "{case_id}"
+        );
+        let partial_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(partial["memory"].clone()).unwrap();
+        for region in &cli_snapshot.memory {
+            assert_eq!(
+                region.bytes_hex, partial_memory[&region.region_id],
+                "{case_id}: {}",
+                region.region_id
+            );
+        }
+
+        let mut resume_fixture = input.fixture.clone();
+        resume_fixture.initial_state = cli_snapshot.state.clone();
+        for region in &mut resume_fixture.memory {
+            let partial_region = cli_snapshot
+                .memory
+                .iter()
+                .find(|snapshot| snapshot.region_id == region.region_id)
+                .unwrap();
+            assert_eq!(
+                region.guest_address, partial_region.guest_address,
+                "{case_id}"
+            );
+            region.initial_bytes_hex = partial_region.bytes_hex.clone();
+        }
+        let resumed_fixture = Fixture::from_json(&serde_json::to_vec(&resume_fixture).unwrap())
+            .unwrap()
+            .fixture;
+        for (restored, original) in resumed_fixture.memory.iter().zip(&input.fixture.memory) {
+            assert_eq!(restored.guest_address, original.guest_address, "{case_id}");
+            assert_eq!(restored.permissions, original.permissions, "{case_id}");
+        }
+        let mut memory = FlatMemory::from_fixture(&resumed_fixture).unwrap();
+        let mut state = resumed_fixture.initial_state.to_cpu().unwrap();
+        let resumed = execute::run_with_rflags_defined(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: resumed_fixture.stop_rip.map(HexU64::get),
+                context: AccessContext::default(),
+            },
+            cli_snapshot.rflags_defined.get(),
+            || false,
+        )
+        .unwrap();
+        assert_eq!(resumed.exit, RunExit::StopAddress, "{case_id}");
+        assert_eq!(resumed.instructions_executed, 1, "{case_id}");
+        assert_eq!(resumed.rflags_defined, 0x0cc7, "{case_id}");
+
+        let final_snapshot = &expected["resumed"];
+        let final_gpr: [HexU64; 16] =
+            serde_json::from_value(final_snapshot["gpr"].clone()).unwrap();
+        assert_eq!(state.gpr, final_gpr.map(HexU64::get), "{case_id}");
+        let expected_final_rflags: HexU64 =
+            serde_json::from_value(final_snapshot["rflags"].clone()).unwrap();
+        let expected_final_defined: HexU64 =
+            serde_json::from_value(final_snapshot["rflags_defined"].clone()).unwrap();
+        assert_eq!(
+            state.rflags & expected_final_defined.get(),
+            expected_final_rflags.get() & expected_final_defined.get(),
+            "{case_id}"
+        );
+        assert_eq!(
+            resumed.rflags_defined,
+            expected_final_defined.get(),
+            "{case_id}"
+        );
+        assert_eq!(
+            state.rip,
+            serde_json::from_value::<HexU64>(final_snapshot["rip"].clone())
+                .unwrap()
+                .get(),
+            "{case_id}"
+        );
+        let final_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(final_snapshot["memory"].clone()).unwrap();
+        for region in memory.snapshot() {
+            assert_eq!(
+                region.bytes_hex, final_memory[&region.region_id],
+                "{case_id}: {}",
+                region.region_id
+            );
+        }
+    }
+}
+
+#[test]
 fn popfq_cli_fixtures_match_literal_flags_stack_pointer_and_memory() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

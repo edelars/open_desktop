@@ -1,9 +1,10 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-19g расширяет ограниченный REPE SCASB до
-SCASW/D/Q; это не расширяет общий REP/JIT/native profile и не выполняет
-финальный Mac mini/SSH/native/physical acceptance. RSI-first dual-fault policy
-S2-19f остаётся описана в ISSUE-020 и не устанавливает hardware priority.
+Последнее локальное подзадание S2-19i проверяет явное продолжение REP после
+лимита 1024 итерации с сохранённой definedness; общий REP/JIT/native profile
+и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
+policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
+устанавливается.
 
 **Дата:** 23 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–j add local-only FS/GS-base, selector, descriptor-load, VERW/GDT and exact GS/FS.base composition cases; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 S2-22h load fixtures and two S2-22i/j composition fixtures are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b UD2 fixture are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Stage 2 remains open under broader roadmap criteria. ISSUE-011/012/013/014/015/016/017/018 remain open; acceptance criteria are unchanged.
 
@@ -158,7 +159,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-16 | Условия, переходы, SETcc/CMOVcc | S2-11 |
 | [ ] | S2-17 | Стек, CALL/RET и косвенные переходы | S2-16 |
 | [ ] | S2-18 | Строковые операции без REP; S2-18a–n локально покрывают MOVS/STOS/LODS/SCAS/CMPS bounded формы и CLD/STD; общая приёмка открыта | S2-17 |
-| [ ] | S2-19 | REP и точный частичный прогресс; S2-19a–d реализуют bounded REP STOS/LODS/MOVS с partial progress, остальные REP формы и общая приёмка открыты | S2-18 |
+| [ ] | S2-19 | REP и точный частичный прогресс; S2-19a–h реализуют bounded REP формы в локальных границах, S2-19i проверяет явное продолжение после лимита; остальные формы и общая приёмка открыты | S2-18 |
 | [ ] | S2-20 | Исключения, приоритеты и fault state | S2-14, S2-19 |
 | [ ] | S2-21 | Нужные однопроцессорные atomic/fence формы | S2-20 |
 | [ ] | S2-22 | Сегменты и права доступа | S2-20 |
@@ -1240,6 +1241,21 @@ width, two prefix-normalization cases and four CMP/TEST compositions per width.
 The generator serializes fixed literal expectations only. The CLI verifies full
 state and JIT denial; Linux-only native admission remains explicitly denied.
 No native execution, physical, Mini, or SSH acceptance is claimed.
+
+#### S2-19i — явное продолжение REP после лимита итераций
+
+Шесть schema-v2 fixtures покрывают `TEST RAX,RAX` перед REP STOSB, LODSB и
+MOVSB с DF=0/1 и `RCX=1025`. Первый запуск выполняет TEST и 1024 итерации REP,
+возвращая частичный snapshot с RIP на REP, `RCX=1` и сохранённой flag
+definedness. Sidecar содержит дословные snapshots первого запуска и конечные
+snapshots после второго запуска, передавшего definedness первого результата в
+`run_with_rflags_defined`. Продолжение выполняет последнюю итерацию ровно один
+раз, сохраняет undefined AF и завершает REP. Schema-v2/profile и стандартное
+поведение свежего `run()` не меняются: обычный `run()` по-прежнему начинает с
+полной integer-flag definedness; сохранение между вызовами доступно только
+через новый явный tracked-entry API. Fixtures не являются доказательством
+hardware restart state или fault priority. ISSUE-016/020/021 остаются открыты;
+native/JIT/physical acceptance не выполнялась.
 
 ### S2-20. Точность исключений и exit state
 
