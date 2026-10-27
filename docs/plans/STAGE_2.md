@@ -1383,6 +1383,34 @@ serialization-only generator; проверить CLI snapshots/JIT denial. Об�
 отчёт, CPU contract, interpreter coverage и fixture README. Физическую,
 native/JIT, Mac mini и SSH проверки не выполнять.
 
+#### S2-19n — bounded REPE CMPSB с address-size 32
+
+Расширить только Long64 byte CMPS на точные трёхбайтовые prefix-порядки
+`F3 67 A6` и `67 F3 A6`, оба декодируются как `Operation::RepCmps { size:
+Byte }`. Сохранить существующий `F3 A6` address-size-64 и закрыть `A7`, REPNE,
+добавочные 66/REX/segment/LOCK и повторные prefixes. Decoder и executor
+admission должны принимать один и тот же набор.
+
+Сохранить полный локальный entry/restart gate до чтения count, включая
+ECX=0: `RFLAGS & 0x8d5 == 0x44`, а definedness содержит `0x8d5`. Count — ECX;
+при нуле сохранить полный RCX/RSI/RDI и flags, не обращаться к памяти, перейти
+на RIP+3 и retire ровно один раз. Иначе каждая итерация сначала читает byte
+из zero-extended ESI, затем byte из zero-extended EDI. После обоих успешных
+чтений сравнить source−destination через существующую модель CMPSB и только
+затем обновить flags, ESI/EDI modulo 2^32 по DF и zero-extended ECX-1.
+Текущая неуспешная итерация не коммитится; предшествующий read остаётся в trace
+при ошибке destination. Source-first и dual-invalid результат — local ISSUE-020
+policy, не аппаратный приоритет или MMIO side-effect rollback claim.
+
+Завершение по ECX=0 или ZF=0 предшествует STOP, затем применяется limit 1024
+успешных сравнений. Fault/STOP/limit оставляют RIP на CMPSB и retirement=0;
+tracked resume передаёт definedness mask. Проверить независимую byte CMP-модель,
+оба DF, высокие половины и wrap, count/mismatch, первый/второй/dual invalid,
+retry, gate в том числе при ECX=0, zero budget, STOP, limit и tracked resume.
+Добавить literal schema-v2 snapshots и serialization-only generator, проверить
+runner full snapshot/JIT denial, затем обновить контракт, notes, issue и report.
+Native/JIT/physical/Mac mini/SSH проверки не выполнять.
+
 ### S2-20. Точность исключений и exit state
 
 1. Свести для реализованных форм `#UD`, `#DE`, `#GP`, `#SS`, memory faults и traps только там, где они действительно определены профилем/адаптером.

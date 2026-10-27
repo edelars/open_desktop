@@ -7265,6 +7265,77 @@ fn rep_scasb_addr32_literal_fixtures_match_full_expected_answers() {
 }
 
 #[test]
+fn rep_cmpsb_addr32_literal_fixtures_match_full_expected_answers() {
+    let dir = arithmetic_fixture_directory();
+    let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(dir.join("s2_19n_rep_cmpsb_addr32_expected.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answers.len(), 13);
+    for (id, answer) in answers {
+        let input =
+            Fixture::from_json(&std::fs::read(dir.join(format!("{id}.case.json"))).unwrap())
+                .unwrap()
+                .fixture;
+        let mut state = input.initial_state.to_cpu().unwrap();
+        let mut memory = FlatMemory::from_fixture(&input).unwrap();
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(input.instruction_budget, input.stop_rip.map(HexU64::get)),
+            || false,
+        );
+        match input.expected_exit {
+            ExpectedExit::StopAddress => assert_eq!(result.exit, RunExit::StopAddress, "{id}"),
+            ExpectedExit::InstructionBudgetExhausted => {
+                assert_eq!(result.exit, RunExit::InstructionBudgetExhausted, "{id}")
+            }
+            ExpectedExit::RepIterationBudgetExhausted => {
+                assert_eq!(result.exit, RunExit::RepIterationBudgetExhausted, "{id}")
+            }
+            ExpectedExit::HarnessError => {
+                assert!(
+                    matches!(result.exit, RunExit::MemoryError(_)),
+                    "{id}: {:?}",
+                    result.exit
+                )
+            }
+            ExpectedExit::Unsupported => {
+                let opcode = if id.ends_with("_af_rejected") {
+                    0xa7
+                } else {
+                    0xa6
+                };
+                assert_eq!(result.exit, RunExit::Unsupported { opcode }, "{id}");
+            }
+            _ => panic!("unexpected REP CMPSB address32 outcome {id}"),
+        }
+        let expected_gpr: [HexU64; 16] = serde_json::from_value(answer["gpr"].clone()).unwrap();
+        let expected_flags: HexU64 = serde_json::from_value(answer["rflags"].clone()).unwrap();
+        let expected_defined: HexU64 =
+            serde_json::from_value(answer["rflags_defined"].clone()).unwrap();
+        let expected_rip: HexU64 = serde_json::from_value(answer["rip"].clone()).unwrap();
+        assert_eq!(state.gpr, expected_gpr.map(HexU64::get), "{id}");
+        assert_eq!(state.rflags, expected_flags.get(), "{id}");
+        assert_eq!(result.rflags_defined, expected_defined.get(), "{id}");
+        assert_eq!(state.rip, expected_rip.get(), "{id}");
+        let expected_memory: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(answer["memory"].clone()).unwrap();
+        for region in memory.snapshot() {
+            assert_eq!(region.bytes_hex, expected_memory[&region.region_id], "{id}");
+        }
+        let expected_retired = if id.starts_with("s2_19n_cmp_rax_rax") {
+            2
+        } else if id.starts_with("s2_19n_test_rax") {
+            1
+        } else {
+            u64::from(input.expected_exit == ExpectedExit::StopAddress)
+        };
+        assert_eq!(result.instructions_executed, expected_retired, "{id}");
+    }
+}
+
+#[test]
 fn rep_scas_wdq_literal_fixtures_match_full_expected_answers() {
     let dir = arithmetic_fixture_directory();
     let answers: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(

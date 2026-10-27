@@ -7962,6 +7962,36 @@ Local evidence and exclusions are recorded in the
 [interpreter notes](../testing/INTERPRETER.md#repe-scasb-address-size-32--s2-19m),
 and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19m--bounded-repe-scasb-address-size-32).
 
+### Local S2-19n bounded REPE CMPSB address-size-32 contract
+
+The Long64 interpreter admits only exact `F3 67 A6` and `67 F3 A6`, each
+three bytes, decoded as byte `Operation::RepCmps`. Existing address-size-64
+`F3 A6` remains unchanged. Address-size-32 `A7`, REPNE, extra 66/REX/segment/
+LOCK prefixes, and repeated prefixes remain outside this profile. Decoder and
+execution admission enforce the same boundary; JIT/native admission stays
+closed.
+
+Before consulting ECX, including at zero count, the existing local gate
+requires `RFLAGS & 0x8d5 == 0x44` and definedness to contain `0x8d5`. Count uses
+ECX. ECX=0 preserves full RCX/RSI/RDI and flags, performs no address check or
+data read, advances RIP by three, and retires once. Each nonzero iteration reads
+one byte from zero-extended ESI, then one byte from zero-extended EDI. It
+compares source minus destination using existing CMPSB/CMP semantics. Only after
+both reads succeed does it commit arithmetic flags, modulo-32 ESI/EDI ±1 by DF,
+and zero-extended ECX-1. A failed second read retains the successful source
+read in the local trace but commits no current-iteration CPU state. Earlier
+iterations remain committed. Source-first and dual-invalid results are local
+ISSUE-020 policy only; no hardware priority or MMIO rollback is claimed.
+
+ECX completion or ZF clear completes before STOP, which precedes the 1024
+successful-comparison limit. Fault, STOP, and limit preserve REP RIP and retire
+zero. Tracked continuation carries the prior definedness mask; fresh `run()`
+remains a fresh entry. Missing mappings remain harness errors.
+
+The implementation evidence is in the [S2-19n plan](../plans/STAGE_2.md#s2-19n--bounded-repe-cmpsb-с-address-size-32),
+[interpreter notes](../testing/INTERPRETER.md#repe-cmpsb-address-size-32--s2-19n),
+and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-19n--bounded-repe-cmpsb-address-size-32). ISSUE-020 remains open.
+
 ### Local S2-19d bounded REP MOVSB/W/D/Q contract
 
 The interpreter admits exact `F3 A4` MOVSB, `F3 66 A5` MOVSW, `F3 A5` MOVSD,

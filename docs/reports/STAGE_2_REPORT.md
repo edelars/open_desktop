@@ -10875,3 +10875,34 @@ workspace suite passed 1,419 tests, and `cargo check --workspace --all-targets
 --offline` plus `cargo fmt --all -- --check` passed. Graphify was refreshed.
 No native, physical x86, Mac mini, or SSH test was run. No unresolved S2-19m
 issue was found; existing ISSUE-016/020/021 remain outside this substage.
+
+## S2-19n — bounded REPE CMPSB address-size-32
+
+Extended Long64 REPE CMPSB to exact three-byte `F3 67 A6` and `67 F3 A6`,
+both decoded as byte `RepCmps`; existing `F3 A6` address-size-64 behavior and
+the PF|ZF plus `0x8d5` definedness gate remain unchanged. The operation uses
+ECX and zero-extended ESI/EDI. A zero ECX preserves all of RCX/RSI/RDI and
+flags with no data access. Otherwise each iteration traces source read first,
+then destination read; only after both succeed does it commit existing CMP
+flags, modulo-32 indices and zero-extended ECX decrement. Completion/mismatch
+precedes STOP and the 1024-success cap. STOP and limit continuation preserve
+tracked flag definedness. ISSUE-020 stays open: source-first is local policy,
+not evidence for hardware dual-invalid priority or MMIO rollback. JIT/native
+admission remains closed.
+
+Local coverage includes 393,216 independent source×destination×DF checks across
+address64 and both addr32 spellings, zero-count high-half preservation, pointer
+wrap/truncation, source and destination invalid access, dual-invalid source-first
+trace, second-read no-commit and replay after changing source memory, mismatch,
+STOP, budget-zero, limit and tracked resume. Thirteen literal schema-v2 fixtures
+record full snapshots; their generator serializes hand-authored values only.
+The od-testkit fixture comparison and runner CLI full-state/JIT-denial test
+passed. `cargo test --workspace --all-targets --offline`,
+`cargo check --workspace --all-targets --offline`, and
+`cargo fmt --all -- --check` passed. All 123 Python CPU tests and all fixture
+generator freshness checks passed; `git diff --check` passed and Graphify was
+refreshed. `tools/check_layout.py` was also attempted, but in this managed
+worktree it reports the `.git` worktree marker as an unmapped root file and
+two existing links in the report to absent `work/.../manifest.json` artifacts;
+no layout changes were made. No native, physical x86, Mac mini, or SSH
+execution was performed.

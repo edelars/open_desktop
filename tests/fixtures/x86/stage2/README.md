@@ -4142,6 +4142,33 @@ cargo test -p od-testkit --offline rep_scasb_addr32_literal_fixtures_match_full_
 cargo test -p od-runner --test fixture_v2 --offline rep_scasb_addr32_cli_fixtures_check_full_state_and_jit_denial
 ```
 
+## Bounded REPE CMPSB address-size-32 fixtures S2-19n
+
+Thirteen literal schema-v2 fixtures cover both exact encodings (`F3 67 A6`,
+`67 F3 A6`), zero-count high-half preservation, high-half address zero-extension,
+equal completion, mismatch at comparison two, source and destination unmapped reads,
+the 1024-success limit, zero instruction budget, CMP→REP success,
+TEST→REP undefined-AF rejection, bad entry values at ECX=0, and address-size-32
+AF rejection. Expected sidecars contain full GPR/RFLAGS/definedness/RIP/memory
+snapshots. The generator serializes a fixed input and expected-state table; it
+does not calculate or execute instruction semantics.
+
+The independent interpreter model covers all 256×256 source/destination byte
+pairs for both DF values on both addr32 spellings, plus the retained address64
+form. Focused cases check ECX and index wrap/truncation, source-first dual-invalid
+trace, second-read no-commit and replay with modified source data, STOP,
+zero-budget, 1024 limit, and tracked continuation. ISSUE-020 remains open; the
+local first-read result does not establish hardware dual-fault priority or MMIO
+rollback. Runner CLI snapshots pass and JIT stays denied. No native, physical
+x86, Mac mini, or SSH execution is claimed.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_cmpsb_addr32.py --check
+python3 tests/cpu/test_stage2_rep_cmpsb_addr32_generator.py
+cargo test -p od-testkit --offline rep_cmpsb_addr32_literal_fixtures_match_full_expected_answers
+cargo test -p od-runner --test fixture_v2 --offline rep_cmpsb_addr32_cli_fixtures_check_full_state_and_jit_denial
+```
+
 ## Bounded REPE SCASB fixtures S2-19e
 
 Exactly 24 literal schema-v2 fixtures cover exact `F3 AE` progress: zero count

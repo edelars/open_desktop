@@ -1312,16 +1312,22 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && matches!(opcode.byte, 0xa6 | 0xa7)
             && prefixes.group1 == Some(0xf3)
             && prefixes.segment.is_none()
-            && !prefixes.address_override
             && if opcode.byte == 0xa6 {
-                self.length == 2
+                (self.length == 2
                     && prefixes
                         == (Prefixes {
                             group1: Some(0xf3),
                             ..Prefixes::default()
-                        })
+                        }))
+                    || (self.length == 3
+                        && prefixes
+                            == (Prefixes {
+                                group1: Some(0xf3),
+                                address_override: true,
+                                ..Prefixes::default()
+                            }))
             } else {
-                prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                !prefixes.address_override && prefixes.rex.is_none_or(|rex| rex & 8 != 0)
             };
         if !known
             || (prefixes.group1.is_some()
@@ -6148,6 +6154,17 @@ mod tests {
                 size: OperandSize::Byte
             }
         );
+        for bytes in [&[0xf3, 0x67, 0xa6][..], &[0x67, 0xf3, 0xa6][..]] {
+            let decoded = Memory::new(bytes).decode().unwrap();
+            assert_eq!(
+                decoded.operation,
+                Operation::RepCmps {
+                    size: OperandSize::Byte
+                }
+            );
+            assert_eq!(decoded.address_size, OperandSize::Dword);
+            assert_eq!(decoded.length, 3);
+        }
         for (bytes, size) in [
             (&[0xf3, 0x66, 0xa7][..], OperandSize::Word),
             (&[0x66, 0xf3, 0xa7][..], OperandSize::Word),
@@ -6171,11 +6188,17 @@ mod tests {
             );
         }
         let mut rejected = Vec::new();
-        for prefix in [
-            0xf0, 0xf2, 0xf3, 0x66, 0x67, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65,
-        ] {
+        for prefix in [0xf0, 0xf2, 0xf3, 0x66, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
             rejected.push(vec![prefix, 0xf3, 0xa6]);
         }
+        rejected.extend([
+            vec![0xf3, 0x66, 0xa6],
+            vec![0xf3, 0x67, 0x66, 0xa6],
+            vec![0xf3, 0x67, 0x48, 0xa6],
+            vec![0xf3, 0x67, 0xf3, 0xa6],
+            vec![0xf3, 0x67, 0xa7],
+            vec![0xf2, 0x67, 0xa6],
+        ]);
         for rex in 0x40..=0x4f {
             rejected.push(vec![0xf3, rex, 0xa6]);
         }
@@ -6268,6 +6291,9 @@ mod tests {
         let mut rejected = Vec::new();
         for form in &forms {
             for prefix in [0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65] {
+                if *form == [0x67, 0xa6] && prefix == 0xf3 {
+                    continue;
+                }
                 rejected.push([vec![prefix], form.clone()].concat());
             }
             rejected.push([vec![0x67], form.clone()].concat());
@@ -6280,7 +6306,7 @@ mod tests {
             rejected.push(vec![0x67, rex, 0xa7]);
             rejected.push(vec![0x67, 0x66, rex, 0xa7]);
         }
-        assert_eq!(rejected.len(), 73);
+        assert_eq!(rejected.len(), 72);
         for bytes in rejected {
             assert!(
                 matches!(
@@ -6291,11 +6317,7 @@ mod tests {
             );
         }
 
-        for bytes in [
-            vec![0x67, 0xf3, 0xa6],
-            vec![0x67, 0xf3, 0x66, 0xa7],
-            vec![0x67, 0xf3, 0xa7],
-        ] {
+        for bytes in [vec![0x67, 0xf3, 0x66, 0xa7], vec![0x67, 0xf3, 0xa7]] {
             assert!(
                 matches!(
                     Memory::new(&bytes).decode(),

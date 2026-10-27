@@ -624,6 +624,41 @@ complete CPU and memory snapshots; their generator serializes hand-authored
 input and expected tables only. The CLI also checks complete snapshots and
 keeps JIT denied. No native or physical execution is claimed.
 
+## REPE CMPSB address-size 32 — S2-19n
+
+Only exact `F3 67 A6` and `67 F3 A6` (length three) are admitted in Long64;
+both decode as byte `RepCmps`. Existing address-size-64 `F3 A6` remains
+unchanged. `A7`, REPNE, additional 66/REX/segment/LOCK, and repeated prefixes
+remain unsupported by both decoder and executor admission.
+
+The complete local entry/restart gate is checked before ECX, including ECX=0:
+`RFLAGS & 0x8d5 == 0x44` and carried definedness includes `0x8d5`. ECX=0
+preserves full RCX/RSI/RDI and flags, skips both reads, and retires at RIP+3.
+For each nonzero iteration, the interpreter reads one byte at zero-extended ESI
+then one byte at zero-extended EDI. After both reads, it applies existing
+source-minus-destination CMP flags, updates both indices modulo 2^32 by DF, and
+zero-extends ECX-1 into RCX. A current read fault commits no current comparison;
+a successful source read remains in the trace after destination failure.
+Source-first, including the dual-invalid winner, is local ISSUE-020 policy and
+does not establish hardware fault priority. Completion/mismatch precedes STOP,
+then the 1024-success limit. Tracked resume carries the produced definedness
+mask.
+
+Coverage includes the independent 256×256×DF comparison matrix for address64
+and both addr32 spellings; high halves, count zero, modulo-32 wrap, both read
+failures, dual-invalid source-first trace, replay with changed source data,
+STOP, limit/resume, CMP→REP success, and TEST→REP undefined-AF rejection.
+Thirteen literal schema-v2 fixtures compare full state; the generator
+serializes authored values only. Runner CLI compares snapshots and keeps JIT
+denied. Native, physical x86, Mac mini and SSH execution were not run.
+
+```sh
+python3 tests/cpu/generate_stage2_rep_cmpsb_addr32.py --check
+python3 tests/cpu/test_stage2_rep_cmpsb_addr32_generator.py
+cargo test -p od-testkit --offline rep_cmpsb_addr32_literal_fixtures_match_full_expected_answers
+cargo test -p od-runner --test fixture_v2 --offline rep_cmpsb_addr32_cli_fixtures_check_full_state_and_jit_denial
+```
+
 ## REPE CMPSB — S2-19f local interpreter coverage
 
 Only exact `F3 A6` is admitted in Long64/address64. Even at RCX zero, entry
