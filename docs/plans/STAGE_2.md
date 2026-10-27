@@ -8541,3 +8541,25 @@ acceptance remains deferred.
 
 S2-35.26 implementation checks and review outcomes are recorded in
 [STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).
+
+#### S2-35.27 — local-only bounded register `PUNPCKHWD`
+
+Requires S2-34.1 raw x87/SSE state and mandatory-66 XMM decoding from S2-35.1.
+The bounded profile `s2-long-punpckhwd-reg-v1` admits legacy
+`66 [one optional REX.R/B] 0F 69 /r` with ModR/M.mod=3 and XMM0–15. ModR/M.reg
+is the destination and ModR/M.r/m the source. For `i=0..3`, result words are
+`DEST[2*i] = old_DEST[4+i]` and `DEST[2*i+1] = SRC[4+i]`. Little-endian u16
+ordering is preserved; all destination words are overwritten and input low
+halves are ignored.
+
+Coverage includes the high-word sentinel, self-alias, low-half independence,
+all byte values at each consumed byte, walking bits, all 16×16 XMM/REX.R/B
+combinations, complete state preservation, and zero guest data callbacks.
+Missing state, truncation, STOP/budget atomicity, strict decoder/schema
+negatives including VEX `C5 F9 69 C1`, and a literal XMM8/XMM9 fixture cover
+the boundaries. JIT and native execution remain denied. Other widths, packing,
+shuffles, shifts, memory, MMX, extra prefixes, REX.W/X, VEX/EVEX, feature gates,
+exception delivery and physical execution remain excluded. SSE2 and
+CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. S2-34, S2-35, global
+`S2-35 → S2-34`, and combined Mac mini/SSH acceptance remain open. Evidence is
+recorded in [STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).

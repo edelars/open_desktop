@@ -12580,3 +12580,40 @@ were corrected, and final re-review passed with no remaining findings.
 These are local interpreter/profile results only and do not close S2-34,
 S2-35, global `S2-35 → S2-34`, physical x86 validation, or deferred combined
 Mac mini/SSH acceptance.
+
+## S2-35.27 — local PUNPCKHWD XMM register slice
+
+Added local-only profile `s2-long-punpckhwd-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 69 /r`, with ModR/M.mod=3, ModR/M.reg as the
+destination, ModR/M.r/m as the source, and XMM0–15. Each of four
+little-endian u16 lanes interleaves original destination word `4+i` and source
+word `4+i`; byte order within words is preserved. The destination's eight
+words are fully overwritten and both input low halves are ignored.
+
+The exact sentinel `DEST [0908,0b0a,0d0c,0f0e]` and
+`SRC [8988,8b8a,8d8c,8f8e]` produced
+`[0908,8988,0b0a,8b8a,0d0c,8d8c,0f0e,8f8e]`; self-alias with input high
+words `[d4,d5,d6,d7]` produced `[d4,d4,d5,d5,d6,d6,d7,d7]`. Tests cover
+low-half independence, all byte values at all 16 consumed operand-byte
+positions, walking bits across both high halves, the complete 16×16 XMM/REX.R/B
+matrix, complete architectural
+state preservation, zero data-memory callbacks, missing-state/truncation and
+STOP/budget atomicity, plus strict negatives including VEX `C5 F9 69 C1`.
+The handwritten literal XMM8/XMM9 fixture passes schema validation and
+interpreter execution with the exact XMM8 result; JIT remains denied. The
+Linux-only native-denial test is compiled by the Linux-target all-target check
+and remains unexecuted on this Darwin host.
+
+Focused `cargo test -p od-isa punpckhwd --offline` passed (4 tests), and
+`cargo test -p od-runner punpckhwd_literal_cli_fixture_executes_and_keeps_jit_denied --offline`
+passed (1). `cargo test --workspace --offline --quiet` passed all 1,738 tests.
+`cargo check --workspace --all-targets --offline` and the same check for
+`x86_64-unknown-linux-gnu` passed. Formatting and diff whitespace checks
+passed. The Linux-only native-denial test was compile-checked but not executed
+on this Darwin host. `python3 tools/check_layout.py` retains its known linked
+worktree `.git` pointer and two missing historical oracle-manifest links.
+`graphify update .` completed and reported the existing
+`include/open_desktop/host_abi.h` extractor warning. Independent review and
+re-review found no remaining code findings. These are local interpreter/profile results only;
+they do not close S2-34, S2-35, global `S2-35 → S2-34`, physical x86
+validation, or combined Mac mini/SSH acceptance.
