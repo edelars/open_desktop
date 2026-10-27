@@ -670,12 +670,15 @@ fn is_checked_memory_address(
                     8 => (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement),
                     _ => false,
                 }
-                && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+                && (matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+                    || matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp)))
         }
         None => operand.scale == 1,
     };
     supported_index
         && (matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+            || operand.index.is_some()
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
             || instruction_length == 4
                 && operand.index.is_none()
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
@@ -908,7 +911,8 @@ fn is_indexed_qword_sib_data_operand(operand: MemoryOperand, instruction_length:
         8 => (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement),
         _ => false,
     };
-    matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+    (matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+        || matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp)))
         && operand.index.is_some_and(|register| (register as u8) < 4)
         && matches!(operand.scale, 1 | 2 | 4 | 8)
         && displacement_valid

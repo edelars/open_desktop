@@ -2378,7 +2378,7 @@ mod tests {
 
             for bytes in [
                 vec![0x48, opcode, 0x44, 0x24],    // truncated before disp8
-                vec![0x48, opcode, 0x44, 0x04, 0], // index present
+                vec![0x48, opcode, 0x44, 0x2c, 0], // unsupported RBP index
                 vec![0x48, opcode, 0x44, 0x64, 0], // scale != 1, no index
                 vec![0x67, 0x48, opcode, 0x44, 0x2c, 0],
                 vec![0x48, 0x67, opcode, 0x44, 0x24, 0],
@@ -2611,13 +2611,16 @@ mod tests {
             (4, 0),
             (4, i32::MAX),
         ];
-        let base_index_cases = [(0_u8, 1_u8), (1, 1), (2, 3)];
+        let base_index_cases = [(0_u8, 1_u8), (1, 1), (2, 3), (4, 0), (4, 1), (4, 2), (4, 3)];
         for (opcode, operation) in [
             (0x8b_u8, MemorySiteOperationV2::Load),
             (0x89_u8, MemorySiteOperationV2::Store),
         ] {
-            for data_register in [4_u8, 5] {
+            for data_register in 0_u8..=5 {
                 for (base, index) in base_index_cases {
+                    if base < 4 && data_register < 4 {
+                        continue;
+                    }
                     for scale_bits in 0..4_u8 {
                         for &(width, displacement) in displacement_cases {
                             let mode = match width {

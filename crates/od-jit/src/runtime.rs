@@ -147,8 +147,13 @@ impl MemorySiteV2 {
                     | od_isa::Register::Rbx
             )
         );
+        let indexed_sib_base_profile = base_is_low_gpr
+            || matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+            );
         let indexed_sib_data_profile = matches!(length, 4 | 5 | 8)
-            && base_is_low_gpr
+            && indexed_sib_base_profile
             && self
                 .operand
                 .index
@@ -362,6 +367,13 @@ impl MemorySiteV2 {
                         && matches!(length, 4 | 5 | 8)
                         && self.operand.index.is_none()
                         && self.operand.scale == 1
+                        && (length == 4 && self.operand.displacement == 0
+                            || length == 5 && i8::try_from(self.operand.displacement).is_ok()
+                            || length == 8 && i32::try_from(self.operand.displacement).is_ok())
+                    || register == od_isa::Register::Rsp
+                        && self.operand.address_size == od_isa::OperandSize::Qword
+                        && self.operand.index.is_some_and(|index| (index as u8) < 4)
+                        && matches!(self.operand.scale, 1 | 2 | 4 | 8)
                         && (length == 4 && self.operand.displacement == 0
                             || length == 5 && i8::try_from(self.operand.displacement).is_ok()
                             || length == 8 && i32::try_from(self.operand.displacement).is_ok())
@@ -699,7 +711,7 @@ impl MemorySiteV2 {
                     && self.operand.scale == 1
                     && i32::try_from(self.operand.displacement).is_ok();
             }
-            base < 4
+            (base < 4 || base == 4 && decoded_base == od_isa::Register::Rsp)
                 && index < 4
                 && od_isa::Register::from_encoding(base) == Some(decoded_base)
                 && self.operand.index == od_isa::Register::from_encoding(index)

@@ -1346,7 +1346,11 @@ fn is_indexed_qword_sib_data_operand(
     instruction.address_size == OperandSize::Qword
         && operand.address_size == OperandSize::Qword
         && operand.size == OperandSize::Qword
-        && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+        && (matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+            || matches!(
+                operand.base,
+                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+            ))
         && operand.index.is_some_and(|register| (register as u8) < 4)
         && matches!(operand.scale, 1 | 2 | 4 | 8)
         && displacement_valid
@@ -1657,6 +1661,11 @@ fn is_checked_qword_memory_address(
                         operand.base,
                         od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                     )
+                || operand.index.is_some()
+                    && matches!(
+                        operand.base,
+                        od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                    )
                 || matches!(instruction.length, 4 | 5 | 8)
                     && operand.index.is_none()
                     && operand.scale == 1
@@ -1914,6 +1923,7 @@ pub(crate) fn exact_qword_sib_displacement_memory_bytes(
         return false;
     };
     let expected_mode = match bytes.len() {
+        4 => 0,
         5 => 1,
         8 => 2,
         _ => return false,
@@ -1921,8 +1931,8 @@ pub(crate) fn exact_qword_sib_displacement_memory_bytes(
     bytes[0..2] == [0x48, opcode]
         && bytes[2] >> 6 == expected_mode
         && bytes[2] & 7 == 4
-        && (bytes[2] >> 3) & 7 < 4
-        && bytes[3] & 7 < 4
+        && (bytes[2] >> 3) & 7 <= 5
+        && bytes[3] & 7 <= 4
         && (bytes[3] >> 3) & 7 < 4
 }
 

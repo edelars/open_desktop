@@ -2146,6 +2146,18 @@ remain the sole EA semantics. Data remains full-width even when the data and
 base register alias. See
 [S3-20ap evidence](../reports/STAGE_3_S3-20ap_2026-10-27.md).
 
+#### S3-20aq: indexed SIB with RSP base and stack-register data
+
+Admit only singleton 64-bit-address-size `48 8B/89 /r sib
+[disp8|disp32]` forms with ModRM `mod=00/01/10,r/m=100`, SIB base RSP,
+index RAX..RBX, scale 1/2/4/8 and data RAX..RBP. Lengths are 4/5/8 bytes;
+transfer width stays Qword. The existing no-index SIB `0x24` remains a
+separate profile. No address-size override, other base/index, pair or V3 form
+is added. `MemoryOperand` and `access_address_48` remain the sole EA semantics.
+The base and index are read from the instruction's pre-state before any load
+destination commit; stores use the old data register value. See
+[S3-20aq evidence](../reports/STAGE_3_S3-20aq_2026-10-27.md).
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

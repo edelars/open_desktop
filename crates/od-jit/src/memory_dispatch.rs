@@ -865,7 +865,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
             if modrm >> 6 == 0
                 && modrm & 7 == 4
                 && (modrm >> 3) & 7 <= 5
-                && sib & 7 < 4
+                && sib & 7 <= 4
                 && (sib >> 3) & 7 < 4 =>
         {
             compile_ir_memory_load_block_v2(view, rip)
@@ -877,7 +877,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
             if modrm >> 6 == 0
                 && modrm & 7 == 4
                 && (modrm >> 3) & 7 <= 5
-                && sib & 7 < 4
+                && sib & 7 <= 4
                 && (sib >> 3) & 7 < 4 =>
         {
             compile_ir_memory_store_block_v2(view, rip)
@@ -917,7 +917,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
             if modrm >> 6 == 1
                 && modrm & 7 == 4
                 && (modrm >> 3) & 7 <= 5
-                && sib & 7 < 4
+                && sib & 7 <= 4
                 && (sib >> 3) & 7 < 4 =>
         {
             compile_ir_memory_load_block_v2(view, rip)
@@ -929,7 +929,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
             if modrm >> 6 == 1
                 && modrm & 7 == 4
                 && (modrm >> 3) & 7 <= 5
-                && sib & 7 < 4
+                && sib & 7 <= 4
                 && (sib >> 3) & 7 < 4 =>
         {
             compile_ir_memory_store_block_v2(view, rip)
@@ -957,7 +957,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
             if modrm >> 6 == 2
                 && modrm & 7 == 4
                 && (modrm >> 3) & 7 <= 5
-                && sib & 7 < 4
+                && sib & 7 <= 4
                 && (sib >> 3) & 7 < 4 =>
         {
             compile_ir_memory_load_block_v2(view, rip)
@@ -969,7 +969,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
             if modrm >> 6 == 2
                 && modrm & 7 == 4
                 && (modrm >> 3) & 7 <= 5
-                && sib & 7 < 4
+                && sib & 7 <= 4
                 && (sib >> 3) & 7 < 4 =>
         {
             compile_ir_memory_store_block_v2(view, rip)
