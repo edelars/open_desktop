@@ -569,6 +569,22 @@ interpreter fallback is attempted. Legacy `jit` and one-block `jit-block`
 retain their existing backend tags and behavior. This local CLI does not
 complete the S3-15 hand-case/corpus acceptance or S3-14 physical x86 comparison.
 
+`tests/cpu/stage1_harness.py --suite oracle --engine jit-dispatch` selects the
+full acceptance input set by default: the 10 unchanged manual cases plus 1000
+generated cases using seed `0x5eedcafe`, with two repeats. `--local-only`
+selects the same cases and repeat count but runs interpreter versus
+`jit-dispatch` on the local host only. Its saved manifest and summary identify
+`local_only` evidence and explicitly record that physical x86 was not run; it
+cannot satisfy either hardware acceptance. The full physical path still records
+interpreter/JIT/native results and host/build metadata. Dispatch remote test
+preflight runs `od-testkit`, `od-runner`, and `od-x86-runner`; `od-isa` is built
+as a dependency, while its unrelated full unit suite is excluded due to the
+known ISSUE-023 x87 failures. A local-only run on this harness revision passed
+for 10 manual plus 1000 generated inputs, seed `0x5eedcafe`, and two repeats
+(4040 local engine results; 2020 cross-engine and 2020 repeat comparisons); its
+manifest marks `physical_x86=not_run`. Physical triple comparison remains
+pending.
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

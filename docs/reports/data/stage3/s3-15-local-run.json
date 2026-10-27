@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-27",
+  "run_id": "stage1-20261027-000237-882135f1",
+  "orchestrator_run_id": "stage1-harness-20261027-000235-842de746",
+  "stage": "S3-15",
+  "status": "local_only",
+  "evidence_scope": "local_only",
+  "physical_x86": "not_run",
+  "engine": "jit-dispatch",
+  "backend": "jit_ir_dispatch",
+  "host": {
+    "cpu": "Apple M3 Max",
+    "os": "macOS 26.7.1",
+    "architecture": "arm64",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)"
+  },
+  "source_fingerprint": "d7c3c1e48e5be67b8be8f4f7c2b32f48d3819a69fab480346302753c417d2152",
+  "seed": "0x5eedcafe",
+  "manual_cases": 10,
+  "generated_cases": 1000,
+  "corpus_sha256": "9356e916b2037a3f5a082e8366fe33bf4277ab00812489809bfc586210744d35",
+  "repeats": 2,
+  "unique_inputs": 1010,
+  "fixtures_and_repeats": 2020,
+  "engine_results": 4040,
+  "interpreter_vs_dispatch_comparisons": 2020,
+  "repeat_comparisons": 2020,
+  "nonzero_differences": 0,
+  "unsupported_inputs": 0,
+  "manifest": "work/stage1-oracle/stage1-20261027-000237-882135f1/manifest.json",
+  "summary": "work/stage1-harness/stage1-harness-20261027-000235-842de746/summary.json"
+}

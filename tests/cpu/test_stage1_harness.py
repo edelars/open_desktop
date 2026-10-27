@@ -90,9 +90,12 @@ class HarnessSelectionTests(unittest.TestCase):
     def test_remote_test_routing_keeps_legacy_suite_and_skips_known_isa_failures_for_block(self):
         legacy = oracle.remote_test_command("/remote/repo", "jit")
         block = oracle.remote_test_command("/remote/repo", "jit-block")
+        dispatch = oracle.remote_test_command("/remote/repo", "jit-dispatch")
         self.assertIn("cargo test --offline -p od-isa -p od-testkit -p od-runner -p od-x86-runner", legacy)
         self.assertIn("cargo test --offline -p od-testkit -p od-runner -p od-x86-runner", block)
+        self.assertIn("cargo test --offline -p od-testkit -p od-runner -p od-x86-runner", dispatch)
         self.assertNotIn("-p od-isa ", block)
+        self.assertNotIn("-p od-isa ", dispatch)
         self.assertIn("cd /remote/repo", block)
 
     def test_remote_preflight_persists_full_process_output_and_exit_code(self):
@@ -190,7 +193,8 @@ class HarnessSelectionTests(unittest.TestCase):
                         oracle.load_case_manifest(manifest_path)
 
     def _run_oracle_main(self, *, engine="jit-block", selection="manifest", result_backend=None,
-                         preflight_exit_code=0, preflight_timeout=False):
+                         preflight_exit_code=0, preflight_timeout=False, local_only=False,
+                         result_revision=None):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name).resolve()
@@ -241,7 +245,7 @@ class HarnessSelectionTests(unittest.TestCase):
                 "status": "completed",
                 "expected_exit": fixture["expected_exit"],
                 "build": {
-                    "revision": f"sha256:{fingerprint}",
+                    "revision": result_revision or f"sha256:{fingerprint}",
                     "target": "test-target",
                     "profile": "debug",
                     "compiler": "rustc test",
@@ -309,7 +313,9 @@ class HarnessSelectionTests(unittest.TestCase):
             return {"case_id": fixture["case_id"], "differences": []}
 
         argv = ["stage1_oracle.py"]
-        if selection == "manifest":
+        if local_only:
+            argv.extend([fixture_rel, "--engine", engine, "--local-only"])
+        elif selection == "manifest":
             argv.extend(["--engine", engine, "--manifest", manifest_rel])
         elif selection == "cases":
             argv.extend([fixture_rel, "--engine", engine])
@@ -338,6 +344,60 @@ class HarnessSelectionTests(unittest.TestCase):
             saved["_preflight_stderr"] = (manifest_paths[0].parent / preflight["stderr_path"]).read_text()
         return status, engines, native_batches, comparisons, saved
 
+    def test_jit_dispatch_local_only_preserves_repeats_without_native_claims(self):
+        status, engines, native_batches, comparisons, saved = self._run_oracle_main(
+            engine="jit-dispatch", selection="cases", local_only=True
+        )
+        self.assertEqual(status, 0, saved)
+        self.assertEqual(engines, ["interpreter", "jit-dispatch"] * 2)
+        self.assertEqual(native_batches, [])
+        self.assertEqual(len(comparisons), 4)
+        self.assertEqual(saved["status"], "local_only")
+        self.assertEqual(saved["evidence_scope"], "local_only")
+        self.assertEqual(saved["physical_x86"], "not_run")
+        self.assertEqual(saved["jit_backend"], "jit_ir_dispatch")
+        self.assertEqual(saved["stage"], "S3-15")
+        self.assertIsNone(saved["host"])
+        self.assertEqual(saved["fixtures"][1]["differences"], {"interpreter_vs_jit_dispatch": 0})
+        self.assertEqual(
+            saved["fixtures"][1]["repeat_differences"],
+            {"interpreter": 0, "jit_dispatch": 0},
+        )
+
+    def test_jit_dispatch_local_only_rejects_stale_build_revision(self):
+        status, engines, native_batches, _, saved = self._run_oracle_main(
+            engine="jit-dispatch", selection="cases", local_only=True,
+            result_revision="sha256:" + "b" * 64,
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(engines, ["interpreter"])
+        self.assertEqual(native_batches, [])
+        self.assertEqual(saved["status"], "failed")
+        self.assertIn("build revision does not match", saved["error"])
+
+    def test_jit_dispatch_physical_manifest_identifies_triple_evidence(self):
+        status, engines, native_batches, _, saved = self._run_oracle_main(
+            engine="jit-dispatch", selection="cases"
+        )
+        self.assertEqual(status, 0, saved)
+        self.assertEqual(engines, ["interpreter", "jit-dispatch"] * 2)
+        self.assertEqual(len(native_batches), 2)
+        self.assertEqual(saved["stage"], "S3-15")
+        self.assertEqual(saved["suite"], "dispatcher physical triple comparison")
+        self.assertEqual(saved["evidence_scope"], "physical_triple")
+        self.assertEqual(saved["physical_x86"], "compared")
+
+    def test_jit_dispatch_local_only_rejects_wrong_backend(self):
+        status, engines, native_batches, _, saved = self._run_oracle_main(
+            engine="jit-dispatch", selection="cases", result_backend="jit_ir_block", local_only=True
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(engines, ["interpreter", "jit-dispatch"])
+        self.assertEqual(native_batches, [])
+        self.assertEqual(saved["status"], "failed")
+        self.assertEqual(saved["evidence_scope"], "local_only")
+        self.assertIn("expected 'jit_ir_dispatch'", saved["error"])
+
     def test_jit_block_orchestration_checks_backend_and_repeats_all_three_engines(self):
         status, engines, native_batches, comparisons, saved = self._run_oracle_main()
         self.assertEqual(status, 0, saved)
@@ -345,6 +405,7 @@ class HarnessSelectionTests(unittest.TestCase):
         self.assertEqual(len(native_batches), 2)
         self.assertEqual(len(comparisons), 9)  # cross-backend, native, and all three repeat checks
         self.assertEqual(saved["status"], "passed")
+        self.assertEqual(saved["physical_x86"], "compared")
         self.assertEqual(saved["stage"], "S3-14")
         self.assertEqual(saved["suite"], "register-only one-block triple comparison")
         self.assertEqual(saved["engine"], "jit-block")
@@ -432,6 +493,60 @@ class HarnessSelectionTests(unittest.TestCase):
         for fixture in oracle.DEFAULT_CASES:
             self.assertIn(fixture, oracle_command)
         self.assertTrue(oracle_command[-1].startswith("work/stage1-harness-generated-"))
+
+    def test_dispatch_harness_defaults_to_1000_cases_and_local_only_is_labelled(self):
+        commands = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def step(name, command, run_dir, timeout):
+                commands.append((name, command))
+                output = "local-only manifest: work/local-manifest.json\n" if name == "local_oracle" else ""
+                return {"status": "passed", "output_tail": output}
+
+            with patch.object(harness, "ROOT", root), patch.object(harness, "run_step", side_effect=step), \
+                 patch("sys.argv", ["stage1_harness.py", "--suite", "oracle", "--local-only"]), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(harness.main(), 0)
+            summary_path = next((root / "work/stage1-harness").glob("*/summary.json"))
+            summary = json.loads(summary_path.read_text())
+        self.assertEqual(summary["status"], "local_only")
+        self.assertEqual(summary["evidence_scope"], "local_only")
+        self.assertEqual(summary["engine"], "jit-dispatch")
+        self.assertEqual(summary["oracle"]["generated_count"], 1000)
+        self.assertEqual(summary["oracle"]["seed"], "0x5eedcafe")
+        self.assertEqual(summary["suites"]["oracle"]["manifest"], "work/local-manifest.json")
+        self.assertEqual(len(commands), 2)
+        generation = commands[0][1]
+        self.assertIn("1000", generation)
+        oracle_command = commands[1][1]
+        self.assertIn("--engine", oracle_command)
+        self.assertIn("jit-dispatch", oracle_command)
+        self.assertIn("--local-only", oracle_command)
+        for fixture in oracle.DEFAULT_CASES:
+            self.assertIn(fixture, oracle_command)
+
+    def test_legacy_harness_defaults_remain_unchanged(self):
+        commands = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def step(name, command, run_dir, timeout):
+                commands.append(command)
+                return {"status": "passed", "output_tail": ""}
+
+            with patch.object(harness, "ROOT", root), patch.object(harness, "run_step", side_effect=step), \
+                 patch("sys.argv", ["stage1_harness.py", "--suite", "oracle"]), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(harness.main(), 0)
+            summary_path = next((root / "work/stage1-harness").glob("*/summary.json"))
+            summary = json.loads(summary_path.read_text())
+        self.assertEqual(summary["engine"], "jit")
+        self.assertEqual(summary["oracle"]["generated_count"], 0)
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(len(commands), 1)
+        self.assertIn("--engine", commands[0])
+        self.assertIn("jit", commands[0])
 
 
 if __name__ == "__main__":

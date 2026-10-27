@@ -33,7 +33,11 @@ DEFAULT_CASES = (
     "tests/fixtures/x86/s1_06_mov_preserves_flags.case.json",
 )
 JIT_BLOCK_MANIFEST = "tests/cpu/manifests/stage3_s3_14_jit_block.json"
-JIT_ENGINES = {"jit": "jit", "jit-block": "jit_ir_block"}
+JIT_ENGINES = {
+    "jit": "jit",
+    "jit-block": "jit_ir_block",
+    "jit-dispatch": "jit_ir_dispatch",
+}
 SOURCE_ROOTS = (
     "crates/od-isa",
     "crates/od-testkit",
@@ -269,8 +273,8 @@ def ssh_run(target: str, command: str, *, timeout: float = 60.0) -> str:
 
 
 def remote_test_packages(engine: str) -> tuple[str, ...]:
-    """Keep jit-block's remote preflight on the relevant downstream suites."""
-    if engine == "jit-block":
+    """Avoid unrelated od-isa unit failures for the bounded Stage 3 engines."""
+    if engine in {"jit-block", "jit-dispatch"}:
         # od-isa still builds as a dependency, but its full unit suite has known
         # x87 expectation failures tracked by ISSUE-023.
         return ("od-testkit", "od-runner", "od-x86-runner")
@@ -484,12 +488,118 @@ def local_machine() -> dict:
     }
 
 
+def run_local_dispatch_comparisons(
+    cases: list[tuple[Path, dict, str]],
+    output_dir: Path,
+    manifest: dict,
+    manifest_path: Path,
+    runner: Path,
+    env: dict[str, str],
+    repeats: int,
+) -> None:
+    """Compare only local interpreter and jit-dispatch results, preserving all evidence."""
+    for repeat in range(1, repeats + 1):
+        repeat_dir = output_dir / f"repeat-{repeat:02d}"
+        repeat_dir.mkdir()
+        for fixture_path, fixture, input_digest in cases:
+            case_dir = repeat_dir / fixture["case_id"]
+            case_dir.mkdir()
+            local_results: dict[str, dict] = {}
+            result_paths: dict[str, Path] = {}
+            for engine in ("interpreter", "jit-dispatch"):
+                result_path = case_dir / f"{engine}.json"
+                process = run(
+                    [str(runner), "--fixture", str(fixture_path), "--engine", engine, "--json"],
+                    env=env,
+                    timeout=max(60.0, fixture["wall_timeout_ms"] / 1000 + 30.0),
+                )
+                result_path.write_text(process.stdout)
+                (case_dir / f"{engine}.stderr.log").write_text(process.stderr)
+                (case_dir / f"{engine}.process.json").write_text(
+                    json.dumps({"returncode": process.returncode})
+                )
+                if process.returncode != 0:
+                    raise Stage1Error(
+                        f"local {engine} exited {process.returncode}: {process.stderr[-1000:]}"
+                    )
+                result = parse_result(process.stdout, result_path)
+                backend = engine if engine == "interpreter" else expected_backend(engine)
+                validate_result(result, fixture, input_digest, backend, f"local {engine}")
+                expected_revision = f"sha256:{manifest['source_fingerprint']}"
+                if result["build"]["revision"] != expected_revision:
+                    raise Stage1Error(
+                        f"local {engine} result build revision does not match the source fingerprint"
+                    )
+                local_results[engine] = result
+                result_paths[engine] = result_path
+
+            cross_path = case_dir / "interpreter-vs-jit-dispatch.json"
+            cross = compare(
+                runner,
+                result_paths["interpreter"],
+                result_paths["jit-dispatch"],
+                fixture_path,
+                cross_path,
+                env,
+            )
+            if cross.get("case_id") != fixture["case_id"]:
+                raise Stage1Error("interpreter/jit-dispatch comparison returned a different case")
+
+            repeat_checks = {}
+            if repeat > 1:
+                previous_dir = output_dir / f"repeat-{repeat - 1:02d}" / fixture["case_id"]
+                for engine in ("interpreter", "jit-dispatch"):
+                    report = compare(
+                        runner,
+                        previous_dir / f"{engine}.json",
+                        result_paths[engine],
+                        fixture_path,
+                        case_dir / f"{engine}-repeat-compare.json",
+                        env,
+                    )
+                    if report.get("case_id") != fixture["case_id"]:
+                        raise Stage1Error(f"{engine} repeat comparison returned a different case")
+                    repeat_checks[engine.replace("-", "_")] = 0
+
+            manifest["fixtures"].append(
+                {
+                    "repeat": repeat,
+                    "case_id": fixture["case_id"],
+                    "fixture_path": fixture_path.relative_to(ROOT).as_posix(),
+                    "fixture_sha256": input_digest,
+                    "fixture_schema_version": fixture["schema_version"],
+                    "result_schema_version": local_results["jit-dispatch"]["schema_version"],
+                    "build": {
+                        "local_interpreter": local_results["interpreter"]["build"],
+                        "local_jit_dispatch": local_results["jit-dispatch"]["build"],
+                    },
+                    "machines": {
+                        "local_interpreter": local_results["interpreter"]["machine"],
+                        "local_jit_dispatch": local_results["jit-dispatch"]["machine"],
+                    },
+                    "differences": {"interpreter_vs_jit_dispatch": 0},
+                    "repeat_differences": repeat_checks,
+                }
+            )
+            if len(manifest["fixtures"]) % 25 == 0:
+                manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+            print(f"local-only repeat {repeat}/{repeats}: {fixture['case_id']} matched interpreter and jit-dispatch")
+
+    manifest["status"] = "local_only"
+    manifest["local_comparison_status"] = "passed"
+    manifest["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"local-only manifest: {manifest_path}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cases", nargs="*", help="fixture JSON paths; defaults to S0 and S1-06 cases")
     parser.add_argument("--engine", choices=tuple(JIT_ENGINES), default="jit",
                         help="local JIT engine (default: jit)")
     parser.add_argument("--manifest", help="explicit S3-14 jit-block case manifest")
+    parser.add_argument("--local-only", action="store_true",
+                        help="compare local interpreter and jit-dispatch without native x86")
     parser.add_argument("--host", default="192.168.1.14")
     parser.add_argument("--user", default="senya")
     parser.add_argument("--remote-root", default="/home/senya/projects/open_desktop-stage1")
@@ -508,6 +618,10 @@ def main() -> int:
         parser.error("--engine jit-block requires an explicit --manifest or fixture cases")
     if args.manifest and args.engine != "jit-block":
         parser.error("--manifest is reserved for --engine jit-block")
+    if args.local_only and args.engine != "jit-dispatch":
+        parser.error("--local-only requires --engine jit-dispatch")
+    if args.local_only and args.manifest:
+        parser.error("--local-only does not use a jit-block manifest")
 
     try:
         case_names = load_case_manifest(args.manifest) if args.manifest else args.cases
@@ -521,24 +635,31 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=False)
     manifest_path = output_dir / "manifest.json"
     is_block_engine = args.engine == "jit-block"
+    is_dispatch_engine = args.engine == "jit-dispatch"
     manifest = {
         "run_id": run_id,
-        "stage": "S3-14" if is_block_engine else "Stage1",
+        "stage": "S3-15" if is_dispatch_engine else "S3-14" if is_block_engine else "Stage1",
         "suite": (
-            "register-only one-block triple comparison"
+            "local-only interpreter versus jit-dispatch"
+            if args.local_only
+            else "register-only one-block triple comparison"
             if args.manifest
             else "explicit jit-block case comparison"
             if is_block_engine
+            else "dispatcher physical triple comparison"
+            if is_dispatch_engine
             else "legacy fixture oracle"
         ),
         "status": "running",
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source_fingerprint": None,
-        "host": args.host,
-        "user": args.user,
-        "remote_root": args.remote_root,
+        "host": None if args.local_only else args.host,
+        "user": None if args.local_only else args.user,
+        "remote_root": None if args.local_only else args.remote_root,
         "engine": args.engine,
         "jit_backend": expected_backend(args.engine),
+        "evidence_scope": "local_only" if args.local_only else "physical_triple",
+        "physical_x86": "not_run" if args.local_only else "pending",
         "repeats": args.repeats,
         "machines": {},
         "fixtures": [],
@@ -556,11 +677,43 @@ def main() -> int:
         manifest["reproduce_argv"] = [sys.executable, "tests/cpu/stage1_oracle.py",
             "--host", args.host, "--user", args.user, "--remote-root", args.remote_root,
             "--repeats", str(args.repeats), "--engine", args.engine]
+        if args.local_only:
+            manifest["reproduce_argv"].append("--local-only")
         if args.manifest:
             manifest["reproduce_argv"].extend(["--manifest", args.manifest])
         else:
             manifest["reproduce_argv"].extend(str(path) for path, _, _ in cases)
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+
+        if args.local_only:
+            fingerprint = source_fingerprint(ROOT)
+            local_info = local_machine()
+            revision = f"sha256:{fingerprint}"
+            manifest["source_fingerprint"] = fingerprint
+            manifest["machines"] = {"local": local_info}
+            manifest["commands"].append(
+                {"host": "local", "argv": ["cargo", "build", "--offline", "-p", "od-runner"]}
+            )
+            local_env = os.environ.copy()
+            local_env["OPEN_DESKTOP_GIT_REVISION"] = revision
+            local_env["RUSTC_VERSION"] = local_info["rustc"]
+            build = run(
+                ["cargo", "build", "--offline", "-p", "od-runner"],
+                env=local_env,
+                timeout=600.0,
+            )
+            require_success(build, "local od-runner build")
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+            run_local_dispatch_comparisons(
+                cases,
+                output_dir,
+                manifest,
+                manifest_path,
+                ROOT / "target/debug/od-runner",
+                local_env,
+                args.repeats,
+            )
+            return 0
 
         fingerprint = source_fingerprint(ROOT)
         remote_cd = f"cd {shlex.quote(args.remote_root)}"
@@ -773,6 +926,8 @@ def main() -> int:
                 print(f"repeat {repeat}/{args.repeats}: {fixture['case_id']} matched interpreter and {args.engine}")
 
         manifest["status"] = "passed"
+        if not args.local_only:
+            manifest["physical_x86"] = "compared"
         manifest["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
         print(f"manifest: {manifest_path}")

@@ -458,9 +458,31 @@ S3-14 физически остаётся открытой, а S3-15 откры�
 --all-targets --offline`, `cargo test -p od-host --offline` (24 tests,
 включая native iterative dispatch на текущем macOS ARM64 host),
 `cargo test -p od-testkit --offline` (184 tests), `cargo test -p od-runner
---offline` (196 tests, including 3 dispatcher CLI children),
+--offline` (304 total: 101 unit, 4 jit-block CLI, 3 jit-dispatch CLI, 196 v2),
 `cargo check --workspace --all-targets --offline`, `git diff --check` и
-`graphify update .`. Независимый review этого CLI-среза ещё не выполнен.
+`graphify update .`. Независимый review CLI-среза чистый.
+
+Harness для следующей проверки также поддерживает `jit-dispatch`: по умолчанию
+выбирается 10 ручных cases плюс 1000 generated cases с seed `0x5eedcafe`, два
+повтора. `--local-only` запускает только interpreter и `jit-dispatch`, сохраняет
+frozen fixtures, сырые результаты и cross/repeat comparisons, а manifest явно
+помечает `evidence_scope=local_only`, `physical_x86=not_run`. Этот режим не
+засчитывается как physical acceptance. Для `jit-dispatch` удалённый Cargo
+preflight использует `od-testkit`, `od-runner` и `od-x86-runner`; `od-isa`
+остаётся dependency, но полный unit suite пропускается из-за пяти известных
+x87 failures ISSUE-023. Полный физический режим сохраняет тройное сравнение и
+metadata. Сам 10+1000 local-only прогон и его повторные результаты должны быть
+отделены от hardware acceptance. На revision для этого среза local-only прогон
+завершился успешно: 10 manual + 1000 generated inputs, два повтора, 4040
+локальных engine results, включая 2020 interpreter↔dispatch comparisons и
+2020 per-engine repeat comparisons, seed `0x5eedcafe`, corpus SHA-256
+`9356e916b2037a3f5a082e8366fe33bf4277ab00812489809bfc586210744d35`.
+Manifest: `work/stage1-oracle/stage1-20261027-000237-882135f1/manifest.json`;
+summary: `work/stage1-harness/stage1-harness-20261027-000235-842de746/summary.json`.
+Физический triple run не выполнялся и остаётся pending; локальное совпадение двух
+собственных движков не закрывает S3-14/S3-15. Фактический локальный результат и
+machine-readable summary записаны в
+[`S3-15 report`](../reports/STAGE_3_S3-15_2026-10-27.md).
 
 ### S3-16. Подключить interpreter fallback
 
