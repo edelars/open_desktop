@@ -9,6 +9,9 @@ use crate::result::{
 };
 use crate::{FormatError, HexU64, MAX_RESULT_JSON_BYTES, sha256_hex};
 use od_isa::LongModeState;
+use od_isa::OperandSize;
+use od_isa::long_decode::Operation;
+use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub const SCHEMA_VERSION: u32 = 2;
@@ -24,6 +27,37 @@ pub const PROFILE_FS_LOAD: &str = "s2-long-fs-load-v1";
 pub const PROFILE_GS_LOAD: &str = "s2-long-gs-load-v1";
 pub const PROFILE_NULL_DS_ES: &str = "s2-long-null-ds-es-v1";
 pub const PROFILE_X87_STATE: &str = "s2-long-x87-state-v1";
+pub const PROFILE_X87_SSE_STATE: &str = "s2-long-x87-sse-state-v1";
+pub const PROFILE_MOVUPS_REGISTER: &str = "s2-long-movups-reg-v1";
+pub const PROFILE_XORPS_REGISTER: &str = "s2-long-xorps-reg-v1";
+pub const PROFILE_PXOR_REGISTER: &str = "s2-long-pxor-reg-v1";
+pub const PROFILE_PADDB_REGISTER: &str = "s2-long-paddb-reg-v1";
+pub const PROFILE_PADDUSW_REGISTER: &str = "s2-long-paddusw-reg-v1";
+pub const PROFILE_PSUBD_REGISTER: &str = "s2-long-psubd-reg-v1";
+pub const PROFILE_PSUBUSW_REGISTER: &str = "s2-long-psubusw-reg-v1";
+pub const PROFILE_PSUBW_REGISTER: &str = "s2-long-psubw-reg-v1";
+pub const PROFILE_PSUBB_REGISTER: &str = "s2-long-psubb-reg-v1";
+pub const PROFILE_PADDUSB_REGISTER: &str = "s2-long-paddusb-reg-v1";
+pub const PROFILE_PADDSB_REGISTER: &str = "s2-long-paddsb-reg-v1";
+pub const PROFILE_PSUBSB_REGISTER: &str = "s2-long-psubsb-reg-v1";
+pub const PROFILE_PADDSW_REGISTER: &str = "s2-long-paddsw-reg-v1";
+pub const PROFILE_PSUBSW_REGISTER: &str = "s2-long-psubsw-reg-v1";
+pub const PROFILE_PSUBUSB_REGISTER: &str = "s2-long-psubusb-reg-v1";
+pub const PROFILE_ANDPS_REGISTER: &str = "s2-long-andps-reg-v1";
+pub const PROFILE_ORPS_REGISTER: &str = "s2-long-orps-reg-v1";
+pub const PROFILE_ANDNPS_REGISTER: &str = "s2-long-andnps-reg-v1";
+pub const PROFILE_MOVSS_REGISTER: &str = "s2-long-movss-reg-v1";
+pub const PROFILE_MOVSD_REGISTER: &str = "s2-long-movsd-reg-v1";
+pub const PROFILE_MOVSD_STORE_REGISTER: &str = "s2-long-movsd-store-reg-v1";
+pub const PROFILE_MOVSD_MEMORY_LOAD: &str = "s2-long-movsd-mem-load-v1";
+pub const PROFILE_MOVSS_STORE_REGISTER: &str = "s2-long-movss-store-reg-v1";
+pub const PROFILE_MOVSS_MEMORY_STORE: &str = "s2-long-movss-mem-store-v1";
+pub const PROFILE_MOVUPS_MEMORY_LOAD: &str = "s2-long-movups-mem-load-v1";
+pub const PROFILE_MOVUPS_MEMORY_STORE: &str = "s2-long-movups-mem-store-v1";
+pub const PROFILE_MOVUPS_MEMORY_BASE: &str = "s2-long-movups-mem-base-v1";
+/// Diagnostic mask for this bounded local fixture profile only. It is not a
+/// universal hardware CPUID mask and does not model guest #GP behavior.
+pub const PROFILE_SSE_MXCSR_DIAGNOSTIC_MASK: u32 = 0x0000_ffbf;
 /// Integer arithmetic flags, reserved bit 1 and DF. System flags are not yet modeled.
 pub const INTEGER_FLAGS: u64 = 0x8d7 | (1 << 10);
 
@@ -49,6 +83,70 @@ pub enum Profile {
     LongNullDsEsV1,
     #[serde(rename = "s2-long-x87-state-v1")]
     LongX87StateV1,
+    #[serde(rename = "s2-long-x87-sse-state-v1")]
+    LongX87SseStateV1,
+    #[serde(rename = "s2-long-movups-reg-v1")]
+    LongMovupsRegV1,
+    #[serde(rename = "s2-long-xorps-reg-v1")]
+    LongXorpsRegV1,
+    #[serde(rename = "s2-long-pxor-reg-v1")]
+    LongPxorRegV1,
+    #[serde(rename = "s2-long-paddb-reg-v1")]
+    LongPaddbRegV1,
+    #[serde(rename = "s2-long-paddw-reg-v1")]
+    LongPaddwRegV1,
+    #[serde(rename = "s2-long-psubw-reg-v1")]
+    LongPsubwRegV1,
+    #[serde(rename = "s2-long-paddusw-reg-v1")]
+    LongPadduswRegV1,
+    #[serde(rename = "s2-long-psubusw-reg-v1")]
+    LongPsubuswRegV1,
+    #[serde(rename = "s2-long-psubb-reg-v1")]
+    LongPsubbRegV1,
+    #[serde(rename = "s2-long-paddusb-reg-v1")]
+    LongPaddusbRegV1,
+    #[serde(rename = "s2-long-paddsb-reg-v1")]
+    LongPaddsbRegV1,
+    #[serde(rename = "s2-long-psubsb-reg-v1")]
+    LongPsubsbRegV1,
+    #[serde(rename = "s2-long-paddsw-reg-v1")]
+    LongPaddswRegV1,
+    #[serde(rename = "s2-long-psubsw-reg-v1")]
+    LongPsubswRegV1,
+    #[serde(rename = "s2-long-paddd-reg-v1")]
+    LongPadddRegV1,
+    #[serde(rename = "s2-long-psubd-reg-v1")]
+    LongPsubdRegV1,
+    #[serde(rename = "s2-long-psubusb-reg-v1")]
+    LongPsubusbRegV1,
+    #[serde(rename = "s2-long-andps-reg-v1")]
+    LongAndpsRegV1,
+    #[serde(rename = "s2-long-orps-reg-v1")]
+    LongOrpsRegV1,
+    #[serde(rename = "s2-long-andnps-reg-v1")]
+    LongAndnpsRegV1,
+    #[serde(rename = "s2-long-movss-reg-v1")]
+    LongMovssRegV1,
+    #[serde(rename = "s2-long-movsd-reg-v1")]
+    LongMovsdRegV1,
+    #[serde(rename = "s2-long-movsd-store-reg-v1")]
+    LongMovsdStoreRegV1,
+    #[serde(rename = "s2-long-movss-store-reg-v1")]
+    LongMovssStoreRegV1,
+    #[serde(rename = "s2-long-movss-mem-load-v1")]
+    LongMovssMemLoadV1,
+    #[serde(rename = "s2-long-movsd-mem-load-v1")]
+    LongMovsdMemLoadV1,
+    #[serde(rename = "s2-long-movsd-mem-store-v1")]
+    LongMovsdMemStoreV1,
+    #[serde(rename = "s2-long-movss-mem-store-v1")]
+    LongMovssMemStoreV1,
+    #[serde(rename = "s2-long-movups-mem-load-v1")]
+    LongMovupsMemLoadV1,
+    #[serde(rename = "s2-long-movups-mem-store-v1")]
+    LongMovupsMemStoreV1,
+    #[serde(rename = "s2-long-movups-mem-base-v1")]
+    LongMovupsMemBaseV1,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -175,6 +273,13 @@ pub struct IntegerState {
     /// Full x87 state only in `s2-long-x87-state-v1`; absent from older wire profiles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x87: Option<X87Snapshot>,
+    /// Present only in `s2-long-x87-sse-state-v1`.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_sse_snapshot",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sse: Option<SseSnapshot>,
 }
 
 /// Lossless Long64 x87 observation. Register hex strings contain ten bytes in
@@ -258,11 +363,85 @@ impl X87Snapshot {
     }
 }
 
+/// Lossless Long64 SSE snapshot. `diagnostic_mxcsr_mask` is profile metadata,
+/// not part of architectural state; `mxcsr` remains an unrestricted raw u32.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SseSnapshot {
+    pub xmm: [String; 16],
+    pub mxcsr: HexU64,
+    pub diagnostic_mxcsr_mask: HexU64,
+}
+
+impl From<&od_isa::state::SseState> for SseSnapshot {
+    fn from(state: &od_isa::state::SseState) -> Self {
+        Self {
+            xmm: state
+                .xmm
+                .map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect()),
+            mxcsr: HexU64(u64::from(state.mxcsr)),
+            diagnostic_mxcsr_mask: HexU64(u64::from(PROFILE_SSE_MXCSR_DIAGNOSTIC_MASK)),
+        }
+    }
+}
+
+impl SseSnapshot {
+    pub fn to_cpu(&self) -> Result<od_isa::state::SseState, FormatError> {
+        self.validate()?;
+        let mut xmm = [[0; 16]; 16];
+        for (source, destination) in self.xmm.iter().zip(&mut xmm) {
+            for (index, byte) in destination.iter_mut().enumerate() {
+                let pair = &source[index * 2..index * 2 + 2];
+                *byte = u8::from_str_radix(pair, 16)
+                    .map_err(|_| invalid("state.sse.xmm", "invalid byte encoding"))?;
+            }
+        }
+        Ok(od_isa::state::SseState {
+            xmm,
+            mxcsr: self.mxcsr.get() as u32,
+        })
+    }
+
+    fn validate(&self) -> Result<(), FormatError> {
+        for register in &self.xmm {
+            if register.len() != 32
+                || !register
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(invalid(
+                    "state.sse.xmm",
+                    "each register must be exactly 32 lowercase hex digits",
+                ));
+            }
+        }
+        if self.mxcsr.get() > u32::MAX as u64 {
+            return Err(invalid("state.sse.mxcsr", "must fit in 32 bits"));
+        }
+        if self.diagnostic_mxcsr_mask.get() != u64::from(PROFILE_SSE_MXCSR_DIAGNOSTIC_MASK) {
+            return Err(invalid(
+                "state.sse.diagnostic_mxcsr_mask",
+                "must equal the bounded profile metadata mask 0x0000ffbf",
+            ));
+        }
+        Ok(())
+    }
+}
+
 fn deserialize_present_hex_u64<'de, D>(deserializer: D) -> Result<Option<HexU64>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     HexU64::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_present_sse_snapshot<'de, D>(
+    deserializer: D,
+) -> Result<Option<SseSnapshot>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    SseSnapshot::deserialize(deserializer).map(Some)
 }
 
 fn deserialize_present_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
@@ -296,6 +475,7 @@ impl From<&LongModeState> for IntegerState {
             gs_cache_access: None,
             gs_cache_flags: None,
             x87: None,
+            sse: None,
         }
     }
 }
@@ -356,6 +536,79 @@ impl IntegerState {
             },
             x87: match (profile, &self.x87) {
                 (Profile::LongX87StateV1, Some(x87)) => Some(x87.to_cpu()?),
+                (
+                    Profile::LongX87SseStateV1
+                    | Profile::LongMovupsRegV1
+                    | Profile::LongXorpsRegV1
+                    | Profile::LongPxorRegV1
+                    | Profile::LongPaddbRegV1
+                    | Profile::LongPaddwRegV1
+                    | Profile::LongPsubwRegV1
+                    | Profile::LongPadduswRegV1
+                    | Profile::LongPsubuswRegV1
+                    | Profile::LongPsubbRegV1
+                    | Profile::LongPaddusbRegV1
+                    | Profile::LongPaddsbRegV1
+                    | Profile::LongPsubsbRegV1
+                    | Profile::LongPaddswRegV1
+                    | Profile::LongPsubswRegV1
+                    | Profile::LongPadddRegV1
+                    | Profile::LongPsubdRegV1
+                    | Profile::LongPsubusbRegV1
+                    | Profile::LongAndpsRegV1
+                    | Profile::LongOrpsRegV1
+                    | Profile::LongAndnpsRegV1
+                    | Profile::LongMovsdRegV1
+                    | Profile::LongMovsdStoreRegV1
+                    | Profile::LongMovssRegV1
+                    | Profile::LongMovssMemLoadV1
+                    | Profile::LongMovsdMemLoadV1
+                    | Profile::LongMovsdMemStoreV1
+                    | Profile::LongMovssMemStoreV1
+                    | Profile::LongMovssStoreRegV1
+                    | Profile::LongMovupsMemLoadV1
+                    | Profile::LongMovupsMemStoreV1
+                    | Profile::LongMovupsMemBaseV1,
+                    Some(x87),
+                ) => Some(x87.to_cpu()?),
+                _ => None,
+            },
+            sse: match (profile, &self.sse) {
+                (
+                    Profile::LongX87SseStateV1
+                    | Profile::LongMovupsRegV1
+                    | Profile::LongXorpsRegV1
+                    | Profile::LongPxorRegV1
+                    | Profile::LongPaddbRegV1
+                    | Profile::LongPaddwRegV1
+                    | Profile::LongPsubwRegV1
+                    | Profile::LongPadduswRegV1
+                    | Profile::LongPsubuswRegV1
+                    | Profile::LongPsubbRegV1
+                    | Profile::LongPaddusbRegV1
+                    | Profile::LongPaddsbRegV1
+                    | Profile::LongPsubsbRegV1
+                    | Profile::LongPaddswRegV1
+                    | Profile::LongPsubswRegV1
+                    | Profile::LongPadddRegV1
+                    | Profile::LongPsubdRegV1
+                    | Profile::LongPsubusbRegV1
+                    | Profile::LongAndpsRegV1
+                    | Profile::LongOrpsRegV1
+                    | Profile::LongAndnpsRegV1
+                    | Profile::LongMovsdRegV1
+                    | Profile::LongMovsdStoreRegV1
+                    | Profile::LongMovssRegV1
+                    | Profile::LongMovssMemLoadV1
+                    | Profile::LongMovsdMemLoadV1
+                    | Profile::LongMovsdMemStoreV1
+                    | Profile::LongMovssMemStoreV1
+                    | Profile::LongMovssStoreRegV1
+                    | Profile::LongMovupsMemLoadV1
+                    | Profile::LongMovupsMemStoreV1
+                    | Profile::LongMovupsMemBaseV1,
+                    Some(sse),
+                ) => Some(sse.to_cpu()?),
                 _ => None,
             },
         })
@@ -365,6 +618,81 @@ impl IntegerState {
         let mut result = Self::from(state);
         result.x87 = if profile == Profile::LongX87StateV1 {
             state.x87.as_ref().map(X87Snapshot::from)
+        } else if matches!(
+            profile,
+            Profile::LongX87SseStateV1
+                | Profile::LongMovupsRegV1
+                | Profile::LongXorpsRegV1
+                | Profile::LongPxorRegV1
+                | Profile::LongPaddbRegV1
+                | Profile::LongPaddwRegV1
+                | Profile::LongPsubwRegV1
+                | Profile::LongPadduswRegV1
+                | Profile::LongPsubuswRegV1
+                | Profile::LongPsubbRegV1
+                | Profile::LongPaddusbRegV1
+                | Profile::LongPaddsbRegV1
+                | Profile::LongPsubsbRegV1
+                | Profile::LongPaddswRegV1
+                | Profile::LongPsubswRegV1
+                | Profile::LongPadddRegV1
+                | Profile::LongPsubdRegV1
+                | Profile::LongPsubusbRegV1
+                | Profile::LongAndpsRegV1
+                | Profile::LongOrpsRegV1
+                | Profile::LongAndnpsRegV1
+                | Profile::LongMovsdRegV1
+                | Profile::LongMovsdStoreRegV1
+                | Profile::LongMovssRegV1
+                | Profile::LongMovssMemLoadV1
+                | Profile::LongMovsdMemLoadV1
+                | Profile::LongMovsdMemStoreV1
+                | Profile::LongMovssMemStoreV1
+                | Profile::LongMovssStoreRegV1
+                | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupsMemStoreV1
+                | Profile::LongMovupsMemBaseV1
+        ) {
+            state.x87.as_ref().map(X87Snapshot::from)
+        } else {
+            None
+        };
+        result.sse = if matches!(
+            profile,
+            Profile::LongX87SseStateV1
+                | Profile::LongMovupsRegV1
+                | Profile::LongXorpsRegV1
+                | Profile::LongPxorRegV1
+                | Profile::LongPaddbRegV1
+                | Profile::LongPaddwRegV1
+                | Profile::LongPsubwRegV1
+                | Profile::LongPadduswRegV1
+                | Profile::LongPsubuswRegV1
+                | Profile::LongPsubbRegV1
+                | Profile::LongPaddusbRegV1
+                | Profile::LongPaddsbRegV1
+                | Profile::LongPsubsbRegV1
+                | Profile::LongPaddswRegV1
+                | Profile::LongPsubswRegV1
+                | Profile::LongPadddRegV1
+                | Profile::LongPsubdRegV1
+                | Profile::LongPsubusbRegV1
+                | Profile::LongAndpsRegV1
+                | Profile::LongOrpsRegV1
+                | Profile::LongAndnpsRegV1
+                | Profile::LongMovsdRegV1
+                | Profile::LongMovsdStoreRegV1
+                | Profile::LongMovssRegV1
+                | Profile::LongMovssMemLoadV1
+                | Profile::LongMovsdMemLoadV1
+                | Profile::LongMovsdMemStoreV1
+                | Profile::LongMovssMemStoreV1
+                | Profile::LongMovssStoreRegV1
+                | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupsMemStoreV1
+                | Profile::LongMovupsMemBaseV1
+        ) {
+            state.sse.as_ref().map(SseSnapshot::from)
         } else {
             None
         };
@@ -418,13 +746,77 @@ impl IntegerState {
 
     fn validate_for(&self, profile: Profile) -> Result<(), FormatError> {
         let state_profile = match profile {
-            Profile::LongX87StateV1 => Profile::LongIntegerV1,
+            Profile::LongX87StateV1
+            | Profile::LongX87SseStateV1
+            | Profile::LongMovupsRegV1
+            | Profile::LongXorpsRegV1
+            | Profile::LongPxorRegV1
+            | Profile::LongPaddbRegV1
+            | Profile::LongPaddwRegV1
+            | Profile::LongPsubwRegV1
+            | Profile::LongPadduswRegV1
+            | Profile::LongPsubuswRegV1
+            | Profile::LongPsubbRegV1
+            | Profile::LongPaddusbRegV1
+            | Profile::LongPaddsbRegV1
+            | Profile::LongPsubsbRegV1
+            | Profile::LongPaddswRegV1
+            | Profile::LongPsubswRegV1
+            | Profile::LongPadddRegV1
+            | Profile::LongPsubdRegV1
+            | Profile::LongPsubusbRegV1
+            | Profile::LongAndpsRegV1
+            | Profile::LongOrpsRegV1
+            | Profile::LongAndnpsRegV1
+            | Profile::LongMovsdRegV1
+            | Profile::LongMovsdStoreRegV1
+            | Profile::LongMovssRegV1
+            | Profile::LongMovssMemLoadV1
+            | Profile::LongMovsdMemLoadV1
+            | Profile::LongMovsdMemStoreV1
+            | Profile::LongMovssMemStoreV1
+            | Profile::LongMovssStoreRegV1
+            | Profile::LongMovupsMemLoadV1
+            | Profile::LongMovupsMemStoreV1
+            | Profile::LongMovupsMemBaseV1 => Profile::LongIntegerV1,
             other => other,
         };
         match (state_profile, self.fs_base) {
             (
                 Profile::LongIntegerV1
                 | Profile::LongX87StateV1
+                | Profile::LongX87SseStateV1
+                | Profile::LongMovupsRegV1
+                | Profile::LongXorpsRegV1
+                | Profile::LongPxorRegV1
+                | Profile::LongPaddbRegV1
+                | Profile::LongPaddwRegV1
+                | Profile::LongPsubwRegV1
+                | Profile::LongPadduswRegV1
+                | Profile::LongPsubuswRegV1
+                | Profile::LongPsubbRegV1
+                | Profile::LongPaddusbRegV1
+                | Profile::LongPaddsbRegV1
+                | Profile::LongPsubsbRegV1
+                | Profile::LongPaddswRegV1
+                | Profile::LongPsubswRegV1
+                | Profile::LongPadddRegV1
+                | Profile::LongPsubdRegV1
+                | Profile::LongPsubusbRegV1
+                | Profile::LongAndpsRegV1
+                | Profile::LongOrpsRegV1
+                | Profile::LongAndnpsRegV1
+                | Profile::LongMovsdRegV1
+                | Profile::LongMovsdStoreRegV1
+                | Profile::LongMovssRegV1
+                | Profile::LongMovssMemLoadV1
+                | Profile::LongMovsdMemLoadV1
+                | Profile::LongMovsdMemStoreV1
+                | Profile::LongMovssMemStoreV1
+                | Profile::LongMovssStoreRegV1
+                | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupsMemStoreV1
+                | Profile::LongMovupsMemBaseV1
                 | Profile::LongGsBaseV1
                 | Profile::LongGsSelectorV1
                 | Profile::LongVerwGdtV1
@@ -437,6 +829,38 @@ impl IntegerState {
             (
                 Profile::LongIntegerV1
                 | Profile::LongX87StateV1
+                | Profile::LongX87SseStateV1
+                | Profile::LongMovupsRegV1
+                | Profile::LongXorpsRegV1
+                | Profile::LongPxorRegV1
+                | Profile::LongPaddbRegV1
+                | Profile::LongPaddwRegV1
+                | Profile::LongPsubwRegV1
+                | Profile::LongPadduswRegV1
+                | Profile::LongPsubuswRegV1
+                | Profile::LongPsubbRegV1
+                | Profile::LongPaddusbRegV1
+                | Profile::LongPaddsbRegV1
+                | Profile::LongPsubsbRegV1
+                | Profile::LongPaddswRegV1
+                | Profile::LongPsubswRegV1
+                | Profile::LongPadddRegV1
+                | Profile::LongPsubdRegV1
+                | Profile::LongPsubusbRegV1
+                | Profile::LongAndpsRegV1
+                | Profile::LongOrpsRegV1
+                | Profile::LongAndnpsRegV1
+                | Profile::LongMovsdRegV1
+                | Profile::LongMovsdStoreRegV1
+                | Profile::LongMovssRegV1
+                | Profile::LongMovssMemLoadV1
+                | Profile::LongMovsdMemLoadV1
+                | Profile::LongMovsdMemStoreV1
+                | Profile::LongMovssMemStoreV1
+                | Profile::LongMovssStoreRegV1
+                | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupsMemStoreV1
+                | Profile::LongMovupsMemBaseV1
                 | Profile::LongGsBaseV1
                 | Profile::LongGsSelectorV1
                 | Profile::LongVerwGdtV1
@@ -454,6 +878,38 @@ impl IntegerState {
             (
                 Profile::LongIntegerV1
                 | Profile::LongX87StateV1
+                | Profile::LongX87SseStateV1
+                | Profile::LongMovupsRegV1
+                | Profile::LongXorpsRegV1
+                | Profile::LongPxorRegV1
+                | Profile::LongPaddbRegV1
+                | Profile::LongPaddwRegV1
+                | Profile::LongPsubwRegV1
+                | Profile::LongPadduswRegV1
+                | Profile::LongPsubuswRegV1
+                | Profile::LongPsubbRegV1
+                | Profile::LongPaddusbRegV1
+                | Profile::LongPaddsbRegV1
+                | Profile::LongPsubsbRegV1
+                | Profile::LongPaddswRegV1
+                | Profile::LongPsubswRegV1
+                | Profile::LongPadddRegV1
+                | Profile::LongPsubdRegV1
+                | Profile::LongPsubusbRegV1
+                | Profile::LongAndpsRegV1
+                | Profile::LongOrpsRegV1
+                | Profile::LongAndnpsRegV1
+                | Profile::LongMovsdRegV1
+                | Profile::LongMovsdStoreRegV1
+                | Profile::LongMovssRegV1
+                | Profile::LongMovssMemLoadV1
+                | Profile::LongMovsdMemLoadV1
+                | Profile::LongMovsdMemStoreV1
+                | Profile::LongMovssMemStoreV1
+                | Profile::LongMovssStoreRegV1
+                | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupsMemStoreV1
+                | Profile::LongMovupsMemBaseV1
                 | Profile::LongFsBaseV1
                 | Profile::LongFsSelectorV1
                 | Profile::LongVerwGdtV1
@@ -474,6 +930,38 @@ impl IntegerState {
             (
                 Profile::LongIntegerV1
                 | Profile::LongX87StateV1
+                | Profile::LongX87SseStateV1
+                | Profile::LongMovupsRegV1
+                | Profile::LongXorpsRegV1
+                | Profile::LongPxorRegV1
+                | Profile::LongPaddbRegV1
+                | Profile::LongPaddwRegV1
+                | Profile::LongPsubwRegV1
+                | Profile::LongPadduswRegV1
+                | Profile::LongPsubuswRegV1
+                | Profile::LongPsubbRegV1
+                | Profile::LongPaddusbRegV1
+                | Profile::LongPaddsbRegV1
+                | Profile::LongPsubsbRegV1
+                | Profile::LongPaddswRegV1
+                | Profile::LongPsubswRegV1
+                | Profile::LongPadddRegV1
+                | Profile::LongPsubdRegV1
+                | Profile::LongPsubusbRegV1
+                | Profile::LongAndpsRegV1
+                | Profile::LongOrpsRegV1
+                | Profile::LongAndnpsRegV1
+                | Profile::LongMovsdRegV1
+                | Profile::LongMovsdStoreRegV1
+                | Profile::LongMovssRegV1
+                | Profile::LongMovssMemLoadV1
+                | Profile::LongMovsdMemLoadV1
+                | Profile::LongMovsdMemStoreV1
+                | Profile::LongMovssMemStoreV1
+                | Profile::LongMovssStoreRegV1
+                | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupsMemStoreV1
+                | Profile::LongMovupsMemBaseV1
                 | Profile::LongFsBaseV1
                 | Profile::LongGsBaseV1
                 | Profile::LongVerwGdtV1
@@ -644,11 +1132,159 @@ impl IntegerState {
         }
         match (profile, &self.x87) {
             (Profile::LongX87StateV1, Some(x87)) => x87.validate()?,
+            (
+                Profile::LongX87SseStateV1
+                | Profile::LongMovupsRegV1
+                | Profile::LongXorpsRegV1
+                | Profile::LongPxorRegV1
+                | Profile::LongPaddbRegV1
+                | Profile::LongPaddwRegV1
+                | Profile::LongPsubwRegV1
+                | Profile::LongPadduswRegV1
+                | Profile::LongPsubuswRegV1
+                | Profile::LongPsubbRegV1
+                | Profile::LongPaddusbRegV1
+                | Profile::LongPaddsbRegV1
+                | Profile::LongPsubsbRegV1
+                | Profile::LongPaddswRegV1
+                | Profile::LongPsubswRegV1
+                | Profile::LongPadddRegV1
+                | Profile::LongPsubdRegV1
+                | Profile::LongPsubusbRegV1
+                | Profile::LongAndpsRegV1
+                | Profile::LongOrpsRegV1
+                | Profile::LongAndnpsRegV1
+                | Profile::LongMovsdRegV1
+                | Profile::LongMovsdStoreRegV1
+                | Profile::LongMovssRegV1
+                | Profile::LongMovssMemLoadV1
+                | Profile::LongMovsdMemLoadV1
+                | Profile::LongMovsdMemStoreV1
+                | Profile::LongMovssMemStoreV1
+                | Profile::LongMovssStoreRegV1
+                | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupsMemStoreV1
+                | Profile::LongMovupsMemBaseV1,
+                Some(x87),
+            ) => x87.validate()?,
             (Profile::LongX87StateV1, None) => {
+                return Err(invalid("state.x87", "required by this profile"));
+            }
+            (
+                Profile::LongX87SseStateV1
+                | Profile::LongMovupsRegV1
+                | Profile::LongXorpsRegV1
+                | Profile::LongPxorRegV1
+                | Profile::LongPaddbRegV1
+                | Profile::LongPaddwRegV1
+                | Profile::LongPsubwRegV1
+                | Profile::LongPadduswRegV1
+                | Profile::LongPsubuswRegV1
+                | Profile::LongPsubbRegV1
+                | Profile::LongPaddusbRegV1
+                | Profile::LongPaddsbRegV1
+                | Profile::LongPsubsbRegV1
+                | Profile::LongPaddswRegV1
+                | Profile::LongPsubswRegV1
+                | Profile::LongPadddRegV1
+                | Profile::LongPsubdRegV1
+                | Profile::LongPsubusbRegV1
+                | Profile::LongAndpsRegV1
+                | Profile::LongOrpsRegV1
+                | Profile::LongAndnpsRegV1
+                | Profile::LongMovsdRegV1
+                | Profile::LongMovsdStoreRegV1
+                | Profile::LongMovssRegV1
+                | Profile::LongMovssMemLoadV1
+                | Profile::LongMovsdMemLoadV1
+                | Profile::LongMovsdMemStoreV1
+                | Profile::LongMovssMemStoreV1
+                | Profile::LongMovssStoreRegV1
+                | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupsMemStoreV1
+                | Profile::LongMovupsMemBaseV1,
+                None,
+            ) => {
                 return Err(invalid("state.x87", "required by this profile"));
             }
             (_, None) => {}
             (_, Some(_)) => return Err(invalid("state.x87", "not part of this profile")),
+        }
+        match (profile, &self.sse) {
+            (
+                Profile::LongX87SseStateV1
+                | Profile::LongMovupsRegV1
+                | Profile::LongXorpsRegV1
+                | Profile::LongPxorRegV1
+                | Profile::LongPaddbRegV1
+                | Profile::LongPaddwRegV1
+                | Profile::LongPsubwRegV1
+                | Profile::LongPadduswRegV1
+                | Profile::LongPsubuswRegV1
+                | Profile::LongPsubbRegV1
+                | Profile::LongPaddusbRegV1
+                | Profile::LongPaddsbRegV1
+                | Profile::LongPsubsbRegV1
+                | Profile::LongPaddswRegV1
+                | Profile::LongPsubswRegV1
+                | Profile::LongPadddRegV1
+                | Profile::LongPsubdRegV1
+                | Profile::LongPsubusbRegV1
+                | Profile::LongAndpsRegV1
+                | Profile::LongOrpsRegV1
+                | Profile::LongAndnpsRegV1
+                | Profile::LongMovsdRegV1
+                | Profile::LongMovsdStoreRegV1
+                | Profile::LongMovssRegV1
+                | Profile::LongMovssMemLoadV1
+                | Profile::LongMovsdMemLoadV1
+                | Profile::LongMovsdMemStoreV1
+                | Profile::LongMovssMemStoreV1
+                | Profile::LongMovssStoreRegV1
+                | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupsMemStoreV1
+                | Profile::LongMovupsMemBaseV1,
+                Some(sse),
+            ) => sse.validate()?,
+            (
+                Profile::LongX87SseStateV1
+                | Profile::LongMovupsRegV1
+                | Profile::LongXorpsRegV1
+                | Profile::LongPxorRegV1
+                | Profile::LongPaddbRegV1
+                | Profile::LongPaddwRegV1
+                | Profile::LongPsubwRegV1
+                | Profile::LongPadduswRegV1
+                | Profile::LongPsubuswRegV1
+                | Profile::LongPsubbRegV1
+                | Profile::LongPaddusbRegV1
+                | Profile::LongPaddsbRegV1
+                | Profile::LongPsubsbRegV1
+                | Profile::LongPaddswRegV1
+                | Profile::LongPsubswRegV1
+                | Profile::LongPadddRegV1
+                | Profile::LongPsubdRegV1
+                | Profile::LongPsubusbRegV1
+                | Profile::LongAndpsRegV1
+                | Profile::LongOrpsRegV1
+                | Profile::LongAndnpsRegV1
+                | Profile::LongMovsdRegV1
+                | Profile::LongMovsdStoreRegV1
+                | Profile::LongMovssRegV1
+                | Profile::LongMovssMemLoadV1
+                | Profile::LongMovsdMemLoadV1
+                | Profile::LongMovsdMemStoreV1
+                | Profile::LongMovssMemStoreV1
+                | Profile::LongMovssStoreRegV1
+                | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupsMemStoreV1
+                | Profile::LongMovupsMemBaseV1,
+                None,
+            ) => {
+                return Err(invalid("state.sse", "required by this profile"));
+            }
+            (_, None) => {}
+            (_, Some(_)) => return Err(invalid("state.sse", "not part of this profile")),
         }
         Ok(())
     }
@@ -783,12 +1419,417 @@ impl Fixture {
                 ));
             }
         }
-        if self.profile == Profile::LongX87StateV1 {
+        if matches!(
+            self.profile,
+            Profile::LongXorpsRegV1
+                | Profile::LongPxorRegV1
+                | Profile::LongPaddbRegV1
+                | Profile::LongPaddwRegV1
+                | Profile::LongPsubwRegV1
+                | Profile::LongPadduswRegV1
+                | Profile::LongPsubuswRegV1
+                | Profile::LongPsubbRegV1
+                | Profile::LongPaddusbRegV1
+                | Profile::LongPaddsbRegV1
+                | Profile::LongPsubsbRegV1
+                | Profile::LongPaddswRegV1
+                | Profile::LongPsubswRegV1
+                | Profile::LongPadddRegV1
+                | Profile::LongPsubdRegV1
+                | Profile::LongPsubusbRegV1
+                | Profile::LongAndpsRegV1
+                | Profile::LongOrpsRegV1
+                | Profile::LongAndnpsRegV1
+                | Profile::LongMovsdRegV1
+                | Profile::LongMovsdStoreRegV1
+                | Profile::LongMovssRegV1
+                | Profile::LongMovssStoreRegV1
+        ) {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid("memory.code", "required by this profile"));
+            };
+            let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let length = match self.profile {
+                Profile::LongXorpsRegV1 => xorps_register_length(&code_bytes),
+                Profile::LongPxorRegV1 => pxor_register_length(&code_bytes),
+                Profile::LongPaddbRegV1 => paddb_register_length(&code_bytes),
+                Profile::LongPaddwRegV1 => paddw_register_length(&code_bytes),
+                Profile::LongPsubwRegV1 => psubw_register_length(&code_bytes),
+                Profile::LongPadduswRegV1 => paddusw_register_length(&code_bytes),
+                Profile::LongPsubuswRegV1 => psubusw_register_length(&code_bytes),
+                Profile::LongPsubbRegV1 => psubb_register_length(&code_bytes),
+                Profile::LongPaddusbRegV1 => paddusb_register_length(&code_bytes),
+                Profile::LongPaddsbRegV1 => paddsb_register_length(&code_bytes),
+                Profile::LongPsubsbRegV1 => psubsb_register_length(&code_bytes),
+                Profile::LongPaddswRegV1 => paddsw_register_length(&code_bytes),
+                Profile::LongPsubswRegV1 => psubsw_register_length(&code_bytes),
+                Profile::LongPadddRegV1 => paddd_register_length(&code_bytes),
+                Profile::LongPsubdRegV1 => psubd_register_length(&code_bytes),
+                Profile::LongPsubusbRegV1 => psubusb_register_length(&code_bytes),
+                Profile::LongAndpsRegV1 => andps_register_length(&code_bytes),
+                Profile::LongOrpsRegV1 => orps_register_length(&code_bytes),
+                Profile::LongAndnpsRegV1 => andnps_register_length(&code_bytes),
+                Profile::LongMovssRegV1 => movss_register_length(&code_bytes),
+                Profile::LongMovsdRegV1 => movsd_register_length(&code_bytes),
+                Profile::LongMovsdStoreRegV1 => movsd_store_register_length(&code_bytes),
+                Profile::LongMovssStoreRegV1 => movss_store_register_length(&code_bytes),
+                _ => unreachable!("matched SSE logic profile above"),
+            }
+            .ok_or_else(|| invalid("memory.code", "outside the register-only SSE profile"))?;
+            if code.guest_address != self.initial_state.rip
+                || code.length != length
+                || !code.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get)
+                    != self.initial_state.rip.get().checked_add(u64::from(length))
+                || self.expected_exit != ExpectedExit::StopAddress
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "SSE logic requires one executable instruction, budget 1, and stop_rip immediately afterward",
+                ));
+            }
+        }
+        if self.profile == Profile::LongMovupsRegV1 {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid("memory.code", "required by this profile"));
+            };
+            let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let length = movups_register_length(&code_bytes).ok_or_else(|| {
+                invalid("memory.code", "outside the register-only MOVUPS profile")
+            })?;
+            if code.guest_address != self.initial_state.rip
+                || code.length != length
+                || !code.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get)
+                    != self.initial_state.rip.get().checked_add(u64::from(length))
+                || self.expected_exit != ExpectedExit::StopAddress
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "MOVUPS requires one executable instruction, budget 1, and stop_rip immediately afterward",
+                ));
+            }
+        }
+        if self.profile == Profile::LongMovupsMemLoadV1 {
             let code = self.memory.iter().find(|region| region.region_id == "code");
             let Some(code) = code else {
                 return Err(invalid("memory.code", "required by this profile"));
             };
             let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let (length, _) = movups_memory_load_destination(&code_bytes).ok_or_else(|| {
+                invalid(
+                    "memory.code",
+                    "outside the [RAX] MOVUPS memory-load profile",
+                )
+            })?;
+            let start = self.initial_state.gpr[0].get();
+            let end = start
+                .checked_add(15)
+                .ok_or_else(|| invalid("state.gpr[0]", "MOVUPS source range overflows u64"))?;
+            let data = self.memory.iter().find(|region| region.region_id == "data");
+            let Some(data) = data else {
+                return Err(invalid("memory.data", "required by this profile"));
+            };
+            let data_start = data.guest_address.get();
+            let data_end = data_start
+                .checked_add(u64::from(data.length))
+                .ok_or_else(|| invalid("memory.data", "range overflows u64"))?;
+            let code_end = self.initial_state.rip.get().checked_add(u64::from(length));
+            if self.memory.len() != 2
+                || code.region_id != "code"
+                || code.guest_address.get() != self.initial_state.rip.get()
+                || code.length != length
+                || !code.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != code_end
+                || self.expected_exit != ExpectedExit::StopAddress
+                || !data.permissions.read
+                || data.region_id != "data"
+                || data.permissions.write
+                || data.permissions.execute
+                || start < data_start
+                || end >= data_end
+            {
+                return Err(invalid(
+                    "memory",
+                    "MOVUPS memory-load profile requires one code instruction and one readable, non-writable data region covering [RAX..RAX+15]",
+                ));
+            }
+        }
+        if self.profile == Profile::LongMovssMemLoadV1 {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid("memory.code", "required by this profile"));
+            };
+            let bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let (length, _) = movss_memory_load_destination(&bytes)
+                .ok_or_else(|| invalid("memory.code", "outside the F3 MOVSS [RAX] load profile"))?;
+            let start = self.initial_state.gpr[0].get();
+            let end = start
+                .checked_add(3)
+                .ok_or_else(|| invalid("state.gpr[0]", "MOVSS source range overflows u64"))?;
+            let Some(data) = self.memory.iter().find(|region| region.region_id == "data") else {
+                return Err(invalid("memory.data", "required by this profile"));
+            };
+            let data_start = data.guest_address.get();
+            let data_end = data_start
+                .checked_add(u64::from(data.length))
+                .ok_or_else(|| invalid("memory.data", "range overflows u64"))?;
+            if self.memory.len() != 2
+                || code.guest_address != self.initial_state.rip
+                || code.length != length
+                || !code.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get)
+                    != self.initial_state.rip.get().checked_add(u64::from(length))
+                || self.expected_exit != ExpectedExit::StopAddress
+                || data.permissions
+                    != (MemoryPermissions {
+                        read: true,
+                        write: false,
+                        execute: false,
+                    })
+                || data_start > start
+                || end >= data_end
+            {
+                return Err(invalid(
+                    "memory",
+                    "MOVSS load requires one code instruction, one read-only data region covering [RAX..RAX+3], budget 1, and stop immediately afterward",
+                ));
+            }
+        }
+        if self.profile == Profile::LongMovsdMemLoadV1 {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid("memory.code", "required by this profile"));
+            };
+            let bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let (length, _) = movsd_memory_load_destination(&bytes)
+                .ok_or_else(|| invalid("memory.code", "outside the F2 MOVSD [RAX] load profile"))?;
+            let start = self.initial_state.gpr[0].get();
+            let end = start
+                .checked_add(7)
+                .ok_or_else(|| invalid("state.gpr[0]", "MOVSD source range overflows u64"))?;
+            let Some(data) = self.memory.iter().find(|region| region.region_id == "data") else {
+                return Err(invalid("memory.data", "required by this profile"));
+            };
+            let data_start = data.guest_address.get();
+            let data_end = data_start
+                .checked_add(u64::from(data.length))
+                .ok_or_else(|| invalid("memory.data", "range overflows u64"))?;
+            if self.memory.len() != 2
+                || code.guest_address != self.initial_state.rip
+                || code.length != length
+                || !code.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get)
+                    != self.initial_state.rip.get().checked_add(u64::from(length))
+                || self.expected_exit != ExpectedExit::StopAddress
+                || data.permissions
+                    != (MemoryPermissions {
+                        read: true,
+                        write: false,
+                        execute: false,
+                    })
+                || data_start > start
+                || end >= data_end
+            {
+                return Err(invalid(
+                    "memory",
+                    "MOVSD load requires one code instruction, one read-only data region covering [RAX..RAX+7], budget 1, and stop immediately afterward",
+                ));
+            }
+        }
+        if self.profile == Profile::LongMovsdMemStoreV1 {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid("memory.code", "required by this profile"));
+            };
+            let bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let (length, _) = movsd_memory_store_source(&bytes).ok_or_else(|| {
+                invalid("memory.code", "outside the F2 MOVSD [RAX] store profile")
+            })?;
+            let start = self.initial_state.gpr[0].get();
+            let end = start
+                .checked_add(7)
+                .ok_or_else(|| invalid("state.gpr[0]", "MOVSD destination range overflows u64"))?;
+            let Some(data) = self.memory.iter().find(|region| region.region_id == "data") else {
+                return Err(invalid("memory.data", "required by this profile"));
+            };
+            let data_start = data.guest_address.get();
+            let data_end = data_start
+                .checked_add(u64::from(data.length))
+                .ok_or_else(|| invalid("memory.data", "range overflows u64"))?;
+            if self.memory.len() != 2
+                || code.guest_address != self.initial_state.rip
+                || code.length != length
+                || !code.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get)
+                    != self.initial_state.rip.get().checked_add(u64::from(length))
+                || self.expected_exit != ExpectedExit::StopAddress
+                || data.permissions
+                    != (MemoryPermissions {
+                        read: true,
+                        write: true,
+                        execute: false,
+                    })
+                || data_start > start
+                || end >= data_end
+            {
+                return Err(invalid(
+                    "memory",
+                    "MOVSD store requires one code instruction, one writable data region covering [RAX..RAX+7], budget 1, and stop immediately afterward",
+                ));
+            }
+        }
+        if self.profile == Profile::LongMovssMemStoreV1 {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid("memory.code", "required by this profile"));
+            };
+            let bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let (length, _) = movss_memory_store_source(&bytes).ok_or_else(|| {
+                invalid("memory.code", "outside the F3 MOVSS [RAX] store profile")
+            })?;
+            let start = self.initial_state.gpr[0].get();
+            let end = start
+                .checked_add(3)
+                .ok_or_else(|| invalid("state.gpr[0]", "MOVSS destination range overflows u64"))?;
+            let Some(data) = self.memory.iter().find(|region| region.region_id == "data") else {
+                return Err(invalid("memory.data", "required by this profile"));
+            };
+            let data_start = data.guest_address.get();
+            let data_end = data_start
+                .checked_add(u64::from(data.length))
+                .ok_or_else(|| invalid("memory.data", "range overflows u64"))?;
+            if self.memory.len() != 2
+                || code.guest_address != self.initial_state.rip
+                || code.length != length
+                || !code.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get)
+                    != self.initial_state.rip.get().checked_add(u64::from(length))
+                || self.expected_exit != ExpectedExit::StopAddress
+                || data.permissions
+                    != (MemoryPermissions {
+                        read: true,
+                        write: true,
+                        execute: false,
+                    })
+                || data_start > start
+                || end >= data_end
+            {
+                return Err(invalid(
+                    "memory",
+                    "MOVSS store requires one code instruction, one readable/writable data region covering [RAX..RAX+3], budget 1, and stop immediately afterward",
+                ));
+            }
+        }
+        if self.profile == Profile::LongMovupsMemStoreV1 {
+            let code = self.memory.iter().find(|region| region.region_id == "code");
+            let Some(code) = code else {
+                return Err(invalid("memory.code", "required by this profile"));
+            };
+            let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let length = movups_memory_store_length(&code_bytes).ok_or_else(|| {
+                invalid(
+                    "memory.code",
+                    "outside the [RAX] MOVUPS memory-store profile",
+                )
+            })?;
+            let start = self.initial_state.gpr[0].get();
+            let end = start
+                .checked_add(15)
+                .ok_or_else(|| invalid("state.gpr[0]", "MOVUPS destination range overflows u64"))?;
+            let data = self.memory.iter().find(|region| region.region_id == "data");
+            let Some(data) = data else {
+                return Err(invalid("memory.data", "required by this profile"));
+            };
+            let data_start = data.guest_address.get();
+            let data_end = data_start
+                .checked_add(u64::from(data.length))
+                .ok_or_else(|| invalid("memory.data", "range overflows u64"))?;
+            let code_end = self.initial_state.rip.get().checked_add(u64::from(length));
+            if self.memory.len() != 2
+                || code.region_id != "code"
+                || code.guest_address.get() != self.initial_state.rip.get()
+                || code.length != length
+                || !code.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != code_end
+                || self.expected_exit != ExpectedExit::StopAddress
+                || !data.permissions.write
+                || data.permissions.execute
+                || data.region_id != "data"
+                || start < data_start
+                || end >= data_end
+            {
+                return Err(invalid(
+                    "memory",
+                    "MOVUPS memory-store profile requires one code instruction and one writable, non-executable data region covering [RAX..RAX+15]",
+                ));
+            }
+        }
+        if self.profile == Profile::LongMovupsMemBaseV1 {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid("memory.code", "required by this profile"));
+            };
+            let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let cpu = self.initial_state.to_cpu_for(self.profile)?;
+            let (length, store, start) =
+                movups_memory_base_form(&code_bytes, &cpu).ok_or_else(|| {
+                    invalid(
+                        "memory.code",
+                        "outside the base+displacement MOVUPS profile",
+                    )
+                })?;
+            let end = start
+                .checked_add(15)
+                .ok_or_else(|| invalid("state.gpr", "MOVUPS access range overflows u64"))?;
+            let data = self.memory.iter().find(|region| region.region_id == "data");
+            let Some(data) = data else {
+                return Err(invalid("memory.data", "required by this profile"));
+            };
+            let data_start = data.guest_address.get();
+            let data_end = data_start
+                .checked_add(u64::from(data.length))
+                .ok_or_else(|| invalid("memory.data", "range overflows u64"))?;
+            let code_end = self.initial_state.rip.get().checked_add(u64::from(length));
+            let permission_ok = if store {
+                data.permissions.write
+            } else {
+                data.permissions.read
+            };
+            if self.memory.len() != 2
+                || code.region_id != "code"
+                || code.guest_address.get() != self.initial_state.rip.get()
+                || code.length != length
+                || !code.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != code_end
+                || self.expected_exit != ExpectedExit::StopAddress
+                || !permission_ok
+                || data.permissions.execute
+                || start < data_start
+                || end >= data_end
+            {
+                return Err(invalid(
+                    "memory",
+                    "MOVUPS base profile requires one code instruction and one direction-appropriate data region covering the effective 16-byte range",
+                ));
+            }
+        }
+        if self.profile == Profile::LongX87StateV1 || self.profile == Profile::LongX87SseStateV1 {
+            let code = self.memory.iter().find(|region| region.region_id == "code");
+            let Some(code) = code else {
+                return Err(invalid("memory.code", "required by this profile"));
+            };
+            let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            if self.profile == Profile::LongX87SseStateV1 && code_bytes != "90" {
+                return Err(invalid(
+                    "memory.code",
+                    "the local x87/SSE snapshot profile admits exactly one NOP",
+                ));
+            }
             let (expected_bytes, expected_length) = match code_bytes.as_str() {
                 "90" => ("90", 1),
                 "dbe3" => ("dbe3", 2),
@@ -2443,6 +3484,9 @@ pub fn compare(
     if a.state.x87 != b.state.x87 {
         differences.push("x87".into());
     }
+    if a.state.sse != b.state.sse {
+        differences.push("sse".into());
+    }
     if (a.state.rflags.get() ^ b.state.rflags.get()) & mask != 0 {
         differences.push("rflags".into());
     }
@@ -2705,6 +3749,638 @@ fn fcmovu_bare_source(code_bytes: &str) -> Option<u8> {
     let opcode = u8::from_str_radix(&code_bytes[0..2], 16).ok()?;
     let modrm = u8::from_str_radix(&code_bytes[2..4], 16).ok()?;
     (opcode == 0xda && (0xd8..=0xdf).contains(&modrm)).then_some(modrm & 7)
+}
+
+fn xorps_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x0f, 0x57, modrm] if modrm >> 6 == 3 => Some(3),
+        [rex, 0x0f, 0x57, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(4)
+        }
+        _ => None,
+    }
+}
+
+fn pxor_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xef, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xef, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn paddb_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xfc, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xfc, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn paddw_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xfd, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xfd, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn paddusw_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xdd, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xdd, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn psubusw_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xd9, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xd9, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn psubw_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xf9, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xf9, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn psubb_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xf8, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xf8, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn paddusb_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xdc, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xdc, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn paddsb_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xec, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xec, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn psubsb_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xe8, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xe8, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn paddsw_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xed, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xed, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn paddd_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xfe, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xfe, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn psubd_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xfa, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xfa, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn psubsw_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xe9, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xe9, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn psubusb_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xd8, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xd8, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn andps_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x0f, 0x54, modrm] if modrm >> 6 == 3 => Some(3),
+        [rex, 0x0f, 0x54, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(4)
+        }
+        _ => None,
+    }
+}
+
+fn orps_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x0f, 0x56, modrm] if modrm >> 6 == 3 => Some(3),
+        [rex, 0x0f, 0x56, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(4)
+        }
+        _ => None,
+    }
+}
+
+fn movss_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0xf3, 0x0f, 0x10, modrm] if modrm >> 6 == 3 => Some(4),
+        [0xf3, rex, 0x0f, 0x10, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn movsd_register_length(code_bytes: &str) -> Option<u32> {
+    let bytes = decode_bytes(code_bytes).ok()?;
+    match bytes.as_slice() {
+        [0xf2, 0x0f, 0x10, modrm] if modrm >> 6 == 3 => Some(4),
+        [0xf2, rex, 0x0f, 0x10, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn movsd_store_register_length(code_bytes: &str) -> Option<u32> {
+    let bytes = decode_bytes(code_bytes).ok()?;
+    match bytes.as_slice() {
+        [0xf2, 0x0f, 0x11, modrm] if modrm >> 6 == 3 => Some(4),
+        [0xf2, rex, 0x0f, 0x11, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn movss_memory_load_destination(code_bytes: &str) -> Option<(u32, u8)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (length, rex, modrm) = match bytes.as_slice() {
+        [0xf3, 0x0f, 0x10, modrm] => (4, 0, *modrm),
+        [0xf3, rex, 0x0f, 0x10, modrm] if (0x40..=0x4f).contains(rex) && rex & 0x0b == 0 => {
+            (5, *rex, *modrm)
+        }
+        _ => return None,
+    };
+    (modrm >> 6 == 0 && modrm & 7 == 0).then_some((length, ((modrm >> 3) & 7) | ((rex & 4) << 1)))
+}
+
+fn movsd_memory_load_destination(code_bytes: &str) -> Option<(u32, u8)> {
+    let bytes = decode_bytes(code_bytes).ok()?;
+    let (length, rex, modrm) = match bytes.as_slice() {
+        [0xf2, 0x0f, 0x10, modrm] => (4, 0, *modrm),
+        [0xf2, rex, 0x0f, 0x10, modrm] if (0x40..=0x4f).contains(rex) && rex & 0x0b == 0 => {
+            (5, *rex, *modrm)
+        }
+        _ => return None,
+    };
+    (modrm >> 6 == 0 && modrm & 7 == 0).then_some((length, ((modrm >> 3) & 7) | ((rex & 4) << 1)))
+}
+
+fn movsd_memory_store_source(code_bytes: &str) -> Option<(u32, u8)> {
+    let bytes = decode_bytes(code_bytes).ok()?;
+    let (length, rex, modrm) = match bytes.as_slice() {
+        [0xf2, 0x0f, 0x11, modrm] => (4, 0, *modrm),
+        [0xf2, rex, 0x0f, 0x11, modrm] if (0x40..=0x4f).contains(rex) && rex & 0x0b == 0 => {
+            (5, *rex, *modrm)
+        }
+        _ => return None,
+    };
+    (modrm >> 6 == 0 && modrm & 7 == 0).then_some((length, ((modrm >> 3) & 7) | ((rex & 4) << 1)))
+}
+
+fn movss_memory_store_source(code_bytes: &str) -> Option<(u32, u8)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (length, rex, modrm) = match bytes.as_slice() {
+        [0xf3, 0x0f, 0x11, modrm] => (4, 0, *modrm),
+        [0xf3, rex, 0x0f, 0x11, modrm] if (0x40..=0x4f).contains(rex) && rex & 0x0b == 0 => {
+            (5, *rex, *modrm)
+        }
+        _ => return None,
+    };
+    (modrm >> 6 == 0 && modrm & 7 == 0).then_some((length, ((modrm >> 3) & 7) | ((rex & 4) << 1)))
+}
+
+fn movss_store_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0xf3, 0x0f, 0x11, modrm] if modrm >> 6 == 3 => Some(4),
+        [0xf3, rex, 0x0f, 0x11, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn andnps_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x0f, 0x55, modrm] if modrm >> 6 == 3 => Some(3),
+        [rex, 0x0f, 0x55, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(4)
+        }
+        _ => None,
+    }
+}
+
+fn movups_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let opcode_at = match bytes.as_slice() {
+        [0x0f, 0x10 | 0x11, modrm] if modrm >> 6 == 3 => 0,
+        [rex, 0x0f, 0x10 | 0x11, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            1
+        }
+        _ => return None,
+    };
+    Some((opcode_at + 3) as u32)
+}
+
+fn movups_memory_load_destination(code_bytes: &str) -> Option<(u32, u8)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (prefix_len, modrm) = match bytes.as_slice() {
+        [0x0f, 0x10, modrm] => (0, *modrm),
+        [rex, 0x0f, 0x10, modrm] if (0x40..=0x4f).contains(rex) && rex & 0x0b == 0 => (1, *modrm),
+        _ => return None,
+    };
+    (modrm >> 6 == 0 && modrm & 7 == 0).then_some((
+        (prefix_len + 3) as u32,
+        ((modrm >> 3) & 7) | ((bytes.first().copied().unwrap_or(0) & 4) << 1),
+    ))
+}
+
+fn movups_memory_store_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (prefix_len, modrm) = match bytes.as_slice() {
+        [0x0f, 0x11, modrm] => (0, *modrm),
+        [rex, 0x0f, 0x11, modrm] if (0x40..=0x4f).contains(rex) && rex & 0x0b == 0 => (1, *modrm),
+        _ => return None,
+    };
+    (modrm >> 6 == 0 && modrm & 7 == 0).then_some((prefix_len + 3) as u32)
+}
+
+fn movups_memory_base_form(code_bytes: &str, state: &LongModeState) -> Option<(u32, bool, u64)> {
+    let bytes = decode_bytes(code_bytes).ok()?;
+    let mut memory = InstructionBytes { bytes: &bytes };
+    let instruction = od_isa::long_decode::decode(&mut memory, 0, AccessContext::default()).ok()?;
+    if usize::from(instruction.length) != bytes.len() {
+        return None;
+    }
+    let (store, operand) = match instruction.operation {
+        Operation::MovupsLoadMemory { source, .. } => (false, source),
+        Operation::MovupsStoreMemory { destination, .. } => (true, destination),
+        _ => return None,
+    };
+    let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
+    let start = operand.effective_address(state, next_rip);
+    Some((u32::from(instruction.length), store, start))
+}
+
+/// Fetch-only source used by schema validation to apply the core x86 decoder.
+struct InstructionBytes<'a> {
+    bytes: &'a [u8],
+}
+
+impl GuestMemory for InstructionBytes<'_> {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        self.bytes
+            .get(usize::try_from(address).unwrap_or(usize::MAX))
+            .copied()
+            .ok_or(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            })
+    }
+
+    fn read(&mut self, address: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Read,
+        })
+    }
+
+    fn write(&mut self, address: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Write,
+        })
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        address: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Read,
+        })
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        address: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Read,
+        })
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        address: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Read,
+        })
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        Ok(())
+    }
 }
 
 /// Exact S2-30ch FCMOVU bare, FNSTSW, repeat, and retained producer streams.

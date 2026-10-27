@@ -66,15 +66,32 @@ impl MemoryOperand {
         state: &LongModeState,
         next_rip: u64,
     ) -> Result<u64, MemoryError> {
+        self.access_range_address_48(state, next_rip, self.size.bytes())
+    }
+
+    /// Validate a byte range described by this addressing expression. This
+    /// supports instructions whose memory width is not an integer OperandSize.
+    pub fn access_range_address_48(
+        self,
+        state: &LongModeState,
+        next_rip: u64,
+        length: usize,
+    ) -> Result<u64, MemoryError> {
+        if length == 0 {
+            return Err(MemoryError::AddressOverflow {
+                address: self.effective_address(state, next_rip),
+                length,
+            });
+        }
         let start = self
             .linear_address_48(state, next_rip)
             .map_err(MemoryError::Architectural)?;
-        let last = start.checked_add(self.size.bytes() as u64 - 1).ok_or(
-            MemoryError::AddressOverflow {
+        let last = start
+            .checked_add(length as u64 - 1)
+            .ok_or(MemoryError::AddressOverflow {
                 address: start,
-                length: self.size.bytes(),
-            },
-        )?;
+                length,
+            })?;
         if canonical(last) {
             return Ok(start);
         }
@@ -444,6 +461,150 @@ pub enum Operation {
     },
     /// Bare `0F AE F0` completion fence for explicitly opted-in memory backends.
     Mfence,
+    /// Local-only legacy `0F 10/11 /r` MOVUPS XMM-to-XMM register form.
+    MovupsRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `0F 57 /r` register form, bitwise XOR of raw XMM bits.
+    XorpsRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `66 0F EF /r` register form, raw 128-bit integer XOR.
+    PxorRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PADDB with byte-wise wrapping XMM addition.
+    PaddbRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PADDW with word-wise wrapping XMM addition.
+    PaddwRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PADDD with dword-wise wrapping XMM addition.
+    PadddRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PSUBD with dword-wise wrapping XMM subtraction.
+    PsubdRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PSUBW with word-wise wrapping XMM subtraction.
+    PsubwRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PADDUSW with unsigned word saturation.
+    PadduswRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PSUBUSW with unsigned word saturation to zero.
+    PsubuswRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PSUBB with byte-wise wrapping XMM subtraction.
+    PsubbRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PADDUSB with unsigned byte-wise saturation.
+    PaddusbRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PADDSB with signed byte saturation.
+    PaddsbRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PSUBSB with signed byte saturation.
+    PsubsbRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PADDSW with signed word saturation.
+    PaddswRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PSUBSW with signed word saturation.
+    PsubswRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only mandatory-66 PSUBUSB with unsigned byte-wise saturation.
+    PsubusbRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `0F 54 /r` register form, bitwise AND of raw XMM bits.
+    AndpsRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `0F 56 /r` register form, bitwise OR of raw XMM bits.
+    OrpsRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `NP 0F 55 /r` register form, raw `(~DEST) & SRC`.
+    AndnpsRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `F3 0F 10 /r` XMM-register form; copies scalar low 32 bits.
+    MovssRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `F2 0F 10 /r` XMM-register form; copies scalar low 64 bits.
+    MovsdRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `F2 0F 11 /r` XMM-register form; copies scalar low 64 bits.
+    MovsdStoreRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy F2 MOVSD load from the bounded `[RAX]` m64 form.
+    MovsdLoadMemory {
+        destination: u8,
+        source: MemoryOperand,
+    },
+    /// Local-only legacy F2 MOVSD store to the bounded `[RAX]` m64 form.
+    MovsdStoreMemory {
+        destination: MemoryOperand,
+        source: u8,
+    },
+    /// Local-only legacy F3 MOVSS load from the bounded `[RAX]` m32 form.
+    MovssLoadMemory {
+        destination: u8,
+        source: MemoryOperand,
+    },
+    /// Local-only legacy F3 MOVSS store to the bounded `[RAX]` m32 form.
+    MovssStoreMemory {
+        destination: MemoryOperand,
+        source: u8,
+    },
+    /// Local-only legacy memory MOVUPS using the shared ModR/M base+displacement operand.
+    MovupsLoadMemory {
+        destination: u8,
+        source: MemoryOperand,
+    },
+    MovupsStoreMemory {
+        destination: MemoryOperand,
+        source: u8,
+    },
     /// Bare `DB E3` FNINIT in the local profile with an existing x87 state.
     Fninit,
     /// Bare `DB E2` FNCLEX in the local profile with an existing x87 state.
@@ -1249,7 +1410,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && (direct_arithmetic(opcode.byte).is_some() || direct_logic(opcode.byte).is_some()))
             || matches!((opcode.map, opcode.byte),
             (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf6 | 0xf7 | 0xfc | 0xfd)
-            | (OpcodeMap::Escape0f, 0x00 | 0x40..=0x4f | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf));
+            | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x11 | 0x40..=0x4f | 0x54..=0x57 | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf | 0xd8 | 0xd9 | 0xdc | 0xdd | 0xe8 | 0xe9 | 0xec | 0xed | 0xef | 0xf8 | 0xf9 | 0xfa | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
                 opcode,
@@ -1406,6 +1567,307 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     prefixes.rex.is_none_or(|rex| rex & 8 != 0)
                 }
             };
+        // This profile deliberately accepts only bare MOVUPS or one effective
+        // REX immediately before 0F 10/11. W/X are excluded from this local form.
+        let movups_register = opcode.map == OpcodeMap::Escape0f
+            && matches!(opcode.byte, 0x10 | 0x11)
+            && (prefix_count == 0
+                || (prefix_count == 1
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        let movups_memory = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x10
+            && (prefix_count == 0
+                || (prefix_count == 1
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x08 == 0));
+        let movups_memory_store = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x11
+            && (prefix_count == 0
+                || (prefix_count == 1
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x08 == 0));
+        let xorps_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x57
+            && (prefix_count == 0
+                || (prefix_count == 1
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PXOR's 66 is mandatory (unprefixed 0F EF is MMX). Allow only the
+        // mandatory prefix and at most one effective REX.R/B byte.
+        let pxor_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xef
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PADDB's mandatory 66 selects the XMM/SSE2 form; bare 0F FC is MMX.
+        let paddb_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xfc
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PADDW's mandatory 66 selects the XMM/SSE2 form; bare 0F FD is MMX.
+        let paddw_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xfd
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PADDD's mandatory 66 selects the XMM/SSE2 form; bare 0F FE is MMX.
+        let paddd_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xfe
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PSUBD's mandatory 66 selects the XMM/SSE2 form; bare 0F FA is MMX.
+        let psubd_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xfa
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PADDUSW's mandatory 66 selects the XMM/SSE2 form; bare 0F DD is MMX.
+        let paddusw_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xdd
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PSUBUSW's mandatory 66 selects the XMM/SSE2 form; bare 0F D9 is MMX.
+        let psubusw_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xd9
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PSUBW's mandatory 66 selects the XMM/SSE2 form; bare 0F F9 is MMX.
+        let psubw_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xf9
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PSUBB's mandatory 66 selects XMM/SSE2; bare 0F F8 is MMX.
+        let psubb_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xf8
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PADDUSB's mandatory 66 selects XMM/SSE2; bare 0F DC is MMX.
+        let paddusb_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xdc
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PADDSB's mandatory 66 selects the XMM/SSE2 form; bare 0F EC is MMX.
+        let paddsb_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xec
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PSUBSB's mandatory 66 selects the XMM/SSE2 form; bare 0F E8 is MMX.
+        let psubsb_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xe8
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PADDSW's mandatory 66 selects the XMM/SSE2 form; bare 0F ED is MMX.
+        let paddsw_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xed
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PSUBSW's mandatory 66 selects the XMM/SSE2 form; bare 0F E9 is MMX.
+        let psubsw_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xe9
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // PSUBUSB's mandatory 66 selects the XMM/SSE2 form; bare 0F D8 is MMX.
+        let psubusb_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xd8
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        let andps_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x54
+            && (prefix_count == 0
+                || (prefix_count == 1
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        let orps_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x56
+            && (prefix_count == 0
+                || (prefix_count == 1
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        let andnps_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x55
+            && (prefix_count == 0
+                || (prefix_count == 1
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        let movss_register = opcode.map == OpcodeMap::Escape0f
+            && matches!(opcode.byte, 0x10 | 0x11)
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == 0xf3
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0);
+        let movsd_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x10
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == 0xf2
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0);
+        let movsd_store_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x11
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == 0xf2
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0);
+        let movsd_memory_load = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x10
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == 0xf2
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0b == 0);
+        let movsd_memory_store = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x11
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == 0xf2
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0b == 0);
+        let movss_memory_load = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x10
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == 0xf3
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0b == 0);
+        let movss_memory_store = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x11
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == 0xf3
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0b == 0);
         if !known
             || (prefixes.group1.is_some()
                 && !rep_stosb
@@ -1418,6 +1880,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !repne_cmpsb_addr32
                 && !repne_cmps_wdq_addr32
                 && !rep_cmps
+                && !movss_register
+                && !movsd_register
+                && !movsd_store_register
+                && !movsd_memory_load
+                && !movsd_memory_store
+                && !movss_memory_load
+                && !movss_memory_store
                 && !locked_qword_memory_xadd_candidate)
         {
             return Err(self.unsupported(opcode));
@@ -1425,6 +1894,386 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let mut size = prefixes.operand_size();
         let rex = prefixes.rex.unwrap_or(0);
         let operation = match (opcode.map, opcode.byte) {
+            (OpcodeMap::Escape0f, 0x10) if movsd_register || movsd_memory_load => {
+                let modrm = self.byte()?;
+                if modrm >> 6 == 3 && movsd_register {
+                    Operation::MovsdRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else if modrm >> 6 == 0 && modrm & 7 == 0 && movsd_memory_load {
+                    let operand = self.rm_operand(modrm, prefixes, OperandSize::Qword)?;
+                    let Operand::Memory(source) = operand else {
+                        return Err(self.unsupported(opcode));
+                    };
+                    Operation::MovsdLoadMemory {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source,
+                    }
+                } else {
+                    return Err(self.unsupported(opcode));
+                }
+            }
+            (OpcodeMap::Escape0f, 0x11) if movsd_store_register || movsd_memory_store => {
+                let modrm = self.byte()?;
+                if modrm >> 6 == 3 && movsd_store_register {
+                    Operation::MovsdStoreRegister {
+                        destination: (modrm & 7) | ((rex & 1) << 3),
+                        source: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    }
+                } else if modrm >> 6 == 0 && modrm & 7 == 0 && movsd_memory_store {
+                    let operand = self.rm_operand(modrm, prefixes, OperandSize::Qword)?;
+                    let Operand::Memory(destination) = operand else {
+                        return Err(self.unsupported(opcode));
+                    };
+                    Operation::MovsdStoreMemory {
+                        destination,
+                        source: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    }
+                } else {
+                    return Err(self.unsupported(opcode));
+                }
+            }
+            (OpcodeMap::Escape0f, 0x10) if movss_register || movss_memory_load => {
+                let modrm = self.byte()?;
+                if modrm >> 6 == 3 && movss_register {
+                    Operation::MovssRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else if modrm >> 6 == 0 && modrm & 7 == 0 && movss_memory_load {
+                    let operand = self.rm_operand(modrm, prefixes, OperandSize::Dword)?;
+                    let Operand::Memory(source) = operand else {
+                        return Err(self.unsupported(opcode));
+                    };
+                    Operation::MovssLoadMemory {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source,
+                    }
+                } else {
+                    return Err(self.unsupported(opcode));
+                }
+            }
+            (OpcodeMap::Escape0f, 0x11) if movss_register || movss_memory_store => {
+                let modrm = self.byte()?;
+                if modrm >> 6 == 3 && movss_register {
+                    Operation::MovssRegister {
+                        destination: (modrm & 7) | ((rex & 1) << 3),
+                        source: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    }
+                } else if modrm >> 6 == 0 && modrm & 7 == 0 && movss_memory_store {
+                    let operand = self.rm_operand(modrm, prefixes, OperandSize::Dword)?;
+                    let Operand::Memory(destination) = operand else {
+                        return Err(self.unsupported(opcode));
+                    };
+                    Operation::MovssStoreMemory {
+                        destination,
+                        source: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    }
+                } else {
+                    return Err(self.unsupported(opcode));
+                }
+            }
+            (OpcodeMap::Escape0f, 0x54) => {
+                if !andps_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::AndpsRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x56) => {
+                if !orps_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::OrpsRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x55) => {
+                if !andnps_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::AndnpsRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x57) => {
+                if !xorps_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::XorpsRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xef) => {
+                if !pxor_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PxorRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xfc) => {
+                if !paddb_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PaddbRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xfd) => {
+                if !paddw_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PaddwRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xfe) => {
+                if !paddd_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PadddRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xfa) => {
+                if !psubd_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PsubdRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xdd) => {
+                if !paddusw_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PadduswRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xd9) => {
+                if !psubusw_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PsubuswRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xf9) => {
+                if !psubw_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PsubwRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xf8) => {
+                if !psubb_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PsubbRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xdc) => {
+                if !paddusb_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PaddusbRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xec) => {
+                if !paddsb_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PaddsbRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xe8) => {
+                if !psubsb_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PsubsbRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xed) => {
+                if !paddsw_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PaddswRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xe9) => {
+                if !psubsw_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PsubswRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xd8) => {
+                if !psubusb_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::PsubusbRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x10 | 0x11) => {
+                if !movups_register && !movups_memory && !movups_memory_store {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if (modrm >> 6 == 3 && !movups_register)
+                    || (modrm >> 6 != 3 && !movups_memory && !movups_memory_store)
+                {
+                    return Err(self.unsupported(opcode));
+                }
+                let reg = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+                let rm = (modrm & 7) | ((rex & 1) << 3);
+                if modrm >> 6 != 3 && (movups_memory || movups_memory_store) {
+                    // Reuse the shared ModR/M decoder for disp8/disp32, extended
+                    // base registers and the bounded RIP-relative form.
+                    let operand = self.rm_operand(modrm, prefixes, OperandSize::Qword)?;
+                    let Operand::Memory(memory) = operand else {
+                        return Err(self.unsupported(opcode));
+                    };
+                    if (modrm & 7 != 4 && rex & 2 != 0)
+                        // In 64-bit mode mod=00/rm=101 stays RIP-relative when
+                        // REX.B=1. This local profile bounds its REX.B allowlist
+                        // to actual GPR bases, so reject rather than alias R13.
+                        || (matches!(memory.base, AddressBase::NextRip) && rex & 1 != 0)
+                        || prefixes.address_override
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                    if opcode.byte == 0x10 {
+                        Operation::MovupsLoadMemory {
+                            destination: reg,
+                            source: memory,
+                        }
+                    } else {
+                        Operation::MovupsStoreMemory {
+                            destination: memory,
+                            source: reg,
+                        }
+                    }
+                } else if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                } else if opcode.byte == 0x10 {
+                    Operation::MovupsRegister {
+                        destination: reg,
+                        source: rm,
+                    }
+                } else {
+                    Operation::MovupsRegister {
+                        destination: rm,
+                        source: reg,
+                    }
+                }
+            }
             (OpcodeMap::Primary, 0xdb) => {
                 if prefixes != Prefixes::default() {
                     return Err(self.unsupported(opcode));
@@ -2842,6 +3691,1662 @@ mod tests {
 
         fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
             panic!("decoder performed a memory fence")
+        }
+    }
+
+    #[test]
+    fn xorps_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut memory = Memory::new(&[rex, 0x0f, 0x57, modrm]);
+                let decoded = memory.decode().unwrap_or_else(|error| {
+                    panic!("dest={destination} src={source} rex={rex:02x}: {error:?}")
+                });
+                assert_eq!(
+                    decoded.operation,
+                    Operation::XorpsRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, 4);
+                if rex == 0x40 {
+                    let mut bare = Memory::new(&[0x0f, 0x57, modrm]);
+                    assert_eq!(bare.decode().unwrap().operation, decoded.operation);
+                }
+            }
+        }
+        for bytes in [
+            &[0x66, 0x0f, 0x57, 0xc1][..],
+            &[0xf2, 0x0f, 0x57, 0xc1][..],
+            &[0xf3, 0x0f, 0x57, 0xc1][..],
+            &[0x67, 0x0f, 0x57, 0xc1][..],
+            &[0xf0, 0x0f, 0x57, 0xc1][..],
+            &[0x48, 0x0f, 0x57, 0xc1][..],
+            &[0x42, 0x0f, 0x57, 0xc1][..],
+            &[0x40, 0x41, 0x0f, 0x57, 0xc1][..],
+            &[0x0f, 0x57, 0x01][..],
+            &[0x0f, 0x57][..],
+            &[0x0f][..],
+            &[0xc5, 0xf8, 0x57, 0xc1][..],
+            &[0xc4, 0xe1, 0x78, 0x57, 0xc1][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x57, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn pxor_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut memory = Memory::new(&[0x66, rex, 0x0f, 0xef, modrm]);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PxorRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, 5);
+                if rex == 0x40 {
+                    let mut bare = Memory::new(&[0x66, 0x0f, 0xef, modrm]);
+                    assert_eq!(bare.decode().unwrap().operation, decoded.operation);
+                }
+            }
+        }
+        for bytes in [
+            &[0x0f, 0xef, 0xc1][..], // MMX form is not admitted.
+            &[0xf2, 0x66, 0x0f, 0xef, 0xc1][..],
+            &[0xf3, 0x66, 0x0f, 0xef, 0xc1][..],
+            &[0x67, 0x66, 0x0f, 0xef, 0xc1][..],
+            &[0xf0, 0x66, 0x0f, 0xef, 0xc1][..],
+            &[0x66, 0x48, 0x0f, 0xef, 0xc1][..],
+            &[0x66, 0x42, 0x0f, 0xef, 0xc1][..],
+            &[0x66, 0x40, 0x41, 0x0f, 0xef, 0xc1][..],
+            &[0x66, 0x0f, 0xef, 0x01][..],
+            &[0x66, 0x0f, 0xef][..],
+            &[0x66, 0x0f][..],
+            &[0xc5, 0xf8, 0xef, 0xc1][..],
+            &[0xc4, 0xe1, 0x78, 0xef, 0xc1][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0xef, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paddb_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut memory = Memory::new(&[0x66, rex, 0x0f, 0xfc, modrm]);
+                let decoded = memory.decode().unwrap_or_else(|error| {
+                    panic!("dest={destination} src={source} rex={rex:02x}: {error:?}")
+                });
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PaddbRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, 5);
+            }
+        }
+        for bytes in [
+            &[0x0f, 0xfc, 0xc1][..], // MMX form is not admitted.
+            &[0x66, 0xf2, 0x0f, 0xfc, 0xc1][..],
+            &[0x66, 0xf3, 0x0f, 0xfc, 0xc1][..],
+            &[0x66, 0x67, 0x0f, 0xfc, 0xc1][..],
+            &[0x66, 0xf0, 0x0f, 0xfc, 0xc1][..],
+            &[0x66, 0x48, 0x0f, 0xfc, 0xc1][..],
+            &[0x66, 0x42, 0x0f, 0xfc, 0xc1][..],
+            &[0x66, 0x40, 0x41, 0x0f, 0xfc, 0xc1][..],
+            &[0x66, 0x0f, 0xfc, 0x01][..], // memory form
+            &[0x66, 0x0f, 0xfc][..],
+            &[0x66, 0x0f][..],
+            &[0xc5, 0xf9, 0xfc, 0xc1][..],
+            &[0xc4, 0xe1, 0x79, 0xfc, 0xc1][..],
+            &[0x62, 0xf1, 0x7d, 0x08, 0xfc, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paddw_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut bytes = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    bytes.push(rex);
+                }
+                bytes.extend([0x0f, 0xfd, modrm]);
+                let mut memory = Memory::new(&bytes);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PaddwRegister {
+                        destination,
+                        source
+                    }
+                );
+                for invalid in [
+                    vec![0x0f, 0xfd, 0xc1],
+                    vec![0xf2, 0x66, 0x0f, 0xfd, 0xc1],
+                    vec![0x66, 0x48, 0x0f, 0xfd, 0xc1],
+                    vec![0x66, 0x42, 0x0f, 0xfd, 0xc1],
+                    vec![0x66, 0x0f, 0xfd, 0x01],
+                    vec![0x66, 0x0f, 0xfd],
+                    vec![0xc5, 0xf9, 0xfd, 0xc1],
+                    vec![0xc4, 0xe1, 0x79, 0xfd, 0xc1],
+                    vec![0x62, 0xf1, 0x7d, 0x08, 0xfd, 0xc1],
+                ] {
+                    let mut rejected = Memory::new(&invalid);
+                    assert!(rejected.decode().is_err(), "{invalid:02x?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paddd_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut bytes = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    bytes.push(rex);
+                }
+                bytes.extend([0x0f, 0xfe, modrm]);
+                let mut memory = Memory::new(&bytes);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PadddRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, bytes.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0x0f, 0xfe, 0xc1][..],
+            &[0xf2, 0x66, 0x0f, 0xfe, 0xc1][..],
+            &[0xf3, 0x66, 0x0f, 0xfe, 0xc1][..],
+            &[0x67, 0x66, 0x0f, 0xfe, 0xc1][..],
+            &[0xf0, 0x66, 0x0f, 0xfe, 0xc1][..],
+            &[0x66, 0x48, 0x0f, 0xfe, 0xc1][..],
+            &[0x66, 0x42, 0x0f, 0xfe, 0xc1][..],
+            &[0x66, 0x40, 0x41, 0x0f, 0xfe, 0xc1][..],
+            &[0x66, 0x0f, 0xfe, 0x01][..],
+            &[0x66, 0x0f, 0xfe][..],
+            &[0x66, 0x0f][..],
+            &[0xc5, 0xf9, 0xfe, 0xc1][..],
+            &[0xc4, 0xe1, 0x79, 0xfe, 0xc1][..],
+            &[0x62, 0xf1, 0x7d, 0x08, 0xfe, 0xc1][..],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn psubd_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut bytes = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    bytes.push(rex);
+                }
+                bytes.extend([0x0f, 0xfa, modrm]);
+                let mut memory = Memory::new(&bytes);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PsubdRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, bytes.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0x0f, 0xfa, 0xc1][..],
+            &[0xf2, 0x66, 0x0f, 0xfa, 0xc1],
+            &[0xf3, 0x66, 0x0f, 0xfa, 0xc1],
+            &[0x67, 0x66, 0x0f, 0xfa, 0xc1],
+            &[0xf0, 0x66, 0x0f, 0xfa, 0xc1],
+            &[0x66, 0x48, 0x0f, 0xfa, 0xc1],
+            &[0x66, 0x42, 0x0f, 0xfa, 0xc1],
+            &[0x66, 0x40, 0x41, 0x0f, 0xfa, 0xc1],
+            &[0x66, 0x0f, 0xfa, 0x01],
+            &[0x66, 0x0f, 0xfa],
+            &[0x66, 0x0f],
+            &[0xc5, 0xf9, 0xfa, 0xc1],
+            &[0xc4, 0xe1, 0x79, 0xfa, 0xc1],
+            &[0x62, 0xf1, 0x7d, 0x08, 0xfa, 0xc1],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn psubw_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut bytes = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    bytes.push(rex);
+                }
+                bytes.extend([0x0f, 0xf9, modrm]);
+                let mut memory = Memory::new(&bytes);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PsubwRegister {
+                        destination,
+                        source
+                    }
+                );
+                for invalid in [
+                    vec![0x0f, 0xf9, 0xc1],
+                    vec![0xf2, 0x66, 0x0f, 0xf9, 0xc1],
+                    vec![0x66, 0x48, 0x0f, 0xf9, 0xc1],
+                    vec![0x66, 0x42, 0x0f, 0xf9, 0xc1],
+                    vec![0x66, 0x0f, 0xf9, 0x01],
+                    vec![0x66, 0x0f, 0xf9],
+                    vec![0xc5, 0xf9, 0xf9, 0xc1],
+                    vec![0xc4, 0xe1, 0x79, 0xf9, 0xc1],
+                    vec![0x62, 0xf1, 0x7d, 0x08, 0xf9, 0xc1],
+                ] {
+                    let mut rejected = Memory::new(&invalid);
+                    assert!(rejected.decode().is_err(), "{invalid:02x?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paddusw_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut bytes = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    bytes.push(rex);
+                }
+                bytes.extend([0x0f, 0xdd, modrm]);
+                let mut memory = Memory::new(&bytes);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PadduswRegister {
+                        destination,
+                        source
+                    }
+                );
+                for invalid in [
+                    vec![0x0f, 0xdd, 0xc1],
+                    vec![0xf2, 0x66, 0x0f, 0xdd, 0xc1],
+                    vec![0x66, 0x48, 0x0f, 0xdd, 0xc1],
+                    vec![0x66, 0x42, 0x0f, 0xdd, 0xc1],
+                    vec![0x66, 0x0f, 0xdd, 0x01],
+                    vec![0x66, 0x0f, 0xdd],
+                    vec![0xc5, 0xf9, 0xdd, 0xc1],
+                    vec![0xc4, 0xe1, 0x79, 0xdd, 0xc1],
+                    vec![0x62, 0xf1, 0x7d, 0x08, 0xdd, 0xc1],
+                ] {
+                    let mut rejected = Memory::new(&invalid);
+                    assert!(rejected.decode().is_err(), "{invalid:02x?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn psubusw_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut bytes = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    bytes.push(rex);
+                }
+                bytes.extend([0x0f, 0xd9, modrm]);
+                let mut memory = Memory::new(&bytes);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PsubuswRegister {
+                        destination,
+                        source
+                    }
+                );
+                for invalid in [
+                    vec![0x0f, 0xd9, 0xc1],
+                    vec![0xf2, 0x66, 0x0f, 0xd9, 0xc1],
+                    vec![0x66, 0x48, 0x0f, 0xd9, 0xc1],
+                    vec![0x66, 0x42, 0x0f, 0xd9, 0xc1],
+                    vec![0x66, 0x0f, 0xd9, 0x01],
+                    vec![0x66, 0x0f, 0xd9],
+                    vec![0xc5, 0xf9, 0xd9, 0xc1],
+                    vec![0xc4, 0xe1, 0x79, 0xd9, 0xc1],
+                    vec![0x62, 0xf1, 0x7d, 0x08, 0xd9, 0xc1],
+                ] {
+                    let mut rejected = Memory::new(&invalid);
+                    assert!(rejected.decode().is_err(), "{invalid:02x?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn psubb_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let code = if destination >= 8 || source >= 8 {
+                    vec![0x66, rex, 0x0f, 0xf8, modrm]
+                } else {
+                    vec![0x66, 0x0f, 0xf8, modrm]
+                };
+                let mut memory = Memory::new(&code);
+                let decoded = memory.decode().unwrap_or_else(|error| {
+                    panic!("dest={destination} src={source} rex={rex:02x}: {error:?}")
+                });
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PsubbRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, code.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0x0f, 0xf8, 0xc1][..], // MMX form is not admitted.
+            &[0x66, 0xf2, 0x0f, 0xf8, 0xc1][..],
+            &[0x66, 0xf3, 0x0f, 0xf8, 0xc1][..],
+            &[0x66, 0x67, 0x0f, 0xf8, 0xc1][..],
+            &[0x66, 0xf0, 0x0f, 0xf8, 0xc1][..],
+            &[0x66, 0x48, 0x0f, 0xf8, 0xc1][..],
+            &[0x66, 0x42, 0x0f, 0xf8, 0xc1][..],
+            &[0x66, 0x40, 0x41, 0x0f, 0xf8, 0xc1][..],
+            &[0x66, 0x0f, 0xf8, 0x01][..], // memory form
+            &[0x66, 0x0f, 0xf8][..],
+            &[0x66, 0x0f][..],
+            &[0xc5, 0xf9, 0xf8, 0xc1][..],
+            &[0xc4, 0xe1, 0x79, 0xf8, 0xc1][..],
+            &[0x62, 0xf1, 0x7d, 0x08, 0xf8, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paddusb_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let code = if destination >= 8 || source >= 8 {
+                    vec![0x66, rex, 0x0f, 0xdc, modrm]
+                } else {
+                    vec![0x66, 0x0f, 0xdc, modrm]
+                };
+                let mut memory = Memory::new(&code);
+                let decoded = memory.decode().unwrap_or_else(|error| {
+                    panic!("dest={destination} src={source} rex={rex:02x}: {error:?}")
+                });
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PaddusbRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, code.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0x0f, 0xdc, 0xc1][..], // MMX form is not admitted.
+            &[0x66, 0xf2, 0x0f, 0xdc, 0xc1][..],
+            &[0x66, 0xf3, 0x0f, 0xdc, 0xc1][..],
+            &[0x66, 0x67, 0x0f, 0xdc, 0xc1][..],
+            &[0x66, 0xf0, 0x0f, 0xdc, 0xc1][..],
+            &[0x66, 0x48, 0x0f, 0xdc, 0xc1][..],
+            &[0x66, 0x42, 0x0f, 0xdc, 0xc1][..],
+            &[0x66, 0x40, 0x41, 0x0f, 0xdc, 0xc1][..],
+            &[0x66, 0x0f, 0xdc, 0x01][..], // memory form
+            &[0x66, 0x0f, 0xdc][..],
+            &[0x66, 0x0f][..],
+            &[0xc5, 0xf9, 0xdc, 0xc1][..],
+            &[0xc4, 0xe1, 0x79, 0xdc, 0xc1][..],
+            &[0x62, 0xf1, 0x7d, 0x08, 0xdc, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paddsb_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let code = if destination >= 8 || source >= 8 {
+                    vec![0x66, rex, 0x0f, 0xec, modrm]
+                } else {
+                    vec![0x66, 0x0f, 0xec, modrm]
+                };
+                let mut memory = Memory::new(&code);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PaddsbRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, code.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0x0f, 0xec, 0xc1][..],
+            &[0x66, 0xf2, 0x0f, 0xec, 0xc1][..],
+            &[0x66, 0xf3, 0x0f, 0xec, 0xc1][..],
+            &[0x66, 0x67, 0x0f, 0xec, 0xc1][..],
+            &[0x66, 0xf0, 0x0f, 0xec, 0xc1][..],
+            &[0x66, 0x48, 0x0f, 0xec, 0xc1][..],
+            &[0x66, 0x42, 0x0f, 0xec, 0xc1][..],
+            &[0x66, 0x40, 0x41, 0x0f, 0xec, 0xc1][..],
+            &[0x66, 0x0f, 0xec, 0x01][..],
+            &[0x66, 0x0f, 0xec][..],
+            &[0x66, 0x0f][..],
+            &[0xc5, 0xf9, 0xec, 0xc1][..],
+            &[0xc4, 0xe1, 0x79, 0xec, 0xc1][..],
+            &[0x62, 0xf1, 0x7d, 0x08, 0xec, 0xc1][..],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn psubsb_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let code = if destination >= 8 || source >= 8 {
+                    vec![0x66, rex, 0x0f, 0xe8, modrm]
+                } else {
+                    vec![0x66, 0x0f, 0xe8, modrm]
+                };
+                let mut memory = Memory::new(&code);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PsubsbRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, code.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0x0f, 0xe8, 0xc1][..],
+            &[0x66, 0xf2, 0x0f, 0xe8, 0xc1][..],
+            &[0x66, 0xf3, 0x0f, 0xe8, 0xc1][..],
+            &[0x66, 0x67, 0x0f, 0xe8, 0xc1][..],
+            &[0x66, 0xf0, 0x0f, 0xe8, 0xc1][..],
+            &[0x66, 0x48, 0x0f, 0xe8, 0xc1][..],
+            &[0x66, 0x42, 0x0f, 0xe8, 0xc1][..],
+            &[0x66, 0x40, 0x41, 0x0f, 0xe8, 0xc1][..],
+            &[0x66, 0x0f, 0xe8, 0x01][..],
+            &[0x66, 0x0f, 0xe8][..],
+            &[0x66, 0x0f][..],
+            &[0xc5, 0xf9, 0xe8, 0xc1][..],
+            &[0xc4, 0xe1, 0x79, 0xe8, 0xc1][..],
+            &[0x62, 0xf1, 0x7d, 0x08, 0xe8, 0xc1][..],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn paddsw_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let code = if destination >= 8 || source >= 8 {
+                    vec![0x66, rex, 0x0f, 0xed, modrm]
+                } else {
+                    vec![0x66, 0x0f, 0xed, modrm]
+                };
+                let mut memory = Memory::new(&code);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PaddswRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, code.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0x0f, 0xed, 0xc1][..],
+            &[0x66, 0xf2, 0x0f, 0xed, 0xc1][..],
+            &[0x66, 0xf3, 0x0f, 0xed, 0xc1][..],
+            &[0x66, 0x67, 0x0f, 0xed, 0xc1][..],
+            &[0x66, 0xf0, 0x0f, 0xed, 0xc1][..],
+            &[0x66, 0x48, 0x0f, 0xed, 0xc1][..],
+            &[0x66, 0x42, 0x0f, 0xed, 0xc1][..],
+            &[0x66, 0x40, 0x41, 0x0f, 0xed, 0xc1][..],
+            &[0x66, 0x0f, 0xed, 0x01][..],
+            &[0x66, 0x0f, 0xed][..],
+            &[0x66, 0x0f][..],
+            &[0xc5, 0xf9, 0xed, 0xc1][..],
+            &[0xc4, 0xe1, 0x79, 0xed, 0xc1][..],
+            &[0x62, 0xf1, 0x7d, 0x08, 0xed, 0xc1][..],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn psubsw_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let code = if destination >= 8 || source >= 8 {
+                    vec![0x66, rex, 0x0f, 0xe9, modrm]
+                } else {
+                    vec![0x66, 0x0f, 0xe9, modrm]
+                };
+                let mut memory = Memory::new(&code);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PsubswRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, code.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0x0f, 0xe9, 0xc1][..],
+            &[0x66, 0xf2, 0x0f, 0xe9, 0xc1][..],
+            &[0x66, 0xf3, 0x0f, 0xe9, 0xc1][..],
+            &[0x66, 0x67, 0x0f, 0xe9, 0xc1][..],
+            &[0x66, 0xf0, 0x0f, 0xe9, 0xc1][..],
+            &[0x66, 0x48, 0x0f, 0xe9, 0xc1][..],
+            &[0x66, 0x42, 0x0f, 0xe9, 0xc1][..],
+            &[0x66, 0x40, 0x41, 0x0f, 0xe9, 0xc1][..],
+            &[0x66, 0x0f, 0xe9, 0x01][..],
+            &[0x66, 0x0f, 0xe9][..],
+            &[0x66, 0x0f][..],
+            &[0xc5, 0xf9, 0xe9, 0xc1][..],
+            &[0xc4, 0xe1, 0x79, 0xe9, 0xc1][..],
+            &[0x62, 0xf1, 0x7d, 0x08, 0xe9, 0xc1][..],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn andps_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut memory = Memory::new(&[rex, 0x0f, 0x54, modrm]);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::AndpsRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, 4);
+                if rex == 0x40 {
+                    let mut bare = Memory::new(&[0x0f, 0x54, modrm]);
+                    assert_eq!(bare.decode().unwrap().operation, decoded.operation);
+                }
+            }
+        }
+        for bytes in [
+            &[0x66, 0x0f, 0x54, 0xc1][..],
+            &[0xf2, 0x0f, 0x54, 0xc1][..],
+            &[0xf3, 0x0f, 0x54, 0xc1][..],
+            &[0x67, 0x0f, 0x54, 0xc1][..],
+            &[0xf0, 0x0f, 0x54, 0xc1][..],
+            &[0x48, 0x0f, 0x54, 0xc1][..],
+            &[0x42, 0x0f, 0x54, 0xc1][..],
+            &[0x40, 0x41, 0x0f, 0x54, 0xc1][..],
+            &[0x0f, 0x54, 0x01][..],
+            &[0x0f, 0x54][..],
+            &[0x0f][..],
+            &[0xc5, 0xf8, 0x54, 0xc1][..],
+            &[0xc4, 0xe1, 0x78, 0x54, 0xc1][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x54, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn psubusb_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let code = if destination >= 8 || source >= 8 {
+                    vec![0x66, rex, 0x0f, 0xd8, modrm]
+                } else {
+                    vec![0x66, 0x0f, 0xd8, modrm]
+                };
+                let mut memory = Memory::new(&code);
+                let decoded = memory.decode().unwrap_or_else(|error| {
+                    panic!("dest={destination} src={source} rex={rex:02x}: {error:?}")
+                });
+                assert_eq!(
+                    decoded.operation,
+                    Operation::PsubusbRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, code.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0x0f, 0xd8, 0xc1][..], // MMX form is not admitted.
+            &[0x66, 0xf2, 0x0f, 0xd8, 0xc1][..],
+            &[0x66, 0xf3, 0x0f, 0xd8, 0xc1][..],
+            &[0x66, 0x67, 0x0f, 0xd8, 0xc1][..],
+            &[0x66, 0xf0, 0x0f, 0xd8, 0xc1][..],
+            &[0x66, 0x48, 0x0f, 0xd8, 0xc1][..],
+            &[0x66, 0x42, 0x0f, 0xd8, 0xc1][..],
+            &[0x66, 0x40, 0x41, 0x0f, 0xd8, 0xc1][..],
+            &[0x66, 0x0f, 0xd8, 0x01][..], // memory form
+            &[0x66, 0x0f, 0xd8][..],
+            &[0x66, 0x0f][..],
+            &[0xc5, 0xf9, 0xd8, 0xc1][..],
+            &[0xc4, 0xe1, 0x79, 0xd8, 0xc1][..],
+            &[0x62, 0xf1, 0x7d, 0x08, 0xd8, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn orps_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut memory = Memory::new(&[rex, 0x0f, 0x56, modrm]);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::OrpsRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, 4);
+                if rex == 0x40 {
+                    let mut bare = Memory::new(&[0x0f, 0x56, modrm]);
+                    assert_eq!(bare.decode().unwrap().operation, decoded.operation);
+                }
+            }
+        }
+        for bytes in [
+            &[0x66, 0x0f, 0x56, 0xc1][..],
+            &[0xf2, 0x0f, 0x56, 0xc1][..],
+            &[0xf3, 0x0f, 0x56, 0xc1][..],
+            &[0x67, 0x0f, 0x56, 0xc1][..],
+            &[0xf0, 0x0f, 0x56, 0xc1][..],
+            &[0x48, 0x0f, 0x56, 0xc1][..],
+            &[0x42, 0x0f, 0x56, 0xc1][..],
+            &[0x40, 0x41, 0x0f, 0x56, 0xc1][..],
+            &[0x0f, 0x56, 0x01][..],
+            &[0x0f, 0x56][..],
+            &[0x0f][..],
+            &[0xc5, 0xf8, 0x56, 0xc1][..],
+            &[0xc4, 0xe1, 0x78, 0x56, 0xc1][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x56, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn andnps_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut memory = Memory::new(&[rex, 0x0f, 0x55, modrm]);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::AndnpsRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, 4);
+                if rex == 0x40 {
+                    let mut bare = Memory::new(&[0x0f, 0x55, modrm]);
+                    assert_eq!(bare.decode().unwrap().operation, decoded.operation);
+                }
+            }
+        }
+        for bytes in [
+            &[0x66, 0x0f, 0x55, 0xc1][..],
+            &[0xf2, 0x0f, 0x55, 0xc1][..],
+            &[0xf3, 0x0f, 0x55, 0xc1][..],
+            &[0x67, 0x0f, 0x55, 0xc1][..],
+            &[0xf0, 0x0f, 0x55, 0xc1][..],
+            &[0x48, 0x0f, 0x55, 0xc1][..],
+            &[0x42, 0x0f, 0x55, 0xc1][..],
+            &[0x40, 0x41, 0x0f, 0x55, 0xc1][..],
+            &[0x0f, 0x55, 0x01][..],
+            &[0x0f, 0x55][..],
+            &[0x0f][..],
+            &[0xc5, 0xf8, 0x55, 0xc1][..],
+            &[0xc4, 0xe1, 0x78, 0x55, 0xc1][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x55, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn movsd_register_decodes_all_xmm_pairs_and_requires_exact_f2_prefix_order() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut memory = Memory::new(&[0xf2, rex, 0x0f, 0x10, modrm]);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::MovsdRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, 5);
+                if rex == 0x40 {
+                    let mut bare_rex = Memory::new(&[0xf2, 0x40, 0x0f, 0x10, modrm]);
+                    assert_eq!(bare_rex.decode().unwrap().operation, decoded.operation);
+                }
+                if destination < 8 && source < 8 {
+                    let mut bare = Memory::new(&[0xf2, 0x0f, 0x10, modrm]);
+                    assert_eq!(bare.decode().unwrap().operation, decoded.operation);
+                }
+            }
+        }
+        for bytes in [
+            &[0xf2, 0x0f, 0x10, 0x01][..],             // memory form
+            &[0x66, 0x0f, 0x10, 0xc1][..],             // MOVUPD
+            &[0xf2, 0x48, 0x0f, 0x10, 0xc1][..],       // REX.W
+            &[0xf2, 0x42, 0x0f, 0x10, 0xc1][..],       // REX.X
+            &[0xf2, 0x40, 0x41, 0x0f, 0x10, 0xc1][..], // duplicate REX
+            &[0x40, 0xf2, 0x0f, 0x10, 0xc1][..],       // REX before F2
+            &[0xf2, 0x0f, 0x10][..],
+            &[0xf2, 0x45, 0x0f, 0x10][..], // truncated ModR/M
+            &[0xf2, 0x0f][..],
+            &[0xf2][..],
+            &[0xc5, 0xf8, 0x10, 0xc1][..],             // VEX
+            &[0xc4, 0xe1, 0x7b, 0x10, 0xc1][..],       // VEX
+            &[0x62, 0xf1, 0x7f, 0x08, 0x10, 0xc1][..], // EVEX
+            &[0xf2, 0xa5][..], // string MOVSD is a distinct primary-map instruction
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+        let mut movss = Memory::new(&[0xf3, 0x0f, 0x10, 0xc1]);
+        assert_eq!(
+            movss.decode().unwrap().operation,
+            Operation::MovssRegister {
+                destination: 0,
+                source: 1,
+            }
+        );
+        let mut movups = Memory::new(&[0x0f, 0x10, 0xc1]);
+        assert_eq!(
+            movups.decode().unwrap().operation,
+            Operation::MovupsRegister {
+                destination: 0,
+                source: 1,
+            }
+        );
+        let mut followed_by_nop = Memory::new(&[0xf2, 0x0f, 0x10, 0xc1, 0x90]);
+        assert_eq!(followed_by_nop.decode().unwrap().length, 4);
+    }
+
+    #[test]
+    fn movss_register_decodes_all_xmm_pairs_and_requires_exact_mandatory_prefix_order() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut memory = Memory::new(&[0xf3, rex, 0x0f, 0x10, modrm]);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::MovssRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, 5);
+                if rex == 0x40 {
+                    let mut bare_rex = Memory::new(&[0xf3, 0x40, 0x0f, 0x10, modrm]);
+                    assert_eq!(bare_rex.decode().unwrap().operation, decoded.operation);
+                }
+                if destination < 8 && source < 8 {
+                    let mut bare = Memory::new(&[0xf3, 0x0f, 0x10, modrm]);
+                    assert_eq!(bare.decode().unwrap().operation, decoded.operation);
+                }
+            }
+        }
+        for bytes in [
+            &[0xf3, 0x0f, 0x10, 0x01][..], // memory operand
+            &[0x66, 0x0f, 0x10, 0xc1][..],
+            &[0x40, 0xf3, 0x0f, 0x10, 0xc1][..], // REX before mandatory prefix
+            &[0xf3, 0x48, 0x0f, 0x10, 0xc1][..],
+            &[0xf3, 0x42, 0x0f, 0x10, 0xc1][..],
+            &[0xf3, 0x40, 0x41, 0x0f, 0x10, 0xc1][..],
+            &[0xf3, 0x0f, 0x10][..],
+            &[0xf3, 0x45, 0x0f, 0x10][..], // truncated ModR/M in a five-byte form
+            &[0xf3, 0x0f][..],
+            &[0xf3][..],
+            &[0xc5, 0xf8, 0x10, 0xc1][..],
+            &[0xc4, 0xe1, 0x7a, 0x10, 0xc1][..],
+            &[0x62, 0xf1, 0x7e, 0x08, 0x10, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+        let mut no_prefix = Memory::new(&[0x0f, 0x10, 0xc1]);
+        assert_eq!(
+            no_prefix.decode().unwrap().operation,
+            Operation::MovupsRegister {
+                destination: 0,
+                source: 1
+            }
+        );
+        let mut movsd = Memory::new(&[0xf2, 0x0f, 0x10, 0xc1]);
+        assert_eq!(
+            movsd.decode().unwrap().operation,
+            Operation::MovsdRegister {
+                destination: 0,
+                source: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn movss_store_register_decodes_reverse_operands_and_rejects_other_forms() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((source >> 3) << 2) | (destination >> 3);
+                let modrm = 0xc0 | ((source & 7) << 3) | (destination & 7);
+                let mut memory = Memory::new(&[0xf3, rex, 0x0f, 0x11, modrm]);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::MovssRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, 5);
+                if rex == 0x40 {
+                    let mut bare_rex = Memory::new(&[0xf3, 0x40, 0x0f, 0x11, modrm]);
+                    assert_eq!(bare_rex.decode().unwrap().operation, decoded.operation);
+                }
+                if destination < 8 && source < 8 {
+                    let mut bare = Memory::new(&[0xf3, 0x0f, 0x11, modrm]);
+                    assert_eq!(bare.decode().unwrap().operation, decoded.operation);
+                }
+            }
+        }
+        for bytes in [
+            &[0xf3, 0x0f, 0x11, 0x01][..], // memory operand
+            &[0x66, 0x0f, 0x11, 0xc1][..],
+            &[0x67, 0xf3, 0x0f, 0x11, 0xc1][..], // address-size override
+            &[0x2e, 0xf3, 0x0f, 0x11, 0xc1][..], // segment override
+            &[0xf0, 0xf3, 0x0f, 0x11, 0xc1][..], // LOCK
+            &[0xf3, 0xf3, 0x0f, 0x11, 0xc1][..], // duplicate mandatory prefix
+            &[0x40, 0xf3, 0x0f, 0x11, 0xc1][..], // REX before F3
+            &[0xf3, 0x48, 0x0f, 0x11, 0xc1][..], // REX.W
+            &[0xf3, 0x42, 0x0f, 0x11, 0xc1][..], // REX.X
+            &[0xf3, 0x40, 0x41, 0x0f, 0x11, 0xc1][..], // duplicate REX
+            &[0xf3, 0x0f, 0x11][..],
+            &[0xf3, 0x45, 0x0f, 0x11][..],             // missing ModR/M
+            &[0xc5, 0xf8, 0x11, 0xc1][..],             // VEX
+            &[0xc4, 0xe1, 0x7a, 0x11, 0xc1][..],       // VEX
+            &[0x62, 0xf1, 0x7e, 0x08, 0x11, 0xc1][..], // EVEX
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+        let mut movsd = Memory::new(&[0xf2, 0x0f, 0x11, 0xc1]);
+        assert_eq!(
+            movsd.decode().unwrap().operation,
+            Operation::MovsdStoreRegister {
+                destination: 1,
+                source: 0
+            }
+        );
+    }
+
+    #[test]
+    fn movsd_store_register_decodes_reverse_operands_and_rejects_other_forms() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((source >> 3) << 2) | (destination >> 3);
+                let modrm = 0xc0 | ((source & 7) << 3) | (destination & 7);
+                let mut memory = Memory::new(&[0xf2, rex, 0x0f, 0x11, modrm]);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::MovsdStoreRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, 5);
+                if rex == 0x40 {
+                    let mut bare_rex = Memory::new(&[0xf2, 0x40, 0x0f, 0x11, modrm]);
+                    assert_eq!(bare_rex.decode().unwrap().operation, decoded.operation);
+                }
+                if destination < 8 && source < 8 {
+                    let mut bare = Memory::new(&[0xf2, 0x0f, 0x11, modrm]);
+                    assert_eq!(bare.decode().unwrap().operation, decoded.operation);
+                }
+            }
+        }
+        for bytes in [
+            &[0xf2, 0x0f, 0x11, 0x01][..],             // memory destination
+            &[0x66, 0x0f, 0x11, 0xc1][..],             // MOVUPD
+            &[0x67, 0xf2, 0x0f, 0x11, 0xc1][..],       // address-size override
+            &[0x2e, 0xf2, 0x0f, 0x11, 0xc1][..],       // segment override
+            &[0xf0, 0xf2, 0x0f, 0x11, 0xc1][..],       // LOCK
+            &[0xf2, 0xf2, 0x0f, 0x11, 0xc1][..],       // duplicate mandatory prefix
+            &[0x40, 0xf2, 0x0f, 0x11, 0xc1][..],       // REX before mandatory prefix
+            &[0xf2, 0x48, 0x0f, 0x11, 0xc1][..],       // REX.W
+            &[0xf2, 0x42, 0x0f, 0x11, 0xc1][..],       // REX.X
+            &[0xf2, 0x40, 0x41, 0x0f, 0x11, 0xc1][..], // duplicate REX
+            &[0xf2, 0x0f, 0x11][..],
+            &[0xf2, 0x45, 0x0f, 0x11][..], // truncated ModR/M
+            &[0xc5, 0xf8, 0x11, 0xc1][..],
+            &[0xc4, 0xe1, 0x7b, 0x11, 0xc1][..],
+            &[0x62, 0xf1, 0x7f, 0x08, 0x11, 0xc1][..],
+            &[0xf2, 0xa5][..], // string MOVSD has a distinct opcode
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+        let mut movss = Memory::new(&[0xf3, 0x0f, 0x11, 0xc1]);
+        assert_eq!(
+            movss.decode().unwrap().operation,
+            Operation::MovssRegister {
+                destination: 1,
+                source: 0
+            }
+        );
+        let mut movups = Memory::new(&[0x0f, 0x11, 0xc1]);
+        assert_eq!(
+            movups.decode().unwrap().operation,
+            Operation::MovupsRegister {
+                destination: 1,
+                source: 0
+            }
+        );
+    }
+
+    #[test]
+    fn movsd_memory_load_decodes_only_bounded_f2_rax_m64_form() {
+        for destination in 0..16u8 {
+            let mut bytes = vec![0xf2];
+            if destination >= 8 {
+                bytes.push(0x44); // REX.R extends ModR/M.reg to XMM8..XMM15.
+            }
+            bytes.extend([0x0f, 0x10, (destination & 7) << 3]);
+            let mut memory = Memory::new(&bytes);
+            let decoded = memory.decode().unwrap();
+            let Operation::MovsdLoadMemory {
+                destination: actual_destination,
+                source,
+            } = decoded.operation
+            else {
+                panic!("expected MOVSD memory load, got {:?}", decoded.operation);
+            };
+            assert_eq!(actual_destination, destination);
+            assert_eq!(source.base, AddressBase::Register(Register::Rax));
+            assert_eq!(source.size, OperandSize::Qword);
+            assert_eq!(decoded.length as usize, bytes.len());
+        }
+
+        for bytes in [
+            &[0xf2, 0x0f, 0x10, 0x01][..],             // [RCX]
+            &[0xf2, 0x0f, 0x10, 0x04][..],             // SIB
+            &[0xf2, 0x0f, 0x10, 0x40, 0x00][..],       // disp8
+            &[0xf2, 0x0f, 0x10, 0x80, 0, 0, 0, 0][..], // disp32
+            &[0xf2, 0x42, 0x0f, 0x10, 0x00][..],       // REX.X
+            &[0xf2, 0x41, 0x0f, 0x10, 0x00][..],       // REX.B
+            &[0xf2, 0x48, 0x0f, 0x10, 0x00][..],       // REX.W
+            &[0xf2, 0x40, 0x41, 0x0f, 0x10, 0x00][..], // duplicate REX
+            &[0x40, 0xf2, 0x0f, 0x10, 0x00][..],       // REX before F2
+            &[0xf2, 0xf2, 0x0f, 0x10, 0x00][..],       // duplicate mandatory prefix
+            &[0x66, 0xf2, 0x0f, 0x10, 0x00][..],
+            &[0xf3, 0x0f, 0x10, 0x00][..],
+            &[0x67, 0xf2, 0x0f, 0x10, 0x00][..],
+            &[0x64, 0xf2, 0x0f, 0x10, 0x00][..],
+            &[0xf0, 0xf2, 0x0f, 0x10, 0x00][..],
+            &[0xf2, 0x0f, 0x10][..], // truncated ModR/M
+            &[0xf2, 0x44, 0x0f, 0x10][..],
+            &[0xc5, 0xfb, 0x10, 0x00][..], // VEX
+            &[0xc4, 0xe1, 0x7b, 0x10, 0x00][..],
+            &[0x62, 0xf1, 0xff, 0x08, 0x10, 0x00][..], // EVEX
+            &[0xf2, 0xa5][..], // string MOVSD is a separate primary-map instruction
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                !matches!(
+                    memory.decode().map(|instruction| instruction.operation),
+                    Ok(Operation::MovsdLoadMemory { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn movsd_memory_store_decodes_only_bounded_f2_rax_m64_form() {
+        for source in 0..16u8 {
+            let mut bytes = vec![0xf2];
+            if source >= 8 {
+                bytes.push(0x44);
+            }
+            bytes.extend([0x0f, 0x11, (source & 7) << 3]);
+            let mut memory = Memory::new(&bytes);
+            let decoded = memory.decode().unwrap();
+            let Operation::MovsdStoreMemory {
+                destination,
+                source: actual_source,
+            } = decoded.operation
+            else {
+                panic!("expected MOVSD memory store, got {:?}", decoded.operation);
+            };
+            assert_eq!(actual_source, source);
+            assert_eq!(destination.base, AddressBase::Register(Register::Rax));
+            assert_eq!(destination.size, OperandSize::Qword);
+            assert_eq!(decoded.length as usize, bytes.len());
+        }
+        for bytes in [
+            &[0xf2, 0x0f, 0x11, 0x09][..],
+            &[0xf2, 0x0f, 0x11, 0x04][..],
+            &[0xf2, 0x0f, 0x11, 0x40, 0][..],
+            &[0xf2, 0x0f, 0x11, 0x80, 0, 0, 0, 0][..],
+            &[0xf2, 0x41, 0x0f, 0x11, 0][..],
+            &[0xf2, 0x42, 0x0f, 0x11, 0][..],
+            &[0xf2, 0x48, 0x0f, 0x11, 0][..],
+            &[0xf2, 0xf2, 0x0f, 0x11, 0][..],
+            &[0x40, 0xf2, 0x0f, 0x11, 0][..],
+            &[0x66, 0xf2, 0x0f, 0x11, 0][..],
+            &[0x67, 0xf2, 0x0f, 0x11, 0][..],
+            &[0x64, 0xf2, 0x0f, 0x11, 0][..],
+            &[0xf0, 0xf2, 0x0f, 0x11, 0][..],
+            &[0xf2, 0x0f, 0x11][..],
+            &[0xf2, 0x44, 0x0f, 0x11][..],
+            &[0xc5, 0xfb, 0x11, 0][..],
+            &[0x62, 0xf1, 0xff, 0x08, 0x11, 0][..],
+            &[0xf2, 0xa5][..],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn movss_memory_load_decodes_only_bounded_rax_m32_form() {
+        for destination in 0..16u8 {
+            let rex = 0x40 | ((destination >> 3) << 2);
+            let bytes = [0xf3, rex, 0x0f, 0x10, (destination & 7) << 3];
+            let mut memory = Memory::new(&bytes);
+            let decoded = memory.decode().unwrap();
+            let Operation::MovssLoadMemory {
+                destination: actual,
+                source,
+            } = decoded.operation
+            else {
+                panic!("unexpected operation: {:?}", decoded.operation);
+            };
+            assert_eq!(actual, destination);
+            assert_eq!(source.base, AddressBase::Register(Register::Rax));
+            assert_eq!(source.size, OperandSize::Dword);
+            assert_eq!(decoded.length, 5);
+            if destination < 8 {
+                let mut bare = Memory::new(&[0xf3, 0x0f, 0x10, (destination & 7) << 3]);
+                assert_eq!(bare.decode().unwrap().operation, decoded.operation);
+            }
+        }
+        for bytes in [
+            &[0xf3, 0x0f, 0x10][..],
+            &[0xf3, 0x45, 0x0f, 0x10][..],
+            &[0xf3, 0x0f, 0x10, 0x01][..],       // base other than RAX
+            &[0xf3, 0x0f, 0x10, 0x04, 0x00][..], // SIB
+            &[0xf3, 0x0f, 0x10, 0x40, 0x00][..], // displacement
+            &[0xf3, 0x41, 0x0f, 0x10, 0x00][..], // REX.B changes base
+            &[0xf3, 0x42, 0x0f, 0x10, 0x00][..], // REX.X
+            &[0xf2, 0x0f, 0x10, 0x01][..], // valid mandatory prefix, but unsupported [RCX] form
+            &[0x66, 0xf3, 0x0f, 0x10, 0x00][..],
+            &[0x40, 0xf3, 0x0f, 0x10, 0x00][..],
+            &[0xf3, 0x40, 0x41, 0x0f, 0x10, 0x00][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn movss_memory_store_decodes_only_bounded_rax_m32_form() {
+        for source in 0..16u8 {
+            let rex = 0x40 | ((source >> 3) << 2);
+            let modrm = (source & 7) << 3;
+            let bytes = [0xf3, rex, 0x0f, 0x11, modrm];
+            let mut memory = Memory::new(&bytes);
+            let decoded = memory.decode().unwrap();
+            let Operation::MovssStoreMemory {
+                destination,
+                source: actual,
+            } = decoded.operation
+            else {
+                panic!("unexpected operation: {:?}", decoded.operation);
+            };
+            assert_eq!(actual, source);
+            assert_eq!(destination.base, AddressBase::Register(Register::Rax));
+            assert_eq!(destination.size, OperandSize::Dword);
+            assert_eq!(decoded.length, 5);
+        }
+        for bytes in [
+            &[0xf3, 0x0f, 0x11][..],
+            &[0xf3, 0x45, 0x0f, 0x11][..],
+            &[0xf3, 0x0f, 0x11, 0x01][..],       // Other base
+            &[0xf3, 0x0f, 0x11, 0x04, 0x00][..], // SIB
+            &[0xf3, 0x0f, 0x11, 0x40, 0x00][..], // Displacement
+            &[0xf3, 0x41, 0x0f, 0x11, 0x00][..], // REX.B
+            &[0xf3, 0x42, 0x0f, 0x11, 0x00][..], // REX.X
+            &[0xf3, 0x48, 0x0f, 0x11, 0x00][..], // REX.W
+            &[0x66, 0xf3, 0x0f, 0x11, 0x00][..],
+            &[0x40, 0xf3, 0x0f, 0x11, 0x00][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn movups_register_decodes_all_xmm_register_pairs_and_rex_r_b_combinations() {
+        for opcode in [0x10, 0x11] {
+            for destination in 0..16u8 {
+                for source in 0..16u8 {
+                    let (reg, rm) = if opcode == 0x10 {
+                        (destination, source)
+                    } else {
+                        (source, destination)
+                    };
+                    let rex = 0x40 | ((reg >> 3) << 2) | (rm >> 3);
+                    let modrm = 0xc0 | ((reg & 7) << 3) | (rm & 7);
+                    let mut memory = Memory::new(&[rex, 0x0f, opcode, modrm]);
+                    let instruction = memory.decode().unwrap();
+                    assert_eq!(instruction.length, 4);
+                    assert_eq!(
+                        instruction.operation,
+                        Operation::MovupsRegister {
+                            destination,
+                            source
+                        }
+                    );
+                    if rex == 0x40 {
+                        let mut bare = Memory::new(&[0x0f, opcode, modrm]);
+                        assert_eq!(bare.decode().unwrap().operation, instruction.operation);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn movups_register_fails_closed_for_prefixes_memory_duplicate_rex_and_truncation() {
+        for opcode in [0x10, 0x11] {
+            for prefix in [0x66, 0xf2, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x67, 0xf0] {
+                let bytes = [prefix, 0x0f, opcode, 0xc1];
+                let mut memory = Memory::new(&bytes);
+                if prefix == 0xf2 && opcode == 0x10 {
+                    assert!(matches!(
+                        memory.decode().unwrap().operation,
+                        Operation::MovsdRegister { .. }
+                    ));
+                    continue;
+                }
+                if prefix == 0xf2 && opcode == 0x11 {
+                    assert!(matches!(
+                        memory.decode().unwrap().operation,
+                        Operation::MovsdStoreRegister { .. }
+                    ));
+                    continue;
+                }
+                assert!(
+                    matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                    "{bytes:02x?}"
+                );
+            }
+            for bytes in [
+                vec![0x40, 0x41, 0x0f, opcode, 0xc1],
+                vec![0x48, 0x0f, opcode, 0xc1],
+                vec![0x42, 0x0f, opcode, 0xc1],
+            ] {
+                let mut memory = Memory::new(&bytes);
+                assert!(
+                    matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                    "{bytes:02x?}"
+                );
+            }
+            for bytes in [
+                vec![0xc5, 0xf8, opcode, 0xc1],
+                vec![0xc4, 0xe1, 0x78, opcode, 0xc1],
+                vec![0x62, 0xf1, 0x7c, 0x08, opcode, 0xc1],
+            ] {
+                let mut memory = Memory::new(&bytes);
+                assert!(
+                    matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                    "{bytes:02x?}"
+                );
+            }
+        }
+
+        for bytes in [
+            &[0x0f][..],
+            &[0x0f, 0x10][..],
+            &[0x0f, 0x11][..],
+            &[0x40, 0x0f][..],
+            &[0x40, 0x0f, 0x10][..],
+            &[0x40, 0x0f, 0x11][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn movups_store_register_modrm_direction_and_rex_examples() {
+        for (bytes, destination, source) in [
+            (&[0x0f, 0x11, 0xc1][..], 1, 0),
+            (&[0x45, 0x0f, 0x11, 0xc1][..], 9, 8),
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert_eq!(
+                memory.decode().unwrap().operation,
+                Operation::MovupsRegister {
+                    destination,
+                    source
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn movups_load_rax_decodes_all_xmm_destinations_and_rejects_neighbors() {
+        for destination in 0..16u8 {
+            let rex = if destination < 8 { vec![] } else { vec![0x44] };
+            let mut bytes = rex;
+            bytes.extend([0x0f, 0x10, (destination & 7) << 3]);
+            let mut memory = Memory::new(&bytes);
+            let instruction = memory.decode().unwrap();
+            let Operation::MovupsLoadMemory {
+                destination: actual_destination,
+                source,
+            } = instruction.operation
+            else {
+                panic!("unexpected operation: {:?}", instruction.operation);
+            };
+            assert_eq!(actual_destination, destination);
+            assert_eq!(source.base, AddressBase::Register(Register::Rax));
+            assert_eq!(source.displacement, 0);
+            assert_eq!(instruction.length as usize, bytes.len());
+        }
+
+        for bytes in [
+            &[0x42, 0x0f, 0x10, 0x00][..], // REX.X
+            &[0x48, 0x0f, 0x10, 0x00][..], // REX.W
+            &[0x66, 0x0f, 0x10, 0x00][..],
+            &[0xf2, 0x0f, 0x10, 0x01][..], // other-base MOVSD load remains out of this form
+            &[0xf0, 0x0f, 0x10, 0x00][..],
+            &[0x67, 0x0f, 0x10, 0x00][..],
+            &[0x2e, 0x0f, 0x10, 0x00][..],
+            &[0x40, 0x41, 0x0f, 0x10, 0x00][..],
+            &[0xc5, 0xf8, 0x10, 0x00][..],
+            &[0xc4, 0xe1, 0x78, 0x10, 0x00][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x10, 0x00][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn movups_store_rax_decodes_all_xmm_sources_and_rejects_neighbors() {
+        for source in 0..16u8 {
+            let rex = if source < 8 { vec![] } else { vec![0x44] };
+            let mut bytes = rex;
+            bytes.extend([0x0f, 0x11, (source & 7) << 3]);
+            let mut memory = Memory::new(&bytes);
+            let instruction = memory.decode().unwrap();
+            let Operation::MovupsStoreMemory {
+                destination,
+                source: actual_source,
+            } = instruction.operation
+            else {
+                panic!("unexpected operation: {:?}", instruction.operation);
+            };
+            assert_eq!(actual_source, source);
+            assert_eq!(destination.base, AddressBase::Register(Register::Rax));
+            assert_eq!(destination.displacement, 0);
+            assert_eq!(instruction.length as usize, bytes.len());
+        }
+
+        for bytes in [
+            &[0x42, 0x0f, 0x11, 0x00][..], // REX.X
+            &[0x48, 0x0f, 0x11, 0x00][..], // REX.W
+            &[0x66, 0x0f, 0x11, 0x00][..],
+            &[0xf0, 0x0f, 0x11, 0x00][..],
+            &[0x67, 0x0f, 0x11, 0x00][..],
+            &[0x2e, 0x0f, 0x11, 0x00][..],
+            &[0x40, 0x41, 0x0f, 0x11, 0x00][..],
+            &[0xc5, 0xf8, 0x11, 0x00][..],
+            &[0xc4, 0xe1, 0x78, 0x11, 0x00][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x11, 0x00][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                "{bytes:02x?}"
+            );
+        }
+        assert!(matches!(
+            Memory::new(&[0xf2, 0x0f, 0x11, 0x00])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::MovsdStoreMemory { .. }
+        ));
+        for bytes in [
+            &[0x0f][..],
+            &[0x0f, 0x11][..],
+            &[0x44, 0x0f][..],
+            &[0x44, 0x0f, 0x11][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn movups_memory_base_disp_reuses_modrm_address_parser() {
+        for opcode in [0x10, 0x11] {
+            for (bytes, base, displacement, length) in [
+                (vec![0x0f, opcode, 0x01], Register::Rcx, 0, 3),
+                (vec![0x0f, opcode, 0x45, 0x80], Register::Rbp, -128, 4),
+                (
+                    vec![0x0f, opcode, 0x90, 0, 0, 0x80, 0x7f],
+                    Register::Rax,
+                    0x7f80_0000,
+                    7,
+                ),
+                (vec![0x41, 0x0f, opcode, 0x02], Register::R10, 0, 4),
+                (vec![0x41, 0x0f, opcode, 0x45, 0xff], Register::R13, -1, 5),
+            ] {
+                let mut memory = Memory::new(&bytes);
+                let instruction = memory.decode().unwrap();
+                let operand = if opcode == 0x10 {
+                    match instruction.operation {
+                        Operation::MovupsLoadMemory { source, .. } => source,
+                        other => panic!("unexpected operation: {other:?}"),
+                    }
+                } else {
+                    match instruction.operation {
+                        Operation::MovupsStoreMemory { destination, .. } => destination,
+                        other => panic!("unexpected operation: {other:?}"),
+                    }
+                };
+                assert_eq!(instruction.length, length);
+                assert_eq!(operand.base, AddressBase::Register(base));
+                assert_eq!(operand.displacement, displacement);
+                assert_eq!(operand.address_size, OperandSize::Qword);
+            }
+        }
+
+        for bytes in [
+            &[0x42, 0x0f, 0x10, 0x01][..],    // REX.X is rejected without SIB
+            &[0x0f, 0x10, 0x04][..],          // truncated SIB
+            &[0x0f, 0x10, 0x44, 0x00][..],    // truncated disp8 after SIB
+            &[0x0f, 0x10, 0x84, 0x00, 0][..], // truncated disp32 after SIB
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn movups_memory_rip_relative_decodes_signed_disp32_and_rejects_rex_b() {
+        for opcode in [0x10, 0x11] {
+            for (prefix, xmm, length) in [(&[][..], 3u8, 7u8), (&[0x44][..], 11, 8)] {
+                for displacement in [0i32, 0x1234_5678, -0x1234_5678] {
+                    let mut bytes = prefix.to_vec();
+                    bytes.extend([0x0f, opcode, 0x05 | ((xmm & 7) << 3)]);
+                    bytes.extend(displacement.to_le_bytes());
+                    let mut memory = Memory::new(&bytes);
+                    let instruction = memory.decode().unwrap();
+                    let operand = match (opcode, instruction.operation) {
+                        (
+                            0x10,
+                            Operation::MovupsLoadMemory {
+                                destination,
+                                source,
+                            },
+                        ) => {
+                            assert_eq!(destination, xmm);
+                            source
+                        }
+                        (
+                            0x11,
+                            Operation::MovupsStoreMemory {
+                                destination,
+                                source,
+                            },
+                        ) => {
+                            assert_eq!(source, xmm);
+                            destination
+                        }
+                        (_, other) => panic!("unexpected operation: {other:?}"),
+                    };
+                    assert_eq!(instruction.length, length);
+                    assert_eq!(operand.base, AddressBase::NextRip);
+                    assert_eq!(operand.index, None);
+                    assert_eq!(operand.displacement, i64::from(displacement));
+                    assert_eq!(operand.address_size, OperandSize::Qword);
+                }
+            }
+        }
+
+        // REX.B does not turn mod=00/rm=101 into R13. It remains RIP-relative
+        // architecturally, but this profile deliberately rejects that prefix.
+        for bytes in [
+            &[0x41, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
+            &[0x45, 0x0f, 0x11, 0x05, 0, 0, 0, 0][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(matches!(
+                memory.decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn movups_memory_sib_decodes_scale_index_base_and_rex_extensions() {
+        for opcode in [0x10, 0x11] {
+            for (base, base_bits, rex_b, mode, displacement, displacement_bytes) in [
+                (Some(Register::Rsp), 4u8, false, 0u8, 0i64, vec![]),
+                (Some(Register::Rbp), 5, false, 1, -7, vec![0xf9]),
+                (
+                    Some(Register::Rbp),
+                    5,
+                    false,
+                    2,
+                    0x1234_5678,
+                    0x1234_5678i32.to_le_bytes().to_vec(),
+                ),
+                (Some(Register::R12), 4, true, 0, 0, vec![]),
+                (Some(Register::R13), 5, true, 1, 0, vec![0]),
+                (
+                    Some(Register::R13),
+                    5,
+                    true,
+                    2,
+                    -1,
+                    (-1i32).to_le_bytes().to_vec(),
+                ),
+                (
+                    None,
+                    5,
+                    false,
+                    0,
+                    0x1234_5678,
+                    0x1234_5678i32.to_le_bytes().to_vec(),
+                ),
+                (None, 5, true, 0, -1, (-1i32).to_le_bytes().to_vec()),
+            ] {
+                for (index, index_bits, rex_x) in [
+                    (None, 4u8, false),
+                    (Some(Register::Rcx), 1, false),
+                    (Some(Register::R12), 4, true),
+                ] {
+                    for scale_bits in 0..4u8 {
+                        for xmm in [0u8, 8] {
+                            let rex = 0x40
+                                | if xmm >= 8 { 4 } else { 0 }
+                                | if rex_x { 2 } else { 0 }
+                                | if rex_b { 1 } else { 0 };
+                            let modrm = (mode << 6) | ((xmm & 7) << 3) | 4;
+                            let sib = (scale_bits << 6) | (index_bits << 3) | base_bits;
+                            let mut bytes = Vec::new();
+                            if rex != 0x40 {
+                                bytes.push(rex);
+                            }
+                            bytes.extend([0x0f, opcode, modrm, sib]);
+                            bytes.extend(displacement_bytes.iter().copied());
+                            let mut memory = Memory::new(&bytes);
+                            let instruction = memory
+                                .decode()
+                                .unwrap_or_else(|error| panic!("{bytes:02x?}: {error:?}"));
+                            let operand = match (opcode, instruction.operation) {
+                                (
+                                    0x10,
+                                    Operation::MovupsLoadMemory {
+                                        destination,
+                                        source,
+                                    },
+                                ) => {
+                                    assert_eq!(destination, xmm);
+                                    source
+                                }
+                                (
+                                    0x11,
+                                    Operation::MovupsStoreMemory {
+                                        destination,
+                                        source,
+                                    },
+                                ) => {
+                                    assert_eq!(source, xmm);
+                                    destination
+                                }
+                                (_, other) => panic!("unexpected operation: {other:?}"),
+                            };
+                            assert_eq!(
+                                operand.base,
+                                base.map_or(AddressBase::None, AddressBase::Register)
+                            );
+                            assert_eq!(operand.index, index);
+                            assert_eq!(operand.scale, 1 << scale_bits);
+                            assert_eq!(operand.displacement, displacement);
+                            assert_eq!(operand.address_size, OperandSize::Qword);
+                            assert_eq!(instruction.length as usize, bytes.len());
+                        }
+                    }
+                }
+            }
+        }
+
+        for opcode in [0x10, 0x11] {
+            let valid_prefix = [0x0f, opcode, 0x84, 0x8c];
+            for available_disp_bytes in 0..4usize {
+                let mut bytes = valid_prefix.to_vec();
+                bytes.extend(
+                    [0x01, 0x02, 0x03, 0x04][..available_disp_bytes]
+                        .iter()
+                        .copied(),
+                );
+                let mut memory = Memory::new(&bytes);
+                assert!(memory.decode().is_err(), "{bytes:02x?}");
+            }
         }
     }
 
@@ -8146,7 +10651,6 @@ mod tests {
             (vec![0xf2, 0xf3, 0xb8], 3, OpcodeMap::Primary),
             (vec![0x26, 0x64, 0xb8], 3, OpcodeMap::Primary),
             (vec![0x67, 0x67, 0xb8], 3, OpcodeMap::Primary),
-            (vec![0xf3, 0x0f, 0x10], 3, OpcodeMap::Escape0f),
             (vec![0x66, 0x0f, 0x38, 0xb8], 4, OpcodeMap::Escape0f38),
             (vec![0x0f, 0x3a, 0xb8], 3, OpcodeMap::Escape0f3a),
             (vec![0xf0, 0xb8], 2, OpcodeMap::Primary),
@@ -8429,6 +10933,7 @@ mod tests {
                 gs_cache: None,
 
                 x87: None,
+                sse: None,
             };
             let before = state.clone();
             assert_eq!(

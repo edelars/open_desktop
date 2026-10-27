@@ -402,3 +402,58 @@ width, address size and instruction length across resumes. Existing F2 SCASB and
 F3 behavior remain unchanged; old entry APIs and JIT/native admission stay
 closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md), [interpreter
 notes](../../docs/testing/INTERPRETER.md), and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
+
+S2-34.1 adds an independent optional `SseState` alongside `X87State` in
+`LongModeState`: 16 XMM registers of raw 16-byte values and raw u32 MXCSR. The
+C fragment adapter rejects `Some(sse)`. This is local snapshot/state storage
+only; SSE execution and native/JIT support are not claimed. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#local-profile-s2-341-s2-long-x87-sse-state-v1).
+
+S2-34.2 locally adds only legacy register-only `0F 10 /r` MOVUPS under the
+separate `s2-long-movups-reg-v1` profile. One optional effective REX can extend
+ModR/M.reg/rm to XMM0–XMM15; memory forms, extra prefixes, `0F 11`, SSE2
+variants and native/JIT are excluded. The operation copies raw 128-bit state
+and preserves x87/MXCSR/GPR/RFLAGS. It assumes SSE availability and the stated
+CR0/CR4 preconditions without implementing control state. See the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#local-profile-s2-342-s2-long-movups-reg-v1).
+
+S2-34.4 adds a separate local-only legacy MOVUPS load profile for exact
+`0F 10 /r`, ModR/M.mod=00 and r/m=000 (`[RAX]`), with optional REX.R for
+XMM8–15. It validates the canonical 16-byte range and issues one raw
+`GuestMemory::read` before committing the destination XMM and RIP. Unaligned
+access is allowed; stores, other addressing forms, native/JIT and physical
+execution remain outside the slice. The profile's SSE and CR0/CR4 conditions
+are assumptions, not implemented gates, and it is one form rather than a full
+Generic amd64 profile. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-profile-s2-344-s2-long-movups-mem-load-v1).
+
+S2-34.6a adds separate local-only `s2-long-movups-mem-base-v1` coverage for
+both legacy memory directions with ModR/M modes 00/01/10, base plus signed
+disp8/disp32, REX.R XMM extension and REX.B GPR-base extension. Decoding reuses
+the existing `rm_operand` and `MemoryOperand`; execution validates a raw
+16-byte range without widening `OperandSize`. SIB, RIP-relative, REX.W/X,
+address-size 32, prefixes, VEX/EVEX and native/JIT remain excluded. The prior
+state, register and `[RAX]` memory profiles keep their exact admissions. See
+the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-profile-s2-346a-s2-long-movups-mem-base-v1).
+
+S2-34.6b extends the same profile with legacy `0F 10 /r` and `0F 11 /r`
+ModR/M.mod=00/rm=101 RIP-relative disp32 forms. It sign-extends disp32 and
+uses complete next RIP through `MemoryOperand::NextRip`; REX.R still selects
+XMM8–15. Intel SDM 093 Vol. 2A §2.2.1.6 confirms REX.B does not select R13
+for this encoding. The bounded profile rejects REX.B=1 on this form. SIB,
+segment/address/mandatory prefixes, VEX/EVEX and native/JIT remain excluded.
+The earlier base+displacement forms and other profile admissions stay intact.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-346b-rip-relative-extension).
+
+S2-35.5 adds local-only register `PSUBUSB` for `66 [one optional REX.R/B] 0F D8 /r` with ModR/M.mod=3. Each XMM byte lane independently computes `max(unsigned(DEST) - unsigned(SRC), 0)`. This is a narrow SSE2 diagnostic slice: no MMX, memory, other widths, prefixes, REX.W/X, VEX/EVEX, native/JIT, or physical execution. SSE2 and CR0/CR4 conditions are assumptions only. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-register-only-psubusb-profile--s2-355).
+
+S2-35.6 adds local-only register `PADDW` for `66 [one optional REX.R/B] 0F FD /r` with ModR/M.mod=3. Eight independent little-endian u16 lanes add modulo 65536. MMX, memory, other widths, saturation, other prefixes, REX.W/X, VEX/EVEX, JIT/native and physical execution remain excluded. SSE2 and CR0/CR4 conditions are assumptions only. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-register-only-paddw-profile--s2-356).
+
+S2-35.7 adds local-only register `PSUBW` for `66 [one optional REX.R/B] 0F F9 /r` with ModR/M.mod=3. Eight independent little-endian u16 lanes subtract modulo 65536. MMX, memory, other widths, saturation, other prefixes, REX.W/X, VEX/EVEX, JIT/native and physical execution remain excluded. SSE2 and CR0/CR4 conditions are assumptions only. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-register-only-psubw-profile--s2-357).
+
+S2-35.8 adds local-only register `PADDUSW` for `66 [one optional REX.R/B] 0F DD /r` with ModR/M.mod=3. Eight independent little-endian u16 lanes add with unsigned saturation at 65535. MMX, memory, other widths, signed saturation, other prefixes, REX.W/X, VEX/EVEX, JIT/native and physical execution remain excluded. SSE2 and CR0/CR4 conditions are assumptions only. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-register-only-paddusw-profile--s2-358).
+
+S2-35.9 adds local-only register `PSUBUSW` for `66 [one optional REX.R/B] 0F D9 /r` with ModR/M.mod=3. Eight independent little-endian u16 lanes compute `max(DEST - SRC, 0)`. MMX, memory, other widths, signed saturation, other prefixes, REX.W/X, VEX/EVEX, JIT/native and physical execution remain excluded. SSE2 and CR0/CR4 conditions are assumptions only. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-register-only-psubusw-profile--s2-359).
+
+S2-35.10 adds local-only register `PADDSB` for `66 [one optional REX.R/B] 0F EC /r` with ModR/M.mod=3. Sixteen independent signed i8 lanes add with saturation to [-128, 127], storing the raw result bytes. MMX, wider forms, subtraction, memory, other prefixes, REX.W/X, VEX/EVEX, JIT/native and physical execution remain excluded. S2-35.12 adds local-only register `PADDSW` for `66 [one optional REX.R/B] 0F ED /r`, ModR/M.mod=3; eight independent signed i16 lanes add using widened intermediates and saturate to [-32768, 32767]. SSE2 and CR0/CR4 conditions are assumptions only. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-register-only-paddsb-profile--s2-3510).
+
+S2-35.14 adds local-only register PADDD for `66 [one optional REX.R/B] 0F FE /r`, ModR/M.mod=3. Four little-endian u32 lanes add modulo 2^32 independently; the bounded profile excludes MMX, other widths, saturation, memory, extra prefixes, REX.W/X, VEX/EVEX and native/JIT execution.

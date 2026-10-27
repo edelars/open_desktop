@@ -59,6 +59,21 @@ Operand and environment rejection cases are restricted to bare `dac9`; prefixed
 and neighboring DA encodings remain outside the schema. This is fixture-format
 coverage only and does not claim native or physical x86 behavior.
 
+The S2-34.6b MOVUPS base profile extension uses the shared `od-isa` decoder to
+derive RIP-relative literal addresses from initial RIP plus decoded instruction
+length and signed disp32. It accepts only the same one-instruction full-state
+fixture shape and direction-appropriate data mapping. This preserves the
+single decoder as the encoding source; native/JIT remain denied.
+
+S2-34.4 adds a distinct `s2-long-movups-mem-load-v1` schema-v2 profile. It
+admits one literal legacy `0F 10 /r` with ModR/M.mod=00 and r/m=000, optional
+REX.R, and one readable, non-writable data region covering `[RAX..RAX+15]`.
+It keeps the S2-34.1 NOP-only and S2-34.2/.3 register-only profiles unchanged.
+The handwritten fixture carries an unaligned source and canaries; local schema,
+executor and runner checks verify state and memory preservation. Native
+admission remains denied. This does not establish full Generic amd64 baseline
+support or physical behavior.
+
 S2-30cb admits exactly 19 FCMOVNE schema streams: each bare `DB C8..CF` form
 alone and followed by FNSTSW, the repeated C9 stream, and two FCOMI producer
 programs. Operand/environment rejects cover indexed source selection and
@@ -83,3 +98,37 @@ S2-30ch admits exactly 18 FCMOVU streams: bare DA D8..DF and their FNSTSW
 forms, the DA D9 repeat, and the retained producer. The schema still rejects
 prefixes, neighboring encodings and all other sequences; these are local
 fixture-format rules, not native or physical x86 evidence.
+
+S2-34.1 adds the separate local-only `s2-long-x87-sse-state-v1` snapshot
+profile. It requires both the existing x87 snapshot and 16 raw 16-byte XMM
+registers plus raw MXCSR, verifies exact widths, and compares every XMM byte
+and MXCSR. Its fixed `0x0000ffbf` diagnostic mask is profile metadata only, not
+a universal hardware CPUID mask or guest `#GP` rule. A literal one-NOP fixture
+checks state transfer; no SSE execution or physical verification is claimed.
+
+S2-34.2 adds separate local fixture profile `s2-long-movups-reg-v1`, requiring
+raw x87/SSE snapshots and one register-only legacy MOVUPS instruction. It
+checks exact code shape, profile state and complete before/after snapshots;
+native admission remains explicitly denied. See the [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-342-local-register-movups)
+and [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-profile-s2-342-s2-long-movups-reg-v1).
+
+S2-34.6a adds a distinct `s2-long-movups-mem-base-v1` schema-v2 profile. It
+admits one legacy `0F 10` load or `0F 11` store with ordinary base+displacement
+addressing (ModR/M modes 00/01/10, signed disp8/disp32), and REX.R/REX.B
+register extensions. The handwritten `[R8-7]` fixture and schema checks retain
+the earlier state-only, register and exact `[RAX]` profiles' shapes. SIB,
+RIP-relative and unsupported prefix forms fail closed; native/JIT remain denied.
+See the [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-346a-local-movups-basedisplacement-memory-forms)
+and [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-profile-s2-346a-s2-long-movups-mem-base-v1).
+
+S2-35.5 adds schema-v2 profile `s2-long-psubusb-reg-v1` for one register-only XMM `PSUBUSB`. It requires raw x87/SSE state and admits only `66 [one optional REX.R/B] 0F D8 /r` with ModR/M.mod=3. The strict profile rejects bare MMX, memory, neighboring prefixes and encodings; native and JIT remain denied.
+
+S2-35.8 adds the literal local-only PADDUSW diagnostic fixture profile `s2-long-paddusw-reg-v1`; it requires raw x87/SSE state and permits only the exact register encoding.
+
+S2-35.9 adds the literal local-only PSUBUSW diagnostic fixture profile `s2-long-psubusw-reg-v1`; it requires raw x87/SSE state and permits only `66 [one optional REX.R/B] 0F D9 /r` with ModR/M.mod=3. Eight unsigned word lanes saturate subtraction at zero; JIT/native remain denied.
+
+S2-35.10 adds the literal local-only PADDSB diagnostic fixture profile `s2-long-paddsb-reg-v1`; it requires raw x87/SSE state and permits only `66 [one optional REX.R/B] 0F EC /r` with ModR/M.mod=3. Sixteen signed byte lanes saturate addition to [-128, 127]; JIT/native remain denied.
+
+S2-35.12 adds literal local-only PADDSW profile `s2-long-paddsw-reg-v1`. It admits only `66 [one optional REX.R/B] 0F ED /r`, ModR/M.mod=3, with XMM0–15 destination/source registers. Eight signed little-endian word lanes saturate sums computed in i32 to [-32768, 32767]; JIT/native remain denied.
+
+S2-35.14 adds literal local-only PADDD profile `s2-long-paddd-reg-v1`. It admits only `66 [one optional REX.R/B] 0F FE /r`, ModR/M.mod=3, with XMM0–15 destination/source registers. Four independent little-endian dword lanes add modulo 2^32; JIT/native remain denied.

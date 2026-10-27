@@ -25,7 +25,9 @@ Microsoft публикует для Windows 11 общий минимум: сов
 
 ## Linux x86-64 для ранней отладки
 
-Кандидатный дистрибутив и ISO указаны в матрице поддержки. Для минимального стенда предпочтителен прямой Linux/x86 boot protocol, отдельный от будущей UEFI-загрузки Windows.
+Кандидатный дистрибутив и ISO указаны в матрице поддержки. Для минимального стенда предпочтителен прямой Linux/x86 boot protocol, отдельный от будущей UEFI-загрузки Windows. Целевой профиль ОС принят как Ubuntu Generic `amd64`. Нормативное прочтение только ABI/ISA floor — baseline x86-64 psABI (x86-64-v1); v2/v3/v4 не входят в цель. Ubuntu публикует для обычного `amd64` baseline без расширений сверх исходных 64-bit AMD/Intel CPU, а отдельно описывает `amd64v3`; это обосновывает floor, но не задаёт полный профиль исполняемого kernel/CPU.
+
+Решение о floor не фиксирует vendor/family/model/stepping, CPUID leaves/mask, MSR allowlist, initial CPU state, kernel paths, или поддержку ОС. Требования config, upstream source reachability, exact Ubuntu source/binary и реально наблюдаемое исполнение — разные уровни доказательств; подробный статус и открытые условия собраны в [S2-00 Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#решение-по-generic-amd64-baseline). Initramfs, command line, device/topology manifest и критерий успеха остаются незакрытыми.
 
 22 октября 2026 года статически проверены exact `7.0.0-38.38` amd64 metapackage, signed kernel package и buildinfo с официального Ubuntu archive. Их bytes разобраны в памяти без установки или запуска; SHA-256, version/config и header приведены в [отчёте S2-00 Linux profile](../reports/STAGE_2_LINUX_PROFILE.md). Это уточнение входных данных, а не приёмка загрузки или полного CPU-профиля C/D.
 

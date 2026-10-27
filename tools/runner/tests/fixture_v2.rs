@@ -4484,6 +4484,691 @@ fn local_x87_fcomi_indexed_fixtures_cover_self_alias_wrap_and_actual_source_reje
 }
 
 #[test]
+fn local_x87_sse_snapshot_fixture_preserves_all_raw_state_through_nop() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_1_x87_sse_raw_state_snapshot.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongX87SseStateV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    assert_eq!(snapshot(&result).state, expected);
+}
+
+#[test]
+fn local_xorps_register_fixture_xors_raw_xmm_and_keeps_native_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_7a_xorps_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongXorpsRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "10".repeat(16);
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_pxor_register_fixture_xors_raw_xmm_and_keeps_native_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_1_pxor_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongPxorRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "10".repeat(16);
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_paddb_register_fixture_subtracts_bytes_with_wrap_and_keeps_jit_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_2_paddb_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongPaddbRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "10121416181a1c1e20222426282a2c2e".into();
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_psubb_register_fixture_subtracts_bytes_with_wrap_and_keeps_jit_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_3_psubb_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongPsubbRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0".into();
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_paddusb_register_fixture_saturates_bytes_and_keeps_jit_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_4_paddusb_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongPaddusbRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "ffffffffffffffffffffffffffffffff".into();
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_psubusb_register_fixture_saturates_bytes_and_keeps_jit_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_5_psubusb_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongPsubusbRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "00000000000000000000000000000000".into();
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_andps_register_fixture_ands_raw_xmm_and_keeps_native_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_7b_andps_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongAndpsRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "808182838485868788898a8b8c8d8e8f".into();
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_orps_register_fixture_ors_raw_xmm_and_keeps_native_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_7c_orps_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongOrpsRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "909192939495969798999a9b9c9d9e9f".into();
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_andnps_register_fixture_uses_original_destination_and_keeps_native_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_7d_andnps_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongAndnpsRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "10101010101010101010101010101010".into();
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_movss_register_copies_only_scalar_low_bits_and_keeps_native_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_8a_movss_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovssRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    let source_low = expected.sse.as_ref().unwrap().xmm[9][..8].to_owned();
+    expected.sse.as_mut().unwrap().xmm[8].replace_range(..8, &source_low);
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_movsd_register_copies_only_scalar_low_qword_and_keeps_native_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_9a_movsd_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovsdRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    let source_low = expected.sse.as_ref().unwrap().xmm[9][..16].to_owned();
+    expected.sse.as_mut().unwrap().xmm[8].replace_range(..16, &source_low);
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_movsd_memory_load_copies_low_qword_clears_upper_and_keeps_native_closed() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_9c_movsd_memory_load_rax.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovsdMemLoadV1
+    );
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "f2440f1000");
+    assert_eq!(input.fixture.initial_state.gpr[0], HexU64(0x0020_0001));
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "00010203040506070000000000000000".into();
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+    assert!(matches!(
+        jit_result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_movsd_memory_store_writes_source_low_qword_and_keeps_jit_closed() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_9d_movsd_memory_store_rax.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovsdMemStoreV1
+    );
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "f2440f1100");
+    assert_eq!(input.fixture.initial_state.gpr[0], HexU64(0x0020_0001));
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    let observed = snapshot(&result);
+    assert_eq!(observed.state, expected);
+    assert_eq!(
+        observed.memory[1].bytes_hex,
+        format!("a5fedcba987654321008090a0b0c0d0e0f{}", "5a".repeat(15))
+    );
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+    assert!(matches!(
+        jit_result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_movsd_store_register_copies_reverse_scalar_low_qword_and_keeps_native_closed() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_9b_movsd_store_register.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovsdStoreRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    let source_low = expected.sse.as_ref().unwrap().xmm[8][..16].to_owned();
+    expected.sse.as_mut().unwrap().xmm[9].replace_range(..16, &source_low);
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_movss_store_register_copies_reverse_direction_and_keeps_native_closed() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_8b_movss_store_register.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovssStoreRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    let source_low = expected.sse.as_ref().unwrap().xmm[8][..8].to_owned();
+    expected.sse.as_mut().unwrap().xmm[9].replace_range(..8, &source_low);
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_movups_register_fixture_copies_raw_xmm_and_preserves_other_state() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_2_movups_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupsRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    let source = expected.sse.as_ref().unwrap().xmm[9].clone();
+    expected.sse.as_mut().unwrap().xmm[8] = source;
+    assert_eq!(snapshot(&result).state, expected);
+
+    let store_bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_3_movups_store_register.case.json"
+    );
+    let (input, result) = run(store_bytes, "interpreter", 0);
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "0f11c1");
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    let source = expected.sse.as_ref().unwrap().xmm[0].clone();
+    expected.sse.as_mut().unwrap().xmm[1] = source;
+    assert_eq!(snapshot(&result).state, expected);
+
+    let mut self_copy = input.fixture.clone();
+    self_copy.memory[0].initial_bytes_hex = "0f11c9".into();
+    self_copy.memory[0].comparison_mask_hex = "ffffff".into();
+    self_copy.stop_rip = Some(HexU64(self_copy.initial_state.rip.get() + 3));
+    let (input, result) = run(&self_copy.to_json().unwrap(), "interpreter", 0);
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    assert_eq!(snapshot(&result).state, expected);
+}
+
+#[test]
+fn local_movups_memory_load_fixture_reads_unaligned_bytes_into_xmm8() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_4_movups_memory_load_rax.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupsMemLoadV1
+    );
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "440f1000");
+    assert_eq!(input.fixture.initial_state.gpr[0], HexU64(0x0020_0001));
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "000102030405060708090a0b0c0d0e0f".into();
+    assert_eq!(snapshot(&result).state, expected);
+    assert_eq!(
+        input.fixture.memory[1].initial_bytes_hex,
+        "a5000102030405060708090a0b0c0d0e0f5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    );
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+    assert!(matches!(
+        jit_result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_movss_memory_load_fixture_clears_xmm_upper_bits_and_keeps_native_closed() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_8c_movss_memory_load_rax.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovssMemLoadV1
+    );
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "f3440f1000");
+    assert_eq!(input.fixture.initial_state.gpr[0], HexU64(0x0020_0001));
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "00010203000000000000000000000000".into();
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+    assert!(matches!(
+        jit_result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_movss_memory_store_fixture_writes_one_low_dword_and_keeps_native_closed() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_8d_movss_memory_store_rax.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovssMemStoreV1
+    );
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "f3440f1100");
+    assert_eq!(input.fixture.initial_state.gpr[0], HexU64(0x0020_0001));
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    assert_eq!(snapshot(&result).state, expected);
+    assert_eq!(
+        snapshot(&result).memory[1].bytes_hex,
+        "a5808182830405060708090a0b0c0d0e0f5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    );
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+    assert!(matches!(
+        jit_result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_movups_memory_store_fixture_writes_unaligned_raw_xmm8_to_rax() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_5_movups_memory_store_rax.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupsMemStoreV1
+    );
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "440f1100");
+    assert_eq!(input.fixture.initial_state.gpr[0], HexU64(0x0020_0001));
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    assert_eq!(snapshot(&result).state, expected);
+    assert_eq!(
+        snapshot(&result).memory[1].bytes_hex,
+        "a5808182838485868788898a8b8c8d8e8f5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    );
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+    assert!(matches!(
+        jit_result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_movups_memory_base_fixture_writes_raw_xmm8_through_extended_base_and_disp8() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_6_movups_memory_base.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupsMemBaseV1
+    );
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "450f1140f9");
+    assert_eq!(input.fixture.initial_state.gpr[8], HexU64(0x0020_0008));
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    assert_eq!(snapshot(&result).state, expected);
+    assert_eq!(
+        snapshot(&result).memory[1].bytes_hex,
+        "a5808182838485868788898a8b8c8d8e8f5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    );
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn local_movups_rip_relative_load_fixture_uses_next_rip_and_keeps_canaries() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_6b_movups_rip_load.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupsMemBaseV1
+    );
+    assert_eq!(
+        input.fixture.memory[0].initial_bytes_hex,
+        "440f1005f9ff0f00"
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "808182838485868788898a8b8c8d8e8f".into();
+    assert_eq!(snapshot(&result).state, expected);
+    assert_eq!(
+        snapshot(&result).memory[1].bytes_hex,
+        input.fixture.memory[1].initial_bytes_hex
+    );
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn local_movups_rip_relative_store_fixture_writes_raw_xmm8_and_keeps_canaries() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_6b_movups_rip_store.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupsMemBaseV1
+    );
+    assert_eq!(
+        input.fixture.memory[0].initial_bytes_hex,
+        "440f1105f9ff0f00"
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    assert_eq!(snapshot(&result).state, expected);
+    assert_eq!(
+        snapshot(&result).memory[1].bytes_hex,
+        "a5a0a1a2a3a4a5a6a7a8a9aaabacadaeaf5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    );
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn local_movups_sib_load_fixture_uses_stack_base_and_scaled_index() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_6c_movups_sib_load.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupsMemBaseV1
+    );
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "440f10444cf9");
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "808182838485868788898a8b8c8d8e8f".into();
+    assert_eq!(snapshot(&result).state, expected);
+    assert_eq!(
+        snapshot(&result).memory[1].bytes_hex,
+        input.fixture.memory[1].initial_bytes_hex
+    );
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_movups_sib_store_fixture_uses_rex_no_base_and_r12_index() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_6c_movups_sib_store.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupsMemBaseV1
+    );
+    assert_eq!(
+        input.fixture.memory[0].initial_bytes_hex,
+        "470f1104e501002000"
+    );
+    assert_eq!(input.fixture.initial_state.gpr[12], HexU64(0));
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    assert_eq!(snapshot(&result).state, expected);
+    assert_eq!(
+        snapshot(&result).memory[1].bytes_hex,
+        "a5a0a1a2a3a4a5a6a7a8a9aaabacadaeaf5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    );
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_x87_state_profile_runs_only_exact_fadd_and_rejects_inexact_sum_without_commit() {
     let mut fixture = Fixture::from_json(MFENCE_STORE_FENCE_LOAD).unwrap().fixture;
     fixture.case_id = "local_x87_fadd_exact".into();
@@ -10962,4 +11647,246 @@ fn scas_addr32_cli_fixtures_match_literal_full_state_and_keep_jit_closed() {
             "{case_id}"
         );
     }
+}
+
+#[test]
+fn paddw_literal_cli_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_6_paddw_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPaddwRegV1
+    );
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    assert_eq!(
+        interp.instructions_executed,
+        Observation::Available { value: HexU64(1) }
+    );
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PADDW interpreter snapshot unavailable")
+    };
+    assert_eq!(&value.state.sse.as_ref().unwrap().xmm[8][..4], "1013");
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+#[test]
+fn paddusw_literal_cli_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_8_paddusw_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPadduswRegV1
+    );
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    assert_eq!(
+        interp.instructions_executed,
+        Observation::Available { value: HexU64(1) }
+    );
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PADDUSW interpreter snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[8][..32],
+        "ffffffffffffffffffffffffffffffff"
+    );
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn psubw_literal_cli_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_7_psubw_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPsubwRegV1
+    );
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    assert_eq!(
+        interp.instructions_executed,
+        Observation::Available { value: HexU64(1) }
+    );
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PSUBW interpreter snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[8][..32],
+        "ff00fe00ffff0100ffff810080ffff00"
+    );
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn psubusw_literal_cli_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_9_psubusw_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPsubuswRegV1
+    );
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    assert_eq!(
+        interp.instructions_executed,
+        Observation::Available { value: HexU64(1) }
+    );
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PSUBUSW interpreter snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[8],
+        "000001000000fefffeff01000000ff00"
+    );
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn paddsb_literal_cli_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_10_paddsb_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPaddsbRegV1
+    );
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    assert_eq!(
+        interp.instructions_executed,
+        Observation::Available { value: HexU64(1) }
+    );
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PADDSB interpreter snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[8],
+        "01000300030000ff00ffffffffff0101"
+    );
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn psubsb_literal_cli_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_11_psubsb_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPsubsbRegV1
+    );
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    assert_eq!(
+        interp.instructions_executed,
+        Observation::Available { value: HexU64(1) }
+    );
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PSUBSB interpreter snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[8],
+        "ff000100ff00fefffeff0180ff7fff01"
+    );
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn paddsw_literal_cli_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_12_paddsw_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPaddswRegV1
+    );
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    assert_eq!(
+        interp.instructions_executed,
+        Observation::Available { value: HexU64(1) }
+    );
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PADDSW interpreter snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[8],
+        "ff7f01800000008001007f00ff7f0180"
+    );
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn psubsw_literal_cli_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_13_psubsw_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPsubswRegV1
+    );
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    assert_eq!(
+        interp.instructions_executed,
+        Observation::Available { value: HexU64(1) }
+    );
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PSUBSW interpreter snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[8],
+        "fe7f008000800000ffff8100fe7f0080"
+    );
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn paddd_literal_cli_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_14_paddd_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPadddRegV1
+    );
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    assert_eq!(
+        interp.instructions_executed,
+        Observation::Available { value: HexU64(1) }
+    );
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PADDD interpreter snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[8],
+        "00000000ffffffff0000008000000000"
+    );
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn psubd_literal_cli_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_15_psubd_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPsubdRegV1
+    );
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PSUBD snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[8],
+        "fefffffffffffffffeffff7f00000000"
+    );
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
 }

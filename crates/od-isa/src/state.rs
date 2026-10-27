@@ -18,6 +18,14 @@ pub struct X87State {
     pub last_opcode: u16,
 }
 
+/// Raw Long64 SSE state for local snapshot profiles. XMM lanes are stored as
+/// sixteen bytes in architectural memory order; MXCSR is kept verbatim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SseState {
+    pub xmm: [[u8; 16]; 16],
+    pub mxcsr: u32,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum X87Tag {
@@ -218,6 +226,8 @@ pub struct LongModeState {
     pub gs_cache: Option<FsDescriptorCache>,
     /// Raw x87 state only for profiles that explicitly carry it.
     pub x87: Option<X87State>,
+    /// Raw SSE state only for profiles that explicitly carry it.
+    pub sse: Option<SseState>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -254,6 +264,7 @@ impl Default for LongModeState {
             fs_cache: None,
             gs_cache: None,
             x87: None,
+            sse: None,
         }
     }
 }
@@ -287,6 +298,7 @@ pub enum FragmentAdapterError {
     UnsupportedFsCache(FsDescriptorCache),
     UnsupportedGsCache(FsDescriptorCache),
     UnsupportedX87,
+    UnsupportedSse,
     InstructionPointerOutOfRange(u64),
     UnsupportedFlags(u64),
     ReservedFlagMissing,
@@ -308,6 +320,9 @@ impl TryFrom<&LongModeState> for FragmentState {
     fn try_from(state: &LongModeState) -> Result<Self, Self::Error> {
         if state.x87.is_some() {
             return Err(FragmentAdapterError::UnsupportedX87);
+        }
+        if state.sse.is_some() {
+            return Err(FragmentAdapterError::UnsupportedSse);
         }
         if state.fs_base != 0 {
             return Err(FragmentAdapterError::UnsupportedFsBase(state.fs_base));
@@ -432,6 +447,19 @@ mod tests {
     }
 
     #[test]
+    fn fragment_adapter_rejects_sse_even_when_integer_state_fits() {
+        let mut state = LongModeState::default();
+        state.sse = Some(SseState {
+            xmm: [[0; 16]; 16],
+            mxcsr: 0,
+        });
+        assert!(matches!(
+            FragmentState::try_from(&state),
+            Err(FragmentAdapterError::UnsupportedSse)
+        ));
+    }
+
+    #[test]
     fn every_register_obeys_long_mode_aliasing_and_preserves_other_state() {
         for encoding in 0..16 {
             let register = Register::from_encoding(encoding).unwrap();
@@ -459,6 +487,7 @@ mod tests {
                         gs_cache: None,
 
                         x87: None,
+                        sse: None,
                     };
                     let before = state.clone();
                     let view = RegisterView::low(register, size);

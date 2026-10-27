@@ -1131,11 +1131,18 @@ fn fnstcw_second_byte_permission_failure_is_atomic_across_fixture_regions() {
 struct AccessTraceMemory {
     inner: FlatMemory,
     accesses: Vec<(AccessKind, u64, usize, AccessContext)>,
+    fetch_limit: Option<u64>,
 }
 
 impl GuestMemory for AccessTraceMemory {
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
         self.accesses.push((AccessKind::Fetch, address, 1, context));
+        if self.fetch_limit.is_some_and(|limit| address >= limit) {
+            return Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            });
+        }
         self.inner.fetch(address, context)
     }
 
@@ -2115,8 +2122,8 @@ fn popfw_preserves_unmasked_rflags_bits_locally() {
         std::fs::read(directory.join("s2_17r_popfw_updates_allowed_flags.case.json")).unwrap();
     let fixture = Fixture::from_json(&raw).unwrap().fixture;
     let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
-    let memory_before = memory.snapshot();
     let mut state = fixture.initial_state.to_cpu().unwrap();
+    let memory_before = memory.snapshot();
     // The v2 fixture mask does not compare IF, reserved bit 3, ID, or upper
     // RFLAGS bits. Keep IOPL=0 for the admitted profile and assert those bits
     // directly here. The stack source itself carries IOPL=3, which POPFW must
@@ -2607,6 +2614,7 @@ fn s2_22i_loaded_gs_base_composes_with_exact_qword_load() {
     let mut memory = AccessTraceMemory {
         inner: FlatMemory::from_fixture(&fixture).unwrap(),
         accesses: Vec::new(),
+        fetch_limit: None,
     };
     let result = run(
         &mut state,
@@ -2712,6 +2720,7 @@ fn s2_22i_later_gs_data_fault_preserves_load_and_canonicality_fault_skips_read()
         let mut memory = AccessTraceMemory {
             inner,
             accesses: Vec::new(),
+            fetch_limit: None,
         };
         let original_rax = state.gpr[Register::Rax as usize];
         let result = run(
@@ -2771,6 +2780,7 @@ fn s2_22j_loaded_fs_base_composes_with_exact_qword_load() {
     let mut memory = AccessTraceMemory {
         inner: FlatMemory::from_fixture(&fixture).unwrap(),
         accesses: Vec::new(),
+        fetch_limit: None,
     };
     let result = run(
         &mut state,
@@ -2876,6 +2886,7 @@ fn s2_22j_later_fs_data_fault_preserves_load_and_canonicality_fault_skips_read()
         let mut memory = AccessTraceMemory {
             inner,
             accesses: Vec::new(),
+            fetch_limit: None,
         };
         let original_rax = state.gpr[Register::Rax as usize];
         let result = run(
@@ -4275,6 +4286,7 @@ fn cmps_read_failures_preserve_state_and_stop_at_the_failing_operand() {
                     let mut memory = AccessTraceMemory {
                         inner: FlatMemory::from_fixture(&fixture).unwrap(),
                         accesses: Vec::new(),
+                        fetch_limit: None,
                     };
                     let failed_address = if site == 0 { 0x0020_0000 } else { 0x0020_0008 };
                     let injected_error = match error {
@@ -4340,6 +4352,7 @@ fn cmps_read_failures_preserve_state_and_stop_at_the_failing_operand() {
     let mut memory = AccessTraceMemory {
         inner: FlatMemory::from_fixture(&dual_missing).unwrap(),
         accesses: Vec::new(),
+        fetch_limit: None,
     };
     let result = run(&mut state, &mut memory, config(1, None), || false);
     assert_eq!(result.rflags_defined, 0x0cd7);
@@ -7774,6 +7787,7 @@ fn repne_cmps_wdq_addr32_dual_invalid_addresses_keep_source_first_trace() {
         let mut memory = AccessTraceMemory {
             inner: FlatMemory::from_fixture(&fixture).unwrap(),
             accesses: Vec::new(),
+            fetch_limit: None,
         };
         let mut continuation = None;
         let result = od_isa::execute::run_with_rep_continuation(
@@ -7857,6 +7871,7 @@ fn repne_cmps_wdq_addr32_uses_contiguous_cross_4g_reads_and_width_exact_tail_acc
             let mut memory = AccessTraceMemory {
                 inner: FlatMemory::from_fixture(&fixture).unwrap(),
                 accesses: Vec::new(),
+                fetch_limit: None,
             };
             let mut continuation = None;
             let result = od_isa::execute::run_with_rep_continuation(
@@ -7945,6 +7960,7 @@ fn repne_cmps_wdq_addr32_uses_contiguous_cross_4g_reads_and_width_exact_tail_acc
         let mut memory = AccessTraceMemory {
             inner: FlatMemory::from_fixture(&fixture).unwrap(),
             accesses: Vec::new(),
+            fetch_limit: None,
         };
         let mut continuation = None;
         let result = od_isa::execute::run_with_rep_continuation(
@@ -10636,6 +10652,243 @@ fn movsd_rejects_non_w_rex_rep_and_segment_prefixes_at_execution_boundary() {
 }
 
 #[test]
+fn movsd_memory_store_writes_exact_source_qword_and_commits_after_success() {
+    use crate::v2::Profile;
+
+    let raw = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_9d_movsd_memory_store_rax.case.json"
+    );
+    let base = Fixture::from_json(raw).unwrap().fixture;
+    for source in 0..16u8 {
+        let mut fixture = base.clone();
+        let mut code = vec![0xf2];
+        if source >= 8 {
+            code.push(0x44);
+        }
+        code.extend([0x0f, 0x11, (source & 7) << 3]);
+        let bytes = code
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let region = fixture
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        region.length = code.len() as u32;
+        region.initial_bytes_hex = bytes;
+        region.comparison_mask_hex = "ff".repeat(code.len());
+        fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + code.len() as u64));
+        let mut state = fixture
+            .initial_state
+            .to_cpu_for(Profile::LongMovsdMemStoreV1)
+            .unwrap();
+        let before = state.clone();
+        let mut memory = AccessTraceMemory {
+            inner: FlatMemory::from_fixture(&fixture).unwrap(),
+            accesses: Vec::new(),
+            fetch_limit: None,
+        };
+        let result = run(
+            &mut state,
+            &mut memory,
+            config(1, fixture.stop_rip.map(HexU64::get)),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.rip, fixture.stop_rip.unwrap().get());
+        let mut expected_state = before.clone();
+        expected_state.rip = fixture.stop_rip.unwrap().get();
+        assert_eq!(state, expected_state, "source {source}");
+        let data = memory
+            .inner
+            .snapshot()
+            .into_iter()
+            .find(|r| r.region_id == "data")
+            .unwrap();
+        let mut expected = (0..32)
+            .map(|index| {
+                u8::from_str_radix(
+                    &base.memory[1].initial_bytes_hex[index * 2..index * 2 + 2],
+                    16,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let raw_source = before.sse.as_ref().unwrap().xmm[usize::from(source)];
+        expected[1..9].copy_from_slice(&raw_source[..8]);
+        assert_eq!(
+            data.bytes_hex,
+            expected
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        let data_accesses = memory
+            .accesses
+            .iter()
+            .filter(|(_, address, _, _)| *address >= 0x20_0000)
+            .collect::<Vec<_>>();
+        assert_eq!(data_accesses.len(), 1, "source {source}");
+        assert_eq!(data_accesses[0].0, AccessKind::Write);
+        assert_eq!(data_accesses[0].1, 0x20_0001);
+        assert_eq!(data_accesses[0].2, 8);
+    }
+
+    let fixture = base.clone();
+    let mut state = fixture
+        .initial_state
+        .to_cpu_for(Profile::LongMovsdMemStoreV1)
+        .unwrap();
+    let before = state.clone();
+    let mut memory = AccessTraceMemory {
+        inner: FlatMemory::from_fixture(&fixture).unwrap(),
+        accesses: Vec::new(),
+        fetch_limit: None,
+    };
+    memory.inner.inject_once(
+        0x20_0001,
+        AccessKind::Write,
+        MemoryError::PermissionDenied {
+            address: 0x20_0001,
+            access: AccessKind::Write,
+        },
+    );
+    let result = run(
+        &mut state,
+        &mut memory,
+        config(1, fixture.stop_rip.map(HexU64::get)),
+        || false,
+    );
+    assert!(matches!(result.exit, RunExit::MemoryError(_)));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(
+        memory
+            .accesses
+            .iter()
+            .filter(|(kind, _, _, _)| *kind == AccessKind::Write)
+            .count(),
+        1
+    );
+    assert!(
+        !memory
+            .accesses
+            .iter()
+            .any(|(kind, _, _, _)| *kind == AccessKind::Read)
+    );
+
+    for (address, canonical) in [
+        (0x0000_8000_0000_0000, false),
+        (0x0000_7fff_ffff_ffff, false),
+        (0x0000_7fff_ffff_fff8, true),
+        (0xffff_8000_0000_0000, true),
+        (u64::MAX - 3, false),
+    ] {
+        let fixture = base.clone();
+        let mut state = fixture
+            .initial_state
+            .to_cpu_for(Profile::LongMovsdMemStoreV1)
+            .unwrap();
+        state.gpr[Register::Rax as usize] = address;
+        let before = state.clone();
+        let mut memory = AccessTraceMemory {
+            inner: FlatMemory::from_fixture(&fixture).unwrap(),
+            accesses: Vec::new(),
+            fetch_limit: None,
+        };
+        let result = run(&mut state, &mut memory, config(1, None), || false);
+        assert_eq!(state, before);
+        if !canonical {
+            assert!(
+                matches!(result.exit, RunExit::Fault(_) | RunExit::MemoryError(_)),
+                "address {address:#x}: {result:?}"
+            );
+            assert!(
+                !memory
+                    .accesses
+                    .iter()
+                    .any(|(kind, _, _, _)| *kind == AccessKind::Write)
+            );
+        } else {
+            assert!(
+                matches!(result.exit, RunExit::MemoryError(_)),
+                "address {address:#x}: {result:?}"
+            );
+            assert_eq!(
+                memory
+                    .accesses
+                    .iter()
+                    .filter(|(kind, _, _, _)| *kind == AccessKind::Write)
+                    .count(),
+                1
+            );
+        }
+    }
+
+    for boundary in [
+        "missing_sse",
+        "fetch_failure",
+        "truncated_code",
+        "stop",
+        "budget",
+    ] {
+        let fixture = base.clone();
+        let mut state = fixture
+            .initial_state
+            .to_cpu_for(Profile::LongMovsdMemStoreV1)
+            .unwrap();
+        if boundary == "missing_sse" {
+            state.sse = None;
+        }
+        let before = state.clone();
+        let mut memory = AccessTraceMemory {
+            inner: FlatMemory::from_fixture(&fixture).unwrap(),
+            accesses: Vec::new(),
+            fetch_limit: None,
+        };
+        if boundary == "fetch_failure" {
+            memory.inner.inject_once(
+                state.rip + 2,
+                AccessKind::Fetch,
+                MemoryError::Unmapped {
+                    address: state.rip + 2,
+                    access: AccessKind::Fetch,
+                },
+            );
+        } else if boundary == "truncated_code" {
+            memory.fetch_limit = Some(state.rip + 4);
+        }
+        let (stop_rip, budget) = match boundary {
+            "stop" => (Some(state.rip), 1),
+            "budget" => (None, 0),
+            _ => (None, 1),
+        };
+        let result = run(&mut state, &mut memory, config(budget, stop_rip), || false);
+        assert_eq!(result.instructions_executed, 0, "{boundary}");
+        assert_eq!(state, before, "{boundary}");
+        assert!(
+            !memory
+                .accesses
+                .iter()
+                .any(|(kind, _, _, _)| *kind == AccessKind::Write),
+            "{boundary}"
+        );
+        assert!(
+            !memory
+                .accesses
+                .iter()
+                .any(|(kind, _, _, _)| *kind == AccessKind::Read),
+            "{boundary}"
+        );
+        if boundary == "stop" || boundary == "budget" {
+            assert!(memory.accesses.is_empty(), "{boundary}");
+        }
+    }
+}
+
+#[test]
 fn movsw_accepts_ignored_misplaced_rex_after_normalization() {
     let directory = arithmetic_fixture_directory();
     let mut fixture =
@@ -10705,6 +10958,7 @@ fn movsb_rejects_prefixes_and_other_string_widths_without_commit() {
             gs_cache: None,
 
             x87: None,
+            sse: None,
         };
         let before = state.clone();
         let outcome = step(
@@ -11942,6 +12196,7 @@ fn ud2_fetch_boundary_is_exact_across_complete_and_adjacent_executable_regions()
         let mut memory = AccessTraceMemory {
             inner,
             accesses: Vec::new(),
+            fetch_limit: None,
         };
         let result = run(
             &mut state,
@@ -12005,6 +12260,7 @@ fn ud2_second_fetch_errors_preserve_backend_class_payload_and_state() {
         let mut memory = AccessTraceMemory {
             inner,
             accesses: Vec::new(),
+            fetch_limit: None,
         };
         let result = run(
             &mut state,
@@ -12080,6 +12336,7 @@ fn ud2_missing_second_byte_and_first_fetch_failure_do_not_become_ud_or_commit() 
         let mut memory = AccessTraceMemory {
             inner,
             accesses: Vec::new(),
+            fetch_limit: None,
         };
         let result = run(
             &mut state,
@@ -12409,4 +12666,1826 @@ fn s2_30cj_literal_transfer_rejection_and_repeat_fixtures_match_full_snapshots()
             }
         }
     }
+}
+
+#[test]
+fn local_xorps_register_uses_literal_pattern_and_preserves_architectural_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_7a_xorps_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, before.rip + 4);
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        before.sse.as_ref().unwrap().xmm[8][i] ^ before.sse.as_ref().unwrap().xmm[9][i]
+    });
+    assert_eq!(state.sse.as_ref().unwrap().xmm[8], expected);
+    assert_eq!(
+        state.sse.as_ref().unwrap().xmm[9],
+        before.sse.as_ref().unwrap().xmm[9]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().mxcsr,
+        before.sse.as_ref().unwrap().mxcsr
+    );
+    assert_eq!(state.x87, before.x87);
+    assert_eq!(state.gpr, before.gpr);
+    assert_eq!(state.rflags, before.rflags);
+    assert_eq!(memory.snapshot(), memory_before);
+}
+
+#[test]
+fn local_pxor_register_uses_literal_pattern_and_preserves_architectural_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_1_pxor_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, before.rip + 5);
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        before.sse.as_ref().unwrap().xmm[8][i] ^ before.sse.as_ref().unwrap().xmm[9][i]
+    });
+    assert_eq!(state.sse.as_ref().unwrap().xmm[8], expected);
+    assert_eq!(
+        state.sse.as_ref().unwrap().xmm[9],
+        before.sse.as_ref().unwrap().xmm[9]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().mxcsr,
+        before.sse.as_ref().unwrap().mxcsr
+    );
+    assert_eq!(state.x87, before.x87);
+    assert_eq!(state.gpr, before.gpr);
+    assert_eq!(state.rflags, before.rflags);
+    assert_eq!(memory.snapshot(), memory_before);
+}
+
+#[test]
+fn local_paddb_register_uses_literal_lanes_and_preserves_architectural_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_2_paddb_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, before.rip + 5);
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        before.sse.as_ref().unwrap().xmm[8][i].wrapping_add(before.sse.as_ref().unwrap().xmm[9][i])
+    });
+    assert_eq!(state.sse.as_ref().unwrap().xmm[8], expected);
+    let mut expected_state = before.clone();
+    expected_state.rip = fixture.stop_rip.unwrap().get();
+    expected_state.sse.as_mut().unwrap().xmm[8] = expected;
+    assert_eq!(state, expected_state);
+    assert_eq!(memory.snapshot(), memory_before);
+
+    let mut state = before;
+    let sse = state.sse.as_mut().unwrap();
+    sse.xmm[8] = [0xff, 0x7f, 0xff, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    sse.xmm[9] = [0x01, 0x01, 0x01, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    state.rip = fixture.initial_state.rip.get();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        &state.sse.as_ref().unwrap().xmm[8][..4],
+        &[0x00, 0x80, 0x00, 0xff]
+    );
+}
+
+#[test]
+fn local_psubb_register_uses_literal_lanes_and_preserves_architectural_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_3_psubb_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, before.rip + 5);
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        before.sse.as_ref().unwrap().xmm[8][i].wrapping_sub(before.sse.as_ref().unwrap().xmm[9][i])
+    });
+    assert_eq!(state.sse.as_ref().unwrap().xmm[8], expected);
+    let mut expected_state = before.clone();
+    expected_state.rip = fixture.stop_rip.unwrap().get();
+    expected_state.sse.as_mut().unwrap().xmm[8] = expected;
+    assert_eq!(state, expected_state);
+    assert_eq!(memory.snapshot(), memory_before);
+
+    let mut state = before;
+    let sse = state.sse.as_mut().unwrap();
+    sse.xmm[8] = [0x01, 0x02, 0x00, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    sse.xmm[9] = [0x02, 0x01, 0x01, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    state.rip = fixture.initial_state.rip.get();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        &state.sse.as_ref().unwrap().xmm[8][..4],
+        &[0xff, 0x01, 0xff, 0xfe]
+    );
+
+    // Byte lanes do not borrow from each other.
+    {
+        let sse = state.sse.as_mut().unwrap();
+        sse.xmm[8] = [0; 16];
+        sse.xmm[9] = [0; 16];
+        sse.xmm[8][1] = 2;
+        sse.xmm[9][0] = 1;
+        sse.xmm[9][1] = 1;
+    }
+    state.rip = fixture.initial_state.rip.get();
+    run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(&state.sse.as_ref().unwrap().xmm[8][..2], &[0xff, 1]);
+}
+
+#[test]
+fn local_paddusb_register_uses_literal_lanes_and_preserves_architectural_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_4_paddusb_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, before.rip + 5);
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        before.sse.as_ref().unwrap().xmm[8][i]
+            .saturating_add(before.sse.as_ref().unwrap().xmm[9][i])
+    });
+    assert_eq!(state.sse.as_ref().unwrap().xmm[8], expected);
+    let mut expected_state = before.clone();
+    expected_state.rip = fixture.stop_rip.unwrap().get();
+    expected_state.sse.as_mut().unwrap().xmm[8] = expected;
+    assert_eq!(state, expected_state);
+    assert_eq!(memory.snapshot(), memory_before);
+
+    let mut state = before;
+    {
+        let sse = state.sse.as_mut().unwrap();
+        sse.xmm[8] = [
+            0xff, 0x7f, 0x80, 0x00, 0xfe, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        sse.xmm[9] = [
+            0x01, 0x01, 0x80, 0xff, 0x01, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+    }
+    state.rip = fixture.initial_state.rip.get();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        &state.sse.as_ref().unwrap().xmm[8][..6],
+        &[0xff, 0x80, 0xff, 0xff, 0xff, 0xff]
+    );
+
+    // Saturation is lane-local.
+    {
+        let sse = state.sse.as_mut().unwrap();
+        sse.xmm[8] = [0; 16];
+        sse.xmm[9] = [0; 16];
+        sse.xmm[8][0] = 0xff;
+        sse.xmm[9][0] = 1;
+        sse.xmm[8][1] = 1;
+        sse.xmm[9][1] = 1;
+    }
+    state.rip = fixture.initial_state.rip.get();
+    run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(&state.sse.as_ref().unwrap().xmm[8][..2], &[0xff, 2]);
+}
+#[test]
+fn local_psubusb_register_uses_literal_lanes_and_preserves_architectural_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_5_psubusb_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, before.rip + 5);
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        before.sse.as_ref().unwrap().xmm[8][i]
+            .saturating_sub(before.sse.as_ref().unwrap().xmm[9][i])
+    });
+    assert_eq!(state.sse.as_ref().unwrap().xmm[8], expected);
+    let mut expected_state = before.clone();
+    expected_state.rip = fixture.stop_rip.unwrap().get();
+    expected_state.sse.as_mut().unwrap().xmm[8] = expected;
+    assert_eq!(state, expected_state);
+    assert_eq!(memory.snapshot(), memory_before);
+
+    let mut state = before;
+    {
+        let sse = state.sse.as_mut().unwrap();
+        sse.xmm[8] = [
+            0x00, 0x02, 0x01, 0xff, 0x80, 0x7f, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        sse.xmm[9] = [
+            0x01, 0x01, 0x02, 0x01, 0x7f, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+    }
+    state.rip = fixture.initial_state.rip.get();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        &state.sse.as_ref().unwrap().xmm[8][..7],
+        &[0x00, 0x01, 0x00, 0xfe, 0x01, 0x00, 0xff]
+    );
+
+    // Saturating subtraction is unsigned and lane-local.
+    {
+        let sse = state.sse.as_mut().unwrap();
+        sse.xmm[8] = [0; 16];
+        sse.xmm[9] = [0; 16];
+        sse.xmm[8][1] = 2;
+        sse.xmm[9][0] = 1;
+        sse.xmm[9][1] = 1;
+    }
+    state.rip = fixture.initial_state.rip.get();
+    run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(&state.sse.as_ref().unwrap().xmm[8][..2], &[0, 1]);
+
+    {
+        let sse = state.sse.as_mut().unwrap();
+        sse.xmm[8] = [0x5a; 16];
+        sse.xmm[9] = [0x5a; 16];
+    }
+    state.rip = fixture.initial_state.rip.get();
+    run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(state.sse.as_ref().unwrap().xmm[8], [0; 16]);
+}
+
+#[test]
+fn local_paddw_register_uses_literal_word_lanes_and_preserves_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_6_paddw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    let source = before.sse.as_ref().unwrap().xmm[9];
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        if i % 2 == 0 {
+            let a = u16::from_le_bytes([
+                before.sse.as_ref().unwrap().xmm[8][i],
+                before.sse.as_ref().unwrap().xmm[8][i + 1],
+            ]);
+            let b = u16::from_le_bytes([source[i], source[i + 1]]);
+            a.wrapping_add(b).to_le_bytes()[0]
+        } else {
+            let a = u16::from_le_bytes([
+                before.sse.as_ref().unwrap().xmm[8][i - 1],
+                before.sse.as_ref().unwrap().xmm[8][i],
+            ]);
+            let b = u16::from_le_bytes([source[i - 1], source[i]]);
+            a.wrapping_add(b).to_le_bytes()[1]
+        }
+    });
+    assert_eq!(state.sse.as_ref().unwrap().xmm[8], expected);
+    let mut expected_state = before.clone();
+    expected_state.rip = fixture.stop_rip.unwrap().get();
+    expected_state.sse.as_mut().unwrap().xmm[8] = expected;
+    assert_eq!(state, expected_state);
+    assert_eq!(memory.snapshot(), memory_before);
+    let sse = state.sse.as_mut().unwrap();
+    sse.xmm[8] = [
+        0xff, 0x00, 1, 0, 0xff, 0xff, 1, 0, 0, 0x80, 0, 0x80, 0xff, 0x7f, 0, 0,
+    ];
+    sse.xmm[9] = [1, 0, 1, 0, 1, 0, 1, 0, 0, 0x80, 0, 0x80, 1, 0, 0, 0];
+    state.rip = before.rip;
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        &state.sse.as_ref().unwrap().xmm[8][..14],
+        &[0, 1, 2, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0x80]
+    );
+}
+
+#[test]
+fn paddw_exhausts_every_word_lhs_against_boundary_addends() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_6_paddw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let base = fixture.initial_state.rip.get();
+    for lhs in 0..=u16::MAX {
+        for rhs in [0, 1, 0x7fff, 0x8000, u16::MAX] {
+            state.rip = base;
+            let sse = state.sse.as_mut().unwrap();
+            sse.xmm[8][0..2].copy_from_slice(&lhs.to_le_bytes());
+            sse.xmm[9][0..2].copy_from_slice(&rhs.to_le_bytes());
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Advanced
+            );
+            assert_eq!(
+                &state.sse.as_ref().unwrap().xmm[8][0..2],
+                &lhs.wrapping_add(rhs).to_le_bytes(),
+                "{lhs:04x}+{rhs:04x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn paddw_interpreter_covers_all_register_pairs_and_preserves_other_state() {
+    for destination in 0..16u8 {
+        for source in 0..16u8 {
+            let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+            let mut code = vec![0x66];
+            if destination >= 8 || source >= 8 {
+                code.push(rex);
+            }
+            code.extend([0x0f, 0xfd, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+            let mut memory = memory(&code, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.x87 = Some(od_isa::state::X87State::fixture_seed());
+            state.sse = Some(od_isa::state::SseState {
+                xmm: [[0; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            for r in 0..16 {
+                for lane in 0..8 {
+                    let a = (r as u16)
+                        .wrapping_mul(1021)
+                        .wrapping_add((lane as u16).wrapping_mul(8191));
+                    let b = (r as u16)
+                        .wrapping_mul(313)
+                        .wrapping_add((lane as u16).wrapping_mul(12347));
+                    state.sse.as_mut().unwrap().xmm[r][lane * 2..lane * 2 + 2]
+                        .copy_from_slice(&a.to_le_bytes());
+                    state.sse.as_mut().unwrap().xmm[r][lane * 2 + 1] = b.to_le_bytes()[1];
+                }
+            }
+            state.rflags = 0x8d7 | (1 << 10);
+            let before = state.clone();
+            let memory_before = memory.snapshot();
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Advanced
+            );
+            let mut expected = before.clone();
+            expected.rip += code.len() as u64;
+            for lane in 0..8 {
+                let a = u16::from_le_bytes([
+                    before.sse.as_ref().unwrap().xmm[destination as usize][lane * 2],
+                    before.sse.as_ref().unwrap().xmm[destination as usize][lane * 2 + 1],
+                ]);
+                let b = u16::from_le_bytes([
+                    before.sse.as_ref().unwrap().xmm[source as usize][lane * 2],
+                    before.sse.as_ref().unwrap().xmm[source as usize][lane * 2 + 1],
+                ]);
+                expected.sse.as_mut().unwrap().xmm[destination as usize][lane * 2..lane * 2 + 2]
+                    .copy_from_slice(&a.wrapping_add(b).to_le_bytes());
+            }
+            assert_eq!(state, expected, "dest={destination} source={source}");
+            assert_eq!(
+                memory.snapshot(),
+                memory_before,
+                "data access for {destination},{source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn paddw_missing_state_truncation_stop_and_budget_are_atomic() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_6_paddw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let code = [0x66, 0x0f, 0xfd, 0xc1];
+    for missing_x87 in [true, false] {
+        let mut candidate = state.clone();
+        if missing_x87 {
+            candidate.x87 = None;
+        } else {
+            candidate.sse = None;
+        }
+        let before = candidate.clone();
+        let mut memory = memory(&code, fixture.initial_state.rip.get());
+        let memory_before = memory.snapshot();
+        assert!(matches!(
+            step(&mut candidate, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xfd })
+        ));
+        assert_eq!(candidate, before);
+        assert_eq!(memory.snapshot(), memory_before);
+    }
+    let mut truncated_memory = memory(&code[..3], fixture.initial_state.rip.get());
+    state.rip = fixture.initial_state.rip.get();
+    let before = state.clone();
+    let memory_before = truncated_memory.snapshot();
+    assert!(step(&mut state, &mut truncated_memory, AccessContext::default()).is_err());
+    assert_eq!(state, before);
+    assert_eq!(truncated_memory.snapshot(), memory_before);
+    for (budget, stop, expected) in [
+        (0, None, RunExit::InstructionBudgetExhausted),
+        (1, Some(before.rip), RunExit::StopAddress),
+    ] {
+        let mut candidate = before.clone();
+        let mut memory = memory(&code, candidate.rip);
+        let memory_before = memory.snapshot();
+        let result = run(
+            &mut candidate,
+            &mut memory,
+            RunConfig {
+                instruction_budget: budget,
+                stop_rip: stop,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, expected);
+        assert_eq!(candidate, before);
+        assert_eq!(memory.snapshot(), memory_before);
+    }
+    let mut cancelled = before.clone();
+    let mut memory = memory(&code, cancelled.rip);
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut cancelled,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || true,
+    );
+    assert_eq!(result.exit, RunExit::StopRequested);
+    assert_eq!(cancelled, before);
+    assert_eq!(memory.snapshot(), memory_before);
+}
+#[test]
+fn local_psubw_register_uses_literal_word_lanes_and_preserves_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_7_psubw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    let source = before.sse.as_ref().unwrap().xmm[9];
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        if i % 2 == 0 {
+            let a = u16::from_le_bytes([
+                before.sse.as_ref().unwrap().xmm[8][i],
+                before.sse.as_ref().unwrap().xmm[8][i + 1],
+            ]);
+            let b = u16::from_le_bytes([source[i], source[i + 1]]);
+            a.wrapping_sub(b).to_le_bytes()[0]
+        } else {
+            let a = u16::from_le_bytes([
+                before.sse.as_ref().unwrap().xmm[8][i - 1],
+                before.sse.as_ref().unwrap().xmm[8][i],
+            ]);
+            let b = u16::from_le_bytes([source[i - 1], source[i]]);
+            a.wrapping_sub(b).to_le_bytes()[1]
+        }
+    });
+    assert_eq!(state.sse.as_ref().unwrap().xmm[8], expected);
+    let mut expected_state = before.clone();
+    expected_state.rip = fixture.stop_rip.unwrap().get();
+    expected_state.sse.as_mut().unwrap().xmm[8] = expected;
+    assert_eq!(state, expected_state);
+    assert_eq!(memory.snapshot(), memory_before);
+    let sse = state.sse.as_mut().unwrap();
+    sse.xmm[8] = [
+        0x00, 0x01, 0, 0, 2, 0, 1, 0, 2, 0, 0, 0x80, 0xff, 0x7f, 0x34, 0x12,
+    ];
+    sse.xmm[9] = [1, 0, 1, 0, 1, 0, 2, 0, 1, 0, 1, 0, 0xff, 0xff, 0x34, 0x12];
+    state.rip = before.rip;
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        &state.sse.as_ref().unwrap().xmm[8][..14],
+        &[
+            0xff, 0x00, 0xff, 0xff, 1, 0, 0xff, 0xff, 1, 0, 0xff, 0x7f, 0, 0x80
+        ]
+    );
+}
+
+#[test]
+fn psubw_exhausts_every_word_lhs_against_boundary_addends() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_7_psubw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let base = fixture.initial_state.rip.get();
+    for lhs in 0..=u16::MAX {
+        for rhs in [0, 1, 0x7fff, 0x8000, u16::MAX] {
+            state.rip = base;
+            let sse = state.sse.as_mut().unwrap();
+            sse.xmm[8][0..2].copy_from_slice(&lhs.to_le_bytes());
+            sse.xmm[9][0..2].copy_from_slice(&rhs.to_le_bytes());
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Advanced
+            );
+            assert_eq!(
+                &state.sse.as_ref().unwrap().xmm[8][0..2],
+                &lhs.wrapping_sub(rhs).to_le_bytes(),
+                "{lhs:04x}+{rhs:04x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn psubw_interpreter_covers_all_register_pairs_and_preserves_other_state() {
+    for destination in 0..16u8 {
+        for source in 0..16u8 {
+            let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+            let mut code = vec![0x66];
+            if destination >= 8 || source >= 8 {
+                code.push(rex);
+            }
+            code.extend([0x0f, 0xf9, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+            let mut memory = memory(&code, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.x87 = Some(od_isa::state::X87State::fixture_seed());
+            state.sse = Some(od_isa::state::SseState {
+                xmm: [[0; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            for r in 0..16 {
+                for lane in 0..8 {
+                    let a = (r as u16)
+                        .wrapping_mul(1021)
+                        .wrapping_sub((lane as u16).wrapping_mul(8191));
+                    let b = (r as u16)
+                        .wrapping_mul(313)
+                        .wrapping_sub((lane as u16).wrapping_mul(12347));
+                    state.sse.as_mut().unwrap().xmm[r][lane * 2..lane * 2 + 2]
+                        .copy_from_slice(&a.to_le_bytes());
+                    state.sse.as_mut().unwrap().xmm[r][lane * 2 + 1] = b.to_le_bytes()[1];
+                }
+            }
+            state.rflags = 0x8d7 | (1 << 10);
+            let before = state.clone();
+            let memory_before = memory.snapshot();
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Advanced
+            );
+            let mut expected = before.clone();
+            expected.rip += code.len() as u64;
+            for lane in 0..8 {
+                let a = u16::from_le_bytes([
+                    before.sse.as_ref().unwrap().xmm[destination as usize][lane * 2],
+                    before.sse.as_ref().unwrap().xmm[destination as usize][lane * 2 + 1],
+                ]);
+                let b = u16::from_le_bytes([
+                    before.sse.as_ref().unwrap().xmm[source as usize][lane * 2],
+                    before.sse.as_ref().unwrap().xmm[source as usize][lane * 2 + 1],
+                ]);
+                expected.sse.as_mut().unwrap().xmm[destination as usize][lane * 2..lane * 2 + 2]
+                    .copy_from_slice(&a.wrapping_sub(b).to_le_bytes());
+            }
+            assert_eq!(state, expected, "dest={destination} source={source}");
+            assert_eq!(
+                memory.snapshot(),
+                memory_before,
+                "data access for {destination},{source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn psubw_missing_state_truncation_stop_and_budget_are_atomic() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_7_psubw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let code = [0x66, 0x0f, 0xf9, 0xc1];
+    for missing_x87 in [true, false] {
+        let mut candidate = state.clone();
+        if missing_x87 {
+            candidate.x87 = None;
+        } else {
+            candidate.sse = None;
+        }
+        let before = candidate.clone();
+        let mut memory = memory(&code, fixture.initial_state.rip.get());
+        let memory_before = memory.snapshot();
+        assert!(matches!(
+            step(&mut candidate, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xf9 })
+        ));
+        assert_eq!(candidate, before);
+        assert_eq!(memory.snapshot(), memory_before);
+    }
+    let mut truncated_memory = memory(&code[..3], fixture.initial_state.rip.get());
+    state.rip = fixture.initial_state.rip.get();
+    let before = state.clone();
+    let memory_before = truncated_memory.snapshot();
+    assert!(step(&mut state, &mut truncated_memory, AccessContext::default()).is_err());
+    assert_eq!(state, before);
+    assert_eq!(truncated_memory.snapshot(), memory_before);
+    for (budget, stop, expected) in [
+        (0, None, RunExit::InstructionBudgetExhausted),
+        (1, Some(before.rip), RunExit::StopAddress),
+    ] {
+        let mut candidate = before.clone();
+        let mut memory = memory(&code, candidate.rip);
+        let memory_before = memory.snapshot();
+        let result = run(
+            &mut candidate,
+            &mut memory,
+            RunConfig {
+                instruction_budget: budget,
+                stop_rip: stop,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, expected);
+        assert_eq!(candidate, before);
+        assert_eq!(memory.snapshot(), memory_before);
+    }
+    let mut cancelled = before.clone();
+    let mut memory = memory(&code, cancelled.rip);
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut cancelled,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || true,
+    );
+    assert_eq!(result.exit, RunExit::StopRequested);
+    assert_eq!(cancelled, before);
+    assert_eq!(memory.snapshot(), memory_before);
+}
+#[test]
+fn local_paddusw_register_uses_literal_word_lanes_and_preserves_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_8_paddusw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    let source = before.sse.as_ref().unwrap().xmm[9];
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        if i % 2 == 0 {
+            let a = u16::from_le_bytes([
+                before.sse.as_ref().unwrap().xmm[8][i],
+                before.sse.as_ref().unwrap().xmm[8][i + 1],
+            ]);
+            let b = u16::from_le_bytes([source[i], source[i + 1]]);
+            a.saturating_add(b).to_le_bytes()[0]
+        } else {
+            let a = u16::from_le_bytes([
+                before.sse.as_ref().unwrap().xmm[8][i - 1],
+                before.sse.as_ref().unwrap().xmm[8][i],
+            ]);
+            let b = u16::from_le_bytes([source[i - 1], source[i]]);
+            a.saturating_add(b).to_le_bytes()[1]
+        }
+    });
+    assert_eq!(state.sse.as_ref().unwrap().xmm[8], expected);
+    let mut expected_state = before.clone();
+    expected_state.rip = fixture.stop_rip.unwrap().get();
+    expected_state.sse.as_mut().unwrap().xmm[8] = expected;
+    assert_eq!(state, expected_state);
+    assert_eq!(memory.snapshot(), memory_before);
+    let sse = state.sse.as_mut().unwrap();
+    sse.xmm[8] = [
+        0x00, 0x01, 0, 0, 2, 0, 1, 0, 2, 0, 0, 0x80, 0xff, 0x7f, 0x34, 0x12,
+    ];
+    sse.xmm[9] = [1, 0, 1, 0, 1, 0, 2, 0, 1, 0, 1, 0, 0xff, 0xff, 0x34, 0x12];
+    state.rip = before.rip;
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        &state.sse.as_ref().unwrap().xmm[8][..16],
+        &[
+            1, 1, 1, 0, 3, 0, 3, 0, 3, 0, 1, 0x80, 0xff, 0xff, 0x68, 0x24
+        ]
+    );
+}
+
+#[test]
+fn paddusw_saturates_unsigned_words_independently_and_keeps_raw_little_endian_lanes() {
+    let mut state = LongModeState::default();
+    state.rip = 0x1000;
+    state.x87 = Some(od_isa::state::X87State::fixture_seed());
+    state.sse = Some(od_isa::state::SseState {
+        xmm: [[0; 16]; 16],
+        mxcsr: 0x1f80,
+    });
+    let code = [0x66, 0x0f, 0xdd, 0xc1];
+    let mut sim_memory = memory(&code, 0x1000);
+    let vectors: [([u16; 8], [u16; 8]); 2] = [
+        (
+            [0xffff, 1, 0x7fff, 0x8000, 0x00ff, 0xfffe, 0xffff, 0],
+            [1, 1, 1, 0x8000, 1, 2, 0, 0],
+        ),
+        (
+            [0x7fff, 0x8000, 0xfffe, 0xffff, 0, 0, 0x1234, 0xffff],
+            [1, 0x8000, 1, 1, 0xffff, 1, 0xedcb, 1],
+        ),
+    ];
+    let results: [[u16; 8]; 2] = [
+        [0xffff, 2, 0x8000, 0xffff, 0x0100, 0xffff, 0xffff, 0],
+        [0x8000, 0xffff, 0xffff, 0xffff, 0xffff, 1, 0xffff, 0xffff],
+    ];
+    for (lhs, rhs) in vectors.into_iter().zip(results) {
+        let sse = state.sse.as_mut().unwrap();
+        for lane in 0..8 {
+            sse.xmm[0][lane * 2..lane * 2 + 2].copy_from_slice(&lhs.0[lane].to_le_bytes());
+            sse.xmm[1][lane * 2..lane * 2 + 2].copy_from_slice(&lhs.1[lane].to_le_bytes());
+        }
+        assert_eq!(
+            step(&mut state, &mut sim_memory, AccessContext::default()).unwrap(),
+            StepOutcome::Advanced
+        );
+        let output = &state.sse.as_ref().unwrap().xmm[0];
+        for lane in 0..8 {
+            assert_eq!(&output[lane * 2..lane * 2 + 2], &rhs[lane].to_le_bytes());
+        }
+        state.rip = 0x1000;
+    }
+    // Aliased source/destination covers the two relevant self-add thresholds.
+    let mut alias_state = LongModeState::default();
+    alias_state.rip = 0x2000;
+    alias_state.x87 = Some(od_isa::state::X87State::fixture_seed());
+    alias_state.sse = Some(od_isa::state::SseState {
+        xmm: [[0; 16]; 16],
+        mxcsr: 0x1f80,
+    });
+    let alias_code = [0x66, 0x0f, 0xdd, 0xc0];
+    let mut alias_memory = memory(&alias_code, 0x2000);
+    let xmm0 = &mut alias_state.sse.as_mut().unwrap().xmm[0];
+    xmm0[0..2].copy_from_slice(&0x7fffu16.to_le_bytes());
+    xmm0[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
+    assert_eq!(
+        step(
+            &mut alias_state,
+            &mut alias_memory,
+            AccessContext::default()
+        )
+        .unwrap(),
+        StepOutcome::Advanced
+    );
+    assert_eq!(
+        &alias_state.sse.as_ref().unwrap().xmm[0][0..4],
+        &[0xfe, 0xff, 0xff, 0xff]
+    );
+}
+
+#[test]
+fn paddusw_exhausts_every_word_lhs_against_boundary_addends() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_8_paddusw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let base = fixture.initial_state.rip.get();
+    for lhs in 0..=u16::MAX {
+        for rhs in [0, 1, 0x7fff, 0x8000, u16::MAX] {
+            state.rip = base;
+            let sse = state.sse.as_mut().unwrap();
+            sse.xmm[8][0..2].copy_from_slice(&lhs.to_le_bytes());
+            sse.xmm[9][0..2].copy_from_slice(&rhs.to_le_bytes());
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Advanced
+            );
+            assert_eq!(
+                &state.sse.as_ref().unwrap().xmm[8][0..2],
+                &lhs.saturating_add(rhs).to_le_bytes(),
+                "{lhs:04x}+{rhs:04x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn paddusw_interpreter_covers_all_register_pairs_and_preserves_other_state() {
+    for destination in 0..16u8 {
+        for source in 0..16u8 {
+            let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+            let mut code = vec![0x66];
+            if destination >= 8 || source >= 8 {
+                code.push(rex);
+            }
+            code.extend([0x0f, 0xdd, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+            let mut memory = memory(&code, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.x87 = Some(od_isa::state::X87State::fixture_seed());
+            state.sse = Some(od_isa::state::SseState {
+                xmm: [[0; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            for r in 0..16 {
+                for lane in 0..8 {
+                    let a = (r as u16)
+                        .wrapping_mul(1021)
+                        .saturating_add((lane as u16).wrapping_mul(8191));
+                    let b = (r as u16)
+                        .wrapping_mul(313)
+                        .saturating_add((lane as u16).wrapping_mul(12347));
+                    state.sse.as_mut().unwrap().xmm[r][lane * 2..lane * 2 + 2]
+                        .copy_from_slice(&a.to_le_bytes());
+                    state.sse.as_mut().unwrap().xmm[r][lane * 2 + 1] = b.to_le_bytes()[1];
+                }
+            }
+            state.rflags = 0x8d7 | (1 << 10);
+            let before = state.clone();
+            let memory_before = memory.snapshot();
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Advanced
+            );
+            let mut expected = before.clone();
+            expected.rip += code.len() as u64;
+            for lane in 0..8 {
+                let a = u16::from_le_bytes([
+                    before.sse.as_ref().unwrap().xmm[destination as usize][lane * 2],
+                    before.sse.as_ref().unwrap().xmm[destination as usize][lane * 2 + 1],
+                ]);
+                let b = u16::from_le_bytes([
+                    before.sse.as_ref().unwrap().xmm[source as usize][lane * 2],
+                    before.sse.as_ref().unwrap().xmm[source as usize][lane * 2 + 1],
+                ]);
+                expected.sse.as_mut().unwrap().xmm[destination as usize][lane * 2..lane * 2 + 2]
+                    .copy_from_slice(&a.saturating_add(b).to_le_bytes());
+            }
+            assert_eq!(state, expected, "dest={destination} source={source}");
+            assert_eq!(
+                memory.snapshot(),
+                memory_before,
+                "data access for {destination},{source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn paddusw_missing_state_truncation_stop_and_budget_are_atomic() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_8_paddusw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let code = [0x66, 0x0f, 0xdd, 0xc1];
+    for missing_x87 in [true, false] {
+        let mut candidate = state.clone();
+        if missing_x87 {
+            candidate.x87 = None;
+        } else {
+            candidate.sse = None;
+        }
+        let before = candidate.clone();
+        let mut memory = memory(&code, fixture.initial_state.rip.get());
+        let memory_before = memory.snapshot();
+        assert!(matches!(
+            step(&mut candidate, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xdd })
+        ));
+        assert_eq!(candidate, before);
+        assert_eq!(memory.snapshot(), memory_before);
+    }
+    let mut truncated_memory = memory(&code[..3], fixture.initial_state.rip.get());
+    state.rip = fixture.initial_state.rip.get();
+    let before = state.clone();
+    let memory_before = truncated_memory.snapshot();
+    assert!(step(&mut state, &mut truncated_memory, AccessContext::default()).is_err());
+    assert_eq!(state, before);
+    assert_eq!(truncated_memory.snapshot(), memory_before);
+    for (budget, stop, expected) in [
+        (0, None, RunExit::InstructionBudgetExhausted),
+        (1, Some(before.rip), RunExit::StopAddress),
+    ] {
+        let mut candidate = before.clone();
+        let mut memory = memory(&code, candidate.rip);
+        let memory_before = memory.snapshot();
+        let result = run(
+            &mut candidate,
+            &mut memory,
+            RunConfig {
+                instruction_budget: budget,
+                stop_rip: stop,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, expected);
+        assert_eq!(candidate, before);
+        assert_eq!(memory.snapshot(), memory_before);
+    }
+    let mut cancelled = before.clone();
+    let mut memory = memory(&code, cancelled.rip);
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut cancelled,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || true,
+    );
+    assert_eq!(result.exit, RunExit::StopRequested);
+    assert_eq!(cancelled, before);
+    assert_eq!(memory.snapshot(), memory_before);
+}
+#[test]
+fn local_psubb_register_covers_all_byte_pairs_and_wraps_without_carry_or_saturation() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_3_psubb_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let config = RunConfig {
+        instruction_budget: 1,
+        stop_rip: None,
+        context: AccessContext::default(),
+    };
+    for lhs in 0..=u8::MAX {
+        for rhs in 0..=u8::MAX {
+            let sse = state.sse.as_mut().unwrap();
+            sse.xmm[8].fill(lhs);
+            sse.xmm[9].fill(rhs);
+            state.rip = fixture.initial_state.rip.get();
+            let result = run(&mut state, &mut memory, config, || false);
+            assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+            assert!(
+                state.sse.as_ref().unwrap().xmm[8]
+                    .iter()
+                    .all(|&byte| byte == lhs.wrapping_sub(rhs))
+            );
+            assert_eq!(state.sse.as_ref().unwrap().xmm[9], [rhs; 16]);
+        }
+    }
+    // 0x01 - 0x02 wraps to 0xff; subtracting 0x01 from 0x02 produces 0x01.
+    assert_eq!(1u8.wrapping_sub(2), 0xff);
+    assert_eq!(2u8.wrapping_sub(1), 1);
+}
+
+#[test]
+fn local_paddusb_register_covers_all_byte_pairs_with_unsigned_saturation() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_4_paddusb_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let config = RunConfig {
+        instruction_budget: 1,
+        stop_rip: None,
+        context: AccessContext::default(),
+    };
+    for lhs in 0..=u8::MAX {
+        for rhs in 0..=u8::MAX {
+            let sse = state.sse.as_mut().unwrap();
+            sse.xmm[8].fill(lhs);
+            sse.xmm[9].fill(rhs);
+            state.rip = fixture.initial_state.rip.get();
+            let result = run(&mut state, &mut memory, config, || false);
+            assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+            assert!(
+                state.sse.as_ref().unwrap().xmm[8]
+                    .iter()
+                    .all(|&byte| byte == lhs.saturating_add(rhs))
+            );
+            assert_eq!(state.sse.as_ref().unwrap().xmm[9], [rhs; 16]);
+        }
+    }
+    // 0xff+0x01 clamps at 0xff; 0x7f+0x01 remains 0x80 (unsigned saturation).
+    assert_eq!(254u8.saturating_add(1), 255);
+    assert_eq!(127u8.saturating_add(1), 128);
+}
+
+#[test]
+fn local_andps_register_uses_literal_pattern_and_preserves_architectural_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_7b_andps_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, before.rip + 4);
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        before.sse.as_ref().unwrap().xmm[8][i] & before.sse.as_ref().unwrap().xmm[9][i]
+    });
+    assert_eq!(state.sse.as_ref().unwrap().xmm[8], expected);
+    assert_eq!(
+        expected,
+        [
+            0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d,
+            0x8e, 0x8f
+        ]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().xmm[9],
+        before.sse.as_ref().unwrap().xmm[9]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().mxcsr,
+        before.sse.as_ref().unwrap().mxcsr
+    );
+    assert_eq!(state.x87, before.x87);
+    assert_eq!(state.gpr, before.gpr);
+    assert_eq!(state.rflags, before.rflags);
+    assert_eq!(memory.snapshot(), memory_before);
+}
+
+#[test]
+fn local_psubusb_register_covers_all_byte_pairs_with_unsigned_saturation() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_5_psubusb_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let config = RunConfig {
+        instruction_budget: 1,
+        stop_rip: None,
+        context: AccessContext::default(),
+    };
+    for lhs in 0..=u8::MAX {
+        for rhs in 0..=u8::MAX {
+            let sse = state.sse.as_mut().unwrap();
+            sse.xmm[8].fill(lhs);
+            sse.xmm[9].fill(rhs);
+            state.rip = fixture.initial_state.rip.get();
+            let result = run(&mut state, &mut memory, config, || false);
+            assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+            assert!(
+                state.sse.as_ref().unwrap().xmm[8]
+                    .iter()
+                    .all(|&byte| byte == lhs.saturating_sub(rhs))
+            );
+            assert_eq!(state.sse.as_ref().unwrap().xmm[9], [rhs; 16]);
+        }
+    }
+    assert_eq!(0u8.saturating_sub(1), 0);
+    assert_eq!(2u8.saturating_sub(1), 1);
+    assert_eq!(1u8.saturating_sub(2), 0);
+    assert_eq!(255u8.saturating_sub(1), 254);
+    assert_eq!(128u8.saturating_sub(127), 1);
+    assert_eq!(127u8.saturating_sub(128), 0);
+}
+
+#[test]
+fn local_andnps_register_uses_original_destination_and_literal_result() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_7d_andnps_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, before.rip + 4);
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        !before.sse.as_ref().unwrap().xmm[8][i] & before.sse.as_ref().unwrap().xmm[9][i]
+    });
+    assert_eq!(state.sse.as_ref().unwrap().xmm[8], expected);
+    assert_eq!(
+        expected,
+        [
+            0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10,
+            0x10, 0x10
+        ]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().xmm[9],
+        before.sse.as_ref().unwrap().xmm[9]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().mxcsr,
+        before.sse.as_ref().unwrap().mxcsr
+    );
+    assert_eq!(state.x87, before.x87);
+    assert_eq!(state.gpr, before.gpr);
+    assert_eq!(state.rflags, before.rflags);
+    assert_eq!(memory.snapshot(), memory_before);
+}
+
+#[test]
+fn andps_bytewise_truth_table_covers_every_input_pair() {
+    for left in 0..=u8::MAX {
+        for right in 0..=u8::MAX {
+            let mut state = LongModeState::default();
+            state.x87 = Some(od_isa::state::X87State::fixture_seed());
+            state.sse = Some(od_isa::state::SseState {
+                xmm: [[0; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            state.sse.as_mut().unwrap().xmm[0].fill(left);
+            state.sse.as_mut().unwrap().xmm[1].fill(right);
+            let mut memory = memory(&[0x0f, 0x54, 0xc1], 0x1000);
+            state.rip = 0x1000;
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+            assert_eq!(state.sse.as_ref().unwrap().xmm[0], [left & right; 16]);
+        }
+    }
+}
+
+#[test]
+fn andnps_bytewise_truth_table_covers_every_input_pair() {
+    for left in 0..=u8::MAX {
+        for right in 0..=u8::MAX {
+            let mut state = LongModeState::default();
+            state.x87 = Some(od_isa::state::X87State::fixture_seed());
+            state.sse = Some(od_isa::state::SseState {
+                xmm: [[0; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            state.sse.as_mut().unwrap().xmm[0].fill(left);
+            state.sse.as_mut().unwrap().xmm[1].fill(right);
+            let mut memory = memory(&[0x0f, 0x55, 0xc1], 0x1000);
+            state.rip = 0x1000;
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+            assert_eq!(state.sse.as_ref().unwrap().xmm[0], [!left & right; 16]);
+        }
+    }
+}
+
+#[test]
+fn local_movups_register_copies_all_128_raw_bits_and_preserves_non_sse_state() {
+    let loaded = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_2_movups_register.case.json"
+    ))
+    .unwrap();
+    let fixture = loaded.fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, before.rip + 4);
+    assert_eq!(
+        state.sse.as_ref().unwrap().xmm[8],
+        before.sse.as_ref().unwrap().xmm[9]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().mxcsr,
+        before.sse.as_ref().unwrap().mxcsr
+    );
+    assert_eq!(state.x87, before.x87);
+    assert_eq!(state.gpr, before.gpr);
+    assert_eq!(state.rflags, before.rflags);
+
+    let mut self_copy_fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_2_movups_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    self_copy_fixture.memory[0].length = 3;
+    self_copy_fixture.memory[0].initial_bytes_hex = "0f10c0".into();
+    self_copy_fixture.memory[0].comparison_mask_hex = "ffffff".into();
+    self_copy_fixture.stop_rip = Some(HexU64(self_copy_fixture.initial_state.rip.get() + 3));
+    self_copy_fixture.validate().unwrap();
+    let mut self_state = self_copy_fixture
+        .initial_state
+        .to_cpu_for(self_copy_fixture.profile)
+        .unwrap();
+    let self_before = self_state.clone();
+    let mut self_memory = FlatMemory::from_fixture(&self_copy_fixture).unwrap();
+    let self_result = run(
+        &mut self_state,
+        &mut self_memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: self_copy_fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(self_result.exit, RunExit::StopAddress);
+    assert_eq!(self_result.instructions_executed, 1);
+    assert_eq!(self_state.rip, self_before.rip + 3);
+    assert_eq!(self_state.sse, self_before.sse);
+    assert_eq!(self_state.x87, self_before.x87);
+    assert_eq!(self_state.gpr, self_before.gpr);
+    assert_eq!(self_state.rflags, self_before.rflags);
+}
+
+#[test]
+fn local_psubusw_register_uses_literal_lanes_and_preserves_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_9_psubusw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(
+        state.sse.as_ref().unwrap().xmm[8],
+        [
+            0, 0, 1, 0, 0, 0, 0xfe, 0xff, 0xfe, 0xff, 1, 0, 0, 0, 0xff, 0
+        ]
+    );
+    let mut expected = before;
+    expected.rip = fixture.stop_rip.unwrap().get();
+    expected.sse.as_mut().unwrap().xmm[8] = [
+        0, 0, 1, 0, 0, 0, 0xfe, 0xff, 0xfe, 0xff, 1, 0, 0, 0, 0xff, 0,
+    ];
+    assert_eq!(state, expected);
+    assert_eq!(memory.snapshot(), memory_before);
+}
+
+#[test]
+fn psubusw_saturates_unsigned_words_independently_and_keeps_little_endian_lanes() {
+    let mut state = LongModeState::default();
+    state.rip = 0x1000;
+    state.x87 = Some(od_isa::state::X87State::fixture_seed());
+    state.sse = Some(od_isa::state::SseState {
+        xmm: [[0; 16]; 16],
+        mxcsr: 0x1f80,
+    });
+    let code = [0x66, 0x0f, 0xd9, 0xc1];
+    let mut sim_memory = memory(&code, 0x1000);
+    let lhs: [u16; 8] = [
+        0x0000, 0x0002, 0x0001, 0xffff, 0xffff, 0x8000, 0x7fff, 0x0100,
+    ];
+    let rhs: [u16; 8] = [
+        0x0001, 0x0001, 0x0002, 0x0001, 0x0001, 0x7fff, 0x8000, 0x0001,
+    ];
+    for lane in 0..8 {
+        state.sse.as_mut().unwrap().xmm[0][lane * 2..lane * 2 + 2]
+            .copy_from_slice(&lhs[lane].to_le_bytes());
+        state.sse.as_mut().unwrap().xmm[1][lane * 2..lane * 2 + 2]
+            .copy_from_slice(&rhs[lane].to_le_bytes());
+    }
+    assert_eq!(
+        step(&mut state, &mut sim_memory, AccessContext::default()).unwrap(),
+        StepOutcome::Advanced
+    );
+    assert_eq!(
+        &state.sse.as_ref().unwrap().xmm[0],
+        &[
+            0, 0, 1, 0, 0, 0, 0xfe, 0xff, 0xfe, 0xff, 1, 0, 0, 0, 0xff, 0
+        ]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().xmm[1],
+        [1, 0, 1, 0, 2, 0, 1, 0, 1, 0, 0xff, 0x7f, 0, 0x80, 1, 0]
+    );
+    assert_eq!(state.rflags, 2);
+
+    // Equality and self-subtraction produce zero in each lane.
+    let alias_code = [0x66, 0x0f, 0xd9, 0xc0];
+    let mut alias_memory = memory(&alias_code, 0x2000);
+    state.rip = 0x2000;
+    assert_eq!(
+        step(&mut state, &mut alias_memory, AccessContext::default()).unwrap(),
+        StepOutcome::Advanced
+    );
+    assert_eq!(state.sse.as_ref().unwrap().xmm[0], [0; 16]);
+}
+
+#[test]
+fn psubusw_exhausts_every_word_lhs_against_boundary_subtrahends() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_9_psubusw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let base = fixture.initial_state.rip.get();
+    for lhs in 0..=u16::MAX {
+        for rhs in [0, 1, 0x7fff, 0x8000, u16::MAX] {
+            state.rip = base;
+            let sse = state.sse.as_mut().unwrap();
+            sse.xmm[8][0..2].copy_from_slice(&lhs.to_le_bytes());
+            sse.xmm[9][0..2].copy_from_slice(&rhs.to_le_bytes());
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Advanced
+            );
+            assert_eq!(
+                &state.sse.as_ref().unwrap().xmm[8][0..2],
+                &lhs.saturating_sub(rhs).to_le_bytes(),
+                "{lhs:04x}-{rhs:04x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn psubusw_interpreter_covers_all_register_pairs_and_preserves_other_state() {
+    for destination in 0..16u8 {
+        for source in 0..16u8 {
+            let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+            let mut code = vec![0x66];
+            if destination >= 8 || source >= 8 {
+                code.push(rex);
+            }
+            code.extend([0x0f, 0xd9, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+            let mut memory = memory(&code, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.x87 = Some(od_isa::state::X87State::fixture_seed());
+            state.sse = Some(od_isa::state::SseState {
+                xmm: [[0; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            for register in 0..16 {
+                for lane in 0..8 {
+                    let lhs = (register as u16)
+                        .wrapping_mul(1021)
+                        .wrapping_add((lane as u16).wrapping_mul(8191));
+                    let rhs = (register as u16)
+                        .wrapping_mul(313)
+                        .wrapping_add((lane as u16).wrapping_mul(12347));
+                    state.sse.as_mut().unwrap().xmm[register][lane * 2..lane * 2 + 2]
+                        .copy_from_slice(&lhs.to_le_bytes());
+                    state.sse.as_mut().unwrap().xmm[register][lane * 2 + 1] = rhs.to_le_bytes()[1];
+                }
+            }
+            state.rflags = 0x8d7 | (1 << 10);
+            let before = state.clone();
+            let memory_before = memory.snapshot();
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Advanced
+            );
+            let mut expected = before.clone();
+            expected.rip += code.len() as u64;
+            for lane in 0..8 {
+                let a = u16::from_le_bytes([
+                    before.sse.as_ref().unwrap().xmm[destination as usize][lane * 2],
+                    before.sse.as_ref().unwrap().xmm[destination as usize][lane * 2 + 1],
+                ]);
+                let b = u16::from_le_bytes([
+                    before.sse.as_ref().unwrap().xmm[source as usize][lane * 2],
+                    before.sse.as_ref().unwrap().xmm[source as usize][lane * 2 + 1],
+                ]);
+                expected.sse.as_mut().unwrap().xmm[destination as usize][lane * 2..lane * 2 + 2]
+                    .copy_from_slice(&a.saturating_sub(b).to_le_bytes());
+            }
+            assert_eq!(state, expected, "dest={destination} source={source}");
+            assert_eq!(
+                memory.snapshot(),
+                memory_before,
+                "data access for {destination},{source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn psubusw_missing_state_truncation_stop_and_budget_are_atomic() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_9_psubusw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let code = [0x66, 0x0f, 0xd9, 0xc1];
+    for missing_x87 in [true, false] {
+        let mut candidate = state.clone();
+        if missing_x87 {
+            candidate.x87 = None;
+        } else {
+            candidate.sse = None;
+        }
+        let before = candidate.clone();
+        let mut memory = memory(&code, fixture.initial_state.rip.get());
+        let memory_before = memory.snapshot();
+        assert!(matches!(
+            step(&mut candidate, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xd9 })
+        ));
+        assert_eq!(candidate, before);
+        assert_eq!(memory.snapshot(), memory_before);
+    }
+    let mut truncated = memory(&code[..3], fixture.initial_state.rip.get());
+    state.rip = fixture.initial_state.rip.get();
+    let before = state.clone();
+    let memory_before = truncated.snapshot();
+    assert!(step(&mut state, &mut truncated, AccessContext::default()).is_err());
+    assert_eq!(state, before);
+    assert_eq!(truncated.snapshot(), memory_before);
+    let mut candidate = before.clone();
+    let mut budget_memory = memory(&code, candidate.rip);
+    let result = run(
+        &mut candidate,
+        &mut budget_memory,
+        RunConfig {
+            instruction_budget: 0,
+            stop_rip: None,
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(candidate, before);
+    let mut stopped = before.clone();
+    let mut stop_memory = memory(&code, stopped.rip);
+    let stopped_rip = stopped.rip;
+    let result = run(
+        &mut stopped,
+        &mut stop_memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: Some(stopped_rip),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(stopped, before);
+}
+
+#[test]
+fn paddsb_literal_fixture_uses_signed_saturation_and_preserves_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_10_paddsb_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        (before.sse.as_ref().unwrap().xmm[8][i] as i8)
+            .saturating_add(before.sse.as_ref().unwrap().xmm[9][i] as i8) as u8
+    });
+    let mut expected_state = before.clone();
+    expected_state.rip = fixture.stop_rip.unwrap().get();
+    expected_state.sse.as_mut().unwrap().xmm[8] = expected;
+    assert_eq!(state, expected_state);
+    assert_eq!(memory.snapshot(), memory_before);
+}
+
+#[test]
+fn psubsb_literal_fixture_uses_signed_saturation_and_preserves_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_11_psubsb_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        (before.sse.as_ref().unwrap().xmm[8][i] as i8)
+            .saturating_sub(before.sse.as_ref().unwrap().xmm[9][i] as i8) as u8
+    });
+    let mut expected_state = before.clone();
+    expected_state.rip = fixture.stop_rip.unwrap().get();
+    expected_state.sse.as_mut().unwrap().xmm[8] = expected;
+    assert_eq!(state, expected_state);
+    assert_eq!(memory.snapshot(), memory_before);
 }

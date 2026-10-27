@@ -434,6 +434,7 @@ fn state(regs: &libc::user_regs_struct) -> LongModeState {
         gs_cache: None,
 
         x87: None,
+        sse: None,
     }
 }
 
@@ -1398,6 +1399,36 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongGsLoadV1
             | v2::Profile::LongNullDsEsV1
             | v2::Profile::LongX87StateV1
+            | v2::Profile::LongX87SseStateV1
+            | v2::Profile::LongMovupsRegV1
+            | v2::Profile::LongXorpsRegV1
+            | v2::Profile::LongPxorRegV1
+            | v2::Profile::LongPaddbRegV1
+            | v2::Profile::LongPaddwRegV1
+            | v2::Profile::LongPsubwRegV1
+            | v2::Profile::LongPadduswRegV1
+            | v2::Profile::LongPsubuswRegV1
+            | v2::Profile::LongPsubbRegV1
+            | v2::Profile::LongPaddusbRegV1
+            | v2::Profile::LongPaddsbRegV1
+            | v2::Profile::LongPsubsbRegV1
+            | v2::Profile::LongPaddswRegV1
+            | v2::Profile::LongPsubswRegV1
+            | v2::Profile::LongPadddRegV1
+            | v2::Profile::LongPsubusbRegV1
+            | v2::Profile::LongAndpsRegV1
+            | v2::Profile::LongOrpsRegV1
+            | v2::Profile::LongAndnpsRegV1
+            | v2::Profile::LongMovssRegV1
+            | v2::Profile::LongMovsdRegV1
+            | v2::Profile::LongMovsdMemLoadV1
+            | v2::Profile::LongMovsdMemStoreV1
+            | v2::Profile::LongMovssStoreRegV1
+            | v2::Profile::LongMovssMemLoadV1
+            | v2::Profile::LongMovssMemStoreV1
+            | v2::Profile::LongMovupsMemLoadV1
+            | v2::Profile::LongMovupsMemStoreV1
+            | v2::Profile::LongMovupsMemBaseV1
     ) {
         return empty_result(
             loaded,
@@ -1606,7 +1637,11 @@ mod tests {
             &std::fs::read(directory.join("s2_16d_jmp_noncanonical.case.json")).unwrap(),
         )
         .unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(
             admission(&loaded.fixture, &mut decoder, &actual)
@@ -4161,6 +4196,74 @@ mod tests {
     }
 
     #[test]
+    fn x87_sse_snapshot_profile_is_explicitly_native_unsupported() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_34_1_x87_sse_raw_state_snapshot.case.json"
+        ))
+        .unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    }
+
+    #[test]
+    fn movups_register_profile_is_explicitly_native_unsupported() {
+        for bytes in [
+            &include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_2_movups_register.case.json")
+                [..],
+            &include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_7a_xorps_register.case.json")
+                [..],
+            &include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_7b_andps_register.case.json")
+                [..],
+            &include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_7c_orps_register.case.json")
+                [..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_7d_andnps_register.case.json"
+            )[..],
+            &include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_8a_movss_register.case.json")
+                [..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_8b_movss_store_register.case.json"
+            )[..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_8c_movss_memory_load_rax.case.json"
+            )[..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_8d_movss_memory_store_rax.case.json"
+            )[..],
+            &include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_9a_movsd_register.case.json")
+                [..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_9c_movsd_memory_load_rax.case.json"
+            )[..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_9d_movsd_memory_store_rax.case.json"
+            )[..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_3_movups_store_register.case.json"
+            )[..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_4_movups_memory_load_rax.case.json"
+            )[..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_5_movups_memory_store_rax.case.json"
+            )[..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_6_movups_memory_base.case.json"
+            )[..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_6c_movups_sib_load.case.json"
+            )[..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_6c_movups_sib_store.case.json"
+            )[..],
+        ] {
+            let loaded = Fixture::from_json(bytes).unwrap();
+            let result = execute(&loaded);
+            assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        }
+    }
+
+    #[test]
     fn x87_instructions_are_rejected_by_native_profile_and_instruction_admission() {
         for code in [
             [0xdb, 0x00],
@@ -5011,5 +5114,350 @@ mod tests {
                 "unexpected admission error for {code:02x?}"
             );
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_1_pxor_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_1_pxor_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        let reason = admission(&loaded.fixture, &mut decoder, &actual).unwrap_err();
+        assert_eq!(
+            reason,
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_2_paddb_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_2_paddb_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_3_psubb_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_3_psubb_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_4_paddusb_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_4_paddusb_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_5_psubusb_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_5_psubusb_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_6_paddw_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_6_paddw_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_7_psubw_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_7_psubw_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_8_paddusw_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_8_paddusw_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_9_psubusw_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_9_psubusw_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_10_paddsb_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_10_paddsb_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_11_psubsb_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_11_psubsb_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_13_psubsw_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_13_psubsw_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_14_paddd_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_14_paddd_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_15_psubd_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_15_psubd_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_12_paddsw_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_12_paddsw_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
     }
 }

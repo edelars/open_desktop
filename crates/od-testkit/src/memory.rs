@@ -148,6 +148,9 @@ impl GuestMemory for FlatMemory {
         _context: AccessContext,
         source: &[u8],
     ) -> Result<(), MemoryError> {
+        // FlatMemory validates every byte and injected failure before mutation;
+        // this is a private synchronous fixture-RAM policy, not a hardware
+        // atomicity, MMIO, or SMP guarantee.
         self.injected_error(address, source.len(), AccessKind::Write)?;
         let locations = self.locations(address, source.len(), AccessKind::Write)?;
         for (byte, (region, offset)) in source.iter().zip(locations) {
@@ -293,6 +296,60 @@ mod tests {
                 assert_eq!(memory.snapshot(), before);
             }
         }
+    }
+
+    #[test]
+    fn flat_memory_write_failure_leaves_all_bytes_unchanged() {
+        let mut input = fixture();
+        input.memory = vec![
+            MemoryRegionSpec {
+                region_id: "left".into(),
+                guest_address: HexU64(0x2000),
+                length: 8,
+                permissions: MemoryPermissions {
+                    read: true,
+                    write: true,
+                    execute: false,
+                },
+                initial_bytes_hex: "a5a5a5a5a5a5a5a5".into(),
+                comparison_mask_hex: "ffffffffffffffff".into(),
+            },
+            MemoryRegionSpec {
+                region_id: "right".into(),
+                guest_address: HexU64(0x2008),
+                length: 8,
+                permissions: MemoryPermissions {
+                    read: true,
+                    write: false,
+                    execute: false,
+                },
+                initial_bytes_hex: "5a5a5a5a5a5a5a5a".into(),
+                comparison_mask_hex: "ffffffffffffffff".into(),
+            },
+        ];
+        let mut denied = FlatMemory::from_fixture(&input).unwrap();
+        let before = denied.snapshot();
+        assert_eq!(
+            denied.write(0x2004, AccessContext::default(), &[0; 16]),
+            Err(MemoryError::PermissionDenied {
+                address: 0x2008,
+                access: AccessKind::Write,
+            })
+        );
+        assert_eq!(denied.snapshot(), before);
+
+        let mut injected = FlatMemory::from_fixture(&input).unwrap();
+        injected.inject_once(
+            0x2006,
+            AccessKind::Write,
+            MemoryError::Backend("injected write failure".into()),
+        );
+        let before = injected.snapshot();
+        assert_eq!(
+            injected.write(0x2004, AccessContext::default(), &[0; 16]),
+            Err(MemoryError::Backend("injected write failure".into()))
+        );
+        assert_eq!(injected.snapshot(), before);
     }
 
     #[test]

@@ -83,11 +83,11 @@
 ### ISSUE-012 — Не подтверждена семантика operand range через верх u64
 
 - **Дата обнаружения:** 2026-10-22.
-- **Компонент:** `od-isa` S2-08, full-width address validation диагностического long-mode профиля.
+- **Компонент:** `od-isa` S2-08 full-width address validation диагностического long-mode профиля; S2-34.5 legacy `MOVUPS [RAX],XMM` также сохраняет ту же явную overflow policy.
 - **Статус:** открыта; непроверенная semantic boundary, не подтверждённый hardware bug.
 - **Основание и последствия:** проверка Intel SDM093 Vol.3A, §§4.5.1 и 6.15, не дала однозначного нормативного ответа для многобайтного доступа, у которого endpoint переполняет u64. Поэтому реализация возвращает `MemoryError::AddressOverflow` до backend и без commit; она не выдаёт неподтверждённый #GP. Это harness/memory-boundary error, не установленная x86 exception semantics.
-- **Воспроизведение:** в диагностическом long-mode профиле задать `RAX = 0xffffffffffffffff` и исполнить `MOV r64, [RAX]` (например `48 8b 08`, destination RCX); старт canonical, endpoint 8-byte operand непредставим u64. Проверить AddressOverflow, сохранённые RIP/GPR/flags и отсутствие обращения к backend.
-- **Следующий шаг:** найти точный нормативный источник или независимое подтверждение на физическом x86 для этого диапазона, затем закрепить architectural outcome и regression. Закрыть до полной приёмки этапа 2; локальная проверка выбранного boundary policy не заменяет hardware confirmation. Контекст — [CPU contract](specs/CPU_CONTRACT.md#исполнение-mov--s2-08).
+- **Воспроизведение:** в диагностическом long-mode профиле задать `RAX = 0xfffffffffffffff8` и исполнить legacy `MOVUPS [RAX],XMM0` (`0f 11 00`); старт canonical, endpoint 16-byte operand непредставим u64. Проверить `AddressOverflow`, сохранённый CPU state и отсутствие обращения к backend. Qword пример `RAX = 0xffffffffffffffff`, `48 8b 08` остаётся исходным воспроизведением для S2-08.
+- **Следующий шаг:** найти точный нормативный источник или независимое подтверждение на физическом x86 для этого диапазона, затем закрепить architectural outcome и regression. Закрыть до полной приёмки этапа 2; локальная проверка выбранного boundary policy не заменяет hardware confirmation. Контекст — [CPU contract](specs/CPU_CONTRACT.md#исполнение-mov--s2-08) и [S2-34.5](specs/CPU_CONTRACT.md#local-profile-s2-345-s2-long-movups-mem-store-v1).
 
 ### ISSUE-011 — AMD APM 4.09 не прочитан через web fetch
 
@@ -1194,3 +1194,12 @@
 - **Суть и последствия:** bounded interpreter performs source read `DS:[RSI/ESI]` before destination write `ES:[RDI/EDI]`, including the S2-19l address-size-32 REP form. This local order means a source failure prevents destination access; it does not establish hardware exception priority when both are invalid. Destination failure follows a successful source read and precedes commit of destination bytes and index/count state for that iteration under the bounded all-or-error memory contract. No MMIO rollback is claimed.
 - **Основание:** S2-19d and S2-19l `rep_movs_faults_preserve_only_fully_transferred_iterations` matrices check source-first traces and retry behavior. S2-18o adds `movs_address32_dual_invalid_accesses_observe_local_source_first_policy` and four `s2_18o_dual_unmapped_{b,w,d,q}.case.json` fixtures. These local tests are not a physical x86 comparison.
 - **Следующий шаг:** при необходимости аппаратного dual-fault claim найти нормативное основание либо провести изолированное dual-invalid сравнение на physical x86 в общем финальном acceptance substage. До результата оставлять порядок source-first только local policy. Реализация S2-19l описана в [плане](plans/STAGE_2.md#s2-19l-bounded-rep-movs-с-address-size-32) и [контракте](specs/CPU_CONTRACT.md#local-s2-19l-bounded-rep-movs-address-size-32).
+
+### ISSUE-023 — Layout checker reports worktree metadata and stale oracle links
+
+- **Дата обнаружения:** 2026-10-27.
+- **Компонент:** `tools/check_layout.py`, current Git worktree metadata and archived Stage 1/2 oracle report links.
+- **Статус:** открыта; unrelated to MOVUPS implementation.
+- **Суть и последствия:** Layout validation reports the root `.git` worktree pointer as an unmapped file and two missing historical oracle manifests referenced by `docs/reports/STAGE_2_REPORT.md`. This prevents a clean layout-check result in this checkout; it does not affect interpreter or fixture execution.
+- **Воспроизведение:** `python3 tools/check_layout.py` from the repository root in the linked Stage 2 worktree reports `Unmapped root file: .git` and broken local links to `work/stage2-oracle/stage2-20261022-230853-3684f650/manifest.json` and `work/stage1-oracle/stage1-20261022-230241-3b73e810/manifest.json`.
+- **Следующий шаг:** update the layout checker to recognize Git worktree pointer files and restore the referenced manifests or correct their archived references in the report. Do not hide the failures by moving the checkout metadata or fabricating evidence.

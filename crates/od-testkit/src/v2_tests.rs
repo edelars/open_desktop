@@ -81,6 +81,1316 @@ fn x87_fixture() -> LoadedFixture {
     Fixture::from_json(&fixture.to_json().unwrap()).unwrap()
 }
 
+fn x87_sse_fixture() -> LoadedFixture {
+    let mut fixture = x87_fixture().fixture;
+    fixture.case_id = "local_x87_sse_state_nop".into();
+    fixture.profile = Profile::LongX87SseStateV1;
+    fixture.initial_state.sse = Some(SseSnapshot {
+        xmm: std::array::from_fn(|register| {
+            (0..16)
+                .map(|byte| format!("{:02x}", register * 16 + byte))
+                .collect()
+        }),
+        mxcsr: HexU64(0xdead_beef),
+        diagnostic_mxcsr_mask: HexU64(u64::from(PROFILE_SSE_MXCSR_DIAGNOSTIC_MASK)),
+    });
+    Fixture::from_json(&fixture.to_json().unwrap()).unwrap()
+}
+
+#[test]
+fn x87_sse_state_profile_roundtrips_raw_state_and_compares_every_xmm_and_mxcsr() {
+    let input = x87_sse_fixture();
+    let state = input
+        .fixture
+        .initial_state
+        .to_cpu_for(Profile::LongX87SseStateV1)
+        .unwrap();
+    let sse = state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], std::array::from_fn(|i| i as u8));
+    assert_eq!(sse.xmm[15], std::array::from_fn(|i| (240 + i) as u8));
+    assert_eq!(sse.mxcsr, 0xdead_beef);
+    assert_eq!(
+        IntegerState::from_cpu_for(&state, Profile::LongX87SseStateV1).sse,
+        input.fixture.initial_state.sse
+    );
+    assert_eq!(
+        state.x87,
+        input
+            .fixture
+            .initial_state
+            .x87
+            .as_ref()
+            .map(|value| value.to_cpu().unwrap())
+    );
+
+    let baseline = result(&input);
+    for register in 0..16 {
+        let mut changed = baseline.clone();
+        let snapshot = snapshot(&mut changed);
+        snapshot.state.sse.as_mut().unwrap().xmm[register].replace_range(0..2, "ff");
+        assert!(
+            compare(&input, &baseline, &changed)
+                .unwrap()
+                .contains(&"sse".into())
+        );
+    }
+    let mut changed = baseline.clone();
+    snapshot(&mut changed).state.sse.as_mut().unwrap().mxcsr = HexU64(0xdead_beee);
+    assert!(
+        compare(&input, &baseline, &changed)
+            .unwrap()
+            .contains(&"sse".into())
+    );
+}
+
+#[test]
+fn x87_sse_profile_has_strict_wire_scope_and_raw_mxcsr_validation() {
+    let mut fixture = x87_sse_fixture().fixture;
+    let mut wrong_width = fixture.clone();
+    wrong_width.initial_state.sse.as_mut().unwrap().xmm[0].pop();
+    assert!(wrong_width.validate().is_err());
+    let mut wrong_case = fixture.clone();
+    wrong_case.initial_state.sse.as_mut().unwrap().xmm[0].make_ascii_uppercase();
+    assert!(wrong_case.validate().is_err());
+    let mut wrong_mxcsr = fixture.clone();
+    wrong_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(u32::MAX) + 1);
+    assert!(wrong_mxcsr.validate().is_err());
+    let mut wrong_mask = fixture.clone();
+    wrong_mask
+        .initial_state
+        .sse
+        .as_mut()
+        .unwrap()
+        .diagnostic_mxcsr_mask = HexU64(0xffff);
+    assert!(wrong_mask.validate().is_err());
+
+    let mut old_x87 = x87_fixture().fixture;
+    old_x87.initial_state.sse = fixture.initial_state.sse.clone();
+    assert!(old_x87.validate().is_err());
+    let mut old_integer = loaded().fixture;
+    let old_wire = serde_json::to_value(&old_integer).unwrap();
+    assert!(old_wire["initial_state"].get("sse").is_none());
+    let mut old_with_null = old_wire.clone();
+    old_with_null["initial_state"]["sse"] = serde_json::Value::Null;
+    assert!(Fixture::from_json(&serde_json::to_vec(&old_with_null).unwrap()).is_err());
+    old_integer.initial_state.sse = fixture.initial_state.sse.take();
+    assert!(old_integer.validate().is_err());
+
+    let mut wrong_program = x87_sse_fixture().fixture;
+    wrong_program.memory[0].initial_bytes_hex = "dbe3".into();
+    wrong_program.memory[0].length = 2;
+    wrong_program.memory[0].comparison_mask_hex = "ffff".into();
+    wrong_program.stop_rip = Some(HexU64(0x1002));
+    assert!(wrong_program.validate().is_err());
+}
+
+#[test]
+fn xorps_profile_is_separate_exact_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_7a_xorps_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongXorpsRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "450f57c1");
+    let mut bare = fixture.clone();
+    bare.memory[0].initial_bytes_hex = "0f57c1".into();
+    bare.memory[0].length = 3;
+    bare.memory[0].comparison_mask_hex = "ffffff".into();
+    bare.stop_rip = Some(HexU64(bare.initial_state.rip.get() + 3));
+    bare.validate().unwrap();
+    for bytes in [
+        "660f57c1", // mandatory prefix selects another instruction family
+        "f20f57c1",
+        "f30f57c1",
+        "670f57c1",
+        "f00f57c1",
+        "480f57c1",   // REX.W
+        "420f57c1",   // REX.X
+        "40410f57c1", // duplicate REX
+        "0f5701",     // memory operand
+        "0f57",       // truncated ModRM
+        "c5f857c1",   // VEX
+    ] {
+        let mut wrong_program = fixture.clone();
+        wrong_program.memory[0].initial_bytes_hex = bytes.to_owned();
+        wrong_program.memory[0].length = (bytes.len() / 2) as u32;
+        wrong_program.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        wrong_program.stop_rip = Some(HexU64(
+            wrong_program.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(wrong_program.validate().is_err(), "{bytes}");
+    }
+    let mut wrong_profile = fixture.clone();
+    wrong_profile.profile = Profile::LongMovupsRegV1;
+    assert!(wrong_profile.validate().is_err());
+}
+
+#[test]
+fn pxor_profile_is_separate_exact_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_1_pxor_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongPxorRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "66450fefc1");
+    for bytes in [
+        "0fefc1",
+        "f2660fefc1",
+        "f3660fefc1",
+        "67660fefc1",
+        "f0660fefc1",
+        "66480fefc1",
+        "66420fefc1",
+        "6640410fefc1",
+        "660fef01",
+        "660fef",
+        "c5f8efc1",
+        "c4e178efc1",
+        "62f17c08efc1",
+    ] {
+        let mut wrong_program = fixture.clone();
+        wrong_program.memory[0].initial_bytes_hex = bytes.to_owned();
+        wrong_program.memory[0].length = (bytes.len() / 2) as u32;
+        wrong_program.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        wrong_program.stop_rip = Some(HexU64(
+            wrong_program.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(wrong_program.validate().is_err(), "{bytes}");
+    }
+    let mut wrong_profile = fixture.clone();
+    wrong_profile.profile = Profile::LongMovupsRegV1;
+    assert!(wrong_profile.validate().is_err());
+}
+
+#[test]
+fn paddb_profile_is_exact_requires_raw_state_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_2_paddb_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongPaddbRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "66450ffcc1");
+    fixture.validate().unwrap();
+    for bytes in [
+        "0ffcc1", // MMX
+        "f2660ffcc1",
+        "f3660ffcc1",
+        "67660ffcc1",
+        "f0660ffcc1",
+        "66480ffcc1", // REX.W
+        "66420ffcc1", // REX.X
+        "6640410ffcc1",
+        "660ffc01", // memory
+        "660ffc",
+        "c5f9fcc1",
+        "c4e179fcc1",
+        "62f17d08fcc1",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing_sse = fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.validate().is_err());
+    let mut wrong_profile = fixture;
+    wrong_profile.profile = Profile::LongPxorRegV1;
+    assert!(wrong_profile.validate().is_err());
+}
+
+#[test]
+fn psubb_profile_is_exact_requires_raw_state_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_3_psubb_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongPsubbRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "66450ff8c1");
+    fixture.validate().unwrap();
+    for bytes in [
+        "0ff8c1", // MMX
+        "f2660ff8c1",
+        "f3660ff8c1",
+        "67660ff8c1",
+        "f0660ff8c1",
+        "66480ff8c1", // REX.W
+        "66420ff8c1", // REX.X
+        "6640410ff8c1",
+        "660ff801", // memory
+        "660ff8",
+        "c5f9f8c1",
+        "c4e179f8c1",
+        "62f17d08f8c1",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing_sse = fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.validate().is_err());
+    let mut wrong_profile = fixture;
+    wrong_profile.profile = Profile::LongPxorRegV1;
+    assert!(wrong_profile.validate().is_err());
+}
+
+#[test]
+fn paddusb_profile_is_exact_requires_raw_state_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_4_paddusb_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongPaddusbRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "66450fdcc1");
+    fixture.validate().unwrap();
+    for bytes in [
+        "0fdcc1", // MMX
+        "f2660fdcc1",
+        "f3660fdcc1",
+        "67660fdcc1",
+        "f0660fdcc1",
+        "66480fdcc1", // REX.W
+        "66420fdcc1", // REX.X
+        "6640410fdcc1",
+        "660fdc01", // memory
+        "660fdc",
+        "c5f9dcc1",
+        "c4e179dcc1",
+        "62f17d08dcc1",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing_sse = fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.validate().is_err());
+    let mut wrong_profile = fixture;
+    wrong_profile.profile = Profile::LongPxorRegV1;
+    assert!(wrong_profile.validate().is_err());
+}
+
+#[test]
+fn andps_profile_is_separate_exact_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_7b_andps_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongAndpsRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "450f54c1");
+    let mut bare = fixture.clone();
+    bare.memory[0].initial_bytes_hex = "0f54c1".into();
+    bare.memory[0].length = 3;
+    bare.memory[0].comparison_mask_hex = "ffffff".into();
+    bare.stop_rip = Some(HexU64(bare.initial_state.rip.get() + 3));
+    bare.validate().unwrap();
+    for bytes in [
+        "660f54c1",
+        "f20f54c1",
+        "f30f54c1",
+        "670f54c1",
+        "f00f54c1",
+        "480f54c1",
+        "420f54c1",
+        "40410f54c1",
+        "0f5401",
+        "0f54",
+        "c5f854c1",
+        "c4e17854c1",
+        "62f17c0854c1",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut wrong_profile = fixture.clone();
+    wrong_profile.profile = Profile::LongXorpsRegV1;
+    assert!(wrong_profile.validate().is_err());
+}
+
+#[test]
+fn psubusb_profile_is_exact_requires_raw_state_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_5_psubusb_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongPsubusbRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "66450fd8c1");
+    fixture.validate().unwrap();
+    for bytes in [
+        "0fd8c1", // MMX
+        "f2660fd8c1",
+        "f3660fd8c1",
+        "67660fd8c1",
+        "f0660fd8c1",
+        "66480fd8c1", // REX.W
+        "66420fd8c1", // REX.X
+        "6640410fd8c1",
+        "660fd801", // memory
+        "660fd8",
+        "c5f9d8c1",
+        "c4e179d8c1",
+        "62f17d08d8c1",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing_sse = fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.validate().is_err());
+    let mut wrong_profile = fixture;
+    wrong_profile.profile = Profile::LongPxorRegV1;
+    assert!(wrong_profile.validate().is_err());
+}
+
+#[test]
+fn paddw_profile_is_exact_requires_raw_state_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_6_paddw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongPaddwRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "66450ffdc1");
+    fixture.validate().unwrap();
+    for bytes in [
+        "0ffdc1",
+        "f2660ffdc1",
+        "f3660ffdc1",
+        "67660ffdc1",
+        "f0660ffdc1",
+        "66480ffdc1",
+        "6642 0ffdc1",
+        "6640410ffdc1",
+        "660ffd01",
+        "660ffd",
+        "c5f9fdc1",
+        "c4e179fdc1",
+        "62f17d08fdc1",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.replace(' ', "");
+        let len = (invalid.memory[0].initial_bytes_hex.len() / 2) as u32;
+        invalid.memory[0].length = len;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(len as usize);
+        invalid.stop_rip = Some(HexU64(invalid.initial_state.rip.get() + u64::from(len)));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing = fixture.clone();
+    missing.initial_state.sse = None;
+    assert!(missing.validate().is_err());
+    let mut wrong = fixture;
+    wrong.profile = Profile::LongPaddbRegV1;
+    assert!(wrong.validate().is_err());
+}
+
+#[test]
+fn psubw_profile_is_exact_requires_raw_state_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_7_psubw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongPsubwRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "66450ff9c1");
+    fixture.validate().unwrap();
+    for bytes in [
+        "0ff9c1",
+        "f2660ff9c1",
+        "f3660ff9c1",
+        "67660ff9c1",
+        "f0660ff9c1",
+        "66480ff9c1",
+        "6642 0ff9c1",
+        "6640410ff9c1",
+        "660ff901",
+        "660ff9",
+        "c5f9f9c1",
+        "c4e179f9c1",
+        "62f17d08f9c1",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.replace(' ', "");
+        let len = (invalid.memory[0].initial_bytes_hex.len() / 2) as u32;
+        invalid.memory[0].length = len;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(len as usize);
+        invalid.stop_rip = Some(HexU64(invalid.initial_state.rip.get() + u64::from(len)));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing = fixture.clone();
+    missing.initial_state.sse = None;
+    assert!(missing.validate().is_err());
+    let mut wrong = fixture;
+    wrong.profile = Profile::LongPaddbRegV1;
+    assert!(wrong.validate().is_err());
+}
+
+#[test]
+fn paddusw_profile_is_exact_requires_raw_state_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_8_paddusw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongPadduswRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "66450fddc1");
+    fixture.validate().unwrap();
+    for bytes in [
+        "0fddc1",
+        "f2660fddc1",
+        "f3660fddc1",
+        "67660fddc1",
+        "f0660fddc1",
+        "66480fddc1",
+        "6642 0fddc1",
+        "6640410fddc1",
+        "660fdd01",
+        "660fdd",
+        "c5f9ddc1",
+        "c4e179ddc1",
+        "62f17d08ddc1",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.replace(' ', "");
+        let len = (invalid.memory[0].initial_bytes_hex.len() / 2) as u32;
+        invalid.memory[0].length = len;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(len as usize);
+        invalid.stop_rip = Some(HexU64(invalid.initial_state.rip.get() + u64::from(len)));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing = fixture.clone();
+    missing.initial_state.sse = None;
+    assert!(missing.validate().is_err());
+    let mut wrong = fixture;
+    wrong.profile = Profile::LongPaddbRegV1;
+    assert!(wrong.validate().is_err());
+}
+
+#[test]
+fn orps_profile_is_separate_exact_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_7c_orps_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongOrpsRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "450f56c1");
+    let mut bare = fixture.clone();
+    bare.memory[0].initial_bytes_hex = "0f56c1".into();
+    bare.memory[0].length = 3;
+    bare.memory[0].comparison_mask_hex = "ffffff".into();
+    bare.stop_rip = Some(HexU64(bare.initial_state.rip.get() + 3));
+    bare.validate().unwrap();
+    for bytes in [
+        "660f56c1",
+        "f20f56c1",
+        "f30f56c1",
+        "670f56c1",
+        "f00f56c1",
+        "480f56c1",
+        "420f56c1",
+        "40410f56c1",
+        "0f5601",
+        "0f56",
+        "c5f856c1",
+        "c4e17856c1",
+        "62f17c0856c1",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut wrong_profile = fixture.clone();
+    wrong_profile.profile = Profile::LongAndpsRegV1;
+    assert!(wrong_profile.validate().is_err());
+}
+
+#[test]
+fn andnps_profile_is_separate_exact_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_7d_andnps_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongAndnpsRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "450f55c1");
+    let mut bare = fixture.clone();
+    bare.memory[0].initial_bytes_hex = "0f55c1".into();
+    bare.memory[0].length = 3;
+    bare.memory[0].comparison_mask_hex = "ffffff".into();
+    bare.stop_rip = Some(HexU64(bare.initial_state.rip.get() + 3));
+    bare.validate().unwrap();
+    for bytes in [
+        "660f55c1",
+        "f20f55c1",
+        "f30f55c1",
+        "670f55c1",
+        "f00f55c1",
+        "480f55c1",
+        "420f55c1",
+        "40410f55c1",
+        "0f5501",
+        "0f55",
+        "c5f855c1",
+        "c4e17855c1",
+        "62f17c0855c1",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut wrong_profile = fixture.clone();
+    wrong_profile.profile = Profile::LongOrpsRegV1;
+    assert!(wrong_profile.validate().is_err());
+}
+
+#[test]
+fn movss_store_register_profile_is_separate_exact_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_8a_movss_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut store = fixture.clone();
+    store.profile = Profile::LongMovssStoreRegV1;
+    store.memory[0].initial_bytes_hex = "f3450f11c1".into();
+    store.memory[0].comparison_mask_hex = "ffffffffff".into();
+    store.validate().unwrap();
+
+    let mut bare = store.clone();
+    bare.memory[0].initial_bytes_hex = "f30f11c1".into();
+    bare.memory[0].length = 4;
+    bare.memory[0].comparison_mask_hex = "ffffffff".into();
+    bare.stop_rip = Some(HexU64(bare.initial_state.rip.get() + 4));
+    bare.validate().unwrap();
+
+    for bytes in [
+        "f3450f10c1", // opposite MOVSS direction
+        "f30f1101",   // memory form
+        "f20f11c1",
+        "660f11c1",
+        "67f30f11c1",   // address-size override
+        "2ef30f11c1",   // segment override
+        "f0f30f11c1",   // LOCK
+        "f3f30f11c1",   // duplicate mandatory prefix
+        "40f30f11c1",   // REX before mandatory prefix
+        "f3480f11c1",   // REX.W
+        "f3420f11c1",   // REX.X
+        "f340410f11c1", // duplicate REX
+        "c5f811c1",     // VEX
+        "c4e17a11c1",   // VEX
+        "62f17e0811c1", // EVEX
+        "f3450f11",     // truncated five-byte encoding
+        "f30f11",       // truncated four-byte encoding
+    ] {
+        let mut invalid = store.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut load_profile = fixture;
+    load_profile.memory[0].initial_bytes_hex = "f3450f11c1".into();
+    assert!(load_profile.validate().is_err());
+}
+
+#[test]
+fn movsd_register_profile_is_exact_f2_legacy_register_form() {
+    let original = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_9a_movsd_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(original.profile, Profile::LongMovsdRegV1);
+    original.validate().unwrap();
+
+    for bytes in [
+        "f20f1001",     // memory source form
+        "f30f10c1",     // MOVSS
+        "660f10c1",     // MOVUPD
+        "0f10c1",       // MOVUPS
+        "f20f11c1",     // reverse direction
+        "f2480f10c1",   // REX.W
+        "f2420f10c1",   // REX.X
+        "40f20f10c1",   // REX before mandatory F2
+        "f240410f10c1", // duplicate REX
+        "c5f810c1",     // VEX MOVUPS-like encoding
+        "c4e17b10c1",   // VEX MOVSD
+        "62f17f0810c1", // EVEX MOVSD
+        "f2a5",         // string MOVSD is separate
+        "f20f1000",     // ModR/M memory operand
+    ] {
+        let mut fixture = original.clone();
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        fixture.stop_rip = Some(HexU64(
+            fixture.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(fixture.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
+fn movsd_store_register_profile_is_exact_f2_legacy_reverse_register_form() {
+    let original = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_9b_movsd_store_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(original.profile, Profile::LongMovsdStoreRegV1);
+    original.validate().unwrap();
+
+    for bytes in [
+        "f20f1101",     // memory destination
+        "f30f11c1",     // MOVSS store
+        "660f11c1",     // MOVUPD store
+        "0f11c1",       // MOVUPS store
+        "f20f10c1",     // forward direction
+        "f2480f11c1",   // REX.W
+        "f2420f11c1",   // REX.X
+        "40f20f11c1",   // REX before mandatory F2
+        "f240410f11c1", // duplicate REX
+        "c5f811c1",     // VEX
+        "c4e17b11c1",   // VEX MOVSD
+        "62f17f0811c1", // EVEX
+        "f2a5",         // string MOVSD is separate
+        "f20f1100",     // ModR/M memory operand
+    ] {
+        let mut fixture = original.clone();
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        fixture.stop_rip = Some(HexU64(
+            fixture.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(fixture.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
+fn movups_profile_admits_both_directions_and_rejects_out_of_profile_forms() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_2_movups_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let store_fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_3_movups_store_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(store_fixture.memory[0].initial_bytes_hex, "0f11c1");
+    for bytes in [
+        "660f10c1", // 66 selects MOVUPD in the adjacent SSE2 family.
+        "f20f10c1",
+        "f30f10c1",
+        "2e0f10c1",
+        "670f10c1",
+        "f00f10c1",
+        "40410f10c1", // duplicate REX
+        "480f10c1",   // REX.W is excluded by this local form
+        "420f10c1",   // REX.X is excluded by this local form
+        "0f1001",     // memory ModR/M form
+        "400f10",     // truncated before ModR/M
+        "4c0f10c1",   // REX.W plus REX.R is excluded by this profile.
+        "660f11c1",
+        "f20f11c1",
+        "f30f11c1",
+        "2e0f11c1",
+        "670f11c1",
+        "f00f11c1",
+        "40410f11c1",
+        "480f11c1",
+        "420f11c1",
+        "0f1101",
+        "400f11",
+        "4c0f11c1",
+        "c5f811c1",
+        "c4e17811c1",
+        "62f17c0811c1",
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        let length = (bytes.len() / 2) as u32;
+        code.length = length;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(rejected.initial_state.rip.get() + u64::from(length)));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+
+    for bytes in ["0f11c1", "450f11c1"] {
+        let mut accepted = store_fixture.clone();
+        let code = accepted
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        let length = (bytes.len() / 2) as u32;
+        code.length = length;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        accepted.stop_rip = Some(HexU64(accepted.initial_state.rip.get() + u64::from(length)));
+        assert!(accepted.validate().is_ok(), "{bytes}");
+    }
+
+    let mut too_many_xmms = serde_json::to_value(&fixture).unwrap();
+    too_many_xmms["initial_state"]["sse"]["xmm"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::Value::String("00".repeat(16)));
+    assert!(Fixture::from_json(&serde_json::to_vec(&too_many_xmms).unwrap()).is_err());
+}
+
+#[test]
+fn movups_memory_load_profile_is_separate_and_exactly_bounds_rax_source() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_4_movups_memory_load_rax.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongMovupsMemLoadV1);
+    for bytes in ["0f1000", "0f1038", "440f1000", "440f1038"] {
+        let mut accepted = fixture.clone();
+        let code = accepted
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        accepted.stop_rip = Some(HexU64(
+            accepted.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(accepted.validate().is_ok(), "{bytes}");
+    }
+
+    for bytes in [
+        "0f1001",         // [RCX]
+        "0f104000",       // displacement
+        "0f108000000000", // disp32
+        "0f100400",       // SIB
+        "410f1000",       // REX.B / [R8]
+        "420f1000",       // REX.X
+        "480f1000",       // REX.W
+        "660f1000",
+        "f20f1000",
+        "f30f1000",
+        "f00f1000",
+        "670f1000",
+        "2e0f1000",
+        "40440f1000",   // duplicate REX
+        "0f1100",       // store direction
+        "0f10c0",       // register source
+        "c5f81000",     // VEX
+        "c4e1781000",   // VEX3
+        "62f17c081000", // EVEX
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(
+            rejected.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+
+    let mut missing_data = fixture.clone();
+    missing_data.memory.pop();
+    assert!(missing_data.validate().is_err());
+    let mut writable_data = fixture.clone();
+    writable_data.memory[1].permissions.write = true;
+    assert!(writable_data.validate().is_err());
+    let mut short_data = fixture;
+    short_data.memory[1].length = 16;
+    short_data.memory[1].initial_bytes_hex.truncate(32);
+    short_data.memory[1].comparison_mask_hex.truncate(32);
+    assert!(short_data.validate().is_err());
+}
+
+#[test]
+fn movss_memory_load_profile_is_exact_f3_rax_m32_only() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_8c_movss_memory_load_rax.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongMovssMemLoadV1);
+    for bytes in ["f30f1000", "f3440f1000"] {
+        let mut accepted = fixture.clone();
+        let code = accepted
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        accepted.stop_rip = Some(HexU64(
+            accepted.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(accepted.validate().is_ok(), "{bytes}");
+    }
+    for bytes in [
+        "f20f1000",
+        "66f30f1000",
+        "f3410f1000",
+        "f3420f1000",
+        "f3480f1000",
+        "f30f1001",
+        "f30f100400",
+        "f30f104000",
+        "f30f1100",
+        "f30f10c0",
+        "f3440f1001",
+        "f3c5f81000",
+        "f362f17e081000",
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(
+            rejected.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+    let mut short_data = fixture;
+    short_data.memory[1].length = 3;
+    short_data.memory[1].initial_bytes_hex.truncate(6);
+    short_data.memory[1].comparison_mask_hex.truncate(6);
+    assert!(short_data.validate().is_err());
+}
+
+#[test]
+fn movsd_memory_load_profile_is_exact_f2_rax_m64_only() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_9c_movsd_memory_load_rax.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongMovsdMemLoadV1);
+    for bytes in ["f20f1000", "f2400f1000", "f2440f1000"] {
+        let mut accepted = fixture.clone();
+        let code = accepted
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        accepted.stop_rip = Some(HexU64(
+            accepted.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(accepted.validate().is_ok(), "{bytes}");
+    }
+    for bytes in [
+        "f20f1001",         // other base register
+        "f20f1004",         // SIB
+        "f20f104000",       // disp8
+        "f20f108000000000", // disp32
+        "f2410f1000",       // REX.B
+        "f2420f1000",       // REX.X
+        "f2480f1000",       // REX.W
+        "f240410f1000",     // duplicate REX
+        "40f20f1000",       // REX before mandatory prefix
+        "f2f20f1000",       // duplicate mandatory prefix
+        "66f20f1000",
+        "f30f1000",
+        "67f20f1000",
+        "64f20f1000",
+        "f0f20f1000",
+        "f20f1100", // store direction
+        "f20f10c0", // register form
+        "f20f10",   // truncated ModR/M
+        "c5fb1000", // VEX
+        "c4e17b1000",
+        "62f1ff081000", // EVEX
+        "f2a5",         // string MOVSD
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(
+            rejected.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+
+    let mut short_data = fixture;
+    let data = short_data
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "data")
+        .unwrap();
+    data.length = 8;
+    data.initial_bytes_hex.truncate(16);
+    data.comparison_mask_hex.truncate(16);
+    assert!(short_data.validate().is_err());
+}
+
+#[test]
+fn movsd_memory_store_profile_is_exact_f2_rax_m64_only() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_9d_movsd_memory_store_rax.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongMovsdMemStoreV1);
+    for bytes in ["f20f1100", "f2440f1100", "f2400f1100"] {
+        let mut accepted = fixture.clone();
+        let code = accepted
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        accepted.stop_rip = Some(HexU64(
+            accepted.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(accepted.validate().is_ok(), "{bytes}");
+    }
+    for bytes in [
+        "f20f1101",
+        "f20f1104",
+        "f20f114000",
+        "f20f118000000000",
+        "f2410f1100",
+        "f2420f1100",
+        "f2480f1100",
+        "f240410f1100",
+        "40f20f1100",
+        "f2f20f1100",
+        "66f20f1100",
+        "f30f1100",
+        "67f20f1100",
+        "64f20f1100",
+        "f0f20f1100",
+        "f20f1000",
+        "f20f11c0",
+        "f20f11",
+        "f2440f11",
+        "f2a5",
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(
+            rejected.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+    let mut read_only = fixture.clone();
+    read_only.memory[1].permissions.write = false;
+    assert!(read_only.validate().is_err());
+    let mut missing_sse = fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.validate().is_err());
+    let mut short_data = fixture;
+    short_data.memory[1].length = 8;
+    short_data.memory[1].initial_bytes_hex.truncate(16);
+    short_data.memory[1].comparison_mask_hex.truncate(16);
+    assert!(short_data.validate().is_err());
+}
+
+#[test]
+fn movss_memory_store_profile_is_exact_f3_rax_m32_only() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_8d_movss_memory_store_rax.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongMovssMemStoreV1);
+    for bytes in ["f30f1100", "f3440f1100"] {
+        let mut accepted = fixture.clone();
+        let code = accepted
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        accepted.stop_rip = Some(HexU64(
+            accepted.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(accepted.validate().is_ok(), "{bytes}");
+    }
+    for bytes in [
+        "f20f1100",
+        "66f30f1100",
+        "f3410f1100",
+        "f3420f1100",
+        "f3480f1100",
+        "f30f1101",
+        "f30f110400",
+        "f30f114000",
+        "f30f1000",
+        "f30f11c0",
+        "f3440f1101",
+        "40f30f1100",
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(
+            rejected.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+    let mut no_write = fixture.clone();
+    no_write.memory[1].permissions.write = false;
+    assert!(no_write.validate().is_err());
+    let mut missing_data = fixture.clone();
+    missing_data.memory.pop();
+    assert!(missing_data.validate().is_err());
+    let mut short_data = fixture;
+    short_data.memory[1].length = 3;
+    short_data.memory[1].initial_bytes_hex.truncate(6);
+    short_data.memory[1].comparison_mask_hex.truncate(6);
+    assert!(short_data.validate().is_err());
+}
+
+#[test]
+fn movups_memory_store_profile_is_separate_and_exactly_bounds_rax_destination() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_5_movups_memory_store_rax.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongMovupsMemStoreV1);
+    for bytes in ["0f1100", "0f1138", "440f1100", "440f1138"] {
+        let mut accepted = fixture.clone();
+        let code = accepted
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        accepted.stop_rip = Some(HexU64(
+            accepted.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(accepted.validate().is_ok(), "{bytes}");
+    }
+
+    for bytes in [
+        "0f1101",         // [RCX]
+        "0f114000",       // displacement
+        "0f118000000000", // disp32
+        "0f110400",       // SIB
+        "410f1100",       // REX.B / [R8]
+        "420f1100",       // REX.X
+        "480f1100",       // REX.W
+        "660f1100",
+        "f20f1100",
+        "f30f1100",
+        "f00f1100",
+        "670f1100",
+        "2e0f1100",
+        "40440f1100",   // duplicate REX
+        "0f1000",       // load direction
+        "0f11c0",       // register destination
+        "c5f81100",     // VEX
+        "c4e1781100",   // VEX3
+        "62f17c081100", // EVEX
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(
+            rejected.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+
+    let mut readonly = fixture.clone();
+    readonly.memory[1].permissions.write = false;
+    assert!(readonly.validate().is_err());
+    let mut state_only = fixture.clone();
+    state_only.profile = Profile::LongX87SseStateV1;
+    assert!(state_only.validate().is_err());
+}
+
+#[test]
+fn movups_memory_base_profile_admits_base_disp_and_rejects_other_address_forms() {
+    let original = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_5_movups_memory_store_rax.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    for (bytes, base_register, base_value) in [
+        ("0f1000", 0usize, 0x0020_0001u64),                // [RAX]
+        ("410f1000", 8usize, 0x0020_0001),                 // [R8], no displacement
+        ("0f1040f9", 0usize, 0x0020_0008),                 // [RAX-7]
+        ("0f1145f9", 5usize, 0x0020_0008),                 // [RBP-7], SS default
+        ("410f1045ff", 13usize, 0x0020_0002),              // [R13-1], DS default
+        ("450f1140f9", 8usize, 0x0020_0008),               // REX.R+B, [R8-7], XMM8 source
+        ("0f108000000080", 0usize, 0x8020_0000),           // signed disp32 minimum
+        ("0f1080ffffff7f", 0usize, 0xffff_ffff_8020_0002), // signed disp32 maximum
+    ] {
+        for opcode in [0x10, 0x11] {
+            let mut fixture = original.clone();
+            fixture.profile = Profile::LongMovupsMemBaseV1;
+            let code = fixture
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "code")
+                .unwrap();
+            let mut instruction = bytes
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect::<Vec<_>>();
+            let opcode_index = if instruction[0] == 0x0f { 1 } else { 2 };
+            instruction[opcode_index] = opcode;
+            code.length = instruction.len() as u32;
+            code.initial_bytes_hex = instruction
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            code.comparison_mask_hex = "ff".repeat(instruction.len());
+            fixture.stop_rip = Some(HexU64(
+                fixture.initial_state.rip.get() + instruction.len() as u64,
+            ));
+            fixture.initial_state.gpr[base_register] = HexU64(base_value);
+            assert!(fixture.validate().is_ok(), "{bytes} opcode={opcode:#x}");
+        }
+    }
+
+    for bytes in [
+        "0f1004",         // truncated forbidden SIB
+        "0f100400",       // SIB
+        "0f100500000000", // RIP relative
+        "420f1000",       // REX.X
+        "480f1000",       // REX.W
+        "670f1000",       // address-size override
+        "440f1000", // truncated/no displacement REX.R is okay but old code shape has no rex.B; this remains valid below
+        "0f1000",   // RAX-only form is valid in new profile
+    ] {
+        let mut fixture = original.clone();
+        fixture.profile = Profile::LongMovupsMemBaseV1;
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        fixture.stop_rip = Some(HexU64(
+            fixture.initial_state.rip.get() + u64::from(code.length),
+        ));
+        let accepted = fixture.validate().is_ok();
+        if matches!(bytes, "440f1000" | "0f1000") {
+            assert!(accepted, "{bytes}");
+        } else {
+            assert!(!accepted, "{bytes}");
+        }
+    }
+}
+
 #[test]
 fn x87_schema_admits_fdivr_forms_and_inexact_no_stop_case() {
     let mut fixture = x87_fixture().fixture;
@@ -3886,4 +5196,227 @@ fn exception_comparison_ignores_unavailable_explanations_but_requires_architectu
         reason: "unknown".into(),
     };
     assert!(right.validate().is_err());
+}
+
+#[test]
+fn psubusw_profile_admits_only_its_exact_register_encoding() {
+    let raw =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_9_psubusw_register.case.json");
+    let valid = Fixture::from_json(raw).unwrap();
+    assert_eq!(valid.fixture.profile, Profile::LongPsubuswRegV1);
+    for bytes in [
+        "0fd9c1",       // bare MMX
+        "f2660fd9c1",   // other prefix
+        "66480fd9c1",   // REX.W
+        "66420fd9c1",   // REX.X
+        "660fd901",     // memory operand
+        "660fd9",       // truncated ModR/M
+        "c5f9d9c1",     // VEX
+        "c4e179d9c1",   // VEX3
+        "62f17d08d9c1", // EVEX
+        "66660fd9c1",   // duplicate mandatory prefix
+    ] {
+        let mut root: serde_json::Value = serde_json::from_slice(raw).unwrap();
+        let byte_len = (bytes.len() / 2) as u64;
+        root["memory"][0]["length"] = byte_len.into();
+        root["memory"][0]["initial_bytes_hex"] = bytes.into();
+        root["memory"][0]["comparison_mask_hex"] = "ff".repeat(byte_len as usize).into();
+        root["stop_rip"] = format!("0x{:016x}", 0x0010_0000 + byte_len).into();
+        let error = Fixture::from_json(&serde_json::to_vec(&root).unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                FormatError::InvalidField {
+                    field: "memory.code",
+                    ..
+                }
+            ),
+            "{bytes}: {error}"
+        );
+    }
+}
+
+#[test]
+fn psubsb_profile_admits_only_its_exact_register_encoding() {
+    let raw =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_11_psubsb_register.case.json");
+    let valid = Fixture::from_json(raw).unwrap();
+    assert_eq!(valid.fixture.profile, Profile::LongPsubsbRegV1);
+    assert_eq!(valid.fixture.memory[0].initial_bytes_hex, "66450fe8c1");
+    for bytes in [
+        "0fe8c1",     // bare MMX
+        "f2660fe8c1", // extra prefix
+        "f3660fe8c1",
+        "67660fe8c1",
+        "f0660fe8c1",
+        "66480fe8c1",   // REX.W
+        "66420fe8c1",   // REX.X
+        "6640410fe8c1", // two REX prefixes
+        "660fe801",     // memory form
+        "660fe8",       // truncated ModR/M
+        "c5f9e8c1",     // VEX
+        "c4e179e8c1",   // VEX3
+        "62f17d08e8c1", // EVEX
+        "66660fe8c1",   // duplicate mandatory prefix
+    ] {
+        let mut invalid = valid.fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing_sse = valid.fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.validate().is_err());
+}
+
+#[test]
+fn paddsw_profile_admits_only_its_exact_register_encoding() {
+    let raw =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_12_paddsw_register.case.json");
+    let valid = Fixture::from_json(raw).unwrap();
+    assert_eq!(valid.fixture.profile, Profile::LongPaddswRegV1);
+    assert_eq!(valid.fixture.memory[0].initial_bytes_hex, "66450fedc1");
+    for bytes in [
+        "0fedc1",     // bare MMX
+        "f2660fedc1", // extra prefix
+        "f3660fedc1",
+        "67660fedc1",
+        "f0660fedc1",
+        "66480fedc1",   // REX.W
+        "66420fedc1",   // REX.X
+        "6640410fedc1", // two REX prefixes
+        "660fed01",     // memory form
+        "660fed",       // truncated ModR/M
+        "c5f9edc1",     // VEX
+        "c4e179edc1",   // VEX3
+        "62f17d08edc1", // EVEX
+        "66660fedc1",   // duplicate mandatory prefix
+    ] {
+        let mut invalid = valid.fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing_sse = valid.fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.validate().is_err());
+}
+
+#[test]
+fn psubsw_profile_admits_only_its_exact_register_encoding() {
+    let raw =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_13_psubsw_register.case.json");
+    let valid = Fixture::from_json(raw).unwrap();
+    assert_eq!(valid.fixture.profile, Profile::LongPsubswRegV1);
+    assert_eq!(valid.fixture.memory[0].initial_bytes_hex, "66450fe9c1");
+    for bytes in [
+        "0fe9c1",     // bare MMX
+        "f2660fe9c1", // extra prefix
+        "f3660fe9c1",
+        "67660fe9c1",
+        "f0660fe9c1",
+        "66480fe9c1",   // REX.W
+        "66420fe9c1",   // REX.X
+        "6640410fe9c1", // two REX prefixes
+        "660fe901",     // memory form
+        "660fe9",       // truncated ModR/M
+        "c5f9e9c1",     // VEX
+        "c4e179e9c1",   // VEX3
+        "62f17d08e9c1", // EVEX
+        "66660fe9c1",   // duplicate mandatory prefix
+    ] {
+        let mut invalid = valid.fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing_sse = valid.fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.validate().is_err());
+}
+
+#[test]
+fn paddd_profile_admits_only_its_exact_register_encoding() {
+    let raw =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_14_paddd_register.case.json");
+    let valid = Fixture::from_json(raw).unwrap();
+    assert_eq!(valid.fixture.profile, Profile::LongPadddRegV1);
+    assert_eq!(valid.fixture.memory[0].initial_bytes_hex, "66450ffec1");
+    for bytes in [
+        "0ffec1",     // bare MMX
+        "f2660ffec1", // extra prefix
+        "f3660ffec1",
+        "67660ffec1",
+        "f0660ffec1",
+        "66480ffec1",   // REX.W
+        "66420ffec1",   // REX.X
+        "6640410ffec1", // two REX prefixes
+        "660ffe01",     // memory form
+        "660ffe",       // truncated ModR/M
+        "c5f9fec1",     // VEX
+        "c4e179fec1",   // VEX3
+        "62f17d08fec1", // EVEX
+        "66660ffec1",   // duplicate mandatory prefix
+    ] {
+        let mut invalid = valid.fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing_sse = valid.fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.validate().is_err());
+}
+
+#[test]
+fn psubd_profile_admits_only_its_exact_register_encoding() {
+    let raw =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_15_psubd_register.case.json");
+    let valid = Fixture::from_json(raw).unwrap();
+    assert_eq!(valid.fixture.profile, Profile::LongPsubdRegV1);
+    assert_eq!(valid.fixture.memory[0].initial_bytes_hex, "66450ffac1");
+    for bytes in [
+        "0ffac1",
+        "f2660ffac1",
+        "f3660ffac1",
+        "67660ffac1",
+        "f0660ffac1",
+        "66480ffac1",
+        "66420ffac1",
+        "6640410ffac1",
+        "660ffa01",
+        "660ffa",
+        "c5f9fac1",
+        "c4e179fac1",
+        "62f17d08fac1",
+        "66660ffac1",
+    ] {
+        let mut invalid = valid.fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing_sse = valid.fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.validate().is_err());
 }

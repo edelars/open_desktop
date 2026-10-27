@@ -122,6 +122,32 @@ direct64 сам по себе не доказывает отсутствие д�
 анализ upstream источника, который ещё нужно сопоставить с точным Ubuntu
 source package и фактическим выполнением выбранного образа.
 
+## Решение по Generic amd64 baseline
+
+**User decision:** целевой Ubuntu-кандидат — Generic `amd64`. Его нормативное
+прочтение как ABI/ISA floor — baseline x86-64 psABI (x86-64-v1); уровни
+x86-64-v2/v3/v4 не принимаются. Ubuntu описывает обычный `amd64` как baseline
+без расширений сверх исходных 64-bit AMD/Intel CPU, отдельно выделяя
+`amd64v3`; psABI задаёт baseline и кумулятивные уровни v2–v4. См. прямые
+источники: [Ubuntu supported architectures and baselines](https://ubuntu.com/project/docs/how-ubuntu-is-made/concepts/supported-architectures/)
+и [upstream x86-64 psABI, Micro-Architecture Levels](https://gitlab.com/x86-psABIs/x86-64-ABI/-/blob/master/x86-64-ABI/low-level-sys-info.tex).
+Это решение ограничено ABI/ISA floor. Оно не принимает целостный CPU, CPUID,
+MSR или OS boot profile. В частности, предложенные в архитектурном анализе
+synthetic vendor/family/model/stepping, CPUID mask и MSR allowlist — только
+candidates; они остаются unresolved до exact-source/binary gate.
+
+| Уровень доказательств | Текущий статус | Чего он не доказывает |
+|---|---|---|
+| Нормативный ABI/ISA floor | Generic amd64; baseline x86-64 psABI (v1), без v2/v3/v4 | Полный набор ISA форм и system semantics выбранной ОС |
+| Kernel config requirements | Для exact buildinfo зафиксированы required capabilities из таблицы выше | Что каждая capability обязательно включена в CPUID mask либо исполняется каждым boot path |
+| Upstream source reachability | Сопоставлены upstream v7.0 paths и Ubuntu source delta; см. audit ниже | Что конкретные ветви включены/достижимы в точном binary и выбранной конфигурации |
+| Exact Ubuntu source/binary | Source delta и package metadata исследованы; package `startup_64` disassembly и связка каждого пути с binary не завершены | Фактическая последовательность исполнения |
+| Observed execution | Ubuntu kernel guest boot не наблюдался | Успешный boot, C/D или поддерживаемая ОС |
+
+До перехода к реализации/приёмке C/D остаются незакрытыми initramfs, command
+line, device/topology manifest и измеримый success milestone. Это не меняет
+статус S2-00: принят диагностический A; profile C/D и boot остаются открытыми.
+
 ## Что остаётся для C/D
 
 1. Подготовить локальный staging исследованного image/config с проверкой
@@ -154,15 +180,80 @@ source package и фактическим выполнением выбранно
 ссылается на архивный
 [linux_7.0.0-38.38.diff.gz](https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux_7.0.0-38.38.diff.gz).
 Полученный diff имеет 5769 path entries и совпадает с опубликованным MD5
-`130cb6bcf60f97cbe11c2a8b3fb0dadc`. Среди затронутых x86 paths только
-`tools/arch/x86/include/asm/msr-index.h` и
-`tools/perf/arch/x86/tests/amd-ibs-period.c`; файлы `head_64.S`,
-`pgtable_64.c` и `header.S` source delta не меняет.
+`130cb6bcf60f97cbe11c2a8b3fb0dadc` и SHA-256
+`98e913d4a1c1f810e4dcfa573cbcf0f1a3a4427bdcd503722555298a794c52b2`.
+В diff 98 x86 paths: 96 под `arch/x86/` и два в `tools/arch/x86/` либо
+`tools/perf/arch/x86/`. Delta затрагивает, в частности,
+`arch/x86/entry/entry_64.S`, CPU feature checks и FPU signal paths. Она не
+меняет `arch/x86/boot/compressed/head_64.S`,
+`arch/x86/boot/compressed/pgtable_64.c`, `arch/x86/kernel/head_64.S` или
+`arch/x86/boot/header.S`.
 
-Это сужает вопрос о расхождении Ubuntu source patches для указанных путей,
-но не связывает каждый собранный byte с исходником и не доказывает порядок
-инструкций или выполнение конкретного kernel image. Disassembly package
-binary `startup_64` пока не проверен. Поэтому локальные S2-22k fixtures
+Первоначальный подсчёт x86 paths был ошибочным: он пропустил пути,
+начинающиеся с `arch/x86/`. Этот корректный перечень сужает вопрос об
+изменениях именно четырёх ранних boot files, но показывает, что более поздние
+entry, CPU и FPU paths имеют Ubuntu deltas. Он не связывает каждый собранный
+byte с исходником и не доказывает порядок инструкций или выполнение
+конкретного kernel image. Disassembly package binary `startup_64` пока не
+проверен. Поэтому локальные S2-22k fixtures
 `MOV DS/ES, AX` не называются исполняемым startup prefix и не доказывают
 фактический вход в Ubuntu artifact. Linux boot, machine handoff и C/D
 inventory остаются открытыми.
+
+## C/D reachability audit — 27 октября 2026
+
+Этот аудит сопоставляет upstream v7.0 source paths с опубликованной Ubuntu
+source delta; это уровень **source reachability**, а не disassembly точного
+пакета или наблюдавшийся boot. Exact Ubuntu `.dsc` и delta доступны по
+[linux 7.0.0-38.38 `.dsc`](https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux_7.0.0-38.38.dsc)
+и [diff.gz](https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux_7.0.0-38.38.diff.gz).
+Правильно разобранная delta содержит 98 x86 paths, включая
+`arch/x86/entry/entry_64.S`, CPU и FPU paths; ранние boot files,
+перечисленные выше, не меняются. Ubuntu delta дополнительно добавляет
+Intel `IA32_PLATFORM_ID` probe в отдельных model/hypervisor conditions,
+AMD-specific MSR writes и saferet alternatives; upstream-only ISA inventory
+недостаточен. Binary/source identity и выполнение этих ветвей не проверены.
+
+**C — системное состояние и переходы.** При условии direct64 handoff,
+Long64, одного машинно описанного vCPU и согласованного 4-level paging
+возможна узкая политика `CPUID.LA57=0`, `CR4.LA57=0` и `no5lvl`; тогда
+upstream `configure_5level_paging` не требует 32-bit trampoline. Но это
+условная policy, не установленное состояние точного пакета. Kernel path
+достигает сегментных/descriptor операций (null DS/ES/SS/FS/GS, GDT/IDT/LTR,
+LGDT/LIDT и CS reload), CR0/CR4/CR2/CR3, CPUID и model-dependent MSR,
+debug registers, SYSCALL/IRET user↔kernel переходов и обработки #PF/#GP.
+Путь также задаёт timer/interrupt requirements; «один vCPU» сам по себе не
+исключает IRQ/APIC. Эти области отражены upstream в
+[`head_64.S`](https://raw.githubusercontent.com/torvalds/linux/v7.0/arch/x86/boot/compressed/head_64.S),
+[`kernel/head_64.S`](https://raw.githubusercontent.com/torvalds/linux/v7.0/arch/x86/kernel/head_64.S),
+[`cpu/common.c`](https://raw.githubusercontent.com/torvalds/linux/v7.0/arch/x86/kernel/cpu/common.c),
+[`entry_64.S`](https://raw.githubusercontent.com/torvalds/linux/v7.0/arch/x86/entry/entry_64.S)
+и [`verify_cpu.S`](https://raw.githubusercontent.com/torvalds/linux/v7.0/arch/x86/kernel/verify_cpu.S).
+
+**D — FPU/SIMD state.** По upstream path обязательны FPU initialization:
+`FNINIT`, настройка CR0/CR4 FPU bits и `FXSAVE` для чтения MXCSR mask; при
+XSAVE выключенном используется legacy `FXSAVE64`/`FXRSTOR64` для save/restore
+перед userspace. Значит одного текущего x87 environment snapshot
+недостаточно: требуются XMM/MXCSR state и точный FXSAVE layout/semantics.
+XSAVE/AVX paths условны по CPUID/state; их нельзя выводить только из
+`CONFIG_*`. RAID6/SSE2 modules могут исполнять SSE2 при загрузке, а
+accelerated crypto branches зависят от CPU features; пока initramfs/module
+manifest не закреплён, их нельзя объявить обязательными или исключить.
+Обязательность общего MMX, отдельных x87 arithmetic/conversion/transcendental
+forms и произвольных SSE2 instructions source path не доказал. Ссылки:
+[`fpu/init.c`](https://raw.githubusercontent.com/torvalds/linux/v7.0/arch/x86/kernel/fpu/init.c),
+[`fpu/core.c`](https://raw.githubusercontent.com/torvalds/linux/v7.0/arch/x86/kernel/fpu/core.c),
+[`fpu/legacy.h`](https://raw.githubusercontent.com/torvalds/linux/v7.0/arch/x86/kernel/fpu/legacy.h),
+[`fpu/xstate.c`](https://raw.githubusercontent.com/torvalds/linux/v7.0/arch/x86/kernel/fpu/xstate.c),
+[`lib/raid6/algos.c`](https://raw.githubusercontent.com/torvalds/linux/v7.0/lib/raid6/algos.c)
+и [`lib/raid6/sse2.c`](https://raw.githubusercontent.com/torvalds/linux/v7.0/lib/raid6/sse2.c).
+
+**Открытый профильный выбор.** До реализации следующего C/D blocker нужно
+закрепить CPU vendor/family/model/stepping и hypervisor identity; maximum
+CPUID leaves/subleaves и feature mask; начальные CR/EFER/segment/table state;
+mitigation policy; exact kernel/initramfs/ELF64 init/module hashes;
+command line, page/memory map, UART, timer/interrupt controller и root path;
+критерий успеха (PID1/serial marker). `S2-00` остаётся принятым только для
+диагностического A. Profile C/D, S2-22/25/26/27, S2-23 necessity и source-to-
+binary/observed-execution evidence остаются открытыми. Физический x86/Mac
+mini acceptance будет единым финальным подэтапом, не заменой этому manifest.

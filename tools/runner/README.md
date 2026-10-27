@@ -135,3 +135,13 @@ S2-30ce fixture runs compare full machine and memory snapshots for bare
 FCMOVNBE, signed-zero transfer, repeat, and FCOMI-produced conditions. Both
 repeat instructions are checked by interpreter state tests; the runner denies
 JIT for all success and rejection fixtures.
+
+S2-35.7's local-only register `PSUBW` fixture exercises `66 [one optional
+REX.R/B] 0F F9 /r`; each of eight little-endian u16 lanes subtracts modulo
+65536. JIT remains unsupported. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-register-only-psubw-profile--s2-357).
+
+S2-35.8’s local-only register `PADDUSW` fixture checks eight unsigned word lanes with per-lane saturation. It remains interpreter-only and JIT/native denied.
+
+S2-35.9’s local-only register `PSUBUSW` fixture checks eight unsigned word lanes with per-lane saturation to zero. It remains interpreter-only and JIT/native denied.
+
+S2-35.10’s local-only register `PADDSB` fixture checks signed byte addition with saturation in all 16 lanes. It remains interpreter-only and JIT/native denied.

@@ -5,6 +5,21 @@
 ISSUE-011/012 остаются открытыми; наличие нового состояния или local instruction
 slice не означает завершение этапа.
 
+## S2-00 — уточнение целевого Linux floor
+
+Пользователь уточнил целевой профиль Ubuntu как Generic `amd64`. Для ABI/ISA
+floor принята нормативная интерпретация x86-64 psABI baseline (x86-64-v1);
+x86-64-v2/v3/v4 не входят в цель. Это не является принятием полного
+CPU/CPUID/MSR/OS boot profile. Конкретные synthetic vendor/family/model,
+CPUID mask и MSR allowlist остаются кандидатами до exact-source/binary gate.
+
+Доказательства разделены на нормативный floor, kernel config requirements,
+upstream source reachability, exact Ubuntu source/binary и observed execution.
+Статические config/source/package findings не подтверждают загрузку. Initramfs,
+command line, device/topology manifest и success milestone не определены;
+Linux boot и C/D/System остаются открытыми. Подробные источники, evidence
+ladder и условия продолжения: [S2-00 Linux profile report](STAGE_2_LINUX_PROFILE.md#решение-по-generic-amd64-baseline).
+
 ## S2-22e — CPL3 GDT-only VERW
 
 Added the local-only `s2-long-verw-gdt-v1` profile and one exact decoder form,
@@ -108,7 +123,7 @@ independent Sol-medium review rechecked this path and reported no remaining
 findings.
 
 Source: Intel SDM revision 093, Vol.2B (253667-093US), MOV pp.4-28–4-31,
-[official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241); Vol.3A
+[official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf); Vol.3A
 (325384-093US), §§3.4.3–3.4.5.1, 3.5.1, 6.4.1.1, 6.6–6.6.1, 6.11.5 and
 7.13 plus Event 11, [official combined PDF](https://cdrdv2.intel.com/v1/dl/getContent/671447).
 
@@ -155,7 +170,7 @@ native execution or physical acceptance was run; those remain in the shared
 final acceptance substage. Independent Sol-medium code review completed with
 no remaining code or fixture findings after the descriptor-origin wording fix.
 
-Sources: Intel SDM revision 093, Vol.2B MOV pp.4-28–4-31, [official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241);
+Sources: Intel SDM revision 093, Vol.2B MOV pp.4-28–4-31, [official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf);
 Vol.3A §§3.4.5.1 pp.3-12–3-13, 5.6.1 pp.5-33–5-35, 5.7 pp.5-37–5-38,
 11.1.2.1 p.11-3 Automatic Locking, [official combined PDF](https://cdrdv2.intel.com/v1/dl/getContent/671447).
 
@@ -465,7 +480,7 @@ check и `cargo test --workspace --offline`: od-host 6, od-isa 19, od-jit 4,
 od-runner 9, od-testkit 47 и od-x86-runner library 8 tests. Layout и whitespace
 checks также прошли. Нормативные источники — Intel
 SDM 093 [Vol.2A](https://cdrdv2.intel.com/v1/dl/getContent/671199), §§2.1.1–2.2.1,
-ADD/CMP/Jcc/LOCK, и [Vol.2B](https://cdrdv2.intel.com/v1/dl/getContent/671241),
+ADD/CMP/Jcc/LOCK, и [Vol.2B](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf),
 MOV/SUB. S2-06 принят в перечисленных decode-only границах; новых execution
 форм и их проверки на физическом oracle это не подтверждает.
 
@@ -797,7 +812,7 @@ widths, успешные quotient/remainder и defined flags. Эти прове�
 host signal/context архитектурному vector.
 
 Точные Intel SDM revision 093 references сверены по официальным PDF volumes:
-[Vol.2B](https://cdrdv2.intel.com/v1/dl/getContent/671241) MUL pp.4-140–4-141;
+[Vol.2B](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf) MUL pp.4-140–4-141;
 [Vol.2A](https://cdrdv2.intel.com/v1/dl/getContent/671199) IMUL pp.3-451–3-454,
 DIV pp.3-264–3-266, IDIV pp.3-448–3-450; Vol.1 §3.4.1.1 — GPR alias/32-bit
 write rules. The fixture metadata currently identifies the four mnemonics
@@ -2003,6 +2018,42 @@ The case was not included in native acceptance selection or execution. The
 deferred S2-15-onward pool increases from 592 to 593; the native-selected subset
 is unchanged.
 
+## S2-35.2 — local PADDB XMM register slice
+
+Implemented exact profile `s2-long-paddb-reg-v1` for `66 [one optional
+REX.R/B] 0F FC /r`, ModR/M.mod=3. Mandatory `66` selects XMM/SSE2; bare
+`0F FC` (MMX), memory operands, other packed-add widths, saturating forms,
+other legacy prefixes, REX.W/X, VEX and EVEX are rejected. ModR/M.reg selects
+the destination, ModR/M.r/m the source; each of sixteen lanes adds modulo 256
+independently. State tests confirm x87, MXCSR, GPR, RFLAGS and unrelated XMM
+preservation, including all 256 destination/source register pairs and
+self-aliasing, with no data-memory access. The fixture exercises the high
+register form XMM8←XMM9. Schema, interpreter, runner, JIT-denial and
+native-admission-denial paths are covered.
+
+The encoding and lane semantics follow Intel SDM revision 093 Vol. 2B PADDB
+(`66 0F FC /r`; ModR/M.reg destination, r/m source): [official Intel Vol. 2B
+PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf) and [Intel SDM
+page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+The profile assumes SSE2 availability, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1;
+it makes no CPUID claim and does not model #UD/#NM/control-register faults.
+Memory forms, native/JIT execution and physical verification are outside this
+slice.
+
+Focused tests passed: od-isa decoder/execution matrices (2), od-testkit profile
+and execution tests (3), and od-runner interpreter/JIT fixture test (1). Full
+affected offline tests passed: od-isa (940), od-testkit (282), od-runner (102
+unit and 256 fixture tests), od-x86-runner (8 library and 1 binary test). The
+workspace all-target offline check and `x86_64-unknown-linux-gnu` x86-runner
+all-target compile check passed. `cargo fmt --all -- --check`, `git diff
+--check` and `graphify update .` passed. The Linux target was compile-checked
+only. `python3 tools/check_layout.py` reports the managed worktree `.git`
+pointer and two existing links to absent ignored Stage 1/2 oracle manifests;
+the new paths are not implicated. Independent `gpt-6.1-sol` review and
+re-review found no remaining actionable findings. No physical x86 or Mac mini
+execution occurred. Child S2-35.2 is complete; parent S2-34 and S2-35 and the
+global dependency `S2-35 → S2-34` remain open and unchanged.
+
 [`generate_stage2_idiv_qword_error.py`](../../tests/cpu/generate_stage2_idiv_qword_error.py)
 serializes handwritten encoding, register values, and expected state with
 provenance to Intel SDM revision 093 Vol.2A IDIV; it does not calculate CPU
@@ -2238,7 +2289,7 @@ DMA, SMP or physical ordering. The deferred pool grows 601 → 602; native
 selection is unchanged. ISSUE-017 remains open for general LOCK ordering.
 
 Normative reference: Intel SDM revision 093 (order 253667-093US), Vol.2B
-MFENCE p.4-15, [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241).
+MFENCE p.4-15, [official Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf).
 
 Local validation passed: `od-isa` 129/129, `od-testkit` 124/124, runner
 `fixture_v2` 35/35, focused generator freshness/provenance 2/2. Physical checks
@@ -2262,7 +2313,7 @@ added. Pool count is 602 → 603; native-selected subset is unchanged.
 
 Sources: Intel SDM revision 093 (253665-093US), Vol.1 §§3.3.7–3.3.7.1
 pp.3-10–3-11 and §3.4.2.1 p.3-15; Vol.2B MOV pp.4-28–4-31 (253667-093US),
-[official Vol.2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241). See
+[official Vol.2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf). See
 [CPU contract](../specs/CPU_CONTRACT.md#s2-22a--единственная-fs-base-форма-в-отдельном-локальном-профиле)
 and [fixture format](../testing/TEST_CASE_FORMAT.md#version-2-long-mode-integer-states).
 
@@ -2298,7 +2349,7 @@ fixture provenance now use the official Vol.2B PDF.
 
 Source: Intel SDM revision 093 (253665-093US), Vol.1 §§3.3.7–3.3.7.1
 pp.3-10–3-11 and §3.4.2.1 p.3-15; Vol.2B MOV pp.4-28–4-31 (253667-093US),
-[official Vol.2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241). See the
+[official Vol.2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf). See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-22b--единственная-gs-base-форма-в-отдельном-локальном-профиле)
 and [fixture format](../testing/TEST_CASE_FORMAT.md#version-2-long-mode-integer-states).
 
@@ -2332,7 +2383,7 @@ privilege, stack and mode-specific segmentation behavior.
 Source: Intel SDM revision 093, Vol.1 §3.4.2 p.3-13 (253665-093US; segment
 registers contain selectors), [official Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436);
 Vol.2B MOV pp.4-28–4-31 (253667-093US; REX.W + 8C /r zero-extends the selector
-into r64), [official Vol.2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241).
+into r64), [official Vol.2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf).
 
 Validation passed: `cargo fmt --all -- --check`; workspace
 `cargo check --workspace --all-targets --offline`; local tests for od-isa (134),
@@ -2371,7 +2422,7 @@ segmentation behavior.
 Source: Intel SDM revision 093, Vol.1 §3.4.2 p.3-13 (253665-093US; segment
 registers contain selectors), [official Vol.1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436);
 Vol.2B MOV pp.4-28–4-31 (253667-093US; REX.W + 8C /r zero-extends the selector
-into r64, ModR/M E8 selects GS:RAX), [official Vol.2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241).
+into r64, ModR/M E8 selects GS:RAX), [official Vol.2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf).
 
 Validation passed: `cargo fmt --all -- --check`, `cargo check --workspace
 --all-targets --offline`, `cargo test --workspace --offline`, all 81 Python
@@ -11181,3 +11232,983 @@ The Ubuntu source diff review in the [Linux profile report](STAGE_2_LINUX_PROFIL
 only establishes the published source patch delta; package-binary disassembly
 and actual artifact execution remain unverified. S2-22 and ISSUE-018 remain
 open.
+
+## S2-34.1 — local raw x87/SSE snapshot transfer
+
+Added the separate `s2-long-x87-sse-state-v1` fixture profile, requiring the
+existing x87 snapshot plus a new independent `SseState` containing 16 raw
+16-byte XMM registers and raw u32 MXCSR. The profile accepts one literal NOP
+with instruction budget 1 and stop RIP immediately after it. The local
+interpreter result retained all bytes and both x87/SSE snapshots; comparator
+mutations of each XMM register and MXCSR are reported. Older profiles omit the
+SSE object and reject it when supplied. The C fragment adapter rejects
+`Some(sse)`, and native profile admission remains closed.
+
+The diagnostic fixture metadata fixes the bounded-profile MXCSR mask at
+`0x0000ffbf` (default without optional DAZ). This is not a universal hardware
+CPUID mask and does not define guest `#GP` semantics; core state keeps raw
+MXCSR. Verification passed: `cargo test -p od-isa --offline` (882 tests),
+`cargo test -p od-testkit --offline` (254 tests),
+`cargo test -p od-runner --test fixture_v2 --offline` (234 tests),
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`cargo fmt --all -- --check`, `git diff --check`, and direct local execution of
+the literal fixture using the interpreter CLI. No generator owns this handwritten
+literal, so there was no generator output to refresh. The native Linux target was
+compile-checked only; no SSH, Mac mini, physical x86, SSE execution, native/JIT
+execution, or physical verification was performed. This result establishes only
+snapshot/state preservation. S2-34, S2-38 and S2-39 remain open.
+
+## S2-34.2 — local register MOVUPS slice
+
+Added separate schema-v2 profile `s2-long-movups-reg-v1`; the S2-34.1
+`s2-long-x87-sse-state-v1` profile remains NOP-only. The new profile admits
+one legacy `0F 10 /r` with ModR/M.mod=3, optionally preceded by one effective
+REX. REX.R/B select the XMM register indices. REX.W/X are excluded, as are
+legacy `66`, F2/F3, segment/address, LOCK and duplicate/ignored-prefix
+variants, memory forms, `0F 11`, SSE2 alternatives, VEX and EVEX. The form was
+checked against Intel SDM version 093, Vol. 2B, MOVUPS entry `0F 10 /r` and its
+ModR/M operand encoding; the separate `0F 11 /r` store form is not included.
+
+The diagnostic profile assumes SSE availability, CR0.EM=0, CR0.TS=0 and
+CR4.OSFXSR=1. It does not implement control registers, `#UD/#NM`, memory or
+alignment behavior, MXCSR effects, floating-point arithmetic, native/JIT or
+physical x86 execution. A successful operation copies all 128 source bits,
+including self-copy, while preserving x87, MXCSR, GPR and RFLAGS. RIP and
+retirement advance only after successful execution. Decoder matrices cover all
+256 XMM source/destination pairs across REX.R/B; literal fixture/runner tests
+cover XMM8←XMM9 and snapshot preservation; negative cases cover prefix,
+ModR/M and truncation rejection. Native profile admission explicitly denies
+the profile. This is local completion only; S2-34/D/System remains open.
+
+Verification for this local slice: `cargo test -p od-isa --offline` (884
+passed), `cargo test -p od-testkit --offline` (256 passed),
+`cargo test -p od-runner --test fixture_v2 --offline` (235 passed),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+and `git diff --check` passed. The native-deny case is included in the
+Linux-only x86-runner tests and the Linux target compile-check passed; running
+that test binary from this macOS host failed at link because its system linker
+does not accept Linux linker flags, so native-deny runtime execution was not
+performed here. The literal fixture is handwritten and has no generator
+freshness command; its execution and complete snapshot are checked by the
+runner fixture test. `python3 tools/check_layout.py` reported this worktree's
+`.git` file as an unmapped root file and two already-referenced missing archived
+oracle manifests in the report; it reported no broken links from this slice.
+No Mac mini, SSH or physical x86 run was performed.
+Independent Sol/medium review found no functional findings; two P3 comment
+corrections were applied and the affected test and formatting checks passed
+again.
+
+## S2-34.3 — local reverse-direction register MOVUPS slice
+
+Extended the existing `s2-long-movups-reg-v1` profile to admit legacy
+`0F 11 /r` only for ModR/M.mod=3. ModR/M.reg + REX.R supplies the source and
+ModR/M.r/m + REX.B supplies the destination; the shared `MovupsRegister`
+operation and executor remain in use. The allowlist, explicit SSE/CR0/CR4
+preconditions, native denial and local-only boundaries are unchanged. Intel
+SDM revision 093, Vol. 2B, MOVUPS table entry `NP 0F 11 /r`, Op/En B
+(`MOVUPS xmm2/m128, xmm1`) identifies `xmm1` as source and `xmm2/m128` as
+destination.
+
+The decoder matrix now checks all 256 register pairs for both directions, with
+explicit checks for `0F 11 C1` (XMM0→XMM1) and `45 0F 11 C1` (XMM8→XMM9).
+The new handwritten literal fixture executes the first encoding and compares
+the complete x87/XMM/MXCSR snapshot. Runner coverage checks self-copy; an
+executor test confirms no data-memory accesses and preserves the remaining
+architectural state. Schema coverage admits both directions and rejects the
+legacy-prefix, memory, truncation, REX.W/X, VEX and EVEX cases. Native admission
+has a regression for both fixture directions; the native-deny test is
+Linux-target-only and was compile-checked, not runtime-executed here.
+
+Verification in this worktree: `cargo test -p od-isa --offline` (886 passed),
+`cargo test -p od-testkit --offline` (256 passed),
+`cargo test -p od-runner --test fixture_v2 --offline` (235 passed),
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`cargo fmt --all -- --check`, and `git diff --check` passed. No SSH, Mac mini,
+physical x86, native guest execution or physical verification was performed.
+This is local completion only: S2-34.1 remains NOP-only; S2-34/D/System remains
+open.
+
+## S2-34.4 — local MOVUPS memory-source load from `[RAX]`
+
+Added a new schema-v2 profile, `s2-long-movups-mem-load-v1`; the S2-34.1
+state-only profile remains NOP-only and the S2-34.2/.3 register profile remains
+register-only. The profile admits exactly legacy `0F 10 /r` with
+ModR/M.mod=00, r/m=000, optionally preceded by one effective REX.R for the
+destination. REX.B/X/W, SIB, displacement, other bases, `0F 11`, legacy prefix
+variants, duplicate prefixes, VEX and EVEX fail closed. The encoding follows
+Intel SDM revision 093, Vol. 2B, MOVUPS `0F 10 /r`, Op/En RM.
+
+Execution checks the full 16-byte canonical48 range for `[RAX]`, performs one
+`GuestMemory::read` into a temporary 16-byte array, then updates only the
+selected XMM register and RIP. It does not model this width as `OperandSize::Qword`.
+The unaligned fixture loads bytes `00` through `0f` from a read-only region at
+RAX=`0x200001`, preserving surrounding canaries, source memory, every other XMM,
+x87, MXCSR, GPR and RFLAGS. Local tests cover all 16 destinations, byte patterns
+with both high and low bits set, exact one-read/no-write callback traces, first
+and last canonical boundaries, cross-hole and u64-overflow rejection, injected
+read/backend/fetch failure no-commit, and forbidden encoding variants. The
+native runner explicitly denies the profile; its Linux-target test code was
+compile-checked, not run on a Linux host. The local CLI fixture also explicitly
+denies JIT without interpreter fallback.
+
+Verification in this worktree: `cargo test -p od-isa --offline` (890 passed),
+`cargo test -p od-testkit --offline` (257 passed),
+`cargo test -p od-runner --test fixture_v2 --offline` (236 passed),
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`cargo fmt --all -- --check` and `git diff --check` passed. No SSH, Mac mini,
+physical x86, native guest execution or physical verification was performed.
+`python3 tools/check_layout.py` reported the linked-worktree `.git` pointer and
+two missing archived oracle manifests; neither is caused by this slice. They
+are recorded as [ISSUE-023](../KNOWN_ISSUES.md#issue-023--layout-checker-reports-worktree-metadata-and-stale-oracle-links).
+This slice assumes SSE availability, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1; it
+implements no control-register gates, `#UD/#NM`, MXCSR operation or broader
+SSE behavior. It adds one form under the chosen Generic amd64 baseline work and
+does not establish a complete generic CPU profile. S2-34/D/System remain open.
+
+## S2-34.5 — local MOVUPS memory store to `[RAX]`
+
+Added separate profile `s2-long-movups-mem-store-v1`; the prior state-only,
+register, and memory-load profiles retain their contracts. It admits only
+legacy `0F 11 /r`, ModR/M.mod=00, r/m=000 (`[RAX]`), with optional effective
+REX.R selecting source XMM0–15. Intel SDM revision 093, Vol. 2B, MOVUPS
+`NP 0F 11 /r`, Op/En B (`xmm2/m128, xmm1`) defines XMM as source and memory as
+destination. The SDM allows unaligned memory operands, lists no SIMD FP
+exceptions and defers other exceptions to Type 4 with a note that #AC treatment
+varies; this slice implements no architectural control gates or exceptions.
+
+The executor validates all 16 bytes in the canonical48 diagnostic model,
+captures raw `[u8; 16]` from the selected XMM before backend access, issues one
+`GuestMemory::write`, and commits RIP/retirement only after success. It issues
+no read and does not use `OperandSize::Qword`. Injected backend write failures
+leave CPU state unchanged. FlatMemory separately documents/tests all-or-error
+for its private synchronous fixture RAM, with no hardware 16-byte atomicity,
+MMIO or SMP claim. Upper-u64 overflow remains the explicit ISSUE-012
+restriction. A handwritten full-state literal, all 16 XMM source test vectors,
+canaries, unaligned address, one-write/no-read trace, permission/mapping/backend
+failures, canonical/overflow boundaries, forbidden/truncated encodings,
+STOP/budget behavior and JIT/native denial cover the bounded slice. S2-34/D/System
+remain open. x86-64-v1 is only an ABI floor; this slice does not complete a
+generic CPU profile. Checks passed: `cargo test -p od-isa -p od-testkit --offline`, `cargo test -p od-runner --test fixture_v2 --offline`, `cargo test -p od-x86-runner --offline`, `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`, `git diff --check`, and Graphify update. The target-specific native-v2 unit test is Linux/x86_64-only; this macOS host compiled it with the Linux target but did not execute it. JIT denial was exercised by the fixture runner. Independent `gpt-6.1-sol` medium review found and the author fixed the missing STOP/budget coverage, 8-byte-only FlatMemory fixture check (expanded to 16 bytes), an unused schema-helper source-index bug, and a stale Intel PDF link. Final re-review found no remaining defects.
+
+## S2-34.6a — local MOVUPS base+displacement memory forms
+
+Added separate profile `s2-long-movups-mem-base-v1` for both legacy
+`0F 10 /r` loads and `0F 11 /r` stores with ModR/M memory modes 00/01/10,
+base GPR and absent/signed disp8/signed disp32. REX.R extends XMM selection;
+REX.B extends the GPR base. SIB, mod=00/rm=101 RIP-relative, REX.W/X,
+address-size 32, segment/other legacy prefixes, VEX and EVEX remain Unsupported.
+Prior state-only, register and exact `[RAX]` profiles retain their exact
+admissions. Encoding was checked against Intel SDM revision 093 Vol. 2B MOVUPS
+and Vol. 2A §§2.1.3–2.1.5, 2.2.1.1–2.2.1.3 ([official SDM page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
+[Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[Vol. 2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)).
+
+The decoder reuses `rm_operand`/`MemoryOperand`. Both directions validate the
+full 16-byte range through the shared helper; loads read once into a temporary
+before XMM/RIP commit, and stores capture raw XMM bytes before one write and
+advance RIP only after success. Backend errors preserve full CPU state.
+FlatMemory's all-or-error behavior is local fixture-RAM policy only, not
+hardware atomicity. Default DS/SS and #SS/#GP attribution come from
+`MemoryOperand`; RBP is SS-attributed and R13 data-attributed. RSP/R12 require
+SIB and cannot be encoded in this no-SIB slice. ISSUE-012's upper-u64
+AddressOverflow behavior remains open. The literal fixture exercises
+`MOVUPS [R8-7],XMM8`; executor tests exercise both directions, low/high XMM,
+supported base classes, signed displacement extrema, exact one-callback
+accesses, canonical-range faults, backend no-commit, STOP/budget and forbidden
+or truncated encodings. Native/JIT and physical execution remain excluded.
+
+Verification in this worktree: `cargo test -p od-isa --offline` (898 passed),
+`cargo test -p od-testkit --offline` (260 passed),
+`cargo test -p od-runner --test fixture_v2 --offline` (238 passed),
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`cargo fmt --all -- --check` and `git diff --check` passed. The Linux-target
+native test was compile-checked on this host, not run on Linux. `graphify update .`
+updated the code graph. `python3 tools/check_layout.py` still exits 1 on the
+linked-worktree `.git` pointer and two missing archived oracle manifests already
+recorded in the report; no new layout/link issue was found. No SSH, Mac mini,
+physical x86 or physical verification was performed. Independent Sol-medium
+review found that no-displacement REX.B `[R8]` could take the old `[RAX]` path
+and schema admission duplicated ModR/M displacement decoding. The memory
+operations were consolidated through the shared `MemoryOperand` parser, schema
+now invokes that same decoder, and tests were expanded for REX.B, signed
+displacement extrema and truncated fetch. Re-review reported no remaining
+findings.
+
+## S2-34.6b — local MOVUPS RIP-relative memory forms
+
+Extended the existing `s2-long-movups-mem-base-v1` profile for legacy
+`0F 10 /r` load and `0F 11 /r` store at ModR/M.mod=00/rm=101 with signed
+disp32. Intel SDM revision 093, Vol. 2A §2.2.1.6 (Order No. 253666-093US,
+September 2026) confirms the effective address is next RIP plus signed disp32
+and r/m=101 is unaffected by REX: REX.B=1 still means RIP-relative, not R13.
+The bounded profile rejects REX.B=1 for this encoding and allows REX.R for
+XMM8–15; other REX bits follow the existing allowlist. This admission was
+verified against Intel's current [Vol. 2A revision 093 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)
+and [manuals page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+
+Decoder and execution continue to use shared `rm_operand`, `MemoryOperand::NextRip`
+and the full-range 16-byte access path. Effective address uses instruction end
+after optional REX, escape, opcode, ModR/M and displacement. Two handwritten
+fixtures cover XMM8 load/store, unaligned data, and canaries. Tests cover both
+directions with positive/zero/negative disp32, 7/8-byte lengths, current-RIP
+and unsigned-disp discriminators, high-XMM selection, exact one-callback access,
+canonical crossing, injected backend no-commit, all four disp32 truncations,
+STOP/budget and unsupported SIB/prefix/REX.B forms. Earlier state/register/
+exact `[RAX]` profile admissions remain unchanged. Native/JIT, physical x86,
+alignment/control behavior and segment/address/mandatory prefixes remain out
+of scope. Verification passed: `cargo test -p od-isa --offline` (902 tests),
+`cargo test -p od-testkit --offline` (260 tests),
+`cargo test -p od-runner --test fixture_v2 --offline` (240 tests),
+`cargo test -p od-x86-runner --offline` (9 tests),
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`cargo fmt --all -- --check`, `git diff --check` and `graphify update .`. The
+Linux x86-runner target was compile-checked on this host, not run on Linux.
+`python3 tools/check_layout.py` still exits 1 for the linked-worktree `.git`
+pointer and two archived oracle manifest links already reported under S2-34.6a;
+it reports no new layout problem. Independent Sol-medium review found two test
+gaps (identical initial/load XMM8 data and missing STOP callback case); both
+were fixed, and re-review found no remaining findings.
+
+## S2-34.6c — shared SIB-addressed MOVUPS memory forms
+
+Extended the existing local-only `s2-long-movups-mem-base-v1` profile to
+legacy `0F 10 /r` loads and `0F 11 /r` stores through SIB addressing with
+64-bit address size. Intel SDM revision 093 Vol. 2A §§2.1.3–2.1.5 and
+2.2.1.1–2.2.1.3 establishes SIB scale, REX extensions, and the special
+`mod=00/base=5` no-base disp32 form. `index=4` means no index with REX.X=0 and
+R12 with REX.X=1. REX.B does not change `mod=00/base=5`; `mod=01/10` can select
+R13. Intel SDM Vol. 1 §§3.3.7.1, 3.7.4.1, 3.7.5.1 confirms #SS attribution
+for actual RSP/RBP base references; R12/R13 base and index-only/no-base forms
+remain DS/#GP attributed. References:
+[official Intel SDM page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
+[Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[Vol. 2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf),
+[Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436).
+
+The decoder reuses `rm_operand`/`MemoryOperand`; execution reuses the existing
+full-range 16-byte validation and generic one-read/one-write path. Loads remain
+temporary-before-commit, stores capture source bytes before writing, and any
+backend error leaves CPU state uncommitted. Flat fixture RAM all-or-error does
+not imply hardware atomicity, MMIO behavior or SMP ordering. Two handwritten
+schema-v2 fixtures cover a scaled RSP-based load and no-base R12-index store;
+runner snapshots verify state/memory/canaries and retain native/JIT denial.
+The local matrix covers scale 1/2/4/8, absent/normal/R12 index, RSP/RBP/R12/R13
+and no-base, REX.B/X, mod 00/01/10 displacements, both opcodes, all XMM
+registers, callback width, canonical #SS/#GP attribution, failures, truncation,
+prefix rejection, and STOP/budget. REX.W, address-size 32, legacy segment or
+mandatory prefixes, VEX/EVEX, alignment/control gates and native/JIT execution
+remain unsupported. S2-34 remains open and x86-64-v1 remains only the ABI
+floor.
+
+Verification passed: `cargo test -p od-isa --offline` (905 tests),
+`cargo test -p od-testkit --offline` (260 tests),
+`cargo test -p od-runner --test fixture_v2 --offline` (242 tests),
+`cargo test -p od-x86-runner --offline` (9 tests),
+`cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, `git diff --check`, and `graphify update .`.
+Independent Sol-medium review found no confirmed findings. No Mac mini, SSH or
+physical execution was performed.
+
+
+## S2-34.7a — local register XORPS slice
+
+Added a separate schema-v2 `s2-long-xorps-reg-v1` profile. It admits only
+legacy `0F 57 /r` with ModR/M.mod=3, bare or with one effective REX.R/B byte
+selecting XMM0–XMM15. Intel SDM revision 093 Vol. 2B XORPS (`NP 0F 57 /r`,
+Op/En RM) defines the destination/source fields. Execution XORs the 16 raw
+bytes directly and preserves MXCSR, x87, GPR, RFLAGS and unrelated XMM state.
+MOVUPS profiles were not changed. Literal fixture `s2_34_7a_xorps_register`
+uses `45 0F 57 C1` (`XORPS XMM8,XMM9`).
+
+Local tests cover 16×16 register pairs and every byte offset, self-XOR, REX
+high registers, forbidden memory/prefix/REX variants, fetch truncation, stop
+and budget boundaries, no data callbacks, missing-state atomicity and runner
+snapshot behavior. The slice assumes SSE availability and CR0/CR4 prerequisites;
+`#UD`/`#NM`, control-register gates, native/JIT admission and physical
+execution remain outside its contract. S2-34/D/System remains open.
+
+Verification passed: `cargo test -p od-isa xorps --offline` (3 tests),
+`cargo test -p od-testkit xorps --offline` (2 tests),
+`cargo test -p od-runner --test fixture_v2 local_xorps_register --offline`
+(1 test), `cargo test -p od-x86-runner --offline` (9 tests),
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`, `cargo fmt --all -- --check`, `git diff --check`, and
+`graphify update .`. The Linux-only native test target was compile-checked but not
+executed on this macOS host. Independent `gpt-6.1-sol` medium review found no
+XORPS-specific issues. No Mac mini, SSH or physical x86 checks were performed.
+
+
+## S2-34.7b — local register ANDPS slice
+
+Added the separate schema-v2 diagnostic profile `s2-long-andps-reg-v1`. It
+admits only legacy `NP 0F 54 /r` with ModR/M.mod=3, bare or with one effective
+REX.R/B byte selecting XMM0–XMM15. Intel SDM revision 093 Vol. 2A, ANDPS,
+Op/En A specifies ModRM.reg as destination and ModRM.r/m as source and defines
+the legacy destination as its previous value bitwise-ANDed with the source.
+The literal fixture `s2_34_7b_andps_register` executes `45 0F 54 C1`
+(`ANDPS XMM8,XMM9`). Execution directly ANDs 16 raw bytes and preserves MXCSR,
+x87, GPR, RFLAGS and unrelated XMM state. The MOVUPS/XORPS profiles remain
+separate; memory, VEX/EVEX, host floating point, control-register gates,
+`#UD`/`#NM`, native/JIT, CPUID/boot profile and physical execution remain out of
+scope.
+
+Tests cover the 16×16 register matrix, all 65,536 byte input pairs, alias/self,
+high registers, prefix/REX/memory rejection, no data callbacks, state
+preservation, fetch truncation, stop/budget, missing-state atomicity and schema
+and runner snapshot behavior. The source of ISA semantics is Intel's official
+[revision 093 Volume 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+ANDPS pages 3-72–3-74.
+
+Verification passed: `cargo test -p od-isa andps --offline` (3 tests),
+`cargo test -p od-testkit andps --offline` (3 tests),
+`cargo test -p od-runner --test fixture_v2 local_andps_register --offline`
+(1 test), `cargo test -p od-x86-runner --offline` (9 tests),
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`, `cargo fmt --all -- --check`, and `git diff --check`.
+The Linux-only target was compile-checked, not executed on this macOS host.
+No physical x86, Mac mini or SSH execution was performed. Independent
+`gpt-6.1-sol` medium review found no remaining findings after clarifying the
+65,536 input-pair count and asserting zero retirement for callback STOP.
+
+
+## S2-34.7c — local register ORPS slice
+
+Added the isolated schema-v2 diagnostic profile `s2-long-orps-reg-v1`. It
+admits only legacy `NP 0F 56 /r` with ModR/M.mod=3, bare or with one effective
+REX.R/B selecting XMM0–XMM15. Intel SDM revision 093 Vol. 2B ORPS Op/En RM
+defines ModRM.reg as destination, ModRM.r/m as source, and the legacy result as
+the old destination bitwise-ORed with the source. The literal fixture
+`s2_34_7c_orps_register` uses `45 0F 56 C1` (`ORPS XMM8,XMM9`). Execution ORs
+all 16 raw bytes, with no host floating-point operation, preserving MXCSR, x87,
+GPR, RFLAGS and unrelated XMM state.
+
+Coverage includes the 16×16 register matrix with patterns spanning all 256 byte
+values, alias/self, high registers, all forbidden prefix/REX/memory and VEX/EVEX
+forms, truncated fetch, missing x87/SSE state, stop/budget, callback STOP,
+state preservation, and zero data callbacks. The exact fixture runner admits
+one instruction and keeps JIT unsupported; the native runner rejects this
+profile before instruction admission. No control-register gates, `#UD`/`#NM`,
+CPUID/boot profile or physical execution are claimed. Intel source: [official
+revision 093 Volume 2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf),
+ORPS pages 4-171–4-172.
+
+Verification passed: filtered `cargo test -p od-isa orps --offline` (6 matching
+ORPS/XORPS tests), `cargo test -p od-testkit orps --offline` (3 matching logic
+tests), `cargo test -p od-runner --test fixture_v2 local_orps_register --offline`
+(1), `cargo test -p od-x86-runner --offline` (9),
+`cargo check --workspace --all-targets --offline`, and
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`. The Linux target was compile-checked, not run on this host. The
+independent `gpt-6.1-sol` medium review found and helped correct a missing-state
+test setup/expected-outcome issue; final re-review reported no remaining
+findings. No physical x86, Mac mini or SSH execution was performed.
+
+`cargo fmt --all -- --check`, `git diff --check` and `graphify update .` also
+completed. `python3 tools/check_layout.py` remains blocked by the worktree
+environment and existing local report references: it flags the worktree's
+`.git` file as an unmapped root entry and two absent generated manifests under
+`work/stage1-oracle/` and `work/stage2-oracle/`. No layout or report-link changes
+were made for those unrelated conditions.
+
+
+## S2-34.7d — local register ANDNPS slice
+
+Added the separate exact fixture profile `s2-long-andnps-reg-v1`. It admits
+only legacy `NP 0F 55 /r` with ModR/M.mod=3, bare or with one effective REX.R/B
+for XMM0–XMM15. Intel SDM revision 093 Vol. 2A specifies Op/En RM, ModRM.reg as
+read/write destination and ModRM.r/m as source; the legacy result is
+`(~old destination) & source`. The literal `45 0F 55 C1` fixture uses XMM8 and
+XMM9 patterns whose result is `0x10` in every byte, demonstrating the
+asymmetric inversion direction. Execution preserves MXCSR, x87, GPR, RFLAGS
+and unrelated XMM registers and makes no data-memory callbacks.
+
+Coverage includes the 16×16 register matrix and aliasing, every byte pair,
+exact fixture-profile validation, forbidden prefixes/REX/memory/VEX/EVEX forms,
+truncated fetch, missing SSE/x87 state, STOP/budget/callback-stop atomicity,
+and interpreter output. The project runner keeps JIT unsupported; the native
+runner's local-profile denial includes this fixture. No control-register gates,
+`#UD`/`#NM` delivery, CPUID/boot profile or physical execution are claimed.
+Source: [Intel SDM revision 093, Volume 2A, ANDNPS](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+pages 3-73–3-75.
+
+Verification passed: `cargo test -p od-isa andnps --offline` (3 tests),
+`cargo test -p od-testkit --offline` (269 tests),
+`cargo test -p od-runner --test fixture_v2 andnps --offline` (1 test),
+`cargo test -p od-x86-runner --offline` (9 host-available tests),
+`cargo check --workspace --all-targets --offline`, and
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`. Linux-target x86-runner code was compile-checked, not executed on
+this host. No physical x86 execution was performed.
+
+Independent `gpt-6.1-sol` medium review found and corrected fixture source
+volume and VEX/EVEX rejection-byte mistakes, and corrected the report's byte
+pair count. Final re-review found no remaining findings.
+
+## S2-34.8a — local register MOVSS slice
+
+Implemented the strict `s2-long-movss-reg-v1` legacy register-only profile:
+`F3 0F 10 /r`, ModR/M.mod=3, optionally one REX.R/B after F3 immediately
+before `0F`. It copies only the low 32 raw bits and preserves destination bits
+127:32. Intel SDM revision 093 Vol. 2B confirms register-register preservation
+and separately specifies that memory-load form clears bits 127:32; F3 is a
+mandatory opcode prefix here, not REP. Tests cover all 256 register pairs,
+state preservation, literal XMM8/XMM9 fixture, unsupported forms and prefixes,
+no data callbacks, fetch boundary/length, stop/budget, and missing state.
+Native/JIT and physical verification are not claimed. See the
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-348a-local-register-movss).
+
+## S2-34.8b — local reverse-direction register MOVSS slice
+
+Added the separate exact schema-v2 profile `s2-long-movss-store-reg-v1` for
+legacy `F3 0F 11 /r`, ModR/M.mod=3. It accepts mandatory F3 and at most one
+REX.R/B immediately before `0F`; REX.W/X and all other prefix combinations
+remain unsupported. For this opcode direction, ModR/M.reg is the source and
+ModR/M.r/m is the destination. The interpreter copies only raw bits 31:0 and
+preserves destination bits 127:32. The exact existing `F3 0F 10 /r` fixture
+profile remains unchanged.
+
+The Intel SDM revision 093, Volume 2B table lists `F3 0F 11 /r` as
+`MOVSS xmm2/m32, xmm1`, Op/En C, with data moved from xmm1 into xmm2/m32. Its
+legacy register-operation pseudocode copies bits 31:0 and leaves destination
+bits 127:32 unmodified ([official Volume 2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf),
+pp. 4-118–4-119; [Intel manual page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
+F3 is the mandatory opcode prefix here, not REP: RCX and DF are independent,
+and this register form performs no data-memory callbacks.
+
+Coverage includes every 16×16 source/destination pair, high XMM registers,
+aliasing, full x87/SSE/MXCSR/GPR/RFLAGS preservation, absent state, memory
+callback absence, truncated fetch, STOP/budget, strict schema rejection of the
+`0F 10` direction and memory forms, F2/66/other legacy prefixes, REX
+permutations/W/X, VEX and EVEX. The literal `F3 45 0F 11 C1` fixture checks
+XMM8→XMM9 with asymmetric low and preserved high bits. Existing MOVSS load,
+MOVUPS, logic SSE and REP tests were not changed in behavior. Native/JIT,
+feature gates, exception delivery, and physical CPU execution are not claimed.
+
+Verification passed: `cargo test -p od-isa movss --offline` (3 tests),
+`cargo test -p od-testkit --offline` (270 tests),
+`cargo test -p od-runner --test fixture_v2 local_movss_store_register --offline`
+(1 test), `cargo test -p od-x86-runner --offline` (9 tests),
+`cargo check --workspace --all-targets --offline`, and
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`. The Linux target was compile-checked, not executed. Formatting,
+`git diff --check`, and `graphify update .` passed. No physical x86, Mac mini,
+or SSH execution was performed.
+
+Independent `gpt-6.1-sol` medium review and final re-review found no remaining
+findings in decoder operand direction/prefix admission, interpreter semantics,
+exact profile validation, fixture data, runner denial, or documentation.
+
+## S2-34.8c — bounded legacy MOVSS m32 load from `[RAX]`
+
+Added the exact local schema-v2 profile `s2-long-movss-mem-load-v1` and literal
+fixture `s2_34_8c_movss_memory_load_rax.case.json`. The decoder admits only
+legacy `F3 0F 10 /r`, ModR/M.mod=00/rm=000, optional one REX prefix after F3,
+with REX.R available for XMM8–XMM15 and REX.W/X/B rejected. Execution uses the
+shared `MemoryOperand` range validation and reads exactly four bytes once.
+Success writes the low dword and clears destination bits 127:32; unrelated
+state is preserved and XMM/RIP update after success. Injected backend read
+failure preserved the complete local CPU state. This does not establish
+architectural fault priority, guest exception delivery or physical fault
+behavior.
+
+The semantic reference is Intel SDM revision 093, Volume 2B, Order Number
+253667-093US (September 2026): `F3 0F 10 /r`, Op/En A, `MOVSS xmm1,m32`, with
+legacy memory-load pseudocode clearing `DEST[127:32]` (pp. 4-117–4-119).
+See the [official Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)
+and [manual page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+The profile assumes SSE/CR0/CR4 preconditions; CPUID/feature gating and #UD/#NM
+delivery are not implemented. Native/JIT and physical execution remain denied
+or unverified.
+
+Focused verification passed: `cargo test -p od-isa movss_ --offline`,
+`cargo test -p od-testkit movss_memory_load_profile_is_exact_f3_rax_m32_only
+--offline`, and `cargo test -p od-runner
+local_movss_memory_load_fixture_clears_xmm_upper_bits_and_keeps_native_closed
+--offline`. The fixture test confirms the interpreter result and JIT denial.
+
+## S2-34.8d — bounded legacy MOVSS m32 store to `[RAX]`
+
+Added exact local schema-v2 profile `s2-long-movss-mem-store-v1` and literal
+fixture `s2_34_8d_movss_memory_store_rax.case.json`. The decoder admits only
+legacy `F3 0F 11 /r`, ModR/M.mod=00/rm=000 (`[RAX]`), with optional one REX.R
+after F3; ModR/M.reg selects XMM0–XMM15 source. REX.B/X/W and alternate memory,
+register, and prefix forms are rejected. Execution uses shared `MemoryOperand`
+range validation, writes exactly four low XMM bytes once, makes no data read,
+and commits RIP only after write success. XMM and unrelated state are preserved;
+injected backend failure preserved complete CPU state.
+
+Intel SDM revision 093, Vol. 2B, Order Number 253667-093US (September 2026),
+specifies `F3 0F 11 /r`, Op/En C, `MOVSS xmm2/m32,xmm1`: ModR/M.r/m is the
+destination and ModR/M.reg the source. The memory operation copies `SRC[31:0]`
+to `DEST[31:0]` (pp. 4-117–4-119). Sources: [official Intel PDF]
+(https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf) and [Intel SDM page]
+(https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+
+Focused tests cover all sixteen sources, canaries, unaligned 4-byte access,
+canonical and bounded range behavior, write failure, fetch truncation/error,
+STOP/budget, absent SSE state, malformed forms, exact fixture schema, and
+interpreter result with native/JIT denied. No physical x86 execution occurred.
+This local profile does not establish fault priority, guest exception delivery,
+alignment guarantees, or hardware behavior. SSE/CR0/CR4 prerequisites are
+assumed; feature gates remain unimplemented.
+
+Verification passed: `cargo test -p od-isa --offline --quiet` (924 tests),
+`cargo test -p od-testkit --offline --quiet` (272 tests),
+`cargo test -p od-runner --test fixture_v2 --offline --quiet` (250 tests),
+and `cargo test -p od-x86-runner --offline` (8 library and 1 binary test).
+`cargo check --workspace --all-targets --offline` and
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline` passed; the Linux target was compile-checked, not executed.
+`cargo fmt --all -- --check`, `git diff --check`, and `graphify update .`
+passed. `python3 tools/check_layout.py` reported the existing worktree `.git`
+file as an unmapped root file and two pre-existing links in this report to
+absent ignored Stage 1/2 oracle manifests. No physical x86, Mac mini, or SSH
+execution was performed. Independent `gpt-6.1-sol` medium review and re-review
+found no remaining findings.
+
+## S2-34.9a — bounded legacy scalar-double MOVSD register form
+
+Added local fixture profile `s2-long-movsd-reg-v1` and literal high-register
+case `s2_34_9a_movsd_register.case.json`. It admits only legacy `F2 0F 10 /r`,
+ModR/M.mod=3, with optional one REX.R/B between mandatory F2 and `0F`; REX.W/X,
+memory operands, reverse `0F 11`, other prefixes, VEX/EVEX and string MOVSD
+opcode `A5` remain rejected. The decoder maps ModR/M.reg to destination and
+ModR/M.r/m to source. The interpreter copies raw `SRC[63:0]` to `DEST[63:0]`
+while retaining destination bits 127:64 and all unrelated state. The fixture
+uses XMM8←XMM9, RCX=0 and DF=1 and verifies one retirement; no data-memory
+callback occurs. F2 acts as the mandatory opcode prefix, not REPNE.
+
+Intel SDM revision 093, Volume 2B, Order Number 253667-093US (September 2026),
+MOVSD table lists `F2 0F 10 /r`, Op/En A, and defines ModR/M.reg as destination
+and ModR/M.r/m as source. The legacy register operation copies the low qword
+and leaves bits MAXVL:64 unmodified (pp. 4-108–4-110). This is the scalar SIMD
+MOVSD entry; the separate primary-map `A5` string instruction is described in
+the preceding MOVS entry. Sources: [official Intel PDF]
+(https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf) and [Intel SDM page]
+(https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+The local profile assumes explicit SSE2 state and architectural preconditions;
+it makes no CPUID claim and does not implement feature gates, `#UD`/`#NM`
+delivery, native/JIT behavior or physical CPU verification.
+
+Focused tests passed: `cargo test -p od-isa movsd --offline` (3 tests),
+`cargo test -p od-isa movss --offline` (7), `cargo test -p od-isa movups
+--offline` (23), `cargo test -p od-isa rep_movs --offline` (2), the focused
+exact-profile test in `od-testkit`, and the literal interpreter/JIT-denial test
+in `od-runner`. The `od-x86-runner` suite passed (8 library tests and 1 binary
+test); `cargo check --workspace --all-targets --offline` and the
+`x86_64-unknown-linux-gnu` all-targets compile check for `od-x86-runner` also
+passed. No test executed on Linux or physical x86. Independent
+`gpt-6.1-sol` medium review found no remaining actionable implementation,
+profile, fixture, or documentation findings. The reviewer could not retrieve
+the PDF independently through its web tool; the author verified the Rev.093
+metadata and cited operation text through Intel's official SDM page/PDF.
+
+## S2-34.9b — bounded legacy reverse-direction scalar-double MOVSD register form
+
+Added the separate exact local fixture profile `s2-long-movsd-store-reg-v1`
+and literal asymmetric high-register case
+`s2_34_9b_movsd_store_register.case.json`. The decoder admits only legacy
+`F2 0F 11 /r`, ModR/M.mod=3, and at most one REX.R/B after F2 and before `0F`;
+REX.W/X, memory, F3/66/other prefixes, prefix permutations, VEX/EVEX, and
+string MOVSD opcode `A5` are rejected. ModR/M.reg selects source, while r/m
+selects destination. Execution copies raw source bits 63:0 and preserves the
+destination upper 64 bits. The fixture is `XMM9←XMM8`, with unequal upper
+sentinels, RCX=0 and DF=1. Full XMM/x87/MXCSR/GPR/flags state and no data-memory
+callback behavior are checked; native/JIT and physical execution are not
+claimed.
+
+Intel SDM revision 093, Vol. 2B, MOVSD entry `F2 0F 11 /r`, Op/En C,
+specifies `MOVSD xmm2/m64,xmm1`: ModR/M.r/m is destination and ModR/M.reg is
+source. The legacy register form writes the low qword while retaining the
+destination upper qword (pp. 4-108–4-110). Sources: [official Intel PDF]
+(https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf) and [Intel SDM page]
+(https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+
+Focused tests passed: all three new `od-isa` MOVSD store-register tests, the
+exact-profile `od-testkit` test and the literal interpreter/JIT-denial runner
+test. The full `cargo test -p od-isa -p od-testkit -p od-runner --offline`
+passed (930, 274 and 252 tests respectively). Regression filters passed for
+the prior MOVSD register form (6), MOVSS (7), MOVUPS (23), REP MOVS (2), and
+the old MOVSD fixture profile and runner fixture. `cargo test -p od-x86-runner
+--offline` passed (8 library and 1 binary test). `cargo check --workspace
+--all-targets --offline` and `cargo check -p od-x86-runner --all-targets
+--target x86_64-unknown-linux-gnu --offline` passed. The Linux target was
+compile-checked only. `cargo fmt --all -- --check`, `git diff --check`, and
+`graphify update .` passed. `python3 tools/check_layout.py` reported the
+pre-existing worktree `.git` file as an unmapped root file and the two broken
+links above to absent ignored Stage 1/2 oracle manifests; these are unrelated
+to the slice. Independent `gpt-6.1-sol` medium review caught an initial
+fixture issue where source and destination low qwords matched; XMM9 was changed
+to distinct literal bytes and the profile and runner fixture tests were rerun
+successfully. Re-review found no remaining actionable findings. The reviewer
+could not open Intel's PDF, so it did not independently verify page references;
+the author checked the Rev.093 listing and operand text against Intel's official
+SDM page/PDF search result. No physical x86, Mac mini, or SSH execution occurred.
+
+## S2-34.9c — bounded legacy scalar-double MOVSD m64 load
+
+Added the separate local profile `s2-long-movsd-mem-load-v1` and handwritten
+literal fixture `s2_34_9c_movsd_memory_load_rax.case.json`. It accepts only
+legacy `F2 0F 10 /r`, ModR/M.mod=00 and r/m=000 (`[RAX]`), with mandatory F2
+and optional one REX byte allowing only REX.R. ModR/M.reg selects XMM0–XMM15.
+REX.W/X/B, SIB, displacement, other bases, other legacy prefixes, REX/prefix
+permutations, `0F 11`, VEX/EVEX and string MOVSD opcode `A5` remain rejected.
+The high-register fixture uses `F2 44 0F 10 00` and unaligned source bytes.
+
+Intel SDM revision 093, Vol. 2B, Order Number 253667-093US (September 2026),
+lists `F2 0F 10 /r`, Op/En A, for both register and m64 source forms and maps
+ModR/M.reg to the destination and ModR/M.r/m to the source (pp. 4-108–4-109).
+For the legacy memory load it defines `DEST[63:0] := SRC[63:0]`, clears
+`DEST[127:64]`, and leaves `DEST[MAXVL:128]` unchanged (pp. 4-109–4-110).
+Sources: [official Intel Vol. 2B PDF]
+(https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf) and [Intel SDM page]
+(https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+F2 is the mandatory SIMD opcode prefix, not REPNE; string `A5` remains a
+separate instruction. Register MOVSD profiles retain their existing low-qword
+copy/upper-qword-preserve behavior.
+
+The executor validates every byte in canonical48 `[RAX..RAX+7]`, reads once
+into an 8-byte temporary, then commits the low qword, clears the destination
+upper qword and advances RIP. Successful reads preserve data memory, other XMM,
+x87, MXCSR, GPR and RFLAGS. Injected read failure, invalid ranges, truncated or
+failed fetches, missing SSE state, STOP and budget cases verify no premature
+commit or data callback. Decoder and schema tests cover all 16 destinations,
+REX.R, lane patterns/canaries and neighboring ModR/M/prefix/address forms.
+The exact schema and runner tests confirm native/JIT remain denied.
+
+Focused MOVSD execution/decoder, schema and interpreter/JIT-denial fixture tests
+passed. Full affected offline tests passed: `od-isa` (934 unit tests and 102
+additional test target cases), `od-testkit` (275), `od-runner` (253) and
+`od-x86-runner` (8 library and 1 binary test). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`, `git diff --check`, and `graphify update .` passed. The Linux target
+was compile-checked only. `tools/check_layout.py` continues to report the
+managed worktree `.git` pointer and two pre-existing links to absent ignored
+Stage 1/2 oracle manifests; the new paths introduced here are not flagged.
+No guest exception-priority, alignment, native/JIT execution, physical x86,
+Mac mini or SSH behavior was tested.
+Independent `gpt-6.1-sol` review found that the initial literal fixture seeded
+XMM8 with its expected result; the seed was changed to distinct low and upper
+qwords, and the runner fixture test passed again. Re-review found no remaining
+actionable findings.
+
+## S2-34.9d — bounded legacy scalar-double MOVSD m64 store
+
+Added the separate local profile `s2-long-movsd-mem-store-v1` and literal
+`F2 44 0F 11 00` (`MOVSD [RAX],XMM8`) fixture. The allowlist permits only
+ModR/M.mod=00/rm=000 `[RAX]`, mandatory F2 and optional single REX.R; ModR/M.reg
+selects source XMM0–XMM15. This memory store remains distinct from reverse
+register `0F 11` and string MOVSD `A5`. Intel SDM revision 093 Vol. 2B MOVSD
+entry `F2 0F 11 /r`, Op/En C, maps ModR/M.r/m to destination m64 and ModR/M.reg
+to source XMM; the operation stores source bits 63:0 only. The implementation
+uses the shared `MemoryOperand`, validates the complete canonical48 eight-byte
+range, issues one eight-byte write and commits RIP only after success. It
+preserves source and all unrelated CPU state.
+
+The local literal fixture, schema tests, decoder tests and interpreter tests
+cover high-register source selection, all 16 source registers, canaries, exactly
+one write/no data read, write failure rollback, missing SSE, unsupported address,
+prefix and opcode variants. Native/JIT admission remains denied. The interpreter
+profile assumes SSE2 state and preconditions; hardware fault order/delivery,
+CPUID, native execution and physical validation are outside scope. Focused checks
+and all affected offline suites passed: `od-isa` (935 tests), `od-testkit` (277),
+`od-runner` (254), and `od-x86-runner` (8 library and 1 binary test). Workspace
+`cargo check --workspace --all-targets --offline`, Linux x86-runner target check,
+`cargo fmt --all -- --check`, `git diff --check`, and `graphify update .` passed.
+The Linux target was compile-checked only. Independent `gpt-6.1-sol` review found
+no remaining actionable findings after correcting fixture canaries and adding
+full result-memory, boundary, truncation, overflow, and native/JIT-denial checks.
+
+## S2-35.1 — local PXOR register slice
+
+Implemented the separate diagnostic profile `s2-long-pxor-reg-v1` for exactly
+`66 [one optional REX.R/B] 0F EF /r`, ModR/M.mod=3. The mandatory 66 selects
+the XMM/SSE2 form; bare `0F EF` (MMX), memory operands, other legacy prefixes,
+REX.W/X, VEX and EVEX are denied. ModR/M.reg is the destination and r/m the
+source, independently extended to XMM0–XMM15. Execution XORs all 128 raw bits
+and preserves x87, MXCSR, GPR, RFLAGS and unrelated XMM registers without data
+memory callbacks. Fixture schema checks, interpreter execution, CLI fixture
+execution and JIT/native rejection are covered.
+
+Intel SDM revision 093 Vol. 2B PXOR entry distinguishes MMX `0F EF /r` from
+SSE2 `66 0F EF /r`. The diagnostic profile assumes SSE2 availability,
+CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1; it makes no CPUID claim and implements no
+control-gate exception delivery. Verification passed: od-isa PXOR tests (3),
+od-testkit schema/profile and execution tests (2), od-runner fixture test (1),
+workspace all-target offline check, Linux x86-runner all-target compile check,
+format check, whitespace check and Graphify update. A Linux-gated native
+admission test was compile-checked for `x86_64-unknown-linux-gnu`; it was not
+executed on the current macOS host. Independent gpt-6.1-sol review found no
+remaining actionable findings after corrections. No physical execution is
+claimed. Parent S2-34 and S2-35 remain open; the global S2-35 → S2-34 dependency
+is unchanged.
+
+
+## S2-35.3 — local PSUBB XMM register slice
+
+Implemented exact profile `s2-long-psubb-reg-v1` for `66 [REX.R/B] 0F F8 /r`,
+ModR/M.mod=3, with destination in ModR/M.reg. Semantics are independent byte
+subtraction modulo 256. Local decode/execute coverage includes all XMM register
+pairs and all 65,536 fixed-register byte pairs, order reversal, wrap, lane
+isolation, state preservation and no data access; fixture and native/JIT denial
+coverage are also present. The encoding/semantics source is Intel SDM revision
+093 Vol. 2B PSUBB entry (official Intel PDF and manuals page linked in the CPU
+contract). No physical/native SSE execution or CPUID claim is made. SSE2 and
+CR0/CR4 preconditions are assumed. Child S2-35.3 is implemented; parent S2-34,
+S2-35 and global `S2-35 → S2-34` remain open.
+
+## S2-35.4 — local PADDUSB XMM register slice
+
+Implemented the strict local profile `s2-long-paddusb-reg-v1` for
+`66 [one optional REX.R/B] 0F DC /r`, ModR/M.mod=3 only. ModR/M.reg is the
+destination and r/m the source. Each of 16 byte lanes adds as unsigned and
+saturates at 255. The decoder, interpreter and schema-v2 fixture admission
+reject MMX, memory, unrelated prefixes/REX bits and VEX/EVEX. Local tests cover
+all 16×16 register pairs and all 65,536 byte pairs on fixed XMM registers,
+boundaries including `FF+1=FF`, `7F+1=80`, `80+80=FF`, `FF+00=FF`,
+`FF+FF=FF`, lane independence, state preservation, no data callbacks, missing
+state/truncation and stop/budget behavior. The literal fixture is denied by JIT
+and native admission.
+
+The instruction encoding and semantics were checked against Intel SDM Rev. 093,
+Vol. 2B PADDUSB, the official
+[SDM PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf) and
+[manual index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 remain assumptions, with no CPUID,
+physical execution, or exception-delivery claim. Parent S2-34, S2-35, and global
+`S2-35 → S2-34` remain open.
+
+## S2-35.5 — local PSUBUSB XMM register slice
+
+Added strict local profile `s2-long-psubusb-reg-v1` for `66 [one optional REX.R/B] 0F D8 /r`, ModR/M.mod=3. Each of 16 unsigned byte lanes computes `max(DEST - SRC, 0)` independently. The implementation has a literal XMM8,XMM9 fixture, schema rejection checks for neighboring encodings, 16×16 register coverage and exhaustive 65,536 byte-pair coverage, with boundary/order and no-cross-lane checks. Native/JIT remain denied; this is not physical or exception-delivery evidence. SSE2 and CR0/CR4 requirements are assumptions only. Semantics and encoding source: Intel SDM Rev. 093, Vol. 2B, PSUBUSB, [official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf), [Intel manuals page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+
+Verification passed: `cargo test --workspace --offline` (od-isa 949, od-testkit 290, od-runner 102 unit + 259 fixture, od-x86-runner 8 library + 1 binary); `cargo check --workspace --all-targets --offline`; Linux-target `od-x86-runner --all-targets` compile check; `cargo fmt --all -- --check`; `git diff --check`; and `graphify update .`. The Linux-gated native-denial tests compiled through the Linux-target check but were not executed on Linux or physical hardware. Independent `gpt-6.1-sol` medium review and re-review found no remaining findings. The review identified that PADDUSB and PSUBUSB needed explicit early native-profile denial; both are now rejected before tracing and have Linux-gated denial tests. `tools/check_layout.py` continues to report the pre-existing linked-worktree `.git` marker and two stale links to ignored oracle manifests under `work/`; this slice did not change project layout. No Mac mini or SSH acceptance was run; the combined physical batch remains deferred.
+
+## S2-35.6 — local PADDW XMM register slice
+
+Added a strict local interpreter profile `s2-long-paddw-reg-v1` for
+`66 [one optional REX.R/B] 0F FD /r` with register ModR/M. It adds eight
+independent little-endian 16-bit lanes modulo 65536, including lane isolation
+and wrap behavior. The literal schema-v2 fixture runs through the interpreter
+CLI, matches all 16 expected XMM8 bytes, remains JIT-denied, and is denied by
+the native x86 runner. Decoder/interpreter tests cover all 16×16 register pairs;
+arithmetic covers every u16 lhs against five boundary addends. A memory spy
+confirms no guest data-memory callback. SSE2 and CR0/CR4 preconditions remain
+assumptions; no CPUID or physical hardware claim is made.
+
+Verification passed: formatting check; all `od-isa` (951), `od-testkit` (295),
+`od-runner` (103) and `od-x86-runner` (260) tests; workspace offline check;
+Linux x86 runner target check; Graphify update; and `git diff --check`.
+Independent `gpt-6.1-sol` review confirmed no implementation defects and
+requested a full-lane literal assertion, which is now covered by passing CLI
+tests. Parent S2-34, S2-35 and global S2-35 → S2-34 remain open.
+
+## S2-35.7 — local PSUBW XMM register slice
+
+Added exact local interpreter profile `s2-long-psubw-reg-v1` for
+`66 [one optional REX.R/B] 0F F9 /r`, ModR/M.mod=3. ModR/M.reg is the XMM
+word-lane destination and r/m the source. Eight little-endian u16 lanes subtract
+independently modulo 65536. The fixture and tests verify all 16×16 XMM pairs,
+every u16 lhs against boundary rhs values, `0100-0001=00ff`, the raw-byte form
+`[00,01]-[01,00]=[ff,00]`, independent adjacent-word outcomes, order reversal,
+wraparound without saturation, self-subtraction, state preservation and no data
+callbacks. Missing state, truncated fetch, stop/budget, strict schema/decode
+rejection, literal CLI execution, JIT denial and the native allowlist denial
+path are covered. Bare MMX, memory, PSUBD/Q, saturation, other prefixes,
+REX.W/X, VEX/EVEX and physical execution remain excluded. SSE2 and
+CR0.EM=0/CR0.TS=0/CR4.OSFXSR=1 are assumptions only; no CPUID or exception
+delivery claim is made. The encoding and semantics were checked against Intel
+SDM revision 093, Volume 2B, PSUBW, and are cited in the CPU contract.
+
+Verification passed: full workspace tests (`cargo test --workspace --offline`),
+workspace all-target offline check, Linux-target all-target x86-runner compile
+check, formatting, whitespace check and Graphify update. The Linux-gated native
+denial test was compile-checked for `x86_64-unknown-linux-gnu`; it was not
+executed on Linux or physical hardware. Parent S2-34 and S2-35 and the global
+`S2-35 → S2-34` dependency remain open.
+Independent `gpt-6.1-sol` medium review and re-review found no remaining findings.
+
+
+## S2-35.8 — local PADDUSW XMM register slice
+
+Added exact local interpreter profile `s2-long-paddusw-reg-v1` for
+`66 [one optional REX.R/B] 0F DD /r`, ModR/M.mod=3. ModR/M.reg is destination
+and r/m source; eight independent little-endian unsigned word lanes saturate at
+65535. A literal XMM8,XMM9 schema-v2 fixture passes through the runner. Coverage
+includes all 16×16 register pairs, every u16 lhs against selected rhs boundaries,
+`ffff+1=ffff`, `7fff+1=8000`, `8000+8000=ffff`, `00ff+1=0100`, adjacent-lane
+isolation, raw byte order, no data callbacks, state preservation, strict decode
+and schema rejection, missing state, truncation, STOP/budget, and JIT/native
+denial. Bare MMX, memory, other widths, signed saturation, extra prefixes,
+REX.W/X, VEX/EVEX and physical execution remain excluded. SSE2 and CR0/CR4
+conditions are assumptions only; there is no CPUID or exception-delivery claim.
+The opcode and semantics were checked against Intel SDM revision 093, Volume 2B
+pp. 4-212–4-214, PADDUSW ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)). Parent S2-34, S2-35 and the global `S2-35 → S2-34` dependency remain
+open.
+
+S2-35.8 verification: `cargo test --workspace --offline` passed, as did
+`cargo check --workspace --all-targets --offline`, the Linux target compile
+check for `od-x86-runner`, `cargo fmt --all -- --check`, `git diff --check` and
+`graphify update .`. Independent `gpt-6.1-sol` medium review and re-review found
+no remaining PADDUSW defects. `python3 tools/check_layout.py` still reports the
+linked-worktree `.git` marker and two pre-existing broken links to ignored
+oracle manifests under `work/`; this slice added no directories. No physical
+hardware or Mac mini check was run.
+
+## S2-35.9 — local PSUBUSW XMM register slice
+
+Added exact local interpreter profile `s2-long-psubusw-reg-v1` for
+`66 [one optional REX.R/B] 0F D9 /r`, ModR/M.mod=3. ModR/M.reg selects the
+destination and r/m the source, including XMM0–XMM15. Eight little-endian
+unsigned word lanes independently compute `max(DEST - SRC, 0)`. A literal
+XMM8,XMM9 fixture carries asymmetric lane sentinels and tests the result
+`0000, 0001, 0000, fffe, fffe, 0001, 0000, 00ff` in raw little-endian bytes.
+Coverage includes the 16×16 register matrix, every u16 lhs against rhs values
+0, 1, 7fff, 8000 and ffff, lane isolation, self/equality, no memory callbacks,
+complete state preservation, missing state, truncation, STOP/budget, strict
+schema/decode rejection, literal CLI execution and native/JIT denial. Bare MMX,
+memory, other widths, signed saturation, other prefixes, REX.W/X, VEX/EVEX and
+physical execution remain excluded. SSE2 and CR0/CR4 requirements are
+assumptions only; CPUID and exception delivery are not modeled. Encoding and
+semantics follow Intel SDM revision 093, Vol. 2B, PSUBUSW:
+[official instruction reference](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf),
+[Intel SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+S2-34, S2-35 and global `S2-35 → S2-34` remain open.
+
+
+Verification passed: focused decoder, interpreter, schema and CLI tests;
+`cargo test --workspace --offline --quiet` (od-isa 958, od-testkit 312,
+od-runner 103 unit + 263 fixture, od-x86-runner 8 library + 1 binary);
+`cargo check --workspace --all-targets --offline`; Linux-target all-target
+compile check for od-x86-runner; `cargo fmt --all -- --check`; `git diff --check`;
+and `graphify update .`. The Linux-gated native-denial test was compile-checked
+but not executed on Linux or physical hardware. `python3 tools/check_layout.py`
+continues to report the linked-worktree `.git` marker and two pre-existing
+broken links to ignored oracle manifests under `work/`; this slice added no
+directories. No Mac mini or physical oracle check was run.
+Independent `gpt-6.1-sol` high review found one schema-test isolation gap; the
+negative cases now normalize their region length, mask and stop address and
+assert the `memory.code` rejection directly. Re-review found the issue resolved
+and no remaining findings.
+
+## S2-35.11 — local PSUBSB XMM register slice
+
+Implemented exact profile `s2-long-psubsb-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F E8 /r`, ModR/M.mod=3, XMM0–XMM15. Each byte lane
+interprets DEST and SRC as signed i8, subtracts SRC from DEST, saturates to
+[-128, 127] and stores the raw byte. Execution changes only the destination
+XMM register and RIP; flags, MXCSR, x87, GPRs and other XMM registers remain
+unchanged. No data-memory callbacks occur. Bare MMX, memory, other packed
+widths, prefixes/REX bits, VEX/EVEX, native/JIT execution and physical
+execution are excluded. SSE2 and CR0/CR4 preconditions are assumptions only;
+no CPUID or exception-delivery claim is made.
+
+Coverage includes the complete 16×16 register-pair matrix, all 65,536 byte
+pairs, saturation direction/asymmetry including `00-80=7f`, lane isolation,
+strict schema and decoder rejection, literal fixture execution, missing state,
+truncation, STOP/budget and native/JIT denial. Focused local interpreter,
+schema, decoder and CLI checks passed. `cargo test --workspace --offline`
+passed 1,662 tests; workspace all-target checking, Linux x86-64 all-target
+checking for `od-x86-runner`, formatter checking, `git diff --check` and
+`graphify update .` passed. The Linux-gated native-denial test is compile-
+checked but not executed on this macOS host. `python3 tools/check_layout.py`
+continues to report the linked-worktree `.git` marker and two broken links to
+ignored oracle manifests under `work/`; this slice adds no directories. The
+combined Mac mini/SSH batch is intentionally deferred to the final substage.
+Independent gpt-6.1-sol medium static review found no actionable PSUBSB code defects; it did not run tests or physical checks. Parent S2-34, parent S2-35 and global
+`S2-35 → S2-34` remain open.
+
+## S2-35.10 — local PADDSB XMM register slice
+
+Added exact profile `s2-long-paddsb-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F EC /r`, ModR/M.mod=3, XMM0–XMM15. The interpreter
+performs 16 independent signed-byte additions with saturation to [-128, 127],
+updates only the destination vector and RIP, preserves RFLAGS/MXCSR and other
+state, and makes no data callback. PADDSW, subtraction, memory, extra prefixes,
+REX.W/X, VEX/EVEX, JIT/native and physical execution remain excluded. SSE2 and
+CR0/CR4 are assumptions only; no CPUID or exception-delivery claim is made.
+
+The local test suite covers all 65,536 byte-pair values against signed
+interpretation, signed and unsigned distinguishing sentinels, all 16×16 XMM
+register pairs, literal fixture execution, strict profile negatives and
+interpreter-only/native denial. Encoding and semantics follow Intel SDM Rev.
+093 Vol. 2B PADDSB. After the native-gate and strict-schema review fixes,
+`cargo test --workspace --offline` passed 1,662 tests (0 failed); workspace all-target offline checking,
+Linux x86-64 runner all-target checking, formatter checking and `git diff
+--check` passed. Independent code review completed with no remaining findings.
+S2-34, S2-35 and global `S2-35 → S2-34` remain open.
+
+## S2-35.12 — local PADDSW XMM register slice
+
+Added exact diagnostic profile `s2-long-paddsw-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F ED /r`, ModR/M.mod=3. Eight little-endian signed
+word lanes use widened i32 addition and clamp to `[-32768, 32767]`; destination
+XMM and RIP are the only modified architectural state. Tests cover strict
+schema/decoder negatives, all 16×16 XMM pairs, every lhs against the seven
+required rhs boundaries, literal fixture execution, atomic failure behavior,
+and JIT/native denial. `cargo test --workspace --all-targets --offline` passed
+1,672 tests with zero failures;
+workspace all-target offline checking, Linux x86_64 all-target checking,
+formatter checking, `git diff --check`, and Graphify refresh passed. Independent
+gpt-6.1-sol medium review found two schema/fixture coverage mismatches; both
+were corrected and re-reviewed with no remaining findings. Native physical
+execution and Mac mini/SSH tests are deferred to the final combined substage.
+Parent S2-34, parent S2-35, and global `S2-35 → S2-34` remain open.
+
+## S2-35.13 — local PSUBSW XMM register slice
+
+Implemented profile `s2-long-psubsw-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F E9 /r`, ModR/M.mod=3 only. The destination is
+ModR/M.reg and source ModR/M.r/m, with XMM0–15 extension through REX.R/B. Each
+little-endian signed i16 lane computes widened `DEST - SRC` in i32 and clamps
+to [-32768, 32767]. The interpreter preserves every modeled field other than
+destination XMM and RIP, including RFLAGS and MXCSR, and makes no data-memory
+callbacks. A literal XMM8/XMM9 schema-v2 fixture exercises the profile. Strict
+decoder/schema rejects cover bare MMX, unsupported prefixes, REX.W/X, duplicate
+REX/mandatory prefix, memory ModR/M, truncation, VEX and EVEX. JIT and native
+admission stay closed. S2-34, S2-35, and global `S2-35 → S2-34` remain open;
+Mac mini/SSH remains deferred to the combined final substage.
+
+Focused checks passed: `cargo test -p od-isa psubsw --offline` (3 tests),
+`cargo test -p od-testkit psubsw_profile --offline` (1), and
+`cargo test -p od-runner --test fixture_v2 psubsw_literal --offline` (1).
+`cargo test --workspace --all-targets --offline` passed. Host
+`cargo check --workspace --all-targets --offline`, Linux x86_64
+`cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`cargo fmt --all -- --check`, and `git diff --check` passed. Linux x86_64
+`cargo test -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets --no-run --offline`
+compiled Rust code but could not link because the available macOS `ld` does not
+accept Linux GNU linker flags; the Linux-gated native-denial test therefore was
+compile-checked but not executed. No Mac mini/SSH, native runtime, or physical
+x86 acceptance was run.
+
+See the [S2-35.13 plan](../plans/STAGE_2.md#s2-3513--local-only-bounded-register-psubsw),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-psubsw-profile--s2-3513),
+[interpreter testing notes](../testing/INTERPRETER.md#local-register-only-psubsw-slice--s2-3513),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3513-local-register-psubsw-diagnostic-profile).
+
+## S2-35.15 — local PSUBD XMM register slice
+
+Added exact profile `s2-long-psubd-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F FA /r`, ModR/M.mod=3. The destination is
+ModR/M.reg and the source is ModR/M.r/m, including XMM0–15. Four
+little-endian u32 lanes compute wrapping subtraction independently modulo
+2^32. The 16×16 register matrix uses deterministic raw u32 values and checks
+against an independent u64 modulo reference; walking-one/zero patterns and
+borrow-chain sentinels include `00010000-1=0000ffff`. State is preserved except
+destination XMM and RIP, with no data callback. Strict schema/decoder rejects,
+missing state, truncation, STOP/budget, literal high-XMM execution, and JIT/native
+denial are covered. MMX, memory, PADDQ/PSUBQ, saturation, other widths, extra
+prefixes, REX.W/X, VEX/EVEX and physical execution remain outside the profile.
+SSE2 and CR0/CR4 preconditions are assumptions only; no CPUID or exception
+claim is made. S2-34, S2-35, and global S2-35 → S2-34 remain open; Mac mini/SSH
+acceptance remains deferred.

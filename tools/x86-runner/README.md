@@ -10,3 +10,5 @@ Native instruction count is reported unavailable because the hardware run is not
 
 - `libc` 0.2.190 from crates.io (`MIT OR Apache-2.0`, default `std` feature): Linux `setrlimit` bindings for the child process. This package does not depend on `od-host`.
 - `od-isa` from this workspace: strict allowlist decoding of fixture instruction forms and branch targets; the runner does not implement a second decoder.
+
+S2-35.10 PADDSB is a local interpreter-only XMM register profile. Its literal fixture is explicitly denied by native admission; no native execution path is added.

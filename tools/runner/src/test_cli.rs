@@ -6900,4 +6900,37 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn paddw_literal_fixture_runs_in_interpreter_and_jit_stays_denied() {
+        let fixture = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_6_paddw_register.case.json"
+        ))
+        .expect("PADDW schema");
+        fixture.fixture.validate().unwrap();
+        let code = fixture
+            .fixture
+            .memory
+            .iter()
+            .find(|r| r.region_id == "code")
+            .unwrap()
+            .initial_bytes_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        assert!(od_jit::compile(&code).is_err(), "PADDW remains JIT-denied");
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(1) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("PADDW fixture snapshot unavailable")
+        };
+        assert_eq!(&value.state.sse.as_ref().unwrap().xmm[8][..4], "1013");
+    }
 }

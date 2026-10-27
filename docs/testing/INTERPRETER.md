@@ -1237,6 +1237,19 @@ FST/FSTP confirms the loaded value converts to binary64 normal while carrying
 DE forward. Binary32/64 subnormal store results remain unsupported. See the
 [S2-31az contract](../specs/CPU_CONTRACT.md#local-s2-31az-admit-sticky-de-m32-m64-fstfstp).
 
+## Local register-only PSUBUSW slice — S2-35.9
+
+The local schema-v2 `s2-long-psubusw-reg-v1` profile admits only
+`66 [one optional REX.R/B] 0F D9 /r` with ModR/M.mod=3. Eight independent
+little-endian u16 lanes compute `max(DEST - SRC, 0)`. Tests cover all 16×16
+register pairs, every u16 lhs against selected rhs boundaries, underflow,
+equality, no-underflow and unsigned-boundary sentinels, adjacent-lane isolation,
+raw byte order, complete state preservation and no data-memory callbacks.
+Schema/decode rejection, missing state, truncation, STOP/budget and literal
+fixture execution are checked. Native/JIT and physical execution remain
+excluded; SSE2 and CR0/CR4 conditions are assumptions only. Parent S2-34/S2-35
+and the global `S2-35 → S2-34` dependency remain open.
+
 
 ## Local S2-18n address-size-32 CMPS fixture method
 
@@ -1553,3 +1566,517 @@ cargo test -p od-runner --test fixture_v2 repne_cmps_wdq_addr32 --offline
 
 See the [plan](../plans/STAGE_2.md#s2-19t--bounded-repne-cmpswdq-addr32)
 and [report](../reports/STAGE_2_REPORT.md#s2-19t--bounded-repne-cmpswdq-addr32).
+
+## Local x87/SSE state snapshot — S2-34.1
+
+The local `s2-long-x87-sse-state-v1` profile transfers the complete existing
+x87 snapshot and independent raw SSE state through exactly one NOP. It requires
+16 XMM registers at 16 bytes each and raw u32 MXCSR; the comparator observes all
+register bytes and MXCSR. `diagnostic_mxcsr_mask` is fixed at `0x0000ffbf` for
+this profile only (default without optional DAZ), not a universal CPUID mask or
+guest `#GP` rule. The literal fixture uses instruction budget 1 and a stop RIP
+immediately after `90`. Schema validation and runner execution verify local
+snapshot/state preservation only. No SSE instruction, physical verification,
+native/JIT path, or broader FP/SIMD behavior is established; S2-34, S2-38 and
+S2-39 remain open.
+
+## Local register MOVUPS — S2-34.2
+
+The separate `s2-long-movups-reg-v1` profile admits exactly one legacy
+`0F 10 /r` register form with ModR/M.mod=3. The destination is ModR/M.reg and
+the source is ModR/M.r/m. It accepts no prefix or one effective REX directly
+before `0F 10`; REX.R/B select XMM0–XMM15. REX.W/X are excluded. Legacy
+`66`, F2/F3, segment/address, LOCK and duplicate/ignored prefix variants,
+memory ModR/M forms, `0F 11`, SSE2 alternatives and VEX/EVEX all fail closed.
+Encoding checked against Intel SDM version 093, Vol. 2B, MOVUPS.
+
+The local diagnostic profile assumes SSE available, CR0.EM=0, CR0.TS=0 and
+CR4.OSFXSR=1, without modeling those controls or their faults. Success copies
+all 128 raw source bits, including self-copy, and leaves x87/MXCSR/GPR/RFLAGS
+unchanged; RIP and retirement advance after the copy. No memory/alignment,
+MXCSR, FP, `#UD/#NM`, native/JIT or physical execution behavior is claimed.
+The literal runner case checks a high-register transfer and complete snapshot;
+decoder tests cover every register pair and rejected prefix/memory/truncation
+variants. This does not close S2-34/D/System. The S2-34.1 state-only profile
+continues to accept only NOP.
+
+## Reverse-direction register MOVUPS — S2-34.3
+
+The same `s2-long-movups-reg-v1` fixture profile also admits legacy `0F 11 /r`
+when ModR/M.mod=3. This direction reads the source from ModR/M.reg + REX.R and
+writes the destination at ModR/M.r/m + REX.B. Literal `0F 11 C1` coverage
+checks XMM0→XMM1 with all x87, 16 XMM registers and MXCSR observed; decoder
+coverage checks all 256 source/destination pairs for both directions, including
+`45 0F 11 C1` as XMM8→XMM9. Runner coverage also checks self-copy and full state
+preservation; an executor test asserts no data-memory read or write occurs.
+The schema/testkit admits both forms while rejecting the same legacy prefixes,
+memory forms, REX.W/X, VEX and EVEX; native execution denies both directions.
+The profile retains SSE, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 as explicit
+preconditions. No physical or broader S2-34/D/System result is claimed, and
+the S2-34.1 state-only profile remains NOP-only.
+
+## Local MOVUPS memory load from `[RAX]` — S2-34.4
+
+The new, separate `s2-long-movups-mem-load-v1` profile executes exactly one
+legacy `0F 10 /r` with ModR/M.mod=00 and r/m=000. Bare forms target XMM0–7;
+one effective REX.R selects XMM8–15. REX.B/X/W, all other memory address
+forms, `0F 11`, legacy prefixes, duplicate prefixes, VEX and EVEX are rejected.
+The previous `s2-long-x87-sse-state-v1` remains NOP-only and
+`s2-long-movups-reg-v1` remains register-only. Encoding follows Intel SDM
+revision 093, Vol. 2B, MOVUPS `0F 10 /r`, Op/En RM; the official [Intel SDM
+page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
+lists version 093.
+
+Execution validates the entire 16-byte canonical48 range and makes one
+`GuestMemory::read` call into a temporary before copying all bytes to the target
+XMM register. No integer-width helper or `OperandSize::Qword` represents the
+128-bit access. Unaligned reads are allowed. x87, MXCSR, source memory, GPR and
+RFLAGS remain unchanged, and RIP/retirement advance only on success. Local
+injected read/fetch faults check no-commit; they do not establish native fault
+priority or restart state. Assumptions are SSE available, CR0.EM=0, CR0.TS=0,
+and CR4.OSFXSR=1; none of the controls, `#UD/#NM`, MXCSR operations, stores,
+native/JIT or physical execution are implemented. This is one form in the
+chosen Generic amd64 baseline work, not a complete or validated generic CPU
+profile. The handwritten fixture checks an unaligned RAX source, XMM8, byte
+order and memory preservation; local tests cover all destinations, one exact
+16-byte callback, boundary ranges, fault atomicity and fail-closed neighbors.
+
+## Local MOVUPS memory store to `[RAX]` — S2-34.5
+
+The separate `s2-long-movups-mem-store-v1` profile executes exactly one legacy
+`0F 11 /r`, ModR/M.mod=00 and r/m=000. ModR/M.reg selects source XMM0–7, with
+one effective REX.R selecting XMM8–15. It rejects REX.B/X/W, other memory
+address forms, `0F 10`, legacy prefixes, duplicate prefixes/REX, VEX and EVEX.
+The encoding and direction follow Intel SDM revision 093, Vol. 2B, MOVUPS
+`NP 0F 11 /r`, Op/En B (`xmm2/m128, xmm1`): XMM is the source and memory the
+destination. The SDM permits unaligned memory operands, lists no SIMD FP
+exceptions, and delegates other exceptions to Type 4 with a note that #AC
+treatment varies. This local profile does not implement those gates or faults.
+
+The executor validates the complete 16-byte canonical48 range, snapshots the
+selected XMM as raw `[u8; 16]`, then calls `GuestMemory::write` once with those
+16 bytes; it makes no data read and uses no integer-width helper. RIP and
+retirement advance only after successful write. Failed backend writes leave
+CPU state unchanged. The FlatMemory fixture backend tests all-or-error for its
+private synchronous RAM, without asserting hardware 16-byte atomicity, MMIO, or
+SMP behavior. Upper-u64 range overflow remains ISSUE-012. Local tests and the
+literal fixture cover all 16 sources, byte order, unaligned address, canaries,
+one write/no read, permission/mapping/backend errors without partial mutation,
+canonical boundaries, forbidden/truncated encodings, STOP/budget, and
+native/JIT denial. x86-64-v1 remains only an ABI floor, not evidence that this
+slice completes a generic CPU profile. See the
+[S2-34.5 plan](../plans/STAGE_2.md#s2-345--local-only-legacy-movups-rax-xmm).
+
+## Local MOVUPS base+displacement memory forms — S2-34.6a
+
+The separate `s2-long-movups-mem-base-v1` profile admits one legacy `0F 10 /r`
+load or `0F 11 /r` store using ModR/M memory mode 00/01/10, base GPR and absent,
+signed disp8 or signed disp32. REX.R extends XMM selection and REX.B extends the
+base register. It rejects REX.W/X, SIB (`r/m=100`), mod=00/rm=101 RIP-relative,
+address-size 32, segment and other legacy prefixes, VEX and EVEX. The earlier
+state-only, register and exact `[RAX]` profiles retain their admissions.
+
+The decoder uses the existing shared `rm_operand` parser and `MemoryOperand`;
+no duplicate effective-address decoder was added. Execution validates all 16
+bytes through the shared range path. Loads use one `GuestMemory::read` into a
+temporary before XMM/RIP commit. Stores capture raw XMM bytes and use one
+`GuestMemory::write` before RIP commit. Backend errors preserve the entire CPU
+state. FlatMemory all-or-error behavior covers its local fixture RAM only and
+does not claim hardware atomicity. Default DS/SS behavior and noncanonical
+#SS/#GP attribution stay with `MemoryOperand`; RBP is SS-attributed, R13 is
+data-attributed, and RSP/R12 cannot be encoded without the excluded SIB form.
+ISSUE-012's upper-u64 AddressOverflow behavior is retained. Tests cover both
+directions, all XMM registers, supported base classes, signed displacement
+extrema, raw bytes, exact access callbacks, canonical range faults, failures,
+and forbidden/truncated forms. The handwritten fixture exercises
+`MOVUPS [R8-7],XMM8`. Native/JIT and physical execution remain outside this
+local profile.
+
+## Local MOVUPS RIP-relative memory forms — S2-34.6b
+
+The same `s2-long-movups-mem-base-v1` schema-v2 profile now also admits legacy
+`0F 10 /r` loads and `0F 11 /r` stores with ModR/M.mod=00/rm=101 and signed
+disp32. The address uses the complete next RIP (optional REX + `0F` + opcode +
+ModR/M + disp32), then adds the sign-extended displacement. REX.R may select
+XMM8–15. SDM 093 Vol. 2A §2.2.1.6 says REX.B does not affect this special
+encoding; the bounded profile rejects REX.B=1 here, so it never misdecodes the
+form as R13. All other REX bits follow the existing allowlist. SIB, address/
+segment/mandatory prefixes, VEX/EVEX, alignment/control gates and native/JIT
+remain excluded. The previous S2-34.6a base+disp forms still work unchanged.
+
+Decoder and interpreter tests cover both directions, zero/positive/negative
+disp32, instruction lengths 7 and 8, REX.R high XMM, next-RIP and signedness
+distinguishers, full CPU/memory canaries, one contiguous 16-byte callback,
+canonical range checks, injected no-commit, truncated disp32 at each byte with
+no data callback, STOP/budget and forbidden SIB/prefix/REX.B encodings. Two
+handwritten fixtures cover high-XMM load/store and unaligned canary-preserving
+memory; the fixture schema helper computes RIP-relative addresses from the
+fixture's initial RIP and the decoded full instruction length. No physical x86
+or alignment/control behavior is claimed. See the
+[S2-34.6b plan](../plans/STAGE_2.md#s2-346b--bounded-rip-relative-movups-memory-forms)
+and [CPU contract](../specs/CPU_CONTRACT.md#s2-346b-rip-relative-extension).
+
+## Local MOVUPS SIB-addressed memory forms — S2-34.6c
+
+The same `s2-long-movups-mem-base-v1` profile additionally admits legacy
+`0F 10 /r` loads and `0F 11 /r` stores with SIB addressing and 64-bit address
+size. It reuses `rm_operand`/`MemoryOperand`, including SIB scale 1/2/4/8,
+index absent versus R12 according to REX.X, no-base `mod=00/base=5` regardless
+of REX.B, and REX.B extension for `mod=01/10` bases. RSP/RBP actual bases retain
+default SS and #SS canonical fault attribution. R12/R13 bases and index-only or
+no-base references are DS/#GP attributed. The encoding rules were verified
+against Intel SDM revision 093, Vol. 2A §§2.1.3–2.1.5, 2.2.1.1–2.2.1.3 and
+Vol. 1 §§3.3.7.1, 3.7.4.1, 3.7.5.1, plus Vol. 2B MOVUPS:
+[official SDM page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
+[Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[Vol. 2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241),
+[Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436).
+
+Both directions use the existing full-range 16-byte path. Loads read once into
+a temporary before XMM/RIP commit; stores capture raw XMM bytes, write once,
+then commit RIP. Failures leave CPU state unchanged. Flat fixture RAM
+all-or-error behavior does not imply hardware atomicity or MMIO/SMP semantics.
+Tests cover scales, RSP/RBP/R12/R13/no-base, absent/normal/R12 indexes, both
+directions and all XMM registers, displacement modes, exact callback width,
+canaries, #SS/#GP attribution, backend errors, rejected prefixes, truncation,
+STOP/budget, and two literal schema-v2 fixtures. The fixture runner checks
+interpreter behavior and preserves native/JIT denial. S2-34 remains open, and
+x86-64-v1 remains only the ABI floor. See the
+[S2-34.6c plan](../plans/STAGE_2.md#s2-346c--shared-sib-addressed-movups-memory-forms)
+and [CPU contract](../specs/CPU_CONTRACT.md#s2-346c-sib-addressed-extension).
+
+
+## Local XORPS register slice — S2-34.7a
+
+The separate `s2-long-xorps-reg-v1` schema-v2 diagnostic profile admits one
+legacy `0F 57 /r` register form with ModR/M.mod=3. Bare form and one effective
+REX.R/B are supported; W/X, other prefixes, memory forms, VEX and EVEX are
+rejected at this profile boundary. The interpreter XORs all 128 raw XMM bits
+without host FP conversion and preserves MXCSR, x87, GPR, flags and other XMM
+registers. Fixture state requires x87/SSE snapshots; the existing MOVUPS
+profiles remain exact and separate. SSE/CR0/CR4 preconditions are assumed;
+control-register gates, `#UD`/`#NM`, native/JIT and physical execution are not
+modeled. See the [CPU contract](../specs/CPU_CONTRACT.md#local-profile-s2-347a-s2-long-xorps-reg-v1)
+and [fixture](../../tests/fixtures/x86/stage2/s2_34_7a_xorps_register.case.json).
+
+## Local ANDPS register slice — S2-34.7b
+
+The separate `s2-long-andps-reg-v1` schema-v2 diagnostic profile admits one
+legacy `NP 0F 54 /r` register form with ModR/M.mod=3. ModR/M.reg selects the
+destination and ModR/M.r/m the source. Bare form and one effective REX.R/B
+are supported for XMM0–XMM15; W/X, other prefixes, memory forms, VEX and EVEX
+are rejected. The interpreter ANDs all 128 raw XMM bits without host FP
+conversion and preserves MXCSR, x87, GPR, flags and other XMM registers. The
+Intel SDM revision 093 Vol. 2A entry specifies Op/En A and the legacy operation
+`DEST := DEST BITWISE AND SRC`; see the [official Volume 2A PDF]
+(https://cdrdv2.intel.com/v1/dl/getContent/671199). Fixture state requires
+x87/SSE snapshots and remains separate from MOVUPS/XORPS profiles. SSE/CR0/CR4
+preconditions are assumed; control-register gates, `#UD`/`#NM`, native/JIT and
+physical execution are not modeled. See the [CPU contract]
+(../specs/CPU_CONTRACT.md#local-profile-s2-347b-s2-long-andps-reg-v1) and
+[literal fixture](../../tests/fixtures/x86/stage2/s2_34_7b_andps_register.case.json).
+
+## Local ORPS register slice — S2-34.7c
+
+The separate `s2-long-orps-reg-v1` schema-v2 diagnostic profile admits one
+legacy `NP 0F 56 /r` register form with ModR/M.mod=3. ModR/M.reg selects the
+destination and ModR/M.r/m the source. Bare form and one effective REX.R/B are
+supported for XMM0–XMM15; W/X, other prefixes, memory forms, VEX and EVEX are
+rejected. The interpreter ORs all 128 raw XMM bits without host FP conversion
+and preserves MXCSR, x87, GPR, flags and unrelated XMM registers. Intel SDM
+revision 093 Vol. 2B specifies Op/En RM and raw OR semantics ([official Volume
+2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241), pages 4-171–4-172).
+SSE/CR0/CR4 preconditions are assumed; gates, exception delivery, native/JIT
+and physical execution are not modeled. See the [CPU contract]
+(../specs/CPU_CONTRACT.md#local-profile-s2-347c-s2-long-orps-reg-v1) and
+[literal fixture](../../tests/fixtures/x86/stage2/s2_34_7c_orps_register.case.json).
+
+## Local ANDNPS register slice — S2-34.7d
+
+The separate `s2-long-andnps-reg-v1` schema-v2 diagnostic profile admits one
+legacy `NP 0F 55 /r` register form with ModR/M.mod=3. ModR/M.reg is the
+destination and ModR/M.r/m is the source. Bare form and one effective REX.R/B
+are supported for XMM0–XMM15; W/X, other prefixes, memory forms, VEX and EVEX
+are rejected. The interpreter computes `(~old destination) & source` across
+all 128 raw XMM bits; it preserves MXCSR, x87, GPR, flags and unrelated XMM
+registers. Intel SDM revision 093 Vol. 2A specifies Op/En RM and explicitly
+inverts legacy DEST before ANDing SRC ([official Volume 2A PDF]
+(https://cdrdv2.intel.com/v1/dl/getContent/671199), pages 3-73–3-75). Fixture
+state requires x87/SSE snapshots and remains separate from existing profiles.
+SSE/CR0/CR4 preconditions are assumed; gates, `#UD`/`#NM`, native/JIT and
+physical execution are not modeled. See the [CPU contract]
+(../specs/CPU_CONTRACT.md#local-profile-s2-347d-s2-long-andnps-reg-v1) and
+[literal fixture](../../tests/fixtures/x86/stage2/s2_34_7d_andnps_register.case.json).
+
+## Local MOVSS register slice — S2-34.8a
+
+The exact fixture profile `s2-long-movss-reg-v1` runs only legacy
+`F3 0F 10 /r` with ModR/M.mod=3 and the bounded prefix ordering documented in
+the CPU contract. It copies the low 32 raw bits and preserves the destination's
+upper 96 bits. Decoder/executor tests cover all 16×16 register pairs, state
+preservation with RCX and DF set, no data-memory accesses, unsupported forms,
+fetch truncation, stop/budget, and absent x87/SSE state. The literal runner case
+uses XMM8/XMM9 and verifies interpreter execution; native/JIT remain unsupported.
+The profile does not claim feature-gate, exception-delivery, or physical CPU
+verification.
+
+## Local reverse-direction MOVSS register slice — S2-34.8b
+
+The exact profile `s2-long-movss-store-reg-v1` runs only legacy
+`F3 0F 11 /r`, ModR/M.mod=3, with one mandatory F3 and optionally one REX.R/B
+immediately after F3 and before `0F`. It maps ModR/M.reg to source and
+ModR/M.r/m to destination, copies the low 32 raw bits and preserves the
+destination's upper 96 bits. The register-only profile makes no data-memory
+callbacks; F3 is an opcode prefix, so RCX and DF are independent. Decoder and
+executor coverage includes all 16×16 mappings, high registers, aliasing,
+complete state preservation, unsupported prefixes/forms, truncation, missing
+state, stop/budget and callback absence. Its literal XMM8→XMM9 case is
+interpreter-only; native/JIT, feature gates, exception delivery and physical
+verification are not claimed. See the [CPU contract]
+(../specs/CPU_CONTRACT.md#local-reverse-direction-legacy-movss-register-slice--s2-348b),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-348b-local-reverse-direction-register-movss),
+and [plan](../plans/STAGE_2.md#s2-348b--local-legacy-reverse-direction-movss-register-to-register).
+
+## Local legacy MOVSS m32 load from `[RAX]` — S2-34.8c
+
+The exact profile `s2-long-movss-mem-load-v1` admits legacy `F3 0F 10 /r`
+with ModR/M.mod=00/rm=000 and destination XMM0–XMM15. One optional REX.R
+selects XMM8–XMM15; effective REX.B/X/W, SIB, displacement and other addressing
+forms are rejected. It reads exactly four bytes once through the shared
+`MemoryOperand` path, sets the destination low dword, clears bits 127:32, and
+preserves the rest of CPU state. XMM/RIP commit only after a successful local
+memory read. These tests establish backend failure rollback and callback
+counts, not architectural fault ordering or guest fault delivery.
+
+Coverage includes every XMM destination decode, unaligned RAX, range edge and
+injected read failure, unchanged state on failure, no data callback on truncated
+fetch, malformed prefix/opcode/addressing, STOP/budget, and missing SSE state.
+The literal fixture runs in the interpreter; native/JIT are denied. SSE/CR0/CR4
+preconditions are assumed. No CPUID/feature gate or `#UD`/`#NM` delivery is
+claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#local-legacy-movss-m32-load-profile--s2-348c),
+[fixture](../../tests/fixtures/x86/stage2/s2_34_8c_movss_memory_load_rax.case.json),
+and [plan](../plans/STAGE_2.md#s2-348c--local-legacy-movss-m32-load-from-rax).
+
+## Local legacy MOVSS m32 store to `[RAX]` — S2-34.8d
+
+The exact profile `s2-long-movss-mem-store-v1` accepts legacy `F3 0F 11 /r`
+only for ModR/M.mod=00/rm=000 and one optional REX.R after F3. ModR/M.reg
+selects the XMM0–XMM15 source; the bounded destination is `[RAX]`. REX.B/X/W,
+SIB, displacement and all other prefixes/addressing forms are rejected. One
+four-byte write stores the source low dword; XMM and unrelated CPU state stay
+unchanged, and RIP advances only after a successful write through the shared
+`MemoryOperand` validation path.
+
+Execution coverage verifies all source indices, unaligned writes, surrounding
+canaries, exact write/no-read callback counts, range boundaries, injected write
+failure rollback, truncated fetch without data access, malformed encodings,
+STOP/budget and absent SSE state. The literal fixture is interpreter-only;
+native/JIT are denied. This establishes only local backend behavior, not fault
+priority, guest exception delivery, alignment guarantees or physical behavior.
+SSE/CR0/CR4 prerequisites are assumed. See the [CPU contract]
+(../specs/CPU_CONTRACT.md#local-legacy-movss-m32-store-profile--s2-348d),
+[fixture](../../tests/fixtures/x86/stage2/s2_34_8d_movss_memory_store_rax.case.json),
+and [plan](../plans/STAGE_2.md#s2-348d--local-legacy-movss-m32-store-to-rax).
+
+## Local legacy scalar-double MOVSD register slice — S2-34.9a
+
+The exact profile `s2-long-movsd-reg-v1` admits legacy `F2 0F 10 /r` with
+ModR/M.mod=3. One optional REX may occur after mandatory F2 and before `0F`;
+only REX.R/B are allowed, selecting XMM0–XMM15. ModR/M.reg is the destination
+and ModR/M.r/m the source. The interpreter copies the source low qword as raw
+bits and preserves the destination upper qword. RCX and DF are untouched, and
+there are no data-memory callbacks. F2 is the mandatory opcode prefix rather
+than REPNE; primary-map string MOVSD `A5` is a different instruction and is
+rejected by this profile.
+
+The Intel SDM revision 093, Vol. 2B MOVSD table and legacy operation specify
+the encoding, operand direction, raw low-qword copy, and unchanged upper 64
+bits (pp. 4-108–4-110). Decoder tests cover all 16×16 mappings, all REX.R/B
+combinations, aliasing, wrong prefixes, memory/reverse/string/VEX/EVEX forms
+and fetch truncation. Executor tests use zero, all-one, alternating, and
+NaN-like raw patterns with upper-bit sentinels; they check all unrelated state,
+RCX/DF, missing SSE/x87 state, no memory callbacks, STOP and budget behavior.
+The literal XMM8←XMM9 fixture is interpreter-only; native/JIT, CPUID gates,
+`#UD`/`#NM` delivery and physical execution are not claimed. SSE2 state and
+architectural preconditions are explicit local assumptions. See the [CPU
+contract](../specs/CPU_CONTRACT.md#local-legacy-scalar-double-movsd-register-profile--s2-349a),
+[fixture](../../tests/fixtures/x86/stage2/s2_34_9a_movsd_register.case.json),
+and [plan](../plans/STAGE_2.md#s2-349a--local-legacy-scalar-double-movsd-register-to-register).
+
+## Local reverse-direction scalar-double MOVSD register slice — S2-34.9b
+
+The exact profile `s2-long-movsd-store-reg-v1` admits only legacy
+`F2 0F 11 /r` with ModR/M.mod=3. One optional REX may follow F2 before `0F`;
+only REX.R/B are admitted, selecting XMM0–XMM15. ModR/M.reg is the source and
+ModR/M.r/m the destination. Execution copies the raw source low qword and
+preserves the destination upper qword and all unrelated state. F2 is an opcode
+prefix, not REPNE; RCX and DF are untouched, with no data-memory callbacks.
+This form is separate from forward `F2 0F 10` and string `A5` MOVSD.
+
+Decoder tests cover the full 16×16 register matrix, REX.R/B and rejection of
+memory, F3/66/other prefixes, VEX/EVEX, truncation and the string opcode.
+Executor tests verify raw qword copying, upper-qword preservation, full state,
+missing SSE/x87 state, truncated fetch, STOP/budget and no data-memory access.
+The literal XMM9←XMM8 case uses asymmetric upper sentinels, RCX=0 and DF=1;
+native/JIT and physical execution are not claimed. Intel SDM revision 093
+Vol. 2B lists `F2 0F 11 /r` as `MOVSD xmm2/m64,xmm1`, assigning ModR/M.reg to
+the source and r/m to the destination. See the [CPU
+contract](../specs/CPU_CONTRACT.md#local-reverse-direction-scalar-double-movsd-register-profile--s2-349b),
+[fixture](../../tests/fixtures/x86/stage2/s2_34_9b_movsd_store_register.case.json),
+and [plan](../plans/STAGE_2.md#s2-349b--local-legacy-reverse-direction-scalar-double-movsd-register).
+
+## Local scalar-double MOVSD memory-load slice — S2-34.9c
+
+The exact fixture profile `s2-long-movsd-mem-load-v1` admits only legacy
+`F2 0F 10 /r` with ModR/M.mod=00, r/m=000 (`[RAX]`), mandatory F2 and at most
+one following REX byte whose only permitted extension bit is REX.R. ModR/M.reg
+selects XMM0–XMM15. REX.W/X/B, other bases, SIB/displacement, other legacy
+prefixes, `0F 11`, VEX/EVEX, and string MOVSD `A5` remain rejected. F2 is the
+mandatory SIMD opcode prefix, not REPNE.
+
+Intel SDM revision 093, Vol. 2B MOVSD `F2 0F 10 /r`, Op/En A, defines the
+destination in ModR/M.reg and the m64 source in ModR/M.r/m. The legacy load
+copies raw source bits 63:0 to the destination low qword, clears destination
+bits 127:64, and leaves vector bits above 127 unchanged (pp. 4-108–4-110).
+The executor validates every byte of `[RAX..RAX+7]` against canonical48 before
+issuing one eight-byte read. It commits XMM and RIP only after the read
+succeeds, preserving other XMM registers, x87, MXCSR, GPR and RFLAGS.
+
+Tests cover every XMM destination with and without REX.R, asymmetric lane
+patterns and canaries, exactly one 8-byte read/no writes, canonical lower/upper
+boundaries, range overflow, injected read failure, truncated/failing fetch,
+missing SSE state, STOP and budget. Schema tests reject neighboring addressing,
+prefix, register, store, VEX/EVEX and string forms. A handwritten XMM8 literal
+fixture checks the complete interpreter snapshot and native/JIT denial.
+Fault priority, guest #PF delivery, alignment claims, CPUID/control-register
+gates, native/JIT execution and physical x86 remain outside this local slice.
+SSE2 state and architectural preconditions are assumed. See the [CPU contract]
+(../specs/CPU_CONTRACT.md#local-legacy-scalar-double-movsd-memory-load-profile--s2-349c),
+[fixture](../../tests/fixtures/x86/stage2/s2_34_9c_movsd_memory_load_rax.case.json),
+and [plan](../plans/STAGE_2.md#s2-349c--local-legacy-scalar-double-movsd-m64-load-from-rax).
+
+## Local scalar-double MOVSD memory-store slice — S2-34.9d
+
+The separate exact profile `s2-long-movsd-mem-store-v1` accepts only
+`F2 0F 11 /r`, ModR/M.mod=00 and r/m=000 (`[RAX]`), with optional one REX.R
+byte immediately after F2. ModR/M.reg selects source XMM0–XMM15. The interpreter
+validates the full canonical48 eight-byte destination and performs exactly one
+`GuestMemory::write` from the source low qword; it makes no data read. XMM,
+x87, MXCSR, GPR and flags are preserved, and RIP commits only after the write
+succeeds.
+
+Coverage includes every source register, exact write width/address, canary
+preservation, backend write failure, missing SSE state, stop/budget and decode
+failure boundaries, and unsupported address/prefix/opcode forms. The handwritten
+XMM8 fixture verifies the full interpreter snapshot and memory bytes. Native/JIT
+and physical execution remain denied or unverified; hardware fault priority,
+exception delivery, CPUID, and SSE control-register gates are outside this
+slice. See the [CPU contract](../specs/CPU_CONTRACT.md#local-legacy-scalar-double-movsd-memory-store-profile--s2-349d),
+[fixture](../../tests/fixtures/x86/stage2/s2_34_9d_movsd_memory_store_rax.case.json),
+and [plan](../plans/STAGE_2.md#s2-349d--local-legacy-scalar-double-movsd-m64-store-to-rax).
+
+## Local register-only PXOR slice — S2-35.1
+
+The separate `s2-long-pxor-reg-v1` diagnostic profile decodes only
+`66 [REX.R/B] 0F EF /r`, ModR/M.mod=3, and executes raw 128-bit XOR. It
+preserves all non-destination state and causes no data callbacks. Unprefixed
+MMX PXOR, memory forms, other legacy prefixes, REX.W/X, VEX/EVEX and native/JIT
+are denied. The profile assumes SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1; it
+makes no CPUID assertion and does not deliver control-gate exceptions. Parent
+S2-34 and S2-35 remain open.
+
+## Local register-only PADDB slice — S2-35.2
+
+The local profile `s2-long-paddb-reg-v1` accepts only `66 [REX.R/B] 0F FC /r`
+with ModR/M.mod=3, where the single REX byte is optional. It assumes SSE2,
+CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1; those are not runtime gates or CPUID
+advertisements. Tests cover all register pairs, all byte-valued operand pairs,
+lane independence/wraparound, full state preservation, unsupported adjacent
+encodings, fixture/runner/JIT/native rejection paths. No physical SSE result is
+claimed. S2-34, S2-35 and `S2-35 → S2-34` remain open.
+
+
+## Local register-only PSUBB slice — S2-35.3
+
+The `s2-long-psubb-reg-v1` profile admits `66 [REX.R/B] 0F F8 /r`, ModR/M.mod=3,
+with an optional single REX byte. It subtracts source from destination bytewise
+modulo 256; no borrow crosses lanes and the result is not saturated. Tests
+cover all 16×16 registers, all 65,536 single-byte operand pairs, noncommutative
+order, lane sentinels, self-subtraction, REX extensions, state preservation,
+missing SSE state, truncation, stop/budget, fixture acceptance and native/JIT
+deny paths. The profile assumes SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1; no
+CPUID or physical SSE claim is made. Parent S2-34 and S2-35 remain open.
+
+## Local register-only PADDUSB slice — S2-35.4
+
+The `s2-long-paddusb-reg-v1` profile admits only `66 [one optional REX.R/B]
+0F DC /r` with ModR/M.mod=3. ModR/M.reg selects the destination XMM register
+and r/m the source; each unsigned byte lane independently saturates its sum
+at `0xff`. Checks cover all 16×16 register pairs, all 65,536 byte pairs,
+boundaries distinguishing unsigned from signed saturation, lane independence,
+state preservation, missing state, truncation, stop/budget, strict fixture
+admission, and native/JIT denial. The executor does not issue data-memory
+callbacks. It assumes SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1; it does not
+query CPUID or deliver control-gate exceptions. Memory, PADDUSW/other widths,
+signed saturation, other prefixes, REX.W/X, VEX/EVEX, native/JIT and physical
+execution remain excluded. Parent S2-34 and S2-35, plus `S2-35 → S2-34`, remain
+open.
+
+## Local register-only PSUBUSB slice — S2-35.5
+
+The `s2-long-psubusb-reg-v1` fixture admits exactly `66 [one optional REX.R/B] 0F D8 /r`, ModR/M.mod=3, with ModR/M.reg as destination and ModR/M.r/m as source. Each byte computes unsigned saturating subtraction independently (`max(DEST - SRC, 0)`). Tests cover all 16×16 register pairs, all 65,536 byte pairs on fixed registers, unsigned/order boundary vectors, lane isolation, self-subtraction, preservation of unrelated state and memory, and strict profile rejection. Interpreter state, truncation, STOP and budget behavior are local checks; native/JIT and physical claims are excluded. SSE2 and CR0/CR4 are assumptions only.
+
+## Local register-only PADDW slice — S2-35.6
+
+The local schema-v2 `s2-long-paddw-reg-v1` diagnostic profile executes eight
+independent little-endian 16-bit XMM lane additions modulo 65536. Only
+`66 [one optional REX.R/B] 0F FD /r` with ModR/M.mod=3 is admitted. This adds
+no MMX, memory form, other widths, saturation, alternate prefixes, REX.W/X,
+VEX/EVEX, JIT/native path or physical execution. SSE2 availability and relevant
+CR0/CR4 preconditions are assumptions. Parent S2-34/S2-35 and the global
+S2-35 → S2-34 dependency remain open.
+
+S2-35.7 adds local-only `PSUBW` for `66 [one optional REX.R/B] 0F F9 /r`
+with register ModR/M. Eight independent little-endian u16 lanes subtract
+modulo 65536. The narrow profile excludes MMX, memory, PSUBD/Q, saturation,
+extra prefixes, REX.W/X, VEX/EVEX, JIT/native and physical execution. SSE2 and
+CR0/CR4 conditions remain assumptions. See the [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-psubw-profile--s2-357).
+
+
+## Local register-only PADDUSW slice — S2-35.8
+
+The local schema-v2 `s2-long-paddusw-reg-v1` diagnostic profile executes eight
+independent little-endian unsigned word additions with saturation at 65535. It
+admits only `66 [one optional REX.R/B] 0F DD /r` with register ModR/M. Tests
+cover all 16×16 register pairs, all u16 lhs values against selected rhs
+boundaries, saturation and signed-boundary sentinels, adjacent-lane isolation,
+raw little-endian state, preservation and no data-memory callbacks. Schema,
+interpreter, STOP/budget and literal CLI paths are checked; JIT/native and
+physical execution remain excluded. SSE2/CR0/CR4 conditions are assumptions.
+
+
+## Local register-only PSUBSW slice — S2-35.13
+
+The schema-v2 profile `s2-long-psubsw-reg-v1` covers only `66 [one optional
+REX.R/B] 0F E9 /r`, register ModR/M, XMM0–15. Eight little-endian signed
+word lanes subtract independently in widened i32 and clamp to the signed-word
+range. Checks cover all 16×16 register pairs and all 65,536 lhs values against
+seven rhs boundaries, including lane/asymmetry sentinels; complete state
+preservation, no data callbacks, missing-state and fetch/STOP/budget handling,
+strict decoder/schema negatives, literal CLI execution and JIT/native denial.
+This local slice makes no claim for MMX, memory, other widths, prefixes,
+REX.W/X, VEX/EVEX, host exception delivery, or physical acceptance. Mac mini/SSH
+remains deferred to the combined final substage.
+
+## Local register-only PADDD slice — S2-35.14
+
+The schema-v2 profile `s2-long-paddd-reg-v1` covers only `66 [one optional
+REX.R/B] 0F FE /r`, register ModR/M, XMM0–15. Four little-endian dword lanes
+add modulo 2^32 independently. Checks cover all 16×16 register pairs,
+deterministic raw-u32 samples checked against a u64 masked reference, lane and
+carry sentinels, walking bits, full state preservation, no data callbacks,
+missing-state and fetch/STOP/budget handling, strict decoder/schema negatives,
+literal CLI execution and JIT/native denial. This local slice does not cover
+MMX, memory, other widths, saturation, extra prefixes, REX.W/X, VEX/EVEX, host
+exception delivery, or physical acceptance. Mac mini/SSH remains deferred to
+the combined final substage.
