@@ -525,9 +525,10 @@ mapping/backing identity/version spans. Spans обязаны без дыр и ov
 identities могут alias один backing ID/generation. IDs и ненулевые версии
 предоставляет владелец памяти; текущий `CodeView` не связан с реальным MMU и не
 получает generation или identity из host pointer. Key использует полное
-сравнение content при hash collisions. Production cache/invalidation и выбор
-структуры поиска не добавлены; S3-17 остаётся открытой до измерения и
-оставшихся acceptance checks.
+сравнение content при hash collisions. Full production cache/invalidation и
+выбор структуры поиска не добавлены; отдельный one-entry S3-18a partial
+описан ниже, а S3-17 остаётся открытой до измерения и оставшихся acceptance
+checks.
 
 **Benchmark prototype:** `tools/bench` содержит ARM64 macOS `record` wrapper
 вокруг реальных `dispatch::run` block-entry вызовов и portable `measure`
@@ -551,6 +552,28 @@ acceptance и оставшихся cache-key/dependency требований. О
 3. Считать hit/miss/compile/publication и bytes. До S3-25 освобождать только заведомо неактивные entries; активные сохранять до безопасной точки.
 
 **Готово:** повтор программы использует block без новой compile/publication, capacity корректен, изменённый dependency не попадает в execution.
+
+**S3-18a local partial:** `od_jit::dispatch::run_cached` adds one resident
+fixture-dispatch block with an opaque published handle supplied by a generic
+backend; `od-host` implements the backend without changing existing
+release-on-return executor contracts. Same-key hits rebuild/validate the
+bounded guest record and full `TranslationKey`, then skip lowering, allocation,
+emission and publication. Miss replacement drops the old published owner
+before publishing the candidate. The cache rejects capacities other than one
+and caps logical key/code/state-map/publication-copy contents at 512 KiB;
+allocator capacity, page rounding and host-handle internals are explicitly
+outside that logical bound. Dependency/source validation occurs on hit, before
+publish and before entry; a lower bound rejects oversized source/dependency
+payloads before key copying. Stale input returns an error without retry. STOP
+is invocation-local and resampled at guest boundaries; budget counters remain
+per guest instruction. Mock tests cover same-key reuse, self-loop/budget, A→B replacement
+and drop ordering, dependency changes, invalid snapshots, oversize candidates,
+publication errors, clear/drop lifetime and zero-budget/code-end priority. A
+native od-host fixture compares cached and uncached state/results and repeats a
+cache hit. This does not provide a multi-block executable arena, cache
+telemetry, memory lowering, production MMU identity/invalidation, or benchmark
+evidence. S3-18 stays open; S3-22/23/25 remain separate context, invalidation
+and retirement work.
 
 ### S3-19. Подключить checked memory bridge
 

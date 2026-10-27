@@ -213,12 +213,36 @@ impl TranslationKey {
         Ok(validate_dependency_spans(self.code_base, self.code_end, current)? == self.dependencies)
     }
 
+    pub fn matches_code_view(&self, code: CodeView<'_>) -> bool {
+        self.code_base == code.base_rip()
+            && self.code_end == code.code_end()
+            && self.code_bytes == code.bytes()
+    }
+
     pub fn fetch_ranges(&self) -> &[GuestByteRange] {
         self.fetch_ranges.as_slice()
     }
 
     pub const fn terminal(&self) -> TerminalClassification {
         self.terminal
+    }
+
+    /// Logical bytes owned by this key, excluding allocator capacity and the
+    /// caller-owned dependency snapshot passed during validation.
+    pub fn logical_storage_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(self.code_bytes.len())?
+            .checked_add(
+                self.dependencies
+                    .len()
+                    .checked_mul(std::mem::size_of::<CodeDependencySpan>())?,
+            )?
+            .checked_add(
+                self.fetch_ranges
+                    .as_slice()
+                    .len()
+                    .checked_mul(std::mem::size_of::<GuestByteRange>())?,
+            )
     }
 }
 

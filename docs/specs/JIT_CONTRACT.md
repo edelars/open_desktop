@@ -273,8 +273,38 @@ budget и размером emitted блока. Начальный code_end пр�
 при нулевом budget блок не компилируется. `od_host::PublishedBlockExecutor`
 держит mapping только внутри callback publish/execute/drop, затем разрешает
 следующую итерацию. Unsupported/runtime exits возвращаются вызывающему без
-fallback. Это не добавляет cache, CLI multi-block execution или полную
+fallback. Сам S3-15 path не добавляет cache, CLI multi-block cache use или полную
 S3-15 corpus/native-oracle acceptance.
+
+### S3-18a: one-entry fixture-dispatch cache partial
+
+`od_jit::dispatch::run_cached` is a separate opt-in Rust path over the same
+fixture-v1 `AdmittedInstructionBoundaries`. It owns exactly one compiled block
+and an opaque published handle supplied by a generic backend; `od-jit` does not
+depend on `od-host`. `od-host::PublishedBlockExecutor` implements the cached
+backend separately from its existing publish/execute/drop callbacks. On a hit,
+the bounded decoder rebuilds the block record and compares the complete
+`TranslationKey` (including full CodeView bytes, terminal, fetch ranges and
+caller-owned dependency identity/version spans); lowering, allocation,
+emission and publication are skipped. Source bytes and dependency snapshots
+are checked before publication and again before each entry. A stale snapshot
+returns an error without retry. On a miss, the previous owner is dropped
+before publication to respect the current single-live-MAP_JIT lease.
+An early lower-bound check rejects source/dependency payloads that cannot fit
+before copying them into a `TranslationKey`.
+
+The cache constructor rejects any capacity other than one and enforces a
+512-KiB maximum logical entry budget. Accounting includes key contents,
+compiled code and state-map contents, plus an equivalent code/map publication
+copy. It excludes allocator capacity, page rounding and opaque host-handle
+internals, so it is not an RSS bound. Runtime budget and STOP guards retain the
+existing ordering, including a fresh invocation-local STOP flag and boundary
+resampling; zero-budget and code-end checks do not compile or publish.
+The native fixture test compares cached and uncached results and reuses the
+resident owner. This is only a one-entry register-only fixture path; it has no
+multi-block executable arena, memory lowering, production MMU identity source,
+invalidation protocol, hit/miss telemetry, or performance claim. S3-18 remains
+open, as do context/invalidation/retirement work in S3-22/23/25.
 
 Compile result остаётся Rust-side: успешная компиляция даёт непубликованный
 код/metadata; неподдержанная форма классифицируется как `Unsupported`, а

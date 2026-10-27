@@ -34,6 +34,10 @@ impl CompiledBlock {
     pub fn deferred_error(&self) -> Option<&DecodeBoundary> {
         self.deferred_error.as_ref()
     }
+
+    pub(crate) fn logical_storage_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>().checked_add(self.emitted.logical_storage_bytes()?)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,13 +82,64 @@ pub fn compile_block_for_dispatch(
     entry_rip: u64,
     admission: &AdmittedInstructionBoundaries,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
+    let built = build_dispatch_block(code, entry_rip, admission)?;
+    compile_prepared_dispatch_block(code.code_end(), built, admission)
+}
+
+/// Decode and validate the source block once so the cache path can construct
+/// a full translation key before deciding whether native lowering is needed.
+pub(crate) fn build_dispatch_block(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &AdmittedInstructionBoundaries,
+) -> Result<BuildOutcome, BlockCompileError> {
     if !admission.matches_code(code) {
         return Err(BlockCompileError::DispatchAdmissionDoesNotMatchCode);
     }
     if !admission.contains(entry_rip) {
         return Err(BlockCompileError::DispatchEntryNotAdmitted { entry_rip });
     }
-    compile_block_inner(code, entry_rip, Some(admission), None)
+    let built = block::build_block(
+        code,
+        entry_rip,
+        AccessContext::default(),
+        BlockLimits::default(),
+    )
+    .map_err(BlockCompileError::Build)?;
+    if let BuildOutcome::Block(block) = &built {
+        for instruction in &block.instructions {
+            for rip in [instruction.guest_rip, instruction.next_rip] {
+                if !admission.contains(rip) {
+                    return Err(BlockCompileError::DispatchBlockBoundaryNotAdmitted { rip });
+                }
+            }
+        }
+    }
+    Ok(built)
+}
+
+pub(crate) fn compile_prepared_dispatch_block(
+    code_end: u64,
+    built: BuildOutcome,
+    admission: &AdmittedInstructionBoundaries,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    let lowered_outcome =
+        lowering::lower_for_dispatch(&built, admission).map_err(BlockCompileError::Lowering)?;
+    let lowered = match lowered_outcome {
+        LoweringOutcome::NoNativePrefix {
+            rip,
+            reason,
+            deferred_error,
+        } => {
+            return Ok(BlockCompileOutcome::NoNativePrefix {
+                rip,
+                reason,
+                deferred_error,
+            });
+        }
+        LoweringOutcome::Program(lowered) => lowered,
+    };
+    compile_lowered(code_end, lowered)
 }
 
 /// Compile one native prefix for the separately admitted S0-09-plus-NOP

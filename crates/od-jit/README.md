@@ -153,6 +153,16 @@ root task. См. подробности и evidence в JIT contract и план�
 [методике JIT](../../docs/testing/JIT.md). Добавлять формы инструкций можно
 после подтверждения их interpreter semantics и требуемых внешних проверок.
 
+Локальный S3-18a partial добавляет отдельный `dispatch::run_cached` для
+fixture-v1 register-only dispatcher. Cache удерживает не более одного
+compiled block и opaque host-published handle; same-key reuse сравнивает
+полный `TranslationKey` и пропускает lowering/emission/publication. Dependency
+snapshot проверяется на hit, до публикации и до входа; stale state завершает
+вызов без retry. Максимум — 512 KiB логических key/code/state-map bytes,
+включая копию для публикации; allocator/RSS overhead не входит. Это не
+multi-block arena, memory JIT, MMU invalidation или performance result; S3-18
+остаётся открытой до полного capacity/lifecycle/telemetry acceptance.
+
 S3-13 добавляет `block_compile::compile_block`: bounded block → typed lowering
 → allocation → runtime block emission. `NoNativePrefix` остаётся отдельным
 результатом, а emitted block свыше 4096 bytes отклоняется до публикации.
@@ -172,8 +182,9 @@ Jcc и возвращает выбранный RIP как `DispatchCandidate` (t
 `BlockComplete`/`NeedInterpreter` behavior. `dispatch::run` итеративно
 компилирует и исполняет admitted blocks с точным remaining budget, проверкой
 counters и требованием положительного retirement до продолжения. Host callback
-держит lifecycle одного publish/execute/drop на блок. Cache, fallback и CLI
-multi-block execution в этом срезе не добавлены; S3-15 остаётся открытой.
+держит lifecycle одного publish/execute/drop на блок. Один отдельный
+S3-18a Rust cache partial описан ниже; S3-15 CLI не использует cache и не
+выполняет interpreter fallback. Полный этап остаётся открытым.
 
 Локальный S3-17 partial добавляет `translation::TranslationKey`: полный
 immutable `CodeView` content/base/end, entry, compile flavor, terminal class,

@@ -11,10 +11,11 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::block::{AdmittedInstructionBoundaries, CodeMemory, CodeView};
 use crate::block_compile::{
-    BlockCompileError, BlockCompileOutcome, compile_block_for_dispatch,
-    compile_block_for_nop_fallback,
+    BlockCompileError, BlockCompileOutcome, build_dispatch_block, compile_block_for_dispatch,
+    compile_block_for_nop_fallback, compile_prepared_dispatch_block,
 };
 use crate::runtime::RuntimeExitTag;
+use crate::translation::{CodeDependencySpan, CompileFlavor, TranslationKey, TranslationKeyError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlockExecutionReport {
@@ -69,6 +70,112 @@ pub trait BlockExecutor {
     ) -> Result<BlockExecutionReport, Self::Error>;
 }
 
+/// One-block publication backend for the opt-in one-entry cache. The
+/// associated handle stays opaque to od-jit and remains owned by the cache
+/// across calls. Existing release-on-return executor traits are unchanged.
+pub trait CachedBlockBackend {
+    type Error;
+    type Published;
+
+    fn publish_cached_block(
+        &mut self,
+        block: &crate::block_compile::CompiledBlock,
+    ) -> Result<Self::Published, Self::Error>;
+
+    fn execute_cached_block(
+        &mut self,
+        published: &Self::Published,
+        block: &crate::block_compile::CompiledBlock,
+        state: &mut LongModeState,
+        incoming_budget: u64,
+        control: DispatchControl<'_>,
+    ) -> Result<BlockExecutionReport, Self::Error>;
+}
+
+pub const MAX_SINGLE_ENTRY_CACHE_BYTES: usize = 512 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheConfigError {
+    RequiresExactlyOneBlock { requested: usize },
+    InvalidByteLimit { requested: usize, max: usize },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheError {
+    EntryTooLarge { actual: usize, max: usize },
+    MinimumEntryTooLarge { minimum: usize, max: usize },
+    SizeOverflow,
+}
+
+struct CachedEntry<H> {
+    key: TranslationKey,
+    block: crate::block_compile::CompiledBlock,
+    published: H,
+    logical_bytes: usize,
+}
+
+/// Explicitly bounded one-entry cache. Published host memory stays alive only
+/// while this slot owns its opaque handle. The byte limit counts key contents,
+/// compiled code/state-map contents, and one equivalent publication copy;
+/// host allocator bookkeeping, page rounding, and opaque handle internals are
+/// excluded and are not a process-RSS bound.
+pub struct SingleEntryBlockCache<H> {
+    max_bytes: usize,
+    entry: Option<CachedEntry<H>>,
+}
+
+impl<H> SingleEntryBlockCache<H> {
+    pub fn new(max_blocks: usize, max_bytes: usize) -> Result<Self, CacheConfigError> {
+        if max_blocks != 1 {
+            return Err(CacheConfigError::RequiresExactlyOneBlock {
+                requested: max_blocks,
+            });
+        }
+        if max_bytes == 0 || max_bytes > MAX_SINGLE_ENTRY_CACHE_BYTES {
+            return Err(CacheConfigError::InvalidByteLimit {
+                requested: max_bytes,
+                max: MAX_SINGLE_ENTRY_CACHE_BYTES,
+            });
+        }
+        Ok(Self {
+            max_bytes,
+            entry: None,
+        })
+    }
+
+    pub const fn max_bytes(&self) -> usize {
+        self.max_bytes
+    }
+
+    pub fn resident_entries(&self) -> usize {
+        usize::from(self.entry.is_some())
+    }
+
+    pub fn resident_logical_bytes(&self) -> usize {
+        self.entry.as_ref().map_or(0, |entry| entry.logical_bytes)
+    }
+
+    pub fn clear(&mut self) {
+        self.entry = None;
+    }
+
+    fn key(&self) -> Option<&TranslationKey> {
+        self.entry.as_ref().map(|entry| &entry.key)
+    }
+
+    fn cached_block(&self) -> Option<&crate::block_compile::CompiledBlock> {
+        self.entry.as_ref().map(|entry| &entry.block)
+    }
+
+    fn published(&self) -> Option<&H> {
+        self.entry.as_ref().map(|entry| &entry.published)
+    }
+
+    fn install(&mut self, entry: CachedEntry<H>) {
+        self.entry = Some(entry);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DispatchExit {
     CodeEnd,
@@ -98,12 +205,307 @@ pub enum DispatchError<E> {
     AggregateOverflow,
     UnadmittedDispatchRip { rip: u64 },
     ZeroProgress { rip: u64 },
+    TranslationKey(TranslationKeyError),
+    StaleDependencySnapshot,
+    Cache(CacheError),
+    CachePublish(E),
+    CacheExecutor(E),
     NopAdmissionDoesNotMatchCode,
     InterpreterInstructionNotAdmitted { rip: u64 },
     InterpreterStepFailure { rip: u64, outcome: StepOutcome },
     InterpreterMemoryError { rip: u64, error: MemoryError },
     InterpreterProgressMismatch { expected_rip: u64, actual_rip: u64 },
     RetirementInvariant { expected: u64, actual: u64 },
+}
+
+/// Run fixture-dispatch blocks through a one-entry resident cache. This is a
+/// separate opt-in path; `run` retains its publish/execute/drop-per-block
+/// contract. Dependency identities are caller-owned stable snapshots, and
+/// must cover the entire immutable code view.
+pub fn run_cached<B: CachedBlockBackend>(
+    code: CodeView<'_>,
+    admission: &AdmittedInstructionBoundaries,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    cache: &mut SingleEntryBlockCache<B::Published>,
+    backend: &mut B,
+) -> Result<DispatchResult, DispatchError<B::Error>> {
+    let no_stop = AtomicU8::new(0);
+    run_cached_controlled(
+        code,
+        admission,
+        dependencies,
+        state,
+        total_budget,
+        DispatchControl {
+            stop_rip: None,
+            stop_requested: &no_stop,
+        },
+        cache,
+        backend,
+    )
+}
+
+/// Controlled variant of [`run_cached`] with the same STOP/RIP guard order as
+/// generated block entry. Cache lookup/compile/publication never bypass a
+/// boundary guard and guest counters are sampled from the runtime report.
+pub fn run_cached_controlled<B: CachedBlockBackend>(
+    code: CodeView<'_>,
+    admission: &AdmittedInstructionBoundaries,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    cache: &mut SingleEntryBlockCache<B::Published>,
+    backend: &mut B,
+) -> Result<DispatchResult, DispatchError<B::Error>> {
+    if !admission.matches_code(code) {
+        return Err(DispatchError::AdmissionDoesNotMatchCode);
+    }
+
+    if control.stop_rip == Some(state.rip) {
+        return Ok(result(
+            DispatchExit::Runtime(RuntimeExitTag::StopAddress),
+            total_budget,
+            0,
+            0,
+        ));
+    }
+    if control.stop_requested.load(Ordering::Acquire) != 0 {
+        return Ok(result(
+            DispatchExit::Runtime(RuntimeExitTag::StopRequested),
+            total_budget,
+            0,
+            0,
+        ));
+    }
+    if state.rip == code.code_end() {
+        return Ok(result(DispatchExit::CodeEnd, total_budget, 0, 0));
+    }
+    if !admission.contains(state.rip) {
+        return Err(DispatchError::EntryNotAdmitted { rip: state.rip });
+    }
+    if total_budget == 0 {
+        return Ok(result(DispatchExit::BudgetExhausted, 0, 0, 0));
+    }
+
+    let mut remaining = total_budget;
+    let mut retired_total = 0u64;
+    let mut blocks_executed = 0u64;
+
+    loop {
+        if let Some(exit) = control_exit(state.rip, code.code_end(), remaining, control) {
+            return Ok(result(exit, remaining, retired_total, blocks_executed));
+        }
+        if !admission.contains(state.rip) {
+            return Err(DispatchError::EntryNotAdmitted { rip: state.rip });
+        }
+
+        let built =
+            build_dispatch_block(code, state.rip, admission).map_err(DispatchError::Compile)?;
+        let guest_block = match &built {
+            crate::block::BuildOutcome::Block(block) => block,
+            crate::block::BuildOutcome::NoBlock(no_block) => {
+                return Err(DispatchError::NoNativePrefix {
+                    rip: no_block.entry_rip,
+                });
+            }
+        };
+        let minimum = minimum_cache_key_size::<B::Published>(code, dependencies, guest_block)
+            .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
+        if minimum > cache.max_bytes() {
+            return Err(DispatchError::Cache(CacheError::MinimumEntryTooLarge {
+                minimum,
+                max: cache.max_bytes(),
+            }));
+        }
+        let key = TranslationKey::for_block(
+            code,
+            guest_block,
+            CompileFlavor::S0_09FixtureDispatch,
+            dependencies,
+        )
+        .map_err(DispatchError::TranslationKey)?;
+        validate_cached_snapshot(&key, code, dependencies)?;
+
+        let hit = cache.key().is_some_and(|resident| resident == &key)
+            && cache
+                .key()
+                .is_some_and(|resident| resident.matches_code_view(code));
+
+        if !hit {
+            let compiled = match compile_prepared_dispatch_block(code.code_end(), built, admission)
+                .map_err(DispatchError::Compile)?
+            {
+                BlockCompileOutcome::Compiled(block) => block,
+                BlockCompileOutcome::NoNativePrefix { rip, .. } => {
+                    return Err(DispatchError::NoNativePrefix { rip });
+                }
+            };
+            let logical_bytes =
+                cached_entry_size::<B::Published>(&key, &compiled).map_err(DispatchError::Cache)?;
+            if logical_bytes > cache.max_bytes() {
+                return Err(DispatchError::Cache(CacheError::EntryTooLarge {
+                    actual: logical_bytes,
+                    max: cache.max_bytes(),
+                }));
+            }
+
+            validate_cached_snapshot(&key, code, dependencies)?;
+
+            // MAP_JIT is a process-wide singleton lease on the supported host.
+            // Release the previous owner before requesting another publication.
+            cache.clear();
+            let published = backend
+                .publish_cached_block(&compiled)
+                .map_err(DispatchError::CachePublish)?;
+            if !key.matches_code_view(code) {
+                drop(published);
+                return Err(DispatchError::StaleDependencySnapshot);
+            }
+            if let Err(error) = validate_cached_snapshot(&key, code, dependencies) {
+                drop(published);
+                return Err(error);
+            }
+            cache.install(CachedEntry {
+                key,
+                block: compiled,
+                published,
+                logical_bytes,
+            });
+        }
+
+        let cached_key = cache.key().expect("cache entry installed or hit");
+        if let Err(error) = validate_cached_snapshot(cached_key, code, dependencies) {
+            cache.clear();
+            return Err(error);
+        }
+        if !cached_key.matches_code_view(code) {
+            cache.clear();
+            return Err(DispatchError::StaleDependencySnapshot);
+        }
+        let cached_block = cache.cached_block().expect("cache entry installed or hit");
+        let published = cache.published().expect("cache entry installed or hit");
+        let execution =
+            backend.execute_cached_block(published, cached_block, state, remaining, control);
+        let report = match execution {
+            Ok(report) => report,
+            Err(error) => {
+                cache.clear();
+                return Err(DispatchError::CacheExecutor(error));
+            }
+        };
+        validate_counters(
+            report,
+            remaining,
+            u64::from(cached_block.emitted().pc_map().instruction_count()),
+        )?;
+        remaining = report.remaining_budget;
+        retired_total = retired_total
+            .checked_add(report.retired_instructions)
+            .ok_or(DispatchError::AggregateOverflow)?;
+        blocks_executed = blocks_executed
+            .checked_add(1)
+            .ok_or(DispatchError::AggregateOverflow)?;
+        if retired_total > total_budget {
+            return Err(DispatchError::AggregateOverflow);
+        }
+
+        match report.exit {
+            RuntimeExitTag::BlockComplete | RuntimeExitTag::DispatchCandidate => {
+                if !admission.contains(state.rip) {
+                    return Err(DispatchError::UnadmittedDispatchRip { rip: state.rip });
+                }
+                if let Some(exit) = control_exit(state.rip, code.code_end(), remaining, control) {
+                    return Ok(result(exit, remaining, retired_total, blocks_executed));
+                }
+                if report.retired_instructions == 0 {
+                    return Err(DispatchError::ZeroProgress { rip: state.rip });
+                }
+            }
+            RuntimeExitTag::BudgetExhausted => {
+                if remaining != 0 {
+                    return Err(DispatchError::InvalidBudgetExit { remaining });
+                }
+                let exit = control_exit(state.rip, code.code_end(), remaining, control)
+                    .expect("zero remaining budget always produces a terminal control result");
+                return Ok(result(exit, remaining, retired_total, blocks_executed));
+            }
+            exit => {
+                return Ok(result(
+                    DispatchExit::Runtime(exit),
+                    remaining,
+                    retired_total,
+                    blocks_executed,
+                ));
+            }
+        }
+    }
+}
+
+fn validate_cached_snapshot<E>(
+    key: &TranslationKey,
+    code: CodeView<'_>,
+    dependencies: &[CodeDependencySpan],
+) -> Result<(), DispatchError<E>> {
+    if !key.matches_code_view(code)
+        || !key
+            .dependencies_match_snapshot(dependencies)
+            .map_err(DispatchError::TranslationKey)?
+    {
+        return Err(DispatchError::StaleDependencySnapshot);
+    }
+    Ok(())
+}
+
+fn cached_entry_size<H>(
+    key: &TranslationKey,
+    block: &crate::block_compile::CompiledBlock,
+) -> Result<usize, CacheError> {
+    let key_bytes = key
+        .logical_storage_bytes()
+        .ok_or(CacheError::SizeOverflow)?;
+    let compiled_bytes = block
+        .logical_storage_bytes()
+        .ok_or(CacheError::SizeOverflow)?;
+    // PublishedCode owns another code-byte and PcMap copy. Count that copy
+    // even though the opaque backend handle's allocator bookkeeping is outside
+    // this logical bound.
+    let published_copy = block
+        .emitted()
+        .logical_storage_bytes()
+        .ok_or(CacheError::SizeOverflow)?;
+    key_bytes
+        .checked_add(compiled_bytes)
+        .and_then(|total| total.checked_add(published_copy))
+        .and_then(|total| total.checked_add(std::mem::size_of::<CachedEntry<H>>()))
+        .ok_or(CacheError::SizeOverflow)
+}
+
+/// A lower bound available before TranslationKey clones source/dependency
+/// buffers. It includes all key-owned payloads and the fixed cache wrapper; a
+/// later exact logical check also accounts for compiled output and its
+/// publication copy.
+fn minimum_cache_key_size<H>(
+    code: CodeView<'_>,
+    dependencies: &[CodeDependencySpan],
+    block: &crate::block::BasicBlock,
+) -> Option<usize> {
+    std::mem::size_of::<TranslationKey>()
+        .checked_add(code.len())?
+        .checked_add(
+            dependencies
+                .len()
+                .checked_mul(std::mem::size_of::<CodeDependencySpan>())?,
+        )?
+        .checked_add(
+            block
+                .guest_ranges
+                .len()
+                .checked_mul(std::mem::size_of::<crate::block::GuestByteRange>())?,
+        )?
+        .checked_add(std::mem::size_of::<CachedEntry<H>>())
 }
 
 /// Run admitted blocks until the fixture ends, the exact guest budget is
@@ -560,6 +962,12 @@ fn result(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::translation::{
+        AddressSpaceId, BackingId, BackingVersion, CodeIdentity, MappingId, MappingVersion,
+    };
+    use std::cell::RefCell;
+    use std::num::NonZeroU64;
+    use std::rc::Rc;
 
     #[derive(Default)]
     struct ScriptedExecutor {
@@ -674,6 +1082,108 @@ mod tests {
             remaining_budget,
             retired_instructions,
         }
+    }
+
+    #[derive(Default)]
+    struct PublishedTracker {
+        publishes: usize,
+        live: usize,
+        max_live: usize,
+        drops: usize,
+        fail_publish: bool,
+        loop_to_entry: bool,
+        request_stop_once: bool,
+    }
+
+    struct MockPublished(Rc<RefCell<PublishedTracker>>);
+
+    impl Drop for MockPublished {
+        fn drop(&mut self) {
+            let mut tracker = self.0.borrow_mut();
+            tracker.live -= 1;
+            tracker.drops += 1;
+        }
+    }
+
+    #[derive(Clone)]
+    struct MockCachedBackend(Rc<RefCell<PublishedTracker>>);
+
+    impl CachedBlockBackend for MockCachedBackend {
+        type Error = &'static str;
+        type Published = MockPublished;
+
+        fn publish_cached_block(
+            &mut self,
+            _block: &crate::block_compile::CompiledBlock,
+        ) -> Result<Self::Published, Self::Error> {
+            let mut tracker = self.0.borrow_mut();
+            if tracker.fail_publish {
+                return Err("publish failed");
+            }
+            assert_eq!(tracker.live, 0, "old mapping must drop before publish");
+            tracker.publishes += 1;
+            tracker.live += 1;
+            tracker.max_live = tracker.max_live.max(tracker.live);
+            drop(tracker);
+            Ok(MockPublished(self.0.clone()))
+        }
+
+        fn execute_cached_block(
+            &mut self,
+            _published: &Self::Published,
+            block: &crate::block_compile::CompiledBlock,
+            state: &mut LongModeState,
+            incoming_budget: u64,
+            control: DispatchControl<'_>,
+        ) -> Result<BlockExecutionReport, Self::Error> {
+            let (loop_to_entry, request_stop_once) = {
+                let mut tracker = self.0.borrow_mut();
+                let request_stop = tracker.request_stop_once;
+                tracker.request_stop_once = false;
+                (tracker.loop_to_entry, request_stop)
+            };
+            if request_stop_once {
+                control.stop_requested.store(1, Ordering::Release);
+            }
+            state.rip = if loop_to_entry {
+                block.emitted().entry_rip()
+            } else {
+                block.code_end()
+            };
+            let retired = 1;
+            Ok(report(
+                if loop_to_entry {
+                    RuntimeExitTag::DispatchCandidate
+                } else {
+                    RuntimeExitTag::BlockComplete
+                },
+                incoming_budget - retired,
+                retired,
+            ))
+        }
+    }
+
+    fn dependency(code: CodeView<'_>, version: u64) -> [CodeDependencySpan; 1] {
+        let nz = |value| NonZeroU64::new(value).unwrap();
+        [CodeDependencySpan {
+            start_rip: code.base_rip(),
+            end_rip: code.code_end(),
+            identity: CodeIdentity {
+                address_space: AddressSpaceId::new(nz(1)),
+                mapping: MappingId::new(nz(2)),
+                mapping_version: MappingVersion::new(nz(version)),
+                backing: BackingId::new(nz(3)),
+                backing_version: BackingVersion::new(nz(version)),
+                executable: true,
+            },
+        }]
+    }
+
+    fn cached_fixture<'a>(
+        bytes: &'a [u8],
+        base: u64,
+    ) -> (CodeView<'a>, AdmittedInstructionBoundaries) {
+        admitted(bytes, base)
     }
 
     #[test]
@@ -1154,5 +1664,385 @@ mod tests {
         assert_eq!(state.rip, view.code_end());
         assert_eq!(state.gpr[0], 12);
         assert_eq!(state.rflags, 0x242);
+    }
+
+    #[test]
+    fn one_entry_cache_reuses_same_key_and_self_loop_consumes_budget() {
+        let code = [0x75, 0xFE]; // JNZ to this instruction.
+        let (view, admission) = cached_fixture(&code, 0x6000);
+        let dependencies = dependency(view, 1);
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            loop_to_entry: true,
+            ..PublishedTracker::default()
+        }));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+
+        let result = run_cached(
+            view,
+            &admission,
+            &dependencies,
+            &mut state,
+            3,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(result.exit, DispatchExit::BudgetExhausted);
+        assert_eq!(result.retired_instructions, 3);
+        assert_eq!(result.remaining_budget, 0);
+        assert_eq!(tracker.borrow().publishes, 1);
+        assert_eq!(cache.resident_entries(), 1);
+
+        state.rip = view.base_rip();
+        let second = run_cached(
+            view,
+            &admission,
+            &dependencies,
+            &mut state,
+            1,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(second.retired_instructions, 1);
+        assert_eq!(
+            tracker.borrow().publishes,
+            1,
+            "cache hit must not republish"
+        );
+    }
+
+    #[test]
+    fn cache_replaces_changed_key_only_after_dropping_old_handle() {
+        let code_a = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let code_b = [0x48, 0xB8, 2, 0, 0, 0, 0, 0, 0, 0];
+        let (view_a, admission_a) = cached_fixture(&code_a, 0x6100);
+        let (view_b, admission_b) = cached_fixture(&code_b, 0x6100);
+        let deps_a = dependency(view_a, 1);
+        let deps_b = dependency(view_b, 1);
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut state = LongModeState {
+            rip: view_a.base_rip(),
+            ..LongModeState::default()
+        };
+        run_cached(
+            view_a,
+            &admission_a,
+            &deps_a,
+            &mut state,
+            1,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(tracker.borrow().live, 1);
+        state.rip = view_b.base_rip();
+        run_cached(
+            view_b,
+            &admission_b,
+            &deps_b,
+            &mut state,
+            1,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        let status = tracker.borrow();
+        assert_eq!(status.publishes, 2);
+        assert_eq!(status.drops, 1);
+        assert_eq!(status.live, 1);
+        assert_eq!(status.max_live, 1);
+        drop(status);
+        cache.clear();
+        assert_eq!(tracker.borrow().live, 0);
+        assert_eq!(tracker.borrow().drops, 2);
+
+        state.rip = view_b.base_rip();
+        run_cached(
+            view_b,
+            &admission_b,
+            &deps_b,
+            &mut state,
+            1,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(tracker.borrow().live, 1);
+        drop(cache);
+        assert_eq!(tracker.borrow().live, 0);
+        assert_eq!(tracker.borrow().drops, 3);
+    }
+
+    #[test]
+    fn dependency_change_replaces_entry_and_invalid_snapshot_fails_closed() {
+        let code = [0x48, 0xB8, 3, 0, 0, 0, 0, 0, 0, 0];
+        let (view, admission) = cached_fixture(&code, 0x6200);
+        let deps_v1 = dependency(view, 1);
+        let deps_v2 = dependency(view, 2);
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        run_cached(
+            view,
+            &admission,
+            &deps_v1,
+            &mut state,
+            1,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        state.rip = view.base_rip();
+        run_cached(
+            view,
+            &admission,
+            &deps_v2,
+            &mut state,
+            1,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(tracker.borrow().publishes, 2);
+
+        state.rip = view.base_rip();
+        assert!(matches!(
+            run_cached(
+                view,
+                &admission,
+                &[],
+                &mut state,
+                1,
+                &mut cache,
+                &mut backend,
+            ),
+            Err(DispatchError::TranslationKey(_))
+        ));
+        assert_eq!(tracker.borrow().publishes, 2);
+    }
+
+    #[test]
+    fn cache_rejects_oversize_before_publish_and_surfaces_publish_errors() {
+        let code = [0x48, 0xB8, 4, 0, 0, 0, 0, 0, 0, 0];
+        let (view, admission) = cached_fixture(&code, 0x6300);
+        let dependencies = dependency(view, 1);
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut tiny_cache = SingleEntryBlockCache::new(1, 1).unwrap();
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        assert!(matches!(
+            run_cached(
+                view,
+                &admission,
+                &dependencies,
+                &mut state,
+                1,
+                &mut tiny_cache,
+                &mut backend,
+            ),
+            Err(DispatchError::Cache(
+                CacheError::MinimumEntryTooLarge { .. }
+            ))
+        ));
+        assert_eq!(tracker.borrow().publishes, 0);
+
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        tracker.borrow_mut().fail_publish = true;
+        assert_eq!(
+            run_cached(
+                view,
+                &admission,
+                &dependencies,
+                &mut state,
+                1,
+                &mut cache,
+                &mut backend,
+            ),
+            Err(DispatchError::CachePublish("publish failed"))
+        );
+        assert_eq!(cache.resident_entries(), 0);
+    }
+
+    #[test]
+    fn oversized_code_view_is_rejected_before_translation_key_copy() {
+        let mut code = Vec::with_capacity(2_000);
+        for _ in 0..200 {
+            code.extend_from_slice(&[0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0]);
+        }
+        let (view, admission) = cached_fixture(&code, 0x6350);
+        let dependencies = dependency(view, 1);
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, 1_000).unwrap();
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        assert!(matches!(
+            run_cached(
+                view,
+                &admission,
+                &dependencies,
+                &mut state,
+                1,
+                &mut cache,
+                &mut backend,
+            ),
+            Err(DispatchError::Cache(CacheError::MinimumEntryTooLarge {
+                minimum: 2_000..,
+                max: 1_000,
+            }))
+        ));
+        assert_eq!(tracker.borrow().publishes, 0);
+        assert_eq!(cache.resident_entries(), 0);
+    }
+
+    #[test]
+    fn cache_config_and_zero_budget_do_not_publish() {
+        assert_eq!(
+            SingleEntryBlockCache::<()>::new(2, 1024).err().unwrap(),
+            CacheConfigError::RequiresExactlyOneBlock { requested: 2 }
+        );
+        assert_eq!(
+            SingleEntryBlockCache::<()>::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES + 1)
+                .err()
+                .unwrap(),
+            CacheConfigError::InvalidByteLimit {
+                requested: MAX_SINGLE_ENTRY_CACHE_BYTES + 1,
+                max: MAX_SINGLE_ENTRY_CACHE_BYTES,
+            }
+        );
+        let code = [0x74, 0];
+        let (view, admission) = cached_fixture(&code, 0x6400);
+        let dependencies = dependency(view, 1);
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        let result = run_cached(
+            view,
+            &admission,
+            &dependencies,
+            &mut state,
+            0,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(result.exit, DispatchExit::BudgetExhausted);
+        assert_eq!(tracker.borrow().publishes, 0);
+        state.rip = view.code_end();
+        let result = run_cached(
+            view,
+            &admission,
+            &dependencies,
+            &mut state,
+            0,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(result.exit, DispatchExit::CodeEnd);
+        assert_eq!(tracker.borrow().publishes, 0);
+        state.rip = view.base_rip() + 1;
+        assert_eq!(
+            run_cached(
+                view,
+                &admission,
+                &dependencies,
+                &mut state,
+                0,
+                &mut cache,
+                &mut backend,
+            ),
+            Err(DispatchError::EntryNotAdmitted {
+                rip: view.base_rip() + 1
+            })
+        );
+        assert_eq!(tracker.borrow().publishes, 0);
+    }
+
+    #[test]
+    fn cached_dispatch_samples_stop_at_guest_boundary_and_does_not_leak_default_stop() {
+        let code = [0x48, 0xB8, 5, 0, 0, 0, 0, 0, 0, 0];
+        let (view, admission) = cached_fixture(&code, 0x6500);
+        let dependencies = dependency(view, 1);
+        let stop_requested = AtomicU8::new(0);
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let stopped = run_cached_controlled(
+            view,
+            &admission,
+            &dependencies,
+            &mut state,
+            1,
+            DispatchControl {
+                stop_rip: Some(view.code_end()),
+                stop_requested: &stop_requested,
+            },
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(
+            stopped.exit,
+            DispatchExit::Runtime(RuntimeExitTag::StopAddress)
+        );
+        assert_eq!(stopped.retired_instructions, 1);
+
+        // The default API's cooperative flag belongs to this invocation. A
+        // backend that requests STOP once cannot poison a later call.
+        tracker.borrow_mut().request_stop_once = true;
+        state.rip = view.base_rip();
+        let stop_once = run_cached(
+            view,
+            &admission,
+            &dependencies,
+            &mut state,
+            1,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(
+            stop_once.exit,
+            DispatchExit::Runtime(RuntimeExitTag::StopRequested)
+        );
+        state.rip = view.base_rip();
+        let next_call = run_cached(
+            view,
+            &admission,
+            &dependencies,
+            &mut state,
+            1,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(next_call.exit, DispatchExit::CodeEnd);
+        assert_eq!(tracker.borrow().publishes, 1);
     }
 }

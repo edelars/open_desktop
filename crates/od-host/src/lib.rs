@@ -414,6 +414,45 @@ impl od_jit::dispatch::ControlledBlockExecutor for PublishedBlockExecutor {
     }
 }
 
+/// Cache-aware counterpart to `ControlledBlockExecutor`. The cache owns the
+/// published mapping across calls; each invocation executes exactly that
+/// opaque handle. This implementation is deliberately separate from the
+/// release-on-return executor implementations above.
+impl od_jit::dispatch::CachedBlockBackend for PublishedBlockExecutor {
+    type Error = PublishedBlockExecutionError;
+    type Published = PublishedCode;
+
+    fn publish_cached_block(
+        &mut self,
+        block: &od_jit::block_compile::CompiledBlock,
+    ) -> Result<Self::Published, Self::Error> {
+        PublishedCode::publish_block(block.emitted()).map_err(PublishedBlockExecutionError::Publish)
+    }
+
+    fn execute_cached_block(
+        &mut self,
+        published: &Self::Published,
+        _block: &od_jit::block_compile::CompiledBlock,
+        state: &mut od_isa::LongModeState,
+        incoming_budget: u64,
+        control: od_jit::dispatch::DispatchControl<'_>,
+    ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+        let result = published
+            .execute_block(
+                state,
+                incoming_budget,
+                control.stop_rip,
+                control.stop_requested,
+            )
+            .map_err(PublishedBlockExecutionError::Execute)?;
+        Ok(od_jit::dispatch::BlockExecutionReport {
+            exit: result.exit,
+            remaining_budget: result.remaining_budget,
+            retired_instructions: result.retired_instructions,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublishedBlockExecutionError {
     Publish(ExecutableMemoryError),
@@ -2145,6 +2184,83 @@ mod tests {
         assert_eq!(state.gpr[0], 1);
         assert_eq!(result.retired_instructions, 1);
         assert_eq!(result.remaining_budget, 7);
+    }
+
+    #[test]
+    fn cached_dispatch_matches_uncached_native_fixture_and_reuses_owner() {
+        let _guard = jit_test_lock();
+        use od_jit::translation::{
+            AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity, MappingId,
+            MappingVersion,
+        };
+        use std::num::NonZeroU64;
+
+        let base_rip = 0x7B00;
+        let code = [0x48, 0xB8, 0x2A, 0, 0, 0, 0, 0, 0, 0];
+        let view = CodeView::new(base_rip, &code).unwrap();
+        let fixture_decode = od_isa::decode(&code).unwrap();
+        let admission =
+            AdmittedInstructionBoundaries::from_fixture_decode(view, &fixture_decode).unwrap();
+        let nz = |value| NonZeroU64::new(value).unwrap();
+        let dependencies = [CodeDependencySpan {
+            start_rip: view.base_rip(),
+            end_rip: view.code_end(),
+            identity: CodeIdentity {
+                address_space: AddressSpaceId::new(nz(1)),
+                mapping: MappingId::new(nz(2)),
+                mapping_version: MappingVersion::new(nz(1)),
+                backing: BackingId::new(nz(3)),
+                backing_version: BackingVersion::new(nz(1)),
+                executable: true,
+            },
+        }];
+        let mut uncached_state = od_isa::LongModeState {
+            rip: base_rip,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        let mut cached_state = uncached_state.clone();
+        let mut executor = PublishedBlockExecutor;
+        let uncached =
+            od_jit::dispatch::run(view, &admission, &mut uncached_state, 4, &mut executor).unwrap();
+        assert_eq!(uncached.exit, od_jit::dispatch::DispatchExit::CodeEnd);
+        assert_eq!(uncached_state.gpr[0], 42);
+
+        let mut cache = od_jit::dispatch::SingleEntryBlockCache::new(
+            1,
+            od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+        )
+        .unwrap();
+        let cached = od_jit::dispatch::run_cached(
+            view,
+            &admission,
+            &dependencies,
+            &mut cached_state,
+            4,
+            &mut cache,
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(cached, uncached);
+        assert_eq!(cached_state, uncached_state);
+        assert_eq!(cache.resident_entries(), 1);
+        assert!(cache.resident_logical_bytes() > 0);
+
+        cached_state.rip = base_rip;
+        let repeated = od_jit::dispatch::run_cached(
+            view,
+            &admission,
+            &dependencies,
+            &mut cached_state,
+            4,
+            &mut cache,
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(repeated, uncached);
+        assert_eq!(cached_state, uncached_state);
+        cache.clear();
+        assert_eq!(cache.resident_entries(), 0);
     }
 
     #[test]

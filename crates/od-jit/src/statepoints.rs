@@ -272,6 +272,22 @@ impl PcMap {
         &self.boundaries
     }
 
+    /// Logical bytes occupied by the immutable map contents, excluding Vec
+    /// allocator spare capacity.
+    pub(crate) fn logical_storage_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(
+                self.ranges
+                    .len()
+                    .checked_mul(std::mem::size_of::<StatePointRange>())?,
+            )?
+            .checked_add(
+                self.boundaries
+                    .len()
+                    .checked_mul(std::mem::size_of::<GuestBoundaryPoint>())?,
+            )
+    }
+
     /// Lookup only a byte in emitted code. The exclusive end, misaligned PCs,
     /// and code-adjacent padding never map to a guest instruction.
     pub fn lookup(&self, offset: u32) -> Option<&StatePointRange> {

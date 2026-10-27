@@ -66,6 +66,19 @@ impl EmittedRuntimeBlock {
     pub const fn safe_entry_provenance(&self) -> bool {
         self.safe_entry
     }
+
+    /// Logical bytes occupied by emitted words and state-map metadata,
+    /// excluding allocator spare capacity.
+    pub(crate) fn logical_storage_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(
+                self.code
+                    .words()
+                    .len()
+                    .checked_mul(std::mem::size_of::<u32>())?,
+            )?
+            .checked_add(self.pc_map.logical_storage_bytes()?)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
