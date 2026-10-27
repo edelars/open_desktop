@@ -9580,6 +9580,275 @@ mod tests {
     }
 
     #[test]
+    fn active_code_v3_slot_survives_capacity_two_invalidation_and_safe_reuse() {
+        let _guard = jit_test_lock();
+        let entry = 0x1000_u64;
+        let old = 0x1122_3344_5566_7788_u64;
+        let new = 0x8877_6655_4433_2211_u64;
+        let sentinel = 0xCAFE_BABE_1234_5678_u64;
+        let mut program = vec![0x48, 0xBA]; // MOV RDX, old
+        program.extend_from_slice(&old.to_le_bytes());
+        program.extend_from_slice(&[0x48, 0x89, 0x03]); // MOV [RBX], RAX
+        program.extend_from_slice(&[0x48, 0xB9]); // MOV RCX, sentinel
+        program.extend_from_slice(&sentinel.to_le_bytes());
+        let source = CodeView::new(entry, &program).unwrap();
+        let compiled = od_jit::memory_load_v2::compile_active_code_block_v3(source, entry).unwrap();
+
+        let mut owner =
+            TrackedCodeFixture::new(&program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
+        owner.backings[0].bytes[..program.len()].copy_from_slice(&program);
+        owner.active_source_rip = entry + 10;
+        owner.active_source = (0, 10, 3);
+        let mut arena = PublishedArenaBackend::new(2).unwrap();
+        assert_eq!(arena.capacity(), 2);
+        let active = arena.publish_active_code_block_v3(&compiled).unwrap();
+        assert_eq!(arena.available_slots(), 1);
+        assert_eq!(arena.cached_block_capacity(), 1);
+
+        let mut cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            1,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        let (prefix, _) = run_tracked_code_block(&owner, entry, &mut cache, &mut arena);
+        assert_eq!(prefix.retired_instructions, 1);
+        assert_eq!(cache.resident_entries(), 1);
+        assert_eq!(arena.available_slots(), 0);
+        {
+            let arena_state = arena.arena.borrow();
+            assert_eq!(
+                arena_state
+                    .slots
+                    .iter()
+                    .filter(|slot| slot.active_code_metadata_v3.is_some())
+                    .count(),
+                1
+            );
+            assert_eq!(
+                arena_state
+                    .slots
+                    .iter()
+                    .filter(|slot| slot.metadata.is_some())
+                    .count(),
+                1
+            );
+        }
+
+        assert!(matches!(
+            arena.publish_active_code_block_v3(&compiled),
+            Err(PublishedArenaError::CapacityFull)
+        ));
+        assert_eq!(
+            cache.resident_entries(),
+            1,
+            "failed publication preserves cached prefix"
+        );
+        assert_eq!(
+            arena.available_slots(),
+            0,
+            "failed publication preserves both slots"
+        );
+        let hits_before = cache.counters().hits;
+        let (cached_prefix_hit, _) = run_tracked_code_block(&owner, entry, &mut cache, &mut arena);
+        assert_eq!(cached_prefix_hit.retired_instructions, 1);
+        assert_eq!(cache.counters().hits, hits_before + 1);
+        assert_eq!(arena.available_slots(), 0);
+
+        // Clearing a cache while V3 remains published releases only the cached
+        // slot; the V3 handle still resolves its own metadata and guards.
+        cache.clear();
+        assert_eq!(cache.resident_entries(), 0);
+        assert_eq!(arena.available_slots(), 1);
+        let unchanged = od_isa::LongModeState {
+            rip: entry,
+            ..Default::default()
+        };
+        let mut budget_zero = unchanged.clone();
+        let no_entry = active
+            .execute_tracked_v3(
+                &mut budget_zero,
+                &mut owner,
+                AccessContext::default(),
+                0,
+                None,
+                &AtomicU8::new(0),
+                |_| panic!("zero budget cannot write"),
+            )
+            .unwrap();
+        assert_eq!(no_entry.exit, ActiveCodeExecutionExitV3::BudgetExhausted);
+        assert_eq!(budget_zero, unchanged);
+        assert_eq!(arena.available_slots(), 1, "clear cannot release V3 slot");
+
+        let (prefix, _) = run_tracked_code_block(&owner, entry, &mut cache, &mut arena);
+        assert_eq!(prefix.retired_instructions, 1);
+        assert_eq!(arena.available_slots(), 0);
+        let mut state = od_isa::LongModeState {
+            rip: entry,
+            rflags: 0xA55,
+            ..Default::default()
+        };
+        state.gpr[0] = new;
+        state.gpr[1] = 0xA5A5_5A5A_F0F0_0F0F;
+        state.gpr[3] = entry + 2;
+        let mut invalidated = 0;
+        let dirty = active
+            .execute_tracked_v3(
+                &mut state,
+                &mut owner,
+                AccessContext::default(),
+                3,
+                None,
+                &AtomicU8::new(0),
+                |change| invalidated += cache.invalidate(change),
+            )
+            .unwrap();
+        assert_eq!(dirty.exit, ActiveCodeExecutionExitV3::CodeInvalidated);
+        assert_eq!(dirty.retired_instructions, 2);
+        assert_eq!(state.rip, entry + 13);
+        assert_eq!(state.gpr[2], old);
+        assert_eq!(owner.write_count, 1);
+        assert_eq!(invalidated, 1);
+        assert_eq!(cache.resident_entries(), 0);
+        assert_eq!(
+            arena.available_slots(),
+            1,
+            "notification drops prefix, V3 slot remains live"
+        );
+        assert_eq!(
+            arena
+                .arena
+                .borrow()
+                .slots
+                .iter()
+                .filter(|slot| slot.active_code_metadata_v3.is_some())
+                .count(),
+            1
+        );
+
+        // The freed slot admits the fresh tail. It advances through the
+        // sentinel exactly once and does not replay the committed store.
+        let (tail, after_tail) = run_tracked_code_block_with_state(
+            &owner,
+            entry + 13,
+            state.clone(),
+            &mut cache,
+            &mut arena,
+        );
+        assert_eq!(tail.retired_instructions, 1);
+        assert_eq!(after_tail.gpr[1], sentinel);
+        assert_eq!(after_tail.rip, entry + 23);
+        assert_eq!(owner.write_count, 1);
+        assert_eq!(arena.available_slots(), 0);
+
+        let mut stale_state = after_tail.clone();
+        stale_state.rip = entry;
+        let stale_before = stale_state.clone();
+        let stale_ram: Vec<_> = owner
+            .backings
+            .iter()
+            .map(|backing| backing.bytes.clone())
+            .collect();
+        let stale_versions: Vec<_> = owner
+            .backings
+            .iter()
+            .map(|backing| backing.version)
+            .collect();
+        assert_eq!(
+            active.execute_tracked_v3(
+                &mut stale_state,
+                &mut owner,
+                AccessContext::default(),
+                3,
+                None,
+                &AtomicU8::new(0),
+                |_| panic!("stale V3 source cannot notify"),
+            ),
+            Err(ActiveCodeExecutionErrorV3::Preflight(
+                TrackedCodeStorePreflightError::ActiveSourceMismatch
+            )),
+        );
+        assert_eq!(stale_state, stale_before);
+        assert_eq!(owner.write_count, 1);
+        assert_eq!(
+            owner
+                .backings
+                .iter()
+                .map(|backing| &backing.bytes)
+                .collect::<Vec<_>>(),
+            stale_ram.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            owner
+                .backings
+                .iter()
+                .map(|backing| backing.version)
+                .collect::<Vec<_>>(),
+            stale_versions
+        );
+        assert_eq!(arena.available_slots(), 0);
+
+        drop(active);
+        assert_eq!(
+            arena.available_slots(),
+            1,
+            "dropping stale V3 releases only its own slot"
+        );
+        let (updated_bytes, _) = owner.view(entry, program.len());
+        let updated = od_jit::memory_load_v2::compile_active_code_block_v3(
+            CodeView::new(entry, updated_bytes).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let fresh_active = arena.publish_active_code_block_v3(&updated).unwrap();
+        assert_eq!(arena.available_slots(), 0);
+
+        let stop = std::sync::Arc::new(AtomicU8::new(0));
+        owner.request_stop_on_write = true;
+        owner.stop_byte = Some(stop.clone());
+        let mut stop_state = od_isa::LongModeState {
+            rip: entry,
+            rflags: 0xA55,
+            ..Default::default()
+        };
+        stop_state.gpr[0] = 0x8877_6655_4433_2211;
+        stop_state.gpr[1] = 0xDEAD_BEEF;
+        stop_state.gpr[3] = 0x2000;
+        let stopped = fresh_active
+            .execute_tracked_v3(
+                &mut stop_state,
+                &mut owner,
+                AccessContext::default(),
+                3,
+                None,
+                &stop,
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(stopped.exit, ActiveCodeExecutionExitV3::StopRequested);
+        assert_eq!(stopped.retired_instructions, 2);
+        assert_eq!(stop_state.rip, entry + 13);
+        assert_eq!(stop_state.gpr[2], new);
+        assert_eq!(
+            stop_state.gpr[1], 0xDEAD_BEEF,
+            "tail stays unexecuted after committed STOP"
+        );
+        assert_eq!(owner.write_count, 2);
+
+        cache.clear();
+        assert_eq!(arena.available_slots(), 1);
+        drop(arena);
+        assert_eq!(
+            PublishedArenaBackend::new(2).err(),
+            Some(PublishedArenaError::MappingAlreadyLive),
+            "the last V3 handle keeps the arena mapping alive after backend drop",
+        );
+        drop(fresh_active);
+        let reopened = PublishedArenaBackend::new(2).unwrap();
+        assert_eq!(reopened.available_slots(), 2);
+    }
+
+    #[test]
     fn active_code_v3_guards_faults_aliases_and_committed_stop_are_precise() {
         let _guard = jit_test_lock();
         let entry = 0x1000_u64;

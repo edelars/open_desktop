@@ -541,6 +541,27 @@ does not add active invalidation, self-modifying-code handling, SMP
 reclamation, a deferred retirement queue, or full S3-25. See the
 [S3-25a report](../reports/STAGE_3_S3-25a_2026-10-27.md).
 
+### S3-25b: capacity-two V3 lifetime partial
+
+With an arena of exactly two slots, one compiler-issued V3 active-code handle
+and one cached prefix can remain live simultaneously. A third publication
+returns `CapacityFull` without dropping either. Clearing the cache while V3 is
+live releases only the cached slot; after refilling it with the prefix, a
+committed self-write invalidates that prefix while the V3 slot remains owned.
+The freed slot can publish the fresh tail, which executes the sentinel once
+without replaying the store. Re-entry through the stale V3 handle rejects the
+changed source before CPU or memory effects. Dropping the old V3 handle frees
+its slot for a newly compiled source-bound artifact.
+
+The same capacity-two fixture covers STOP after the new artifact's committed
+store and confirms the tail remains unexecuted. Existing V3 fault tests verify
+that a store failure after the register prefix leaves that prefix committed and
+does not retire the store. A backend-drop/last-handle/reopen case verifies the
+arena mapping lease. This remains a synchronous one-vCPU lifetime fixture; it
+does not implement concurrent/reentrant eviction, active native retirement
+beyond this V3 artifact, a deferred queue, SMP reclamation, or complete S3-25.
+See the [S3-25b report](../reports/STAGE_3_S3-25b_2026-10-27.md).
+
 An S3-18d1 benchmark-only partial adds `od-bench dispatch-cache` on native
 Apple Silicon. It compares the uncached publisher, one-entry cache over a
 16-slot arena, FIFO(16), and opt-in LRU(16); the existing multi-entry
