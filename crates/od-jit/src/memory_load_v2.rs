@@ -1450,7 +1450,6 @@ mod tests {
                 vec![0x48, opcode, 0x04],             // truncated before SIB
                 vec![0x48, opcode, 0x04, 0x20],       // no-index
                 vec![0x48, opcode, 0x04, 0x05],       // no-base
-                vec![0x48, opcode, 0x04, 0x24],       // RSP index
                 vec![0x48, opcode, 0x04, 0x28],       // RSP base
                 vec![0x4a, opcode, 0x04, 0x18],       // extended index
                 vec![0x49, opcode, 0x04, 0x18],       // extended base
@@ -1465,6 +1464,69 @@ mod tests {
                         .and_then(|_| compile_memory_store_block_v2(code, 0x5700).map(|_| ()))
                 };
                 assert!(result.is_err(), "unexpected admission: {source:02x?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ir_rsp_base_no_index_sib_is_exactly_the_0x24_form() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data in 0..4_u8 {
+                let source = [0x48, opcode, (data << 3) | 4, 0x24];
+                let code = CodeView::new(0x5710, &source).unwrap();
+                let (site, v2_site, ir_source) = match operation {
+                    MemorySiteOperationV2::Load => {
+                        let ir = compile_ir_memory_load_block_v2(code, 0x5710).unwrap();
+                        let direct = compile_memory_load_block_v2(code, 0x5710).unwrap();
+                        (
+                            ir.site().clone(),
+                            direct.site().clone(),
+                            ir.source_bytes().to_vec(),
+                        )
+                    }
+                    MemorySiteOperationV2::Store => {
+                        let ir = compile_ir_memory_store_block_v2(code, 0x5710).unwrap();
+                        let direct = compile_memory_store_block_v2(code, 0x5710).unwrap();
+                        (
+                            ir.site().clone(),
+                            direct.site().clone(),
+                            ir.source_bytes().to_vec(),
+                        )
+                    }
+                };
+                assert_eq!(site, v2_site);
+                assert_eq!(ir_source, source);
+                assert_eq!(site.guest_rip(), 0x5710);
+                assert_eq!(site.next_rip(), 0x5714);
+                assert_eq!(site.operand().base, AddressBase::Register(Register::Rsp));
+                assert_eq!(site.operand().index, None);
+                assert_eq!(site.operand().scale, 1);
+                assert_eq!(site.operand().displacement, 0);
+                assert!(site.matches_source_bytes(&source, operation));
+            }
+
+            for bytes in [
+                vec![0x48, opcode, 0x04],                   // truncated before SIB
+                vec![0x48, opcode, 0x24, 0x24],             // RSP as data register
+                vec![0x48, opcode, 0x04, 0x64],             // scale > 1, no index
+                vec![0x48, opcode, 0x04, 0x25],             // no base
+                vec![0x48, opcode, 0x44, 0x24, 0],          // displacement
+                vec![0x48, opcode, 0x84, 0x24, 0, 0, 0, 0], // disp32
+                vec![0x67, 0x48, opcode, 0x04, 0x24],
+                vec![0x48, 0x67, opcode, 0x04, 0x24],
+                vec![0x48, opcode, 0x04, 0x24, 0x90], // trailing byte
+            ] {
+                let code = CodeView::new(0x5710, &bytes).unwrap();
+                let result = match operation {
+                    MemorySiteOperationV2::Load => compile_ir_memory_load_block_v2(code, 0x5710)
+                        .and_then(|_| compile_memory_load_block_v2(code, 0x5710).map(|_| ())),
+                    MemorySiteOperationV2::Store => compile_ir_memory_store_block_v2(code, 0x5710)
+                        .and_then(|_| compile_memory_store_block_v2(code, 0x5710).map(|_| ())),
+                };
+                assert!(result.is_err(), "unexpectedly admitted {bytes:02x?}");
             }
         }
     }
@@ -1705,7 +1767,6 @@ mod tests {
             vec![0x48, 0x8b, 0x20],
             vec![0x48, 0x8b, 0xc0],       // register-register mod=11
             vec![0x48, 0x8b, 0x04],       // truncated SIB
-            vec![0x48, 0x8b, 0x04, 0x24], // RSP index is unsupported
             vec![0x48, 0x8b, 0x04, 0x28], // RBP base requires disp32
             vec![0x48, 0x8b, 0x04, 0x20], // no-index SIB
             vec![0x48, 0x8b, 0x04, 0x05], // no-base SIB requires disp32

@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-20n/S3-20o/S3-20p/S3-20q/S3-20r/S3-20s/S3-20t/S3-20u/S3-26a/S3-26b/S3-26c/S3-26d/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-20n/S3-20o/S3-20p/S3-20q/S3-20r/S3-20s/S3-20t/S3-20u/S3-20v/S3-26a/S3-26b/S3-26c/S3-26d/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-25a/S3-25b реализованы как bounded partial slices, общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -168,6 +168,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20s | Address32 signed disp8 SIB qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r sib disp8`, ModRM `mod=01,r/m=100`, data/base/index RAX..RBX, scale1/2/4/8, ровно 6 bytes |
 | [partial] | S3-20t | Address32 signed disp32 SIB qword MOV через shared IR и bounded dispatcher | Только `67 48 8B/89 /r sib disp32`, ModRM `mod=10,r/m=100`, data/base/index RAX..RBX, scale1/2/4/8, ровно 9 bytes; singleton source metadata bound 9 bytes |
 | [partial] | S3-20u | RBP-base signed disp8 qword MOV через shared IR и bounded dispatcher | Только `48 8B/89 /r disp8`, ModRM `mod=01,r/m=101`, RBP base/data RAX..RBX, ровно 4 bytes; decoder preserves RBP #SS semantics |
+| [partial] | S3-20v | RSP-base qword MOV через exact no-index SIB `0x24` в shared IR и bounded dispatcher | Только `48 8B/89 /r sib`, ModRM `mod=00,r/m=100`, SIB `0x24`, RSP base, no index/displacement, data RAX..RBX, ровно 4 bytes |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1243,6 +1244,27 @@ that requests STOP after writing remains committed. Bounded dispatch composes
 the singleton → bare NOP interpreter bridge → existing pair, matches
 interpreter for budgets 0..4, resumes from the actual RIP without replay, and
 keeps RBP/RSP unchanged. See the [S3-20u report](../reports/STAGE_3_S3-20u_2026-10-27.md).
+
+#### S3-20v. RSP-base no-index SIB through shared IR and bounded dispatch
+
+Admit only singleton `48 8B/89 /r sib` with ModRM `mod=00,r/m=100` and exact
+SIB byte `0x24`: RSP base, no index, scale 1, no displacement, data RAX..RBX,
+qword data, 64-bit effective address and exact four-byte length. The decoder's
+`MemoryOperand` and `access_address_48` remain the sole address semantics; host
+SP and frame ABI are unchanged. Other SIB fields, displacement modes, RSP as a
+data register, `67`, other prefixes, extended registers, and pair changes are
+excluded.
+
+Direct V2/shared IR/interpreter load/store parity checks compare full state,
+RAM, callback address/count and retirement, including unchanged RSP/RBP/flags.
+Noncanonical RSP start and last-byte ranges produce #SS; identical RBX controls
+produce #GP, before data access and with no architectural commit. AddressOverflow
+and backend failures remain distinct host errors; entry STOP/zero budget do not
+access memory and store+STOP retains its write. Bounded dispatch exercises the
+four-byte singleton → bare NOP → existing pair, budgets 0..4, actual-RIP
+continuation and partial byte windows. Invalid near-matches return Unsupported
+without publishing a block or calling memory. See the
+[S3-20v report](../reports/STAGE_3_S3-20v_2026-10-27.md).
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

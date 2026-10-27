@@ -151,6 +151,11 @@ impl MemorySiteV2 {
                         | od_isa::Register::Rdx
                         | od_isa::Register::Rbx
                 ) || register == od_isa::Register::Rbp && length == 4
+                    || register == od_isa::Register::Rsp
+                        && length == 4
+                        && self.operand.index.is_none()
+                        && self.operand.scale == 1
+                        && self.operand.displacement == 0
             }
             od_isa::long_decode::AddressBase::NextRip => {
                 self.operand.index.is_none() && length == 7
@@ -376,6 +381,14 @@ impl MemorySiteV2 {
             let od_isa::long_decode::AddressBase::Register(decoded_base) = self.operand.base else {
                 return false;
             };
+            if mode == 0 && sib == 0x24 {
+                return source.len() == 4
+                    && (modrm >> 3) & 7 < 4
+                    && decoded_base == od_isa::Register::Rsp
+                    && self.operand.index.is_none()
+                    && self.operand.scale == 1
+                    && self.operand.displacement == 0;
+            }
             base < 4
                 && index < 4
                 && od_isa::Register::from_encoding(base) == Some(decoded_base)

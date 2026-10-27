@@ -572,6 +572,30 @@ singleton → bare NOP interpreter bridge → existing pair across budgets 0..4,
 and resumes from the actual RIP without replay. See the
 [S3-20u report](../reports/STAGE_3_S3-20u_2026-10-27.md).
 
+#### S3-20v: RSP-base no-index SIB qword MOV in shared IR and dispatch
+
+Admit exactly `48 8B/89 /r sib`, ModRM `mod=00,r/m=100`, SIB byte `0x24`,
+RSP base, no index, scale 1, no displacement, data register RAX..RBX, qword
+data, 64-bit effective address and four-byte instruction length. No SIB
+variation, displacement, RSP data operand, address-size or extra prefix,
+extended register or pair change is admitted. Decoder `MemoryOperand` and
+`access_address_48` remain the sole effective-address and range semantics; host
+SP/frame ABI is not involved.
+
+Direct V2/shared IR/interpreter evidence covers both operations, complete
+state/RAM parity, callback address/count and retirement with RSP/RBP/flags
+unchanged. Noncanonical RSP start and end-of-qword checks produce #SS
+(vector 12/error 0/no linear address); the same RBX checks produce #GP
+(vector 13/error 0/no linear address), with no backend callback or commit.
+AddressOverflow remains its host diagnostic and ordinary backend failures stay
+host errors. Entry STOP and zero budget cause no access; successful store+STOP
+remains committed. Bounded dispatch composes the exact singleton → bare NOP
+interpreter bridge → existing pair across budgets 0..4 and continuation from
+the actual RIP. Partial byte windows return BoundaryReached; malformed SIB,
+displacement, prefix and data-register variants return Unsupported without
+execution. See the
+[S3-20v report](../reports/STAGE_3_S3-20v_2026-10-27.md).
+
 S3-34a adds a bounded host-side differential corpus for these two exact
 sequences. It varies full initial GPR/flags/RAM snapshots, qword values,
 alignment, same/different ranges, and safe partial overlaps for load→store;
