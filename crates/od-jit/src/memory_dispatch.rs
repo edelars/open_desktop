@@ -46,6 +46,8 @@ pub struct MemoryBlockReport {
 }
 
 /// Executes one compiler-issued checked-memory artifact synchronously.
+/// Implementations release the artifact's executable mapping before returning
+/// so opt-in interpreter continuation runs only after native publication ends.
 ///
 /// # Safety
 /// `memory` must satisfy the private synchronous ordinary RAM preconditions
@@ -89,6 +91,16 @@ pub struct BoundedMemoryResult {
     pub blocks_executed: u64,
 }
 
+/// Accounting for the opt-in exact bare-NOP interpreter bridge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundedMemoryFallbackResult {
+    pub exit: BoundedMemoryExit,
+    pub remaining_budget: u64,
+    pub retired_native: u64,
+    pub retired_interpreter: u64,
+    pub blocks_executed: u64,
+}
+
 /// A caller-selected byte-window end for fixture execution. It must lie within
 /// `code`; it may split an instruction and is never treated as a guest halt.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -127,6 +139,24 @@ pub enum BoundedMemoryError<E> {
     },
     InvalidBlockProgress {
         rip: u64,
+    },
+    InterpreterMemory {
+        rip: u64,
+        error: MemoryError,
+    },
+    InterpreterStep {
+        rip: u64,
+        outcome: od_isa::execute::StepOutcome,
+    },
+    InterpreterRipMismatch {
+        expected: u64,
+        actual: u64,
+    },
+    InvalidTotalAccounting {
+        total_budget: u64,
+        remaining_budget: u64,
+        retired_native: u64,
+        retired_interpreter: u64,
     },
     CounterOverflow,
 }
@@ -343,6 +373,195 @@ pub unsafe fn run<E: MemoryBlockExecutor>(
             }
         }
     }
+}
+
+/// Run the checked-memory fixture path with an opt-in interpreter step for
+/// exactly the decoder-confirmed bare `0x90` instruction. The strict `run`
+/// entry remains unchanged and still returns `Unsupported` at NOP.
+///
+/// Each strict native run stops at its first unsupported instruction. When
+/// that RIP decodes as exact bare NOP, the native executor has already
+/// returned (and its host adapter must have dropped the published mapping)
+/// before this function steps the one-byte, immutable code view with the
+/// existing interpreter. It then resumes native dispatch at the resulting
+/// actual RIP with the remaining total budget.
+///
+/// # Safety
+/// The same private synchronous ordinary RAM, immutable non-aliasing code,
+/// all-or-nothing write, no-MMIO/no-concurrency/no-re-entry/no-unwind
+/// preconditions as [`run`] apply for the entire call.
+pub unsafe fn run_with_nop_fallback<E: MemoryBlockExecutor>(
+    code: CodeView<'_>,
+    boundary: FixtureExecutionBoundary,
+    state: &mut LongModeState,
+    memory: &mut dyn GuestMemory,
+    access_context: AccessContext,
+    total_budget: u64,
+    stop_rip: Option<u64>,
+    stop_requested: &AtomicU8,
+    executor: &mut E,
+) -> Result<BoundedMemoryFallbackResult, BoundedMemoryError<E::Error>> {
+    let mut remaining = total_budget;
+    let mut retired_native = 0u64;
+    let mut retired_interpreter = 0u64;
+    let mut blocks_executed = 0u64;
+
+    loop {
+        // SAFETY: forwarded unchanged from this function's caller contract.
+        let native = unsafe {
+            run(
+                code,
+                boundary.clone(),
+                state,
+                memory,
+                access_context,
+                remaining,
+                stop_rip,
+                stop_requested,
+                executor,
+            )
+        }?;
+        remaining = native.remaining_budget;
+        retired_native = retired_native
+            .checked_add(native.retired_instructions)
+            .ok_or(BoundedMemoryError::CounterOverflow)?;
+        blocks_executed = blocks_executed
+            .checked_add(native.blocks_executed)
+            .ok_or(BoundedMemoryError::CounterOverflow)?;
+        validate_fallback_accounting(total_budget, remaining, retired_native, retired_interpreter)?;
+
+        let BoundedMemoryExit::Unsupported { rip } = native.exit else {
+            return Ok(BoundedMemoryFallbackResult {
+                exit: native.exit,
+                remaining_budget: remaining,
+                retired_native,
+                retired_interpreter,
+                blocks_executed,
+            });
+        };
+        if rip != state.rip || !is_exact_bare_nop_at(code, boundary.end_rip, rip) {
+            return Ok(BoundedMemoryFallbackResult {
+                exit: BoundedMemoryExit::Unsupported { rip },
+                remaining_budget: remaining,
+                retired_native,
+                retired_interpreter,
+                blocks_executed,
+            });
+        }
+
+        // `run` has already sampled stop-RIP, STOP, byte boundary and budget
+        // before reporting Unsupported. Keep explicit guards here as well so
+        // this bridge remains safe if its entry is refactored independently.
+        if stop_rip == Some(state.rip) {
+            return Ok(BoundedMemoryFallbackResult {
+                exit: BoundedMemoryExit::StopAddress,
+                remaining_budget: remaining,
+                retired_native,
+                retired_interpreter,
+                blocks_executed,
+            });
+        }
+        if stop_requested.load(Ordering::Acquire) != 0 {
+            return Ok(BoundedMemoryFallbackResult {
+                exit: BoundedMemoryExit::StopRequested,
+                remaining_budget: remaining,
+                retired_native,
+                retired_interpreter,
+                blocks_executed,
+            });
+        }
+        if remaining == 0 {
+            return Ok(BoundedMemoryFallbackResult {
+                exit: BoundedMemoryExit::BudgetExhausted,
+                remaining_budget: remaining,
+                retired_native,
+                retired_interpreter,
+                blocks_executed,
+            });
+        }
+
+        let one_byte = CodeMemory::one_instruction(code, rip).ok_or(
+            BoundedMemoryError::InterpreterMemory {
+                rip,
+                error: MemoryError::Unmapped {
+                    address: rip,
+                    access: AccessKind::Fetch,
+                },
+            },
+        )?;
+        // SAFETY: this operation is the same borrowed private-RAM invocation
+        // guarded by this function's caller contract; NOP performs no data access.
+        let mut fetch = one_byte;
+        match od_isa::execute::step(state, &mut fetch, access_context) {
+            Ok(od_isa::execute::StepOutcome::Advanced) => {
+                let expected = rip
+                    .checked_add(1)
+                    .ok_or(BoundedMemoryError::CounterOverflow)?;
+                if state.rip != expected {
+                    return Err(BoundedMemoryError::InterpreterRipMismatch {
+                        expected,
+                        actual: state.rip,
+                    });
+                }
+            }
+            Ok(outcome) => {
+                return Err(BoundedMemoryError::InterpreterStep { rip, outcome });
+            }
+            Err(error) => {
+                return Err(BoundedMemoryError::InterpreterMemory { rip, error });
+            }
+        }
+        remaining -= 1;
+        retired_interpreter = retired_interpreter
+            .checked_add(1)
+            .ok_or(BoundedMemoryError::CounterOverflow)?;
+        validate_fallback_accounting(total_budget, remaining, retired_native, retired_interpreter)?;
+    }
+}
+
+fn is_exact_bare_nop_at(code: CodeView<'_>, execution_end: u64, rip: u64) -> bool {
+    let Some(end) = rip.checked_add(1) else {
+        return false;
+    };
+    if end > execution_end {
+        return false;
+    }
+    let Some(mut fetch) = CodeMemory::one_instruction(code, rip) else {
+        return false;
+    };
+    let Ok(decoded) = long_decode::decode(&mut fetch, rip, AccessContext::default()) else {
+        return false;
+    };
+    let Some(offset) = rip
+        .checked_sub(code.base_rip())
+        .and_then(|offset| usize::try_from(offset).ok())
+    else {
+        return false;
+    };
+    let Some(first_byte) = code.bytes().get(offset).copied() else {
+        return false;
+    };
+    crate::block::is_exact_bare_nop(decoded, first_byte)
+}
+
+fn validate_fallback_accounting<E>(
+    total_budget: u64,
+    remaining_budget: u64,
+    retired_native: u64,
+    retired_interpreter: u64,
+) -> Result<(), BoundedMemoryError<E>> {
+    let retired = retired_native
+        .checked_add(retired_interpreter)
+        .ok_or(BoundedMemoryError::CounterOverflow)?;
+    if total_budget.checked_sub(remaining_budget) != Some(retired) {
+        return Err(BoundedMemoryError::InvalidTotalAccounting {
+            total_budget,
+            remaining_budget,
+            retired_native,
+            retired_interpreter,
+        });
+    }
+    Ok(())
 }
 
 enum CompileAt {

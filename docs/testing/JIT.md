@@ -74,6 +74,21 @@ These are prerequisites to owner-backed end-to-end testing, not claims made by
 the fixture cases above; physical Mac mini comparison and performance
 measurements remain separate final gates.
 
+### S3-16m bounded-memory bare-NOP fallback
+
+Run `cargo test -p od-host --offline bounded_memory_dispatch`. The native
+fixture uses pair → exact bare `90` → pair and compares complete CPU state,
+data RAM and callback counts with independent full-interpreter execution at
+budgets 0 through 5. It checks native/interpreter retired counts, strict
+`run` rejection at `90`, STOP and stop-RIP on both sides of the NOP, and
+continuation from the post-NOP RIP without repeating the first pair's memory
+accesses. An unsupported instruction after NOP preserves prior commits.
+Prefixed NOP, `0F 1F` and PAUSE must not increment interpreter retirement.
+Successful publication of the trailing pair exercises mapping release before
+the next native publication; the executor contract and explicit host drop
+place that release before the interpreter step. This is fixture-only evidence;
+it adds neither general interpreter fallback nor production owner/MMU tests.
+
 ### Bounded S3-34a two-site memory corpus
 
 For the two exact V2 memory sequences in the JIT contract, run

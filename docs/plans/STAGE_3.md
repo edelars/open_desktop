@@ -582,6 +582,22 @@ Rust API: fixture `jit-dispatch`, schema v1, legacy JIT и generic Stage 2
 fallback не расширены. S3-16 остаётся открытой; эта узкая NOP проверка не
 подтверждает общий fallback contract.
 
+**S3-16m bounded-memory partial:** `memory_dispatch::run` остаётся строгим и
+по-прежнему возвращает `Unsupported` на bare `0x90`. Новый opt-in
+`run_with_nop_fallback` reuses the strict dispatcher with the remaining total
+budget, and steps only the decoder-confirmed exact bare byte `90` through
+`od_isa::execute::step` and a one-byte immutable fetch view. It returns separate
+native/interpreter retirements and checks their sum against consumed budget.
+The synchronous host executor releases `PublishedCode` before returning, so
+the interpreter step follows native mapping drop; next native publication also
+proves the single mapping can be reused. Tests compare the complete CPU state,
+RAM and data callback counts against the full interpreter for budgets 0..=5,
+plus STOP/stop-RIP before and after NOP, continuation without replaying the
+first pair, unsupported tail preservation and strict-mode rejection. Prefix
+NOP, `0F 1F`, PAUSE and all other non-exact forms never enter fallback. This
+does not add production owner integration or general Stage 2 fallback; S3-16
+remains open.
+
 ### S3-17. Определить cache key и зависимости
 
 1. Записать minimum relevant context key по разделу 4.3; включить все реальные compile-time assumptions и версии code/mappings.

@@ -14830,6 +14830,629 @@ mod tests {
     }
 
     #[test]
+    fn bounded_memory_dispatch_opt_in_bare_nop_bridge_preserves_budget_and_effects() {
+        use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
+        use od_jit::memory_dispatch::{
+            BoundedMemoryExit, FixtureExecutionBoundary, MemoryBlockReport,
+        };
+        let _guard = jit_test_lock();
+
+        const BASE: u64 = 0x1280;
+        const CODE: [u8; 13] = [
+            0x48, 0x8b, 0x03, 0x48, 0x89, 0x02, // load/store pair
+            0x90, // exact bare NOP, interpreter-only
+            0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b, // store/load pair
+        ];
+
+        #[derive(Clone, Debug, Eq, PartialEq)]
+        struct Ram {
+            code: [u8; CODE.len()],
+            data: [u8; 64],
+            reads: usize,
+            writes: usize,
+        }
+        impl Ram {
+            fn fresh() -> Self {
+                let mut data = [0; 64];
+                data[8..16].copy_from_slice(&0x1234_5678_9abc_def0_u64.to_le_bytes());
+                data[24..32].copy_from_slice(&0xfeed_face_cafe_beef_u64.to_le_bytes());
+                Self {
+                    code: CODE,
+                    data,
+                    reads: 0,
+                    writes: 0,
+                }
+            }
+        }
+        impl GuestMemory for Ram {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                let offset = address
+                    .checked_sub(BASE)
+                    .and_then(|v| usize::try_from(v).ok());
+                offset
+                    .and_then(|index| self.code.get(index).copied())
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                out: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                self.reads += 1;
+                let start = usize::try_from(address).map_err(|_| MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })?;
+                let source =
+                    self.data
+                        .get(start..start + out.len())
+                        .ok_or(MemoryError::Unmapped {
+                            address,
+                            access: AccessKind::Read,
+                        })?;
+                out.copy_from_slice(source);
+                Ok(())
+            }
+
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                input: &[u8],
+            ) -> Result<(), MemoryError> {
+                self.writes += 1;
+                let start = usize::try_from(address).map_err(|_| MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })?;
+                let destination =
+                    self.data
+                        .get_mut(start..start + input.len())
+                        .ok_or(MemoryError::Unmapped {
+                            address,
+                            access: AccessKind::Write,
+                        })?;
+                destination.copy_from_slice(input);
+                Ok(())
+            }
+
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        let view = CodeView::new(BASE, &CODE).unwrap();
+        let boundary = FixtureExecutionBoundary::new(view, view.code_end()).unwrap();
+        let initial_state = || od_isa::LongModeState {
+            rip: BASE,
+            gpr: [0x7777, 0, 24, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            rflags: 0x202,
+            ..od_isa::LongModeState::default()
+        };
+        let stop = AtomicU8::new(0);
+
+        for budget in 0..=5 {
+            let mut native_state = initial_state();
+            let mut native_ram = Ram::fresh();
+            let mut executor = PublishedMemoryBlockExecutor;
+            // SAFETY: code is immutable and disjoint from fresh private synchronous RAM.
+            let native = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    view,
+                    boundary.clone(),
+                    &mut native_state,
+                    &mut native_ram,
+                    AccessContext::default(),
+                    budget,
+                    None,
+                    &stop,
+                    &mut executor,
+                )
+            }
+            .unwrap_or_else(|error| panic!("fallback dispatch budget {budget}: {error:?}"));
+
+            let mut interpreted_state = initial_state();
+            let mut interpreted_ram = Ram::fresh();
+            let interpreted = od_isa::execute::run(
+                &mut interpreted_state,
+                &mut interpreted_ram,
+                od_isa::execute::RunConfig {
+                    instruction_budget: budget,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(native_state, interpreted_state, "budget {budget}");
+            assert_eq!(native_ram.data, interpreted_ram.data, "budget {budget}");
+            assert_eq!(
+                (native_ram.reads, native_ram.writes),
+                (interpreted_ram.reads, interpreted_ram.writes)
+            );
+            assert_eq!(
+                native.retired_native + native.retired_interpreter,
+                budget - native.remaining_budget,
+                "budget {budget}"
+            );
+            assert_eq!(
+                native.retired_interpreter,
+                u64::from(budget >= 3),
+                "budget {budget}"
+            );
+            assert_eq!(
+                native.retired_native,
+                budget.saturating_sub(u64::from(budget >= 3)),
+                "budget {budget}"
+            );
+            assert_eq!(
+                native.retired_native + native.retired_interpreter,
+                interpreted.instructions_executed
+            );
+            if budget < 5 {
+                assert_eq!(native.exit, BoundedMemoryExit::BudgetExhausted);
+            } else {
+                assert_eq!(
+                    native.exit,
+                    BoundedMemoryExit::BoundaryReached {
+                        rip: view.code_end()
+                    }
+                );
+            }
+        }
+
+        // STOP from the completed native pair is observed before the NOP step.
+        struct StopAfterFirstBlock {
+            inner: PublishedMemoryBlockExecutor,
+            calls: usize,
+        }
+        unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for StopAfterFirstBlock {
+            type Error = PublishedMemoryBlockError;
+
+            unsafe fn execute_one_memory_block(
+                &mut self,
+                block: &od_jit::memory_dispatch::BoundedMemoryArtifact,
+                state: &mut od_isa::LongModeState,
+                memory: &mut dyn GuestMemory,
+                context: AccessContext,
+                budget: u64,
+                stop_rip: Option<u64>,
+                stop: &AtomicU8,
+            ) -> Result<MemoryBlockReport, Self::Error> {
+                self.calls += 1;
+                // SAFETY: this wrapper forwards the caller's unchanged contract.
+                let report = unsafe {
+                    self.inner.execute_one_memory_block(
+                        block, state, memory, context, budget, stop_rip, stop,
+                    )
+                }?;
+                if self.calls == 1 {
+                    stop.store(1, Ordering::Release);
+                }
+                Ok(report)
+            }
+        }
+        let mut stopped_state = initial_state();
+        let mut stopped_ram = Ram::fresh();
+        let mut stop_before_nop = StopAfterFirstBlock {
+            inner: PublishedMemoryBlockExecutor,
+            calls: 0,
+        };
+        let stopped = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback(
+                view,
+                boundary.clone(),
+                &mut stopped_state,
+                &mut stopped_ram,
+                AccessContext::default(),
+                5,
+                None,
+                &stop,
+                &mut stop_before_nop,
+            )
+        }
+        .unwrap();
+        assert_eq!(stopped.exit, BoundedMemoryExit::StopRequested);
+        assert_eq!(
+            (stopped.retired_native, stopped.retired_interpreter),
+            (2, 0)
+        );
+        assert_eq!(stopped_state.rip, BASE + 6);
+        assert_eq!((stopped_ram.reads, stopped_ram.writes), (1, 1));
+
+        // STOP-RIP before NOP and after NOP both retain the exact continuation RIP.
+        stop.store(0, Ordering::Release);
+        let mut before_state = initial_state();
+        let mut before_ram = Ram::fresh();
+        let mut executor = PublishedMemoryBlockExecutor;
+        let before_nop = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback(
+                view,
+                boundary.clone(),
+                &mut before_state,
+                &mut before_ram,
+                AccessContext::default(),
+                5,
+                Some(BASE + 6),
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(before_nop.exit, BoundedMemoryExit::StopAddress);
+        assert_eq!(
+            (before_nop.retired_native, before_nop.retired_interpreter),
+            (2, 0)
+        );
+
+        let mut after_state = initial_state();
+        let mut after_ram = Ram::fresh();
+        let after_nop = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback(
+                view,
+                boundary.clone(),
+                &mut after_state,
+                &mut after_ram,
+                AccessContext::default(),
+                5,
+                Some(BASE + 7),
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(after_nop.exit, BoundedMemoryExit::StopAddress);
+        assert_eq!(
+            (after_nop.retired_native, after_nop.retired_interpreter),
+            (2, 1)
+        );
+        assert_eq!(after_state.rip, BASE + 7);
+
+        // Budget exit after NOP resumes from actual RIP; prior pair accesses do not repeat.
+        let mut resume_state = initial_state();
+        let mut resume_ram = Ram::fresh();
+        let first = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback(
+                view,
+                boundary.clone(),
+                &mut resume_state,
+                &mut resume_ram,
+                AccessContext::default(),
+                3,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(first.exit, BoundedMemoryExit::BudgetExhausted);
+        assert_eq!((first.retired_native, first.retired_interpreter), (2, 1));
+        assert_eq!(resume_state.rip, BASE + 7);
+        let old_counts = (resume_ram.reads, resume_ram.writes);
+        stop.store(1, Ordering::Release);
+        let stopped_after_nop = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback(
+                view,
+                boundary.clone(),
+                &mut resume_state,
+                &mut resume_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(stopped_after_nop.exit, BoundedMemoryExit::StopRequested);
+        assert_eq!(
+            (
+                stopped_after_nop.retired_native,
+                stopped_after_nop.retired_interpreter
+            ),
+            (0, 0)
+        );
+        assert_eq!((resume_ram.reads, resume_ram.writes), old_counts);
+        stop.store(0, Ordering::Release);
+        let second = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback(
+                view,
+                boundary,
+                &mut resume_state,
+                &mut resume_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            second.exit,
+            BoundedMemoryExit::BoundaryReached {
+                rip: view.code_end()
+            }
+        );
+        assert_eq!((second.retired_native, second.retired_interpreter), (2, 0));
+        assert_eq!(
+            (
+                resume_ram.reads - old_counts.0,
+                resume_ram.writes - old_counts.1
+            ),
+            (1, 1)
+        );
+        assert_eq!(resume_state.rip, view.code_end());
+    }
+
+    #[test]
+    fn bounded_memory_dispatch_nop_fallback_is_exact_and_strict_run_stays_strict() {
+        use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
+        use od_jit::memory_dispatch::{BoundedMemoryExit, FixtureExecutionBoundary};
+        let _guard = jit_test_lock();
+
+        const BASE: u64 = 0x12C0;
+        const PREFIX: [u8; 6] = [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02];
+        let mut state = od_isa::LongModeState {
+            rip: BASE,
+            ..Default::default()
+        };
+        state.gpr[3] = 8;
+        state.gpr[2] = 24;
+        struct Ram {
+            bytes: [u8; 64],
+            reads: usize,
+            writes: usize,
+        }
+        impl GuestMemory for Ram {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Fetch,
+                })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                out: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                self.reads += 1;
+                let start = address as usize;
+                let src =
+                    self.bytes
+                        .get(start..start + out.len())
+                        .ok_or(MemoryError::Unmapped {
+                            address,
+                            access: AccessKind::Read,
+                        })?;
+                out.copy_from_slice(src);
+                Ok(())
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                input: &[u8],
+            ) -> Result<(), MemoryError> {
+                self.writes += 1;
+                let start = address as usize;
+                let dst = self.bytes.get_mut(start..start + input.len()).ok_or(
+                    MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Write,
+                    },
+                )?;
+                dst.copy_from_slice(input);
+                Ok(())
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        // Strict run still exposes bare NOP as Unsupported after the native pair.
+        let mut code = PREFIX.to_vec();
+        code.push(0x90);
+        let view = CodeView::new(BASE, &code).unwrap();
+        let boundary = FixtureExecutionBoundary::new(view, view.code_end()).unwrap();
+        let mut memory = Ram {
+            bytes: [0; 64],
+            reads: 0,
+            writes: 0,
+        };
+        memory.bytes[8..16].copy_from_slice(&0x1234_u64.to_le_bytes());
+        let stop = AtomicU8::new(0);
+        let mut executor = PublishedMemoryBlockExecutor;
+        let strict = unsafe {
+            od_jit::memory_dispatch::run(
+                view,
+                boundary.clone(),
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                4,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            strict.exit,
+            BoundedMemoryExit::Unsupported { rip: BASE + 6 }
+        );
+        assert_eq!(strict.retired_instructions, 2);
+        assert_eq!(state.rip, BASE + 6);
+        assert_eq!((memory.reads, memory.writes), (1, 1));
+
+        // A later valid but unsupported instruction preserves the native prefix and NOP.
+        let mut code = PREFIX.to_vec();
+        code.extend_from_slice(&[0x90, 0xF3, 0x90]); // NOP; PAUSE is outside this profile.
+        let view = CodeView::new(BASE, &code).unwrap();
+        let boundary = FixtureExecutionBoundary::new(view, view.code_end()).unwrap();
+        let mut state = od_isa::LongModeState {
+            rip: BASE,
+            ..Default::default()
+        };
+        state.gpr[3] = 8;
+        state.gpr[2] = 24;
+        let mut memory = Ram {
+            bytes: [0; 64],
+            reads: 0,
+            writes: 0,
+        };
+        memory.bytes[8..16].copy_from_slice(&0x5678_u64.to_le_bytes());
+        let fallback = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback(
+                view,
+                boundary,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                4,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            fallback.exit,
+            BoundedMemoryExit::Unsupported { rip: BASE + 7 }
+        );
+        assert_eq!(
+            (fallback.retired_native, fallback.retired_interpreter),
+            (2, 1)
+        );
+        assert_eq!(state.rip, BASE + 7);
+        assert_eq!((memory.reads, memory.writes), (1, 1));
+
+        // Decoder variants that are not exact bare NOP never enter the interpreter.
+        for bytes in [
+            &[0x66, 0x90][..],
+            &[0x0F, 0x1F, 0xC0][..],
+            &[0xF3, 0x90][..],
+        ] {
+            let view = CodeView::new(BASE, bytes).unwrap();
+            let boundary = FixtureExecutionBoundary::new(view, view.code_end()).unwrap();
+            let mut state = od_isa::LongModeState {
+                rip: BASE,
+                ..Default::default()
+            };
+            let mut memory = Ram {
+                bytes: [0; 64],
+                reads: 0,
+                writes: 0,
+            };
+            let fallback = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    view,
+                    boundary,
+                    &mut state,
+                    &mut memory,
+                    AccessContext::default(),
+                    2,
+                    None,
+                    &stop,
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(fallback.retired_interpreter, 0, "bytes={bytes:02x?}");
+            assert!(
+                matches!(
+                    fallback.exit,
+                    BoundedMemoryExit::Unsupported { .. } | BoundedMemoryExit::Invalid { .. }
+                ),
+                "{fallback:?}"
+            );
+            assert_eq!(state.rip, BASE);
+        }
+    }
+
+    #[test]
     fn bounded_memory_dispatch_resumes_faults_and_honors_boundary_guards() {
         use od_isa::memory::{AccessContext, ArchitecturalFault};
         let _guard = jit_test_lock();

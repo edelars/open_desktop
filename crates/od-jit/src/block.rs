@@ -243,7 +243,7 @@ impl S0_09NopAdmission {
     }
 }
 
-fn is_exact_bare_nop(instruction: Instruction, first_byte: u8) -> bool {
+pub(crate) fn is_exact_bare_nop(instruction: Instruction, first_byte: u8) -> bool {
     matches!(instruction.operation, Operation::Nop)
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x90

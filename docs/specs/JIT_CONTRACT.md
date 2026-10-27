@@ -1126,6 +1126,32 @@ other decoded operations, memory instructions, general Stage 2 fallback,
 dispatcher CLI changes, faults on writable/mapped guest memory and generic
 fallback are outside this partial API.
 
+#### S3-16m: exact bare-NOP continuation for the bounded memory dispatcher
+
+`od_jit::memory_dispatch::run_with_nop_fallback` is a separate opt-in entry;
+the existing strict `run` is unchanged and reports `Unsupported` at bare
+`0x90`. The opt-in repeatedly invokes strict dispatch using the remaining total
+budget and intercepts only an `Unsupported` result at the current RIP whose
+single-byte view decodes as exact unprefixed primary-map `Operation::Nop`
+(`90`, length 1, no prefixes). It calls the existing
+`od_isa::execute::step` on `CodeMemory::one_instruction`; only `Advanced` with
+RIP advancing by one retires. Prefix NOP, `0F 1F`, PAUSE and every other
+unsupported/invalid form remain terminal strict results.
+
+The returned `BoundedMemoryFallbackResult` reports `retired_native` and
+`retired_interpreter` separately; after each native segment and interpreter
+step their sum is checked against `total_budget - remaining_budget`. STOP-RIP
+and cooperative STOP are sampled by strict dispatch before reporting the NOP
+and again before stepping; the next strict iteration checks them before
+compiling/publishing the next memory artifact. A budget exit after NOP returns
+the actual next RIP, so later continuation does not repeat the committed pair.
+The `MemoryBlockExecutor` contract requires executable mapping release before
+callback return. `PublishedMemoryBlockExecutor` explicitly drops the published
+mapping after result decoding and before returning to the dispatcher, which
+then steps NOP. This remains an unsafe caller-guaranteed private synchronous RAM
+and fixture byte-window API, not a production owner integration or general
+Stage 2 fallback.
+
 ### S3-17: typed translation identity partial
 
 `od_jit::translation::TranslationKey::for_block` builds an immutable,
