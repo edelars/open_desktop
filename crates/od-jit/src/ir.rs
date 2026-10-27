@@ -712,6 +712,11 @@ fn is_checked_memory_address(
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
             || matches!(operand.base, AddressBase::NextRip)
                 && operand.index.is_none()
+                && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+            || instruction_length == 8
+                && matches!(operand.base, AddressBase::None)
+                && operand.index.is_none()
+                && operand.scale == 1
                 && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement))
 }
 
@@ -738,12 +743,18 @@ fn is_scoped_memory_data_operand(
                     && operand.scale == 1
                     && match data_register {
                         4 => {
-                            (instruction_length == 3
-                                && operand.displacement == 0
-                                && matches!(
-                                    operand.base,
-                                    AddressBase::Register(register) if (register as u8) < 4
-                                ))
+                            (instruction_length == 8
+                                && matches!(operand.base, AddressBase::None)
+                                && operand.index.is_none()
+                                && operand.scale == 1
+                                && (i32::MIN as i64..=i32::MAX as i64)
+                                    .contains(&operand.displacement))
+                                || (instruction_length == 3
+                                    && operand.displacement == 0
+                                    && matches!(
+                                        operand.base,
+                                        AddressBase::Register(register) if (register as u8) < 4
+                                    ))
                                 || (instruction_length == 4
                                     && operand.displacement == 0
                                     && matches!(
@@ -792,12 +803,18 @@ fn is_scoped_memory_data_operand(
                                     && matches!(operand.base, AddressBase::NextRip))
                         }
                         5 => {
-                            (instruction_length == 3
-                                && operand.displacement == 0
-                                && matches!(
-                                    operand.base,
-                                    AddressBase::Register(register) if (register as u8) < 4
-                                ))
+                            (instruction_length == 8
+                                && matches!(operand.base, AddressBase::None)
+                                && operand.index.is_none()
+                                && operand.scale == 1
+                                && (i32::MIN as i64..=i32::MAX as i64)
+                                    .contains(&operand.displacement))
+                                || (instruction_length == 3
+                                    && operand.displacement == 0
+                                    && matches!(
+                                        operand.base,
+                                        AddressBase::Register(register) if (register as u8) < 4
+                                    ))
                                 || (instruction_length == 4
                                     && (i8::MIN as i64..=i8::MAX as i64)
                                         .contains(&operand.displacement)

@@ -234,10 +234,19 @@ impl MemorySiteV2 {
                 8 => i32::try_from(self.operand.displacement).is_ok(),
                 _ => false,
             };
+        let absolute_sib_disp32_data_profile = self.operand.address_size
+            == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Qword
+            && matches!(self.operand.base, od_isa::long_decode::AddressBase::None)
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && length == 8
+            && i32::try_from(self.operand.displacement).is_ok();
         let scoped_data_profile = address32_direct_data_profile
             || address32_indexed_sib_data_profile
             || address32_rsp_sib_base_data_profile
             || address32_rbp_direct_base_data_profile
+            || absolute_sib_disp32_data_profile
             || (self.operand.address_size == od_isa::OperandSize::Qword
                 && self.operand.size == od_isa::OperandSize::Qword
                 && (indexed_sib_data_profile
@@ -432,7 +441,13 @@ impl MemorySiteV2 {
             od_isa::long_decode::AddressBase::NextRip => {
                 self.operand.index.is_none() && length == 7
             }
-            od_isa::long_decode::AddressBase::None => false,
+            od_isa::long_decode::AddressBase::None => {
+                self.operand.address_size == od_isa::OperandSize::Qword
+                    && length == 8
+                    && self.operand.index.is_none()
+                    && self.operand.scale == 1
+                    && i32::try_from(self.operand.displacement).is_ok()
+            }
         };
         if self.instruction_index != expected_index
             || !register_profile
@@ -571,6 +586,9 @@ impl MemorySiteV2 {
             | (od_isa::long_decode::AddressBase::Register(_), Some(_), 8) => {
                 i32::try_from(self.operand.displacement).is_ok()
             }
+            (od_isa::long_decode::AddressBase::None, None, 8) => {
+                i32::try_from(self.operand.displacement).is_ok()
+            }
             _ => return false,
         };
         let expected_scale = if self.operand.index.is_some() {
@@ -707,6 +725,21 @@ impl MemorySiteV2 {
         let modrm = source[2];
         let mode = modrm >> 6;
         let data_register = (modrm >> 3) & 7;
+        if mode == 0 && modrm & 7 == 4 && source.len() == 8 && source[3] == 0x25 {
+            let site_register = match expected_operation {
+                MemorySiteOperationV2::Load => self.destination,
+                MemorySiteOperationV2::Store => self.source,
+            };
+            return data_register <= 5
+                && site_register == Some(data_register)
+                && self.next_rip.checked_sub(self.guest_rip) == Some(8)
+                && self.operand.address_size == od_isa::OperandSize::Qword
+                && self.operand.size == od_isa::OperandSize::Qword
+                && matches!(self.operand.base, od_isa::long_decode::AddressBase::None)
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && i32::try_from(self.operand.displacement).is_ok();
+        }
         if mode == 3
             || data_register > 5
             || data_register >= 4

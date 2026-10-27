@@ -2191,6 +2191,12 @@ The bounded singleton profile admits exactly `67 48 8B/89 /r sib disp8|disp32`, 
 
 Descriptor and host tests cover all six data registers, all low index registers and scale values, both directions, signed disp8/disp32 edges, data=RBP/index and data=RBP/base aliases from pre-instruction state, high-half truncation, ninth-byte displacement identity, contiguous access across 4 GiB, fault/backend classification and no guest commit, store+STOP commit, dispatcher budgets and resume without replay, partial windows, and no-base rejection. See the [S3-20at evidence](../reports/STAGE_3_S3-20at_2026-10-27.md). The evidence remains borrowed-fixture coverage; production memory-owner/MMU integration, physical x86, Mini, and performance are open.
 
+#### S3-20au: absolute qword access through no-base/no-index SIB
+
+Admit only singleton `48 8B/89 /r 25 disp32`: ModRM `mod=00,r/m=100`, exact SIB `0x25`, data RAX..RBP, and length eight. The address is the sign-extended disp32 in 64-bit address mode. The source-profile matcher verifies the opcode, ModRM fields, exact SIB, data register, and decoded instruction length. The displacement comes from the decoder-produced `MemoryOperand` retained in the immutable compiled artifact; the runtime matcher does not re-decode or byte-compare the raw disp32. `MemoryOperand` and `access_address_48` remain the sole effective-address semantics. Indexed no-base, address32, other SIB encodings, moffs, pairs, and V3 remain unsupported.
+
+Direct V2, shared IR, interpreter, and borrowed dispatcher evidence covers both directions and all six data registers; GPR/RIP-independent target calculation; contiguous qword at `-8`; pre-helper overflow for `-1`; architectural/backend no-commit behavior; store+STOP; byte-eight identity; and distinction from RIP-relative addressing. The byte-eight runtime case compiles two immutable decoder-built artifacts whose final disp32 byte differs, then verifies each artifact's independently expected callback target. Partial byte windows return fixture `BoundaryReached` without effects, while a complete address32 neighbor is Unsupported. See the [S3-20au evidence](../reports/STAGE_3_S3-20au_2026-10-27.md). Production owner/MMU integration, physical x86, Mini, and performance remain open.
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

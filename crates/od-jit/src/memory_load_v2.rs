@@ -635,6 +635,12 @@ pub fn compile_ir_memory_store_block_v2(
             entry_rip,
             bytes.len() as u8,
             0x89,
+        )
+        || crate::block::exact_qword_absolute_sib_disp32_memory_bytes(
+            code,
+            entry_rip,
+            bytes.len() as u8,
+            0x89,
         ))
         || !site.has_supported_profile()
         || !site.matches_source_bytes(bytes, MemorySiteOperationV2::Store)
@@ -772,6 +778,12 @@ fn checked_load_metadata_v2(
                 0x8b,
             )
             || crate::block::exact_qword_sib_displacement_memory_bytes(
+                code,
+                entry_rip,
+                decoded.length,
+                0x8b,
+            )
+            || crate::block::exact_qword_absolute_sib_disp32_memory_bytes(
                 code,
                 entry_rip,
                 decoded.length,
@@ -2920,7 +2932,7 @@ mod tests {
             vec![0x48, 0x89, 0x2d, 0, 0, 0],
             vec![0x67, 0x48, 0x8b, 0x25, 0, 0, 0, 0],
             vec![0x48, 0x89, 0x2d, 0, 0, 0, 0, 0x90], // trailing byte
-            vec![0x48, 0x8b, 0x24, 0x25, 0, 0, 0, 0], // SIB, not RIP-relative
+            vec![0x48, 0x8b, 0x24, 0x05, 0, 0, 0, 0], // indexed no-base SIB is unsupported
         ] {
             let code = CodeView::new(0x5a00, &bytes).unwrap();
             let result = if bytes[1] == 0x8b || bytes[2] == 0x8b {
@@ -2959,7 +2971,7 @@ mod tests {
             vec![0x48, 0x8b, 0x04, 0x28], // RBP base requires disp32
             vec![0x48, 0x8b, 0x04, 0x20], // no-index SIB
             vec![0x48, 0x8b, 0x04, 0x05], // no-base SIB requires disp32
-            vec![0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0], // no-base SIB
+            vec![0x48, 0x8b, 0x04, 0x05, 0, 0, 0, 0], // indexed no-base SIB
             vec![0x48, 0x8b, 0x44, 0x20, 1], // no-index SIB with disp8
             vec![0x48, 0x8b, 0x84, 0x20, 1, 0, 0, 0], // no-index SIB with disp32
             vec![0x48, 0x8b, 0x44, 0x00], // mod=01 displacement
@@ -4086,6 +4098,82 @@ mod tests {
                 assert!(
                     result.is_err(),
                     "invalid RBP-indexed SIB admitted {bytes:02x?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn absolute_sib_disp32_has_exact_qword_profile_for_all_data_registers() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in 0..6_u8 {
+                for displacement in [i32::MIN, -8, -1, 0, i32::MAX] {
+                    let mut source = vec![0x48, opcode, (data_register << 3) | 4, 0x25];
+                    source.extend_from_slice(&displacement.to_le_bytes());
+                    let code = CodeView::new(0x2a00, &source).unwrap();
+                    let site = match operation {
+                        MemorySiteOperationV2::Load => {
+                            let ir = compile_ir_memory_load_block_v2(code, 0x2a00)
+                                .unwrap_or_else(|error| panic!("{source:02x?}: {error:?}"));
+                            let direct = compile_memory_load_block_v2(code, 0x2a00).unwrap();
+                            assert_eq!(ir.site(), direct.site());
+                            ir.site().clone()
+                        }
+                        MemorySiteOperationV2::Store => {
+                            let ir = compile_ir_memory_store_block_v2(code, 0x2a00).unwrap();
+                            let direct = compile_memory_store_block_v2(code, 0x2a00).unwrap();
+                            assert_eq!(ir.site(), direct.site());
+                            ir.site().clone()
+                        }
+                    };
+                    assert!(site.has_supported_profile());
+                    assert!(site.matches_source_bytes(&source, operation));
+                    assert_eq!(site.operand.base, od_isa::long_decode::AddressBase::None);
+                    assert_eq!(site.operand.index, None);
+                    assert_eq!(site.operand.scale, 1);
+                    assert_eq!(site.operand.address_size, od_isa::OperandSize::Qword);
+                    assert_eq!(site.operand.size, od_isa::OperandSize::Qword);
+                    assert_eq!(site.operand.displacement, i64::from(displacement));
+                    assert_eq!(site.next_rip(), 0x2a08);
+                }
+            }
+        }
+
+        for opcode in [0x8b, 0x89] {
+            for source in [
+                vec![0x48, opcode, 0x04, 0x05, 0, 0, 0, 0], // indexed no-base
+                vec![0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // unsupported index
+                vec![0x48, opcode, 0x44, 0x25, 0],          // displaced no-index
+                vec![0x67, 0x48, opcode, 0x04, 0x25, 0, 0, 0, 0], // addr32 absolute
+                vec![0x48, opcode, 0x04, 0x25, 0, 0, 0],    // truncated disp32
+                vec![0x48, opcode, 0x04, 0x24, 0, 0, 0, 0], // RSP no-index + tail
+                vec![0x48, opcode, 0x04, 0x25, 0, 0, 0, 0, 0x90], // trailing byte
+            ] {
+                let code = CodeView::new(0x2a00, &source).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x2a00).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x2a00).map(|_| ())
+                };
+                assert!(
+                    result.is_err(),
+                    "invalid absolute SIB form admitted {source:02x?}"
+                );
+            }
+            let complete = [0x48, opcode, 0x04, 0x25, 0, 0, 0, 0];
+            for length in 1..8 {
+                let code = CodeView::new(0x2a00, &complete[..length]).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x2a00).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x2a00).map(|_| ())
+                };
+                assert!(
+                    result.is_err(),
+                    "partial absolute SIB admitted {length} bytes"
                 );
             }
         }
