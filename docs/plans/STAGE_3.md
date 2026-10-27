@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-22a/S3-23a/S3-25a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22/S3-23/S3-25 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-22a/S3-23a/S3-23c/S3-25a реализованы как bounded partial slices, общие memory lowering и S3-19/S3-22/S3-23/S3-25 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -158,6 +158,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Caller-owned frozen snapshot; production mode/MMU lease and compile/publication race remain open |
 | [partial] | S3-23a | Fixture owner notifications для изменения backing/mapping и cache invalidation между sync dispatch calls | Только неактивные entries; production owner, writer integration и publication race остаются открытыми |
+| [partial] | S3-23c | Fixture-only V2 generated store to a different tracked executable backing | One vCPU/fixed RAM; active-source overlap rejected; no active-code retirement or production MMU |
 | [ ] | S3-23 | Инвалидация code dependencies | S3-18, S3-21, S3-22; полный writer/MMU integration |
 | [ ] | S3-24 | Self-modifying code в текущем блоке | S3-23 |
 | [ ] | S3-25 | Eviction, retirement и освобождение | S3-18, S3-24 |
@@ -902,6 +903,29 @@ reclamation resident handles/code/metadata. Owner mutation, racing publication,
 interpreter/JIT/control writes, production MMU, DMA/device notifications и
 active self-modifying code остаются вне среза и требуют последующей интеграции.
 Результат: [S3-23a report](../reports/STAGE_3_S3-23a_2026-10-27.md).
+
+#### S3-23c. Generated V2 store в другой executable backing — fixture partial
+
+Typed V2 store slot/handle размещается в общей bounded executable arena рядом
+с cached V1 block slots, но остаётся отдельным от V1 entry и store API для
+private data RAM. После stop-RIP → STOP → budget guards fixture owner проверяет и связывает полный qword
+range, executable/write permissions, следующую nonwrapping backing version, исходные bytes/RIP с активным source lease и
+пересечение source backing, включая alias. Ошибка preflight выдаётся только если generated helper дошёл до write; Store в активный
+source отвергается до mutation. Успешный generated helper write меняет
+фиксированный executable guest backing один раз; после возврата native call и
+host result decoding owner продвигает version, отправляет
+CodeInvalidation, и cache удаляет только старый target entry до следующего
+lookup. V2 store slot вычитается из доступной cache capacity.
+
+Локальный end-to-end fixture прогревает B и unrelated C, выполняет compiled
+store A через alias B, подтверждает little-endian byte change, один write,
+late-STOP commit, B invalidation/recompile с новым результатом и C cache hit.
+Дополнительные cases проверяют active overlap, range/permission/version
+preflight и backend failure без частичной записи/version/cache mutation.
+Срез ограничен одним vCPU и фиксированным RAM; нет active SMC/retirement,
+production MMU, MMIO, DMA, SMP или автоматического retry. Существующий unsafe
+execute_memory_store_v2 private-data contract не ослаблен и для этого code
+write path не используется. Результат: [S3-23c report](../reports/STAGE_3_S3-23c_2026-10-27.md).
 
 1. Ввести единый путь уведомления committed memory writes и смены backing/mapping. Подключить interpreter, JIT и управляющие writes доступного среза.
 2. Изменить generation/identity нужных code regions, удалить зависимые entries из lookup и сделать невозможным stale entry по старой ссылке.

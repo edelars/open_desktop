@@ -31,6 +31,7 @@ struct BlockMetadata {
     safe_entry: bool,
 }
 
+#[derive(Clone, Copy)]
 struct MemoryOperationMetadataV2 {
     entry_rip: u64,
     site: od_jit::runtime::MemorySiteV2,
@@ -407,37 +408,16 @@ impl PublishedCode {
             });
         }
 
-        let mut adapter = od_jit::memory_bridge::CheckedMemoryAdapter::new(memory, access_context);
-        let sites = [metadata.site];
-        let mut context = od_jit::runtime::RuntimeContextV2 {
-            base: od_jit::runtime::RuntimeContextV1 {
-                state,
-                initial_budget,
-                stop_rip_enabled: u32::from(stop_rip.is_some()),
-                reserved: 0,
-                stop_rip: stop_rip.unwrap_or(0),
-                stop_requested: (stop_requested as *const std::sync::atomic::AtomicU8).cast(),
-                remaining_budget: initial_budget,
-                retired_instructions: 0,
-            },
-            memory_adapter: adapter.as_opaque_ptr(),
-            memory_sites: sites.as_ptr(),
-            memory_site_count: 1,
-            last_memory_site: u32::MAX,
-            last_memory_status: od_jit::memory_bridge::MEMORY_HELPER_INVALID_ARGUMENT,
-            reserved: 0,
-            staged_load_value: 0,
-            memory_outcome: od_jit::memory_bridge::CheckedMemoryOutcomeV1::default(),
-        };
-        context.memory_outcome.status = od_jit::memory_bridge::MEMORY_HELPER_INVALID_ARGUMENT;
-
-        // SAFETY: the V2 entry type and compiler-issued provenance are coupled
-        // to this owner. Context, adapter, site table, state, and stop flag all
-        // remain live for the synchronous native call.
-        let entry: od_jit::runtime::BlockEntryV2 = unsafe { std::mem::transmute(self.as_ptr()) };
-        // SAFETY: context points only to valid invocation-local V2 data.
-        let raw = unsafe { entry(&mut context) };
-        decode_memory_operation_v2_result(metadata, raw, &context)
+        execute_memory_operation_v2_at(
+            self.as_ptr(),
+            metadata,
+            state,
+            memory,
+            access_context,
+            initial_budget,
+            stop_rip,
+            stop_requested,
+        )
     }
 
     fn publish_with_metadata(
@@ -534,6 +514,49 @@ impl PublishedCode {
             std::ptr::null()
         }
     }
+}
+
+fn execute_memory_operation_v2_at(
+    code_ptr: *const u8,
+    metadata: &MemoryOperationMetadataV2,
+    state: &mut od_isa::LongModeState,
+    memory: &mut dyn od_isa::memory::GuestMemory,
+    access_context: od_isa::memory::AccessContext,
+    initial_budget: u64,
+    stop_rip: Option<u64>,
+    stop_requested: &std::sync::atomic::AtomicU8,
+) -> Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2> {
+    let mut adapter = od_jit::memory_bridge::CheckedMemoryAdapter::new(memory, access_context);
+    let sites = [metadata.site];
+    let mut context = od_jit::runtime::RuntimeContextV2 {
+        base: od_jit::runtime::RuntimeContextV1 {
+            state,
+            initial_budget,
+            stop_rip_enabled: u32::from(stop_rip.is_some()),
+            reserved: 0,
+            stop_rip: stop_rip.unwrap_or(0),
+            stop_requested: (stop_requested as *const std::sync::atomic::AtomicU8).cast(),
+            remaining_budget: initial_budget,
+            retired_instructions: 0,
+        },
+        memory_adapter: adapter.as_opaque_ptr(),
+        memory_sites: sites.as_ptr(),
+        memory_site_count: 1,
+        last_memory_site: u32::MAX,
+        last_memory_status: od_jit::memory_bridge::MEMORY_HELPER_INVALID_ARGUMENT,
+        reserved: 0,
+        staged_load_value: 0,
+        memory_outcome: od_jit::memory_bridge::CheckedMemoryOutcomeV1::default(),
+    };
+    context.memory_outcome.status = od_jit::memory_bridge::MEMORY_HELPER_INVALID_ARGUMENT;
+
+    // SAFETY: the caller couples the pointer to compiler-issued V2 provenance.
+    // Context, adapter, site table, state, and stop flag remain live through
+    // this synchronous call and host result decoding.
+    let entry: od_jit::runtime::BlockEntryV2 = unsafe { std::mem::transmute(code_ptr) };
+    // SAFETY: context points only to valid invocation-local V2 data.
+    let raw = unsafe { entry(&mut context) };
+    decode_memory_operation_v2_result(metadata, raw, &context)
 }
 
 fn execute_block_at(
@@ -917,6 +940,7 @@ pub enum PublishedArenaError {
 struct ArenaSlot {
     generation: u64,
     metadata: Option<BlockMetadata>,
+    memory_operation_metadata_v2: Option<MemoryOperationMetadataV2>,
 }
 
 struct ArenaInner {
@@ -944,6 +968,12 @@ pub struct PublishedArenaBlock {
     generation: u64,
 }
 
+/// Typed handle for a compiler-issued V2 memory-store entry in a bounded arena.
+/// It shares the arena with cached runtime blocks but cannot enter their V1 API.
+pub struct PublishedArenaMemoryStore {
+    _block: PublishedArenaBlock,
+}
+
 impl PublishedArenaBackend {
     pub fn new(max_blocks: usize) -> Result<Self, PublishedArenaError> {
         if max_blocks == 0 || max_blocks > MAX_PUBLISHED_ARENA_BLOCKS {
@@ -963,6 +993,7 @@ impl PublishedArenaBackend {
             slots.resize_with(max_blocks, || ArenaSlot {
                 generation: 0,
                 metadata: None,
+                memory_operation_metadata_v2: None,
             });
             let mut free_slots = Vec::with_capacity(max_blocks);
             free_slots.extend((0..max_blocks).rev());
@@ -989,6 +1020,18 @@ impl PublishedArenaBackend {
         self.arena.borrow().slots.len()
     }
 
+    /// Maximum cache entries after reserving currently published typed V2
+    /// store slots in this same arena.
+    pub fn cached_block_capacity(&self) -> usize {
+        let arena = self.arena.borrow();
+        let reserved = arena
+            .slots
+            .iter()
+            .filter(|slot| slot.memory_operation_metadata_v2.is_some())
+            .count();
+        arena.slots.len().saturating_sub(reserved)
+    }
+
     pub fn available_slots(&self) -> usize {
         self.arena.borrow().free_slots.len()
     }
@@ -1007,10 +1050,271 @@ impl Drop for PublishedArenaBlock {
         let Some(slot) = arena.slots.get_mut(self.slot_index) else {
             return;
         };
-        if slot.generation == self.generation && slot.metadata.take().is_some() {
+        if slot.generation == self.generation {
+            let block_metadata = slot.metadata.take();
+            let memory_metadata = slot.memory_operation_metadata_v2.take();
+            let occupied = block_metadata.is_some() || memory_metadata.is_some();
+            if !occupied {
+                return;
+            }
             // The stack was preallocated to the fixed slot count and each
             // live handle returns at most one slot.
             arena.free_slots.push(self.slot_index);
+        }
+    }
+}
+
+/// Preflight failures from the bounded tracked executable-code fixture owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrackedCodeStorePreflightError {
+    UnsupportedSite,
+    ActiveSourceMismatch,
+    OutOfRange,
+    NotWritable,
+    NotExecutable,
+    VersionExhausted,
+    ActiveSourceOverlap,
+}
+
+/// Owner contract for the fixture-only executable-code store path.
+///
+/// This is deliberately not implemented for ordinary GuestMemory backends.
+/// Implementations own fixed ordinary RAM (never MAP_JIT/MMIO), validate the
+/// complete range/permissions/version and active-source overlap in preflight,
+/// implement all-or-nothing writes without panic/re-entry, and return a
+/// versioned notification only after a generated write committed.
+///
+/// # Safety
+/// The write method must be synchronous, all-or-nothing, non-unwinding, and
+/// non-reentrant for the whole generated call. The owner must serialize the
+/// single vCPU, reject every destination overlapping the active source code
+/// backing (also through aliases), and keep the write target non-executable
+/// host memory. Preflight must only stage its decision: it must not surface a
+/// rejection until generated guards pass and the checked write is attempted.
+pub unsafe trait TrackedExecutableCodeOwner: od_isa::memory::GuestMemory {
+    fn preflight_code_store(
+        &mut self,
+        site: &od_jit::runtime::MemorySiteV2,
+        source_bytes: &[u8],
+        state: &od_isa::LongModeState,
+        context: od_isa::memory::AccessContext,
+    );
+
+    /// Called only after generated call and raw-result decoding return.
+    fn finish_code_store(
+        &mut self,
+    ) -> (
+        Option<od_jit::dispatch::CodeInvalidation>,
+        Option<TrackedCodeStorePreflightError>,
+    );
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TrackedCodeStoreExecutionErrorV2 {
+    InvalidHandle,
+    InvalidMetadata,
+    Preflight(TrackedCodeStorePreflightError),
+    Execution(MemoryOperationExecutionErrorV2),
+}
+
+impl PublishedArenaMemoryStore {
+    /// Execute a verified store through the separate fixture code-owner
+    /// contract, then apply its notification after native return/result decode.
+    /// The existing private-data unsafe store API is not involved.
+    pub fn execute_tracked_code_store_v2(
+        &self,
+        state: &mut od_isa::LongModeState,
+        owner: &mut dyn TrackedExecutableCodeOwner,
+        access_context: od_isa::memory::AccessContext,
+        initial_budget: u64,
+        stop_rip: Option<u64>,
+        stop_requested: &std::sync::atomic::AtomicU8,
+        mut notify: impl FnMut(od_jit::dispatch::CodeInvalidation),
+    ) -> Result<MemoryOperationExecutionResultV2, TrackedCodeStoreExecutionErrorV2> {
+        let arena = self._block.arena.borrow();
+        let slot = arena
+            .slots
+            .get(self._block.slot_index)
+            .filter(|slot| slot.generation == self._block.generation)
+            .ok_or(TrackedCodeStoreExecutionErrorV2::InvalidHandle)?;
+        let metadata = slot
+            .memory_operation_metadata_v2
+            .as_ref()
+            .ok_or(TrackedCodeStoreExecutionErrorV2::InvalidMetadata)?;
+        let source_len = usize::from(metadata.source_len);
+        if !(3..=8).contains(&source_len)
+            || metadata.site.operation() != od_jit::runtime::MemorySiteOperationV2::Store
+            || metadata.compile_flavor != od_jit::translation::CompileFlavor::S3_20bMemoryStoreV2
+            || !metadata.site.matches_source_bytes(
+                &metadata.source_bytes[..source_len],
+                od_jit::runtime::MemorySiteOperationV2::Store,
+            )
+            || state.rip != metadata.entry_rip
+        {
+            return Err(TrackedCodeStoreExecutionErrorV2::InvalidMetadata);
+        }
+
+        // Match the generated entry guard order. In particular, do not touch
+        // the owner for a STOP/stop-RIP/budget exit that cannot reach the write.
+        if stop_rip == Some(state.rip) {
+            return Ok(MemoryOperationExecutionResultV2 {
+                exit: MemoryOperationExecutionExitV2::StopAddress,
+                remaining_budget: initial_budget,
+                retired_instructions: 0,
+            });
+        }
+        if stop_requested.load(Ordering::Acquire) != 0 {
+            return Ok(MemoryOperationExecutionResultV2 {
+                exit: MemoryOperationExecutionExitV2::StopRequested,
+                remaining_budget: initial_budget,
+                retired_instructions: 0,
+            });
+        }
+        if initial_budget == 0 {
+            return Ok(MemoryOperationExecutionResultV2 {
+                exit: MemoryOperationExecutionExitV2::BudgetExhausted,
+                remaining_budget: 0,
+                retired_instructions: 0,
+            });
+        }
+
+        owner.preflight_code_store(
+            &metadata.site,
+            &metadata.source_bytes[..source_len],
+            state,
+            access_context,
+        );
+
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let result = self
+            ._block
+            .slot_index
+            .checked_mul(ARENA_SLOT_BYTES)
+            .map(|offset| {
+                let code_ptr = unsafe { arena.region.ptr().as_ptr().add(offset) };
+                execute_memory_operation_v2_at(
+                    code_ptr,
+                    metadata,
+                    state,
+                    owner,
+                    access_context,
+                    initial_budget,
+                    stop_rip,
+                    stop_requested,
+                )
+            })
+            .unwrap_or(Err(MemoryOperationExecutionErrorV2::InvalidMetadata));
+
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let result = {
+            let _ = (
+                metadata,
+                state,
+                access_context,
+                initial_budget,
+                stop_rip,
+                stop_requested,
+            );
+            Err(MemoryOperationExecutionErrorV2::InvalidMetadata)
+        };
+
+        // A successful backend write is already committed even if host
+        // result decoding fails, so always drain its notification after return.
+        drop(arena);
+        let (change, preflight_rejection) = owner.finish_code_store();
+        if let Some(change) = change {
+            notify(change);
+        }
+        if let Some(rejection) = preflight_rejection {
+            return Err(TrackedCodeStoreExecutionErrorV2::Preflight(rejection));
+        }
+        result.map_err(TrackedCodeStoreExecutionErrorV2::Execution)
+    }
+}
+
+impl PublishedArenaBackend {
+    /// Publishes a V2 store artifact into this backend's bounded arena.
+    /// The returned typed handle is separate from the V1 cached-block API.
+    pub fn publish_memory_store_v2(
+        &mut self,
+        block: &od_jit::memory_load_v2::MemoryStoreBlockV2,
+    ) -> Result<PublishedArenaMemoryStore, PublishedArenaError> {
+        if block.site().operation() != od_jit::runtime::MemorySiteOperationV2::Store
+            || block.compile_flavor() != od_jit::translation::CompileFlavor::S3_20bMemoryStoreV2
+        {
+            return Err(PublishedArenaError::InvalidBlockMetadata);
+        }
+        let code = block
+            .code()
+            .to_le_bytes()
+            .map_err(|_| PublishedArenaError::InvalidBlockMetadata)?;
+        if code.is_empty() || code.len() > ARENA_SLOT_BYTES {
+            return Err(PublishedArenaError::BlockTooLarge {
+                actual: code.len(),
+                max: ARENA_SLOT_BYTES,
+            });
+        }
+        let mut source_bytes = [0; 8];
+        let source = block.source_bytes();
+        if !(3..=8).contains(&source.len()) {
+            return Err(PublishedArenaError::InvalidBlockMetadata);
+        }
+        source_bytes[..source.len()].copy_from_slice(source);
+        let metadata = MemoryOperationMetadataV2 {
+            entry_rip: block.entry_rip(),
+            site: *block.site(),
+            source_bytes,
+            source_len: source.len() as u8,
+            compile_flavor: block.compile_flavor(),
+        };
+
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let mut arena = self.arena.borrow_mut();
+            let slot_index = *arena
+                .free_slots
+                .last()
+                .ok_or(PublishedArenaError::CapacityFull)?;
+            let generation = arena.slots[slot_index]
+                .generation
+                .checked_add(1)
+                .ok_or(PublishedArenaError::GenerationExhausted)?;
+            let offset = slot_index
+                .checked_mul(ARENA_SLOT_BYTES)
+                .ok_or(PublishedArenaError::SizeOverflow)?;
+            let end = offset
+                .checked_add(code.len())
+                .ok_or(PublishedArenaError::SizeOverflow)?;
+            if end > arena.region.len {
+                return Err(PublishedArenaError::SizeOverflow);
+            }
+            let slot_base = unsafe { arena.region.ptr().as_ptr().add(offset) };
+            let slot_base = NonNull::new(slot_base).ok_or(PublishedArenaError::SizeOverflow)?;
+            arena.free_slots.pop();
+            let slot = &mut arena.slots[slot_index];
+            slot.generation = generation;
+            slot.metadata = None;
+            slot.memory_operation_metadata_v2 = Some(metadata);
+            // SAFETY: the checked slot range belongs to this arena; the source
+            // vector is owned independently and cannot alias the MAP_JIT mapping.
+            unsafe { write_mapping_bytes(slot_base, &code) };
+            drop(arena);
+            return Ok(PublishedArenaMemoryStore {
+                _block: PublishedArenaBlock {
+                    arena: self.arena.clone(),
+                    owner_id: self.owner_id.clone(),
+                    slot_index,
+                    generation,
+                },
+            });
+        }
+
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            let _ = (code, metadata);
+            Err(PublishedArenaError::Mapping(
+                ExecutableMemoryError::UnsupportedPlatform,
+            ))
         }
     }
 }
@@ -1074,6 +1378,7 @@ impl od_jit::dispatch::CachedBlockBackend for PublishedArenaBackend {
             let slot = &mut arena.slots[slot_index];
             slot.generation = generation;
             slot.metadata = Some(metadata);
+            slot.memory_operation_metadata_v2 = None;
             // SAFETY: the checked slot range belongs to this arena; the source
             // `code` vector cannot alias the MAP_JIT mapping.
             unsafe { write_mapping_bytes(slot_base, &code) };
@@ -1162,7 +1467,7 @@ impl od_jit::dispatch::CachedBlockBackend for PublishedArenaBackend {
 
 impl od_jit::dispatch::MultiBlockCachedBackend for PublishedArenaBackend {
     fn published_block_capacity(&self) -> usize {
-        self.capacity()
+        self.cached_block_capacity()
     }
 }
 
@@ -1521,6 +1826,7 @@ pub unsafe extern "C" fn od_fragment_destroy(handle: *mut std::ffi::c_void) -> u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use od_isa::memory::{AccessContext, MemoryError};
     use od_jit::allocator::{Allocation, AllocatorConfig, HelperBoundaryPosition, ValueLocation};
     use od_jit::arm64::{
         AddressBase, Condition, Encoder, PairIndexMode, WReg, XReg, XRegOrSp, XRegOrZero,
@@ -1548,6 +1854,436 @@ mod tests {
     static RUNTIME_HELPER_FAILURE_STATUS: AtomicU32 = AtomicU32::new(2);
     static RUNTIME_HELPER_STOP_ON_CALL: AtomicUsize = AtomicUsize::new(0);
     static RUNTIME_HELPER_STOP_BYTE: AtomicPtr<AtomicU8> = AtomicPtr::new(std::ptr::null_mut());
+
+    #[derive(Clone)]
+    struct TrackedBackingFixture {
+        id: od_jit::translation::BackingId,
+        version: od_jit::translation::BackingVersion,
+        bytes: Vec<u8>,
+    }
+
+    #[derive(Clone, Copy)]
+    struct TrackedMappingFixture {
+        start: u64,
+        len: usize,
+        backing: usize,
+        backing_offset: usize,
+        mapping: od_jit::translation::MappingId,
+        mapping_version: od_jit::translation::MappingVersion,
+        executable: bool,
+        writable: bool,
+    }
+
+    struct TrackedCodeFixture {
+        address_space: od_jit::translation::AddressSpaceId,
+        backings: Vec<TrackedBackingFixture>,
+        mappings: Vec<TrackedMappingFixture>,
+        active_source_rip: u64,
+        active_source: (usize, usize, usize),
+        pending: Option<(usize, usize, od_jit::translation::BackingVersion)>,
+        preflight_rejection: Option<TrackedCodeStorePreflightError>,
+        write_attempted: bool,
+        pending_write_committed: bool,
+        preflight_calls: usize,
+        write_count: usize,
+        fail_write: bool,
+        request_stop_on_write: bool,
+        stop_byte: Option<std::sync::Arc<AtomicU8>>,
+    }
+
+    impl TrackedCodeFixture {
+        fn nz(value: u64) -> std::num::NonZeroU64 {
+            std::num::NonZeroU64::new(value).unwrap()
+        }
+
+        fn id(value: u64) -> od_jit::translation::BackingId {
+            od_jit::translation::BackingId::new(Self::nz(value))
+        }
+
+        fn new(store_code: &[u8], target_code: &[u8], unrelated_code: &[u8]) -> Self {
+            let mut a = vec![0; 64];
+            a[..store_code.len()].copy_from_slice(store_code);
+            let mut b = vec![0; 64];
+            b[..target_code.len()].copy_from_slice(target_code);
+            let mut c = vec![0; 64];
+            c[..unrelated_code.len()].copy_from_slice(unrelated_code);
+            Self {
+                address_space: od_jit::translation::AddressSpaceId::new(Self::nz(1)),
+                backings: vec![
+                    TrackedBackingFixture {
+                        id: Self::id(2),
+                        version: od_jit::translation::BackingVersion::new(Self::nz(1)),
+                        bytes: a,
+                    },
+                    TrackedBackingFixture {
+                        id: Self::id(3),
+                        version: od_jit::translation::BackingVersion::new(Self::nz(1)),
+                        bytes: b,
+                    },
+                    TrackedBackingFixture {
+                        id: Self::id(4),
+                        version: od_jit::translation::BackingVersion::new(Self::nz(1)),
+                        bytes: c,
+                    },
+                ],
+                mappings: vec![
+                    TrackedMappingFixture {
+                        start: 0x1000,
+                        len: 64,
+                        backing: 0,
+                        backing_offset: 0,
+                        mapping: od_jit::translation::MappingId::new(Self::nz(10)),
+                        mapping_version: od_jit::translation::MappingVersion::new(Self::nz(1)),
+                        executable: true,
+                        writable: true,
+                    },
+                    TrackedMappingFixture {
+                        start: 0x2000,
+                        len: 64,
+                        backing: 1,
+                        backing_offset: 0,
+                        mapping: od_jit::translation::MappingId::new(Self::nz(11)),
+                        mapping_version: od_jit::translation::MappingVersion::new(Self::nz(1)),
+                        executable: true,
+                        writable: true,
+                    },
+                    // A second guest mapping aliases the same executable backing.
+                    TrackedMappingFixture {
+                        start: 0x3000,
+                        len: 64,
+                        backing: 1,
+                        backing_offset: 0,
+                        mapping: od_jit::translation::MappingId::new(Self::nz(12)),
+                        mapping_version: od_jit::translation::MappingVersion::new(Self::nz(1)),
+                        executable: true,
+                        writable: true,
+                    },
+                    TrackedMappingFixture {
+                        start: 0x4000,
+                        len: 64,
+                        backing: 2,
+                        backing_offset: 0,
+                        mapping: od_jit::translation::MappingId::new(Self::nz(13)),
+                        mapping_version: od_jit::translation::MappingVersion::new(Self::nz(1)),
+                        executable: true,
+                        writable: true,
+                    },
+                    TrackedMappingFixture {
+                        start: 0x5000,
+                        len: 64,
+                        backing: 0,
+                        backing_offset: 0,
+                        mapping: od_jit::translation::MappingId::new(Self::nz(14)),
+                        mapping_version: od_jit::translation::MappingVersion::new(Self::nz(1)),
+                        executable: true,
+                        writable: true,
+                    },
+                ],
+                active_source_rip: 0x1000,
+                active_source: (0, 0, store_code.len()),
+                pending: None,
+                preflight_rejection: None,
+                write_attempted: false,
+                pending_write_committed: false,
+                preflight_calls: 0,
+                write_count: 0,
+                fail_write: false,
+                request_stop_on_write: false,
+                stop_byte: None,
+            }
+        }
+
+        fn mapping_at(&self, address: u64, length: usize) -> Option<(usize, usize)> {
+            let end = address.checked_add(u64::try_from(length).ok()?)?;
+            self.mappings.iter().find_map(|mapping| {
+                let map_end = mapping.start.checked_add(mapping.len as u64)?;
+                (address >= mapping.start && end <= map_end).then(|| {
+                    (
+                        mapping.backing,
+                        mapping.backing_offset + (address - mapping.start) as usize,
+                    )
+                })
+            })
+        }
+
+        fn view(&self, address: u64, len: usize) -> (&[u8], od_jit::translation::CodeIdentity) {
+            let (backing_index, offset) = self.mapping_at(address, len).unwrap();
+            let mapping = self
+                .mappings
+                .iter()
+                .find(|map| map.start == address && map.backing == backing_index)
+                .unwrap();
+            let backing = &self.backings[backing_index];
+            (
+                &backing.bytes[offset..offset + len],
+                od_jit::translation::CodeIdentity {
+                    address_space: self.address_space,
+                    mapping: mapping.mapping,
+                    mapping_version: mapping.mapping_version,
+                    backing: backing.id,
+                    backing_version: backing.version,
+                    executable: mapping.executable,
+                },
+            )
+        }
+
+        fn dependencies(
+            &self,
+            address: u64,
+            len: usize,
+        ) -> [od_jit::translation::CodeDependencySpan; 1] {
+            let (_, identity) = self.view(address, len);
+            [od_jit::translation::CodeDependencySpan {
+                start_rip: address,
+                end_rip: address + len as u64,
+                identity,
+            }]
+        }
+    }
+
+    fn run_tracked_code_block(
+        owner: &TrackedCodeFixture,
+        rip: u64,
+        cache: &mut od_jit::dispatch::MultiEntryBlockCache<PublishedArenaBlock>,
+        backend: &mut PublishedArenaBackend,
+    ) -> (od_jit::dispatch::DispatchResult, od_isa::LongModeState) {
+        let (bytes, identity) = owner.view(rip, 10);
+        let code = CodeView::new(rip, bytes).unwrap();
+        let decoded = od_isa::decode(bytes).unwrap();
+        let admission = AdmittedInstructionBoundaries::from_fixture_decode(code, &decoded).unwrap();
+        let dependencies = owner.dependencies(rip, bytes.len());
+        assert_eq!(dependencies[0].identity, identity);
+        let mut state = od_isa::LongModeState {
+            rip,
+            ..od_isa::LongModeState::default()
+        };
+        let result = od_jit::dispatch::run_multi_cached(
+            code,
+            &admission,
+            cached_test_context(),
+            &dependencies,
+            &mut state,
+            1,
+            cache,
+            backend,
+        )
+        .unwrap();
+        (result, state)
+    }
+
+    // SAFETY: this owner is a single-threaded fixed-RAM fixture. Its preflight
+    // checks the entire mapping/backing range and version before entry, its
+    // writes are checked slice copies with no unwind/callback, and it rejects
+    // overlap with the active source backing including aliases.
+    unsafe impl TrackedExecutableCodeOwner for TrackedCodeFixture {
+        fn preflight_code_store(
+            &mut self,
+            site: &od_jit::runtime::MemorySiteV2,
+            source_bytes: &[u8],
+            state: &od_isa::LongModeState,
+            _: AccessContext,
+        ) {
+            self.preflight_calls += 1;
+            self.pending = None;
+            self.preflight_rejection = None;
+            self.write_attempted = false;
+            self.pending_write_committed = false;
+            let validation = (|| {
+                let (active_backing, active_start, active_len) = self.active_source;
+                if site.guest_rip() != self.active_source_rip || source_bytes.len() != active_len {
+                    return Err(TrackedCodeStorePreflightError::ActiveSourceMismatch);
+                }
+                let (source_backing, source_offset) = self
+                    .mapping_at(self.active_source_rip, source_bytes.len())
+                    .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                if (source_backing, source_offset) != (active_backing, active_start)
+                    || self.backings[source_backing].bytes
+                        [source_offset..source_offset + source_bytes.len()]
+                        != *source_bytes
+                {
+                    return Err(TrackedCodeStorePreflightError::ActiveSourceMismatch);
+                }
+                let address = site
+                    .operand()
+                    .access_address_48(state, site.next_rip())
+                    .map_err(|_| TrackedCodeStorePreflightError::UnsupportedSite)?;
+                let (backing, offset) = self
+                    .mapping_at(address, 8)
+                    .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
+                let mapping = self
+                    .mappings
+                    .iter()
+                    .find(|mapping| {
+                        let end = mapping.start + mapping.len as u64;
+                        address >= mapping.start && address + 8 <= end
+                    })
+                    .ok_or(TrackedCodeStorePreflightError::OutOfRange)?;
+                if !mapping.writable {
+                    return Err(TrackedCodeStorePreflightError::NotWritable);
+                }
+                if !mapping.executable {
+                    return Err(TrackedCodeStorePreflightError::NotExecutable);
+                }
+                let next = self.backings[backing]
+                    .version
+                    .checked_next()
+                    .ok_or(TrackedCodeStorePreflightError::VersionExhausted)?;
+                let target_end = offset + 8;
+                let active_end = active_start + active_len;
+                if backing == active_backing && offset < active_end && active_start < target_end {
+                    return Err(TrackedCodeStorePreflightError::ActiveSourceOverlap);
+                }
+                Ok((backing, offset, next))
+            })();
+            match validation {
+                Ok(pending) => self.pending = Some(pending),
+                Err(error) => self.preflight_rejection = Some(error),
+            }
+        }
+
+        fn finish_code_store(
+            &mut self,
+        ) -> (
+            Option<od_jit::dispatch::CodeInvalidation>,
+            Option<TrackedCodeStorePreflightError>,
+        ) {
+            let preflight_rejection = if self.write_attempted {
+                self.preflight_rejection.take()
+            } else {
+                None
+            };
+            let change = self.pending.take().and_then(|(backing, _, next)| {
+                self.pending_write_committed.then(|| {
+                    self.backings[backing].version = next;
+                    od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                        backing: self.backings[backing].id,
+                        current_version: next,
+                    }
+                })
+            });
+            self.pending_write_committed = false;
+            self.preflight_rejection = None;
+            self.write_attempted = false;
+            (change, preflight_rejection)
+        }
+    }
+
+    impl od_isa::memory::GuestMemory for TrackedCodeFixture {
+        fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+            let (backing, offset) = self.mapping_at(address, 1).ok_or(MemoryError::Unmapped {
+                address,
+                access: od_isa::memory::AccessKind::Fetch,
+            })?;
+            self.backings[backing]
+                .bytes
+                .get(offset)
+                .copied()
+                .ok_or(MemoryError::Unmapped {
+                    address,
+                    access: od_isa::memory::AccessKind::Fetch,
+                })
+        }
+
+        fn read(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            destination: &mut [u8],
+        ) -> Result<(), MemoryError> {
+            let (backing, offset) =
+                self.mapping_at(address, destination.len())
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: od_isa::memory::AccessKind::Read,
+                    })?;
+            let source = self.backings[backing]
+                .bytes
+                .get(offset..offset + destination.len())
+                .ok_or(MemoryError::Unmapped {
+                    address,
+                    access: od_isa::memory::AccessKind::Read,
+                })?;
+            destination.copy_from_slice(source);
+            Ok(())
+        }
+
+        fn write(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            source: &[u8],
+        ) -> Result<(), MemoryError> {
+            self.write_attempted = true;
+            if self.preflight_rejection.is_some() {
+                return Err(MemoryError::PermissionDenied {
+                    address,
+                    access: od_isa::memory::AccessKind::Write,
+                });
+            }
+            if source.len() != 8 || self.fail_write {
+                self.fail_write = false;
+                return Err(MemoryError::Backend(
+                    "tracked fixture write rejected".into(),
+                ));
+            }
+            let Some((backing, offset, _)) = self.pending else {
+                return Err(MemoryError::PermissionDenied {
+                    address,
+                    access: od_isa::memory::AccessKind::Write,
+                });
+            };
+            if self.mapping_at(address, source.len()) != Some((backing, offset)) {
+                return Err(MemoryError::PermissionDenied {
+                    address,
+                    access: od_isa::memory::AccessKind::Write,
+                });
+            }
+            self.backings[backing].bytes[offset..offset + source.len()].copy_from_slice(source);
+            self.pending_write_committed = true;
+            self.write_count += 1;
+            if self.request_stop_on_write {
+                if let Some(stop) = &self.stop_byte {
+                    stop.store(1, Ordering::Release);
+                }
+            }
+            Ok(())
+        }
+
+        fn atomic_exchange_integer(
+            &mut self,
+            _: u64,
+            _: AccessContext,
+            _: od_isa::OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            Err(MemoryError::Backend("unsupported in code fixture".into()))
+        }
+
+        fn atomic_fetch_add_integer(
+            &mut self,
+            _: u64,
+            _: AccessContext,
+            _: od_isa::OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            Err(MemoryError::Backend("unsupported in code fixture".into()))
+        }
+
+        fn atomic_compare_exchange_integer(
+            &mut self,
+            _: u64,
+            _: AccessContext,
+            _: od_isa::OperandSize,
+            _: u64,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            Err(MemoryError::Backend("unsupported in code fixture".into()))
+        }
+
+        fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+            Ok(())
+        }
+    }
 
     fn jit_test_lock() -> std::sync::MutexGuard<'static, ()> {
         JIT_TEST_LOCK
@@ -6075,6 +6811,404 @@ mod tests {
             assert_eq!(cache.counters().resident_logical_metadata_bytes, 0);
             assert_eq!(arena.available_slots(), capacity);
         }
+    }
+
+    #[test]
+    fn tracked_v2_store_invalidates_alias_after_return_and_preserves_late_stop_commit() {
+        let _guard = jit_test_lock();
+        let store_source = [0x48, 0x89, 0x18]; // MOV [RAX], RBX
+        let target_code = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let unrelated_code = [0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0];
+        let mut owner = TrackedCodeFixture::new(&store_source, &target_code, &unrelated_code);
+        let mut arena = PublishedArenaBackend::new(4).unwrap();
+        let mut cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            3,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+
+        let (first_b, state_b) = run_tracked_code_block(&owner, 0x2000, &mut cache, &mut arena);
+        let (first_c, _) = run_tracked_code_block(&owner, 0x4000, &mut cache, &mut arena);
+        assert_eq!(first_b.retired_instructions, 1);
+        assert_eq!(state_b.gpr[0], 1);
+        assert_eq!(first_c.retired_instructions, 1);
+        assert_eq!(cache.resident_entries(), 2);
+
+        let store_view = CodeView::new(0x1000, &store_source).unwrap();
+        let store =
+            od_jit::memory_load_v2::compile_memory_store_block_v2(store_view, 0x1000).unwrap();
+        let published_store = arena.publish_memory_store_v2(&store).unwrap();
+        assert_eq!(arena.cached_block_capacity(), 3);
+        assert_eq!(arena.available_slots(), 1);
+
+        let mut over_capacity_cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            4,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        let (b_bytes, b_identity) = owner.view(0x2000, 10);
+        let b_view = CodeView::new(0x2000, b_bytes).unwrap();
+        let b_decoded = od_isa::decode(b_bytes).unwrap();
+        let b_admission =
+            AdmittedInstructionBoundaries::from_fixture_decode(b_view, &b_decoded).unwrap();
+        let b_dependencies = [od_jit::translation::CodeDependencySpan {
+            start_rip: 0x2000,
+            end_rip: 0x200A,
+            identity: b_identity,
+        }];
+        let mut untouched = od_isa::LongModeState {
+            rip: 0x2000,
+            ..od_isa::LongModeState::default()
+        };
+        let before_untouched = untouched.clone();
+        assert!(matches!(
+            od_jit::dispatch::run_multi_cached(
+                b_view,
+                &b_admission,
+                cached_test_context(),
+                &b_dependencies,
+                &mut untouched,
+                1,
+                &mut over_capacity_cache,
+                &mut arena,
+            ),
+            Err(od_jit::dispatch::DispatchError::MultiCacheConfig(
+                od_jit::dispatch::MultiEntryCacheConfigError::BackendCapacityTooSmall {
+                    requested: 4,
+                    available: 3,
+                }
+            ))
+        ));
+        assert_eq!(untouched, before_untouched);
+        assert_eq!(over_capacity_cache.resident_entries(), 0);
+        assert_eq!(arena.available_slots(), 1);
+
+        let stop = std::sync::Arc::new(AtomicU8::new(0));
+        owner.stop_byte = Some(stop.clone());
+        owner.request_stop_on_write = true;
+        let mut store_state = od_isa::LongModeState {
+            rip: 0x1000,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        store_state.gpr[0] = 0x3002; // alias mapping of B's immediate field
+        store_state.gpr[3] = 2;
+        let before = store_state.clone();
+        let mut invalidated = Vec::new();
+        let store_result = published_store
+            .execute_tracked_code_store_v2(
+                &mut store_state,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                |change| {
+                    assert_eq!(cache.invalidate(change), 1);
+                    invalidated.push(change);
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            store_result.exit,
+            MemoryOperationExecutionExitV2::StopRequested
+        );
+        assert_eq!(store_result.remaining_budget, 0);
+        assert_eq!(store_result.retired_instructions, 1);
+        let mut expected = before;
+        expected.rip = 0x1003;
+        assert_eq!(store_state, expected);
+        assert_eq!(owner.write_count, 1);
+        assert_eq!(owner.backings[1].bytes[2..10], 2_u64.to_le_bytes());
+        assert_eq!(owner.backings[1].version.get(), 2);
+        assert_eq!(invalidated.len(), 1);
+        assert_eq!(cache.resident_entries(), 1, "unrelated C entry remains");
+
+        let publications = cache.counters().successful_publications;
+        let (second_c, _) = run_tracked_code_block(&owner, 0x4000, &mut cache, &mut arena);
+        assert_eq!(second_c.retired_instructions, 1);
+        assert_eq!(cache.counters().successful_publications, publications);
+        assert_eq!(cache.counters().hits, 1);
+
+        let (second_b, state_b) = run_tracked_code_block(&owner, 0x2000, &mut cache, &mut arena);
+        assert_eq!(second_b.retired_instructions, 1);
+        assert_eq!(state_b.gpr[0], 2);
+        assert_eq!(cache.counters().successful_publications, publications + 1);
+        assert_eq!(cache.resident_entries(), 2);
+        drop(published_store);
+        assert_eq!(arena.cached_block_capacity(), 4);
+    }
+
+    #[test]
+    fn tracked_v2_store_preflight_overlap_and_backend_failure_are_atomic() {
+        let _guard = jit_test_lock();
+        let store_source = [0x48, 0x89, 0x18];
+        let target_code = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let unrelated_code = [0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0];
+        let mut owner = TrackedCodeFixture::new(&store_source, &target_code, &unrelated_code);
+        let mut arena = PublishedArenaBackend::new(4).unwrap();
+        let mut cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            3,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        run_tracked_code_block(&owner, 0x2000, &mut cache, &mut arena);
+        run_tracked_code_block(&owner, 0x4000, &mut cache, &mut arena);
+        let store_view = CodeView::new(0x1000, &store_source).unwrap();
+        let store =
+            od_jit::memory_load_v2::compile_memory_store_block_v2(store_view, 0x1000).unwrap();
+        let published_store = arena.publish_memory_store_v2(&store).unwrap();
+        let original_bytes = owner.backings[1].bytes.clone();
+        let original_version = owner.backings[1].version;
+        let mut notifications = Vec::new();
+
+        let mut guarded = od_isa::LongModeState {
+            rip: 0x1000,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        guarded.gpr[0] = 0x5000; // invalid active-source alias destination
+        guarded.gpr[3] = 2;
+        let guarded_before = guarded.clone();
+        let stop = AtomicU8::new(1);
+        assert_eq!(
+            published_store.execute_tracked_code_store_v2(
+                &mut guarded,
+                &mut owner,
+                AccessContext::default(),
+                0,
+                Some(0x1000),
+                &stop,
+                |change| notifications.push(change),
+            ),
+            Ok(MemoryOperationExecutionResultV2 {
+                exit: MemoryOperationExecutionExitV2::StopAddress,
+                remaining_budget: 0,
+                retired_instructions: 0,
+            })
+        );
+        assert_eq!(
+            published_store.execute_tracked_code_store_v2(
+                &mut guarded,
+                &mut owner,
+                AccessContext::default(),
+                0,
+                None,
+                &stop,
+                |change| notifications.push(change),
+            ),
+            Ok(MemoryOperationExecutionResultV2 {
+                exit: MemoryOperationExecutionExitV2::StopRequested,
+                remaining_budget: 0,
+                retired_instructions: 0,
+            })
+        );
+        stop.store(0, Ordering::Release);
+        assert_eq!(
+            published_store.execute_tracked_code_store_v2(
+                &mut guarded,
+                &mut owner,
+                AccessContext::default(),
+                0,
+                None,
+                &stop,
+                |change| notifications.push(change),
+            ),
+            Ok(MemoryOperationExecutionResultV2 {
+                exit: MemoryOperationExecutionExitV2::BudgetExhausted,
+                remaining_budget: 0,
+                retired_instructions: 0,
+            })
+        );
+        assert_eq!(guarded, guarded_before);
+        assert_eq!(owner.preflight_calls, 0);
+        assert_eq!(owner.write_count, 0);
+
+        let mut out_of_range = od_isa::LongModeState {
+            rip: 0x1000,
+            ..od_isa::LongModeState::default()
+        };
+        out_of_range.gpr[0] = 0x303C;
+        out_of_range.gpr[3] = 2;
+        assert_eq!(
+            published_store.execute_tracked_code_store_v2(
+                &mut out_of_range,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+                |change| notifications.push(change),
+            ),
+            Err(TrackedCodeStoreExecutionErrorV2::Preflight(
+                TrackedCodeStorePreflightError::OutOfRange
+            ))
+        );
+
+        let mut denied = od_isa::LongModeState {
+            rip: 0x1000,
+            ..od_isa::LongModeState::default()
+        };
+        denied.gpr[0] = 0x3002;
+        denied.gpr[3] = 2;
+        owner.mappings[2].writable = false;
+        assert_eq!(
+            published_store.execute_tracked_code_store_v2(
+                &mut denied,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+                |change| notifications.push(change),
+            ),
+            Err(TrackedCodeStoreExecutionErrorV2::Preflight(
+                TrackedCodeStorePreflightError::NotWritable
+            ))
+        );
+        owner.mappings[2].writable = true;
+
+        owner.mappings[2].executable = false;
+        assert_eq!(
+            published_store.execute_tracked_code_store_v2(
+                &mut denied,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+                |change| notifications.push(change),
+            ),
+            Err(TrackedCodeStoreExecutionErrorV2::Preflight(
+                TrackedCodeStorePreflightError::NotExecutable
+            ))
+        );
+        owner.mappings[2].executable = true;
+
+        let mut exhausted = denied.clone();
+        owner.backings[1].version =
+            od_jit::translation::BackingVersion::new(std::num::NonZeroU64::new(u64::MAX).unwrap());
+        assert_eq!(
+            published_store.execute_tracked_code_store_v2(
+                &mut exhausted,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+                |change| notifications.push(change),
+            ),
+            Err(TrackedCodeStoreExecutionErrorV2::Preflight(
+                TrackedCodeStorePreflightError::VersionExhausted
+            ))
+        );
+        owner.backings[1].version = original_version;
+        assert_eq!(owner.write_count, 0);
+        assert_eq!(owner.backings[1].bytes, original_bytes);
+        assert_eq!(owner.backings[1].version, original_version);
+        assert_eq!(notifications, []);
+        assert_eq!(cache.resident_entries(), 2);
+
+        // A valid store encoding at an unrelated guest RIP cannot borrow the
+        // active-source lease for A, even if its destination aliases B.
+        let unrelated_site_view = CodeView::new(0x2000, &store_source).unwrap();
+        let unrelated_site =
+            od_jit::memory_load_v2::compile_memory_store_block_v2(unrelated_site_view, 0x2000)
+                .unwrap();
+        let unrelated_site_published = arena.publish_memory_store_v2(&unrelated_site).unwrap();
+        let mut wrong_source = od_isa::LongModeState {
+            rip: 0x2000,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        wrong_source.gpr[0] = 0x3002;
+        wrong_source.gpr[3] = 2;
+        let wrong_source_before = wrong_source.clone();
+        assert_eq!(
+            unrelated_site_published.execute_tracked_code_store_v2(
+                &mut wrong_source,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                |change| notifications.push(change),
+            ),
+            Err(TrackedCodeStoreExecutionErrorV2::Preflight(
+                TrackedCodeStorePreflightError::ActiveSourceMismatch
+            ))
+        );
+        assert_eq!(wrong_source, wrong_source_before);
+        assert_eq!(owner.write_count, 0);
+        assert_eq!(owner.backings[1].bytes, original_bytes);
+        assert_eq!(owner.backings[1].version, original_version);
+        assert_eq!(notifications, []);
+        assert_eq!(cache.resident_entries(), 2);
+        drop(unrelated_site_published);
+
+        let mut active_overlap = od_isa::LongModeState {
+            rip: 0x1000,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        active_overlap.gpr[0] = 0x5000; // alias of the active source backing
+        active_overlap.gpr[3] = 2;
+        let before_overlap = active_overlap.clone();
+        let stop = AtomicU8::new(0);
+        assert_eq!(
+            published_store.execute_tracked_code_store_v2(
+                &mut active_overlap,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                |change| notifications.push(change),
+            ),
+            Err(TrackedCodeStoreExecutionErrorV2::Preflight(
+                TrackedCodeStorePreflightError::ActiveSourceOverlap
+            ))
+        );
+        assert_eq!(active_overlap, before_overlap);
+        assert_eq!(owner.write_count, 0);
+        assert_eq!(owner.backings[1].bytes, original_bytes);
+        assert_eq!(owner.backings[1].version, original_version);
+        assert_eq!(notifications, []);
+        assert_eq!(cache.resident_entries(), 2);
+
+        let mut state = od_isa::LongModeState {
+            rip: 0x1000,
+            rflags: 0xA55,
+            ..od_isa::LongModeState::default()
+        };
+        state.gpr[0] = 0x3002;
+        state.gpr[3] = 2;
+        let before = state.clone();
+        owner.fail_write = true;
+        assert!(matches!(
+            published_store.execute_tracked_code_store_v2(
+                &mut state,
+                &mut owner,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                |change| notifications.push(change),
+            ),
+            Err(TrackedCodeStoreExecutionErrorV2::Execution(
+                MemoryOperationExecutionErrorV2::MemoryError(_)
+            ))
+        ));
+        assert_eq!(state, before);
+        assert_eq!(owner.write_count, 0);
+        assert_eq!(owner.backings[1].bytes, original_bytes);
+        assert_eq!(owner.backings[1].version, original_version);
+        assert_eq!(notifications, []);
+        assert_eq!(cache.resident_entries(), 2);
     }
 
     #[test]

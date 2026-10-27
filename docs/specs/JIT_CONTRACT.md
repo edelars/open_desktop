@@ -971,6 +971,38 @@ snapshot has been captured, and it does not retire active/self-modifying code.
 Those remain separate owner/publication and S3-24 lifecycle work. No physical
 Mac mini check was run; see [S3-23a report](../reports/STAGE_3_S3-23a_2026-10-27.md).
 
+### S3-23c: tracked executable-code store fixture partial
+
+The bounded host arena can reserve a typed compiler-issued V2 store slot next
+to cached V1 blocks. The store handle has its own metadata/entry path and does
+not enter the V1 cached-block executor. A fixture-only tracked code owner
+after the entry stop-RIP → STOP → budget guards preflights the full qword
+destination, executable and write permissions, nonwrapping backing-version
+increment, and binds the artifact RIP/source bytes to the owner-held active
+source lease before the helper can write. It also checks overlap against that
+source backing, including guest aliases. It owns fixed
+ordinary host RAM; guest-executable backing is never the host MAP_JIT arena.
+
+The verified generated helper performs one all-or-nothing write. After the
+native entry returns and the host decodes its result, the owner commits the
+backing version and emits CodeInvalidation; the caller applies that event to
+the cache before another lookup. This ordering also preserves an already
+committed write when the generated result is STOP or host decoding fails.
+Cache capacity excludes currently reserved typed store slots.
+
+Native fixture coverage warms target block B and unrelated C, stores through an
+alias of B's backing, observes exactly one little-endian qword write and late
+STOP commit, drops B while retaining C, then recompiles/runs changed B bytes.
+Other cases prove stop-RIP/STOP/budget exits do not touch the owner, reject an
+unrelated artifact/source lease, active-source overlap and
+range/permission/version preflight failures before mutation, and verify a backend write error leaves
+bytes, version, and cache unchanged. This is one-vCPU fixed-RAM fixture work
+only: it does not enable MMIO, DMA, production MMU/writer integration, SMP,
+active-code invalidation, or general self-modifying-code retirement. The
+existing unsafe private-data V2 store API remains unchanged and is not used
+for this executable-code path. See the
+[S3-23c report](../reports/STAGE_3_S3-23c_2026-10-27.md).
+
 ### S3-19a: invocation-local checked memory helper ABI partial
 
 `od_jit::memory_bridge::CheckedMemoryAdapter` borrows one `&mut dyn
