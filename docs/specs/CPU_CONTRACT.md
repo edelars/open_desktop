@@ -9108,6 +9108,7 @@ parent S2-34. Exact allowlists remain in the individual profile sections above.
 |---|---|---|
 | Implemented-local: `MOVUPS` | Exact legacy `0F 10 /r` and `0F 11 /r`: register `mod=3`; m128 `[RAX]` `mod=00,r/m=000`; 64-bit base+disp `mod=00/01/10` excluding RIP/SIB selectors; RIP-relative `mod=00,r/m=101`; SIB forms. Bare or one profile-allowed REX, exact limits in 6a–6c. | Register forms have no data fault/alignment access. Memory forms use one 16-byte local callback, with no CPU commit on backend failure. Alignment, guest fault delivery/priority, feature gates, native/JIT and physical behavior are not established. Local fixtures/matrices exist; parent native-oracle register and memory evidence remains due. Physical SSE is `not_run` because current physical harness admits integer profiles only. No new local slice is needed. |
 | Implemented-local: `MOVAPS` / `MOVAPD` | Register-only MOVAPS `0F 28 /r`, reverse-direction MOVAPS `0F 29 /r`, MOVAPD `66 0F 28 /r`, and reverse-direction MOVAPD `66 0F 29 /r`, each ModR/M.mod=3 with a separate exact local profile. | The profiles copy 128 raw XMM bits without data-memory access and preserve unrelated state. SSE/SSE2 preconditions are assumed; local matrices/fixtures exist. Memory alignment/fault behavior, SSE exception gates, JIT/native, physical execution and parent acceptance remain open. These register-only forms imply no aligned-memory behavior. |
+| Implemented-local: register MOVUPD | Forward MOVUPD `66 0F 10 /r`, ModR/M.mod=3, separate exact local profile. | Copies all 128 raw bits without data-memory access and preserves unrelated state. SSE2 preconditions are assumed; local matrix/fixture exist. Memory alignment/fault behavior, SSE exception gates, JIT/native, physical execution and parent acceptance remain open. No aligned-memory behavior is implied. |
 | Implemented-local: packed logic | `0F 57` `XORPS`, `0F 54` `ANDPS`, `0F 56` `ORPS`, `0F 55` `ANDNPS`, `/r, mod=3`; bare or one REX with R/B extension, no other legacy prefixes. | Raw XMM logic, no memory/alignment/fault path; SSE and CR0/CR4 conditions are assumed. Local semantic/fixture evidence exists; native-oracle confirmation and profile consistency remain open. Physical SSE is `not_run`. |
 | Implemented-local: `MOVSS` | `F3 0F 10 /r` and `F3 0F 11 /r`: register `mod=3` both directions and m32 `[RAX]` `mod=00,r/m=000` load/store; mandatory F3 and at most one optional profile-allowed immediate REX (8a–8d). | Register low-dword transfer preserves destination upper 96 bits; memory load clears them. One 4-byte local callback; local rollback only. Alignment, guest exception ordering/delivery and control gates are unverified. Native oracle remains due; physical SSE is `not_run`. |
 | Implemented-local: `MOVSD` | `F2 0F 10 /r` and `F2 0F 11 /r`: register `mod=3` both directions and m64 `[RAX]` `mod=00,r/m=000` load/store; mandatory F2 and at most one optional profile-allowed immediate REX (9a–9d). Scalar-double SIMD, not string opcode `A5`. | Register low-qword transfer preserves destination upper 64 bits; memory load clears them. One 8-byte local callback; local rollback only. Alignment, guest exception ordering/delivery and control gates are unverified. Native oracle remains due; physical SSE is `not_run`. |
@@ -9691,3 +9692,25 @@ execution remains local interpreter-only; JIT/native and physical execution
 are not implemented. No aligned-memory behavior or parent S2-34 acceptance is
 implied. See the [S2-34.14 plan](../plans/STAGE_2.md#s2-3414--local-only-reverse-direction-register-movapd)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3414-local-reverse-direction-register-movapd-diagnostic-profile).
+
+## Local register-only MOVUPD profile — S2-34.15
+
+The exact diagnostic profile `s2-long-movupd-reg-v1` admits long-mode
+`66 [one optional REX.R/B] 0F 10 /r` only when ModR/M.mod=3. Mandatory `66`
+selects packed SSE2 MOVUPD; prefix-free `0F 10 /r` remains MOVUPS, while F2/F3
+continue to select the existing scalar MOVSD/MOVSS paths. ModR/M.reg plus
+REX.R selects the destination XMM register, and ModR/M.r/m plus REX.B selects
+the source. The interpreter copies the full 128 raw bits, including the high
+64 bits, permits aliases, preserves all state except destination XMM and RIP,
+and makes no data-memory callback. Missing local SSE state refuses atomically.
+SSE2 availability, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumed; these
+control gates and real `#UD/#NM` behavior are not modeled.
+
+The profile rejects missing, duplicate or misplaced `66`, reverse `66 0F 11`,
+MOVAPD `66 0F 28`, MOVUPS bare `0F 10`, scalar F2/F3 forms, memory, other
+legacy prefixes, REX.W/X, VEX/EVEX and incomplete instruction fetches. The
+handwritten high-XMM fixture is interpreter-only; JIT and native admission
+refuse it. This local register form makes no aligned-memory behavior claim and
+does not imply physical execution or parent S2-34 acceptance. See the
+[S2-34.15 plan](../plans/STAGE_2.md#s2-3415--local-only-register-movupd) and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3415-local-register-movupd-diagnostic-profile).

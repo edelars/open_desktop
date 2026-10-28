@@ -9300,3 +9300,30 @@ by the interpreter; JIT and native admission remain denied. This register-only
 slice does not imply aligned-memory behavior or parent S2-34/S2-35 acceptance.
 See the [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-reverse-direction-movapd-profile--s2-3414)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3414-local-reverse-direction-register-movapd-diagnostic-profile).
+
+#### S2-34.15 — local-only register `MOVUPD` (implemented locally)
+
+Add the distinct `s2-long-movupd-reg-v1` profile for exact long-mode
+`66 [one optional REX.R/B] 0F 10 /r`, with ModR/M.mod=3. Mandatory `66`
+selects the packed SSE2 form; the existing prefix-free `0F 10 /r` MOVUPS and
+F2/F3 scalar MOVSD/MOVSS paths retain their current decoding. ModR/M.reg plus
+REX.R selects the destination and ModR/M.r/m plus REX.B selects the source.
+The interpreter copies all 128 raw bits, including the high 64 bits, supports
+aliases, preserves all state other than destination XMM and RIP, and makes no
+data-memory callback. Missing local SSE state refuses atomically. SSE2 and
+CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 remain assumptions.
+
+Strict negatives include missing/duplicate/misplaced `66`, reverse `66 0F 11`,
+MOVAPD `66 0F 28`, MOVUPS bare `0F 10`, scalar F2/F3 forms, memory, other
+legacy prefixes, REX.W/X, VEX/EVEX and truncation. A handwritten high-XMM
+fixture is interpreted; JIT/native remain denied. No aligned-memory, physical
+x86, or parent S2-34 acceptance claim is made. The handwritten XMM8/XMM9 fixture
+passes in the interpreter and is denied by JIT and native admission; the
+Linux-only native denial test is compile-checked, not run on this host. Focused
+checks passed (2026-10-28): `cargo test -p od-isa movupd --offline` (2 tests,
+16×16 decode/execution matrix and atomic boundaries), `cargo test -p od-testkit
+movupd --offline` (1 strict profile/schema test), and `cargo test -p od-runner
+--test fixture_v2 movupd --offline` (1 interpreter/JIT fixture test). Workspace
+offline all-target checks and Linux x86-runner all-target compilation passed.
+These local checks do not establish physical execution or parent S2-34
+acceptance.

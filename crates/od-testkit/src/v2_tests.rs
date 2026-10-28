@@ -1269,6 +1269,72 @@ fn movapd_register_profile_requires_mandatory_66_and_rejects_neighbors() {
 }
 
 #[test]
+fn movupd_register_profile_requires_mandatory_66_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_15_movupd_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongMovupdRegV1);
+    for bytes in ["66450f10c1", "660f10c1"] {
+        let mut accepted = fixture.clone();
+        let code = accepted
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        accepted.stop_rip = Some(HexU64(
+            accepted.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(accepted.validate().is_ok(), "{bytes}");
+    }
+    for bytes in [
+        "0f10c1",       // MOVUPS without the mandatory 66 prefix.
+        "660f11c1",     // Reverse direction is a different encoding.
+        "660f28c1",     // MOVAPD.
+        "660f1000",     // Memory operand.
+        "f20f10c1",     // MOVSD scalar form.
+        "f30f10c1",     // MOVSS scalar form.
+        "66f20f10c1",   // F2 in addition to mandatory 66.
+        "66f30f10c1",   // F3 in addition to mandatory 66.
+        "66660f10c1",   // Duplicate mandatory prefix.
+        "40660f10c1",   // REX before legacy prefix.
+        "26660f10c1",   // CS segment prefix.
+        "2e660f10c1",   // CS segment prefix.
+        "36660f10c1",   // SS segment prefix.
+        "3e660f10c1",   // DS segment prefix.
+        "64660f10c1",   // Segment prefix.
+        "65660f10c1",   // GS segment prefix.
+        "67660f10c1",   // Address-size prefix.
+        "f0660f10c1",   // LOCK.
+        "66480f10c1",   // REX.W.
+        "66420f10c1",   // REX.X.
+        "6640450f10c1", // Duplicate REX.
+        "c5f910c1",     // VEX.
+        "62f1fd0810c1", // EVEX.
+        "66450f10",     // Truncated ModR/M.
+        "66450f10c1f2", // More than one instruction.
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(
+            rejected.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
 fn movapd_reverse_register_profile_requires_mandatory_66_and_rejects_neighbors() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_14_movapd_reverse_register.case.json"

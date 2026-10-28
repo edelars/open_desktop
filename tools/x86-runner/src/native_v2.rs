@@ -1405,6 +1405,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongMovapsReverseRegV1
             | v2::Profile::LongMovapdRegV1
             | v2::Profile::LongMovapdReverseRegV1
+            | v2::Profile::LongMovupdRegV1
             | v2::Profile::LongXorpsRegV1
             | v2::Profile::LongPxorRegV1
             | v2::Profile::LongPandRegV1
@@ -4311,6 +4312,17 @@ mod tests {
             assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
             assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
         }
+    }
+
+    #[test]
+    fn movupd_register_profile_is_native_unsupported_with_unavailable_snapshot() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_34_15_movupd_register.case.json"
+        ))
+        .unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
     }
 
     #[test]

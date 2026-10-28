@@ -13418,3 +13418,40 @@ early-refusal correction.
 See the [plan](../plans/STAGE_2.md#s2-3414--local-only-reverse-direction-register-movapd),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-reverse-direction-movapd-profile--s2-3414),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3414-local-reverse-direction-register-movapd-diagnostic-profile).
+
+## S2-34.15 — local register MOVUPD profile
+
+Implemented `s2-long-movupd-reg-v1` for exact long-mode
+`66 [one optional REX.R/B] 0F 10 /r`, ModR/M.mod=3. Mandatory `66` selects
+packed SSE2 MOVUPD; prefix-free MOVUPS and F2/F3 scalar MOVSD/MOVSS retain their
+separate decoding. ModR/M.reg plus REX.R selects the destination, while
+ModR/M.r/m plus REX.B selects the source. The interpreter copies the full raw
+128-bit value, including the high half, supports aliases, preserves all state
+except destination XMM and RIP, and makes no data-memory callbacks. Missing
+local SSE state refuses atomically. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1
+are assumed preconditions.
+
+Strict profile validation rejects missing, duplicate or misplaced `66`,
+reverse `66 0F 11`, MOVAPD `66 0F 28`, prefix-free MOVUPS, scalar F2/F3 forms,
+memory, other legacy prefixes, REX.W/X, VEX/EVEX and truncation. The handwritten
+XMM8/XMM9 fixture contains 16 distinct literal bytes and passes interpreter
+execution; JIT denies the profile. The Linux native runner early-denies the
+profile with Unsupported and an unavailable snapshot. No aligned-memory,
+physical x86, or parent S2-34 acceptance is claimed.
+
+Focused checks passed (2026-10-28): `cargo test -p od-isa movupd --offline`
+(2 tests: all 256 register pairs, raw byte/high-half semantics, full-state and
+no-callback checks, aliases and atomic budget/STOP/truncation/missing-state
+cases); `cargo test -p od-testkit movupd --offline` (1 strict schema/profile
+test); and `cargo test -p od-runner --test fixture_v2 movupd --offline` (1
+interpreter result/JIT-denial test). `cargo fmt --all -- --check` passed,
+`cargo check --workspace --all-targets --offline` passed, and Linux
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline` passed. The native denial test was compile-checked for Linux but not
+executed on this host. No physical x86, Mac mini, or SSH check was performed.
+Independent Sol-medium review completed with no findings and reran the focused
+test groups (2, 1, and 1 passed).
+
+See the [plan](../plans/STAGE_2.md#s2-3415--local-only-register-movupd),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-movupd-profile--s2-3415),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3415-local-register-movupd-diagnostic-profile).
