@@ -824,6 +824,8 @@ fn is_checked_memory_address(
         };
     let rbp_base_rsi_rdi_indexed_sib =
         is_rbp_base_rsi_rdi_index_qword_sib_data_operand(*operand, instruction_length);
+    let rsi_rdi_base_rsi_rdi_indexed_sib =
+        is_rsi_rdi_base_rsi_rdi_index_qword_sib_data_operand(*operand, instruction_length);
     let rsp_base_rsi_rdi_indexed_sib =
         is_rsp_base_rsi_rdi_index_qword_sib_data_operand(*operand, instruction_length);
     let indexed_no_base_rbp_sib_disp32 = instruction_length == 8
@@ -843,6 +845,7 @@ fn is_checked_memory_address(
                 || rsp_base_rsi_rdi_indexed_sib
                 || rbp_base_rbp_indexed_sib
                 || rbp_base_rsi_rdi_indexed_sib
+                || rsi_rdi_base_rsi_rdi_indexed_sib
                 || indexed_no_base_rbp_sib_disp32
                 || indexed_no_base_rsi_rdi_sib_disp32)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
@@ -855,6 +858,7 @@ fn is_checked_memory_address(
                 && (matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
                     || matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
                     || rsi_rdi_base_rbp_indexed_sib
+                    || rsi_rdi_base_rsi_rdi_indexed_sib
                     || low_base_rsi_rdi_indexed_sib
                     || matches!(instruction_length, 5 | 8)
                         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
@@ -870,6 +874,7 @@ fn is_checked_memory_address(
     supported_index
         && (matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
             || rsi_rdi_base_rbp_indexed_sib
+            || rsi_rdi_base_rsi_rdi_indexed_sib
             || low_base_rsi_rdi_indexed_sib
             || operand.index.is_some()
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
@@ -965,6 +970,10 @@ fn is_scoped_memory_data_operand(
                 || is_rbp_base_rbp_index_qword_sib_data_operand(operand, instruction_length)
                 || is_rbp_base_rsi_rdi_index_qword_sib_data_operand(operand, instruction_length)
                 || is_low_base_rsi_rdi_index_qword_sib_data_operand(operand, instruction_length)
+                || is_rsi_rdi_base_rsi_rdi_index_qword_sib_data_operand(
+                    operand,
+                    instruction_length,
+                )
                 || (operand.index.is_none()
                     && operand.scale == 1
                     && match data_register {
@@ -1531,6 +1540,30 @@ fn is_low_base_rsi_rdi_index_qword_sib_data_operand(
 ) -> bool {
     matches!(instruction_length, 4 | 5 | 8)
         && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+        && matches!(
+            operand.index,
+            Some(od_isa::Register::Rsi | od_isa::Register::Rdi)
+        )
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && match instruction_length {
+            4 => operand.displacement == 0,
+            5 => i8::try_from(operand.displacement).is_ok(),
+            8 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
+        && operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
+}
+
+fn is_rsi_rdi_base_rsi_rdi_index_qword_sib_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    matches!(instruction_length, 4 | 5 | 8)
+        && matches!(
+            operand.base,
+            AddressBase::Register(od_isa::Register::Rsi | od_isa::Register::Rdi)
+        )
         && matches!(
             operand.index,
             Some(od_isa::Register::Rsi | od_isa::Register::Rdi)
