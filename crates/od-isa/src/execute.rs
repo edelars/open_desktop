@@ -1336,6 +1336,7 @@ fn step_tracked_with_stop(
         | Operation::PorRegister { .. }
         | Operation::AndpsRegister { .. }
         | Operation::AndpdRegister { .. }
+        | Operation::OrpdRegister { .. }
         | Operation::OrpsRegister { .. }
         | Operation::AndnpsRegister { .. }
         | Operation::MovssRegister { .. }
@@ -2756,6 +2757,23 @@ fn step_tracked_with_stop(
                 .expect("ANDPD local profile state was prevalidated");
             for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(source) {
                 *dst &= src;
+            }
+        }
+        Operation::OrpdRegister {
+            destination,
+            source,
+        } => {
+            let source = state
+                .sse
+                .as_ref()
+                .expect("ORPD local profile state was prevalidated")
+                .xmm[usize::from(source)];
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("ORPD local profile state was prevalidated");
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(source) {
+                *dst |= src;
             }
         }
         Operation::PxorRegister {
@@ -71725,6 +71743,34 @@ mod tests {
     }
 
     #[test]
+    fn orpd_missing_state_and_truncated_fetch_are_atomic() {
+        let mut memory = Memory::at(&[0x66, 0x0f, 0x56, 0xc1], 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.x87 = Some(X87State::fixture_seed());
+        let before = state.clone();
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0x56 })
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut memory = Memory::at(&[0x66, 0x0f, 0x56], 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.x87 = Some(X87State::fixture_seed());
+        state.sse = Some(SseState {
+            xmm: [[0xa5; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        assert!(step(&mut state, &mut memory, AccessContext::default()).is_err());
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
     fn pxor_missing_state_and_truncated_fetch_are_atomic() {
         let code = [0x66, 0x0f, 0xef, 0xc1];
         let mut memory = Memory::at(&code, 0x1000);
@@ -73362,6 +73408,57 @@ mod tests {
                 assert!(
                     memory.accesses.is_empty(),
                     "ANDPD must not access data memory"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn orpd_register_ors_full_raw_xmm_matrix_without_data_callbacks() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut code = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    code.push(0x40 | ((destination >> 3) << 2) | (source >> 3));
+                }
+                code.extend([0x0f, 0x56, modrm]);
+                let mut memory = Memory::new(&code);
+                let mut state = LongModeState::default();
+                state.rip = 0;
+                state.rflags = 0x0cd7;
+                state.x87 = Some(X87State::fixture_seed());
+                let xmm = std::array::from_fn(|register| {
+                    std::array::from_fn(|byte| (register * 16 + byte) as u8)
+                });
+                state.sse = Some(SseState {
+                    xmm,
+                    mxcsr: 0x0000_1f80,
+                });
+                let before = state.clone();
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(code.len() as u64),
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(result.instructions_executed, 1);
+                let mut expected = before.clone();
+                expected.rip = code.len() as u64;
+                expected.sse.as_mut().unwrap().xmm[destination as usize] =
+                    std::array::from_fn(|byte| {
+                        before.sse.as_ref().unwrap().xmm[destination as usize][byte]
+                            | before.sse.as_ref().unwrap().xmm[source as usize][byte]
+                    });
+                assert_eq!(state, expected, "dest={destination}, src={source}");
+                assert!(
+                    memory.accesses.is_empty(),
+                    "ORPD must not access data memory"
                 );
             }
         }

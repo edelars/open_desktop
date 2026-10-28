@@ -221,6 +221,47 @@ fn xorpd_profile_is_exact_and_rejects_neighbors() {
 }
 
 #[test]
+fn orpd_profile_is_exact_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_19_orpd_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongOrpdRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "66450f56c1");
+    for bytes in [
+        "0f56c1", // prefix-free ORPS
+        "f2660f56c1",
+        "f3660f56c1",
+        "67660f56c1",
+        "f0660f56c1",
+        "2e660f56c1",
+        "0f6656c1",
+        "66480f56c1",
+        "66420f56c1",
+        "66660f56c1",
+        "6640410f56c1",
+        "660f5601",
+        "660f56",
+        "c5f956c1",
+        "62f17d0856c1",
+        "660f54c1", // ANDPD
+        "660f55c1", // ANDNPD
+        "660f57c1", // XORPD
+        "660febc1", // POR
+    ] {
+        let mut wrong = fixture.clone();
+        wrong.memory[0].initial_bytes_hex = bytes.into();
+        wrong.memory[0].length = (bytes.len() / 2) as u32;
+        wrong.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        wrong.stop_rip = Some(HexU64(
+            wrong.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(wrong.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
 fn xorps_profile_is_separate_exact_and_rejects_neighbors() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_7a_xorps_register.case.json"

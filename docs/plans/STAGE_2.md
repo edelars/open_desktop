@@ -384,6 +384,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-34.16 | Separate local-only reverse-direction register MOVUPD `66 0F 11 /r`; raw 128-bit XMM copy, JIT/native closed | S2-34.15 |
 | [x] | S2-34.17 | Separate local-only register XORPD `66 0F 57 /r`; raw 128-bit XOR, JIT/native closed | S2-34.16 |
 | [x] | S2-34.18 | Separate local-only register ANDPD `66 0F 54 /r`; raw 128-bit AND, JIT/native closed | S2-34.17 |
+| [x] | S2-34.19 | Separate local-only register ORPD `66 0F 56 /r`; raw 128-bit OR, JIT/native closed | S2-34.18 |
 | [x] | S2-34.5 | Separate local-only legacy `MOVUPS [RAX],XMM` store profile; one exact 16-byte write with no CPU commit on backend failure | S2-34.4 |
 | [x] | S2-34.6a | Shared local-only MOVUPS base+displacement profile for legacy `0F 10`/`0F 11`, no SIB/RIP-relative | S2-34.5 |
 | [x] | S2-34.6b | Extend `s2-long-movups-mem-base-v1` with bounded legacy RIP-relative `0F 10`/`0F 11` disp32 forms | S2-34.6a |
@@ -9363,3 +9364,9 @@ claim.
 Добавлен отдельный diagnostic profile `s2-long-andpd-reg-v1` для точной long-mode формы `66 [one optional REX.R/B] 0F 54 /r`, только при ModR/M.mod=3. ModR/M.reg с REX.R выбирает destination XMM0–15, ModR/M.r/m с REX.B — source. Исполнение выполняет raw 128-bit AND с поддержкой alias/self-AND, без data-memory callback и без изменения остальных регистров/флагов/MXCSR/x87. ANDPS остаётся прежним отдельным профилем.
 
 Профиль отклоняет отсутствие, дублирование или перестановку mandatory `66`, остальные legacy prefixes, REX.W/X, memory ModRM, VEX/EVEX и неполное encoding. Отдельные negative cases запрещают PAND, ANDNPD, ORPD и XORPD. Handwritten fixture `s2_34_18_andpd_register.case.json` использует XMM8/XMM9 и проверяется testkit/CLI runner; JIT и native admission явно запрещены. SSE2 и CR0/CR4 prerequisites предполагаются; guest control gates, `#UD`/`#NM`, physical execution и parent S2-34 acceptance остаются открытыми. Physical status остаётся `not_run`.
+
+#### S2-34.19 — local-only register ORPD
+
+Добавлен отдельный diagnostic profile `s2-long-orpd-reg-v1` для точной long-mode формы `66 [one optional REX.R/B] 0F 56 /r`, только при ModR/M.mod=3. ModR/M.reg с REX.R выбирает destination XMM0–15, ModR/M.r/m с REX.B — source. Исполнение выполняет raw OR всех 128 бит с alias/self-OR, не вызывает data-memory callbacks и сохраняет все остальные части состояния; существующие ORPS и другие логические профили остаются отдельными.
+
+Строгие отрицательные формы включают отсутствие/дублирование/перестановку `66`, другие legacy prefixes, REX.W/X, memory ModRM, VEX/EVEX, truncation, ORPS без `66`, ANDPD, ANDNPD, XORPD и POR. Handwritten fixture `s2_34_19_orpd_register.case.json` проверяется testkit и CLI interpreter; JIT и native runner запрещают профиль. Unit matrix покрывает XMM0–15 и alias/self-OR, а missing-SSE-state и truncated-fetch отказ атомарны. SSE2 и CR0/CR4 prerequisites предполагаются; guest control gates и `#UD`/`#NM` не реализованы. Семантика соответствует Intel SDM revision 093, Vol. 2B, ORPD. Parent S2-34 остаётся open; physical статус `not_run`.

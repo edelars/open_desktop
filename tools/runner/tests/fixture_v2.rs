@@ -5146,6 +5146,28 @@ fn local_andpd_register_fixture_ands_raw_xmm_and_jit_denies_profile() {
 }
 
 #[test]
+fn local_orpd_register_fixture_ors_raw_xmm_and_jit_denies_profile() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_19_orpd_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongOrpdRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "0ff12ff34ff56ff78ff9affbcffdefff".into();
+    assert_eq!(snapshot(&result).state, expected);
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_movapd_reverse_register_fixture_copies_raw_xmm_and_jit_denies_profile() {
     let bytes = include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_14_movapd_reverse_register.case.json"
