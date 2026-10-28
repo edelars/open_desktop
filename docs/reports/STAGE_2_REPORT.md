@@ -20,9 +20,13 @@ upstream source reachability, exact Ubuntu source/binary и observed execution.
 command line, device/topology manifest и success milestone не определены;
 Linux boot и C/D/System остаются открытыми. На 28 октября подписанная
 `resolute-updates` snapshot chain аутентифицировала kernel/buildinfo,
-исторический metapackage и exact source package; exact direct64/FPU/CPUID paths
-сопоставлены с байтами образа и source lines. Runtime choice of alternatives,
-PE signature, frozen CPU/machine manifest и guest boot не проверены. Подробности
+исторический metapackage и exact source package; exact direct64, main-kernel
+`startup_64`/`verify_cpu`, FPU и CPUID paths сопоставлены с байтами образа и
+source lines. The main kernel reaches `verify_cpu` after the direct64 prefix;
+compressed 32-bit startup's separate call is bypassed. Vendor-specific early
+branches make the still-unfrozen CPU identity and MSR contract material.
+Runtime choice of alternatives, PE signature, frozen CPU/machine manifest and
+guest boot remain unchecked. Подробности
 и ограничения:
 [S2-00 Linux profile report](STAGE_2_LINUX_PROFILE.md#решение-по-generic-amd64-baseline).
 
@@ -11238,10 +11242,9 @@ required booleans in the new profile. Follow-up review found no remaining
 P0–P2 issues.
 
 The local forms are not claimed as an executable Ubuntu `startup_64` prefix.
-The Ubuntu source diff review in the [Linux profile report](STAGE_2_LINUX_PROFILE.md)
-only establishes the published source patch delta; package-binary disassembly
-and actual artifact execution remain unverified. S2-22 and ISSUE-018 remain
-open.
+The [Linux profile report](STAGE_2_LINUX_PROFILE.md) now maps the exact package
+binary `startup_64` and early `verify_cpu` call to authenticated source. No
+artifact execution has been observed. S2-22 and ISSUE-018 remain open.
 
 ## S2-34.1 — local raw x87/SSE snapshot transfer
 

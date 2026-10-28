@@ -1,9 +1,10 @@
 # S2-00: статическое исследование Linux kernel candidate
 
-**Дата проверки:** 22 октября 2026 года. **Статус:** проверены метаданные,
-config и setup header конкретного пакета; Linux boot и полный профиль C/D
-не подтверждены. Исследование не меняет выбранный Ubuntu candidate и не
-закрывает обязательные задачи этапа 2.
+**Дата проверки:** 28 октября 2026 года. **Статус:** проверены подписи и
+метаданные exact package/source snapshot, config, direct64 prefix и main-kernel
+startup source/binary mapping. Linux boot и полный профиль C/D не подтверждены.
+Исследование не меняет выбранный Ubuntu candidate и не закрывает обязательные
+задачи этапа 2.
 
 ## Полученные данные и происхождение
 
@@ -143,7 +144,7 @@ candidates; они остаются unresolved до exact-source/binary gate.
 | Нормативный ABI/ISA floor | Generic amd64; baseline x86-64 psABI (v1), без v2/v3/v4 | Полный набор ISA форм и system semantics выбранной ОС |
 | Kernel config requirements | Для exact buildinfo зафиксированы required capabilities из таблицы выше | Что каждая capability обязательно включена в CPUID mask либо исполняется каждым boot path |
 | Upstream source reachability | Сопоставлены upstream v7.0 paths и Ubuntu source delta; см. audit ниже | Что конкретные ветви включены/достижимы в точном binary и выбранной конфигурации |
-| Exact Ubuntu source/binary | Exact kernel/source files подтверждены подписанным snapshot; распакованный kernel ELF совпал по 38 allocated sections с ELF из dbgsym того же build ID. Direct64 prefix, `startup_64`, CPUID, FPU init/save/restore и alternatives сопоставлены с source paths/lines | Compiled alternatives не означают, что ветка выполнялась; выбранные CPU identity/CPUID mask не закреплены |
+| Exact Ubuntu source/binary | Exact kernel/source files подтверждены подписанным snapshot; распакованный kernel ELF совпал по 38 allocated sections с ELF из dbgsym того же build ID. Direct64 prefix, `startup_64`, early `verify_cpu`, CPUID, FPU init/save/restore и alternatives сопоставлены с source paths/lines | Compiled alternatives не означают, что ветка выполнялась; выбранные CPU identity/CPUID mask не закреплены |
 | Observed execution | Ubuntu kernel guest boot не наблюдался | Успешный boot, C/D или поддерживаемая ОС |
 
 Exact image, buildinfo, historical metapackage и source package `linux`
@@ -202,9 +203,9 @@ profile C/D и observed boot открыты.
 начинающиеся с `arch/x86/`. Этот корректный перечень сужает вопрос об
 изменениях именно четырёх ранних boot files, но показывает, что более поздние
 entry, CPU и FPU paths имеют Ubuntu deltas. Он не связывает каждый собранный
-byte с исходником и не доказывает порядок инструкций или выполнение
-конкретного kernel image. Disassembly package binary `startup_64` пока не
-проверен. Поэтому локальные S2-22k fixtures
+byte с исходником и не доказывает выполнение конкретного kernel image.
+Последующее сопоставление точного ELF и `startup_64` приведено в разделе
+«Exact source-to-binary mapping» ниже. Поэтому локальные S2-22k fixtures
 `MOV DS/ES, AX` не называются исполняемым startup prefix и не доказывают
 фактический вход в Ubuntu artifact. Linux boot, machine handoff и C/D
 inventory остаются открытыми.
@@ -318,6 +319,10 @@ A и x86-64-v1 ABI/ISA floor.
 
 ## Exact source-to-binary mapping — 28 октября 2026
 
+Этот раздел уточняет прежний source-delta аудит выше: он связывает выбранные
+startup bytes с ELF точного Ubuntu kernel package и его аутентифицированным
+source package. Это всё ещё статическая проверка, не наблюдение выполнения.
+
 Snapshot metadata in local `apt-provenance.json` authenticates source package
 `linux` 7.0.0-38.38 and its three files. On-disk SHA-256 checks matched the
 signed source index: `linux_7.0.0.orig.tar.gz` (254,937,830 bytes,
@@ -353,7 +358,7 @@ DWARF locations include:
 
 | ELF virtual address | Binary evidence | Authenticated source location |
 |---|---|---|
-| `ffffffff83f253e0` | `startup_64`, 100 bytes; writes MSR `0xc0000101`, executes `LRETQ`, writes CR3 | `arch/x86/kernel/head_64.S:59` |
+| `ffffffff83f253e0` | `startup_64`, 100 bytes; writes `MSR_GS_BASE` (`0xc0000101`), installs GDT/IDT and executes `LRETQ`; then calls `__pi_sme_enable`, `verify_cpu`, `__pi___startup_64`, `sev_verify_cbit`, and loads CR3 | `arch/x86/kernel/head_64.S:59–138` |
 | `ffffffff813b3931` | `DB E3` — `FNINIT` | `arch/x86/kernel/fpu/init.c:44` |
 | `ffffffff83f2b46e` | `0F AE 05 6B F9 17 00` — `FXSAVE` | `arch/x86/kernel/fpu/init.c:111` |
 | `ffffffff813b48ae` | `48 0F AE 40 40` — `FXSAVE64` | `arch/x86/kernel/fpu/legacy.h:108` |
@@ -361,6 +366,37 @@ DWARF locations include:
 | `ffffffff81408f32` | `0F A2` — `CPUID` | `arch/x86/include/asm/cpuid/api.h:29` |
 | `ffffffff813c0e90` | `get_cpu_cap` | `arch/x86/kernel/cpu/common.c:1017` |
 | `ffffffff813adfd0` | `apply_alternatives` | `arch/x86/kernel/alternative.c:682` |
+
+The configured direct64 flow has a compressed entry at `vmlinuz` offset
+`0x5200`, then transfers from compressed-kernel setup/decompression to the
+uncompressed main-kernel entry `startup_64`. Its exact binary call to
+`verify_cpu` is at `ffffffff83f2540e`. Do not confuse it with the separate
+`verify_cpu` call in
+the compressed 32-bit startup path (`arch/x86/boot/compressed/head_64.S:133`),
+which direct64 bypasses. The selected config has
+`CONFIG_AMD_MEM_ENCRYPT=y`; the compiled `__pi_sme_enable` call is therefore
+also on the main path, with activation behavior still dependent on boot
+parameters and CPUID. The later `sev_verify_cbit` call is compiled into this
+path as well.
+
+This makes CPU identity and MSR behavior material to the exact startup
+contract. `verify_cpu` performs generic CPUID/feature checks and vendor-specific
+branches: Intel family/model combinations may read or update
+`IA32_MISC_ENABLE`. The source contains an AMD recovery branch that may access
+`MSR_K7_HWCR` when SSE/SSE2 are absent, but the earlier required-feature check
+rejects CPUID leaf 1 without SSE and SSE2 (mask `0x07008161` at
+`ffffffff8139c289`). Under a stable CPUID response, that AMD fallback is
+unreachable on the successful startup path and is not a required MSR for it.
+The authenticated source also contains later vendor-dependent MSR
+initialization paths, including `MSR_CSTAR` on non-Intel CPUs; these source
+paths are not all mapped to binary addresses in this audit, and their presence
+does not show that each executes on a boot. The x86-64-v1 ABI/ISA floor does
+not select those branches or establish their MSR behavior. The profile remains
+incomplete until a versioned reference CPU contract fixes vendor identity,
+family/model/stepping, CPUID leaves and masks, relevant MSRs, and entry state.
+This static reachability
+finding does not claim that every later initialization path executes on a
+successful boot.
 
 The mapped `fpu__init_cpu_generic` path clears CR0.EM/TS before `FNINIT` and
 sets CR4 mask `0x600` (OSFXSR/OSXMMEXCPT). Save and restore initially branch
