@@ -191,6 +191,34 @@ fn integer_snapshot_export_rejects_present_idtr_even_when_zero() {
 }
 
 #[test]
+fn integer_snapshot_export_rejects_present_cs_ss_state_even_when_zero() {
+    let mut state = od_isa::LongModeState::default();
+    state.cs_selector = Some(0);
+    assert!(IntegerState::try_from(&state).is_err());
+    assert!(IntegerState::from_cpu_for(&state, Profile::LongIntegerV1).is_err());
+    state.cs_selector = None;
+    state.ss_selector = Some(0);
+    assert!(IntegerState::try_from(&state).is_err());
+    assert!(IntegerState::from_cpu_for(&state, Profile::LongIntegerV1).is_err());
+    state.ss_selector = None;
+    state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x9b,
+        flags: 2,
+    });
+    assert!(IntegerState::try_from(&state).is_err());
+    state.cs_cache = None;
+    state.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x93,
+        flags: 0,
+    });
+    assert!(IntegerState::from_cpu_for(&state, Profile::LongIntegerV1).is_err());
+}
+
+#[test]
 fn x87_sse_profile_has_strict_wire_scope_and_raw_mxcsr_validation() {
     let mut fixture = x87_sse_fixture().fixture;
     let mut wrong_width = fixture.clone();

@@ -1119,6 +1119,58 @@ independent Sol medium code review completed clean; no findings remain. See the
 [Stage 2 plan](../plans/STAGE_2.md#s2-27e--entry-only-maskable-interrupt-eligibility-notification)
 for the bounded matrix and remaining claim limits.
 
+### S2-27f — bounded caller-selected Long64 maskable interrupt delivery
+
+The optional `deliver_maskable_interrupt` operation synchronously attempts to
+deliver exactly one caller-selected external maskable vector into a private
+Long64 CPL0 state. It is separate from instruction execution: it does not fetch
+or retire an instruction and is not integrated with `run`, an interrupt queue,
+an APIC, or asynchronous event arrival. The caller certifies a fresh completed-
+instruction boundary, no pending synchronous exception/debug/NMI event or
+interrupt inhibition, private synchronous RAM, and disabled CET, VMX, SMM, and
+shadow-stack mechanisms. The supplied access context must be Long64 Ring 0; IF
+must be set. `rflags_defined` is accepted only if it is a subset of
+`INTEGER_FLAGS`; the operation consults concrete `state.rflags` values and
+rejects entry TF, RF, VM, or NT.
+
+The bounded profile requires a current non-null CS selector with RPL 0 and a
+cached CS describing present, non-conforming ring-0 Long64 code: S=1,
+executable, base 0, limit `u32::MAX`, L=1, and D=0. This current CS cache is
+authoritative; it is checked without reloading the current descriptor from the
+GDT. Its accessed bit is not checked. A current SS selector is required with
+RPL 0; selector zero is admitted and the SS cache may be absent. Existing SS
+selector/cache state is preserved. IDTR and GDTR must be present. The operation
+reads only the selected 16-byte IDT entry and its target 8-byte GDT code
+descriptor, after checking table bounds and canonical spans. The gate must be a
+present 64-bit interrupt gate, have IST=0, S=0, and zero reserved upper bytes.
+The gate DPL does not block this caller-selected external vector. Its target
+selector must be non-null and name the GDT; the target code descriptor must be
+present, accessed, non-conforming ring-0 code with L=1 and D=0. The target
+selector RPL is ignored. The loaded CS selector has RPL cleared and the
+Long64 CS cache uses base 0 and limit `u32::MAX`. The target RIP must be
+canonical. No LDT, task gate, trap gate, IST stack, privilege transition, or
+code-limit enforcement is implemented.
+
+The stack pointer is aligned down to 16 bytes, then five 8-byte values are
+written in this order at descending addresses: old SS, old RSP, old RFLAGS, old
+CS, old RIP. Thus new RSP is aligned RSP minus 40 and the frame from new RSP
+upward is RIP, CS, RFLAGS, RSP, SS. Stores use explicit memory access; the two
+descriptor reads use DescriptorTable access. After all five stores succeed,
+commit target RIP, new RSP, CS selector/cache, and clear IF, TF, VM, RF, and NT;
+SS state and other flags remain unchanged. No CPU state commits before the last
+store succeeds. A store failure can leave earlier frame writes in memory; the
+result identifies the failing phase, and the caller must stop and must not
+retry. This operation does not provide a general event-delivery framework.
+
+Initial independent Sol review findings for gate S and current CS-cache
+validation were fixed; final independent Sol medium re-review completed clean,
+with no findings remaining. Architecture review
+approved/narrowed this local API against Intel SDM Vol. 3A Rev. 093 (September
+2026), §§7.12.1.2–3 and 7.14 ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). See the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27f--bounded-caller-selected-long64-maskable-interrupt-delivery)
+and [plan](../plans/STAGE_2.md#s2-27f--bounded-caller-selected-long64-maskable-interrupt-delivery)
+for verified tests and remaining limits.
+
 ### S2-22i — loaded GS.base composition fixture
 
 One additional local-only literal fixture uses the existing

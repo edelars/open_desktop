@@ -629,6 +629,18 @@ impl TryFrom<&LongModeState> for IntegerState {
                     .into(),
             });
         }
+        if state.cs_selector.is_some() || state.cs_cache.is_some() {
+            return Err(FormatError::InvalidField {
+                field: "state.cs_selector/state.cs_cache",
+                reason: "CS visible/hidden state is not represented by this snapshot schema".into(),
+            });
+        }
+        if state.ss_selector.is_some() || state.ss_cache.is_some() {
+            return Err(FormatError::InvalidField {
+                field: "state.ss_selector/state.ss_cache",
+                reason: "SS visible/hidden state is not represented by this snapshot schema".into(),
+            });
+        }
         if let Some(idtr) = state.idtr {
             return Err(FormatError::InvalidField {
                 field: "state.idtr",
@@ -679,6 +691,10 @@ impl IntegerState {
             gs_selector: self.gs_selector.map_or(0, |selector| selector.get() as u16),
             ds_selector: self.ds_selector.map_or(0, |selector| selector.get() as u16),
             es_selector: self.es_selector.map_or(0, |selector| selector.get() as u16),
+            cs_selector: None,
+            cs_cache: None,
+            ss_selector: None,
+            ss_cache: None,
             ds_unusable: self.ds_unusable.unwrap_or(false),
             es_unusable: self.es_unusable.unwrap_or(false),
             ds_cache: None,

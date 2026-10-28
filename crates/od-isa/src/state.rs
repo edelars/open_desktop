@@ -216,6 +216,12 @@ pub struct LongModeState {
     /// Visible DS/ES selectors and unusable state for the bounded null-load profile.
     pub ds_selector: u16,
     pub es_selector: u16,
+    /// Visible CS selector and hidden cache after bounded event delivery.
+    pub cs_selector: Option<u16>,
+    pub cs_cache: Option<CodeSegmentDescriptorCache>,
+    /// Visible SS selector and hidden cache supplied by the bounded event profile.
+    pub ss_selector: Option<u16>,
+    pub ss_cache: Option<StackSegmentDescriptorCache>,
     pub ds_unusable: bool,
     pub es_unusable: bool,
     /// Hidden DS descriptor cache only in the bounded MOV-DS-load profile.
@@ -247,6 +253,18 @@ pub struct Idtr {
     pub base: u64,
     pub limit: u16,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CodeSegmentDescriptorCache {
+    /// Long64 code segment base is architecturally treated as zero.
+    pub base: u64,
+    /// Long64 code segment effective limit is fixed to 4 GiB minus one.
+    pub limit: u32,
+    pub access: u8,
+    pub flags: u8,
+}
+
+pub type StackSegmentDescriptorCache = DataSegmentDescriptorCache;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DataSegmentDescriptorCache {
@@ -284,6 +302,10 @@ impl Default for LongModeState {
             gs_selector: 0,
             ds_selector: 0,
             es_selector: 0,
+            cs_selector: None,
+            cs_cache: None,
+            ss_selector: None,
+            ss_cache: None,
             ds_unusable: false,
             es_unusable: false,
             ds_cache: None,
@@ -327,6 +349,10 @@ pub enum FragmentAdapterError {
     UnsupportedIdtr(Idtr),
     UnsupportedDsCache(DsDescriptorCache),
     UnsupportedEsCache(DataSegmentDescriptorCache),
+    UnsupportedCsSelector(u16),
+    UnsupportedCsCache(CodeSegmentDescriptorCache),
+    UnsupportedSsSelector(u16),
+    UnsupportedSsCache(StackSegmentDescriptorCache),
     UnsupportedFsCache(FsDescriptorCache),
     UnsupportedGsCache(FsDescriptorCache),
     UnsupportedX87,
@@ -371,6 +397,18 @@ impl TryFrom<&LongModeState> for FragmentState {
             return Err(FragmentAdapterError::UnsupportedGsSelector(
                 state.gs_selector,
             ));
+        }
+        if let Some(selector) = state.cs_selector {
+            return Err(FragmentAdapterError::UnsupportedCsSelector(selector));
+        }
+        if let Some(cache) = state.cs_cache {
+            return Err(FragmentAdapterError::UnsupportedCsCache(cache));
+        }
+        if let Some(selector) = state.ss_selector {
+            return Err(FragmentAdapterError::UnsupportedSsSelector(selector));
+        }
+        if let Some(cache) = state.ss_cache {
+            return Err(FragmentAdapterError::UnsupportedSsCache(cache));
         }
         if let Some(gdtr) = state.gdtr {
             return Err(FragmentAdapterError::UnsupportedGdtr(gdtr));
@@ -501,6 +539,44 @@ mod tests {
     }
 
     #[test]
+    fn fragment_adapter_rejects_present_cs_ss_selectors_and_caches_even_when_zero() {
+        let mut state = LongModeState::default();
+        state.cs_selector = Some(0);
+        assert_eq!(
+            FragmentState::try_from(&state),
+            Err(FragmentAdapterError::UnsupportedCsSelector(0))
+        );
+        state.cs_selector = None;
+        state.cs_cache = Some(CodeSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x9b,
+            flags: 2,
+        });
+        assert!(matches!(
+            FragmentState::try_from(&state),
+            Err(FragmentAdapterError::UnsupportedCsCache(_))
+        ));
+        state.cs_cache = None;
+        state.ss_selector = Some(0);
+        assert_eq!(
+            FragmentState::try_from(&state),
+            Err(FragmentAdapterError::UnsupportedSsSelector(0))
+        );
+        state.ss_selector = None;
+        state.ss_cache = Some(StackSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x93,
+            flags: 0,
+        });
+        assert!(matches!(
+            FragmentState::try_from(&state),
+            Err(FragmentAdapterError::UnsupportedSsCache(_))
+        ));
+    }
+
+    #[test]
     fn every_register_obeys_long_mode_aliasing_and_preserves_other_state() {
         for encoding in 0..16 {
             let register = Register::from_encoding(encoding).unwrap();
@@ -521,6 +597,10 @@ mod tests {
                         gs_selector: 0,
                         ds_selector: 0,
                         es_selector: 0,
+                        cs_selector: None,
+                        cs_cache: None,
+                        ss_selector: None,
+                        ss_cache: None,
                         ds_unusable: false,
                         es_unusable: false,
                         ds_cache: None,

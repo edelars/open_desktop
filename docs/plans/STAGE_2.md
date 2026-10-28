@@ -2255,6 +2255,47 @@ and workspace checks are recorded in the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27e--entry-only-maskable-interrupt-eligibility-notification);
 independent Sol medium code review completed clean; no findings remain.
 
+#### S2-27f — bounded caller-selected Long64 maskable interrupt delivery
+
+Implemented a separate synchronous `deliver_maskable_interrupt` API for one
+caller-selected external vector in a private Long64 CPL0 state. It requires a
+fresh completed-instruction boundary, no pending synchronous exception,
+debug/NMI event, or interrupt inhibition, private synchronous RAM, and disabled
+CET/VMX/SMM/shadow stacks. It is not called by `run`, does not fetch or retire
+instructions, and does not add an APIC, queue, or asynchronous event path.
+
+The admitted profile requires IF=1, valid `rflags_defined` subset of
+`INTEGER_FLAGS`, IDTR/GDTR, a non-null current CS selector with RPL 0, and a
+current CS cache for present, non-conforming ring-0 Long64 code (S=1,
+executable, base 0, limit `u32::MAX`, L=1/D=0). The cache is authoritative and
+is validated without reloading the current descriptor from the GDT; its
+accessed bit is not checked. A current SS selector with RPL 0 is required;
+`Some(0)` is accepted and SS cache may be absent. SS state is preserved. Only
+the selected IDT 16-byte entry and target GDT 8-byte code descriptor are read.
+The accepted gate is a present 64-bit interrupt gate with IST=0, S=0, and zero
+reserved upper bytes; gate DPL does not block a caller-selected external
+vector. The target is a present, accessed, non-conforming ring-0 code
+descriptor with L=1/D=0 and canonical RIP. LDT selectors, other gate types,
+IST, privilege transitions, and code-limit checks remain outside the slice.
+
+The API writes a five-qword frame, SS/RSP/RFLAGS/CS/RIP, at successive
+descending addresses from the 16-byte-aligned old RSP; the committed new RSP is
+aligned old RSP minus 40. It commits CPU state only after all stores succeed,
+then loads the target CS/RIP and clears IF/TF/VM/RF/NT. A stack-store error may
+leave earlier memory writes in place and is terminal for the caller; do not
+retry. The tests cover eight old-RSP alignment offsets, exact frame bytes and
+post-store commit, ignored gate DPL/selector RPL for vectors 2 and 14,
+state-preserving store failures, descriptor/read failures, and IDT bounds and
+canonical spans. Both snapshot and fragment adapters reject the new CS/SS
+state instead of dropping it.
+
+Architecture review: approve/narrow against Intel SDM Vol. 3A Rev. 093
+(September 2026), §§7.12.1.2–3 and 7.14. Initial independent Sol review
+findings for gate S and current CS-cache validation were fixed; final Sol
+medium re-review completed clean, with no findings remaining. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-27f--bounded-caller-selected-long64-maskable-interrupt-delivery)
+and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27f--bounded-caller-selected-long64-maskable-interrupt-delivery).
+
 **Готово:** обязательные переходы имеют исполняемые tests с корректным state; полноценная доставка при paging/privilege transitions подтверждается интеграционно вместе с machine backend, а не mock callbacks.
 
 ## 9. x87, MMX и SSE/SSE2

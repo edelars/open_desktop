@@ -213,6 +213,65 @@ No boot or physical execution claim is made. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-27e--entry-only-maskable-interrupt-eligibility-notification)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-27e--entry-only-maskable-interrupt-eligibility-notification).
 
+## S2-27f — bounded caller-selected Long64 maskable interrupt delivery
+
+**Статус:** implementation and focused tests are present. Initial independent
+Sol review findings for IDT gate S=1 and current CS-cache validation were
+fixed; final Sol medium re-review completed clean, with no findings remaining. Architecture review is
+**approve/narrow** for this synchronous, explicit local API against Intel SDM
+Vol. 3A Rev. 093 (September 2026), §§7.12.1.2–3 and 7.14
+([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). The
+reviewed scope is one caller-selected external maskable vector delivered into
+a private Long64 CPL0 state; this is not automatic event integration with the
+run loop, an APIC, or a queue.
+
+`deliver_maskable_interrupt` requires the caller to certify a fresh completed-
+instruction boundary, no pending synchronous exception/debug/NMI event or
+interrupt inhibition, private synchronous RAM, and disabled CET, VMX, SMM, and
+shadow stacks. Its access context must be Long64 Ring 0; IF must be set, and
+entry TF/RF/VM/NT are rejected. The supplied `rflags_defined` must be a subset
+of `INTEGER_FLAGS`. The current CS selector must be non-null with RPL 0; its
+cache must describe present, non-conforming ring-0 Long64 code with S=1,
+executable, base 0, limit `u32::MAX`, L=1, and D=0. The cache is validated
+without reloading the current descriptor from the GDT; its accessed bit is not
+checked. A current SS selector with RPL 0 is required; `Some(0)` is admitted,
+and its cache may be absent. Existing SS selector/cache state is preserved.
+IDTR and GDTR must be present.
+
+The operation reads the selected 16-byte IDT gate and its target 8-byte GDT
+code descriptor after table-bound and canonical-span checks. The gate is a
+present 64-bit interrupt gate with IST=0, S=0, and zero reserved upper bytes.
+Gate DPL is ignored for this caller-selected external vector. The target code
+descriptor must be present, accessed, non-conforming ring-0 code with L=1 and
+D=0; its selector must name the GDT and target RIP must be canonical. The
+implementation rejects LDT selectors and gate types other than 0xE. It does
+not implement IST, privilege transitions, or code-limit enforcement.
+
+The operation writes exactly five qwords: old SS, RSP, RFLAGS, CS, and RIP at
+successive descending addresses from the old RSP aligned down to 16 bytes. The
+new RSP is aligned old RSP minus 40; from new RSP upward, memory contains RIP,
+CS, RFLAGS, RSP, SS. It commits CPU state only after all five stack stores
+succeed, then loads target CS/RIP and clears IF/TF/VM/RF/NT. If a store fails,
+earlier writes may remain in guest memory even though CPU state is unchanged;
+the caller must stop and must not retry. There is no instruction fetch,
+retirement, APIC acknowledgement, interrupt request queue, or event loop
+integration.
+
+**Авторские проверки:** `cargo test -p od-isa interrupt::tests --offline`
+(10/10); fragment-adapter CS/SS rejection (1/1); integer-snapshot CS/SS
+rejection (1/1); `cargo check --workspace --all-targets --offline`;
+`cargo fmt --all -- --check`; `git diff --check`; and `graphify update .`.
+The interrupt tests cover eight old-RSP alignment offsets and exact frame
+bytes, DPL/RPL behavior for vectors 2 and 14, gate S/type/present/IST/reserved
+rejection, null/TI selector rejection, current CS selector/cache coherence,
+GDT bounds, stack underflow/noncanonicality, all five injected stack-store
+failures, descriptor/read failures, IDT bounds/canonical spans, and zero
+instruction fetches. These direct unit tests do not integrate page tables or
+the run loop and do not establish native/physical behavior. No Linux boot,
+event-delivery integration, Mac mini, or SSH check is claimed. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-27f--bounded-caller-selected-long64-maskable-interrupt-delivery)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-27f--bounded-caller-selected-long64-maskable-interrupt-delivery).
+
 ## S2-26c — локальный `GsBaseV1` MSR
 
 **Статус:** в процессе. Локальные проверки автора внесены ниже. Независимое

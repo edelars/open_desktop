@@ -7,14 +7,20 @@ use std::collections::HashMap;
 
 pub mod cpuid;
 pub mod execute;
+pub mod interrupt;
 pub mod long_decode;
 pub mod memory;
 pub mod msr;
 pub mod state;
 pub mod x87;
+pub use interrupt::{
+    InterruptDeliveryPhase, InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,
+    deliver_maskable_interrupt,
+};
 pub use state::{
-    DataSegmentDescriptorCache, DsDescriptorCache, FragmentAdapterError, FsDescriptorCache,
-    LongModeState, OperandSize, RegisterError, RegisterView,
+    CodeSegmentDescriptorCache, DataSegmentDescriptorCache, DsDescriptorCache,
+    FragmentAdapterError, FsDescriptorCache, LongModeState, OperandSize, RegisterError,
+    RegisterView, StackSegmentDescriptorCache,
 };
 
 const CF: u64 = 1 << 0;
