@@ -435,6 +435,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.41 | Local-only bounded register PSLLD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.44 | Local-only bounded register PSLLQ immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.45 | Local-only bounded register PSRLQ immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [ ] | S2-35.46 | Local-only bounded register PSLLDQ immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.42 | Local-only bounded register PSRLD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.43 | Local-only bounded register PSRAD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
@@ -8891,6 +8892,31 @@ is a Darwin linker and rejects Linux GNU linker flags; physical native denial
 therefore remains compile-only here. Graphify update and `git diff --check`
 passed. Independent `gpt-6.1-sol` medium review found no remaining findings and
 independently reran the PSLLQ interpreter and fixture tests.
+
+#### S2-35.46 — local-only bounded register immediate `PSLLDQ`
+
+The profile `s2-long-pslldq-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 73 /7 ib`, ModR/M.mod=3. ModR/M.r/m
+selects destination XMM0–15; `/7` is required, while `/6` PSLLQ and `/3`
+PSRLDQ remain distinct selectors. The unsigned imm8 is an unmasked byte count:
+for counts below 16, output byte `i` receives the original destination byte
+`i-count` when `i >= count`, otherwise zero. Counts >=16 clear the full XMM.
+The snapshot-based operation handles movement across the qword boundary;
+flags and MXCSR are unchanged. SSE2 and CR0.EM=0, CR0.TS=0,
+CR4.OSFXSR=1 remain assumptions only.
+
+Local checks cover every count on all 16 destinations against an independent
+byte-index oracle, all 128 walking-one bits, distinct bytes 1–16, count 1
+across byte 7/8, count 8 across the qword boundary, and counts 0/15/16/17/32/255.
+They also cover exact `/7` and PSLLQ `/6` separation, strict prefixes and
+register-only form, full-state/no-callback preservation, missing SSE,
+STOP/zero-budget atomicity, and immediate truncation/page crossing followed by
+complete fetch. The handwritten XMM9 fixture checks interpreter execution
+with JIT denied; native admission remains denied before native execution.
+Physical SSE/SSE2 execution remains `not_run`.
+
+S2-35.46 implementation check (2026-10-27): focused checks and independent
+review are recorded in [the stage report](../reports/STAGE_2_REPORT.md#s2-3546--local-pslldq-immediate-register-profile).
 
 #### S2-35.42 — local-only bounded register immediate `PSRLD`
 

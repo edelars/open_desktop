@@ -5229,6 +5229,16 @@ lanes shift logically left by unmasked unsigned imm8; counts >=64 clear both
 lanes. The local profile assumes SSE2 preconditions and denies JIT and native
 execution.
 
+### S2-35.46 local register PSLLDQ immediate diagnostic profile
+
+`s2_35_46_pslldq_imm_register.case.json` is a handwritten literal XMM9 fixture
+for `s2-long-pslldq-imm-reg-v1`, encoded as `66 41 0F 73 F9 01`. `/7` selects
+PSLLDQ and `r/m` selects XMM9; `/6` PSLLQ and `/3` PSRLDQ remain distinct.
+The unsigned, unmasked byte count shifts the whole XMM value toward higher
+byte indices with zero fill; counts >=16 clear the entire register. The local
+profile assumes SSE2 architectural preconditions and denies JIT and native
+execution.
+
 ### S2-35.42 local register PSRLD immediate diagnostic profile
 
 `s2_35_42_psrld_imm_register.case.json` is a handwritten literal XMM9 fixture

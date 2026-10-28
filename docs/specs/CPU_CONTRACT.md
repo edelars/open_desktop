@@ -9255,6 +9255,20 @@ extra prefixes, VEX/EVEX, feature gating, exception delivery, JIT/native
 execution, and physical behavior are outside this profile. See the
 [S2-35.44 plan](../plans/STAGE_2.md#s2-3544--local-only-bounded-register-immediate-psllq).
 
+## Local register-only immediate `PSLLDQ` profile — S2-35.46
+
+The diagnostic profile `s2-long-pslldq-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 73 /7 ib`, ModR/M.mod=3. ModR/M.r/m selects
+destination XMM0–15. `/7` selects PSLLDQ; `/6` PSLLQ and `/3` PSRLDQ are
+separate forms. The imm8 is an unsigned, unmasked byte count. For count below
+16, result byte `i` is original destination byte `i-count` when `i >= count`,
+else zero. Count >=16 clears all 16 bytes. Flags and MXCSR are unchanged.
+SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Bare REX 40,
+REX.R/X/W, other prefixes, memory destination, and VEX/EVEX forms are outside
+the profile.
+
+See the [S2-35.46 plan](../plans/STAGE_2.md#s2-3546--local-only-bounded-register-immediate-pslldq).
+
 ## Local register-only immediate `PSRLD` profile — S2-35.42
 
 The diagnostic profile `s2-long-psrld-imm-reg-v1` admits exactly

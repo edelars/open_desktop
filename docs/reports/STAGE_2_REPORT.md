@@ -13133,3 +13133,35 @@ the PSLLQ interpreter and fixture tests. S2-34, S2-35, global `S2-35 → S2-34`,
 and combined Mac mini/SSH acceptance remain open. See the [plan](../plans/STAGE_2.md#s2-3544--local-only-bounded-register-immediate-psllq),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-immediate-psllq-profile--s2-3544),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3544-local-register-psllq-immediate-diagnostic-profile).
+
+## S2-35.46 — local PSLLDQ immediate register profile
+
+Implemented `s2-long-pslldq-imm-reg-v1` for exact
+`66 [no REX or optional 41] 0F 73 /7 ib`, ModR/M.mod=3, with XMM0–15
+selected by r/m. `/6` PSLLQ and `/3` PSRLDQ remain distinct operations. The
+unmasked unsigned imm8 shifts the entire 16-byte destination toward higher
+byte indices with zero fill; counts >=16 clear all bytes. The implementation
+uses a source snapshot. Flags and MXCSR are preserved. SSE2 preconditions
+remain assumptions, not feature gates. JIT and native admission remain closed;
+physical SSE/SSE2 execution is not claimed.
+
+The local interpreter checks cover all 256 counts on every XMM destination,
+an independent byte-index oracle, all 128 walking-one positions, distinct
+bytes 1–16, count-1 byte movement across the qword boundary, count-8 behavior,
+and counts 0/15/16/17/32/255. Decoder/schema negatives cover `/6`, `/3`,
+memory form, bare REX 40, REX.R/X/W, missing/extra prefixes, and incomplete
+immediate fetch at a page boundary. State/no-callback preservation, missing
+SSE, STOP/zero-budget atomicity, the handwritten XMM9 fixture, interpreter
+execution, JIT denial, and early native denial are included.
+
+Verification: `cargo test -p od-isa pslldq --offline` passed (5 focused tests),
+and `cargo test -p od-runner --test fixture_v2 pslldq --offline` passed (1
+fixture test). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and
+`cargo check -p od-x86-runner --tests --target x86_64-unknown-linux-gnu
+--offline` passed. `git diff --check` and `graphify update .` passed. The
+Linux-only native-denial guard was compile-checked but not executed on this
+Darwin host; physical SSE/SSE2 remains `not_run`. Independent Sol medium
+review is pending. See the [plan](../plans/STAGE_2.md#s2-3546--local-only-bounded-register-immediate-pslldq),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-immediate-pslldq-profile--s2-3546),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3546-local-register-pslldq-immediate-diagnostic-profile).
