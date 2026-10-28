@@ -20950,8 +20950,8 @@ mod tests {
         for invalid_source in [
             vec![0x48, 0x8b, 0x04, 0x35, 0, 0, 0, 0], // no-base RSI index
             vec![0x48, 0x8b, 0x04, 0x64],             // scale without an index
-            vec![0x48, 0x8b, 0x24, 0x35, 0, 0, 0, 0], // no-base RSI index
-            vec![0x67, 0x48, 0x8b, 0x04, 0x34],       // unsupported RSI index
+            vec![0x48, 0x8b, 0x24, 0x35, 0, 0, 0, 0], // no-base RSI index with RSP data
+            vec![0x67, 0x48, 0x8b, 0x34, 0x34],       // unsupported RSI data register
         ] {
             let mut code_bytes = [0; 16];
             code_bytes[..invalid_source.len()].copy_from_slice(&invalid_source);
@@ -22032,9 +22032,9 @@ mod tests {
             assert_eq!((partial_ram.reads, partial_ram.writes), (0, 0));
         }
         for invalid_source in [
-            vec![0x67, 0x48, 0x8b, 0x30],          // unsupported data register
-            vec![0x67, 0x48, 0x8b, 0x64, 0x34, 0], // unsupported RSI index
-            vec![0x48, 0x67, 0x8b, 0x20],          // reordered prefix
+            vec![0x67, 0x48, 0x8b, 0x04, 0x35, 0, 0, 0, 0], // address32 no-base RSI index
+            vec![0x67, 0x48, 0x8b, 0x74, 0x34, 0],          // unsupported RSI data register
+            vec![0x48, 0x67, 0x8b, 0x20],                   // reordered prefix
         ] {
             let invalid_code = CodeView::new(ENTRY, &invalid_source).unwrap();
             let invalid_boundary = od_jit::memory_dispatch::FixtureExecutionBoundary::new(
@@ -39347,10 +39347,10 @@ mod tests {
             vec![0x48, 0x8b, 0x24, 0x35],                   // no-base RSI index
             vec![0x48, 0x8b, 0x64, 0x24],                   // missing disp8 byte
             vec![0x66, 0x48, 0x8b, 0xa4, 0x25, 0, 0, 0, 0], // extra-prefixed disp32 no-base
-            vec![0x48, 0x8b, 0xa4, 0x64, 0, 0, 0, 0],       // disp32 scale/no index
+            vec![0x48, 0x8b, 0xb4, 0x64, 0, 0, 0, 0],       // unsupported RSI data register
             vec![0x66, 0x48, 0x8b, 0xa4, 0x25, 0, 0, 0, 0], // extra prefix on a no-index SIB
             vec![0x67, 0x48, 0x8b, 0xa4, 0x24, 0, 0, 0],
-            vec![0x67, 0x48, 0x8b, 0x24, 0x34], // unsupported RSI index
+            vec![0x67, 0x48, 0x8b, 0x34, 0x34], // unsupported RSI data register
         ] {
             let code = CodeView::new(ENTRY, &bytes).unwrap();
             let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
@@ -51146,7 +51146,7 @@ mod tests {
         ];
         let stop = AtomicU8::new(0);
         for opcode in [0x8b_u8, 0x89] {
-            for base in 0..4_u8 {
+            for base in [0_u8, 1, 2, 3, 4] {
                 for index in [6_u8, 7] {
                     for scale_shift in 0..4_u8 {
                         for data_register in 0..6_u8 {
@@ -51320,15 +51320,15 @@ mod tests {
         // The last byte of the 32-bit displacement controls the target; both
         // halves of the base/index register values are otherwise preserved.
         let identity_sources = [
-            [0x67, 0x48, 0x8b, 0x84, 0x30, 0, 0, 0, 0],
-            [0x67, 0x48, 0x8b, 0x84, 0x30, 0, 0, 0, 1],
+            [0x67, 0x48, 0x8b, 0x84, 0x34, 0, 0, 0, 0],
+            [0x67, 0x48, 0x8b, 0x84, 0x34, 0, 0, 0, 1],
         ];
         let identity_state = {
             let mut state = od_isa::LongModeState {
                 rip: ENTRY,
                 ..Default::default()
             };
-            state.gpr[0] = 0xffff_ffff_0000_0010;
+            state.gpr[4] = 0xffff_ffff_0000_0010;
             state.gpr[6] = 0xdead_beef_0000_0020;
             state
         };
@@ -51336,7 +51336,7 @@ mod tests {
         for source in identity_sources {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = target32(
-                identity_state.gpr[0],
+                identity_state.gpr[4],
                 identity_state.gpr[6],
                 1,
                 i32::from_le_bytes(source[5..9].try_into().unwrap()),
@@ -51364,15 +51364,15 @@ mod tests {
 
         // Truncation wraps both arithmetic and the transfer width semantics:
         // the qword is one contiguous callback from 0xffff_fffc upward.
-        let crossing_source = [0x67, 0x48, 0x8b, 0x04, 0x30];
+        let crossing_source = [0x67, 0x48, 0x8b, 0x04, 0x34];
         let crossing_code = CodeView::new(ENTRY, &crossing_source).unwrap();
         let mut crossing_state = od_isa::LongModeState {
             rip: ENTRY,
             ..Default::default()
         };
-        crossing_state.gpr[0] = 0x1_0000_0000_u64.wrapping_add(0xffff_fffc);
+        crossing_state.gpr[4] = 0x1_0000_0000_u64.wrapping_add(0xffff_fffc);
         crossing_state.gpr[6] = 0;
-        let crossing_target = target32(crossing_state.gpr[0], crossing_state.gpr[6], 1, 0);
+        let crossing_target = target32(crossing_state.gpr[4], crossing_state.gpr[6], 1, 0);
         assert_eq!(crossing_target, 0xffff_fffc);
         let mut crossing_ram = make_ram(&crossing_source, crossing_target, 0x8877_6655_4433_2211);
         let crossing_published = PublishedCode::publish_ir_memory_load_v2(
@@ -51396,17 +51396,17 @@ mod tests {
 
         // Low32 base/index arithmetic wraps independently of their high
         // halves, while the qword source value remains full width.
-        let wrap_source = [0x67, 0x48, 0x89, 0x6c, 0xf3, 0xff];
+        let wrap_source = [0x67, 0x48, 0x89, 0x6c, 0xf4, 0xff];
         let wrap_code = CodeView::new(ENTRY, &wrap_source).unwrap();
         let mut wrap_initial = od_isa::LongModeState {
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
         };
-        wrap_initial.gpr[3] = 0xdead_beef_ffff_fff0;
+        wrap_initial.gpr[4] = 0xdead_beef_ffff_fff0;
         wrap_initial.gpr[6] = 0xdead_beef_8000_0003;
         wrap_initial.gpr[5] = 0xfedc_ba98_7654_3210;
-        let wrap_target = target32(wrap_initial.gpr[3], wrap_initial.gpr[6], 8, -1);
+        let wrap_target = target32(wrap_initial.gpr[4], wrap_initial.gpr[6], 8, -1);
         assert_eq!(wrap_target, 7);
         let mut wrap_interpreter_state = wrap_initial.clone();
         let mut wrap_interpreter_ram = make_ram(&wrap_source, wrap_target, 0);
@@ -51466,7 +51466,7 @@ mod tests {
         // Host helper failures stay host errors and leave the architectural
         // state/data untouched for both read and write paths.
         for opcode in [0x8b_u8, 0x89] {
-            let source = code_for(opcode, 0, 6, 1, 2, 2, -1);
+            let source = code_for(opcode, 4, 6, 1, 4, 2, -1);
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = target32(0x1000, 0x20, 2, -1);
             let published = if opcode == 0x8b {
@@ -51484,7 +51484,7 @@ mod tests {
                 rip: ENTRY,
                 ..Default::default()
             };
-            state.gpr[0] = 0x1000;
+            state.gpr[4] = 0x1000;
             state.gpr[6] = 0x20;
             state.gpr[2] = 0xfeed_face_cafe_beef;
             let before = state.clone();
@@ -51540,7 +51540,7 @@ mod tests {
         // this borrowed fixture path; neither direction may commit state or
         // RAM before that error is returned.
         for opcode in [0x8b_u8, 0x89] {
-            let source = code_for(opcode, 1, 7, 2, 5, 1, -1);
+            let source = code_for(opcode, 4, 7, 2, 4, 1, -1);
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = target32(0x1100, 0x20, 4, -1);
             let published = if opcode == 0x8b {
@@ -51558,7 +51558,7 @@ mod tests {
                 rip: ENTRY,
                 ..Default::default()
             };
-            state.gpr[1] = 0x1_0000_1100;
+            state.gpr[4] = 0x1_0000_1100;
             state.gpr[7] = 0xffff_ffff_0000_0020;
             state.gpr[5] = 0xfeed_face_cafe_beef;
             let before = state.clone();
@@ -51629,7 +51629,7 @@ mod tests {
         // Guest architectural faults retain their payload and do not commit
         // either the destination register or a store, for both opcodes.
         for opcode in [0x8b_u8, 0x89] {
-            let source = code_for(opcode, 1, 7, 2, 5, 1, -1);
+            let source = code_for(opcode, 4, 7, 2, 4, 1, -1);
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = target32(0x1100, 0x20, 4, -1);
             let published = if opcode == 0x8b {
@@ -51647,7 +51647,7 @@ mod tests {
                 rip: ENTRY,
                 ..Default::default()
             };
-            state.gpr[1] = 0x1_0000_1100;
+            state.gpr[4] = 0x1_0000_1100;
             state.gpr[7] = 0xffff_ffff_0000_0020;
             state.gpr[5] = 0xfeed_face_cafe_beef;
             let before = state.clone();
@@ -51709,7 +51709,7 @@ mod tests {
         // Entry STOP, stop-RIP and zero budget prevent callbacks for each
         // admitted length; the address32 high halves do not trigger #GP.
         for (mode, displacement) in [(0_u8, 0_i32), (1, -1), (2, 0x10000)] {
-            let source = code_for(0x8b, 0, 6, 1, 1, mode, displacement);
+            let source = code_for(0x8b, 4, 6, 1, 1, mode, displacement);
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = target32(0x1000, 0x20, 2, displacement);
             let published = PublishedCode::publish_ir_memory_load_v2(
@@ -51721,7 +51721,7 @@ mod tests {
                     rip: ENTRY,
                     ..Default::default()
                 };
-                state.gpr[0] = 0x1_0000_1000;
+                state.gpr[4] = 0x1_0000_1000;
                 state.gpr[6] = 0xffff_ffff_0000_0020;
                 let before = state.clone();
                 let mut ram = make_ram(&source, target, 0x9988_7766_5544_3322);
@@ -51744,7 +51744,7 @@ mod tests {
 
         // Store+STOP preserves the successful qword write and commits the
         // exact next RIP once for a 9-byte address32 singleton.
-        let stop_source = code_for(0x89, 3, 7, 2, 2, 2, -1);
+        let stop_source = code_for(0x89, 4, 7, 2, 4, 2, -1);
         let stop_code = CodeView::new(ENTRY, &stop_source).unwrap();
         let stop_target = target32(0x1000, 0x20, 4, -1);
         let stop_published = PublishedCode::publish_ir_memory_store_v2(
@@ -51756,10 +51756,8 @@ mod tests {
             rip: ENTRY,
             ..Default::default()
         };
-        stop_state.gpr[0] = 0x1000;
-        stop_state.gpr[3] = 0x1000;
+        stop_state.gpr[4] = 0x1000;
         stop_state.gpr[7] = 0x20;
-        stop_state.gpr[2] = 0xfeed_face_cafe_beef;
         let mut stop_ram = make_ram(&stop_source, stop_target, 0);
         stop_ram.stop_on_write = Some(requested_stop.clone());
         let stopped = unsafe {
@@ -51783,7 +51781,7 @@ mod tests {
             (0..8)
                 .map(|offset| *stop_ram.data.get(&(stop_target + offset)).unwrap())
                 .collect::<Vec<_>>(),
-            0xfeed_face_cafe_beef_u64.to_le_bytes()
+            0x1000_u64.to_le_bytes()
         );
         drop(stop_published);
 
@@ -51791,14 +51789,14 @@ mod tests {
         // stop before publication or memory effects.
         let mut dispatcher = PublishedMemoryBlockExecutor;
         for (mode, displacement) in [(0_u8, 0_i32), (1, -1), (2, 0x0001_0000)] {
-            let partial_source = code_for(0x8b, 0, 6, 1, 1, mode, displacement);
+            let partial_source = code_for(0x8b, 4, 6, 1, 1, mode, displacement);
             let partial_code = CodeView::new(ENTRY, &partial_source).unwrap();
             for visible in 1..partial_source.len() as u64 {
                 let mut state = od_isa::LongModeState {
                     rip: ENTRY,
                     ..Default::default()
                 };
-                state.gpr[0] = 0x1000;
+                state.gpr[4] = 0x1000;
                 state.gpr[6] = 0x20;
                 let before = state.clone();
                 let target = target32(0x1000, 0x20, 2, displacement);
@@ -51830,7 +51828,7 @@ mod tests {
                 assert_eq!((ram.reads, ram.writes), (0, 0));
             }
         }
-        let unsupported_source = [0x67, 0x48, 0x8b, 0x44, 0x34, 0];
+        let unsupported_source = [0x67, 0x48, 0x8b, 0x04, 0x35, 0, 0, 0, 0];
         let unsupported_code = CodeView::new(ENTRY, &unsupported_source).unwrap();
         let mut unsupported_state = od_isa::LongModeState {
             rip: ENTRY,
@@ -51868,7 +51866,7 @@ mod tests {
         // the first read, then interprets NOP and executes the frozen pair.
         let mut executor = PublishedMemoryBlockExecutor;
         for (mode, displacement) in [(0_u8, 0_i32), (1, -1), (2, 0x0001_0000)] {
-            let mut source = code_for(0x8b, 0, 6, 0, 1, mode, displacement);
+            let mut source = code_for(0x8b, 4, 6, 0, 1, mode, displacement);
             let instruction_len = source.len();
             source.push(0x90);
             source.extend_from_slice(&[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]);
@@ -51877,10 +51875,10 @@ mod tests {
                 rip: ENTRY,
                 ..Default::default()
             };
-            state.gpr[0] = 0x1000;
+            state.gpr[4] = 0x1000;
             state.gpr[6] = 0x20;
             state.gpr[3] = 0xdead_beef;
-            let target = target32(state.gpr[0], state.gpr[6], 1, displacement);
+            let target = target32(state.gpr[4], state.gpr[6], 1, displacement);
             let mut ram = make_ram(&source, target, 0x55aa_55aa_55aa_55aa);
             let first = unsafe {
                 od_jit::memory_dispatch::run_with_nop_fallback(
@@ -51897,7 +51895,10 @@ mod tests {
                 )
             }
             .unwrap();
-            assert_eq!(first.remaining_budget, 0);
+            assert_eq!(
+                first.remaining_budget, 0,
+                "source={source:02x?} first={first:?}"
+            );
             assert_eq!(state.rip, ENTRY + instruction_len as u64);
             assert_eq!(first.retired_native, 1);
             assert_eq!(first.retired_interpreter, 0);
