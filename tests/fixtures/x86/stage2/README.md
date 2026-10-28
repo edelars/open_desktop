@@ -5266,3 +5266,11 @@ fixture profile. Four signed little-endian i32 lanes shift arithmetically
 right by the unmasked unsigned imm8; counts >=32 sign-fill negative lanes and
 zero nonnegative lanes. The local profile assumes SSE2 preconditions and
 denies JIT and native execution.
+
+### S2-35.49 local register PAND diagnostic profile
+
+`s2_35_49_pand_register.case.json` is a handwritten high-XMM fixture for
+`s2-long-pand-reg-v1`, encoded as `66 45 0F DB C1` (`PAND XMM8, XMM9`). The
+mandatory `66` selects XMM/SSE2 rather than MMX; `REX.R` and `REX.B` select
+XMM8 and XMM9 independently. The result is the raw 128-bit AND. This local
+profile assumes SSE2 preconditions and denies JIT and native execution.

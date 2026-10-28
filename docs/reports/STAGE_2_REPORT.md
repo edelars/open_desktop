@@ -13194,3 +13194,29 @@ guard was compile-checked but not executed on Darwin; physical SSE/SSE2 remains
 [plan](../plans/STAGE_2.md#s2-3547--local-only-bounded-register-immediate-psrldq),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-immediate-psrldq-profile--s2-3547),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3547-local-register-psrldq-immediate-diagnostic-profile).
+
+## S2-35.49 — local PAND register profile
+
+Implemented `s2-long-pand-reg-v1` for exact `66 [one optional REX.R/B]
+0F DB /r`, ModR/M.mod=3, with independently extended XMM destination and
+source. Raw 128-bit AND uses a source snapshot and leaves other CPU state and
+data callbacks unchanged. Bare MMX, PXOR/PANDN/POR siblings, memory, REX.W/X,
+other/duplicate prefixes, VEX/EVEX, JIT and native execution remain excluded.
+The handwritten `66 45 0F DB C1` fixture exercises XMM8,XMM9 through the
+interpreter.
+
+The focused interpreter tests passed (6 matching tests), including strict
+encoding negatives, all 16×16 register pairs, both independent REX extension
+axes, all 128 bit positions across the four truth-table rows, zero/all-one,
+alternating and upper/lower sentinels, aliasing, full-state preservation,
+no-data-callback checks, missing SSE with seeded x87, and truncation,
+STOP/zero-budget atomicity. The fixture schema and literal execution tests
+passed (2 testkit tests); the headless runner fixture passed (1 test), and the
+fixture remains denied by JIT. The Linux-target x86-runner test build passed,
+confirming the native-denial test compiles; that Linux-only test was not run on
+this Darwin host. Workspace formatting and offline all-target checks passed.
+Graphify update and `git diff --check` passed. Physical SSE2 execution remains
+`not_run`; this local child does not close S2-35 or S2-34. See the
+[plan](../plans/STAGE_2.md#s2-3549--local-only-bounded-register-pand),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-pand-profile--s2-3549),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3549-local-register-pand-diagnostic-profile).

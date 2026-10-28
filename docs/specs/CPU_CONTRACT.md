@@ -9572,3 +9572,20 @@ other prefixes, REX.W/X, VEX/EVEX, JIT/native execution, guest exception
 delivery and physical acceptance are excluded. S2-34, S2-35, and global
 S2-35 → S2-34 remain open. See the
 [S2-35.31 plan](../plans/STAGE_2.md#s2-3531--local-only-bounded-register-punpckhqdq).
+
+## Local register-only `PAND` profile — S2-35.49
+
+The exact schema-v2 fixture profile `s2-long-pand-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F DB /r` with ModR/M.mod=3. Mandatory `66`
+selects the XMM/SSE2 form; bare `0F DB /r` is MMX and rejected. ModR/M.reg is
+the destination and ModR/M.r/m the source, independently extended to XMM0–15
+by REX.R and REX.B. Execution snapshots the source and computes the raw 128-bit
+AND into the destination. Aliasing is supported. No memory callback occurs;
+RFLAGS, MXCSR, x87, GPRs, and non-destination XMM registers are preserved.
+
+Only the exact bounded byte form is admitted. REX.W/X, any other or duplicate
+prefix, memory operands, VEX and EVEX are excluded. SSE2 availability,
+CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are diagnostic preconditions; this profile
+does not model those gates or `#UD/#NM` delivery. JIT/native admission and
+physical execution remain unsupported. See the
+[S2-35.49 plan](../plans/STAGE_2.md#s2-3549--local-only-bounded-register-pand).

@@ -78,3 +78,7 @@ and RCX commit only after both accesses succeed; STOP, errors and the local
 JIT/native execution and await the shared physical acceptance. Details:
 [CPU contract](docs/specs/CPU_CONTRACT.md#local-s2-19d-bounded-rep-movsbwdq-contract),
 [Stage 2 plan](docs/plans/STAGE_2.md#s2-19d--f3-a4a5-rep-movsbwdq-ограниченный-локальный-контракт).
+
+The local-only S2-35.49 `PAND` diagnostic profile accepts only register-form
+`66 [REX.R/B] 0F DB /r` and preserves unrelated CPU state. Its literal fixture
+is interpreter-only; JIT/native and physical SSE2 execution are not claimed.

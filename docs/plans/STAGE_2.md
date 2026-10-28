@@ -9128,3 +9128,37 @@ profile/CPUID decisions, and required save/restore or extended-state capture
 from S2-39/S2-40; this inventory makes no CPUID, boot, allowlist, or extended
 state decision. S2-34, S2-35, and global `S2-35 → S2-34` remain open; the
 combined Mac mini/SSH acceptance remains deferred.
+
+#### S2-35.49 — local-only bounded register `PAND`
+
+Add exact profile `s2-long-pand-reg-v1` for `66 [one optional REX.R/B] 0F DB /r`,
+with ModR/M.mod=3. Mandatory `66` selects XMM/SSE2; bare `0F DB` is MMX and
+remains rejected. ModR/M.reg is the XMM destination and ModR/M.r/m is the
+source; REX.R and REX.B independently extend them through XMM15. Execution
+computes `DEST = original_DEST & original_SRC` for all 128 raw bits and
+preserves flags, MXCSR, x87, GPRs and other XMM registers. Memory, REX.W/X,
+other/duplicate prefixes, VEX/EVEX, JIT/native admission and physical execution
+remain outside this local slice. SSE2 availability and CR0/CR4 preconditions
+are assumed; control-register gates and `#UD/#NM` delivery are not modeled.
+
+Local verification covers every 128-bit truth-table position, all-zero,
+all-one, alternating and upper/lower sentinels, identity/zero behavior, all
+16×16 register pairs and independent REX.R/B extension, source preservation and
+aliasing, full-state/no-data-callback behavior, missing SSE with seeded x87,
+STOP/zero-budget/truncated-fetch atomicity, and strict MMX/sibling/memory/prefix
+rejection. A handwritten high-XMM fixture exercises the interpreter and
+remains denied by JIT and native execution. This child does not close S2-35,
+S2-34, or their global dependency.
+
+S2-35.49 implementation check (2026-10-28): the PAND profile, interpreter
+semantics, schema-v2 fixture and fail-closed JIT/native boundaries are in place.
+`cargo test -p od-isa pand --offline` passed (6 focused tests),
+`cargo test -p od-testkit pand --offline` passed (2 tests), and
+`cargo test -p od-runner --test fixture_v2 pand --offline` passed (1 test).
+Workspace format/check, Linux-target x86-runner test compilation, Graphify
+update and `git diff --check` passed. The Linux-only native-denial test was
+compile-checked but not executed on this Darwin host; physical SSE2 remains
+`not_run`. Independent review is pending. Parent S2-35/S2-34 remain open.
+See the [report](../reports/STAGE_2_REPORT.md#s2-3549--local-pand-register-profile),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-pand-profile--s2-3549),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3549-local-register-pand-diagnostic-profile).
