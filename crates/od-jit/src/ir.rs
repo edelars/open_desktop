@@ -694,6 +694,8 @@ fn is_checked_memory_address(
             *operand,
             instruction_length,
         );
+        let rbp_base_rsi_rdi_indexed =
+            is_address32_rbp_base_rsi_rdi_indexed_sib_data_operand(*operand, instruction_length);
         let rbp_base_rbp_indexed = matches!(instruction_length, 6 | 9)
             && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
             && operand.index == Some(od_isa::Register::Rbp)
@@ -746,6 +748,7 @@ fn is_checked_memory_address(
             || rbp_indexed
             || rsp_base_rbp_indexed
             || rsp_base_rsi_rdi_indexed
+            || rbp_base_rsi_rdi_indexed
             || rbp_base_rbp_indexed
             || rsi_rdi_base_rbp_indexed_sib
             || low_base_rsi_rdi_indexed_sib
@@ -1118,6 +1121,7 @@ fn is_scoped_memory_data_operand(
                 operand,
                 instruction_length,
             )
+            || is_address32_rbp_base_rsi_rdi_indexed_sib_data_operand(operand, instruction_length)
             || is_address32_rbp_base_rbp_indexed_sib_stack_data_operand(
                 operand,
                 instruction_length,
@@ -1332,6 +1336,26 @@ fn is_address32_rsp_base_rsi_rdi_indexed_sib_stack_data_operand(
     operand.address_size == od_isa::OperandSize::Dword
         && operand.size == od_isa::OperandSize::Qword
         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+        && matches!(
+            operand.index,
+            Some(od_isa::Register::Rsi | od_isa::Register::Rdi)
+        )
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && displacement_valid
+}
+
+fn is_address32_rbp_base_rsi_rdi_indexed_sib_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    let displacement_valid = match instruction_length {
+        6 => i8::try_from(operand.displacement).is_ok(),
+        9 => i32::try_from(operand.displacement).is_ok(),
+        _ => false,
+    };
+    operand.address_size == od_isa::OperandSize::Dword
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
         && matches!(
             operand.index,
             Some(od_isa::Register::Rsi | od_isa::Register::Rdi)
