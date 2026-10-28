@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+pub mod binary_float;
 pub mod cpuid;
 pub mod execute;
 pub mod interrupt;

@@ -454,6 +454,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.42 | Local-only bounded register PSRLD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.43 | Local-only bounded register PSRAD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
+| [x] | S2-36a | Lossless binary32/binary64 classification and exact finite normalization; no arithmetic | S2-36; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -4713,6 +4714,37 @@ verification не заявляются. S2-34 и D/System остаются от�
 3. Не считать ARM64 FP эквивалентным x86 по умолчанию. Любой host-assisted путь требует доказанного semantic equivalence; в этом этапе предпочитать понятный собственный reference path.
 
 **Готово:** независимые boundary vectors проверяют точные bits и flags; FP core не зависит от текущего host rounding mode.
+
+#### S2-36a — raw binary32/binary64 classification and finite normalization
+
+Add immutable `Binary32(u32)` and `Binary64(u64)` bit wrappers with
+`from_bits`/`to_bits`, sign, biased exponent, fraction, and classification
+accessors. The six classes are Zero, Subnormal, Normal, Infinity, QuietNaN,
+and SignalingNaN. Preserve signed zero, NaN sign and payload, and all raw bits;
+classification must not quiet signaling NaNs or mutate the wrapper. Wrapper
+`Eq` means raw-bit identity, not guest floating-point comparison.
+
+`normalize_finite() -> Option<BinaryFinite>` provides an integer-only exact
+view for zero and finite values, preserving source class. For nonzero values,
+the invariant is `(-1)^sign × significand × 2^(exponent−63)` with significand
+bit 63 set. Zero keeps its sign and has canonical zero significand/exponent;
+infinities and NaNs return `None`. Do not use host `f32`/`f64` operations,
+rounding, arithmetic, exception/status state, DAZ/FTZ, or instruction helpers.
+
+This is only a reusable encoding and finite-value foundation. S2-36 arithmetic,
+rounding, NaN propagation by operations, flags/exceptions and S2-37/S2-38
+instruction behavior remain open. Tests use literal vectors for raw fields,
+classification boundaries, finite normalization boundaries, every subnormal
+leading-bit position, signed zero, and nonfinite normalization; do not use
+host floating-point as the oracle. Author checks passed:
+`cargo test -p od-isa --offline binary_float::tests` (4/4),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check`, and `graphify update .`. Graphify emitted the existing
+syntax-extractor warning for `include/open_desktop/host_abi.h` and exited 0.
+Independent Sol medium code review completed clean; no findings remain. See the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36a--raw-binary32binary64-classification-and-finite-normalization).
+Normative encodings: Intel SDM Vol. 1 Rev. 093, §§4.2.2/Table 4-3 and 4.8.3.1–4
+([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)).
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

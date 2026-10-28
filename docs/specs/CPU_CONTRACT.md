@@ -10280,3 +10280,38 @@ The `s2-long-pmuludq-reg-v1` profile admits only long-mode `66 [REX.R/B] 0F F4 /
 ## Local register-only `PMADDWD` profile — S2-35.63
 
 The `s2-long-pmaddwd-reg-v1` profile admits only long-mode `66 [REX.R/B] 0F F5 /r` with ModR/M.mod=3. REX.R extends the destination XMM index and REX.B extends the source index independently through XMM15. The eight signed 16-bit lanes are multiplied in adjacent pairs; each pair of signed 32-bit products is added modulo 2^32 into one of four destination dword lanes. In particular, two products of `(-32768) * (-32768)` produce `0x80000000` by 32-bit wrapping. Source/destination aliasing is valid. All unrelated state is preserved and no data-memory access occurs. SSE2 and CR0/CR4 prerequisites are assumed by this local diagnostic profile. MMX, memory, VEX, EVEX, other prefix combinations, CPUID advertisement, JIT/native admission and physical admission remain unsupported. The instruction is specified in Intel SDM revision 093, Vol. 2B, PMADDWD ([official PDF](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2b-manual.pdf)). See the [S2-35.63 plan](../plans/STAGE_2.md#s2-3563-local-only-bounded-register-pmaddwd), [report](../reports/STAGE_2_REPORT.md#s2-3563--local-pmaddwd-register-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3563-local-register-pmaddwd-diagnostic-profile).
+
+## Local S2-36a: raw binary32/binary64 classification and finite normalization
+
+`Binary32` and `Binary64` are immutable raw-bit wrappers. `from_bits` and
+`to_bits` preserve every encoding bit; accessors expose sign, biased exponent,
+fraction, and `BinaryClass` (`Zero`, `Subnormal`, `Normal`, `Infinity`,
+`QuietNaN`, or `SignalingNaN`). NaN sign and payload and signed zero are
+preserved. Classification does not quiet a signaling NaN. Equality on the raw
+wrappers means bit identity, not guest floating-point equality.
+
+Binary32 uses sign bit 31, exponent bits 30:23, and fraction bits 22:0;
+Binary64 uses sign bit 63, exponent bits 62:52, and fraction bits 51:0. An
+all-zero exponent and fraction encodes signed zero; an all-zero exponent with
+nonzero fraction is subnormal; an intermediate exponent encodes a normal with
+an implicit leading one. An all-ones exponent with zero fraction is infinity;
+with nonzero fraction it is a NaN: the most significant fraction bit 1 marks
+`QuietNaN`, and 0 marks `SignalingNaN`.
+
+`normalize_finite() -> Option<BinaryFinite>` returns an exact integer-only view
+for zero and finite values, with the source class retained. Every nonzero
+finite view uses the invariant `(-1)^sign × significand × 2^(exponent−63)` and
+has significand bit 63 set. Zero retains its sign and has zero significand and
+exponent; infinity and NaNs return `None`. This helper performs no floating-
+point operation or rounding and changes no CPU or FP status state.
+
+This is a reusable representation/classification primitive, not an arithmetic
+engine. It defines no rounding, NaN propagation, conversion, flags/exceptions,
+DAZ/FTZ, SSE instruction behavior, or x87 state transition. S2-36 remains open
+for arithmetic/rounding/exception semantics, and S2-37/S2-38 remain open. The
+encoding source is Intel SDM Vol. 1 Rev. 093 (September 2026), §§4.2.2/Table
+4-3 and 4.8.3.1–4 ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)).
+Independent Sol medium code review completed clean; no findings remain.
+Implementation and test status are recorded in the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36a--raw-binary32binary64-classification-and-finite-normalization)
+and [plan](../plans/STAGE_2.md#s2-36a--raw-binary32binary64-classification-and-finite-normalization).

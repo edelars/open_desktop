@@ -5,6 +5,43 @@
 ISSUE-011/012 остаются открытыми; наличие нового состояния или local instruction
 slice не означает завершение этапа.
 
+## S2-36a — raw binary32/binary64 classification and finite normalization
+
+**Статус:** source implementation and focused tests are complete; workspace
+check, formatting, and independent Sol medium code review passed clean, with no
+findings remaining.
+The public immutable `Binary32` and `Binary64` wrappers preserve raw encodings
+and expose `from_bits`, `to_bits`, sign, biased exponent, fraction, class, and
+`normalize_finite`.
+`BinaryClass` has the six classes Zero, Subnormal, Normal, Infinity, QuietNaN,
+and SignalingNaN. `normalize_finite() -> Option<BinaryFinite>` is integer-only,
+retains source class and signed zero, represents every nonzero finite value
+exactly as `(-1)^sign × significand × 2^(exponent−63)` with bit 63 set, and
+returns `None` for infinity and NaNs. The normalized view exposes sign,
+significand, exponent and source class. No host `f32`/`f64` arithmetic or
+rounding is used; classification preserves signaling NaNs without quieting
+them. Raw-wrapper equality is bit identity, not guest floating-point equality.
+
+This slice establishes only raw encoding classification and an exact finite
+representation. It does not implement arithmetic, rounding, NaN propagation,
+conversion, FP flags/exceptions, DAZ/FTZ, or CPU-state transitions. S2-36
+arithmetic/rounding/exceptions and S2-37/S2-38 remain open. Author check
+`cargo test -p od-isa --offline binary_float::tests` passed 4/4;
+`cargo fmt --all -- --check`; `cargo check --workspace --all-targets --offline`;
+`git diff --check`; and `graphify update .` passed. Graphify logged the
+pre-existing syntax-extractor warning for `include/open_desktop/host_abi.h`,
+but exited successfully. The four focused tests include mixed-field literals
+`0xd5a54321` and `0xd5a5432187654321` with direct sign, exponent, fraction, and
+class assertions, plus normalization edges and every subnormal leading-bit
+position. Independent Sol medium code review completed clean; no findings
+remain.
+Hardware checks are deferred; no Mac mini, physical execution, or SSE
+instruction behavior is claimed. Normative encoding reference: Intel SDM
+Vol. 1 Rev. 093 (September 2026), §§4.2.2/Table 4-3 and 4.8.3.1–4
+([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)). See
+the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36a-raw-binary32binary64-classification-and-finite-normalization)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-36a--raw-binary32binary64-classification-and-finite-normalization).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.
