@@ -1652,6 +1652,12 @@ fn is_address32_indexed_sib_stack_data_operand(
                 operand.base,
                 od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
             )
+            || matches!(
+                operand.base,
+                od_isa::long_decode::AddressBase::Register(
+                    od_isa::Register::Rsi | od_isa::Register::Rdi
+                )
+            )
             || matches!(instruction.length, 6 | 9)
                 && matches!(
                     operand.base,
@@ -2102,6 +2108,12 @@ fn is_checked_qword_memory_address(
                     || matches!(
                         operand.base,
                         od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                    )
+                    || matches!(
+                        operand.base,
+                        od_isa::long_decode::AddressBase::Register(
+                            od_isa::Register::Rsi | od_isa::Register::Rdi
+                        )
                     )
                     || matches!(instruction.length, 6 | 9)
                         && matches!(
@@ -2578,6 +2590,7 @@ pub(crate) fn exact_qword_address32_sib_memory_bytes(
         && (bytes[4] == 0x24
             || bytes[4] & 7 < 4 && (bytes[4] >> 3) & 7 < 4
             || bytes[4] & 7 == 4 && (bytes[4] >> 3) & 7 < 4
+            || matches!(bytes[4] & 7, 6 | 7) && (bytes[4] >> 3) & 7 < 4
             || matches!(expected_mode, 1 | 2) && bytes[4] & 7 == 5 && (bytes[4] >> 3) & 7 < 4)
 }
 

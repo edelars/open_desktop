@@ -340,6 +340,12 @@ impl MemorySiteV2 {
                     self.operand.base,
                     od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
                 )
+                || matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(
+                        od_isa::Register::Rsi | od_isa::Register::Rdi
+                    )
+                )
                 || matches!(length, 6 | 9)
                     && matches!(
                         self.operand.base,
@@ -598,7 +604,7 @@ impl MemorySiteV2 {
                 ) || rsi_rdi_direct_data_profile
                     || address32_rsi_rdi_direct_data_profile
                     || matches!(register, od_isa::Register::Rsi | od_isa::Register::Rdi)
-                        && indexed_sib_data_profile
+                        && (indexed_sib_data_profile || address32_indexed_sib_data_profile)
                     || register == od_isa::Register::Rbp && matches!(length, 4 | 7)
                     || register == od_isa::Register::Rsp
                         && matches!(length, 4 | 5 | 8)
@@ -717,7 +723,8 @@ impl MemorySiteV2 {
                         | od_isa::Register::Rdx
                         | od_isa::Register::Rbx
                 )
-            ) || address32_rsi_rdi_direct_data_profile;
+            ) || address32_rsi_rdi_direct_data_profile
+                || address32_indexed_sib_data_profile;
             let direct = self.operand.index.is_none()
                 && self.operand.scale == 1
                 && match length {
@@ -817,6 +824,7 @@ impl MemorySiteV2 {
                 || indexed_no_base_rbp_sib_disp32)
                 && (direct
                     || indexed
+                    || address32_indexed_sib_data_profile
                     || rsp_no_index_sib
                     || rsp_indexed_sib
                     || rsp_base_rbp_indexed_sib
@@ -1002,6 +1010,7 @@ impl MemorySiteV2 {
                     return false;
                 };
                 let rsp_indexed_sib = sib_base == 4;
+                let rsi_rdi_indexed_sib = matches!(sib_base, 6 | 7) && sib_index < 4;
                 let rbp_indexed_sib = sib_base == 5 && matches!(mode, 1 | 2);
                 let rsp_base_rbp_indexed_sib = sib_base == 4 && sib_index == 5;
                 let rbp_base_rbp_indexed_sib =
@@ -1010,6 +1019,7 @@ impl MemorySiteV2 {
                     && data_register <= 5
                     && (sib_base < 4
                         || rsp_indexed_sib && sib_index < 4
+                        || rsi_rdi_indexed_sib
                         || rbp_indexed_sib && sib_index < 4
                         || rsp_base_rbp_indexed_sib
                         || rbp_base_rbp_indexed_sib)

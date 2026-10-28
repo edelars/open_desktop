@@ -657,6 +657,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
                 && (modrm >> 3) & 7 <= 5
                 && (*sib == 0x24
                     || (sib & 7 < 4 || sib & 7 == 4) && (sib >> 3) & 7 < 4
+                    || matches!(sib & 7, 6 | 7) && (sib >> 3) & 7 < 4
                     || sib & 7 < 4 && (sib >> 3) & 7 == 5
                     || sib & 7 == 4 && (sib >> 3) & 7 == 5
                     || sib & 7 == 5 && (sib >> 3) & 7 == 5) =>
@@ -672,6 +673,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
                 && (modrm >> 3) & 7 <= 5
                 && (*sib == 0x24
                     || (sib & 7 < 4 || sib & 7 == 4) && (sib >> 3) & 7 < 4
+                    || matches!(sib & 7, 6 | 7) && (sib >> 3) & 7 < 4
                     || sib & 7 < 4 && (sib >> 3) & 7 == 5
                     || sib & 7 == 4 && (sib >> 3) & 7 == 5
                     || sib & 7 == 5 && (sib >> 3) & 7 == 5) =>
@@ -711,6 +713,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
                 && (modrm >> 3) & 7 <= 5
                 && (*sib == 0x24
                     || (sib & 7 < 4 || sib & 7 == 4 || sib & 7 == 5) && (sib >> 3) & 7 < 4
+                    || matches!(sib & 7, 6 | 7) && (sib >> 3) & 7 < 4
                     || sib & 7 < 4 && (sib >> 3) & 7 == 5
                     || sib & 7 == 4 && (sib >> 3) & 7 == 5
                     || sib & 7 == 5 && (sib >> 3) & 7 == 5) =>
@@ -726,6 +729,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
                 && (modrm >> 3) & 7 <= 5
                 && (*sib == 0x24
                     || (sib & 7 < 4 || sib & 7 == 4 || sib & 7 == 5) && (sib >> 3) & 7 < 4
+                    || matches!(sib & 7, 6 | 7) && (sib >> 3) & 7 < 4
                     || sib & 7 < 4 && (sib >> 3) & 7 == 5
                     || sib & 7 == 4 && (sib >> 3) & 7 == 5
                     || sib & 7 == 5 && (sib >> 3) & 7 == 5) =>
@@ -741,6 +745,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
                 && (modrm >> 3) & 7 <= 5
                 && (*sib == 0x24
                     || (sib & 7 < 4 || sib & 7 == 4 || sib & 7 == 5) && (sib >> 3) & 7 < 4
+                    || matches!(sib & 7, 6 | 7) && (sib >> 3) & 7 < 4
                     || sib & 7 < 4 && (sib >> 3) & 7 == 5
                     || sib & 7 == 4 && (sib >> 3) & 7 == 5
                     || sib & 7 == 5 && (sib >> 3) & 7 == 5) =>
@@ -756,6 +761,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
                 && (modrm >> 3) & 7 <= 5
                 && (*sib == 0x24
                     || (sib & 7 < 4 || sib & 7 == 4 || sib & 7 == 5) && (sib >> 3) & 7 < 4
+                    || matches!(sib & 7, 6 | 7) && (sib >> 3) & 7 < 4
                     || sib & 7 < 4 && (sib >> 3) & 7 == 5
                     || sib & 7 == 4 && (sib >> 3) & 7 == 5
                     || sib & 7 == 5 && (sib >> 3) & 7 == 5) =>

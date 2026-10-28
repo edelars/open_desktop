@@ -702,6 +702,10 @@ fn is_checked_memory_address(
         let indexed_base_supported = base_supported
             || operand.index.is_some_and(|index| (index as u8) < 4)
                 && (matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+                    || matches!(
+                        operand.base,
+                        AddressBase::Register(od_isa::Register::Rsi | od_isa::Register::Rdi)
+                    )
                     || matches!(instruction_length, 6 | 9)
                         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp)));
         let rsi_rdi_direct = matches!(instruction_length, 4 | 5 | 8)
@@ -1157,6 +1161,10 @@ fn is_address32_indexed_sib_stack_data_operand(
         && operand.index.is_some_and(|register| (register as u8) < 4)
         && (matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
             || matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+            || matches!(
+                operand.base,
+                AddressBase::Register(od_isa::Register::Rsi | od_isa::Register::Rdi)
+            )
             || matches!(instruction_length, 6 | 9)
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp)))
         && matches!(operand.scale, 1 | 2 | 4 | 8)
@@ -1475,7 +1483,7 @@ mod tests {
     }
 
     #[test]
-    fn checked_load_addr32_rsi_indexed_sib_is_not_admitted_by_address64_profile() {
+    fn checked_load_addr32_rsi_indexed_sib_is_admitted_by_address32_profile() {
         let mut forged = checked_load_program();
         forged.guest_instructions[0].next_rip = 0x2005;
         forged.code_end = 0x2005;
@@ -1492,10 +1500,7 @@ mod tests {
         if let Operation::Exit { target_rip, .. } = forged.operations.last_mut().unwrap() {
             *target_rip = 0x2005;
         }
-        assert!(matches!(
-            verify(&forged),
-            Err(VerifyError::InvalidCheckedLoadDescriptor { .. })
-        ));
+        assert!(verify(&forged).is_ok());
     }
 
     fn checked_store_program() -> Program {

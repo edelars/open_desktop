@@ -1871,12 +1871,12 @@ mod tests {
         }
 
         for invalid in [
-            vec![0x67, 0x48, 0x8b, 0x04, 0x06],    // SIB instead of direct ESI
-            vec![0x67, 0x48, 0x8b, 0x30],          // RSI data
-            vec![0x67, 0x48, 0x8b, 0x3f],          // RDI data
-            vec![0x67, 0x48, 0x8b, 0x76],          // partial disp8
+            vec![0x67, 0x48, 0x8b, 0x04, 0x2e], // unsupported RBP index with RSI base
+            vec![0x67, 0x48, 0x8b, 0x30],       // RSI data
+            vec![0x67, 0x48, 0x8b, 0x3f],       // RDI data
+            vec![0x67, 0x48, 0x8b, 0x76],       // partial disp8
             vec![0x67, 0x48, 0x8b, 0x86, 0, 0, 0], // partial disp32
-            vec![0x67, 0x48, 0x67, 0x8b, 0x06],    // extra/reordered prefix
+            vec![0x67, 0x48, 0x67, 0x8b, 0x06], // extra/reordered prefix
         ] {
             let code = CodeView::new(0x5b00, &invalid).unwrap();
             assert!(compile_ir_memory_load_block_v2(code, 0x5b00).is_err());
@@ -1989,7 +1989,7 @@ mod tests {
             vec![0x48, 0x8b, 0x04, 0x2d],             // no-base SIB with RBP index
             vec![0x48, 0x8b, 0x44, 0x2e, 0],          // RSI base with RBP index
             vec![0x48, 0x8b, 0x84, 0x2e, 0, 0, 0, 0], // RSI base with RBP index
-            vec![0x67, 0x48, 0x8b, 0x04, 0x0e],       // address32 neighbor
+            vec![0x67, 0x48, 0x8b, 0x04, 0x26],       // address32 no-index SIB neighbor
             vec![0x48, 0x8b, 0x04],                   // missing SIB byte
         ] {
             let code = CodeView::new(0x5b00, &source).unwrap();
@@ -4547,6 +4547,144 @@ mod tests {
                     result.is_err(),
                     "invalid indexed stack-data form admitted {bytes:02x?}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn address32_indexed_sib_rsi_rdi_base_has_exact_qword_profile() {
+        let displacements = [
+            (0_u8, 0),
+            (1_u8, i8::MIN as i32),
+            (1, -1),
+            (1, 0),
+            (1, i8::MAX as i32),
+            (2, i32::MIN),
+            (2, -1),
+            (2, 0),
+            (2, 1),
+            (2, i32::MAX),
+        ];
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for base in [6_u8, 7] {
+                for index in 0..4_u8 {
+                    for scale_shift in 0..4_u8 {
+                        for data in 0..6_u8 {
+                            for (mode, displacement) in displacements {
+                                let mut source = vec![
+                                    0x67,
+                                    0x48,
+                                    opcode,
+                                    (mode << 6) | (data << 3) | 4,
+                                    (scale_shift << 6) | (index << 3) | base,
+                                ];
+                                if mode == 1 {
+                                    source.push(displacement as i8 as u8);
+                                } else if mode == 2 {
+                                    source.extend_from_slice(&displacement.to_le_bytes());
+                                }
+                                let code = CodeView::new(0x2be0, &source).unwrap();
+                                let site = match operation {
+                                    MemorySiteOperationV2::Load => {
+                                        let direct = compile_memory_load_block_v2(code, 0x2be0)
+                                            .unwrap_or_else(|error| {
+                                                panic!("direct {source:02x?}: {error:?}")
+                                            });
+                                        let ir = compile_ir_memory_load_block_v2(code, 0x2be0)
+                                            .unwrap_or_else(|error| {
+                                                panic!("IR {source:02x?}: {error:?}")
+                                            });
+                                        assert_eq!(direct.site(), ir.site());
+                                        ir.site().clone()
+                                    }
+                                    MemorySiteOperationV2::Store => {
+                                        let direct = compile_memory_store_block_v2(code, 0x2be0)
+                                            .unwrap_or_else(|error| {
+                                                panic!("direct {source:02x?}: {error:?}")
+                                            });
+                                        let ir = compile_ir_memory_store_block_v2(code, 0x2be0)
+                                            .unwrap_or_else(|error| {
+                                                panic!("IR {source:02x?}: {error:?}")
+                                            });
+                                        assert_eq!(direct.site(), ir.site());
+                                        ir.site().clone()
+                                    }
+                                };
+                                assert!(site.has_supported_profile());
+                                assert!(site.matches_source_bytes(&source, operation));
+                                assert_eq!(site.next_rip(), 0x2be0 + source.len() as u64);
+                                assert_eq!(site.operand.address_size, od_isa::OperandSize::Dword);
+                                assert_eq!(site.operand.size, od_isa::OperandSize::Qword);
+                                assert_eq!(
+                                    site.operand.base,
+                                    AddressBase::Register(Register::from_encoding(base).unwrap())
+                                );
+                                assert_eq!(
+                                    site.operand.index,
+                                    Some(Register::from_encoding(index).unwrap())
+                                );
+                                assert_eq!(site.operand.scale, 1 << scale_shift);
+                                assert_eq!(site.operand.displacement, i64::from(displacement));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for opcode in [0x8b, 0x89] {
+            for source in [
+                vec![0x67, 0x48, opcode, 0x04, 0x26], // indexed SIB with RSI base
+                vec![0x67, 0x48, opcode, 0x04, 0x2f], // RBP index with RDI base
+                vec![0x67, 0x48, opcode, 0x04, 0x2e], // RBP index
+                vec![0x67, 0x48, opcode, 0x04, 0x36], // RSI index
+                vec![0x67, 0x48, opcode, 0x04, 0x3e], // RDI index
+                vec![0x67, 0x48, opcode, 0x44, 0x2e, 0], // RBP index, disp8
+                vec![0x67, 0x48, opcode, 0x84, 0x2e, 0, 0, 0, 0], // RBP index, disp32
+                vec![0x48, 0x67, opcode, 0x04, 0x06], // reordered prefix
+            ] {
+                let code = CodeView::new(0x2be0, &source).unwrap();
+                let rejected = match opcode {
+                    0x8b => {
+                        compile_ir_memory_load_block_v2(code, 0x2be0).is_err()
+                            && compile_memory_load_block_v2(code, 0x2be0).is_err()
+                    }
+                    _ => {
+                        compile_ir_memory_store_block_v2(code, 0x2be0).is_err()
+                            && compile_memory_store_block_v2(code, 0x2be0).is_err()
+                    }
+                };
+                assert!(
+                    rejected,
+                    "unsupported neighboring form admitted {source:02x?}"
+                );
+            }
+            let disp8 = [0x67, 0x48, opcode, 0x44, 0x06, 0x80];
+            for window in 1..disp8.len() {
+                let code = CodeView::new(0x2be0, &disp8[..window]).unwrap();
+                let rejected = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x2be0).is_err()
+                        && compile_memory_load_block_v2(code, 0x2be0).is_err()
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x2be0).is_err()
+                        && compile_memory_store_block_v2(code, 0x2be0).is_err()
+                };
+                assert!(rejected, "partial disp8 window admitted {window}");
+            }
+            let disp32 = [0x67, 0x48, opcode, 0x84, 0x06, 0, 0, 0, 1];
+            for window in 1..disp32.len() {
+                let code = CodeView::new(0x2be0, &disp32[..window]).unwrap();
+                let rejected = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x2be0).is_err()
+                        && compile_memory_load_block_v2(code, 0x2be0).is_err()
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x2be0).is_err()
+                        && compile_memory_store_block_v2(code, 0x2be0).is_err()
+                };
+                assert!(rejected, "partial disp32 window admitted {window}");
             }
         }
     }
