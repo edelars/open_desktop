@@ -5426,3 +5426,7 @@ JIT/native admission is denied; physical status remains `not_run`.
 ### S2-35.59 local register PMULHUW diagnostic profile
 
 `s2_35_59_pmulhuw_register.case.json` is a handwritten high-XMM fixture for `s2-long-pmulhuw-reg-v1`, encoded as `66 45 0F E4 C1` (`PMULHUW XMM8, XMM9`). It checks high-half unsigned word products, including wrap boundaries, and preserves unrelated state. SSE2 and CR0/CR4 are assumed; JIT/native/physical admission remain closed.
+
+### S2-35.60 local register PSADBW diagnostic profile
+
+`s2_35_60_psadbw_register.case.json` is a handwritten high-XMM fixture for `s2-long-psadbw-reg-v1`, encoded as `66 45 0F F6 C1` (`PSADBW XMM8, XMM9`). It checks separate 64-bit byte-distance sums and zeroed upper bits in each half while preserving unrelated state. SSE2 and CR0/CR4 are assumed; JIT/native/physical admission remain closed.

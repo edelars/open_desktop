@@ -9504,3 +9504,7 @@ Implement the legacy mandatory-66 `0F D5 /r` XMM register form only, with option
 #### S2-35.59 — local-only bounded register `PMULHUW`
 
 Implement the legacy mandatory-66 `0F E4 /r` XMM register form only, with optional REX.R/B register extension and the high 16 bits of each unsigned word product. Support source aliasing and preserve unrelated state without data-memory effects. Assume SSE2 and CR0/CR4; do not add CPUID advertisement or JIT/native/physical admission. Maintain a distinct `s2-long-pmulhuw-reg-v1` profile. Verify all XMM register pairs, strict encoding rejects, atomic missing-state/fetch handling, fixture/testkit/runner denial, and document the local contract. Physical checks are deferred to the combined final substage.
+
+#### S2-35.60 — local-only bounded register `PSADBW`
+
+Implement the legacy mandatory-66 `0F F6 /r` XMM register form only, with optional REX.R/B register extension. Sum eight unsigned byte absolute differences independently in each 64-bit half, store each sum in the low word, and zero the remaining bits. Support aliasing and preserve unrelated state without data-memory effects. Assume SSE2 and CR0/CR4; do not add CPUID advertisement or JIT/native/physical admission. Maintain a distinct `s2-long-psadbw-reg-v1` profile. Verify all XMM register pairs, strict encoding rejects, atomic missing-state/fetch handling, fixture/testkit/runner denial, and document the local contract. Physical checks are deferred to the combined final substage.
