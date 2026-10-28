@@ -744,6 +744,12 @@ pub fn compile_ir_memory_store_block_v2(
             bytes.len() as u8,
             0x89,
         )
+        || crate::block::exact_qword_rsi_rdi_base_no_index_sib_memory_bytes(
+            code,
+            entry_rip,
+            bytes.len() as u8,
+            0x89,
+        )
         || crate::block::exact_qword_rbp_base_no_index_sib_disp_memory_bytes(
             code,
             entry_rip,
@@ -1042,6 +1048,12 @@ fn checked_load_metadata_v2(
                 0x8b,
             )
             || crate::block::exact_qword_low_base_no_index_sib_memory_bytes(
+                code,
+                entry_rip,
+                decoded.length,
+                0x8b,
+            )
+            || crate::block::exact_qword_rsi_rdi_base_no_index_sib_memory_bytes(
                 code,
                 entry_rip,
                 decoded.length,
@@ -1963,7 +1975,7 @@ mod tests {
         for invalid in [
             vec![0x48, 0x8b, 0x76, 0x00],       // RSI data with RSI + disp8
             vec![0x48, 0x89, 0xbf, 0, 0, 0, 0], // RDI data with RDI + disp32
-            vec![0x48, 0x8b, 0x04, 0x26],       // SIB with RSI base and no index
+            vec![0x48, 0x8b, 0x04, 0x66],       // SIB with RSI base and no-index scale alias
             vec![0x67, 0x48, 0x8b, 0x04, 0x26], // address32 RSI-base SIB without an index
             vec![0x48, 0x8b, 0x36],             // RSI as data
             vec![0x48, 0x8b, 0x3e],             // RDI as data
@@ -2138,8 +2150,8 @@ mod tests {
 
         for source in [
             vec![0x48, 0x8b, 0x04, 0x60],       // no-index SIB with non-unit scale
-            vec![0x48, 0x8b, 0x04, 0x26],       // RSI base with no index
-            vec![0x48, 0x8b, 0x04, 0x27],       // RDI base with no index
+            vec![0x48, 0x8b, 0x04, 0x66],       // RSI base with no-index scale alias
+            vec![0x48, 0x8b, 0x04, 0x67],       // RDI base with no-index scale alias
             vec![0x48, 0x8b, 0x74, 0x25, 0],    // RSI data is outside this profile
             vec![0x67, 0x48, 0x8b, 0x34, 0x34], // RSI data is outside this profile
             vec![0x48, 0x8b, 0x04],             // truncated SIB
@@ -2552,15 +2564,15 @@ mod tests {
         }
 
         for source in [
-            vec![0x48, 0x8b, 0x04, 0x26],             // SIB no-index with RSI base
-            vec![0x48, 0x8b, 0x04, 0x27],             // SIB no-index with RDI base
-            vec![0x48, 0x8b, 0x04, 0x26],             // RSI base with no index
-            vec![0x48, 0x8b, 0x04, 0x27],             // RDI base with no index
+            vec![0x48, 0x8b, 0x04, 0x66], // SIB scale alias with RSI base
+            vec![0x48, 0x8b, 0x04, 0x67], // SIB scale alias with RDI base
+            vec![0x48, 0x8b, 0x04, 0x66], // RSI base with no-index scale alias
+            vec![0x48, 0x8b, 0x04, 0x67], // RDI base with no-index scale alias
             vec![0x48, 0x8b, 0x04, 0x65, 0, 0, 0, 0], // non-unit scale with no index
-            vec![0x48, 0x8b, 0x44, 0x26, 0],          // RSI base with no index
-            vec![0x48, 0x8b, 0x84, 0x26, 0, 0, 0, 0], // RSI base with no index
-            vec![0x67, 0x48, 0x8b, 0x04, 0x26],       // address32 no-index SIB neighbor
-            vec![0x48, 0x8b, 0x04],                   // missing SIB byte
+            vec![0x48, 0x8b, 0x44, 0x66, 0], // RSI base with no-index scale alias
+            vec![0x48, 0x8b, 0x84, 0x66, 0, 0, 0, 0], // RSI base with no-index scale alias
+            vec![0x67, 0x48, 0x8b, 0x04, 0x26], // address32 no-index SIB neighbor
+            vec![0x48, 0x8b, 0x04],       // missing SIB byte
         ] {
             let code = CodeView::new(0x5b00, &source).unwrap();
             assert!(
@@ -2681,12 +2693,12 @@ mod tests {
         }
 
         for source in [
-            vec![0x48, 0x8b, 0x04, 0x26],             // RSI base with RSP/no index
-            vec![0x48, 0x8b, 0x04, 0x27],             // RDI base with no index
+            vec![0x48, 0x8b, 0x04, 0x66], // RSI base with no-index scale alias
+            vec![0x48, 0x8b, 0x04, 0x67], // RDI base with no-index scale alias
             vec![0x48, 0x8b, 0x04, 0x65, 0, 0, 0, 0], // invalid no-index scale
-            vec![0x67, 0x48, 0x8b, 0x04, 0x26],       // address32 no-index neighbor
-            vec![0x48, 0x8b, 0x44, 0x26, 0],          // RSI base with no index
-            vec![0x48, 0x8b, 0x84, 0x26, 0, 0, 0, 0], // RSI base with no index
+            vec![0x67, 0x48, 0x8b, 0x04, 0x26], // address32 no-index neighbor
+            vec![0x48, 0x8b, 0x44, 0x66, 0], // RSI base with no-index scale alias
+            vec![0x48, 0x8b, 0x84, 0x66, 0, 0, 0, 0], // RSI base with no-index scale alias
         ] {
             let code = CodeView::new(0x5b00, &source).unwrap();
             assert!(
@@ -2812,7 +2824,7 @@ mod tests {
 
         for source in [
             vec![0x67, 0x48, 0x8b, 0x34, 0x76], // address32 RSI data is outside this profile
-            vec![0x48, 0x8b, 0x04, 0x26],       // RSI base with no index
+            vec![0x48, 0x8b, 0x04, 0x66],       // RSI base with no-index scale alias
             vec![0x48, 0x8b, 0x04, 0x35],       // no-base SIB lacks its disp32
             vec![0x48, 0x8b, 0x04],             // truncated SIB
         ] {
@@ -3222,12 +3234,12 @@ mod tests {
         }
 
         for source in [
-            vec![0x48, 0x8b, 0x44, 0x26, 0],          // RSI base with no index
-            vec![0x48, 0x8b, 0x84, 0x26, 0, 0, 0, 0], // RSI base with no index
-            vec![0x48, 0x8b, 0x74, 0x25, 0],          // RSI data is outside this profile
+            vec![0x48, 0x8b, 0x44, 0x66, 0], // RSI base with no-index scale alias
+            vec![0x48, 0x8b, 0x84, 0x66, 0, 0, 0, 0], // RSI base with no-index scale alias
+            vec![0x48, 0x8b, 0x74, 0x25, 0], // RSI data is outside this profile
             vec![0x48, 0x8b, 0xb4, 0x25, 0, 0, 0, 0], // RSI data is outside this profile
-            vec![0x48, 0x8b, 0x44, 0x0e],             // truncated disp8
-            vec![0x48, 0x8b, 0x84, 0x0e, 0, 0, 0],    // truncated disp32
+            vec![0x48, 0x8b, 0x44, 0x0e],    // truncated disp8
+            vec![0x48, 0x8b, 0x84, 0x0e, 0, 0, 0], // truncated disp32
         ] {
             let code = CodeView::new(0x5b00, &source).unwrap();
             assert!(
@@ -3311,7 +3323,7 @@ mod tests {
                 vec![0x48, opcode, 0x04],             // truncated before SIB
                 vec![0x48, opcode, 0x04, 0x60],       // no-index with non-unit scale
                 vec![0x48, opcode, 0x04, 0x05],       // no-base
-                vec![0x48, opcode, 0x04, 0x26],       // RSI base with no index
+                vec![0x48, opcode, 0x04, 0x66],       // RSI base with no-index scale alias
                 vec![0x4a, opcode, 0x04, 0x18],       // extended index
                 vec![0x49, opcode, 0x04, 0x18],       // extended base
                 vec![0x48, opcode, 0x04, 0x18, 0x90], // trailing byte
@@ -4633,7 +4645,7 @@ mod tests {
             vec![0x48, 0x8b, 0x30],       // unsupported RSI data register
             vec![0x48, 0x8b, 0xc0],       // register-register mod=11
             vec![0x48, 0x8b, 0x04],       // truncated SIB
-            vec![0x48, 0x8b, 0x04, 0x26], // RSI base with no index
+            vec![0x48, 0x8b, 0x04, 0x66], // RSI base with no-index scale alias
             vec![0x48, 0x8b, 0x04, 0x60], // no-index SIB with non-unit scale
             vec![0x48, 0x8b, 0x04, 0x05], // no-base SIB requires disp32
             vec![0x48, 0x8b, 0x04, 0x65, 0, 0, 0, 0], // no-base with invalid no-index scale
@@ -7425,8 +7437,8 @@ mod tests {
         for opcode in [0x8b, 0x89] {
             for source in [
                 vec![0x48, opcode, 0x04, 0x2d],       // no-base plus RBP index
-                vec![0x48, opcode, 0x04, 0x26],       // RSI base with no index
-                vec![0x48, opcode, 0x04, 0x27],       // RDI base with no index
+                vec![0x48, opcode, 0x04, 0x66],       // RSI base with no-index scale alias
+                vec![0x48, opcode, 0x04, 0x67],       // RDI base with no-index scale alias
                 vec![0x67, 0x48, opcode, 0x34, 0x34], // unsupported RSI data register
                 vec![0x48, 0x67, opcode, 0x04, 0x28], // reordered prefix
             ] {
@@ -8444,7 +8456,7 @@ mod tests {
     }
 
     #[test]
-    fn low_base_no_index_sib_has_exact_qword_profile() {
+    fn low_and_rsi_rdi_base_no_index_sib_have_exact_qword_profiles() {
         let displacements = [
             (0_u8, 0_i32),
             (1, i8::MIN as i32),
@@ -8461,7 +8473,7 @@ mod tests {
             (0x8b, MemorySiteOperationV2::Load),
             (0x89, MemorySiteOperationV2::Store),
         ] {
-            for base in 0_u8..=3 {
+            for base in [0_u8, 1, 2, 3, 6, 7] {
                 for data in 0_u8..=5 {
                     for &(mode, displacement) in &displacements {
                         let mut source =
@@ -8591,7 +8603,7 @@ mod tests {
 
         for source in [
             vec![0x48, 0x8b, 0x04, 0x60], // no-index sentinel with non-unit scale
-            vec![0x48, 0x8b, 0x04, 0x26], // SIB base RSI, outside low-base profile
+            vec![0x48, 0x8b, 0x04, 0x66], // no-index scale alias for RSI base
             vec![0x66, 0x48, 0x8b, 0x04, 0x20], // extra prefix
         ] {
             let code = CodeView::new(0x5d00, &source).unwrap();
@@ -8599,8 +8611,8 @@ mod tests {
             assert!(compile_ir_memory_load_block_v2(code, 0x5d00).is_err());
         }
 
-        let first_disp = [0x48, 0x8b, 0x84, 0x20, 0, 0, 0, 1];
-        let second_disp = [0x48, 0x8b, 0x84, 0x20, 0, 0, 0, 2];
+        let first_disp = [0x48, 0x8b, 0x84, 0x26, 0, 0, 0, 1];
+        let second_disp = [0x48, 0x8b, 0x84, 0x26, 0, 0, 0, 2];
         let first =
             compile_ir_memory_load_block_v2(CodeView::new(0x5d00, &first_disp).unwrap(), 0x5d00)
                 .unwrap();
@@ -8613,7 +8625,7 @@ mod tests {
             second.site().operand.displacement
         );
         let state = od_isa::LongModeState {
-            gpr: [0x1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            gpr: [0, 0, 0, 0, 0, 0, 0x1000, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             ..Default::default()
         };
         assert_eq!(

@@ -329,6 +329,26 @@ fn is_low_base_no_index_sib_profile(operand: MemoryOperand, length: u64) -> bool
         }
 }
 
+fn is_rsi_rdi_base_no_index_sib_profile(operand: MemoryOperand, length: u64) -> bool {
+    matches!(length, 4 | 5 | 8)
+        && operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(
+            operand.base,
+            od_isa::long_decode::AddressBase::Register(
+                od_isa::Register::Rsi | od_isa::Register::Rdi
+            )
+        )
+        && operand.index.is_none()
+        && operand.scale == 1
+        && match length {
+            4 => operand.displacement == 0,
+            5 => i8::try_from(operand.displacement).is_ok(),
+            8 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
+}
+
 fn is_address32_low_base_no_index_sib_profile(operand: MemoryOperand, length: u64) -> bool {
     matches!(length, 5 | 6 | 9)
         && operand.address_size == od_isa::OperandSize::Dword
@@ -595,6 +615,8 @@ impl MemorySiteV2 {
             is_low_base_rsi_rdi_index_sib_profile(self.operand, length);
         let low_base_no_index_sib_data_profile =
             is_low_base_no_index_sib_profile(self.operand, length);
+        let rsi_rdi_base_no_index_sib_data_profile =
+            is_rsi_rdi_base_no_index_sib_profile(self.operand, length);
         let rbp_base_no_index_sib_data_profile = self.operand.address_size
             == od_isa::OperandSize::Qword
             && self.operand.size == od_isa::OperandSize::Qword
@@ -798,6 +820,7 @@ impl MemorySiteV2 {
             || indexed_no_base_rsi_rdi_sib_disp32_data_profile
             || rsi_rdi_direct_data_profile
             || low_base_no_index_sib_data_profile
+            || rsi_rdi_base_no_index_sib_data_profile
             || rbp_base_no_index_sib_data_profile
             || address32_rsi_rdi_direct_data_profile
             || (self.operand.address_size == od_isa::OperandSize::Qword
@@ -947,6 +970,7 @@ impl MemorySiteV2 {
                         | od_isa::Register::Rdx
                         | od_isa::Register::Rbx
                 ) || rsi_rdi_direct_data_profile
+                    || rsi_rdi_base_no_index_sib_data_profile
                     || address32_rsi_rdi_direct_data_profile
                     || matches!(register, od_isa::Register::Rsi | od_isa::Register::Rdi)
                         && (indexed_sib_data_profile
@@ -1257,12 +1281,16 @@ impl MemorySiteV2 {
                 i32::try_from(self.operand.displacement).is_ok()
             }
             (od_isa::long_decode::AddressBase::Register(_), None, 5)
-                if low_base_no_index_sib_data_profile || rbp_base_no_index_sib_data_profile =>
+                if low_base_no_index_sib_data_profile
+                    || rsi_rdi_base_no_index_sib_data_profile
+                    || rbp_base_no_index_sib_data_profile =>
             {
                 i8::try_from(self.operand.displacement).is_ok()
             }
             (od_isa::long_decode::AddressBase::Register(_), None, 8)
-                if low_base_no_index_sib_data_profile || rbp_base_no_index_sib_data_profile =>
+                if low_base_no_index_sib_data_profile
+                    || rsi_rdi_base_no_index_sib_data_profile
+                    || rbp_base_no_index_sib_data_profile =>
             {
                 i32::try_from(self.operand.displacement).is_ok()
             }
@@ -1910,6 +1938,17 @@ impl MemorySiteV2 {
                     && self.next_rip.checked_sub(self.guest_rip)
                         == Some(no_index_expected_length as u64)
                     && is_low_base_no_index_sib_profile(self.operand, source.len() as u64)
+                    && od_isa::Register::from_encoding(base) == Some(decoded_base)
+                    && self.operand.index.is_none()
+                    && scale == 1;
+            }
+            if matches!(sib, 0x26 | 0x27) {
+                return source.len() == no_index_expected_length
+                    && data_register <= 5
+                    && register == Some(data_register)
+                    && self.next_rip.checked_sub(self.guest_rip)
+                        == Some(no_index_expected_length as u64)
+                    && is_rsi_rdi_base_no_index_sib_profile(self.operand, source.len() as u64)
                     && od_isa::Register::from_encoding(base) == Some(decoded_base)
                     && self.operand.index.is_none()
                     && scale == 1;
