@@ -461,6 +461,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36e | Normal-only binary32/binary64 packing of rounded significands | S2-36d; independent review |
 | [x] | S2-36f | Direct exact quotient rounding to binary subnormal units | S2-36c, S2-36d; independent review |
 | [x] | S2-36g | Bounded exact aligned addition of finite significands | S2-36a; independent review |
+| [x] | S2-36h | Compose finite binary32/binary64 division through one rounding | S2-36c–36f; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -4980,6 +4981,47 @@ Independent Sol review completed clean with no findings; see the
 Keep broader addition, gaps above 64, final normalization, packing, and
 instruction behavior open. S2-36 exception behavior and S2-37/S2-38 remain
 open; hardware validation is deferred.
+
+#### S2-36h — finite binary division composition
+
+Add `Binary32::divide_finite(lhs, rhs, mode)` and the `Binary64` counterpart,
+returning `Option<(Self, bool)>`: a destination encoding and the final
+mathematical `inexact` indication. Inputs are `BinaryFinite`, so the operation
+is bounded to finite normalized values; zeros are rejected with `None`, and
+NaNs/infinities are outside this input domain. Zero division does not emit
+guest `#DE`.
+
+Reuse the exact S2-36c quotient/remainder decomposition once and preserve its
+original exponent to select the destination path. Binary32 selects precision
+24/`emin=-126`; binary64 selects precision 53/`emin=-1022`, regardless of the
+input formats. If the original quotient exponent is at least `emin`, round
+once with S2-36d and pack with S2-36e. Otherwise, round directly to subnormal
+units through S2-36f; do not round at normal precision and then shift. This
+avoids double rounding around the largest-subnormal/minimum-normal boundary.
+
+Return `None` when the result is outside the implemented normal/subnormal
+result range, including overflow; this is helper-domain rejection, not a guest
+exception. `inexact` reports only the final mathematical rounding. Do not set
+MXCSR PE/underflow flags, deliver exceptions, or impose a guest zero-sign
+policy. Nonzero underflow may produce a signed zero using the exact quotient's
+sign. Do not change or reuse the x87 operation helpers.
+
+Tests cover exact 1/1, 1/3 in both destination formats with mixed input
+formats, all rounding modes/signs for normal 1/3, minimum-normal/2, minimum-
+subnormal/2 directed results and signed zero, maximum-subnormal boundaries,
+overflow rejection, zero-divisor rejection, and input immutability. The
+double-round regression divides binary64 `0x380f_ffff_dfff_ffff` by binary64
+1.0 into binary32 and expects largest subnormal `0x007f_ffff` with
+`inexact=true`. The author reports `cargo test -p od-isa --offline
+binary_float::tests` passing 24/24, `cargo fmt --all -- --check && git diff
+--check` passing, `cargo check --workspace --all-targets --offline` passing,
+and `graphify update .` completing; the graph contains 7757 nodes/15289 edges
+and retains the known
+`include/open_desktop/host_abi.h` syntax warning plus label-refresh notice.
+Independent Sol review completed clean with no findings. Keep broader S2-36
+arithmetic and S2-37/S2-38 instruction/exception work open; no hardware
+validation is claimed.
+See the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36h--finite-binary-division-composition).
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

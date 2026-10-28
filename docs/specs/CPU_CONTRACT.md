@@ -10503,3 +10503,31 @@ existing `include/open_desktop/host_abi.h` extractor warning and label refresh.
 Independent Sol code review completed clean; no findings remain. See the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36g--bounded-exact-aligned-addition)
 and [plan](../plans/STAGE_2.md#s2-36g--bounded-exact-aligned-addition).
+
+## Local S2-36h: finite binary division composition
+
+`Binary32::divide_finite(lhs, rhs, mode)` and `Binary64::divide_finite(...)`
+return `Option<(Self, bool)>`: the destination encoding plus final mathematical
+`inexact`. They accept `BinaryFinite` inputs, reject either zero input with
+`None`, and therefore define neither zero division nor guest `#DE`. NaNs and
+infinities are outside the input type's finite domain.
+
+Each helper reuses one exact S2-36c quotient/remainder decomposition, then
+branches on that original quotient exponent. Destination format selects
+precision and normal exponent threshold: binary32 p=24/emin=-126, binary64
+p=53/emin=-1022, even for mixed-format operands. At or above `emin`, use
+S2-36d once and pack with S2-36e. Below `emin`, use S2-36f's direct subnormal
+unit rounding from the original quotient; do not round normally then shift,
+which can double-round at the largest-subnormal/minimum-normal boundary.
+
+`None` includes out-of-range results such as overflow and is not a guest
+exception. The returned boolean describes only mathematical inexactness. No
+MXCSR PE/underflow status, exception delivery, or guest zero-sign policy is
+implemented. If a nonzero result underflows to zero, the raw result retains the
+quotient sign. No x87 helpers or behavior are changed. Broader arithmetic and
+S2-37/S2-38 instruction/exception work remain open; hardware validation is
+deferred. Author-reported focused tests passed 24/24, with workspace, format,
+diff, and Graphify checks passing; independent Sol review completed clean, with
+no findings. See the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36h--finite-binary-division-composition)
+and [plan](../plans/STAGE_2.md#s2-36h--finite-binary-division-composition).

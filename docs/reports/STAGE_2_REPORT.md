@@ -320,6 +320,53 @@ Independent Sol code review completed clean; no findings remain. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36g-bounded-exact-aligned-addition)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-36g--bounded-exact-aligned-addition).
 
+## S2-36h — finite binary division composition
+
+**Статус:** finite division composition and author checks are complete;
+independent Sol medium code review completed clean, with no findings. Public
+`Binary32::divide_finite(lhs, rhs, mode)` and `Binary64::divide_finite(...)`
+return `Option<(Self, bool)>`: a destination value and final mathematical
+`inexact`. Inputs are finite normalized values. Either zero operand returns
+`None`, including zero divisor, without guest `#DE`; NaNs and infinities are
+outside the input type's domain.
+
+The helper computes the exact quotient once through S2-36c and branches on the
+original quotient exponent. The destination determines precision and `emin`
+even with mixed-format operands: binary32 p=24/emin=-126, binary64
+p=53/emin=-1022. Normal results use S2-36d rounding once followed by S2-36e
+packing. Results below `emin` go directly through S2-36f subnormal-unit
+rounding using the original quotient and remainder. The helper never rounds a
+normal result and then shifts it into subnormal range, avoiding double rounding
+at the largest-subnormal/minimum-normal transition.
+
+`None` also indicates out-of-range results such as overflow; it is helper
+domain rejection, not a guest exception. The boolean reports only the final
+mathematical inexactness. No MXCSR PE or underflow flag, exception delivery, or
+guest zero-sign policy is implemented. Nonzero underflow can return zero with
+the quotient sign preserved. No x87 operation helper or behavior is changed.
+
+Tests cover exact 1/1; 1/3 for both destination formats and mixed operand
+formats; all rounding modes/signs for normal 1/3; minimum-normal/2 and
+minimum-subnormal/2; directed rounding to a signed zero or one subnormal unit;
+maximum-subnormal boundaries; overflow and zero rejection; and input
+immutability. The double-round regression uses binary64
+`0x380f_ffff_dfff_ffff / 0x3ff0_0000_0000_0000` into binary32 and expects
+largest subnormal `0x007f_ffff`, `inexact=true`.
+
+Author-reported checks passed:
+
+- `cargo test -p od-isa --offline binary_float::tests`: 24/24.
+- `cargo fmt --all -- --check && git diff --check`.
+- `cargo check --workspace --all-targets --offline`.
+- `graphify update .` completed with 7757 nodes/15289 edges and the known
+  `include/open_desktop/host_abi.h` syntax warning plus label-refresh notice.
+
+Independent Sol medium code review completed clean; no findings remain. No
+hardware validation is claimed; broader S2-36 arithmetic and S2-37/S2-38
+instruction/exception work remain open. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-36h-finite-binary-division-composition)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-36h--finite-binary-division-composition).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.
