@@ -815,10 +815,15 @@ fn is_checked_memory_address(
                 && operand.index.is_some_and(|index| (index as u8) < 4)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
-            || instruction_length == 3
+            || matches!(instruction_length, 3 | 4 | 7)
                 && operand.index.is_none()
                 && operand.scale == 1
-                && operand.displacement == 0
+                && match instruction_length {
+                    3 => operand.displacement == 0,
+                    4 => i8::try_from(operand.displacement).is_ok(),
+                    7 => i32::try_from(operand.displacement).is_ok(),
+                    _ => false,
+                }
                 && matches!(
                     operand.base,
                     AddressBase::Register(od_isa::Register::Rsi | od_isa::Register::Rdi)
@@ -853,8 +858,13 @@ fn is_scoped_memory_data_operand(
                     && operand.scale == 1
                     && match data_register {
                         4 => {
-                            (instruction_length == 3
-                                && operand.displacement == 0
+                            (matches!(instruction_length, 3 | 4 | 7)
+                                && match instruction_length {
+                                    3 => operand.displacement == 0,
+                                    4 => i8::try_from(operand.displacement).is_ok(),
+                                    7 => i32::try_from(operand.displacement).is_ok(),
+                                    _ => false,
+                                }
                                 && matches!(
                                     operand.base,
                                     AddressBase::Register(
@@ -921,8 +931,13 @@ fn is_scoped_memory_data_operand(
                                     && matches!(operand.base, AddressBase::NextRip))
                         }
                         5 => {
-                            (instruction_length == 3
-                                && operand.displacement == 0
+                            (matches!(instruction_length, 3 | 4 | 7)
+                                && match instruction_length {
+                                    3 => operand.displacement == 0,
+                                    4 => i8::try_from(operand.displacement).is_ok(),
+                                    7 => i32::try_from(operand.displacement).is_ok(),
+                                    _ => false,
+                                }
                                 && matches!(
                                     operand.base,
                                     AddressBase::Register(

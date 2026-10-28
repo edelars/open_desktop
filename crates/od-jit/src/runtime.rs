@@ -224,7 +224,7 @@ impl MemorySiteV2 {
         );
         let rsi_rdi_direct_data_profile = self.operand.address_size == od_isa::OperandSize::Qword
             && self.operand.size == od_isa::OperandSize::Qword
-            && length == 3
+            && matches!(length, 3 | 4 | 7)
             && matches!(
                 self.operand.base,
                 od_isa::long_decode::AddressBase::Register(
@@ -233,7 +233,12 @@ impl MemorySiteV2 {
             )
             && self.operand.index.is_none()
             && self.operand.scale == 1
-            && self.operand.displacement == 0;
+            && match length {
+                3 => self.operand.displacement == 0,
+                4 => i8::try_from(self.operand.displacement).is_ok(),
+                7 => i32::try_from(self.operand.displacement).is_ok(),
+                _ => false,
+            };
         let indexed_sib_base_profile = base_is_low_gpr
             || matches!(
                 self.operand.base,
@@ -1026,14 +1031,20 @@ impl MemorySiteV2 {
         let mode = modrm >> 6;
         let data_register = (modrm >> 3) & 7;
         let base = modrm & 7;
-        if source.len() == 3 && mode == 0 && matches!(base, 6 | 7) {
+        if matches!((source.len(), mode), (3, 0) | (4, 1) | (7, 2)) && matches!(base, 6 | 7) {
             let site_register = match expected_operation {
                 MemorySiteOperationV2::Load => self.destination,
                 MemorySiteOperationV2::Store => self.source,
             };
+            let displacement_valid = match source.len() {
+                3 => self.operand.displacement == 0,
+                4 => i8::try_from(self.operand.displacement).is_ok(),
+                7 => i32::try_from(self.operand.displacement).is_ok(),
+                _ => false,
+            };
             return data_register <= 5
                 && site_register == Some(data_register)
-                && self.next_rip.checked_sub(self.guest_rip) == Some(3)
+                && self.next_rip.checked_sub(self.guest_rip) == Some(source.len() as u64)
                 && self.operand.address_size == od_isa::OperandSize::Qword
                 && self.operand.size == od_isa::OperandSize::Qword
                 && matches!(
@@ -1043,7 +1054,7 @@ impl MemorySiteV2 {
                 )
                 && self.operand.index.is_none()
                 && self.operand.scale == 1
-                && self.operand.displacement == 0;
+                && displacement_valid;
         }
         if mode == 0 && modrm & 7 == 4 && source.len() == 8 && source[3] == 0x25 {
             let site_register = match expected_operation {
