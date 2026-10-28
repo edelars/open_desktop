@@ -680,17 +680,22 @@ fn is_checked_memory_address(
     if operand.address_size != od_isa::OperandSize::Qword {
         return false;
     }
-    let rbp_index_no_disp_sib = instruction_length == 4
+    let rbp_indexed_sib = matches!(instruction_length, 4 | 5 | 8)
         && matches!(
             operand.base,
             AddressBase::Register(register) if (register as u8) < 4
         )
         && operand.index == Some(od_isa::Register::Rbp)
         && matches!(operand.scale, 1 | 2 | 4 | 8)
-        && operand.displacement == 0;
+        && match instruction_length {
+            4 => operand.displacement == 0,
+            5 => i8::try_from(operand.displacement).is_ok(),
+            8 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        };
     let supported_index = match operand.index {
         Some(index) => {
-            (matches!(index as u8, 0..=3) || rbp_index_no_disp_sib)
+            (matches!(index as u8, 0..=3) || rbp_indexed_sib)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && match instruction_length {
                     4 => operand.displacement == 0,
@@ -1021,14 +1026,19 @@ fn is_indexed_qword_sib_data_operand(operand: MemoryOperand, instruction_length:
 }
 
 fn is_rbp_index_qword_sib_data_operand(operand: MemoryOperand, instruction_length: u64) -> bool {
-    instruction_length == 4
+    matches!(instruction_length, 4 | 5 | 8)
         && matches!(
             operand.base,
             AddressBase::Register(register) if (register as u8) < 4
         )
         && operand.index == Some(od_isa::Register::Rbp)
         && matches!(operand.scale, 1 | 2 | 4 | 8)
-        && operand.displacement == 0
+        && match instruction_length {
+            4 => operand.displacement == 0,
+            5 => i8::try_from(operand.displacement).is_ok(),
+            8 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
         && operand.address_size == od_isa::OperandSize::Qword
         && operand.size == od_isa::OperandSize::Qword
 }

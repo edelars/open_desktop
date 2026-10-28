@@ -1695,6 +1695,12 @@ The focused matrices cover source/decoded-profile validation, direct V2/shared I
 
 Приёмка сравнивает direct V2/shared IR/interpreter для load/store ×6 data ×4 base ×4 scale, с отдельной формулой target, high bits RBP, alias `data=RBP`/`data=base` из pre-state, полным qword store, wrap, #GP для start/end без callback, AddressOverflow и backend-classification. Успешный store+STOP остаётся committed один раз. Bounded dispatch проверяет split бюджета и возобновление по фактическому RIP без повторного singleton access; частичные окна и недопустимые соседние SIB формы не выполняют эффекты. Сохранить no-index `SIB=0x24` и no-base `SIB=0x2d` проверки. См. [S3-20ay report](../reports/STAGE_3_S3-20ay_2026-10-27.md); owner/MMU integration, Stage 2/ISA, Mini и performance остаются вне среза.
 
+#### S3-20az. Address64 indexed SIB disp8/disp32 с индексом RBP
+
+Добавить exact singleton-профиль `48 8B/89 /r sib disp8|disp32`: ModRM `mod=01/10,r/m=100`, data RAX..RBP, base RAX..RBX, index RBP, scale 1/2/4/8, длина 5/8 bytes. Не расширять общий whitelist индексов; профиль без displacement S3-20ay остаётся отдельным. Запрещены address-size override, stack/no-base base, другие index, pair и V3. `MemoryOperand` и `access_address_48` остаются единственным источником EA semantics: `base + full64(RBP)*scale + signed displacement` с wrapping u64.
+
+Приёмка сравнивает direct V2/shared IR/interpreter для обоих операций, всех шести data-регистров, четырёх low bases, scales и signed disp8/disp32 границ. Проверяются независимая формула EA, высокие биты RBP, алиасы `data=RBP`/`data=base` из pre-state, qword callback и retirement. Noncanonical start/end должны дать #GP до callback; qword endpoint overflow и backend error сохраняют отдельную классификацию без commit. Store+STOP остаётся committed один раз. Runtime должен показать влияние последнего byte disp32, dispatcher — split и continuation по фактическому RIP без replay, а partial windows/invalid neighbors не дают effects. См. [S3-20az report](../reports/STAGE_3_S3-20az_2026-10-27.md). Production owner/MMU, Stage 2/ISA, Mini, physical x86 и performance остаются вне среза.
+
 ### S3-21. Подтвердить memory slice на физическом x86
 
 1. Выполнить после локального завершения Stage 3 как финальный gate. Использовать завершённый S2-09 native memory profile. Проверить одинаковые входы, наблюдение всех заявленных GPR, нормализацию guest addresses и сравнение memory effects.
