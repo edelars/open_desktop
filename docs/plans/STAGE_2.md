@@ -9162,3 +9162,38 @@ compile-checked but not executed on this Darwin host; physical SSE2 remains
 See the [report](../reports/STAGE_2_REPORT.md#s2-3549--local-pand-register-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-pand-profile--s2-3549),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3549-local-register-pand-diagnostic-profile).
+
+#### S2-35.50 — local-only bounded register `PANDN`
+
+Add the distinct profile `s2-long-pandn-reg-v1` for exact `66 [one optional
+REX.R/B] 0F DF /r`, ModR/M.mod=3. ModR/M.reg is the XMM destination and r/m
+is the source, independently extended to XMM0–XMM15. Each bit computes
+`DEST = ~old_DEST & SRC` over the full 128-bit register; flags, MXCSR, x87,
+GPRs, and all other XMM registers are preserved. PAND (`0F DB`), POR, PXOR,
+MMX, memory, REX.W/X, other or duplicate prefixes, VEX/EVEX, JIT/native
+admission, and physical execution are outside this local diagnostic slice.
+SSE2 and CR0/CR4 preconditions are assumptions; control gates and
+`#UD/#NM` delivery are not modeled.
+
+Verification covers all 16×16 register pairs and independent REX.R/B mapping,
+all 128 bit positions with four truth rows, asymmetric operand order, zero/all
+one and alternating masks, aliasing, full-state preservation and no data
+callbacks, missing SSE with seeded x87, STOP/zero-budget/truncated-fetch
+atomicity, and strict decoder/profile negatives. The handwritten XMM8/XMM9
+fixture is exercised by the interpreter and denied by JIT and native paths.
+Verification (2026-10-28): `cargo test -p od-isa pandn --offline` passed (3),
+`cargo test -p od-testkit pandn --offline` passed (2), and
+`cargo test -p od-runner --test fixture_v2 pandn --offline` passed (1). The
+handwritten fixture produced the literal XMM8 result `10101010101010101010101010101010`;
+its JIT-denial check passed. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`, `graphify update .`, and `git diff --check` passed. The Linux-only
+native-denial test was compile-checked, not executed on this Darwin host.
+Physical SSE2 validation remains `not_run`; independent Sol review completed
+with no remaining findings. Parent S2-35, S2-34, and global `S2-35 → S2-34`
+remain open; combined Mac mini/SSH
+acceptance remains deferred.
+See the [report](../reports/STAGE_2_REPORT.md#s2-3550--local-pandn-register-profile),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-pandn-profile--s2-3550),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3550-local-register-pandn-diagnostic-profile).

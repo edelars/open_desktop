@@ -9589,3 +9589,21 @@ CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are diagnostic preconditions; this profile
 does not model those gates or `#UD/#NM` delivery. JIT/native admission and
 physical execution remain unsupported. See the
 [S2-35.49 plan](../plans/STAGE_2.md#s2-3549--local-only-bounded-register-pand).
+
+## Local register-only `PANDN` profile — S2-35.50
+
+The exact schema-v2 fixture profile `s2-long-pandn-reg-v1` admits legacy
+`66 [one optional REX.R/B] 0F DF /r` with ModR/M.mod=3. Mandatory `66` selects
+the XMM/SSE2 form; bare `0F DF /r` is MMX and rejected. ModR/M.reg selects the
+XMM destination and ModR/M.r/m the source, independently extended through
+XMM15 by REX.R and REX.B. Execution snapshots both old operands and computes
+each destination byte as `!old_DEST & SRC`; aliasing follows that same rule.
+No memory callback occurs. Flags, MXCSR, x87, GPRs, and non-destination XMM
+registers remain unchanged.
+
+Only the exact bounded register form is admitted. Memory, REX.W/X, other or
+duplicate prefixes, VEX/EVEX, and sibling opcodes including PAND and POR are
+excluded. SSE2 availability, CR0.EM=0, CR0.TS=0, and CR4.OSFXSR=1 are diagnostic
+preconditions; this profile does not model those gates or `#UD/#NM` delivery.
+JIT/native admission and physical execution remain unsupported. See the
+[S2-35.50 plan](../plans/STAGE_2.md#s2-3550--local-only-bounded-register-pandn).

@@ -5274,3 +5274,11 @@ denies JIT and native execution.
 mandatory `66` selects XMM/SSE2 rather than MMX; `REX.R` and `REX.B` select
 XMM8 and XMM9 independently. The result is the raw 128-bit AND. This local
 profile assumes SSE2 preconditions and denies JIT and native execution.
+
+### S2-35.50 local register PANDN diagnostic profile
+
+`s2_35_50_pandn_register.case.json` is a handwritten high-XMM fixture for
+`s2-long-pandn-reg-v1`, encoded as `66 45 0F DF C1` (`PANDN XMM8, XMM9`). The
+mandatory `66` selects XMM/SSE2; REX.R and REX.B independently select XMM8 and
+XMM9. The destination computes `~old_DEST & SRC` over all 128 bits. This local
+profile assumes SSE2 preconditions and denies JIT and native execution.

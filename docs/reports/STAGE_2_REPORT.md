@@ -13220,3 +13220,30 @@ Graphify update and `git diff --check` passed. Physical SSE2 execution remains
 [plan](../plans/STAGE_2.md#s2-3549--local-only-bounded-register-pand),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-pand-profile--s2-3549),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3549-local-register-pand-diagnostic-profile).
+
+## S2-35.50 — local PANDN register profile
+
+Implemented `s2-long-pandn-reg-v1` for exact `66 [one optional REX.R/B]
+0F DF /r`, ModR/M.mod=3, with independently extended XMM destination/source.
+Execution computes `~old_DEST & SRC` from snapshotted operands, preserves all
+other CPU state, and performs no data access. PAND, POR, MMX, memory, REX.W/X,
+other/duplicate prefixes, VEX/EVEX, JIT and native execution remain excluded.
+The handwritten `66 45 0F DF C1` fixture exercises XMM8,XMM9 through the
+interpreter.
+
+Focused `od-isa` tests passed (3), `od-testkit` profile/execution tests passed
+(2), and the schema-v2 fixture runner passed (1), including JIT denial. The
+fixture’s independently expected XMM8 bytes are sixteen `0x10` values.
+Workspace formatting/checks and the Linux x86-runner all-target compile passed;
+the Linux-only native-denial test was compile-checked but not executed on this
+Darwin host. `graphify update .` and `git diff --check` passed. Physical SSE2
+validation remains `not_run`. Independent Sol review completed with no
+remaining findings. During review, unrelated ANDPS/ANDNPS/PADDB test expectation
+edits were found and reverted; the original PAND tests remain alongside
+separate PANDN coverage. Post-fix regression tests for ANDPS/ANDNPS (2),
+PAND/PANDN (2), runner PAND/PANDN (2), and PADDB (1) all passed. These local
+results do not close parent S2-35, S2-34, global `S2-35 → S2-34`, or combined
+Mac mini/SSH acceptance.
+See the [plan](../plans/STAGE_2.md#s2-3550--local-only-bounded-register-pandn),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-pandn-profile--s2-3550),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3550-local-register-pandn-diagnostic-profile).

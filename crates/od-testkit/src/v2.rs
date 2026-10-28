@@ -32,6 +32,7 @@ pub const PROFILE_MOVUPS_REGISTER: &str = "s2-long-movups-reg-v1";
 pub const PROFILE_XORPS_REGISTER: &str = "s2-long-xorps-reg-v1";
 pub const PROFILE_PXOR_REGISTER: &str = "s2-long-pxor-reg-v1";
 pub const PROFILE_PAND_REGISTER: &str = "s2-long-pand-reg-v1";
+pub const PROFILE_PANDN_REGISTER: &str = "s2-long-pandn-reg-v1";
 pub const PROFILE_PADDB_REGISTER: &str = "s2-long-paddb-reg-v1";
 pub const PROFILE_PADDUSW_REGISTER: &str = "s2-long-paddusw-reg-v1";
 pub const PROFILE_PSUBD_REGISTER: &str = "s2-long-psubd-reg-v1";
@@ -108,6 +109,8 @@ pub enum Profile {
     LongPxorRegV1,
     #[serde(rename = "s2-long-pand-reg-v1")]
     LongPandRegV1,
+    #[serde(rename = "s2-long-pandn-reg-v1")]
+    LongPandnRegV1,
     #[serde(rename = "s2-long-paddb-reg-v1")]
     LongPaddbRegV1,
     #[serde(rename = "s2-long-paddw-reg-v1")]
@@ -619,6 +622,7 @@ impl IntegerState {
                     | Profile::LongXorpsRegV1
                     | Profile::LongPxorRegV1
                     | Profile::LongPandRegV1
+                    | Profile::LongPandnRegV1
                     | Profile::LongPaddbRegV1
                     | Profile::LongPaddwRegV1
                     | Profile::LongPsubwRegV1
@@ -688,6 +692,7 @@ impl IntegerState {
                     | Profile::LongXorpsRegV1
                     | Profile::LongPxorRegV1
                     | Profile::LongPandRegV1
+                    | Profile::LongPandnRegV1
                     | Profile::LongPaddbRegV1
                     | Profile::LongPaddwRegV1
                     | Profile::LongPsubwRegV1
@@ -764,6 +769,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
+                | Profile::LongPandnRegV1
                 | Profile::LongPaddbRegV1
                 | Profile::LongPaddwRegV1
                 | Profile::LongPsubwRegV1
@@ -834,6 +840,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
+                | Profile::LongPandnRegV1
                 | Profile::LongPaddbRegV1
                 | Profile::LongPaddwRegV1
                 | Profile::LongPsubwRegV1
@@ -953,6 +960,7 @@ impl IntegerState {
             | Profile::LongXorpsRegV1
             | Profile::LongPxorRegV1
             | Profile::LongPandRegV1
+            | Profile::LongPandnRegV1
             | Profile::LongPaddbRegV1
             | Profile::LongPaddwRegV1
             | Profile::LongPsubwRegV1
@@ -1022,6 +1030,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
+                | Profile::LongPandnRegV1
                 | Profile::LongPaddbRegV1
                 | Profile::LongPaddwRegV1
                 | Profile::LongPsubwRegV1
@@ -1097,6 +1106,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
+                | Profile::LongPandnRegV1
                 | Profile::LongPaddbRegV1
                 | Profile::LongPaddwRegV1
                 | Profile::LongPsubwRegV1
@@ -1177,6 +1187,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
+                | Profile::LongPandnRegV1
                 | Profile::LongPaddbRegV1
                 | Profile::LongPaddwRegV1
                 | Profile::LongPsubwRegV1
@@ -1260,6 +1271,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
+                | Profile::LongPandnRegV1
                 | Profile::LongPaddbRegV1
                 | Profile::LongPaddwRegV1
                 | Profile::LongPsubwRegV1
@@ -1494,6 +1506,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
+                | Profile::LongPandnRegV1
                 | Profile::LongPaddbRegV1
                 | Profile::LongPaddwRegV1
                 | Profile::LongPsubwRegV1
@@ -1563,6 +1576,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
+                | Profile::LongPandnRegV1
                 | Profile::LongPaddbRegV1
                 | Profile::LongPaddwRegV1
                 | Profile::LongPsubwRegV1
@@ -1635,6 +1649,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
+                | Profile::LongPandnRegV1
                 | Profile::LongPaddbRegV1
                 | Profile::LongPaddwRegV1
                 | Profile::LongPsubwRegV1
@@ -1701,6 +1716,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
+                | Profile::LongPandnRegV1
                 | Profile::LongPaddbRegV1
                 | Profile::LongPaddwRegV1
                 | Profile::LongPsubwRegV1
@@ -1904,6 +1920,7 @@ impl Fixture {
             Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
+                | Profile::LongPandnRegV1
                 | Profile::LongPaddbRegV1
                 | Profile::LongPaddwRegV1
                 | Profile::LongPsubwRegV1
@@ -1964,6 +1981,7 @@ impl Fixture {
                 Profile::LongXorpsRegV1 => xorps_register_length(&code_bytes),
                 Profile::LongPxorRegV1 => pxor_register_length(&code_bytes),
                 Profile::LongPandRegV1 => pand_register_length(&code_bytes),
+                Profile::LongPandnRegV1 => pandn_register_length(&code_bytes),
                 Profile::LongPaddbRegV1 => paddb_register_length(&code_bytes),
                 Profile::LongPaddwRegV1 => paddw_register_length(&code_bytes),
                 Profile::LongPsubwRegV1 => psubw_register_length(&code_bytes),
@@ -4342,6 +4360,25 @@ fn pand_register_length(code_bytes: &str) -> Option<u32> {
     match bytes.as_slice() {
         [0x66, 0x0f, 0xdb, modrm] if modrm >> 6 == 3 => Some(4),
         [0x66, rex, 0x0f, 0xdb, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn pandn_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0xdf, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0xdf, modrm]
             if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
         {
             Some(5)
