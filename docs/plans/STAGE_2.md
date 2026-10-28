@@ -482,6 +482,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36z | Pure raw binary32/binary64 SSE MIN/MAX selection with right-operand NaN/equality selection and local invalid outcome | S2-36t, S2-36a; independent review |
 | [x] | S2-36aa | Pure raw same-format binary32/binary64 square root with explicit rounding and local invalid outcome | S2-36a, S2-36d-f; independent review |
 | [x] | S2-36ab | Deterministic raw binary32 SSE reciprocal reference; no instruction dispatch or MXCSR | S2-36c, S2-36e, S2-36f; independent review |
+| [x] | S2-36ac | Deterministic pure raw binary32 SSE reciprocal-square-root reference; no diagnostics or state changes | S2-36aa, S2-36ab; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5781,6 +5782,42 @@ SNaN quieting/QNaN return, and relative error no greater than
 contradictorily; see [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpss-rcpps-threshold-inequalities-overlap).
 Exact hardware behavior around the tiny-result boundary remains unresolved.
 Full S2-36 and physical/Mac mini acceptance remain open.
+
+#### S2-36ac — deterministic raw binary32 SSE reciprocal-square-root reference
+
+Add `Binary32::reciprocal_sqrt_sse_raw()` as a pure deterministic value
+reference. Signed zero and either-sign subnormal map to same-sign infinity
+before checking input sign; negative normal values and negative infinity map
+to negative indefinite QNaN; positive infinity maps to positive zero, inferred
+from `1/sqrt(x)`. QNaN is returned unchanged and SNaN is quieted by setting its
+quiet bit while preserving sign and payload as a local policy. Positive normal
+inputs compose `sqrt_raw_result(NearestTiesEven)` and then
+`reciprocal_sse_raw()` on the resulting value. Both intermediate and final
+values remain normal. The method has no rounding argument or diagnostics and
+does not mutate source, CPU state, or MXCSR, deliver SIMD exceptions, or
+consult MXCSR.RC.
+
+For positive normal inputs, each nearest-ties-even stage has relative error at
+most `u=2^-24`; the composition is bounded by `2u/(1-u)`, less than Intel's
+`1.5 * 2^-12` limit. This establishes only the error envelope, not exact or
+hardware-matching result bits. An independent integer-only test uses the
+24-bit significands `Mx` and `My` and unbiased exponents `ex` and `ey` to
+check `(8192-3)^2 <= (Mx*My^2*2^(ex+2*ey-69))*8192^2 <= (8192+3)^2` by
+u128 cross-multiplication. It does not use host floating point or production
+helpers as an expected-value oracle.
+
+Literal coverage includes `1→1`, `4→0.5`, `16→0.25`, `0.25→2`, min-normal
+`2^-126→2^63`, signed zeros, every subnormal leading-bit position and sign,
+infinities, varied QNaN/SNaN payloads, negative normals, source preservation,
+and all positive normal exponent parities with representative significands.
+Intel SDM Rev. 093 Vol. 2B `RSQRTPS` pp. 4-594–4-595 and `RSQRTSS` pp.
+4-596–4-597 specify the special cases, no SIMD FP exceptions, independence
+from MXCSR.RC, and the `1.5 * 2^-12` relative-error bound. Positive-infinity
+mapping and NaN payload/sign behavior are local inferences/policies where the
+operation text does not fully define the result. [Official Intel Vol. 2B
+PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241). Instruction dispatch,
+packed lanes, MXCSR state, native/JIT, CPUID and physical-hardware acceptance
+remain outside this slice.
 
 #### S2-36y — bounded raw binary32/binary64 to signed i64 conversion
 

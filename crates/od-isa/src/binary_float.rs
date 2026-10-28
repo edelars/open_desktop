@@ -1021,6 +1021,35 @@ impl Binary32 {
         }
     }
 
+    /// Computes a deterministic local raw binary32 SSE reciprocal-square-root reference.
+    ///
+    /// Signed zero and every signed subnormal map to same-sign infinity before
+    /// the sign of a finite input is considered. Negative normal values and
+    /// negative infinity map to the negative indefinite QNaN; positive
+    /// infinity maps to positive zero, inferred from `1/sqrt(x)`. QNaN is
+    /// preserved and SNaN is quieted by setting its quiet bit while preserving
+    /// sign and payload. Positive normal values compose the existing
+    /// nearest-ties-even square root and deterministic SSE reciprocal helpers.
+    /// This is a pure value policy: it does not report diagnostics, mutate
+    /// architectural state, consult MXCSR, or claim bitwise hardware matching.
+    pub fn reciprocal_sqrt_sse_raw(self) -> Self {
+        let sign = self.0 & Self::SIGN_MASK;
+        match self.class() {
+            BinaryClass::Zero | BinaryClass::Subnormal => Self::from_bits(sign | 0x7f80_0000),
+            BinaryClass::Infinity if sign != 0 => Self::from_bits(0xffc0_0000),
+            BinaryClass::Infinity => Self::from_bits(0),
+            BinaryClass::QuietNaN => self,
+            BinaryClass::SignalingNaN => Self::from_bits(self.0 | Self::QUIET_BIT),
+            BinaryClass::Normal if sign != 0 => Self::from_bits(0xffc0_0000),
+            BinaryClass::Normal => {
+                let square_root = *self
+                    .sqrt_raw_result(RationalRoundingMode::NearestTiesEven)
+                    .value();
+                square_root.reciprocal_sse_raw()
+            }
+        }
+    }
+
     /// Multiplies same-format raw binary32 operands and returns result diagnostics.
     ///
     /// NaNs use the Intel SDM Rev. 093 first-source rule and signaling NaNs set
@@ -2770,6 +2799,30 @@ mod tests {
         );
     }
 
+    fn assert_sse_reciprocal_sqrt_relative_bound(source_bits: u32, result_bits: u32) {
+        let source = Binary32::from_bits(source_bits);
+        let result = Binary32::from_bits(result_bits);
+        assert_eq!(source.class(), BinaryClass::Normal);
+        assert_eq!(result.class(), BinaryClass::Normal);
+        assert!(!source.sign() && !result.sign());
+
+        let source_significand = u128::from((1 << 23) | source.fraction());
+        let result_significand = u128::from((1 << 23) | result.fraction());
+        let source_exponent = i32::from(source.biased_exponent()) - 127;
+        let result_exponent = i32::from(result.biased_exponent()) - 127;
+        let scale = source_exponent + 2 * result_exponent;
+        let denominator_shift = u32::try_from(69 - scale)
+            .expect("normal reciprocal-square-root result has bounded positive scale");
+        let product = source_significand * result_significand * result_significand;
+        let scaled_product = product * 8192 * 8192;
+        let lower = u128::from(8192_u32 - 3).pow(2) << denominator_shift;
+        let upper = u128::from(8192_u32 + 3).pow(2) << denominator_shift;
+        assert!(
+            lower <= scaled_product && scaled_product <= upper,
+            "relative error exceeds 3/8192: source={source_bits:#010x} result={result_bits:#010x}"
+        );
+    }
+
     #[test]
     fn raw_sse_reciprocal_binary32_handles_specials_and_boundaries() {
         let literals = [
@@ -2856,6 +2909,68 @@ mod tests {
             }
         }
         assert!(checked > 1_000);
+    }
+
+    #[test]
+    fn raw_sse_reciprocal_sqrt_binary32_handles_specials_and_boundaries() {
+        let literals = [
+            (0x0000_0000, 0x7f80_0000),
+            (0x8000_0000, 0xff80_0000),
+            (0x0000_0001, 0x7f80_0000),
+            (0x8000_0001, 0xff80_0000),
+            (0x7f80_0000, 0x0000_0000),
+            (0xff80_0000, 0xffc0_0000),
+            (0x3f80_0000, 0x3f80_0000),
+            (0x4080_0000, 0x3f00_0000),
+            (0x4180_0000, 0x3e80_0000),
+            (0x3e80_0000, 0x4000_0000),
+            (0x0080_0000, 0x5f00_0000),
+            (0xbf80_0000, 0xffc0_0000),
+            (0xc080_0000, 0xffc0_0000),
+            (0x7fc1_2345, 0x7fc1_2345),
+            (0xffe5_4321, 0xffe5_4321),
+            (0x7f81_2345, 0x7fc1_2345),
+            (0xff85_4321, 0xffc5_4321),
+        ];
+        for (source_bits, expected_bits) in literals {
+            let source = Binary32::from_bits(source_bits);
+            assert_eq!(
+                source.reciprocal_sqrt_sse_raw().to_bits(),
+                expected_bits,
+                "source={source_bits:#010x}"
+            );
+            assert_eq!(source.to_bits(), source_bits, "source was mutated");
+        }
+
+        for leading_bit in 0..23 {
+            for sign in [0, 0x8000_0000] {
+                let source_bits = sign | (1 << leading_bit);
+                assert_eq!(
+                    Binary32::from_bits(source_bits)
+                        .reciprocal_sqrt_sse_raw()
+                        .to_bits(),
+                    sign | 0x7f80_0000,
+                    "subnormal source={source_bits:#010x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn raw_sse_reciprocal_sqrt_binary32_normal_results_meet_integer_error_bound() {
+        let fractions = [0, 1, 0x0040_0000, 0x0012_3456, 0x003f_ffff, 0x007f_ffff];
+        let mut checked = 0;
+        for exponent in 1..=254_u32 {
+            for fraction in fractions {
+                let source_bits = (exponent << 23) | fraction;
+                let source = Binary32::from_bits(source_bits);
+                let result_bits = source.reciprocal_sqrt_sse_raw().to_bits();
+                assert_sse_reciprocal_sqrt_relative_bound(source_bits, result_bits);
+                assert_eq!(source.to_bits(), source_bits, "source was mutated");
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 254 * fractions.len());
     }
 
     #[test]

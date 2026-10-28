@@ -51,6 +51,51 @@ envelope for non-flushed normal outputs, without requiring exact equality to
 the helper's result bits. The ambiguous tiny-result boundary remains a
 separate unresolved hardware question.
 
+## S2-36ac — deterministic raw binary32 SSE reciprocal-square-root reference
+
+`Binary32::reciprocal_sqrt_sse_raw()` implements a pure deterministic value
+reference. Signed zeros and either-sign subnormals map to same-sign infinity;
+negative normals and negative infinity map to negative indefinite QNaN;
+positive infinity maps to positive zero, inferred from `1/sqrt(x)`. QNaN is
+preserved and SNaN is quieted by setting its quiet bit while preserving sign
+and payload as a local policy. Positive normal inputs compose the existing
+nearest-ties-even `sqrt_raw_result` followed by `reciprocal_sse_raw` on its
+value. This method takes no rounding argument, returns no diagnostics, and
+does not mutate CPU/MXCSR state or deliver SIMD FP exceptions.
+
+The composed result is a deterministic reference, not an exact or
+hardware-matching bit claim. Each RNE stage has relative error at most
+`u=2^-24`; the composition is bounded by `2u/(1-u) < 1.5 * 2^-12`. Its
+independent test checks the exact 24-bit significand/exponent inequality by
+u128 cross-multiplication, with no host floating-point or production-helper
+oracle. Literal coverage includes `1→1`, `4→0.5`, `16→0.25`, `0.25→2`,
+`2^-126→2^63`, signed zeros, all subnormal leading-bit positions and signs,
+infinities, negative normals, varied QNaN/SNaN payloads, source immutability,
+and representative significands across every normal exponent.
+
+Intel SDM Rev. 093 Vol. 2B `RSQRTPS` pp. 4-594–4-595 and `RSQRTSS` pp.
+4-596–4-597 specify the special-class behavior, no SIMD FP exceptions,
+independence from MXCSR.RC, and the `1.5 * 2^-12` relative-error limit.
+Positive-infinity mapping and NaN sign/payload details follow the explicit
+local policy where the operation text does not fully specify them. [Official
+Intel Vol. 2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241). Packed
+lanes, instruction dispatch, MXCSR state, native/JIT, CPUID, and physical
+hardware validation remain outside this slice.
+
+**Checks:** focused rsqrt tests passed (2/2); the complete `od-isa`
+`binary_float::tests` suite passed (88/88), including existing square-root
+and reciprocal helper regressions. Reproduce with:
+
+```sh
+cargo test -p od-isa --offline raw_sse_reciprocal_sqrt
+cargo test -p od-isa --offline binary_float::tests
+cargo fmt --all -- --check
+cargo check --workspace --all-targets --offline
+```
+
+`graphify update .` updated the code graph. Independent `gpt-6.1-sol` medium
+code and documentation reviews reported no findings.
+
 ## S2-36a — raw binary32/binary64 classification and finite normalization
 
 **Статус:** source implementation and focused tests are complete; workspace
