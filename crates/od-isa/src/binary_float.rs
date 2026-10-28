@@ -246,9 +246,106 @@ pub fn multiply_finite_significands(lhs: BinaryFinite, rhs: BinaryFinite) -> (bo
     (sign, exponent, magnitude)
 }
 
+/// Exact quotient and remainder decomposition for two normalized finite values.
+///
+/// For nonzero operands, `lhs / rhs` is represented exactly as
+/// `(-1)^sign * (quotient + remainder / denominator) * 2^(exponent-63)`.
+/// The denominator is the original normalized divisor significand; it is not
+/// reduced, and this representation is not rounded or packed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BinaryFiniteQuotient {
+    sign: bool,
+    exponent: i32,
+    quotient: u64,
+    remainder: u64,
+    denominator: u64,
+}
+
+impl BinaryFiniteQuotient {
+    const fn new(
+        sign: bool,
+        exponent: i32,
+        quotient: u64,
+        remainder: u64,
+        denominator: u64,
+    ) -> Self {
+        Self {
+            sign,
+            exponent,
+            quotient,
+            remainder,
+            denominator,
+        }
+    }
+
+    const fn zero(denominator: u64) -> Self {
+        Self::new(false, 0, 0, 0, denominator)
+    }
+
+    pub const fn sign(self) -> bool {
+        self.sign
+    }
+
+    pub const fn exponent(self) -> i32 {
+        self.exponent
+    }
+
+    pub const fn quotient(self) -> u64 {
+        self.quotient
+    }
+
+    pub const fn remainder(self) -> u64 {
+        self.remainder
+    }
+
+    pub const fn denominator(self) -> u64 {
+        self.denominator
+    }
+}
+
+/// Divides two finite values into an exact quotient and remainder decomposition.
+///
+/// Returns `None` when the divisor is zero. A zero dividend with a nonzero
+/// divisor returns signless mathematical zero `(false, 0, 0, 0, d)`, retaining
+/// the divisor's normalized significand as `d`; this does not choose a guest
+/// floating-point zero sign. Nonzero results preserve all quotient and remainder
+/// bits without rounding, jamming, or packing.
+pub fn divide_finite_significands(
+    lhs: BinaryFinite,
+    rhs: BinaryFinite,
+) -> Option<BinaryFiniteQuotient> {
+    let numerator = lhs.significand;
+    let denominator = rhs.significand;
+    if denominator == 0 {
+        return None;
+    }
+    if numerator == 0 {
+        return Some(BinaryFiniteQuotient::zero(denominator));
+    }
+
+    let (scaled_numerator, exponent) = if numerator >= denominator {
+        (u128::from(numerator) << 63, lhs.exponent - rhs.exponent)
+    } else {
+        (u128::from(numerator) << 64, lhs.exponent - rhs.exponent - 1)
+    };
+    let divisor = u128::from(denominator);
+    let quotient = (scaled_numerator / divisor) as u64;
+    let remainder = (scaled_numerator % divisor) as u64;
+    Some(BinaryFiniteQuotient::new(
+        lhs.sign ^ rhs.sign,
+        exponent,
+        quotient,
+        remainder,
+        denominator,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Binary32, Binary64, BinaryClass, BinaryFinite, multiply_finite_significands};
+    use super::{
+        Binary32, Binary64, BinaryClass, BinaryFinite, BinaryFiniteQuotient,
+        divide_finite_significands, multiply_finite_significands,
+    };
 
     fn normalized(
         value: BinaryFinite,
@@ -264,6 +361,50 @@ mod tests {
         if significand != 0 {
             assert_ne!(significand & (1 << 63), 0);
         }
+    }
+
+    fn assert_division_identity(lhs: BinaryFinite, rhs: BinaryFinite) {
+        let result = divide_finite_significands(lhs, rhs).unwrap();
+        assert_ne!(rhs.significand(), 0);
+        assert_eq!(result.denominator(), rhs.significand());
+        assert!(result.denominator() >= 1 << 63);
+
+        if lhs.significand() == 0 {
+            assert_eq!(
+                (
+                    result.sign(),
+                    result.exponent(),
+                    result.quotient(),
+                    result.remainder(),
+                ),
+                (false, 0, 0, 0),
+            );
+            return;
+        }
+
+        let (scaled_numerator, expected_exponent) = if lhs.significand() >= rhs.significand() {
+            (
+                u128::from(lhs.significand()) << 63,
+                lhs.exponent() - rhs.exponent(),
+            )
+        } else {
+            (
+                u128::from(lhs.significand()) << 64,
+                lhs.exponent() - rhs.exponent() - 1,
+            )
+        };
+        let quotient = result.quotient();
+        let remainder = result.remainder();
+        let denominator = result.denominator();
+        assert_eq!(result.sign(), lhs.sign() ^ rhs.sign());
+        assert_eq!(result.exponent(), expected_exponent);
+        assert!(quotient >= 1 << 63);
+        assert!(u128::from(quotient) < 1u128 << 64);
+        assert!(remainder < denominator);
+        assert_eq!(
+            u128::from(quotient) * u128::from(denominator) + u128::from(remainder),
+            scaled_numerator,
+        );
     }
 
     #[test]
@@ -695,5 +836,147 @@ mod tests {
             multiply_finite_significands(min_subnormal_b32, positive),
             (false, -148, 0x6000_0000_0000_0000_0000_0000_0000_0000),
         );
+    }
+
+    #[test]
+    fn finite_division_returns_exact_quotient_and_remainder() {
+        let one_b32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let three_b32 = Binary32::from_bits(0x4040_0000).normalize_finite().unwrap();
+        let two_b64 = Binary64::from_bits(0x4000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+
+        assert_eq!(
+            divide_finite_significands(one_b32, one_b32),
+            Some(BinaryFiniteQuotient::new(
+                false,
+                0,
+                0x8000_0000_0000_0000,
+                0,
+                0x8000_0000_0000_0000,
+            )),
+        );
+        assert_eq!(
+            divide_finite_significands(one_b32, three_b32),
+            Some(BinaryFiniteQuotient::new(
+                false,
+                -2,
+                0xaaaaaaaa_aaaaaaaa,
+                0x8000_0000_0000_0000,
+                0xc000_0000_0000_0000,
+            )),
+        );
+        assert_eq!(
+            divide_finite_significands(three_b32, two_b64),
+            Some(BinaryFiniteQuotient::new(
+                false,
+                0,
+                0xc000_0000_0000_0000,
+                0,
+                0x8000_0000_0000_0000,
+            )),
+        );
+
+        let next_one_b64 = Binary64::from_bits(0x3ff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            divide_finite_significands(one_b32, next_one_b64),
+            Some(BinaryFiniteQuotient::new(
+                false,
+                -1,
+                0xffff_ffff_ffff_f000,
+                0x0000_0000_0080_0000,
+                0x8000_0000_0000_0800,
+            )),
+        );
+
+        let min_b64 = Binary64::from_bits(1).normalize_finite().unwrap();
+        let max_b64 = Binary64::from_bits(0x7fef_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            divide_finite_significands(min_b64, max_b64),
+            Some(BinaryFiniteQuotient::new(
+                false,
+                -2098,
+                0x8000_0000_0000_0400,
+                0x0000_0000_0020_0000,
+                0xffff_ffff_ffff_f800,
+            )),
+        );
+        assert_eq!(
+            divide_finite_significands(max_b64, min_b64),
+            Some(BinaryFiniteQuotient::new(
+                false,
+                2097,
+                0xffff_ffff_ffff_f800,
+                0,
+                0x8000_0000_0000_0000,
+            )),
+        );
+
+        assert_division_identity(one_b32, one_b32);
+        assert_division_identity(one_b32, three_b32);
+        assert_division_identity(three_b32, two_b64);
+        assert_division_identity(one_b32, next_one_b64);
+        assert_division_identity(min_b64, max_b64);
+        assert_division_identity(max_b64, min_b64);
+    }
+
+    #[test]
+    fn finite_division_handles_signs_zeros_and_preserves_inputs() {
+        let one = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let negative_one = Binary64::from_bits(0xbff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let positive = divide_finite_significands(one, one).unwrap();
+        let negative = divide_finite_significands(one, negative_one).unwrap();
+        let negative_numerator = divide_finite_significands(negative_one, one).unwrap();
+        let both_negative = divide_finite_significands(negative_one, negative_one).unwrap();
+        assert!(!positive.sign());
+        assert!(negative.sign());
+        assert!(negative_numerator.sign());
+        assert!(!both_negative.sign());
+        assert_eq!(negative.exponent(), 0);
+        assert_eq!(negative.quotient(), 0x8000_0000_0000_0000);
+        assert_eq!(negative.remainder(), 0);
+        assert_eq!(negative.denominator(), 0x8000_0000_0000_0000);
+        assert_division_identity(one, one);
+        assert_division_identity(one, negative_one);
+        assert_division_identity(negative_one, one);
+        assert_division_identity(negative_one, negative_one);
+
+        let positive_zero = Binary32::from_bits(0).normalize_finite().unwrap();
+        let negative_zero = Binary64::from_bits(1 << 63).normalize_finite().unwrap();
+        let zero_over_one = divide_finite_significands(negative_zero, one).unwrap();
+        assert_eq!(
+            (
+                zero_over_one.sign(),
+                zero_over_one.exponent(),
+                zero_over_one.quotient(),
+                zero_over_one.remainder(),
+                zero_over_one.denominator(),
+            ),
+            (false, 0, 0, 0, 0x8000_0000_0000_0000),
+        );
+        assert_division_identity(negative_zero, one);
+        assert_eq!(
+            divide_finite_significands(positive_zero, negative_zero),
+            None
+        );
+        assert_eq!(divide_finite_significands(one, positive_zero), None);
+
+        let raw_numerator = Binary64::from_bits(0x0000_0000_0000_0001);
+        let raw_denominator = Binary32::from_bits(0x4040_0000);
+        let numerator_before = raw_numerator.to_bits();
+        let denominator_before = raw_denominator.to_bits();
+        let finite_numerator = raw_numerator.normalize_finite().unwrap();
+        let finite_denominator = raw_denominator.normalize_finite().unwrap();
+        let _ = divide_finite_significands(finite_numerator, finite_denominator);
+        assert_eq!(raw_numerator.to_bits(), numerator_before);
+        assert_eq!(raw_denominator.to_bits(), denominator_before);
+        assert_eq!(finite_numerator.exponent(), -1074);
+        assert_eq!(finite_denominator.exponent(), 1);
     }
 }

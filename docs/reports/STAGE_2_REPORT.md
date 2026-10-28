@@ -89,6 +89,50 @@ context is Intel SDM Vol. 1 Rev. 093, §§4.8.2, 4.2.2/Table 4-3, 4.8.4, and
 See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36b-exact-finite-significand-multiplication)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-36b--exact-finite-significand-multiplication).
 
+## S2-36c — exact finite quotient and remainder
+
+**Статус:** implementation and author checks are complete; independent Sol
+medium code review is complete and clean after resolving both reported
+findings. `divide_finite_significands(BinaryFinite,
+BinaryFinite) -> Option<BinaryFiniteQuotient>` returns an exact mathematical
+decomposition with sign, exponent, quotient, remainder, and unreduced
+denominator through public read-only accessors. For nonzero
+inputs it represents `lhs/rhs` as
+`(-1)^sign × (q + r/d) × 2^(exponent−63)`, where the divisor significand `d`
+is retained and `0 <= r < d`. It performs no rounding, packing, or exception
+delivery.
+
+**Literal boundary vectors covered by the helper tests:**
+
+| Inputs | Exponent | Quotient | Remainder | Denominator |
+|---|---:|---|---|---|
+| `1 / 1` | 0 | `8000000000000000` | `0` | `8000000000000000` |
+| `1 / 3` | −2 | `aaaaaaaaaaaaaaaa` | `8000000000000000` | `c000000000000000` |
+| `3 / 2` | 0 | `c000000000000000` | `0` | `8000000000000000` |
+| `1 / binary64 successor of 1` | −1 | `fffffffffffff000` | `800000` | `8000000000000800` |
+| Minimum binary64 subnormal / maximum finite | −2098 | `8000000000000400` | `200000` | `fffffffffffff800` |
+| Maximum finite / minimum binary64 subnormal | 2097 | `fffffffffffff800` | `0` | `8000000000000000` |
+
+A zero denominator, including 0/0, returns `None`, meaning undefined
+mathematical quotient rather than guest `#DE`. A zero numerator with nonzero
+denominator returns the signless zero sentinel while retaining `d`. Tests also
+cover binary32/mixed formats, both exponent branches, all four nonzero sign
+combinations, input immutability, and `N=q*d+r` with `2^63 <= q < 2^64`,
+`r < d`, and `d >= 2^63`. The focused
+`cargo test -p od-isa --offline binary_float::tests` passed 8/8. The author
+reports that `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check`, and
+`graphify update .` passed. Graphify emitted its existing
+`include/open_desktop/host_abi.h` extractor syntax warning; update exited 0.
+Independent Sol medium code review completed clean; no findings remain.
+S2-36 rounding/packing and
+S2-37/S2-38 remain open; no physical or instruction-level arithmetic claim is
+made. Normative context: Intel SDM
+Vol. 1 Rev. 093, §§4.8.2, 4.8.4, 4.8.3.1, and 4.9
+([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)). See
+the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36c-exact-finite-quotient-and-remainder)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-36c--exact-finite-quotient-and-remainder).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

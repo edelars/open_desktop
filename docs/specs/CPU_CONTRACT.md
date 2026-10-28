@@ -10343,3 +10343,39 @@ Independent Sol medium code review completed clean; no findings remain. See
 the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36b--exact-finite-significand-multiplication)
 and [plan](../plans/STAGE_2.md#s2-36b--exact-finite-significand-multiplication)
 for tests and claim limits.
+
+## Local S2-36c: exact finite quotient and remainder
+
+`divide_finite_significands` accepts two `BinaryFinite` values and returns
+`Option<BinaryFiniteQuotient>`. The result has private sign, exponent, quotient,
+remainder, and denominator fields exposed through public `const` read-only
+getters. It is an
+exact mathematical decomposition, not a rounded destination value.
+
+For nonzero operands, let `a` and `d` be the normalized significands of the
+left and right inputs. If `a >= d`, set `N = u128(a) << 63` and
+`e = lhs.exponent - rhs.exponent`; otherwise set `N = u128(a) << 64` and
+decrement `e` by one. Set `q = N / d`, `r = N % d`, and sign to the XOR of
+input signs. Preserve the original denominator `d` without reduction. The
+exact quotient is `(-1)^sign × (q + r/d) × 2^(e−63)`, with `2^63 <= q < 2^64`
+and `0 <= r < d`. The numerator fits `u128`, and the result exponent is
+bounded to −2098…2097.
+
+A zero denominator returns `None`, including for 0/0. This means the
+mathematical quotient is undefined; it is not guest `#DE` delivery. A zero
+numerator with nonzero denominator returns sign=false, exponent=0, quotient=0,
+remainder=0 and preserves the actual denominator. This signless zero sentinel
+does not select a guest zero sign. NaNs/infinities are outside the
+`BinaryFinite` domain. No rounding, packing, exception/status state, CPU
+mutation, or x87 behavior is added.
+
+The quotient/remainder representation is a project mathematical contract;
+Intel specifies the floating-point value model and rounding boundary, not this
+tuple layout. The normative context is Intel SDM Vol. 1 Rev. 093 (September
+2026), §§4.8.2, 4.8.4, 4.8.3.1, and 4.9
+([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)). S2-36
+rounding/packing and S2-37/S2-38 instruction behavior remain open.
+Independent Sol medium code review completed clean; both reported findings
+were resolved, and no findings remain. See the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36c--exact-finite-quotient-and-remainder)
+and [plan](../plans/STAGE_2.md#s2-36c--exact-finite-quotient-and-remainder).

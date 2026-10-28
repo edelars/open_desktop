@@ -456,6 +456,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [x] | S2-36a | Lossless binary32/binary64 classification and exact finite normalization; no arithmetic | S2-36; independent review |
 | [x] | S2-36b | Exact unrounded product of finite normalized significands; mathematical helper only | S2-36a; independent review |
+| [x] | S2-36c | Exact finite quotient/remainder decomposition; no rounding or packing | S2-36a; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -4778,6 +4779,48 @@ grounded in Intel SDM Vol. 1 Rev. 093, §§4.8.2, 4.2.2/Table 4-3, and 4.8.4;
 §4.8.3.1 describes zero sign, which this signless sentinel intentionally
 leaves for a later operation-specific decision ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)). S2-36
 rounding/exceptions and S2-37/S2-38 remain open.
+
+#### S2-36c — exact finite quotient and remainder
+
+Add the public `divide_finite_significands` helper, accepting two
+`BinaryFinite` values and returning `Option<BinaryFiniteQuotient>`. The result
+has private fields and read-only getters for sign, exponent, quotient,
+remainder, and denominator. It is an exact mathematical decomposition, not a
+destination floating-point value.
+
+For nonzero operands, let `a = lhs.significand()` and `d = rhs.significand()`.
+When `a >= d`, use `N = u128(a) << 63` and `e = lhs.exponent() - rhs.exponent()`.
+Otherwise use `N = u128(a) << 64` and decrement `e` by one. Compute `q = N / d`,
+`r = N % d`, and `sign = lhs.sign XOR rhs.sign`. Preserve the unreduced
+denominator `d`. The exact quotient is
+`(-1)^sign × (q + r/d) × 2^(e−63)`. Do not round, pack, jam, reduce the
+fraction, or discard the remainder. For nonzero inputs, `2^63 <= q < 2^64` and
+`0 <= r < d`; the numerator fits `u128`. With S2-36a exponent bounds, `e` is
+−2098…2097.
+
+If the denominator significand is zero, return `None`, including for 0/0; this
+means undefined mathematical input, not guest `#DE`. A zero numerator with a
+nonzero denominator returns sign=false, exponent=0, quotient=0, remainder=0,
+and retains the actual denominator. This signless sentinel does not choose a
+guest zero sign. NaNs/infinities remain outside the `BinaryFinite` domain; do
+not infer FP exceptions, underflow, overflow, DE, or PE. Inputs remain
+unchanged; do not alter existing x87 helpers or add a result class.
+
+Literal tests use 1/1, 1/3, 3/2, 1 divided by the binary64 successor of 1,
+minimum binary64 subnormal divided by maximum finite, and the reverse extreme
+quotient. Also cover binary32 and mixed formats, both normalization branches,
+all four nonzero sign combinations, zero numerator/denominator cases, and
+`N=q*d+r`, `2^63 <= q < 2^64`, `r < d`, and `d >= 2^63`. The focused
+`cargo test -p od-isa --offline binary_float::tests` passed 8/8. Workspace
+offline all-target check, formatting check, `git diff --check`, and Graphify
+update passed; Graphify reported its existing `include/open_desktop/host_abi.h`
+extractor syntax warning. Independent Sol medium code review completed clean
+after resolving both reported findings; no findings remain. Author results are
+recorded in the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36c--exact-finite-quotient-and-remainder).
+Normative context: Intel SDM Vol. 1 Rev. 093, §§4.8.2, 4.8.4, 4.8.3.1, and 4.9
+([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)). S2-36
+rounding/packing and S2-37/S2-38 remain open.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 
