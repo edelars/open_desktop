@@ -2184,6 +2184,43 @@ Static Ubuntu evidence and its boundary:
 Normative semantics and Intel references:
 [CPU contract](../specs/CPU_CONTRACT.md#s2-27c--exact-long64-mov-es-ax).
 
+#### S2-27d — exact Long64 `LIDT [RSP+6]`
+
+Add only the exact bare Long64 form `0F 01 5C 24 ib` (`LIDT m16&64
+[RSP+ib]`), with signed disp8 and fixed SIB `24` (RSP base, no index); the
+selected Ubuntu instance uses `ib=06`. Other encodings and prefixes remain
+`Unsupported`, except exact LOCK-prefixed `F0 0F 01 5C 24 ib`, which raises
+`#UD` after full fetch; if truncated, the fetch fault retains priority. Require
+`state.idtr == Some(_)` as an explicit local fail-closed profile gate, not an
+architectural LIDT precondition. CPL1–3 raises `#GP(0)` before a data callback.
+
+At CPL0 perform exactly one explicit 10-byte `GuestMemory` read from SS-based
+`[RSP + sign_extend(ib)]`; decode little-endian 16-bit limit and 64-bit base.
+A source-range fault raises `#SS(0)`. Reject a non-canonical loaded base with
+`#GP(0)` and no state change. Success commits only IDTR, preserves other CPU
+state, advances RIP by five bytes, and retires once. Faults do not commit
+IDTR/RIP/retirement. Do not read the IDT at the loaded base or implement event
+delivery, gate validation, or descriptor semantics.
+
+Adapters that cannot represent IDTR must reject `Some(idtr)`, including zero;
+do not add a serialized fixture profile. The test matrix covers exact bytes and
+unsupported neighbors/prefixes, exact LOCK `#UD` after complete fetch and
+truncated-fetch priority, optional-state gate, CPL priority before data
+access, exact source read and SS fault, LE decoding, canonicality and atomicity,
+IDTR-only commit, RIP+5/one retirement, adapter rejection for nonzero and zero
+`Some(idtr)`, and no IDT target access. Injected `#PF` and canonical source-span
+boundaries were checked; page-table crossing was not exercised because the
+tested `GuestMemory` is flat. Author test/build results are recorded in the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27d--exact-long64-lidt-rsp-6).
+Independent Sol medium code review completed clean after the LOCK-prefix
+wording correction; no findings remain. No event delivery, Linux boot/runtime,
+native/physical execution, Mac mini, or SSH claim is in scope.
+
+Static Ubuntu mapping and its limitations:
+[Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#s2-27d--exact-ubuntu-lidt-candidate).
+Normative contract and source references:
+[CPU contract](../specs/CPU_CONTRACT.md#s2-27d--exact-long64-lidt-rsp-6).
+
 **Готово:** обязательные переходы имеют исполняемые tests с корректным state; полноценная доставка при paging/privilege transitions подтверждается интеграционно вместе с machine backend, а не mock callbacks.
 
 ## 9. x87, MMX и SSE/SSE2

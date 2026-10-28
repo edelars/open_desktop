@@ -145,6 +145,44 @@ marker and two stale links to absent ignored oracle manifests. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-27c--exact-long64-mov-es-ax)
 and [stage plan](../plans/STAGE_2.md#s2-27c--exact-long64-mov-es-ax).
 
+## S2-27d — exact Long64 `LIDT [RSP+6]`
+
+**Статус:** local implementation checks passed; independent Sol medium code
+review completed clean after the LOCK-prefix wording correction, with no
+remaining findings. The local slice is limited to bare
+`0F 01 5C 24 ib`, signed disp8, fixed SIB `24`, and an explicit
+`state.idtr == Some(_)` admission gate. The latter is local fail-closed policy,
+not an architectural requirement. Exact LOCK `F0 0F 01 5C 24 ib` raises
+`#UD` after full fetch; truncation retains fetch-fault priority. Other prefix
+variants remain `Unsupported`. CPL1–3 raises `#GP(0)` before data access;
+CPL0 reads one 10-byte SS-based source with an explicit memory read, with
+`#SS(0)` on source-range fault. Successful canonical data commits only IDTR,
+advances RIP by five, and retires once; a non-canonical base raises `#GP(0)`
+atomically. The loaded IDT is not read. Adapters reject `Some(idtr)`, including
+zero, rather than dropping state; no serialized fixture profile is added.
+
+The Ubuntu bytes `0F 01 5C 24 06` at `ffffffff8133ed4e` are an isolated static
+candidate. The mapping separately records the source call to `native_load_idt`,
+loaded limit/base, and the skipped `MOV SS`; this does not evidence execution
+of a continuous startup prefix. No event delivery, Linux boot/runtime, native
+runtime, physical x86, Mac mini, or SSH result is claimed. See the [Linux
+profile evidence](STAGE_2_LINUX_PROFILE.md#s2-27d--exact-ubuntu-lidt-candidate),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-27d--exact-long64-lidt-rsp-6), and
+[stage plan](../plans/STAGE_2.md#s2-27d--exact-long64-lidt-rsp-6).
+
+**Авторские проверки:** `cargo test -p od-isa --offline lidt_` (5/5);
+`cargo test -p od-isa --offline lgdt_` (12/12, LGDT regression);
+`cargo test -p od-testkit --offline integer_snapshot_export_rejects_present_idtr_even_when_zero`
+(1/1); `cargo check --workspace --all-targets --offline`;
+`cargo check -p od-x86-runner --all-targets --offline --target x86_64-unknown-linux-gnu`
+(47.78 s); `cargo fmt --all -- --check`; `git diff --check`; and
+`graphify update .` passed. The memory model uses flat `GuestMemory`, so a
+page-table crossing was not exercised. Injected `#PF` behavior and canonical
+source-span boundaries were tested. These are local tests and compile checks;
+they do not establish native runtime or physical behavior. Independent Sol
+medium code review completed clean after the LOCK-prefix wording correction;
+no findings remain.
+
 ## S2-26c — локальный `GsBaseV1` MSR
 
 **Статус:** в процессе. Локальные проверки автора внесены ниже. Независимое

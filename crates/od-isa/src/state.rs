@@ -224,6 +224,8 @@ pub struct LongModeState {
     pub es_cache: Option<DataSegmentDescriptorCache>,
     /// GDTR state used by bounded LGDT and GDT-only VERW profiles; no general descriptor support or LDTR is modeled.
     pub gdtr: Option<Gdtr>,
+    /// IDTR state populated only by the bounded local LIDT profile.
+    pub idtr: Option<Idtr>,
     /// Hidden FS descriptor cache only in the local MOV-FS-load profile.
     pub fs_cache: Option<FsDescriptorCache>,
     /// Hidden GS descriptor cache only in the local MOV-GS-load profile.
@@ -236,6 +238,12 @@ pub struct LongModeState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Gdtr {
+    pub base: u64,
+    pub limit: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Idtr {
     pub base: u64,
     pub limit: u16,
 }
@@ -281,6 +289,7 @@ impl Default for LongModeState {
             ds_cache: None,
             es_cache: None,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             x87: None,
@@ -315,6 +324,7 @@ pub enum FragmentAdapterError {
     UnsupportedFsSelector(u16),
     UnsupportedGsSelector(u16),
     UnsupportedGdtr(Gdtr),
+    UnsupportedIdtr(Idtr),
     UnsupportedDsCache(DsDescriptorCache),
     UnsupportedEsCache(DataSegmentDescriptorCache),
     UnsupportedFsCache(FsDescriptorCache),
@@ -364,6 +374,9 @@ impl TryFrom<&LongModeState> for FragmentState {
         }
         if let Some(gdtr) = state.gdtr {
             return Err(FragmentAdapterError::UnsupportedGdtr(gdtr));
+        }
+        if let Some(idtr) = state.idtr {
+            return Err(FragmentAdapterError::UnsupportedIdtr(idtr));
         }
         if let Some(fs_cache) = state.fs_cache {
             return Err(FragmentAdapterError::UnsupportedFsCache(fs_cache));
@@ -512,6 +525,7 @@ mod tests {
                         es_unusable: false,
                         ds_cache: None,
                         gdtr: None,
+                        idtr: None,
                         fs_cache: None,
                         gs_cache: None,
 
@@ -633,6 +647,13 @@ mod tests {
         assert_eq!(
             FragmentState::try_from(&gdtr_state),
             Err(FragmentAdapterError::UnsupportedGdtr(gdtr))
+        );
+        let mut idtr_state = state.clone();
+        let idtr = Idtr { base: 0, limit: 0 };
+        idtr_state.idtr = Some(idtr);
+        assert_eq!(
+            FragmentState::try_from(&idtr_state),
+            Err(FragmentAdapterError::UnsupportedIdtr(idtr))
         );
         let mut cache_state = state.clone();
         let cache = FsDescriptorCache {

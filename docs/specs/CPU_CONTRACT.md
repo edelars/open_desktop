@@ -1033,6 +1033,52 @@ Vol. 3A §§3.4.3–3.4.5.1, 3.5.1, 5.6.1, 5.7, 6.6–6.6.1, 6.11.5, and 7.13
 (Order No. 253668-093US, September 2026,
 [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
 
+### S2-27d — exact Long64 `LIDT [RSP+6]`
+
+This bounded local-only slice is anchored to Ubuntu bytes `0F 01 5C 24 06`,
+decoded as bare Long64 `LIDT m16&64 [RSP+6]`. Admit only
+`0F 01 5C 24 ib`, where `ib` is a signed 8-bit displacement and the fixed SIB
+byte `24` selects RSP with no index. All other ModR/M, SIB, addressing, and
+prefix variants remain `Unsupported`, except exact LOCK-prefixed
+`F0 0F 01 5C 24 ib`, which raises `#UD` after the full instruction is fetched.
+If that form is truncated, the fetch fault retains priority. Admission also
+requires `state.idtr == Some(_)`; this is an explicit fail-closed local profile
+gate, not an architectural precondition of LIDT. CPL1–3 raises CPU-side
+`#GP(0)` before any data callback.
+
+At CPL0, read exactly one 10-byte pseudo-descriptor from the SS-based source
+address `[RSP + sign_extend(ib)]`, using an explicit `GuestMemory` read. Decode
+the 16-bit limit followed by the 64-bit base, both little-endian. A source-range
+fault is `#SS(0)`. A non-canonical loaded base raises `#GP(0)` without changing
+IDTR. After the full read and canonicality check, commit only IDTR, preserve
+other CPU state, advance RIP by five bytes, and retire once. Faults do not
+commit IDTR, RIP, or retirement. Do not read or otherwise touch the IDT at the
+loaded base; event delivery and gate/descriptor validation are outside this
+slice. State adapters must reject any `Some(idtr)`, including the all-zero
+value, when the destination representation cannot preserve it. No serialized
+fixture profile is introduced.
+
+Local implementation tests and compile checks passed; independent Sol medium
+code review completed clean after the LOCK-prefix wording correction, with no
+remaining findings, as recorded in the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27d--exact-long64-lidt-rsp-6).
+The tests inject `#PF` and cover canonical source-span boundaries, but do not
+exercise page-table crossing because the tested `GuestMemory` is flat.
+The Linux evidence is a static isolated source-to-binary match only; the
+surrounding startup path is not claimed as executed or booted. Mac mini/SSH,
+native runtime, and physical x86 checks are not claimed. See the
+[Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-27d--exact-ubuntu-lidt-candidate),
+[stage plan](../plans/STAGE_2.md#s2-27d--exact-long64-lidt-rsp-6), and
+[stage report](../reports/STAGE_2_REPORT.md#s2-27d--exact-long64-lidt-rsp-6).
+
+Semantic references: Intel SDM revision 093, Vol. 2A, `LGDT/LIDT` instruction
+entry (Order No. 253666-093US, September 2026,
+[official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 3A
+§§2.4.1, 3.5.2, 4.5.1, and 4.5.3 (Order No. 253668-093US, September 2026,
+[official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). These
+references define architectural instruction behavior; the `Some(idtr)` gate
+is local profile policy.
+
 ### S2-22i — loaded GS.base composition fixture
 
 One additional local-only literal fixture uses the existing

@@ -521,3 +521,32 @@ Vol. 3A descriptor/privilege context (Order No. 253668-093US, September 2026,
 [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-27c--exact-long64-mov-es-ax) and
 [Stage 2 plan](../plans/STAGE_2.md#s2-27c--exact-long64-mov-es-ax).
+
+## S2-27d — exact Ubuntu LIDT candidate
+
+Static source-to-binary evidence from Ubuntu 7.0.0-38.38 identifies an isolated
+Long64 `LIDT [RSP+6]` candidate:
+
+- `arch/x86/boot/startup/gdt_idt.c:27–43` calls `native_load_idt`.
+- In the matching ELF, `__pi_startup_64_load_idt` is at
+  `ffffffff8133ed4e`; bytes there are `0f 01 5c 24 06`, decoded as
+  `LIDT m16&64 [RSP+6]` (ModR/M `5c`, SIB `24`, disp8 `06`).
+- The 10-byte pseudo-descriptor represents limit `0x01ff` and base
+  `ffffffff83a04000`.
+- `MOV SS` was skipped. This isolated instruction does not establish execution
+  of a contiguous startup prefix.
+
+This is static package/disassembly evidence only; it does not establish LIDT
+runtime execution, IDT access, event delivery, Linux boot, or any physical
+behavior. The local bounded contract requires `state.idtr == Some(_)` only as
+a fail-closed profile gate. Local test and compile results are recorded in the
+[Stage 2 report](STAGE_2_REPORT.md#s2-27d--exact-long64-lidt-rsp-6); independent
+Sol medium code review completed clean after the LOCK-prefix wording
+correction; no findings remain. No native
+runtime, physical x86, Mac mini, or SSH checks are claimed.
+
+Semantic references: Intel SDM revision 093, Vol. 2A, `LGDT/LIDT` entry, and
+Vol. 3A IDTR/interrupt-descriptor-table sections; see the official sources
+already cited in the [CPU contract](../specs/CPU_CONTRACT.md#s2-27d--exact-long64-lidt-rsp-6).
+The [Stage 2 plan](../plans/STAGE_2.md#s2-27d--exact-long64-lidt-rsp-6)
+records the bounded test matrix.

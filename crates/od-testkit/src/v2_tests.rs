@@ -183,6 +183,14 @@ fn integer_snapshot_export_rejects_es_only_and_combined_segment_caches() {
 }
 
 #[test]
+fn integer_snapshot_export_rejects_present_idtr_even_when_zero() {
+    let mut state = od_isa::LongModeState::default();
+    state.idtr = Some(od_isa::state::Idtr { base: 0, limit: 0 });
+    assert!(IntegerState::try_from(&state).is_err());
+    assert!(IntegerState::from_cpu_for(&state, Profile::LongIntegerV1).is_err());
+}
+
+#[test]
 fn x87_sse_profile_has_strict_wire_scope_and_raw_mxcsr_validation() {
     let mut fixture = x87_sse_fixture().fixture;
     let mut wrong_width = fixture.clone();

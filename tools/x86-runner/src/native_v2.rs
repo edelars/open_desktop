@@ -431,6 +431,7 @@ fn state(regs: &libc::user_regs_struct) -> LongModeState {
         es_unusable: false,
         ds_cache: None,
         gdtr: None,
+        idtr: None,
         fs_cache: None,
         gs_cache: None,
 

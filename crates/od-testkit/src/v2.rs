@@ -629,6 +629,12 @@ impl TryFrom<&LongModeState> for IntegerState {
                     .into(),
             });
         }
+        if let Some(idtr) = state.idtr {
+            return Err(FormatError::InvalidField {
+                field: "state.idtr",
+                reason: format!("IDTR state is not represented by this snapshot schema: {idtr:?}"),
+            });
+        }
         Ok(Self {
             mode: Mode::Long64,
             gpr: state.gpr.map(HexU64),
@@ -684,6 +690,7 @@ impl IntegerState {
                 }),
                 _ => None,
             },
+            idtr: None,
             fs_cache: match (
                 self.fs_cache_limit,
                 self.fs_cache_access,

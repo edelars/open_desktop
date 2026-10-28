@@ -424,6 +424,10 @@ pub enum Operation {
     LoadGdtr {
         source: MemoryOperand,
     },
+    /// S2-27d bare `0F 01 5C 24 ib` (LIDT [RSP + sign-extended disp8]).
+    LoadIdtr {
+        source: MemoryOperand,
+    },
     /// The sole S2-22f selector load: bare `8E E0` (MOV FS, AX).
     LoadFsSelector,
     /// The sole S2-22h selector load: bare `8E E8` (MOV GS, AX).
@@ -1736,6 +1740,30 @@ impl<M: GuestMemory> Fetch<'_, M> {
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x01 {
             if prefixes == Prefixes::default() {
                 let modrm = self.byte()?;
+                if modrm == 0x5c {
+                    let sib = self.byte()?;
+                    if sib != 0x24 {
+                        return Err(self.unsupported(opcode));
+                    }
+                    let displacement = i64::from(self.byte()? as i8);
+                    return Ok(Instruction {
+                        length: self.length,
+                        opcode,
+                        prefixes,
+                        operand_size: OperandSize::Qword,
+                        address_size: OperandSize::Qword,
+                        operation: Operation::LoadIdtr {
+                            source: MemoryOperand {
+                                base: AddressBase::Register(Register::Rsp),
+                                index: None,
+                                scale: 1,
+                                displacement,
+                                address_size: OperandSize::Qword,
+                                size: OperandSize::Qword,
+                            },
+                        },
+                    });
+                }
                 if modrm != 0x55 {
                     return Err(self.unsupported(opcode));
                 }
@@ -1760,10 +1788,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && prefixes.rex.is_none()
                 && self.length == 3
             {
-                if self.byte()? != 0x55 {
-                    return Err(self.unsupported(opcode));
+                let modrm = self.byte()?;
+                match modrm {
+                    0x55 => {
+                        self.byte()?;
+                    }
+                    0x5c if self.byte()? == 0x24 => {
+                        self.byte()?;
+                    }
+                    _ => return Err(self.unsupported(opcode)),
                 }
-                self.byte()?;
                 return Err(DecodeError::Invalid {
                     opcode,
                     length: self.length,
@@ -15805,6 +15839,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -16950,6 +16985,81 @@ mod tests {
                 matches!(
                     Memory::new(bytes).decode(),
                     Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lidt_decodes_only_exact_rsp_sib_disp8_and_lock_ud_after_full_fetch() {
+        let mut memory = Memory::new(&[0x0f, 0x01, 0x5c, 0x24, 0x06]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 5);
+        assert_eq!(
+            decoded.operation,
+            Operation::LoadIdtr {
+                source: MemoryOperand {
+                    base: AddressBase::Register(Register::Rsp),
+                    index: None,
+                    scale: 1,
+                    displacement: 6,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Qword,
+                }
+            }
+        );
+        let mut negative = Memory::new(&[0x0f, 0x01, 0x5c, 0x24, 0x80]);
+        assert_eq!(
+            negative.decode().unwrap().operation,
+            Operation::LoadIdtr {
+                source: MemoryOperand {
+                    base: AddressBase::Register(Register::Rsp),
+                    index: None,
+                    scale: 1,
+                    displacement: -128,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Qword,
+                }
+            }
+        );
+        let mut positive_boundary = Memory::new(&[0x0f, 0x01, 0x5c, 0x24, 0x7f]);
+        assert_eq!(
+            positive_boundary.decode().unwrap().operation,
+            Operation::LoadIdtr {
+                source: MemoryOperand {
+                    base: AddressBase::Register(Register::Rsp),
+                    index: None,
+                    scale: 1,
+                    displacement: 127,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Qword,
+                }
+            }
+        );
+        let mut locked = Memory::new(&[0xf0, 0x0f, 0x01, 0x5c, 0x24, 0x06]);
+        assert!(matches!(
+            locked.decode(),
+            Err(DecodeError::Invalid { length: 6, .. })
+        ));
+        assert_eq!(
+            locked.fetched,
+            vec![0xfff, 0x1000, 0x1001, 0x1002, 0x1003, 0x1004]
+        );
+        for bytes in [
+            &[0x66, 0x0f, 0x01, 0x5c, 0x24, 0][..],
+            &[0x67, 0x0f, 0x01, 0x5c, 0x24, 0][..],
+            &[0xf2, 0x0f, 0x01, 0x5c, 0x24, 0][..],
+            &[0x48, 0x0f, 0x01, 0x5c, 0x24, 0][..],
+            &[0x0f, 0x01, 0x1c, 0x24, 0][..],
+            &[0x0f, 0x01, 0x5c, 0x25, 0][..],
+            &[0x0f, 0x01, 0x9c, 0x24, 0, 0, 0, 0][..],
+            &[0x0f, 0x01, 0x5c, 0x24][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. }) | Err(DecodeError::Memory(_))
                 ),
                 "{bytes:02x?}"
             );

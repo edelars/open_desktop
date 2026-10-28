@@ -939,7 +939,20 @@ fn step_tracked_with_profiles(
             opcode: instruction.opcode.byte,
         });
     }
+    if matches!(instruction.operation, Operation::LoadIdtr { .. }) && state.idtr.is_none() {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
     if matches!(instruction.operation, Operation::LoadGdtr { .. })
+        && context.privilege != PrivilegeLevel::Ring0
+    {
+        let MemoryError::Architectural(fault) = general_protection() else {
+            unreachable!("general_protection returns an architectural fault")
+        };
+        return Ok(StepOutcome::Fault(fault));
+    }
+    if matches!(instruction.operation, Operation::LoadIdtr { .. })
         && context.privilege != PrivilegeLevel::Ring0
     {
         let MemoryError::Architectural(fault) = general_protection() else {
@@ -1449,6 +1462,7 @@ fn step_tracked_with_profiles(
         | Operation::MovGsSelectorToRax
         | Operation::VerwGdt
         | Operation::LoadGdtr { .. }
+        | Operation::LoadIdtr { .. }
         | Operation::Fnop
         | Operation::Fninit
         | Operation::Fnclex
@@ -5160,6 +5174,11 @@ fn step_tracked_with_profiles(
                 return report_memory_error(error);
             }
         }
+        Operation::LoadIdtr { source } => {
+            if let Err(error) = load_idtr(state, memory, context, next_rip, source) {
+                return report_memory_error(error);
+            }
+        }
         Operation::LoadFsSelector => {
             let selector = state.gpr[Register::Rax as usize] as u16;
             match load_fs_gdt_selector(state, memory, context, selector) {
@@ -7753,13 +7772,13 @@ fn selector_fault(vector: u8, selector: u16) -> MemoryError {
     })
 }
 
-fn load_gdtr(
-    state: &mut LongModeState,
+fn read_pseudo_descriptor(
+    state: &LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
     next_rip: u64,
     source: MemoryOperand,
-) -> Result<(), MemoryError> {
+) -> Result<(u64, u16), MemoryError> {
     const PSEUDO_DESCRIPTOR_SIZE: usize = 10;
     let address = source.effective_address(state, next_rip);
     let last = address.checked_add(PSEUDO_DESCRIPTOR_SIZE as u64 - 1);
@@ -7785,7 +7804,30 @@ fn load_gdtr(
     if !canonical(base) {
         return Err(general_protection());
     }
+    Ok((base, limit))
+}
+
+fn load_gdtr(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    source: MemoryOperand,
+) -> Result<(), MemoryError> {
+    let (base, limit) = read_pseudo_descriptor(state, memory, context, next_rip, source)?;
     state.gdtr = Some(crate::state::Gdtr { base, limit });
+    Ok(())
+}
+
+fn load_idtr(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    source: MemoryOperand,
+) -> Result<(), MemoryError> {
+    let (base, limit) = read_pseudo_descriptor(state, memory, context, next_rip, source)?;
+    state.idtr = Some(crate::state::Idtr { base, limit });
     Ok(())
 }
 
@@ -10710,6 +10752,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0,
@@ -10778,6 +10821,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0,
@@ -10816,6 +10860,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
@@ -10862,6 +10907,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: base,
@@ -10894,6 +10940,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: base,
@@ -10950,6 +10997,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
@@ -11015,6 +11063,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
                 rip: 0x1000,
@@ -11050,6 +11099,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
@@ -11090,6 +11140,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
@@ -11139,6 +11190,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
@@ -11244,6 +11296,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
@@ -11284,6 +11337,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
@@ -11327,6 +11381,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
@@ -11364,6 +11419,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0x1000,
@@ -11408,6 +11464,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
                 rip: 0x2000,
@@ -11445,6 +11502,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0x2000,
@@ -11514,6 +11572,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: base,
@@ -11543,6 +11602,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: base,
@@ -11591,6 +11651,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
                 rip: 0,
@@ -11621,6 +11682,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0,
@@ -11692,6 +11754,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
                 rip: 0,
@@ -11739,6 +11802,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0,
@@ -11827,6 +11891,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0,
@@ -11862,6 +11927,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
                 rip: 0,
@@ -11897,6 +11963,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0,
@@ -11938,6 +12005,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0,
@@ -11975,6 +12043,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0,
@@ -12043,6 +12112,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0,
@@ -12080,6 +12150,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
                 rip: 0,
@@ -12140,6 +12211,7 @@ mod tests {
                         ds_unusable: false,
                         es_unusable: false,
                         gdtr: None,
+                        idtr: None,
                         fs_cache: None,
                         gs_cache: None,
                         rip: 0,
@@ -12214,6 +12286,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             rip: 0,
@@ -12276,6 +12349,7 @@ mod tests {
                     ds_unusable: false,
                     es_unusable: false,
                     gdtr: None,
+                    idtr: None,
                     fs_cache: None,
                     gs_cache: None,
                     rip: 0,
@@ -12343,6 +12417,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -12474,6 +12549,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -12608,6 +12684,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -12643,6 +12720,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -12677,6 +12755,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -12721,6 +12800,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -12755,6 +12835,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -12818,6 +12899,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -12904,6 +12986,7 @@ mod tests {
                     ds_unusable: false,
                     es_unusable: false,
                     gdtr: None,
+                    idtr: None,
                     fs_cache: None,
                     gs_cache: None,
 
@@ -13040,6 +13123,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -13123,6 +13207,7 @@ mod tests {
                         ds_unusable: false,
                         es_unusable: false,
                         gdtr: None,
+                        idtr: None,
                         fs_cache: None,
                         gs_cache: None,
 
@@ -13204,6 +13289,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -13270,6 +13356,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -13310,6 +13397,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -13361,6 +13449,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -13398,6 +13487,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -13458,6 +13548,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -13514,6 +13605,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -13571,6 +13663,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -13628,6 +13721,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -13685,6 +13779,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -13742,6 +13837,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -13799,6 +13895,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -13856,6 +13953,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -13902,6 +14000,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -13947,6 +14046,7 @@ mod tests {
                         ds_unusable: false,
                         es_unusable: false,
                         gdtr: None,
+                        idtr: None,
                         fs_cache: None,
                         gs_cache: None,
 
@@ -14008,6 +14108,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -14216,6 +14317,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -14298,6 +14400,7 @@ mod tests {
                         ds_unusable: false,
                         es_unusable: false,
                         gdtr: None,
+                        idtr: None,
                         fs_cache: None,
                         gs_cache: None,
 
@@ -14359,6 +14462,7 @@ mod tests {
                         ds_unusable: false,
                         es_unusable: false,
                         gdtr: None,
+                        idtr: None,
                         fs_cache: None,
                         gs_cache: None,
 
@@ -14523,6 +14627,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -14555,6 +14660,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -14598,6 +14704,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -14646,6 +14753,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -14694,6 +14802,7 @@ mod tests {
                     ds_unusable: false,
                     es_unusable: false,
                     gdtr: None,
+                    idtr: None,
                     fs_cache: None,
                     gs_cache: None,
 
@@ -14735,6 +14844,7 @@ mod tests {
                     ds_unusable: false,
                     es_unusable: false,
                     gdtr: None,
+                    idtr: None,
                     fs_cache: None,
                     gs_cache: None,
 
@@ -14798,6 +14908,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -14863,6 +14974,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -14907,6 +15019,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -14947,6 +15060,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -14987,6 +15101,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -15027,6 +15142,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -15058,6 +15174,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -15098,6 +15215,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -15132,6 +15250,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -15173,6 +15292,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -15214,6 +15334,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -15253,6 +15374,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -15333,6 +15455,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
                 ..LongModeState::default()
@@ -15361,6 +15484,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -15511,6 +15635,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
                 ..LongModeState::default()
@@ -15555,6 +15680,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -15599,6 +15725,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             ..LongModeState::default()
@@ -15635,6 +15762,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             ..LongModeState::default()
@@ -15683,6 +15811,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             ..LongModeState::default()
@@ -15722,6 +15851,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             ..LongModeState::default()
@@ -15784,6 +15914,7 @@ mod tests {
                     ds_unusable: false,
                     es_unusable: false,
                     gdtr: None,
+                    idtr: None,
                     fs_cache: None,
                     gs_cache: None,
                     ..LongModeState::default()
@@ -15853,6 +15984,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
                 ..LongModeState::default()
@@ -15906,6 +16038,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             ..LongModeState::default()
@@ -15989,6 +16122,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
                 ..LongModeState::default()
@@ -16030,6 +16164,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             ..LongModeState::default()
@@ -16074,6 +16209,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
                 ..LongModeState::default()
@@ -16108,6 +16244,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             ..LongModeState::default()
@@ -16234,6 +16371,7 @@ mod tests {
                 ds_unusable: false,
                 es_unusable: false,
                 gdtr: None,
+                idtr: None,
                 fs_cache: None,
                 gs_cache: None,
 
@@ -16292,6 +16430,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -16327,6 +16466,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
 
@@ -17126,6 +17266,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             ..LongModeState::default()
@@ -17152,6 +17293,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             ..LongModeState::default()
@@ -17180,6 +17322,7 @@ mod tests {
             ds_unusable: false,
             es_unusable: false,
             gdtr: None,
+            idtr: None,
             fs_cache: None,
             gs_cache: None,
             ..LongModeState::default()
@@ -79045,6 +79188,7 @@ mod tests {
                 flags: 0,
             }),
             gdtr: Some(Gdtr { base: 0, limit: 0 }),
+            idtr: None,
             ..LongModeState::default()
         };
         state.rip = 0x400;
@@ -85665,5 +85809,206 @@ mod tests {
                 (AccessKind::Read, 0x1018, 8)
             ]
         );
+    }
+
+    fn lidt_state(rsp: u64) -> LongModeState {
+        LongModeState {
+            gpr: {
+                let mut gpr = [0; 16];
+                gpr[Register::Rsp as usize] = rsp;
+                gpr[Register::Rax as usize] = 0x1234_5678_9abc_def0;
+                gpr
+            },
+            rip: 0x1000,
+            rflags: 0x8d7,
+            gdtr: Some(Gdtr {
+                base: 0x2000,
+                limit: 0x1234,
+            }),
+            idtr: Some(crate::state::Idtr {
+                base: 0x3000,
+                limit: 0x5678,
+            }),
+            ..LongModeState::default()
+        }
+    }
+
+    fn lidt_code() -> [u8; 5] {
+        [0x0f, 0x01, 0x5c, 0x24, 0x06]
+    }
+
+    #[test]
+    fn lidt_loads_ten_bytes_to_idtr_only_and_preserves_state() {
+        let mut state = lidt_state(0x1000);
+        let mut expected = state.clone();
+        expected.idtr = Some(crate::state::Idtr {
+            base: 0x0000_7fff_ffff_ffff,
+            limit: 0x55aa,
+        });
+        expected.rip = 0x1005;
+        let mut memory = Memory::at(&lidt_code(), 0x1000);
+        memory.bytes[6..8].copy_from_slice(&0x55aau16.to_le_bytes());
+        memory.bytes[8..16].copy_from_slice(&0x0000_7fff_ffff_ffffu64.to_le_bytes());
+        let mut defined = crate::INTEGER_FLAGS;
+        assert_eq!(
+            step_tracked(&mut state, &mut memory, lgdt_ring0(), &mut defined),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state, expected);
+        assert_eq!(defined, crate::INTEGER_FLAGS);
+        assert_eq!(memory.fetches, [0x1000, 0x1001, 0x1002, 0x1003, 0x1004]);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1006, 10)]);
+        assert_eq!(
+            memory.contexts[0].1.origin,
+            crate::memory::AccessOrigin::Explicit
+        );
+    }
+
+    #[test]
+    fn lidt_uses_signed_rsp_disp8_and_accepts_canonical_unmapped_idt_base() {
+        let mut state = lidt_state(0x1010);
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x5c, 0x24, 0xf8], 0x1000);
+        memory.bytes[8..10].copy_from_slice(&0x1234u16.to_le_bytes());
+        memory.bytes[10..18].copy_from_slice(&0xffff_8000_0000_1000u64.to_le_bytes());
+        assert_eq!(
+            step(&mut state, &mut memory, lgdt_ring0()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(
+            state.idtr,
+            Some(crate::state::Idtr {
+                base: 0xffff_8000_0000_1000,
+                limit: 0x1234
+            })
+        );
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 10)]);
+    }
+
+    #[test]
+    fn lidt_faults_are_atomic_and_cpl_and_admission_precede_data_reads() {
+        for base in [0x0000_8000_0000_0000u64, 0xffff_7fff_ffff_ffff] {
+            let mut state = lidt_state(0x1000);
+            let before = state.clone();
+            let mut memory = Memory::at(&lidt_code(), 0x1000);
+            memory.bytes[8..16].copy_from_slice(&base.to_le_bytes());
+            assert_eq!(
+                step(&mut state, &mut memory, lgdt_ring0()),
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None
+                }))
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x1006, 10)]);
+        }
+        for address in [
+            0x0000_8000_0000_0000,
+            0x0000_7fff_ffff_fff9,
+            0xffff_ffff_ffff_fff9,
+        ] {
+            let mut state = lidt_state(address);
+            let before = state.clone();
+            let mut memory = Memory::at(&lidt_code(), 0x1000);
+            assert_eq!(
+                step(&mut state, &mut memory, lgdt_ring0()),
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 12,
+                    error_code: Some(0),
+                    linear_address: None
+                }))
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        for privilege in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = lidt_state(0x1000);
+            let before = state.clone();
+            let mut memory = Memory::at(&lidt_code(), 0x1000);
+            assert_eq!(
+                step(
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        privilege,
+                        ..lgdt_ring0()
+                    }
+                ),
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None
+                }))
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut state = lidt_state(0x1000);
+        state.idtr = None;
+        let before = state.clone();
+        let mut memory = Memory::at(&lidt_code(), 0x1000);
+        assert_eq!(
+            step(&mut state, &mut memory, lgdt_ring0()),
+            Ok(StepOutcome::Unsupported { opcode: 1 })
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn lidt_propagates_read_fault_and_stop_or_zero_budget_do_not_access_memory() {
+        for error in [
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(0x1006),
+            }),
+            MemoryError::Backend("injected LIDT source read fault".into()),
+        ] {
+            let mut state = lidt_state(0x1000);
+            let before = state.clone();
+            let mut memory = Memory::at(&lidt_code(), 0x1000);
+            memory.error = Some(error.clone());
+            memory.error_kind = Some(AccessKind::Read);
+            match error {
+                MemoryError::Architectural(fault) => {
+                    assert_eq!(
+                        step(&mut state, &mut memory, lgdt_ring0()),
+                        Ok(StepOutcome::Fault(fault))
+                    );
+                }
+                other => assert_eq!(step(&mut state, &mut memory, lgdt_ring0()), Err(other)),
+            }
+            assert_eq!(state, before);
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x1006, 10)]);
+        }
+
+        for (budget, stop_rip, exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut state = lidt_state(0x1000);
+            let before = state.clone();
+            let mut memory = Memory::at(&lidt_code(), 0x1000);
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: lgdt_ring0(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty());
+            assert!(memory.accesses.is_empty());
+        }
     }
 }
