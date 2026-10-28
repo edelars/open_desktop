@@ -8764,6 +8764,45 @@ are covered. Other shifts, memory/MMX forms, REX.R/X/W, VEX/EVEX, feature gates,
 exception delivery and physical execution remain excluded. S2-34, S2-35, global
 `S2-35 → S2-34`, and combined Mac mini/SSH acceptance remain open.
 
+#### S2-35.39 — local-only bounded register immediate `PSRAW`
+
+The profile `s2-long-psraw-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 71 /4 ib`, ModR/M.mod=3, with XMM0–15.
+ModR/M.r/m selects the destination and `/4` is mandatory; `/2` PSRLW and `/6`
+PSLLW remain distinct sibling operations and are rejected by the PSRAW schema.
+Each of eight signed i16 lanes shifts arithmetically right by the unsigned,
+unmasked imm8. Counts 0–15 sign-fill; counts >=16 produce `ffff` for negative
+input lanes and `0000` otherwise. Flags and MXCSR remain unchanged. SSE2 and
+CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only.
+
+Local checks cover all 65,536 lane values for counts 0–15 against an independent
+widened floor/sign-fill reference, all 256 counts on each of 16 XMM destinations,
+the `8000>>1=c000`, `ffff>>1=ffff`, `fffd>>1=fffe`, and `7fff>>1=3fff`
+sentinels, full-state preservation, no data callbacks, missing SSE state,
+STOP/zero-budget atomicity, strict selector/encoding negatives, and immediate
+fetch truncation/page crossing. The handwritten XMM9 fixture checks interpreter
+execution with JIT denied. Native denial is checked before mapping/process
+setup; Linux-only guard is compile-only on Darwin. Other shifts, memory/MMX,
+REX.R/X/W and bare REX, VEX/EVEX, feature gates, exception delivery and physical
+execution remain excluded. S2-34, S2-35, global `S2-35 → S2-34`, and combined
+Mac mini/SSH acceptance remain open.
+
+S2-35.39 implementation check (2026-10-27): focused PSRAW interpreter tests
+passed (5), including exhaustive counts/word values, every count on all XMM
+destinations, sentinels, strict encoding, page crossing, state/no-callback, and
+atomicity; the literal fixture CLI test passed (1), including sibling-selector
+schema negatives and JIT denial. PSRLW/PSLLW reciprocal interpreter tests (6
+each) and fixture tests (1 each) passed. Workspace all-target offline check,
+x86_64 Linux runner test compilation, formatting, `git diff --check`, and
+Graphify update passed. Linux native denial is compile-only on this Darwin host;
+`tools/check_layout.py` still reports the pre-existing unmapped `.git` root and
+two absent oracle manifests in the stage report. Independent
+`gpt-6.1-sol` medium review found no remaining issues; the reviewer reran the
+focused PSRAW interpreter and fixture tests plus the diff whitespace check.
+This is local interpreter/profile evidence only; parent S2-34, S2-35, global
+`S2-35 → S2-34`, physical x86 validation, and combined Mac mini/SSH acceptance
+remain open.
+
 
 #### S2-35.33 — local-only bounded register `PACKUSWB`
 

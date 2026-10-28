@@ -9229,6 +9229,22 @@ Memory/MMX, other shifts, REX.R/X/W, VEX/EVEX, feature gating, exception
 delivery, JIT/native execution, and physical behavior are outside this profile.
 See the [S2-35.38 plan](../plans/STAGE_2.md#s2-3538--local-only-bounded-register-immediate-psrlw).
 
+## Local register-only immediate `PSRAW` profile — S2-35.39
+
+The diagnostic profile `s2-long-psraw-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 71 /4 ib`, ModR/M.mod=3. `/4` is required and
+ModR/M.r/m selects XMM0–15. `/2` PSRLW and `/6` PSLLW are separate selectors
+and are rejected by this profile. Each signed i16 lane shifts arithmetically
+right by unsigned imm8: counts 0–15 sign-fill and counts >=16 yield all ones
+for negative inputs or zero for nonnegative inputs. Flags and MXCSR are
+unchanged. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only.
+Memory/MMX, bare REX, REX.R/X/W, VEX/EVEX, feature gating, exception delivery,
+JIT/native execution and physical behavior are excluded. Encoding and semantics
+follow the PSRAW entry in Intel SDM revision 093, Vol. 2B: [official Intel SDM
+PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf),
+[Intel SDM page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+See the [S2-35.39 plan](../plans/STAGE_2.md#s2-3539--local-only-bounded-register-immediate-psraw).
+
 ## Local register-only `PADDUSB` profile — S2-35.4
 
 The exact profile `s2-long-paddusb-reg-v1` admits legacy

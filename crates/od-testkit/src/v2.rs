@@ -175,6 +175,8 @@ pub enum Profile {
     LongPsllwImmRegV1,
     #[serde(rename = "s2-long-psrlw-imm-reg-v1")]
     LongPsrlwImmRegV1,
+    #[serde(rename = "s2-long-psraw-imm-reg-v1")]
+    LongPsrawImmRegV1,
     #[serde(rename = "s2-long-psubusb-reg-v1")]
     LongPsubusbRegV1,
     #[serde(rename = "s2-long-andps-reg-v1")]
@@ -634,6 +636,7 @@ impl IntegerState {
                     | Profile::LongPshufdRegV1
                     | Profile::LongPsllwImmRegV1
                     | Profile::LongPsrlwImmRegV1
+                    | Profile::LongPsrawImmRegV1
                     | Profile::LongPsubusbRegV1
                     | Profile::LongAndpsRegV1
                     | Profile::LongOrpsRegV1
@@ -694,6 +697,7 @@ impl IntegerState {
                     | Profile::LongPshufdRegV1
                     | Profile::LongPsllwImmRegV1
                     | Profile::LongPsrlwImmRegV1
+                    | Profile::LongPsrawImmRegV1
                     | Profile::LongPsubusbRegV1
                     | Profile::LongAndpsRegV1
                     | Profile::LongOrpsRegV1
@@ -761,6 +765,7 @@ impl IntegerState {
                 | Profile::LongPshufdRegV1
                 | Profile::LongPsllwImmRegV1
                 | Profile::LongPsrlwImmRegV1
+                | Profile::LongPsrawImmRegV1
                 | Profile::LongPsubusbRegV1
                 | Profile::LongAndpsRegV1
                 | Profile::LongOrpsRegV1
@@ -822,6 +827,7 @@ impl IntegerState {
                 | Profile::LongPshufdRegV1
                 | Profile::LongPsllwImmRegV1
                 | Profile::LongPsrlwImmRegV1
+                | Profile::LongPsrawImmRegV1
                 | Profile::LongPsubusbRegV1
                 | Profile::LongAndpsRegV1
                 | Profile::LongOrpsRegV1
@@ -932,6 +938,7 @@ impl IntegerState {
             | Profile::LongPshufdRegV1
             | Profile::LongPsllwImmRegV1
             | Profile::LongPsrlwImmRegV1
+            | Profile::LongPsrawImmRegV1
             | Profile::LongPsubusbRegV1
             | Profile::LongAndpsRegV1
             | Profile::LongOrpsRegV1
@@ -992,6 +999,7 @@ impl IntegerState {
                 | Profile::LongPshufdRegV1
                 | Profile::LongPsllwImmRegV1
                 | Profile::LongPsrlwImmRegV1
+                | Profile::LongPsrawImmRegV1
                 | Profile::LongPsubusbRegV1
                 | Profile::LongAndpsRegV1
                 | Profile::LongOrpsRegV1
@@ -1058,6 +1066,7 @@ impl IntegerState {
                 | Profile::LongPshufdRegV1
                 | Profile::LongPsllwImmRegV1
                 | Profile::LongPsrlwImmRegV1
+                | Profile::LongPsrawImmRegV1
                 | Profile::LongPsubusbRegV1
                 | Profile::LongAndpsRegV1
                 | Profile::LongOrpsRegV1
@@ -1129,6 +1138,7 @@ impl IntegerState {
                 | Profile::LongPshufdRegV1
                 | Profile::LongPsllwImmRegV1
                 | Profile::LongPsrlwImmRegV1
+                | Profile::LongPsrawImmRegV1
                 | Profile::LongPsubusbRegV1
                 | Profile::LongAndpsRegV1
                 | Profile::LongOrpsRegV1
@@ -1203,6 +1213,7 @@ impl IntegerState {
                 | Profile::LongPshufdRegV1
                 | Profile::LongPsllwImmRegV1
                 | Profile::LongPsrlwImmRegV1
+                | Profile::LongPsrawImmRegV1
                 | Profile::LongPsubusbRegV1
                 | Profile::LongAndpsRegV1
                 | Profile::LongOrpsRegV1
@@ -1428,6 +1439,7 @@ impl IntegerState {
                 | Profile::LongPshufdRegV1
                 | Profile::LongPsllwImmRegV1
                 | Profile::LongPsrlwImmRegV1
+                | Profile::LongPsrawImmRegV1
                 | Profile::LongPsubusbRegV1
                 | Profile::LongAndpsRegV1
                 | Profile::LongOrpsRegV1
@@ -1488,6 +1500,7 @@ impl IntegerState {
                 | Profile::LongPshufdRegV1
                 | Profile::LongPsllwImmRegV1
                 | Profile::LongPsrlwImmRegV1
+                | Profile::LongPsrawImmRegV1
                 | Profile::LongPsubusbRegV1
                 | Profile::LongAndpsRegV1
                 | Profile::LongOrpsRegV1
@@ -1551,6 +1564,7 @@ impl IntegerState {
                 | Profile::LongPshufdRegV1
                 | Profile::LongPsllwImmRegV1
                 | Profile::LongPsrlwImmRegV1
+                | Profile::LongPsrawImmRegV1
                 | Profile::LongPsubusbRegV1
                 | Profile::LongAndpsRegV1
                 | Profile::LongOrpsRegV1
@@ -1608,6 +1622,7 @@ impl IntegerState {
                 | Profile::LongPshufdRegV1
                 | Profile::LongPsllwImmRegV1
                 | Profile::LongPsrlwImmRegV1
+                | Profile::LongPsrawImmRegV1
                 | Profile::LongPsubusbRegV1
                 | Profile::LongAndpsRegV1
                 | Profile::LongOrpsRegV1
@@ -1802,6 +1817,7 @@ impl Fixture {
                 | Profile::LongPshufdRegV1
                 | Profile::LongPsllwImmRegV1
                 | Profile::LongPsrlwImmRegV1
+                | Profile::LongPsrawImmRegV1
                 | Profile::LongPsubusbRegV1
                 | Profile::LongAndpsRegV1
                 | Profile::LongOrpsRegV1
@@ -1853,6 +1869,7 @@ impl Fixture {
                 Profile::LongPshufdRegV1 => pshufd_register_length(&code_bytes),
                 Profile::LongPsllwImmRegV1 => psllw_immediate_register_length(&code_bytes),
                 Profile::LongPsrlwImmRegV1 => psrlw_immediate_register_length(&code_bytes),
+                Profile::LongPsrawImmRegV1 => psraw_immediate_register_length(&code_bytes),
                 Profile::LongPsubusbRegV1 => psubusb_register_length(&code_bytes),
                 Profile::LongAndpsRegV1 => andps_register_length(&code_bytes),
                 Profile::LongOrpsRegV1 => orps_register_length(&code_bytes),
@@ -4606,6 +4623,25 @@ fn psrlw_immediate_register_length(code_bytes: &str) -> Option<u32> {
         [0x66, 0x0f, 0x71, modrm, _imm8] if modrm >> 6 == 3 && (modrm >> 3) & 7 == 2 => Some(5),
         [0x66, rex, 0x0f, 0x71, modrm, _imm8]
             if *rex == 0x41 && modrm >> 6 == 3 && (modrm >> 3) & 7 == 2 =>
+        {
+            Some(6)
+        }
+        _ => None,
+    }
+}
+
+fn psraw_immediate_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0x71, modrm, _imm8] if modrm >> 6 == 3 && (modrm >> 3) & 7 == 4 => Some(5),
+        [0x66, rex, 0x0f, 0x71, modrm, _imm8]
+            if *rex == 0x41 && modrm >> 6 == 3 && (modrm >> 3) & 7 == 4 =>
         {
             Some(6)
         }

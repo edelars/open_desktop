@@ -12559,6 +12559,49 @@ fn psrlw_literal_fixture_executes_and_keeps_jit_denied() {
 }
 
 #[test]
+fn psraw_literal_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_39_psraw_imm_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPsrawImmRegV1
+    );
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PSRAW snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[9],
+        "00c0fffffeffff3f01000000000000c0"
+    );
+    for rejected in [
+        "0f71e001",
+        "660f71d001",
+        "660f71f001",
+        "66400f71e101",
+        "660f716101",
+        "660f71e0",
+        "660f71e00190",
+        "66480f71e001",
+        "66420f71e001",
+        "66450f71e001",
+        "c5f971e001",
+    ] {
+        let mut invalid = loaded.fixture.clone();
+        invalid.memory[0].initial_bytes_hex = rejected.to_string();
+        invalid.memory[0].length = (rejected.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(invalid.memory[0].length as usize);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + u64::from(invalid.memory[0].length),
+        ));
+        assert!(invalid.to_json().is_err(), "schema admitted {rejected}");
+    }
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
 fn pcmpeqw_literal_cli_fixture_executes_and_keeps_jit_denied() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_19_pcmpeqw_register.case.json");

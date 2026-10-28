@@ -4007,7 +4007,7 @@ x86_64-unknown-linux-gnu --offline`), `git diff --check`, and `graphify update .
 `.serena/` directory; it was left untouched per task instructions. Linux-gated
 native-denial tests compiled but were not run on this arm64 macOS host. No Mac
 mini, SSH or physical-hardware checks were run; these remain in the shared
-acceptance stage. Independent review is pending.
+acceptance stage. Independent `gpt-6.1-sol` medium review found no remaining issues; the reviewer reran the focused PSRAW interpreter and fixture tests plus the diff whitespace check.
 
 ## S2-30x — bounded FST ST(i) local raw-copy slice
 
@@ -6609,7 +6609,7 @@ explicitly denied by JIT/native admission. The full offline workspace suite
 passed (769 tests, zero failures); workspace all-target check, Linux x86_64
 runner all-target check, formatting, and diff checks passed. Graphify updated
 successfully. The layout check reports only the pre-existing unmapped
-`.serena/` directory, which was left untouched. Independent review is pending.
+`.serena/` directory, which was left untouched. Independent `gpt-6.1-sol` medium review found no remaining issues; the reviewer reran the focused PSRAW interpreter and fixture tests plus the diff whitespace check.
 Native runtime and physical acceptance remain deferred under ISSUE-019.
 
 
@@ -12940,3 +12940,37 @@ findings. S2-35.38 is checked in the plan. S2-34,
 S2-35 and global `S2-35 → S2-34` remain open. See the [plan](../plans/STAGE_2.md#s2-3538--local-only-bounded-register-immediate-psrlw),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-immediate-psrlw-profile--s2-3538),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3538-local-register-psrlw-immediate-diagnostic-profile).
+
+## S2-35.39 — local PSRAW immediate register profile
+
+Implemented the local interpreter and strict schema profile
+`s2-long-psraw-imm-reg-v1` for `66 [no REX or optional 41] 0F 71 /4 ib`,
+ModR/M.mod=3, XMM0–15 selected by r/m. Eight signed i16 lanes arithmetic-shift
+right by unsigned unmasked imm8. Counts >=16 sign-fill negative lanes and clear
+nonnegative lanes; count zero preserves input. Flags and MXCSR are unchanged.
+The shared decoder maps `/2` and `/6` to their PSRLW and PSLLW sibling operations;
+the PSRAW fixture profile rejects those selectors. The handwritten XMM9 fixture
+is interpreter-only and JIT remains denied. The native runner rejects this
+local-only profile before execution; its Linux-only denial test compiles on the
+current Darwin host but was not executed.
+
+Focused checks passed: `cargo test -p od-isa psraw --offline` (5/5),
+`cargo test -p od-runner --test fixture_v2 psraw --offline` (1/1), reciprocal
+PSRLW and PSLLW interpreter tests (6/6 each) and fixture tests (1/1 each).
+Coverage includes all 65,536 signed lane values for each count 0–15 against an
+independent widened floor-division reference; all 256 counts on all 16 XMM
+registers; `8000>>1=c000`, `ffff>>1=ffff`, `fffd>>1=fffe`, and `7fff>>1=3fff`;
+full state and no-data-callback checks; missing SSE; STOP/zero-budget; strict
+encoding/schema negatives; immediate truncation and page crossing; fixture
+execution and JIT denial. `cargo fmt --all -- --check`,
+`cargo check -p od-x86-runner --tests --offline --target x86_64-unknown-linux-gnu`,
+`cargo check --workspace --all-targets --offline`, `git diff --check`, and
+`graphify update .` passed. `tools/check_layout.py` reports the existing unmapped
+`.git` root and two missing oracle manifests linked from the Stage 2 report.
+Independent `gpt-6.1-sol` medium review found no remaining issues; the reviewer
+reran the focused PSRAW interpreter and fixture tests plus the diff whitespace
+check. S2-34, S2-35, global `S2-35 → S2-34`, physical x86 validation and
+combined Mac mini/SSH acceptance remain open. See the
+[plan](../plans/STAGE_2.md#s2-3539--local-only-bounded-register-immediate-psraw),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-immediate-psraw-profile--s2-3539),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3539-local-register-psraw-immediate-diagnostic-profile).

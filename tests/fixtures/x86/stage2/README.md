@@ -5190,3 +5190,13 @@ ModR/M selector and `r/m` selects XMM9; `/6` is rejected as the sibling PSLLW
 selector. Eight little-endian u16 lanes shift logically right by the unmasked
 unsigned imm8 count; counts >=16 clear every lane. The local profile assumes
 SSE2 architectural preconditions and denies JIT and native execution.
+
+### S2-35.39 local register PSRAW immediate diagnostic profile
+
+`s2_35_39_psraw_imm_register.case.json` is a handwritten literal XMM9 fixture
+for `s2-long-psraw-imm-reg-v1`, encoded as `66 41 0F 71 E1 01`. `/4` selects
+PSRAW and `r/m` selects XMM9; `/2` PSRLW and `/6` PSLLW are rejected by this
+profile. The eight signed little-endian i16 lanes arithmetic-shift right by
+unmasked unsigned imm8; counts >=16 sign-fill negative lanes and zero
+nonnegative lanes. The local profile assumes SSE2 preconditions and denies JIT
+and native execution.
