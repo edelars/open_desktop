@@ -2090,6 +2090,54 @@ Vol. 2A (`LGDT/LIDT`, Order No. 253666-093US, September 2026):
 Локальные проверки автора записаны в фактическом
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27a--exact-long64-lgdt-rbp-10).
 
+#### S2-27b — exact Long64 `MOV DS, AX`
+
+Добавить отдельный bounded local slice только для bare `8E D8` (`MOV DS, AX`)
+при Long64/CPL0. MOV DS не является privileged instruction; CPL0 здесь —
+явное ограничение профиля. Admission требует явный DS-load profile/state gate,
+present GDTR и present hidden DS cache. AX[15:0] должен содержать non-null
+selector с TI=0. CPL1–3, missing GDTR/cache, TI=1, null selector с hidden
+cache и любые prefix/neighbor forms возвращают `Unsupported`, а не #GP.
+Существующий S2-22k null DS/ES profile не менять: он работает отдельно с
+selector zero, не читает GDT и не обновляет hidden cache.
+
+Для admitted selector выполнить ровно один 8-byte GDT read с
+`AccessOrigin::DescriptorTable` и CPL0/Ring0 page privilege. Индекс за GDTR
+limit — `#GP(selector)` до read; read fault сохраняет исходный fault и не
+коммитит DS/RIP/retirement. После read проверять descriptor в порядке:
+S=1 и data/readable-code type; privilege для data/nonconforming code с
+архитектурным правилом conforming code; P. Type/privilege — `#GP(selector)`,
+P=0 — `#NP(selector)`, selector error code — `selector & 0xfffc`. При A=0
+сделать ровно один byte write access byte | 1 через тот же descriptor context;
+A=1 не требует write. Write fault не коммитит DS/cache/RIP/retirement. После
+успешных accesses обновить visible selector и cached base (zero-extended
+descriptor base), effective limit, access byte, flags nibble; сохранить
+остальное состояние, RIP+2, retirement+1. Кэшированные атрибуты остаются
+observable state, обычная DS memory access semantics в slice не добавляется.
+
+Не создавать schema-v2 fixture profile или serialized fixtures. Fragment
+adapter должен отвергать non-default DS cache; целочисленный и snapshot
+adapters должны сохранять fallible `TryFrom`/`from_cpu_for` contract и
+отклонять cache state, которое они не могут представить. Проверить adapter
+failure до потери состояния. Проверочная матрица должна покрыть точный opcode,
+selector/RPL/DPL, bounds, descriptor read context/fault, type/privilege/P/A
+order, A-bit update/no-update, write fault atomicity, full DS cache commit,
+prefix/CPL/cache/null/TI gates, old null DS/ES profile compatibility, fragment
+rejection, fallible integer/snapshot rejection, RIP+2/retirement+1 и сохранение
+прочего state. Также проверить сохранение загруженного hidden cache после
+изменения GDT bytes и то, что Long64 memory addressing не применяет DS.base.
+Не добавлять MOV SS/ES, LDT, event delivery, Linux boot или Mac mini/SSH claims.
+Локальные проверки реализации и clean independent Sol medium review записаны в
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27b--exact-long64-mov-ds-ax).
+Mac mini/SSH checks и Linux boot не заявлять.
+
+Static Ubuntu source-to-binary evidence and boundaries:
+[Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#s2-27b--exact-ubuntu-ds-load-candidate).
+Normative contract and official Intel SDM references:
+[CPU contract](../specs/CPU_CONTRACT.md#s2-27b--exact-long64-mov-ds-ax).
+Fill only actual implementation/check results in the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27b--exact-long64-mov-ds-ax).
+
 **Готово:** обязательные переходы имеют исполняемые tests с корректным state; полноценная доставка при paging/privilege transitions подтверждается интеграционно вместе с machine backend, а не mock callbacks.
 
 ## 9. x87, MMX и SSE/SSE2

@@ -218,6 +218,8 @@ pub struct LongModeState {
     pub es_selector: u16,
     pub ds_unusable: bool,
     pub es_unusable: bool,
+    /// Hidden DS descriptor cache only in the bounded MOV-DS-load profile.
+    pub ds_cache: Option<DsDescriptorCache>,
     /// GDTR state used by bounded LGDT and GDT-only VERW profiles; no general descriptor support or LDTR is modeled.
     pub gdtr: Option<Gdtr>,
     /// Hidden FS descriptor cache only in the local MOV-FS-load profile.
@@ -234,6 +236,18 @@ pub struct LongModeState {
 pub struct Gdtr {
     pub base: u64,
     pub limit: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DsDescriptorCache {
+    /// The descriptor's 32-bit base; Long64 ordinary data addressing ignores it.
+    pub base: u32,
+    /// Effective limit after applying descriptor granularity.
+    pub limit: u32,
+    /// Descriptor access byte (type, S, DPL, P, A).
+    pub access: u8,
+    /// Descriptor flag nibble (AVL, L, D/B, G).
+    pub flags: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -260,6 +274,7 @@ impl Default for LongModeState {
             es_selector: 0,
             ds_unusable: false,
             es_unusable: false,
+            ds_cache: None,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -295,6 +310,7 @@ pub enum FragmentAdapterError {
     UnsupportedFsSelector(u16),
     UnsupportedGsSelector(u16),
     UnsupportedGdtr(Gdtr),
+    UnsupportedDsCache(DsDescriptorCache),
     UnsupportedFsCache(FsDescriptorCache),
     UnsupportedGsCache(FsDescriptorCache),
     UnsupportedX87,
@@ -348,6 +364,9 @@ impl TryFrom<&LongModeState> for FragmentState {
         }
         if let Some(gs_cache) = state.gs_cache {
             return Err(FragmentAdapterError::UnsupportedGsCache(gs_cache));
+        }
+        if let Some(ds_cache) = state.ds_cache {
+            return Err(FragmentAdapterError::UnsupportedDsCache(ds_cache));
         }
         for encoding in 4..16 {
             if state.gpr[encoding] != 0 {
@@ -482,6 +501,7 @@ mod tests {
                         es_selector: 0,
                         ds_unusable: false,
                         es_unusable: false,
+                        ds_cache: None,
                         gdtr: None,
                         fs_cache: None,
                         gs_cache: None,
@@ -614,6 +634,18 @@ mod tests {
         assert_eq!(
             FragmentState::try_from(&cache_state),
             Err(FragmentAdapterError::UnsupportedFsCache(cache))
+        );
+        let mut ds_cache_state = state.clone();
+        let ds_cache = DsDescriptorCache {
+            base: 0x1234_5678,
+            limit: 0xffff,
+            access: 0x93,
+            flags: 0,
+        };
+        ds_cache_state.ds_cache = Some(ds_cache);
+        assert_eq!(
+            FragmentState::try_from(&ds_cache_state),
+            Err(FragmentAdapterError::UnsupportedDsCache(ds_cache))
         );
         for encoding in 4..16 {
             let mut extra = state.clone();

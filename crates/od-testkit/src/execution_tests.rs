@@ -10952,6 +10952,7 @@ fn movsb_rejects_prefixes_and_other_string_widths_without_commit() {
             ds_selector: 0,
             es_selector: 0,
             ds_unusable: false,
+            ds_cache: None,
             es_unusable: false,
             gdtr: None,
             fs_cache: None,

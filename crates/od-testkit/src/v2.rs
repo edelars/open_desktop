@@ -611,9 +611,18 @@ where
     bool::deserialize(deserializer).map(Some)
 }
 
-impl From<&LongModeState> for IntegerState {
-    fn from(state: &LongModeState) -> Self {
-        Self {
+impl TryFrom<&LongModeState> for IntegerState {
+    type Error = FormatError;
+
+    fn try_from(state: &LongModeState) -> Result<Self, Self::Error> {
+        if state.ds_cache.is_some() {
+            return Err(FormatError::InvalidField {
+                field: "state.ds_cache",
+                reason: "DS hidden descriptor cache is not represented by this snapshot schema"
+                    .into(),
+            });
+        }
+        Ok(Self {
             mode: Mode::Long64,
             gpr: state.gpr.map(HexU64),
             rip: HexU64(state.rip),
@@ -636,7 +645,7 @@ impl From<&LongModeState> for IntegerState {
             gs_cache_flags: None,
             x87: None,
             sse: None,
-        }
+        })
     }
 }
 
@@ -659,6 +668,7 @@ impl IntegerState {
             es_selector: self.es_selector.map_or(0, |selector| selector.get() as u16),
             ds_unusable: self.ds_unusable.unwrap_or(false),
             es_unusable: self.es_unusable.unwrap_or(false),
+            ds_cache: None,
             gdtr: match (self.gdtr_base, self.gdtr_limit) {
                 (Some(base), Some(limit)) => Some(od_isa::state::Gdtr {
                     base: base.get(),
@@ -894,8 +904,8 @@ impl IntegerState {
         })
     }
 
-    pub fn from_cpu_for(state: &LongModeState, profile: Profile) -> Self {
-        let mut result = Self::from(state);
+    pub fn from_cpu_for(state: &LongModeState, profile: Profile) -> Result<Self, FormatError> {
+        let mut result = Self::try_from(state)?;
         result.x87 = if profile == Profile::LongX87StateV1 {
             state.x87.as_ref().map(X87Snapshot::from)
         } else if matches!(
@@ -1141,7 +1151,7 @@ impl IntegerState {
             result.ds_unusable = Some(state.ds_unusable);
             result.es_unusable = Some(state.es_unusable);
         }
-        result
+        Ok(result)
     }
 
     fn validate_for(&self, profile: Profile) -> Result<(), FormatError> {
@@ -4240,7 +4250,7 @@ impl Fixture {
             provenance: source.provenance.clone(),
             seed: source.seed.map(HexU64),
             converted_from_v1_sha256: Some(old.input_sha256.clone()),
-            initial_state: IntegerState::from(&state),
+            initial_state: IntegerState::try_from(&state)?,
             memory: vec![MemoryRegionSpec {
                 region_id: "code".into(),
                 guest_address: HexU64(0),

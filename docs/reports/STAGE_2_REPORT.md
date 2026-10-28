@@ -43,6 +43,62 @@ Semantic references: Intel SDM Vol. 2A `LGDT/LIDT` entry (Order No.
 Vol. 3A §§2.4.1, 3.5.2, 4.5.1 and 4.5.3 (Order No. 253668-093US, September
 2026, [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
 
+## S2-27b — exact Long64 `MOV DS, AX`
+
+**Статус:** bounded local implementation and author-run checks recorded below.
+Independent Sol medium code review completed clean after a conforming-code P2
+fix; no findings remain. Mac mini/SSH checks remain in the common final
+substage.
+
+Target bytes are bare Long64 `8E D8` (`MOV DS, AX`). The local admission is
+CPL0 with explicit GDTR and hidden DS cache state, and a non-null
+TI=0 GDT selector in AX[15:0]. This local profile restriction does not make
+MOV DS architecturally privileged. CPL1–3, missing cache/GDTR, TI=1, null
+selector with cache, and prefix or neighboring forms stay `Unsupported`.
+The existing S2-22k null DS/ES fixtures remain unchanged and continue to avoid
+descriptor reads and cache updates. No new serialized fixture profile is
+introduced; fragment adapters reject hidden-cache state and integer/snapshot
+adapters remain fallible and reject state they cannot represent.
+
+For an admitted selector, the load reads one 8-byte GDT descriptor with
+`DescriptorTable` origin. Bounds, type, privilege, present, and A-bit checks
+follow the order and faults defined by the [CPU contract](../specs/CPU_CONTRACT.md#s2-27b--exact-long64-mov-ds-ax).
+The DS selector/cache commit, RIP+2, and one retirement occur only after the
+descriptor accesses succeed. The static Ubuntu bytes do not establish runtime
+execution or a Linux boot. No MOV SS/ES, LDT, or event-delivery semantics are
+included.
+
+Static source-to-binary evidence is in the
+[Linux profile report](STAGE_2_LINUX_PROFILE.md#s2-27b--exact-ubuntu-ds-load-candidate).
+
+**Локальные проверки автора:** `cargo test -p od-isa --offline mov_ds_ax` (4
+passed; conforming selectors `0x1b` and `0x9f` succeed, while selector `0x1f`
+raises `#NP(0x18)`); `cargo test -p od-isa --offline mov_fs_ax` (10 passed);
+`cargo test -p od-isa --offline mov_gs_ax` (10 passed);
+`cargo test -p od-isa --offline null_ds_es_loads` (2 passed);
+`cargo test -p od-isa --offline lgdt_loaded_gdtr` (1 passed);
+`cargo test -p od-testkit --offline integer_snapshot_export_rejects_ds_hidden_cache`
+(1 passed); `cargo test -p od-isa --offline fragment_adapter_rejects_x87`
+(1 passed; the named test checks x87 rejection, not the DS-cache path);
+`cargo test -p od-isa --offline fragment_adapter_roundtrips_without_truncating_new_state`
+(1 passed; explicitly sets `Some(ds_cache)` and asserts
+`FragmentAdapterError::UnsupportedDsCache(ds_cache)`);
+`cargo check -p od-testkit -p od-runner --all-targets --offline`;
+`cargo fmt --all -- --check`; `git diff --check`; `graphify update .`.
+
+**Независимое code review:** Sol medium review завершено чисто после
+исправления P2 по conforming-code selectors; оставшихся замечаний нет. Linux
+boot, physical/native execution, Mac mini и SSH проверки не выполнялись и не
+заявляются. `python3 tools/check_layout.py` по-прежнему ограничен известными
+ошибками managed worktree: `.git` marker отмечен как unmapped root file и две
+старые ссылки в Stage 2 report указывают на отсутствующие oracle manifests;
+структура каталогов этой задачей не менялась.
+
+Semantic references: Intel SDM Vol. 2B `MOV` entry (Order No. 253667-093US,
+September 2026, [official Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf));
+Vol. 3A descriptor, privilege, and event references (Order No. 253668-093US,
+September 2026, [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+
 ## S2-26c — локальный `GsBaseV1` MSR
 
 **Статус:** в процессе. Локальные проверки автора внесены ниже. Независимое

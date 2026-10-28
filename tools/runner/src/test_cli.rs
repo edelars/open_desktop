@@ -433,7 +433,7 @@ fn execute_fixture_v2(
         }),
         _ => None,
     };
-    let outcome = match execution.exit {
+    let mut outcome = match execution.exit {
         RunExit::StopAddress => v2::Outcome::StopAddress {},
         RunExit::InstructionBudgetExhausted => v2::Outcome::InstructionBudgetExhausted {},
         RunExit::RepIterationBudgetExhausted => v2::Outcome::RepIterationBudgetExhausted {},
@@ -452,6 +452,25 @@ fn execute_fixture_v2(
             reason: format!("fixture memory backend: {error:?}"),
         },
     };
+    let snapshot = match v2::IntegerState::from_cpu_for(&state, loaded.fixture.profile) {
+        Ok(state) => Observation::Available {
+            value: v2::Snapshot {
+                state,
+                // The interpreter tracks architectural flag definedness as
+                // instructions retire, including undefined outputs such as AF
+                // after logical operations.
+                rflags_defined: HexU64(execution.rflags_defined),
+                memory: memory.snapshot(),
+                exception: Observation::Available { value: exception },
+            },
+        },
+        Err(error) => {
+            outcome = v2::Outcome::HarnessError {
+                reason: format!("cannot export CPU state to fixture snapshot: {error}"),
+            };
+            unavailable("CPU state contains data outside the fixture snapshot schema")
+        }
+    };
     v2::RunResult {
         schema_version: v2::SCHEMA_VERSION,
         case_id: loaded.fixture.case_id.clone(),
@@ -462,17 +481,7 @@ fn execute_fixture_v2(
         instructions_executed: Observation::Available {
             value: HexU64(execution.instructions_executed),
         },
-        snapshot: Observation::Available {
-            value: v2::Snapshot {
-                state: v2::IntegerState::from_cpu_for(&state, loaded.fixture.profile),
-                // The interpreter tracks architectural flag definedness as
-                // instructions retire, including undefined outputs such as AF
-                // after logical operations.
-                rflags_defined: HexU64(execution.rflags_defined),
-                memory: memory.snapshot(),
-                exception: Observation::Available { value: exception },
-            },
-        },
+        snapshot,
         build: build_metadata(),
         machine: machine_metadata(),
     }

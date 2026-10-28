@@ -925,6 +925,61 @@ See the [Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-27a--exa
 [stage plan](../plans/STAGE_2.md#s2-27a--exact-long64-lgdt-rbp-10), and
 [stage report](../reports/STAGE_2_REPORT.md#s2-27a--exact-long64-lgdt-rbp-10).
 
+### S2-27b — exact Long64 `MOV DS, AX`
+
+This bounded local-only slice is anchored to Ubuntu bytes `8E D8`, the bare
+Long64 encoding of `MOV DS, AX` (`ModR/M D8`: register destination DS, AX
+source). It admits only CPL0 execution under an explicit local state/profile
+gate with GDTR and the modeled hidden DS cache present. This is a bounded
+profile choice: MOV DS is not architecturally privileged. CPL1–3, absent GDTR
+or DS cache, a TI=1 selector, a null selector when the hidden cache is present,
+and all prefix-bearing or other encodings return `Unsupported`. The separate
+S2-22k null DS/ES profile remains unchanged: it admits its existing bare null
+loads without descriptor lookup or a hidden-cache update. This slice adds no
+serialized fixture profile. The fragment adapter must reject hidden DS cache
+state; integer/snapshot conversion must remain fallible through `TryFrom` and
+`from_cpu_for` and reject unrepresentable cache state instead of dropping it.
+
+For an admitted non-null GDT selector from AX[15:0], the complete 8-byte
+descriptor selected by `selector & 0xfff8` must fit within GDTR.limit. Bounds
+failure, or a non-canonical descriptor-table linear address, raises CPU-side
+`#GP(selector)` before a descriptor read. The descriptor is read once through
+the implicit `DescriptorTable` access, with descriptor-table access origin and
+Ring0 page privilege. Read faults retain their original architectural error
+and do not commit DS state, RIP, or retirement.
+
+After the read, validation order is: require an S=1 data or readable-code
+descriptor; apply the data/nonconforming-code CPL/RPL/DPL checks (with the
+architectural conforming-code rule); then check P. Invalid type or privilege
+raises `#GP(selector)`; P=0 raises `#NP(selector)`. Selector error codes clear
+the RPL bits and EXT/IDT bits (`selector & 0xfffc`). For an otherwise valid
+present descriptor, A=1 needs no write; A=0 requires one byte write setting
+the descriptor Accessed bit. A write fault propagates without committing DS
+selector/cache state or retiring. The bounded profile permits this write only
+through the existing private synchronous descriptor-table memory contract;
+it does not model concurrent GDT writers or MMIO. Once required accesses
+succeed, update the visible DS selector and hidden cache (zero-extended
+descriptor base, effective limit equal to the 20-bit limit for G=0 or
+`(limit20 << 12) | 0xfff` for G=1, access byte, and flags nibble), preserve
+other state, advance RIP by two bytes, and retire once. Cached attributes are
+observable state only; ordinary DS access checks and event delivery are outside
+this slice.
+
+No MOV SS/ES, LDT, general descriptor-loading policy, or event-delivery
+semantics are included. Local implementation checks and clean independent Sol
+medium review are recorded in the Stage 2 report. This static Ubuntu candidate
+is not a boot claim; Mac mini/SSH checks remain in the common final substage.
+See the [S2-27b Linux evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-27b--exact-ubuntu-ds-load-candidate),
+[stage plan](../plans/STAGE_2.md#s2-27b--exact-long64-mov-ds-ax), and
+[stage report](../reports/STAGE_2_REPORT.md#s2-27b--exact-long64-mov-ds-ax).
+
+Semantic references: Intel SDM Vol. 2B, `MOV` entry, pp. 4-28–4-31
+(Order No. 253667-093US, September 2026,
+[official Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf));
+Vol. 3A §§3.4.3–3.4.5.1, 3.5.1, 5.6.1, 5.7, 6.6–6.6.1, 6.11.5, and 7.13
+(Order No. 253668-093US, September 2026,
+[official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+
 ### S2-22i — loaded GS.base composition fixture
 
 One additional local-only literal fixture uses the existing

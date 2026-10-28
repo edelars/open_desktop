@@ -455,3 +455,35 @@ Vol. 3A §§2.4.1, 3.5.2, 4.5.1 and 4.5.3 (Order No. 253668-093US, September
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27a--exact-long64-lgdt-rbp-10),
 [plan](../plans/STAGE_2.md#s2-27a--exact-long64-lgdt-rbp-10), and
 [stage report](STAGE_2_REPORT.md#s2-27a--exact-long64-lgdt-rbp-10).
+
+## S2-27b — exact Ubuntu DS load candidate
+
+The Ubuntu 7.0.0-38.38 startup source contains a non-null GDT selector load
+matching bare Long64 `MOV DS, AX` (`8E D8`). The static source-to-binary
+mapping is:
+
+- `arch/x86/boot/startup/gdt_idt.c:62–65` loads selector `0x18` into EAX and
+  executes `mov ds, ax`.
+- In `vmlinux-7.0.0-38-generic.debug`, the corresponding
+  `__pi_startup_64_setup_gdt_idt` symbol begins at `ffffffff83f132e0`; the
+  instruction bytes at `ffffffff83f13302` are `8e d8`.
+- The corresponding descriptor bytes at `ffffffff8440f018` are
+  `ff ff 00 00 00 93 cf 00` (base 0, effective limit `0xffffffff`, access
+  byte `0x93` for a present DPL0 writable data descriptor with A=1, flags
+  nibble `0xc`).
+- These source files are unchanged by Ubuntu delta `linux` 7.0.0-38.38.
+
+This is static package/disassembly evidence only. It does not establish that
+the instruction or descriptor access occurs at runtime, and it is not a Linux
+boot claim. The bounded local contract and its admission/exception limits are
+described in the [CPU contract](../specs/CPU_CONTRACT.md#s2-27b--exact-long64-mov-ds-ax)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-27b--exact-long64-mov-ds-ax).
+Local implementation checks and clean independent Sol medium review are
+recorded in the [Stage 2 report](STAGE_2_REPORT.md#s2-27b--exact-long64-mov-ds-ax).
+Mac mini/SSH checks remain deferred; no such checks or Linux boot are claimed.
+
+Semantic reference: Intel SDM Vol. 2B, `MOV` entry (Order No. 253667-093US,
+September 2026, [official Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf));
+Vol. 3A descriptor/privilege context (Order No. 253668-093US, September 2026,
+[official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). See the
+[Stage 2 report](STAGE_2_REPORT.md#s2-27b--exact-long64-mov-ds-ax).

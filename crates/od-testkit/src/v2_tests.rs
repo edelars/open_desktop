@@ -110,7 +110,9 @@ fn x87_sse_state_profile_roundtrips_raw_state_and_compares_every_xmm_and_mxcsr()
     assert_eq!(sse.xmm[15], std::array::from_fn(|i| (240 + i) as u8));
     assert_eq!(sse.mxcsr, 0xdead_beef);
     assert_eq!(
-        IntegerState::from_cpu_for(&state, Profile::LongX87SseStateV1).sse,
+        IntegerState::from_cpu_for(&state, Profile::LongX87SseStateV1)
+            .unwrap()
+            .sse,
         input.fixture.initial_state.sse
     );
     assert_eq!(
@@ -141,6 +143,19 @@ fn x87_sse_state_profile_roundtrips_raw_state_and_compares_every_xmm_and_mxcsr()
             .unwrap()
             .contains(&"sse".into())
     );
+}
+
+#[test]
+fn integer_snapshot_export_rejects_ds_hidden_cache() {
+    let mut state = od_isa::LongModeState::default();
+    state.ds_cache = Some(od_isa::state::DsDescriptorCache {
+        base: 0x1234_5678,
+        limit: 0xffff,
+        access: 0x93,
+        flags: 0,
+    });
+    assert!(IntegerState::try_from(&state).is_err());
+    assert!(IntegerState::from_cpu_for(&state, Profile::LongIntegerV1).is_err());
 }
 
 #[test]
@@ -3826,10 +3841,11 @@ fn x87_state_profile_roundtrips_raw_empty_register_payloads_and_compares_mutatio
         .to_cpu_for(Profile::LongX87StateV1)
         .unwrap();
     assert_eq!(cpu.x87.as_ref(), Some(&decoded));
-    let returned = IntegerState::from_cpu_for(&cpu, Profile::LongX87StateV1);
+    let returned = IntegerState::from_cpu_for(&cpu, Profile::LongX87StateV1).unwrap();
     assert_eq!(returned.x87.as_ref(), Some(x87));
     assert!(
         IntegerState::from_cpu_for(&cpu, Profile::LongIntegerV1)
+            .unwrap()
             .x87
             .is_none()
     );
@@ -3838,6 +3854,7 @@ fn x87_state_profile_roundtrips_raw_empty_register_payloads_and_compares_mutatio
     incompatible_cpu.x87 = None;
     assert!(
         IntegerState::from_cpu_for(&incompatible_cpu, Profile::LongX87StateV1)
+            .unwrap()
             .x87
             .is_none()
     );
@@ -6510,7 +6527,7 @@ fn null_ds_es_profile_roundtrips_only_its_selector_and_unusable_state() {
     assert_eq!(cpu.ds_selector, 0x2b);
     assert_eq!(cpu.es_selector, 0x30);
     assert!(!cpu.ds_unusable && !cpu.es_unusable);
-    let output = IntegerState::from_cpu_for(&cpu, Profile::LongNullDsEsV1);
+    let output = IntegerState::from_cpu_for(&cpu, Profile::LongNullDsEsV1).unwrap();
     assert_eq!(output.ds_selector, Some(HexU64(0x2b)));
     assert_eq!(output.es_selector, Some(HexU64(0x30)));
     assert_eq!(output.ds_unusable, Some(false));
