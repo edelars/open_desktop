@@ -10443,3 +10443,39 @@ formatting, diff, and Graphify checks passed. Independent Sol medium code
 review completed clean; no findings remain. See the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36e--pack-an-already-rounded-normal-binary-value)
 and [plan](../plans/STAGE_2.md#s2-36e--pack-an-already-rounded-normal-binary-value).
+
+## Local S2-36f: direct exact quotient rounding to subnormal units
+
+`Binary32::round_pack_subnormal_quotient(sign, exponent, quotient, remainder,
+denominator, mode)` and the `Binary64` counterpart return
+`Option<(Self, bool)>`: the raw format value and an `inexact` indication. They
+consume the original S2-36c exact quotient decomposition and round it directly
+in units of the least subnormal. They must not round to normal precision and
+then shift the rounded result into the subnormal range, which risks double
+rounding at the largest-subnormal/minimum-normal boundary.
+
+For an exact quotient coefficient `(-1)^sign * (q + r/d)` at S2-36c exponent
+`e`, the signed value in least-subnormal units is
+`(-1)^sign * (q + r/d) * 2^(-k)`, where the widened integer `k = 63 + L - e`.
+Binary32 uses `L=-149`, precision 24, `emin=-126`;
+binary64 uses `L=-1074`, precision 53, `emin=-1022`. For `k <= 63`, round the
+original `q/r/d` directly through the S2-36d helper at precision `64-k`. For
+`k == 64`, handle the half-unit boundary explicitly, with ties-to-even going
+to zero. For `k > 64`, nearest and toward-zero return zero; directed modes
+return one least-subnormal unit only in the directed sign. Both branches for
+`k >= 64` report `inexact=true` for every admitted nonzero quotient; `k <= 63`
+uses S2-36d's exact inexactness result. Preserve the input sign bit in the raw
+output even when the magnitude rounds to zero.
+
+Reject `e >= emin`, `quotient < 2^63` (including exact zero), a zero
+denominator, or `remainder >= denominator` with `None`. `None` denotes an input
+outside this helper's domain, not a guest fault. Return only `inexact`; do not
+set underflow, update MXCSR, deliver exceptions, or modify x87 behavior. No
+physical execution is claimed. S2-36 exception delivery and S2-37/S2-38 remain
+open. Author reports the focused binary tests passed 18/18, along with
+workspace, formatting, diff, and Graphify checks. The Graphify update repeated
+its existing `include/open_desktop/host_abi.h` line-68 syntax warning and
+suggested label refresh after community changes. Independent Sol medium code
+review completed clean; no findings remain. See the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36f--direct-exact-quotient-rounding-to-subnormal-units)
+and [plan](../plans/STAGE_2.md#s2-36f--direct-exact-quotient-rounding-to-subnormal-units).

@@ -459,6 +459,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36c | Exact finite quotient/remainder decomposition; no rounding or packing | S2-36a; independent review |
 | [x] | S2-36d | Shared exact rational precision rounding with inexact indication | S2-36c; independent review |
 | [x] | S2-36e | Normal-only binary32/binary64 packing of rounded significands | S2-36d; independent review |
+| [x] | S2-36f | Direct exact quotient rounding to binary subnormal units | S2-36c, S2-36d; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -4904,6 +4905,48 @@ the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36e--pack-an-already-rounde
 S2-36 rounding/exceptions and S2-37/S2-38 remain open; hardware validation is
 deferred. Normative context is the existing Intel SDM Vol. 1 Rev. 093 reference
 in [S2-36d](#s2-36d--shared-exact-rational-precision-rounding).
+
+#### S2-36f — direct exact quotient rounding to subnormal units
+
+Add `Binary32::round_pack_subnormal_quotient` and the corresponding `Binary64`
+helper. Each accepts the original `sign`, S2-36c `exponent`, `quotient`,
+`remainder`, `denominator`, and rounding mode. Round the original exact
+quotient directly in units of the format's least subnormal; do not first round
+to normal precision and then shift into subnormal range, which can double-round
+at the largest-subnormal/minimum-normal boundary.
+
+For exponent `e` and subnormal-unit exponent `L`, compute widened
+`k = 63 + L - e`. Use `L = -149`, precision 24, and `emin = -126` for binary32;
+use `L = -1074`, precision 53, and `emin = -1022` for binary64. Reject inputs
+with `e >= emin`, exact zero/non-normalized quotient, zero denominator, or
+`remainder >= denominator`. For `k <= 63`, delegate the original quotient,
+remainder, and denominator to S2-36d with precision `64-k`. For `k == 64`,
+compare the original exact magnitude against the half-unit boundary explicitly;
+for `k > 64`, nearest/toward-zero produce zero and directed rounding may
+produce one least-subnormal unit according to sign. Both the `k == 64` and
+`k > 64` branches set `inexact=true` for every admitted nonzero quotient;
+`k <= 63` inherits S2-36d's exact inexactness calculation.
+
+Return the final sign bit and raw subnormal or minimum-normal encoding plus only
+the `inexact` indication. A nonzero value that rounds to zero keeps its input
+sign. This helper defines no underflow, MXCSR, exception, or status behavior;
+it does not change x87. Keep S2-36 exception integration and S2-37/S2-38 open;
+hardware validation is deferred.
+
+Source tests include exact minimum subnormal, half-minimum-subnormal ties and
+tails, signed directed underflow, `k=64`/`k>64`, both sides of the largest
+subnormal/minimum-normal boundary, invalid zero and denominator inputs, and
+composition from original division results. They verify minimum-normal and
+largest-subnormal outputs without a normal-then-subnormal round. The author
+reports `cargo test -p od-isa --offline binary_float::tests` passing 18/18,
+`cargo fmt --all -- --check && git diff --check` passing, and
+`cargo check --workspace --all-targets --offline` passing. Graphify update
+passed, with the existing `include/open_desktop/host_abi.h` line-68 extractor
+warning and a community-label refresh notice. Independent Sol review completed
+clean with no findings; see the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36f--direct-exact-quotient-rounding-to-subnormal-units).
+Normative context is the existing Intel SDM Vol. 1 Rev. 093 reference in
+[S2-36d](#s2-36d--shared-exact-rational-precision-rounding).
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

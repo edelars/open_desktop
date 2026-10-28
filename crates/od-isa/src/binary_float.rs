@@ -137,6 +137,38 @@ impl Binary32 {
             ((sign as u32) << 31) | (biased_exponent << 23) | (significand & Self::FRACTION_MASK);
         Some(Self::from_bits(bits))
     }
+
+    /// Rounds an exact normalized quotient directly to binary32 subnormal units.
+    ///
+    /// The input represents `(-1)^sign * (quotient + remainder/denominator) *
+    /// 2^(exponent-63)`. The result may be zero or the minimum normal value;
+    /// `inexact` reports discarded information only and does not update flags.
+    /// This helper accepts only nonzero normalized finite quotients below the
+    /// normal exponent range.
+    pub fn round_pack_subnormal_quotient(
+        sign: bool,
+        exponent: i32,
+        quotient: u64,
+        remainder: u64,
+        denominator: u64,
+        mode: RationalRoundingMode,
+    ) -> Option<(Self, bool)> {
+        let (magnitude, inexact) = round_subnormal_quotient(
+            sign,
+            exponent,
+            quotient,
+            remainder,
+            denominator,
+            24,
+            -126,
+            -149,
+            mode,
+        )?;
+        Some((
+            Self::from_bits((u32::from(sign) << 31) | magnitude as u32),
+            inexact,
+        ))
+    }
 }
 
 /// An immutable binary64 encoding.
@@ -255,6 +287,38 @@ impl Binary64 {
         let bits =
             ((sign as u64) << 63) | (biased_exponent << 52) | (significand & Self::FRACTION_MASK);
         Some(Self::from_bits(bits))
+    }
+
+    /// Rounds an exact normalized quotient directly to binary64 subnormal units.
+    ///
+    /// The input represents `(-1)^sign * (quotient + remainder/denominator) *
+    /// 2^(exponent-63)`. The result may be zero or the minimum normal value;
+    /// `inexact` reports discarded information only and does not update flags.
+    /// This helper accepts only nonzero normalized finite quotients below the
+    /// normal exponent range.
+    pub fn round_pack_subnormal_quotient(
+        sign: bool,
+        exponent: i32,
+        quotient: u64,
+        remainder: u64,
+        denominator: u64,
+        mode: RationalRoundingMode,
+    ) -> Option<(Self, bool)> {
+        let (magnitude, inexact) = round_subnormal_quotient(
+            sign,
+            exponent,
+            quotient,
+            remainder,
+            denominator,
+            53,
+            -1022,
+            -1074,
+            mode,
+        )?;
+        Some((
+            Self::from_bits((u64::from(sign) << 63) | magnitude),
+            inexact,
+        ))
     }
 }
 
@@ -424,6 +488,60 @@ pub fn round_quotient_to_precision(
     mode: RationalRoundingMode,
 ) -> Option<(u128, bool)> {
     crate::rational_rounding::round_quotient_to_precision(sign, q, r, d, precision, mode)
+}
+
+fn round_subnormal_quotient(
+    sign: bool,
+    exponent: i32,
+    quotient: u64,
+    remainder: u64,
+    denominator: u64,
+    precision: u32,
+    minimum_normal_exponent: i32,
+    subnormal_unit_exponent: i32,
+    mode: RationalRoundingMode,
+) -> Option<(u64, bool)> {
+    if exponent >= minimum_normal_exponent
+        || quotient < (1_u64 << 63)
+        || denominator == 0
+        || remainder >= denominator
+    {
+        return None;
+    }
+
+    let k = 63_i64 + i64::from(subnormal_unit_exponent) - i64::from(exponent);
+    let (magnitude, inexact) = if k <= 63 {
+        let retained_precision = u32::try_from(64_i64 - k).ok()?;
+        crate::rational_rounding::round_quotient_to_precision(
+            sign,
+            quotient,
+            remainder,
+            denominator,
+            retained_precision,
+            mode,
+        )?
+    } else if k == 64 {
+        let increment = match mode {
+            RationalRoundingMode::NearestTiesEven => quotient > (1_u64 << 63) || remainder != 0,
+            RationalRoundingMode::TowardZero => false,
+            RationalRoundingMode::TowardPositive => !sign,
+            RationalRoundingMode::TowardNegative => sign,
+        };
+        (u128::from(increment), true)
+    } else {
+        let magnitude = match mode {
+            RationalRoundingMode::NearestTiesEven | RationalRoundingMode::TowardZero => 0,
+            RationalRoundingMode::TowardPositive => u64::from(!sign),
+            RationalRoundingMode::TowardNegative => u64::from(sign),
+        };
+        (u128::from(magnitude), true)
+    };
+
+    let minimum_normal = 1_u64 << (precision - 1);
+    if magnitude > u128::from(minimum_normal) {
+        return None;
+    }
+    Some((magnitude as u64, inexact))
 }
 
 #[cfg(test)]
@@ -1430,6 +1548,371 @@ mod tests {
             .unwrap()
             .to_bits(),
             0xbeaa_aaab,
+        );
+    }
+
+    #[test]
+    fn subnormal_quotient_packers_match_boundary_vectors() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let q = 0x8000_0000_0000_0000;
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(false, -149, q, 0, 1, Nearest),
+            Some((Binary32::from_bits(1), false)),
+        );
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(false, -150, q, 0, 1, Nearest),
+            Some((Binary32::from_bits(0), true)),
+        );
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(false, -150, q, 1, 2, Nearest),
+            Some((Binary32::from_bits(1), true)),
+        );
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(false, -151, u64::MAX, 0, 1, Nearest),
+            Some((Binary32::from_bits(0), true)),
+        );
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(
+                false,
+                -149,
+                0xc000_0000_0000_0000,
+                0,
+                1,
+                Nearest
+            ),
+            Some((Binary32::from_bits(2), true)),
+        );
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(
+                false,
+                -148,
+                0xa000_0000_0000_0000,
+                0,
+                1,
+                Nearest
+            ),
+            Some((Binary32::from_bits(2), true)),
+        );
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(
+                false,
+                -127,
+                0xffff_fe00_0000_0000,
+                0,
+                1,
+                Nearest
+            ),
+            Some((Binary32::from_bits(0x007f_ffff), false)),
+        );
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(
+                false,
+                -127,
+                0xffff_ff00_0000_0000,
+                0,
+                1,
+                Nearest
+            ),
+            Some((Binary32::from_bits(0x0080_0000), true)),
+        );
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(
+                false,
+                -127,
+                0xffff_feff_ffff_ffff,
+                0,
+                1,
+                Nearest
+            ),
+            Some((Binary32::from_bits(0x007f_ffff), true)),
+        );
+
+        assert_eq!(
+            Binary64::round_pack_subnormal_quotient(false, -1074, q, 0, 1, Nearest),
+            Some((Binary64::from_bits(1), false)),
+        );
+        assert_eq!(
+            Binary64::round_pack_subnormal_quotient(false, -1075, q, 0, 1, Nearest),
+            Some((Binary64::from_bits(0), true)),
+        );
+        assert_eq!(
+            Binary64::round_pack_subnormal_quotient(false, -1075, q, 1, 2, Nearest),
+            Some((Binary64::from_bits(1), true)),
+        );
+        assert_eq!(
+            Binary64::round_pack_subnormal_quotient(
+                false,
+                -1023,
+                0xffff_ffff_ffff_f000,
+                0,
+                1,
+                Nearest
+            ),
+            Some((Binary64::from_bits(0x000f_ffff_ffff_ffff), false)),
+        );
+        assert_eq!(
+            Binary64::round_pack_subnormal_quotient(
+                false,
+                -1023,
+                0xffff_ffff_ffff_f800,
+                0,
+                1,
+                Nearest
+            ),
+            Some((Binary64::from_bits(0x0010_0000_0000_0000), true)),
+        );
+        assert_eq!(
+            Binary64::round_pack_subnormal_quotient(
+                false,
+                -1023,
+                0xffff_ffff_ffff_f7ff,
+                0,
+                1,
+                Nearest
+            ),
+            Some((Binary64::from_bits(0x000f_ffff_ffff_ffff), true)),
+        );
+    }
+
+    #[test]
+    fn subnormal_quotient_packers_handle_modes_ties_and_tails() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let q = 0x8000_0000_0000_0000;
+        for (mode, positive_half, negative_half, positive_far, negative_far) in [
+            (Nearest, 0, 0, 0, 0),
+            (Zero, 0, 0, 0, 0),
+            (Up, 1, 0, 1, 0),
+            (Down, 0, 1, 0, 1),
+        ] {
+            assert_eq!(
+                Binary32::round_pack_subnormal_quotient(false, -150, q, 0, 1, mode),
+                Some((Binary32::from_bits(positive_half), true)),
+            );
+            assert_eq!(
+                Binary32::round_pack_subnormal_quotient(true, -150, q, 0, 1, mode),
+                Some((Binary32::from_bits(0x8000_0000 | negative_half), true)),
+            );
+            assert_eq!(
+                Binary64::round_pack_subnormal_quotient(false, -1075, q, 0, 1, mode),
+                Some((Binary64::from_bits(u64::from(positive_half)), true)),
+            );
+            assert_eq!(
+                Binary64::round_pack_subnormal_quotient(true, -1075, q, 0, 1, mode),
+                Some((
+                    Binary64::from_bits(0x8000_0000_0000_0000 | u64::from(negative_half)),
+                    true
+                )),
+            );
+
+            assert_eq!(
+                Binary32::round_pack_subnormal_quotient(false, -151, q, 0, 1, mode),
+                Some((Binary32::from_bits(positive_far), true)),
+            );
+            assert_eq!(
+                Binary32::round_pack_subnormal_quotient(true, -151, q, 0, 1, mode),
+                Some((Binary32::from_bits(0x8000_0000 | negative_far), true)),
+            );
+        }
+
+        for (exponent, expected) in [(-149, 2), (-148, 2)] {
+            let tie_q = if exponent == -149 {
+                0xc000_0000_0000_0000
+            } else {
+                0xa000_0000_0000_0000
+            };
+            assert_eq!(
+                Binary32::round_pack_subnormal_quotient(false, exponent, tie_q, 0, 1, Nearest),
+                Some((Binary32::from_bits(expected), true)),
+            );
+        }
+        for (exponent, tie_q, expected) in [
+            (-1074, 0xc000_0000_0000_0000, 2),
+            (-1073, 0xa000_0000_0000_0000, 2),
+        ] {
+            assert_eq!(
+                Binary64::round_pack_subnormal_quotient(false, exponent, tie_q, 0, 1, Nearest),
+                Some((Binary64::from_bits(expected), true)),
+            );
+        }
+
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(false, -150, q, 1, 2, Nearest),
+            Some((Binary32::from_bits(1), true)),
+        );
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(false, -150, q, 1, u64::MAX, Nearest),
+            Some((Binary32::from_bits(1), true)),
+        );
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(
+                false,
+                -150,
+                q,
+                u64::MAX - 1,
+                u64::MAX,
+                Nearest
+            ),
+            Some((Binary32::from_bits(1), true)),
+        );
+        assert_eq!(
+            Binary64::round_pack_subnormal_quotient(false, i32::MIN, q, 0, 1, Nearest),
+            Some((Binary64::from_bits(0), true)),
+        );
+    }
+
+    #[test]
+    fn subnormal_quotient_packers_reject_invalid_inputs_and_preserve_inputs() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        for (exponent, q, r, d) in [
+            (-126, 0x8000_0000_0000_0000, 0, 1),
+            (i32::MAX, 0x8000_0000_0000_0000, 0, 1),
+            (-127, 0, 0, 1),
+            (-127, 1, 0, 1),
+            (-127, 0x8000_0000_0000_0000, 0, 0),
+            (-127, 0x8000_0000_0000_0000, 1, 1),
+        ] {
+            assert_eq!(
+                Binary32::round_pack_subnormal_quotient(false, exponent, q, r, d, Nearest),
+                None
+            );
+        }
+        for (exponent, q, r, d) in [
+            (-1022, 0x8000_0000_0000_0000, 0, 1),
+            (i32::MAX, 0x8000_0000_0000_0000, 0, 1),
+            (-1023, 0, 0, 1),
+            (-1023, 1, 0, 1),
+            (-1023, 0x8000_0000_0000_0000, 0, 0),
+            (-1023, 0x8000_0000_0000_0000, 1, 1),
+        ] {
+            assert_eq!(
+                Binary64::round_pack_subnormal_quotient(false, exponent, q, r, d, Nearest),
+                None
+            );
+        }
+
+        let numerator = Binary64::from_bits(1);
+        let denominator = Binary32::from_bits(0x4040_0000);
+        let numerator_bits = numerator.to_bits();
+        let denominator_bits = denominator.to_bits();
+        let lhs = numerator.normalize_finite().unwrap();
+        let rhs = denominator.normalize_finite().unwrap();
+        let exact = divide_finite_significands(lhs, rhs).unwrap();
+        let _ = Binary64::round_pack_subnormal_quotient(
+            exact.sign(),
+            exact.exponent(),
+            exact.quotient(),
+            exact.remainder(),
+            exact.denominator(),
+            Nearest,
+        );
+        assert_eq!(numerator.to_bits(), numerator_bits);
+        assert_eq!(denominator.to_bits(), denominator_bits);
+    }
+
+    #[test]
+    fn subnormal_quotient_packers_compose_with_exact_binary_division() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let two32 = Binary32::from_bits(0x4000_0000).normalize_finite().unwrap();
+        let min_normal32 = Binary32::from_bits(0x0080_0000).normalize_finite().unwrap();
+        let half_min_normal32 = divide_finite_significands(min_normal32, two32).unwrap();
+        assert_eq!(half_min_normal32.exponent(), -127);
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(
+                half_min_normal32.sign(),
+                half_min_normal32.exponent(),
+                half_min_normal32.quotient(),
+                half_min_normal32.remainder(),
+                half_min_normal32.denominator(),
+                Nearest,
+            ),
+            Some((Binary32::from_bits(0x0040_0000), false)),
+        );
+        let min_subnormal32 = Binary32::from_bits(1).normalize_finite().unwrap();
+        let half_min_subnormal32 = divide_finite_significands(min_subnormal32, two32).unwrap();
+        assert_eq!(half_min_subnormal32.exponent(), -150);
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(
+                half_min_subnormal32.sign(),
+                half_min_subnormal32.exponent(),
+                half_min_subnormal32.quotient(),
+                half_min_subnormal32.remainder(),
+                half_min_subnormal32.denominator(),
+                Nearest,
+            ),
+            Some((Binary32::from_bits(0), true)),
+        );
+        let max_subnormal32 = Binary32::from_bits(0x007f_ffff).normalize_finite().unwrap();
+        let max_subnormal_quotient32 = divide_finite_significands(max_subnormal32, one32).unwrap();
+        assert_eq!(
+            Binary32::round_pack_subnormal_quotient(
+                max_subnormal_quotient32.sign(),
+                max_subnormal_quotient32.exponent(),
+                max_subnormal_quotient32.quotient(),
+                max_subnormal_quotient32.remainder(),
+                max_subnormal_quotient32.denominator(),
+                Nearest,
+            ),
+            Some((Binary32::from_bits(0x007f_ffff), false)),
+        );
+
+        let one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let two64 = Binary64::from_bits(0x4000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let min_normal64 = Binary64::from_bits(0x0010_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let half_min_normal64 = divide_finite_significands(min_normal64, two64).unwrap();
+        assert_eq!(half_min_normal64.exponent(), -1023);
+        assert_eq!(
+            Binary64::round_pack_subnormal_quotient(
+                half_min_normal64.sign(),
+                half_min_normal64.exponent(),
+                half_min_normal64.quotient(),
+                half_min_normal64.remainder(),
+                half_min_normal64.denominator(),
+                Nearest,
+            ),
+            Some((Binary64::from_bits(0x0008_0000_0000_0000), false)),
+        );
+        let min_subnormal64 = Binary64::from_bits(1).normalize_finite().unwrap();
+        let half_min_subnormal64 = divide_finite_significands(min_subnormal64, two64).unwrap();
+        assert_eq!(half_min_subnormal64.exponent(), -1075);
+        assert_eq!(
+            Binary64::round_pack_subnormal_quotient(
+                half_min_subnormal64.sign(),
+                half_min_subnormal64.exponent(),
+                half_min_subnormal64.quotient(),
+                half_min_subnormal64.remainder(),
+                half_min_subnormal64.denominator(),
+                Nearest,
+            ),
+            Some((Binary64::from_bits(0), true)),
+        );
+        let max_subnormal64 = Binary64::from_bits(0x000f_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        let max_subnormal_quotient64 = divide_finite_significands(max_subnormal64, one64).unwrap();
+        assert_eq!(
+            Binary64::round_pack_subnormal_quotient(
+                max_subnormal_quotient64.sign(),
+                max_subnormal_quotient64.exponent(),
+                max_subnormal_quotient64.quotient(),
+                max_subnormal_quotient64.remainder(),
+                max_subnormal_quotient64.denominator(),
+                Nearest,
+            ),
+            Some((Binary64::from_bits(0x000f_ffff_ffff_ffff), false)),
         );
     }
 }

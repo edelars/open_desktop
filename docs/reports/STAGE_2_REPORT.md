@@ -227,6 +227,55 @@ S2-36 rounding/exception integration and S2-37/S2-38 remain open. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36e-pack-an-already-rounded-normal-binary-value)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-36e--pack-an-already-rounded-normal-binary-value).
 
+## S2-36f — direct exact quotient rounding to subnormal units
+
+**Статус:** implementation and author checks are complete; independent Sol
+medium code review completed clean, with no findings. The public
+`Binary32::round_pack_subnormal_quotient(sign, exponent, quotient, remainder,
+denominator, mode)` and `Binary64` counterpart return `Option<(Self, bool)>`:
+the raw result and an `inexact` indication. They round directly from the
+original S2-36c quotient, remainder, denominator, and exponent into units of
+the format's least subnormal. They do not round to normal precision first and
+then shift; that sequence can double-round near the largest-subnormal/minimum-
+normal boundary.
+
+For exponent `e` and subnormal-unit exponent `L`, the helper computes widened
+`k = 63 + L - e`. Binary32 uses `L = -149`, precision 24, and `emin = -126`;
+binary64 uses `L = -1074`, precision 53, and `emin = -1022`. For `k <= 63`, it
+uses the shared S2-36d precision rounder on the original `q/r/d` with precision
+`64-k`. At `k == 64`, it compares the original value to the half-unit boundary;
+for `k > 64`, nearest/toward-zero yield zero while directed modes can yield one
+subnormal unit as required by sign. Both `k >= 64` branches are inexact for
+every admitted nonzero quotient; `k <= 63` uses S2-36d's exact inexactness
+result. The output keeps the input sign even when a nonzero value rounds to
+zero. The only status returned is `inexact`.
+
+The helper rejects exact zero or a non-normalized quotient, zero denominator,
+`remainder >= denominator`, and exponents at or above `emin`. It returns
+`None` for inputs outside this subnormal-rounding helper's domain; it does not
+signal an architectural fault. No underflow flag, MXCSR update, exception,
+zero-input handling, or x87 change is included.
+
+Source tests cover exact minimum subnormal, half-minimum-subnormal ties and
+rational tails, all directed modes for both signs at half and far-below cases,
+`k == 64` and `k > 64`, largest-subnormal/minimum-normal boundaries, signed
+zero from nonzero underflow, invalid input rejection, `i32::MIN` exponent
+safety, and composition from exact division results with input immutability.
+Author-reported checks passed:
+
+- `cargo test -p od-isa --offline binary_float::tests`: 18/18.
+- `cargo fmt --all -- --check` and `git diff --check`.
+- `cargo check --workspace --all-targets --offline`.
+- `graphify update .` completed and refreshed the graph; it repeated the
+  existing `include/open_desktop/host_abi.h` line-68 extractor warning and
+  suggested refreshing labels after community changes.
+
+Independent Sol medium code review completed clean; no findings remain. No
+physical execution is claimed; S2-36 exception integration and S2-37/S2-38
+remain open. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-36f-direct-exact-quotient-rounding-to-subnormal-units)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-36f--direct-exact-quotient-rounding-to-subnormal-units).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.
