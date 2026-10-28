@@ -1613,7 +1613,17 @@ fn is_address32_direct_stack_data_operand(
         && operand.size == OperandSize::Qword
         && operand.index.is_none()
         && operand.scale == 1
-        && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+        && matches!(
+            operand.base,
+            od_isa::long_decode::AddressBase::Register(
+                od_isa::Register::Rax
+                    | od_isa::Register::Rcx
+                    | od_isa::Register::Rdx
+                    | od_isa::Register::Rbx
+                    | od_isa::Register::Rsi
+                    | od_isa::Register::Rdi
+            )
+        )
         && displacement_valid
 }
 
@@ -2066,6 +2076,19 @@ fn is_checked_qword_memory_address(
                     instruction.length,
                     operand.displacement,
                 );
+            let rsi_rdi_direct = matches!(instruction.length, 4 | 5 | 8)
+                && matches!(
+                    operand.base,
+                    od_isa::long_decode::AddressBase::Register(
+                        od_isa::Register::Rsi | od_isa::Register::Rdi
+                    )
+                )
+                && operand.index.is_none()
+                && operand.scale == 1
+                && address32_checked_displacement_matches_length(
+                    instruction.length,
+                    operand.displacement,
+                );
             let sib = matches!(instruction.length, 5 | 6 | 9)
                 && operand.index.is_some_and(|index| (index as u8) < 4)
                 && (base_supported
@@ -2166,6 +2189,7 @@ fn is_checked_qword_memory_address(
                 && i32::try_from(operand.displacement).is_ok();
             instruction.prefixes.address_override
                 && (base_supported && direct
+                    || rsi_rdi_direct
                     || sib
                     || rbp_indexed_sib
                     || rsp_base_rbp_indexed_sib
@@ -2483,7 +2507,9 @@ pub(crate) fn exact_qword_address32_memory_bytes(
     bytes[0..3] == [0x67, 0x48, opcode]
         && bytes[3] >> 6 == expected_mode
         && (bytes[3] >> 3) & 7 <= 5
-        && (bytes[3] & 7 < 4 || expected_mode != 0 && bytes[3] & 7 == 5)
+        && (bytes[3] & 7 < 4
+            || expected_mode != 0 && bytes[3] & 7 == 5
+            || matches!(bytes[3] & 7, 6 | 7))
 }
 
 pub(crate) fn exact_qword_address32_sib_memory_bytes(

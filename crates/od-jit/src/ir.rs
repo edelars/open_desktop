@@ -704,7 +704,21 @@ fn is_checked_memory_address(
                 && (matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
                     || matches!(instruction_length, 6 | 9)
                         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp)));
+        let rsi_rdi_direct = matches!(instruction_length, 4 | 5 | 8)
+            && matches!(
+                operand.base,
+                AddressBase::Register(od_isa::Register::Rsi | od_isa::Register::Rdi)
+            )
+            && operand.index.is_none()
+            && operand.scale == 1
+            && match instruction_length {
+                4 => operand.displacement == 0,
+                5 => i8::try_from(operand.displacement).is_ok(),
+                8 => i32::try_from(operand.displacement).is_ok(),
+                _ => false,
+            };
         return (base_supported && direct)
+            || rsi_rdi_direct
             || (indexed_base_supported && indexed)
             || rbp_indexed
             || rsp_base_rbp_indexed
@@ -1097,7 +1111,17 @@ fn is_address32_direct_stack_data_operand(operand: MemoryOperand, instruction_le
     operand.address_size == od_isa::OperandSize::Dword
         && operand.index.is_none()
         && operand.scale == 1
-        && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+        && matches!(
+            operand.base,
+            AddressBase::Register(
+                od_isa::Register::Rax
+                    | od_isa::Register::Rcx
+                    | od_isa::Register::Rdx
+                    | od_isa::Register::Rbx
+                    | od_isa::Register::Rsi
+                    | od_isa::Register::Rdi
+            )
+        )
         && displacement_valid
 }
 

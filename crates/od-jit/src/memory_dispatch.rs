@@ -631,13 +631,21 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
         return CompileAt::Unsupported;
     };
     match instruction {
-        [0x67, 0x48, 0x8b, modrm] if modrm >> 6 == 0 && modrm & 7 < 4 && (modrm >> 3) & 7 <= 5 => {
+        [0x67, 0x48, 0x8b, modrm]
+            if modrm >> 6 == 0
+                && (modrm & 7 < 4 || matches!(modrm & 7, 6 | 7))
+                && (modrm >> 3) & 7 <= 5 =>
+        {
             compile_ir_memory_load_block_v2(view, rip)
                 .map(BoundedMemoryArtifact::Load)
                 .map(CompileAt::Block)
                 .unwrap_or(CompileAt::Unsupported)
         }
-        [0x67, 0x48, 0x89, modrm] if modrm >> 6 == 0 && modrm & 7 < 4 && (modrm >> 3) & 7 <= 5 => {
+        [0x67, 0x48, 0x89, modrm]
+            if modrm >> 6 == 0
+                && (modrm & 7 < 4 || matches!(modrm & 7, 6 | 7))
+                && (modrm >> 3) & 7 <= 5 =>
+        {
             compile_ir_memory_store_block_v2(view, rip)
                 .map(BoundedMemoryArtifact::Store)
                 .map(CompileAt::Block)
@@ -758,7 +766,9 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
                 .unwrap_or(CompileAt::Unsupported)
         }
         [0x67, 0x48, 0x8b, modrm, _disp]
-            if modrm >> 6 == 1 && (modrm & 7 < 4 || modrm & 7 == 5) && (modrm >> 3) & 7 <= 5 =>
+            if modrm >> 6 == 1
+                && (modrm & 7 < 4 || matches!(modrm & 7, 5 | 6 | 7))
+                && (modrm >> 3) & 7 <= 5 =>
         {
             compile_ir_memory_load_block_v2(view, rip)
                 .map(BoundedMemoryArtifact::Load)
@@ -766,7 +776,9 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
                 .unwrap_or(CompileAt::Unsupported)
         }
         [0x67, 0x48, 0x89, modrm, _disp]
-            if modrm >> 6 == 1 && (modrm & 7 < 4 || modrm & 7 == 5) && (modrm >> 3) & 7 <= 5 =>
+            if modrm >> 6 == 1
+                && (modrm & 7 < 4 || matches!(modrm & 7, 5 | 6 | 7))
+                && (modrm >> 3) & 7 <= 5 =>
         {
             compile_ir_memory_store_block_v2(view, rip)
                 .map(BoundedMemoryArtifact::Store)
@@ -774,7 +786,9 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
                 .unwrap_or(CompileAt::Unsupported)
         }
         [0x67, 0x48, 0x8b, modrm, _, _, _, _]
-            if modrm >> 6 == 2 && (modrm & 7 < 4 || modrm & 7 == 5) && (modrm >> 3) & 7 <= 5 =>
+            if modrm >> 6 == 2
+                && (modrm & 7 < 4 || matches!(modrm & 7, 5 | 6 | 7))
+                && (modrm >> 3) & 7 <= 5 =>
         {
             compile_ir_memory_load_block_v2(view, rip)
                 .map(BoundedMemoryArtifact::Load)
@@ -782,7 +796,9 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
                 .unwrap_or(CompileAt::Unsupported)
         }
         [0x67, 0x48, 0x89, modrm, _, _, _, _]
-            if modrm >> 6 == 2 && (modrm & 7 < 4 || modrm & 7 == 5) && (modrm >> 3) & 7 <= 5 =>
+            if modrm >> 6 == 2
+                && (modrm & 7 < 4 || matches!(modrm & 7, 5 | 6 | 7))
+                && (modrm >> 3) & 7 <= 5 =>
         {
             compile_ir_memory_store_block_v2(view, rip)
                 .map(BoundedMemoryArtifact::Store)

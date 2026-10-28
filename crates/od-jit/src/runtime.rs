@@ -239,6 +239,24 @@ impl MemorySiteV2 {
                 7 => i32::try_from(self.operand.displacement).is_ok(),
                 _ => false,
             };
+        let address32_rsi_rdi_direct_data_profile = self.operand.address_size
+            == od_isa::OperandSize::Dword
+            && self.operand.size == od_isa::OperandSize::Qword
+            && matches!(length, 4 | 5 | 8)
+            && matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(
+                    od_isa::Register::Rsi | od_isa::Register::Rdi
+                )
+            )
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && match length {
+                4 => self.operand.displacement == 0,
+                5 => i8::try_from(self.operand.displacement).is_ok(),
+                8 => i32::try_from(self.operand.displacement).is_ok(),
+                _ => false,
+            };
         let indexed_sib_base_profile = base_is_low_gpr
             || matches!(
                 self.operand.base,
@@ -428,6 +446,7 @@ impl MemorySiteV2 {
             || indexed_no_base_sib_disp32_data_profile
             || indexed_no_base_rbp_sib_disp32_data_profile
             || rsi_rdi_direct_data_profile
+            || address32_rsi_rdi_direct_data_profile
             || (self.operand.address_size == od_isa::OperandSize::Qword
                 && self.operand.size == od_isa::OperandSize::Qword
                 && (indexed_sib_data_profile
@@ -570,6 +589,7 @@ impl MemorySiteV2 {
                         | od_isa::Register::Rdx
                         | od_isa::Register::Rbx
                 ) || rsi_rdi_direct_data_profile
+                    || address32_rsi_rdi_direct_data_profile
                     || register == od_isa::Register::Rbp && matches!(length, 4 | 7)
                     || register == od_isa::Register::Rsp
                         && matches!(length, 4 | 5 | 8)
@@ -688,7 +708,7 @@ impl MemorySiteV2 {
                         | od_isa::Register::Rdx
                         | od_isa::Register::Rbx
                 )
-            );
+            ) || address32_rsi_rdi_direct_data_profile;
             let direct = self.operand.index.is_none()
                 && self.operand.scale == 1
                 && match length {
@@ -1007,6 +1027,8 @@ impl MemorySiteV2 {
             return source.len() == expected_length
                 && data_register <= 5
                 && (base < 4
+                    || base == 6 && decoded_base == od_isa::Register::Rsi
+                    || base == 7 && decoded_base == od_isa::Register::Rdi
                     || matches!(mode, 1 | 2)
                         && base == 5
                         && decoded_base == od_isa::Register::Rbp)

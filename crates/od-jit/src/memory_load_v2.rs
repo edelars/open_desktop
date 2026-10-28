@@ -1784,7 +1784,7 @@ mod tests {
             vec![0x48, 0x8b, 0x76, 0x00],       // RSI data with RSI + disp8
             vec![0x48, 0x89, 0xbf, 0, 0, 0, 0], // RDI data with RDI + disp32
             vec![0x48, 0x8b, 0x04, 0x2e],       // SIB with RSI base
-            vec![0x67, 0x48, 0x8b, 0x06],       // address32 override
+            vec![0x67, 0x48, 0x8b, 0x04, 0x2e], // address32 SIB with RSI base is outside this profile
             vec![0x48, 0x8b, 0x36],             // RSI as data
             vec![0x48, 0x8b, 0x3e],             // RDI as data
             vec![0x48, 0x8b, 0x46],             // truncated disp8
@@ -1795,6 +1795,94 @@ mod tests {
             let code = CodeView::new(0x5a00, &invalid).unwrap();
             assert!(compile_ir_memory_load_block_v2(code, 0x5a00).is_err());
             assert!(compile_ir_memory_store_block_v2(code, 0x5a00).is_err());
+        }
+    }
+
+    #[test]
+    fn address32_rsi_rdi_direct_qword_bases_have_exact_displacement_profiles() {
+        let displacement_forms = [
+            (0_u8, 0_i64),
+            (1, i8::MIN as i64),
+            (1, -1),
+            (1, 0),
+            (1, i8::MAX as i64),
+            (2, i32::MIN as i64),
+            (2, -1),
+            (2, 0),
+            (2, 1),
+            (2, i32::MAX as i64),
+        ];
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data in 0..6_u8 {
+                for base in [6_u8, 7] {
+                    for (mode, displacement) in displacement_forms {
+                        let mut source = vec![0x67, 0x48, opcode, (mode << 6) | (data << 3) | base];
+                        match mode {
+                            0 => {}
+                            1 => source.push(displacement as i8 as u8),
+                            2 => source.extend_from_slice(&(displacement as i32).to_le_bytes()),
+                            _ => unreachable!(),
+                        }
+                        let code = CodeView::new(0x5b00, &source).unwrap();
+                        let (site, copied) = match operation {
+                            MemorySiteOperationV2::Load => {
+                                let ir = compile_ir_memory_load_block_v2(code, 0x5b00).unwrap();
+                                let direct = compile_memory_load_block_v2(code, 0x5b00).unwrap();
+                                assert_eq!(ir.site(), direct.site());
+                                (ir.site().clone(), ir.source_bytes().to_vec())
+                            }
+                            MemorySiteOperationV2::Store => {
+                                let ir = compile_ir_memory_store_block_v2(code, 0x5b00).unwrap();
+                                let direct = compile_memory_store_block_v2(code, 0x5b00).unwrap();
+                                assert_eq!(ir.site(), direct.site());
+                                (ir.site().clone(), ir.source_bytes().to_vec())
+                            }
+                        };
+                        let expected_base = if base == 6 {
+                            Register::Rsi
+                        } else {
+                            Register::Rdi
+                        };
+                        assert_eq!(copied, source);
+                        assert_eq!(site.next_rip(), 0x5b00 + source.len() as u64);
+                        assert_eq!(site.operand().address_size, od_isa::OperandSize::Dword);
+                        assert_eq!(site.operand().size, od_isa::OperandSize::Qword);
+                        assert_eq!(site.operand().base, AddressBase::Register(expected_base));
+                        assert_eq!(site.operand().index, None);
+                        assert_eq!(site.operand().scale, 1);
+                        assert_eq!(site.operand().displacement, displacement);
+                        assert_eq!(site.operation(), operation);
+                        assert_eq!(
+                            site.destination(),
+                            (operation == MemorySiteOperationV2::Load).then_some(data)
+                        );
+                        assert_eq!(
+                            site.source(),
+                            (operation == MemorySiteOperationV2::Store).then_some(data)
+                        );
+                        assert!(site.has_supported_profile());
+                        assert!(site.matches_source_bytes(&source, operation));
+                    }
+                }
+            }
+        }
+
+        for invalid in [
+            vec![0x67, 0x48, 0x8b, 0x04, 0x06],    // SIB instead of direct ESI
+            vec![0x67, 0x48, 0x8b, 0x30],          // RSI data
+            vec![0x67, 0x48, 0x8b, 0x3f],          // RDI data
+            vec![0x67, 0x48, 0x8b, 0x76],          // partial disp8
+            vec![0x67, 0x48, 0x8b, 0x86, 0, 0, 0], // partial disp32
+            vec![0x67, 0x48, 0x67, 0x8b, 0x06],    // extra/reordered prefix
+        ] {
+            let code = CodeView::new(0x5b00, &invalid).unwrap();
+            assert!(compile_ir_memory_load_block_v2(code, 0x5b00).is_err());
+            assert!(compile_memory_load_block_v2(code, 0x5b00).is_err());
+            assert!(compile_ir_memory_store_block_v2(code, 0x5b00).is_err());
+            assert!(compile_memory_store_block_v2(code, 0x5b00).is_err());
         }
     }
 
