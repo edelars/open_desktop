@@ -12900,5 +12900,9 @@ encoding/schema negatives, the literal fixture's interpreter result and JIT
 denial, and STOP/zero-budget atomicity. `cargo check -p od-x86-runner --tests
 --offline --target x86_64-unknown-linux-gnu` passed, compiling the Linux-only
 native-denial test; the test itself was not executed on this Darwin host.
-Independent review remains pending; S2-34, S2-35 and global
+The native runner returns the local-only denial before memory mapping or process
+setup. Truncation coverage confirms the four-byte instruction prefix/opcode/
+ModR/M sequence at 0xffc and the missing imm8 fetch at 0x1000; a complete
+five-byte case confirms a successful fetch across the same boundary.
+Independent Sol review found no remaining findings. S2-34, S2-35 and global
 `S2-35 → S2-34` remain open.

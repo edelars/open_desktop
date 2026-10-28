@@ -8731,10 +8731,15 @@ strict encoding/schema negatives, full-state/source preservation, no data
 callbacks, and STOP/zero-budget atomicity. The handwritten XMM9 fixture is
 checked through interpreter execution with JIT denied; a Linux-only native
 admission denial guard is compiled for the Linux target on this Darwin host, but
-not executed there. These checks need
-independent review. Other shifts, memory/MMX forms, REX.R/X/W, VEX/EVEX, feature gates,
-exception delivery and physical execution remain excluded. S2-34, S2-35,
-global `S2-35 → S2-34`, and combined Mac mini/SSH acceptance remain open.
+not executed there. Tests also verify the missing immediate fetch at 0x1000
+after four instruction bytes at 0xffc, plus successful five-byte fetch across
+that boundary. The native runner rejects this local-only profile before mapping
+or process setup. Formatting, focused PSLLW interpreter and fixture tests,
+host/Linux-target test compilation, and Graphify passed; independent review
+found no remaining issues. Other shifts, memory/MMX forms, REX.R/X/W, VEX/EVEX,
+feature gates, exception delivery and physical execution remain excluded.
+S2-34, S2-35, global `S2-35 → S2-34`, and combined Mac mini/SSH acceptance
+remain open.
 
 
 #### S2-35.33 — local-only bounded register `PACKUSWB`
