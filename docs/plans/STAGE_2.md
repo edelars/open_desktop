@@ -465,6 +465,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36i | Compose finite binary32/binary64 multiplication through one rounding | S2-36b, S2-36d–36f; independent review |
 | [x] | S2-36j | Compose bounded aligned finite binary32/binary64 addition through one rounding | S2-36d–36h; independent review |
 | [x] | S2-36k | Compose bounded aligned finite binary32/binary64 subtraction through one rounding | S2-36j; independent review |
+| [x] | S2-36l | Compare finite normalized binary32/binary64 values | S2-36a; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5150,6 +5151,31 @@ notice. Independent Sol review completed clean with no findings. Wider gaps,
 full guest subtraction/exception policy, broader S2-36 arithmetic, and hardware
 validation remain open.
 See the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36k--finite-binary-subtraction-composition).
+
+#### S2-36l — finite binary comparison helper
+
+Add `compare_finite(lhs: BinaryFinite, rhs: BinaryFinite) ->
+core::cmp::Ordering` as a numeric comparison for finite normalized values.
+Treat positive and negative zero as numerically Equal while preserving the
+separate raw-bit identity of `Binary32`/`Binary64`. For nonzero operands,
+negative values precede positive values. Within one sign, compare normalized
+`(exponent, significand)` lexicographically and reverse the result for
+negative values. Do not add `Eq`/`Ord` implementations or change the raw
+encoding equality of either wrapper. Do not use host floating-point
+operations.
+
+Literal checks cover zero pairs and signed-zero ordering around zero in both
+formats; strict `-2 < -1 < 0 < 1 < 2` chains; adjacent encodings around 1 and
+2; largest-subnormal/minimum-normal and minimum-subnormal/maximum-finite
+boundaries; and exact mixed-format equality for 1, minimum subnormal, and
+minimum normal. They also check mixed-precision ordering, reflexivity,
+symmetry, transitivity, source-class retention, and input immutability. The
+author reports `cargo test -p od-isa --offline binary_float::tests` passing
+35/35; format, diff, workspace all-target offline check, and Graphify update
+passing. Independent Sol code review completed clean, with no findings. NaN/infinity unordered
+semantics, SSE comparison predicates and lane/EFLAGS effects, DAZ/MXCSR,
+x87, and instruction integration remain outside this helper.
+See the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36l--finite-binary-comparison).
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

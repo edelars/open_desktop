@@ -594,6 +594,51 @@ impl BinaryFinite {
     }
 }
 
+/// Compares two finite values numerically without changing raw-encoding identity.
+///
+/// Signed zeros compare equal. Nonzero values compare by sign and then by their
+/// normalized `(exponent, significand)` pair; negative magnitudes reverse that
+/// order. This helper does not define NaN, infinity, or guest comparison flags.
+pub fn compare_finite(lhs: BinaryFinite, rhs: BinaryFinite) -> core::cmp::Ordering {
+    use core::cmp::Ordering;
+
+    let lhs_zero = lhs.significand == 0;
+    let rhs_zero = rhs.significand == 0;
+    match (lhs_zero, rhs_zero) {
+        (true, true) => return Ordering::Equal,
+        (true, false) => {
+            return if rhs.sign {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            };
+        }
+        (false, true) => {
+            return if lhs.sign {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
+        }
+        (false, false) => {}
+    }
+
+    if lhs.sign != rhs.sign {
+        return if lhs.sign {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        };
+    }
+
+    let magnitude_order = (lhs.exponent, lhs.significand).cmp(&(rhs.exponent, rhs.significand));
+    if lhs.sign {
+        magnitude_order.reverse()
+    } else {
+        magnitude_order
+    }
+}
+
 /// Multiplies two normalized finite significands without rounding or packing.
 ///
 /// For nonzero inputs, returns `(sign, exponent, magnitude)` such that the exact
@@ -873,9 +918,11 @@ fn round_subnormal_quotient(
 mod tests {
     use super::{
         Binary32, Binary64, BinaryClass, BinaryFinite, BinaryFiniteQuotient, RationalRoundingMode,
-        add_finite_aligned, divide_finite_significands, multiply_finite_significands,
-        round_quotient_to_precision,
+        add_finite_aligned, compare_finite, divide_finite_significands,
+        multiply_finite_significands, round_quotient_to_precision,
     };
+
+    use core::cmp::Ordering;
 
     fn normalized(
         value: BinaryFinite,
@@ -935,6 +982,207 @@ mod tests {
             u128::from(quotient) * u128::from(denominator) + u128::from(remainder),
             scaled_numerator,
         );
+    }
+
+    #[test]
+    fn finite_comparison_orders_signed_zeros_and_binary32_values() {
+        let positive_zero32 = Binary32::from_bits(0).normalize_finite().unwrap();
+        let negative_zero32 = Binary32::from_bits(0x8000_0000).normalize_finite().unwrap();
+        let positive_min_subnormal32 = Binary32::from_bits(1).normalize_finite().unwrap();
+        let negative_min_subnormal32 = Binary32::from_bits(0x8000_0001).normalize_finite().unwrap();
+
+        for lhs in [positive_zero32, negative_zero32] {
+            for rhs in [positive_zero32, negative_zero32] {
+                assert_eq!(compare_finite(lhs, rhs), Ordering::Equal);
+            }
+        }
+        assert_ne!(Binary32::from_bits(0), Binary32::from_bits(0x8000_0000));
+        assert_eq!(
+            compare_finite(negative_min_subnormal32, positive_zero32),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_finite(negative_min_subnormal32, negative_zero32),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_finite(positive_zero32, positive_min_subnormal32),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_finite(negative_zero32, positive_min_subnormal32),
+            Ordering::Less
+        );
+
+        let negative_two32 = Binary32::from_bits(0xc000_0000).normalize_finite().unwrap();
+        let negative_one32 = Binary32::from_bits(0xbf80_0000).normalize_finite().unwrap();
+        let positive_one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let positive_two32 = Binary32::from_bits(0x4000_0000).normalize_finite().unwrap();
+        let chain32 = [
+            negative_two32,
+            negative_one32,
+            positive_zero32,
+            positive_one32,
+            positive_two32,
+        ];
+        assert_strict_comparison_chain(&chain32);
+
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let next_one32 = Binary32::from_bits(0x3f80_0001).normalize_finite().unwrap();
+        let negative_one32_next = Binary32::from_bits(0xbf80_0001).normalize_finite().unwrap();
+        let negative_one32_exact = Binary32::from_bits(0xbf80_0000).normalize_finite().unwrap();
+        assert_comparison_pair(one32, next_one32, Ordering::Less);
+        assert_comparison_pair(negative_one32_next, negative_one32_exact, Ordering::Less);
+
+        let largest_below_two32 = Binary32::from_bits(0x3fff_ffff).normalize_finite().unwrap();
+        let two32 = Binary32::from_bits(0x4000_0000).normalize_finite().unwrap();
+        assert_comparison_pair(largest_below_two32, two32, Ordering::Less);
+        let largest_subnormal32 = Binary32::from_bits(0x007f_ffff).normalize_finite().unwrap();
+        let min_normal32 = Binary32::from_bits(0x0080_0000).normalize_finite().unwrap();
+        assert_comparison_pair(largest_subnormal32, min_normal32, Ordering::Less);
+        let max_finite32 = Binary32::from_bits(0x7f7f_ffff).normalize_finite().unwrap();
+        assert_comparison_pair(positive_min_subnormal32, max_finite32, Ordering::Less);
+        let negative_max_finite32 = Binary32::from_bits(0xff7f_ffff).normalize_finite().unwrap();
+        assert_comparison_pair(
+            negative_max_finite32,
+            negative_min_subnormal32,
+            Ordering::Less,
+        );
+    }
+
+    #[test]
+    fn finite_comparison_orders_binary64_values_and_mixed_precisions() {
+        let positive_zero64 = Binary64::from_bits(0).normalize_finite().unwrap();
+        let negative_zero64 = Binary64::from_bits(0x8000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let positive_min_subnormal64 = Binary64::from_bits(1).normalize_finite().unwrap();
+        let negative_min_subnormal64 = Binary64::from_bits(0x8000_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        for lhs in [positive_zero64, negative_zero64] {
+            for rhs in [positive_zero64, negative_zero64] {
+                assert_eq!(compare_finite(lhs, rhs), Ordering::Equal);
+            }
+        }
+        assert_ne!(
+            Binary64::from_bits(0),
+            Binary64::from_bits(0x8000_0000_0000_0000)
+        );
+        assert_comparison_pair(negative_min_subnormal64, negative_zero64, Ordering::Less);
+        assert_comparison_pair(negative_zero64, positive_min_subnormal64, Ordering::Less);
+
+        let negative_two64 = Binary64::from_bits(0xc000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_one64 = Binary64::from_bits(0xbff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let positive_one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let positive_two64 = Binary64::from_bits(0x4000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let chain64 = [
+            negative_two64,
+            negative_one64,
+            positive_zero64,
+            positive_one64,
+            positive_two64,
+        ];
+        assert_strict_comparison_chain(&chain64);
+
+        let next_one64 = Binary64::from_bits(0x3ff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        let negative_next_one64 = Binary64::from_bits(0xbff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        assert_comparison_pair(positive_one64, next_one64, Ordering::Less);
+        assert_comparison_pair(negative_next_one64, negative_one64, Ordering::Less);
+
+        let largest_below_two64 = Binary64::from_bits(0x3fff_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        let two64 = Binary64::from_bits(0x4000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_comparison_pair(largest_below_two64, two64, Ordering::Less);
+        let largest_subnormal64 = Binary64::from_bits(0x000f_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        let min_normal64 = Binary64::from_bits(0x0010_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_comparison_pair(largest_subnormal64, min_normal64, Ordering::Less);
+        let max_finite64 = Binary64::from_bits(0x7fef_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        assert_comparison_pair(positive_min_subnormal64, max_finite64, Ordering::Less);
+        let negative_max_finite64 = Binary64::from_bits(0xffef_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        assert_comparison_pair(
+            negative_max_finite64,
+            negative_min_subnormal64,
+            Ordering::Less,
+        );
+
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let next_one64 = Binary64::from_bits(0x3ff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        let next_one32 = Binary32::from_bits(0x3f80_0001).normalize_finite().unwrap();
+        assert_comparison_pair(one32, one64, Ordering::Equal);
+        let min_subnormal32 = Binary32::from_bits(1).normalize_finite().unwrap();
+        let same_min_subnormal64 = Binary64::from_bits(0x36a0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_comparison_pair(min_subnormal32, same_min_subnormal64, Ordering::Equal);
+        let min_normal32 = Binary32::from_bits(0x0080_0000).normalize_finite().unwrap();
+        let same_min_normal64 = Binary64::from_bits(0x3810_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_comparison_pair(min_normal32, same_min_normal64, Ordering::Equal);
+        assert_comparison_pair(one32, next_one64, Ordering::Less);
+        assert_comparison_pair(next_one64, next_one32, Ordering::Less);
+
+        assert_eq!(min_subnormal32.source_class(), BinaryClass::Subnormal);
+        assert_eq!(same_min_subnormal64.source_class(), BinaryClass::Normal);
+        assert_eq!(min_normal32.source_class(), BinaryClass::Normal);
+        assert_eq!(same_min_normal64.source_class(), BinaryClass::Normal);
+        assert_eq!(
+            compare_finite(min_subnormal32, min_subnormal32),
+            Ordering::Equal
+        );
+    }
+
+    fn assert_comparison_pair(lhs: BinaryFinite, rhs: BinaryFinite, expected: Ordering) {
+        let lhs_before = lhs;
+        let rhs_before = rhs;
+        assert_eq!(compare_finite(lhs, rhs), expected);
+        assert_eq!(compare_finite(rhs, lhs), expected.reverse());
+        assert_eq!(compare_finite(lhs, lhs), Ordering::Equal);
+        assert_eq!(compare_finite(rhs, rhs), Ordering::Equal);
+        assert_eq!(lhs, lhs_before);
+        assert_eq!(rhs, rhs_before);
+    }
+
+    fn assert_strict_comparison_chain(values: &[BinaryFinite]) {
+        for pair in values.windows(2) {
+            assert_eq!(compare_finite(pair[0], pair[1]), Ordering::Less);
+        }
+        for triple in values.windows(3) {
+            assert_eq!(compare_finite(triple[0], triple[2]), Ordering::Less);
+            assert_eq!(
+                compare_finite(triple[0], triple[2]),
+                compare_finite(triple[0], triple[1]).then(compare_finite(triple[1], triple[2]))
+            );
+        }
     }
 
     #[test]

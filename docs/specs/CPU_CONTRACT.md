@@ -10659,3 +10659,32 @@ complete guest subtraction/exception semantics, broader S2-36 arithmetic, and
 hardware validation remain open. See the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36k--finite-binary-subtraction-composition)
 and [plan](../plans/STAGE_2.md#s2-36k--finite-binary-subtraction-composition).
+
+## Local S2-36l: finite binary comparison
+
+`compare_finite(lhs: BinaryFinite, rhs: BinaryFinite) ->
+core::cmp::Ordering` provides numeric ordering for two finite normalized
+values. Either signed zero compares Equal to the other signed zero, but
+`Binary32` and `Binary64` retain raw-bit equality, so their positive and
+negative zero encodings remain distinct under `Eq`. No wrapper `Eq`/`Ord`
+implementation changes. Host floating-point operations are not used.
+
+For nonzero finite operands, a negative value is less than a positive value.
+If the signs match, compare `(exponent, significand)` lexicographically; for
+negative values reverse that magnitude ordering. This order spans both source
+formats because `BinaryFinite` represents the exact normalized mathematical
+value independently of binary32/binary64 encoding precision.
+
+Tests cover signed-zero pairs and ordering next to zero for both formats,
+`-2 < -1 < 0 < 1 < 2`, adjacent encodings around 1 and 2, the
+largest-subnormal/minimum-normal and minimum-subnormal/maximum-finite
+boundaries, and mixed-format equality at 1, minimum subnormal, and minimum
+normal. Mixed-precision ordering, reflexivity, symmetry, transitivity,
+retained source class, and input immutability are checked. Author-reported
+`cargo test -p od-isa --offline binary_float::tests` passed 35/35; formatting,
+diff, workspace all-target offline check, and Graphify update passed.
+Independent Sol review completed clean, with no findings. NaN/infinity unordered comparisons, SSE
+predicates, lane/EFLAGS effects, DAZ/MXCSR, x87, and instruction semantics
+remain deferred. See the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36l--finite-binary-comparison)
+and [plan](../plans/STAGE_2.md#s2-36l--finite-binary-comparison-helper).

@@ -522,6 +522,40 @@ hardware validation remain open. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36k-finite-binary-subtraction-composition)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-36k--finite-binary-subtraction-composition).
 
+## S2-36l — finite binary comparison
+
+**Статус:** finite comparison helper and author checks are complete;
+independent Sol medium code review completed clean, with no findings. Public
+`compare_finite(lhs: BinaryFinite, rhs: BinaryFinite) ->
+core::cmp::Ordering` compares finite normalized values numerically. Signed
+zeros compare Equal, while `Binary32`/`Binary64` raw-bit `Eq` remains unchanged
+and still distinguishes the two zero encodings. For nonzero values, compare
+sign first; for matching signs, compare normalized `(exponent, significand)`
+lexicographically and reverse the magnitude order when both values are
+negative. The helper performs no host floating-point operations and adds no
+wrapper `Eq`/`Ord` implementation.
+
+Tests cover signed-zero pairs and ordering around zero in both formats,
+`-2 < -1 < 0 < 1 < 2`, adjacent encodings around 1 and 2,
+largest-subnormal/minimum-normal and minimum-subnormal/maximum-finite
+boundaries, and exact mixed-format equality for 1, minimum subnormal, and
+minimum normal. Mixed precision ordering, reflexivity, symmetry, transitivity,
+source-class retention, and input immutability are also covered.
+
+Author-reported checks passed:
+
+- `cargo test -p od-isa --offline binary_float::tests`: 35/35.
+- `cargo fmt --all -- --check`.
+- `git diff --check`.
+- `cargo check --workspace --all-targets --offline`.
+- `graphify update .` completed with the known `host_abi.h` syntax warning.
+
+Independent Sol medium code review completed clean, with no findings. NaN/infinity unordered
+semantics, SSE predicates and lane/EFLAGS effects, DAZ/MXCSR, x87, and guest
+instruction integration remain outside this local helper. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-36l-finite-binary-comparison)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-36l--finite-binary-comparison-helper).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.
