@@ -463,6 +463,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36g | Bounded exact aligned addition of finite significands | S2-36a; independent review |
 | [x] | S2-36h | Compose finite binary32/binary64 division through one rounding | S2-36c–36f; independent review |
 | [x] | S2-36i | Compose finite binary32/binary64 multiplication through one rounding | S2-36b, S2-36d–36f; independent review |
+| [x] | S2-36j | Compose bounded aligned finite binary32/binary64 addition through one rounding | S2-36d–36h; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5062,6 +5063,52 @@ Independent Sol review completed clean with no findings. Keep broader S2-36
 arithmetic and S2-37/S2-38 instruction/exception work open; hardware
 validation is deferred.
 See the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36i--finite-binary-multiplication-composition).
+
+#### S2-36j — finite binary addition composition
+
+Add `Binary32::add_finite_aligned(lhs, rhs, mode)` and the `Binary64`
+counterpart, returning `Option<(Self, bool)>`: destination encoding plus final
+mathematical `inexact`. Inputs are finite normalized `BinaryFinite` values.
+The underlying exact alignment accepts exponent gaps up to 64; wider gaps
+return `None`. One zero operand is the mathematical identity and returns the
+other operand rounded to the destination format. Both-zero and exact
+cancellation return `None`, leaving guest zero-sign selection to a later
+layer. No guest exceptions, overflow/infinity policy, or flags are defined.
+
+For nonzero operands, align the unsigned significands to the smaller exponent
+using `u128`; add magnitudes for equal signs and subtract the smaller magnitude
+from the larger for opposite signs. The helper’s exact result is
+`(-1)^sign * magnitude * 2^(exponent-63)`. Normalize that magnitude into a
+private quotient/remainder bridge without dropping bits. Every normalized
+binary32/binary64 significand has at least 11 low zero bits; alignment,
+addition, subtraction, and normalization preserve at least one, so the bridge
+can represent the exact value as
+`(-1)^sign * (q + r / 2^63) * 2^(e-63)`. This proof is specific to the current
+finite binary formats, not a generic `u128` conversion.
+
+Select destination precision and `emin` even for mixed-format operands:
+binary32 p=24/emin=-126 and binary64 p=53/emin=-1022. For a normal result,
+round the exact bridge once through S2-36d and pack through S2-36e. For a
+subnormal result, round the original exact bridge directly through S2-36f.
+Do not round an intermediate extended-precision value or round to normal
+precision before selecting the subnormal path. A nonzero exact sum that rounds
+to zero keeps the sum sign. No x87 behavior changes.
+
+Literal regressions cover same-sign sums, opposite-sign differences,
+`successor(1)+(-1)=+2^-52` and `(-successor(1))+1=-2^-52` deep cancellation,
+exact min-subnormal results, the accepted gap-64 and
+rejected gap-65 boundary, zero-neutral signs, mixed-format conversion, and
+input immutability. They also cover a normal binary64 midpoint double-round
+case (`0x3ff0_0000_0000_0001 + 0x3c9f_ffff_ffff_ffff` must round to
+`0x3ff0_0000_0000_0001`, inexact) and a binary64-to-binary32 subnormal
+double-round case (result `0x007f_ffff`, inexact). The author reports focused
+tests passing 30/30, formatting/diff checks and workspace offline all-target
+check passing, and Graphify update completing at 7776 nodes/15361 edges with
+the known `include/open_desktop/host_abi.h` syntax warning and label-refresh
+notice. Independent Sol code review completed clean, with no findings. Keep wider exponent gaps,
+standalone subtraction, overflow/exception policy, broader S2-36 arithmetic,
+S2-37/S2-38 instruction work, and hardware validation open.
+See the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36j--finite-binary-addition-composition).
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

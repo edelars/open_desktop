@@ -241,6 +241,36 @@ impl Binary32 {
             )
         }
     }
+
+    /// Adds two finite values and rounds once to binary32 precision.
+    ///
+    /// The exact aligned sum is bridged without discarding bits before target
+    /// rounding. Both-zero and exact-cancellation cases return `None`, leaving
+    /// their guest zero sign policy to a later layer.
+    pub fn add_finite_aligned(
+        lhs: BinaryFinite,
+        rhs: BinaryFinite,
+        mode: RationalRoundingMode,
+    ) -> Option<(Self, bool)> {
+        let (sign, exponent, magnitude) = add_finite_aligned(lhs, rhs)?;
+        let (sign, exponent, quotient, remainder, denominator) =
+            finite_sum_quotient(sign, exponent, magnitude)?;
+        if exponent >= -126 {
+            let (rounded, inexact) =
+                round_quotient_to_precision(sign, quotient, remainder, denominator, 24, mode)?;
+            let value = Self::pack_normal_rounded_significand(sign, exponent, rounded)?;
+            Some((value, inexact))
+        } else {
+            Self::round_pack_subnormal_quotient(
+                sign,
+                exponent,
+                quotient,
+                remainder,
+                denominator,
+                mode,
+            )
+        }
+    }
 }
 
 /// An immutable binary64 encoding.
@@ -464,6 +494,36 @@ impl Binary64 {
             )
         }
     }
+
+    /// Adds two finite values and rounds once to binary64 precision.
+    ///
+    /// The exact aligned sum is bridged without discarding bits before target
+    /// rounding. Both-zero and exact-cancellation cases return `None`, leaving
+    /// their guest zero sign policy to a later layer.
+    pub fn add_finite_aligned(
+        lhs: BinaryFinite,
+        rhs: BinaryFinite,
+        mode: RationalRoundingMode,
+    ) -> Option<(Self, bool)> {
+        let (sign, exponent, magnitude) = add_finite_aligned(lhs, rhs)?;
+        let (sign, exponent, quotient, remainder, denominator) =
+            finite_sum_quotient(sign, exponent, magnitude)?;
+        if exponent >= -1022 {
+            let (rounded, inexact) =
+                round_quotient_to_precision(sign, quotient, remainder, denominator, 53, mode)?;
+            let value = Self::pack_normal_rounded_significand(sign, exponent, rounded)?;
+            Some((value, inexact))
+        } else {
+            Self::round_pack_subnormal_quotient(
+                sign,
+                exponent,
+                quotient,
+                remainder,
+                denominator,
+                mode,
+            )
+        }
+    }
 }
 
 /// Exact normalized representation shared by finite binary32 and binary64 values.
@@ -591,6 +651,30 @@ pub fn add_finite_aligned(lhs: BinaryFinite, rhs: BinaryFinite) -> Option<(bool,
     } else {
         Some((rhs.sign, exponent, rhs_magnitude - lhs_magnitude))
     }
+}
+
+fn finite_sum_quotient(
+    sign: bool,
+    exponent: i32,
+    magnitude: u128,
+) -> Option<(bool, i32, u64, u64, u64)> {
+    if magnitude == 0 {
+        return None;
+    }
+    let shift = magnitude.leading_zeros();
+    let normalized = magnitude << shift;
+    let low = normalized as u64;
+    if low & 1 != 0 {
+        return None;
+    }
+    let normalized_exponent = i32::try_from(i64::from(exponent) + 64 - i64::from(shift)).ok()?;
+    let quotient = (normalized >> 64) as u64;
+    let remainder = low >> 1;
+    let denominator = 1_u64 << 63;
+    if quotient < (1_u64 << 63) || remainder >= denominator {
+        return None;
+    }
+    Some((sign, normalized_exponent, quotient, remainder, denominator))
 }
 
 /// Exact quotient and remainder decomposition for two normalized finite values.
@@ -2174,6 +2258,274 @@ mod tests {
         );
         assert_eq!(subnormal_edge_raw.to_bits(), edge_before);
         assert_eq!(one_raw.to_bits(), one_before);
+    }
+
+    #[test]
+    fn finite_addition_composes_once_to_normal_binary32_and_binary64() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary32::add_finite_aligned(one32, one32, Nearest),
+            Some((Binary32::from_bits(0x4000_0000), false)),
+        );
+        assert_eq!(
+            Binary64::add_finite_aligned(one64, one64, Nearest),
+            Some((Binary64::from_bits(0x4000_0000_0000_0000), false)),
+        );
+
+        let one_and_half = Binary64::from_bits(0x3ff8_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_one64 = Binary64::from_bits(0xbff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary32::add_finite_aligned(one_and_half, negative_one64, Nearest),
+            Some((Binary32::from_bits(0x3f00_0000), false)),
+        );
+
+        let successor_one64 = Binary64::from_bits(0x3ff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        let negative_successor_one64 = Binary64::from_bits(0xbff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        let negative_one64 = Binary64::from_bits(0xbff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::add_finite_aligned(successor_one64, negative_one64, Nearest),
+            Some((Binary64::from_bits(0x3cb0_0000_0000_0000), false)),
+        );
+        assert_eq!(
+            Binary64::add_finite_aligned(negative_successor_one64, one64, Nearest),
+            Some((Binary64::from_bits(0xbcb0_0000_0000_0000), false)),
+        );
+
+        let two_to_minus_64 = Binary64::from_bits(0x3bf0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_two_to_minus_64 = Binary64::from_bits(0xbbf0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        for (mode, expected_positive, expected_below) in [
+            (Nearest, 0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000),
+            (Zero, 0x3ff0_0000_0000_0000, 0x3fef_ffff_ffff_ffff),
+            (Up, 0x3ff0_0000_0000_0001, 0x3ff0_0000_0000_0000),
+            (Down, 0x3ff0_0000_0000_0000, 0x3fef_ffff_ffff_ffff),
+        ] {
+            assert_eq!(
+                Binary64::add_finite_aligned(one64, two_to_minus_64, mode),
+                Some((Binary64::from_bits(expected_positive), true)),
+            );
+            assert_eq!(
+                Binary64::add_finite_aligned(one64, negative_two_to_minus_64, mode),
+                Some((Binary64::from_bits(expected_below), true)),
+            );
+        }
+
+        let tail_above_binary32_midpoint = Binary64::from_bits(0x3e70_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary32::add_finite_aligned(one64, tail_above_binary32_midpoint, Nearest),
+            Some((Binary32::from_bits(0x3f80_0001), true)),
+        );
+
+        let min_normal_plus_halfway = Binary64::from_bits(0x3810_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_halfway = Binary64::from_bits(0xb690_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary32::add_finite_aligned(min_normal_plus_halfway, negative_halfway, Nearest),
+            Some((Binary32::from_bits(0x007f_ffff), true)),
+        );
+
+        let two_to_minus_149 = Binary64::from_bits(0x36a0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_two_to_minus_150 = Binary64::from_bits(0xb690_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let positive_sum =
+            Binary32::add_finite_aligned(two_to_minus_149, negative_two_to_minus_150, Nearest)
+                .unwrap();
+        assert_eq!(positive_sum, (Binary32::from_bits(0), true));
+        let negative_sum = Binary32::add_finite_aligned(
+            Binary64::from_bits(0xb6a0_0000_0000_0000)
+                .normalize_finite()
+                .unwrap(),
+            Binary64::from_bits(0x3690_0000_0000_0000)
+                .normalize_finite()
+                .unwrap(),
+            Nearest,
+        )
+        .unwrap();
+        assert_eq!(negative_sum, (Binary32::from_bits(0x8000_0000), true));
+
+        // Directed modes remain mathematical rounding only; the returned bit
+        // sign follows each nonzero exact sum even when its magnitude is zero.
+        assert_eq!(
+            Binary32::add_finite_aligned(two_to_minus_149, negative_two_to_minus_150, Up),
+            Some((Binary32::from_bits(1), true)),
+        );
+        assert_eq!(
+            Binary32::add_finite_aligned(
+                Binary64::from_bits(0xb6a0_0000_0000_0000)
+                    .normalize_finite()
+                    .unwrap(),
+                Binary64::from_bits(0x3690_0000_0000_0000)
+                    .normalize_finite()
+                    .unwrap(),
+                Down,
+            ),
+            Some((Binary32::from_bits(0x8000_0001), true)),
+        );
+
+        let one32_raw = Binary32::from_bits(0x3f80_0000);
+        assert_eq!(
+            Binary64::add_finite_aligned(
+                one32_raw.normalize_finite().unwrap(),
+                successor_one64,
+                Nearest,
+            ),
+            Some((Binary64::from_bits(0x4000_0000_0000_0000), true)),
+        );
+    }
+
+    #[test]
+    fn finite_addition_composes_directly_at_subnormal_boundaries() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let min_normal32 = Binary32::from_bits(0x0080_0000).normalize_finite().unwrap();
+        let negative_max_subnormal32 = Binary32::from_bits(0x807f_ffff).normalize_finite().unwrap();
+        assert_eq!(
+            Binary32::add_finite_aligned(min_normal32, negative_max_subnormal32, Nearest),
+            Some((Binary32::from_bits(1), false)),
+        );
+
+        let min_normal64 = Binary64::from_bits(0x0010_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_max_subnormal64 = Binary64::from_bits(0x800f_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::add_finite_aligned(min_normal64, negative_max_subnormal64, Nearest),
+            Some((Binary64::from_bits(1), false)),
+        );
+    }
+
+    #[test]
+    fn finite_addition_composition_rejects_zero_cancellation_and_wide_gaps() {
+        use RationalRoundingMode::{NearestTiesEven as Nearest, TowardPositive as Up};
+
+        let one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_one64 = Binary64::from_bits(0xbff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let positive_zero = Binary32::from_bits(0).normalize_finite().unwrap();
+        let negative_zero = Binary64::from_bits(0x8000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary32::add_finite_aligned(positive_zero, negative_zero, Nearest),
+            None
+        );
+        assert_eq!(
+            Binary32::add_finite_aligned(one64, negative_one64, Nearest),
+            None
+        );
+        let successor_one64 = Binary64::from_bits(0x3ff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary32::add_finite_aligned(positive_zero, successor_one64, Nearest),
+            Some((Binary32::from_bits(0x3f80_0000), true)),
+        );
+        assert_eq!(
+            Binary64::add_finite_aligned(negative_zero, successor_one64, Nearest),
+            Some((Binary64::from_bits(0x3ff0_0000_0000_0001), false)),
+        );
+
+        let two_to_minus_64 = Binary64::from_bits(0x3bf0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_two_to_minus_64 = Binary64::from_bits(0xbbf0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let two_to_minus_65 = Binary64::from_bits(0x3be0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::add_finite_aligned(one64, two_to_minus_64, Nearest),
+            Some((Binary64::from_bits(0x3ff0_0000_0000_0000), true)),
+        );
+        assert_eq!(
+            Binary64::add_finite_aligned(one64, two_to_minus_64, Up),
+            Some((Binary64::from_bits(0x3ff0_0000_0000_0001), true)),
+        );
+        assert_eq!(
+            Binary64::add_finite_aligned(one64, negative_two_to_minus_64, Nearest),
+            Some((Binary64::from_bits(0x3ff0_0000_0000_0000), true)),
+        );
+        assert_eq!(
+            Binary64::add_finite_aligned(one64, negative_two_to_minus_64, Up),
+            Some((Binary64::from_bits(0x3ff0_0000_0000_0000), true)),
+        );
+        assert_eq!(
+            Binary64::add_finite_aligned(one64, two_to_minus_65, Nearest),
+            None
+        );
+        assert_eq!(
+            Binary64::add_finite_aligned(two_to_minus_65, one64, Nearest),
+            None
+        );
+
+        let max_finite32 = Binary32::from_bits(0x7f7f_ffff).normalize_finite().unwrap();
+        let max_finite64 = Binary64::from_bits(0x7fef_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary32::add_finite_aligned(max_finite32, max_finite32, Nearest),
+            None
+        );
+        assert_eq!(
+            Binary64::add_finite_aligned(max_finite64, max_finite64, Nearest),
+            None
+        );
+
+        let negative_one32 = Binary32::from_bits(0xbf80_0000).normalize_finite().unwrap();
+        assert_eq!(
+            Binary32::add_finite_aligned(negative_zero, negative_one32, Nearest),
+            Some((Binary32::from_bits(0xbf80_0000), false)),
+        );
+
+        let lhs_raw = Binary64::from_bits(0x3ff0_0000_0000_0001);
+        let rhs_raw = Binary64::from_bits(0x3c9f_ffff_ffff_ffff);
+        let lhs_before = lhs_raw.to_bits();
+        let rhs_before = rhs_raw.to_bits();
+        assert_eq!(
+            Binary64::add_finite_aligned(
+                lhs_raw.normalize_finite().unwrap(),
+                rhs_raw.normalize_finite().unwrap(),
+                Nearest,
+            ),
+            Some((Binary64::from_bits(0x3ff0_0000_0000_0001), true)),
+        );
+        assert_eq!(lhs_raw.to_bits(), lhs_before);
+        assert_eq!(rhs_raw.to_bits(), rhs_before);
     }
 
     #[test]

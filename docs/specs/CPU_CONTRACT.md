@@ -10559,3 +10559,57 @@ formatting, diff, and Graphify checks. Independent Sol code review completed
 clean; no findings remain. See
 the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36i--finite-binary-multiplication-composition)
 and [plan](../plans/STAGE_2.md#s2-36i--finite-binary-multiplication-composition).
+
+## Local S2-36j: finite binary addition composition
+
+`Binary32::add_finite_aligned(lhs, rhs, mode)` and
+`Binary64::add_finite_aligned(...)` return `Option<(Self, bool)>`: a
+destination encoding and final mathematical `inexact`. Inputs are finite
+normalized `BinaryFinite` values. Alignment is bounded to exponent gaps of at
+most 64; a wider gap returns `None`. A single zero operand returns the other
+operand rounded to the selected destination. Both-zero and exact-cancellation
+results return `None`; this helper does not select the guest zero sign.
+Overflow rejection is `None`, not a guest exception. No flags, exception
+delivery, or NaN/infinity policy are defined.
+
+For nonzero inputs, align their unsigned significands to the smaller exponent
+in `u128`. Equal signs add magnitudes; opposite signs subtract the smaller
+magnitude from the larger and take the larger magnitude's sign. The exact
+aligned result is `(-1)^sign * magnitude * 2^(exponent-63)`. A private
+normalization bridge moves the highest set bit to bit 127, adjusting the
+exponent without losing bits. Each normalized binary32/binary64 significand
+has at least 11 trailing zero bits, and the bounded alignment, addition or
+subtraction, and normalization preserve an even normalized magnitude. Thus
+the private bridge can split it exactly as `q=(N>>64)`, `r=(N low64)>>1`,
+`d=2^63`, representing
+`(-1)^sign * (q + r/d) * 2^(e-63)`. The proof is specialized to the existing
+binary32/binary64 input domain and is not a generic arbitrary-integer bridge.
+
+The destination controls precision and normal threshold, including for mixed
+formats: binary32 uses p=24 and emin=-126; binary64 uses p=53 and emin=-1022.
+If the exact normalized exponent is normal, use one S2-36d round followed by
+S2-36e packing. Otherwise use S2-36f directly from the original exact
+quotient/remainder. This avoids both intermediate precision rounding and
+normal-then-subnormal double rounding. For a nonzero exact sum that rounds to
+zero, the result keeps the sum's sign; `inexact` reports only mathematical
+rounding. x87 APIs and behavior are unchanged.
+
+Literal coverage includes `successor(1)+(-1)=+2^-52` and
+`(-successor(1))+1=-2^-52` deep cancellation, exact minimum subnormals,
+same-sign addition and opposite-sign subtraction, gap 64 accepted
+and gap 65 rejected in both operand orders, zero-neutral behavior, mixed
+binary32/binary64 inputs, and input immutability. The normal double-round
+regression
+`0x3ff0_0000_0000_0001 + 0x3c9f_ffff_ffff_ffff` rounds to
+`0x3ff0_0000_0000_0001` with `inexact=true`; the binary64-to-binary32
+subnormal regression rounds directly to largest subnormal `0x007f_ffff`,
+also inexact. Author-reported `binary_float::tests` passed 30/30;
+`cargo fmt --all -- --check && git diff --check` and
+`cargo check --workspace --all-targets --offline` passed. `graphify update .`
+completed at 7776 nodes/15361 edges with the known
+`include/open_desktop/host_abi.h` syntax warning and label-refresh notice.
+Independent Sol review completed clean, with no findings. Wider gaps, standalone subtraction,
+overflow/exception policy, broader S2-36 arithmetic, S2-37/S2-38 instruction
+work, and hardware validation remain open. See the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36j--finite-binary-addition-composition)
+and [plan](../plans/STAGE_2.md#s2-36j--finite-binary-addition-composition).
