@@ -469,7 +469,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 
 ### S2-00. Принять проверяемый профиль
 
-**Статус:** выполнено для диагностического A; целевой Ubuntu-кандидат уточнён как Generic amd64. Нормативное прочтение его ABI/ISA floor — x86-64 psABI baseline (x86-64-v1); уровни v2/v3/v4 не принимаются. Это не утверждает полный CPU/CPUID/MSR/OS boot profile: C/D, точные source-to-binary требования и наблюдаемое исполнение остаются открытыми. См. [отчёт](../reports/STAGE_2_REPORT.md#s2-00--профиль) и [Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#решение-по-generic-amd64-baseline).
+**Статус:** выполнено для диагностического A и x86-64-v1 ABI/ISA floor; exact Ubuntu 7.0.0-38.38 image/config пакеты staged локально и их ранее зафиксированные hashes повторно подтверждены. Это не утверждает полный CPU/CPUID/MSR/OS boot profile: APT signature, C/D, точные source-to-binary требования, сценарный manifest и наблюдаемое исполнение остаются открытыми. См. [отчёт](../reports/STAGE_2_REPORT.md#s2-00--профиль) и [Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#решение-по-generic-amd64-baseline).
 
 **Файлы:** CPU_CONTRACT, GUEST_REQUIREMENTS по фактическим уточнениям, будущий INTERPRETER.
 

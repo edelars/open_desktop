@@ -11,8 +11,9 @@ config и setup header конкретного пакета; Linux boot и пол
 пакета. Они разобраны в памяти исследовательского процесса стандартными
 средствами Python (`urllib.request`, ar headers, `tarfile`, `hashlib`,
 `struct`); установка, запуск kernel, изменение host/bootloader, SSH и
-запись стороннего kernel code в проект не выполнялись. Пакеты и образ не
-сохранены в guest staging и Git. Значения ниже измерены по полученным
+запись стороннего kernel code в проект не выполнялись. При первичном
+исследовании пакеты и образ не сохранялись; точные deb и извлечённые members
+позднее помещены в локальный ignored staging, описанный в конце отчёта. Значения ниже измерены по полученным
 байтам; это не данные запущенного гостя.
 
 | Артефакт | Размер, bytes | Измеренный SHA-256 |
@@ -144,16 +145,16 @@ candidates; они остаются unresolved до exact-source/binary gate.
 | Exact Ubuntu source/binary | Source delta и package metadata исследованы; package `startup_64` disassembly и связка каждого пути с binary не завершены | Фактическая последовательность исполнения |
 | Observed execution | Ubuntu kernel guest boot не наблюдался | Успешный boot, C/D или поддерживаемая ОС |
 
-До перехода к реализации/приёмке C/D остаются незакрытыми initramfs, command
-line, device/topology manifest и измеримый success milestone. Это не меняет
-статус S2-00: принят диагностический A; profile C/D и boot остаются открытыми.
+До перехода к реализации/приёмке C/D остаются незакрытыми APT Release
+signature/provenance, initramfs, command line, device/topology manifest и
+измеримый success milestone. Это не меняет статус S2-00: принят диагностический
+A; profile C/D и boot остаются открытыми.
 
 ## Что остаётся для C/D
 
-1. Подготовить локальный staging исследованного image/config с проверкой
-   приведённых digest и APT provenance; зафиксировать initramfs/command
-   line/memory map/device manifest. Содержимое не заменять движущейся
-   зависимостью метапакета.
+1. Проверить APT Release signature/provenance для staged exact packages;
+   зафиксировать exact initramfs/command line/memory map/device manifest.
+   Содержимое не заменять движущейся зависимостью метапакета.
 2. Сопоставить Ubuntu source version `7.0.0-38.38`, kernel build flags,
    alternatives и CPU checks с полным ISA/CPUID/MSR/exception/state
    inventory. Наличие capability не заменяет реализацию её семантики.
@@ -257,3 +258,27 @@ command line, page/memory map, UART, timer/interrupt controller и root path;
 диагностического A. Profile C/D, S2-22/25/26/27, S2-23 necessity и source-to-
 binary/observed-execution evidence остаются открытыми. Физический x86/Mac
 mini acceptance будет единым финальным подэтапом, не заменой этому manifest.
+
+## Exact package staging — 28 октября 2026
+
+Три ранее исследованных пакета скачаны с точных HTTPS URL из
+`archive.ubuntu.com` в игнорируемый каталог
+`work/vms/s2-00-ubuntu-26.04.1/`. Для каждого совпали HTTP `Content-Length`,
+измеренный размер и SHA-256 из таблицы выше; URL, `Last-Modified`, размер и
+измеренный digest сохранены в локальном `download-manifest.json`. Пакеты не
+добавлены в Git. Из signed image извлечён `boot/vmlinuz-7.0.0-38-generic`
+(17,320,328 bytes, SHA-256
+`9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`); из
+buildinfo повторно извлечён config (308,501 bytes, SHA-256
+`6cb18717c6914d4947489eedf8cb69ac23db3faa8ef9b9f563ff02c346dcd32d`), а также
+сохранены compiler и ABI metadata для последующего аудита.
+
+Это подтверждает точное повторное получение и целостность скачанных bytes
+относительно ранее зафиксированных digest, но не криптографическую APT
+provenance: подпись `InRelease` и PE/Authenticode здесь не проверялись.
+Локальные архивы и manifest находятся в игнорируемом `work/`; долговечная
+фиксация результата — этот отчёт. Извлечение `vmlinuz` ещё не является
+`startup_64` disassembly или source-to-binary mapping. Initramfs, command line,
+device/topology/memory manifest, success milestone, точное исполнение и полный
+ISA/CPUID/MSR/state matrix остаются открытыми; S2-00 по-прежнему принят только
+для диагностического A и x86-64-v1 ABI/ISA floor.
