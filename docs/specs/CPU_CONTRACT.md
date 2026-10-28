@@ -9607,3 +9607,21 @@ excluded. SSE2 availability, CR0.EM=0, CR0.TS=0, and CR4.OSFXSR=1 are diagnostic
 preconditions; this profile does not model those gates or `#UD/#NM` delivery.
 JIT/native admission and physical execution remain unsupported. See the
 [S2-35.50 plan](../plans/STAGE_2.md#s2-3550--local-only-bounded-register-pandn).
+
+## Local register-only `POR` profile — S2-35.51
+
+The exact schema-v2 fixture profile `s2-long-por-reg-v1` admits long-mode
+`66 [one optional REX.R/B] 0F EB /r` with ModR/M.mod=3. Mandatory `66`
+selects the XMM/SSE2 operation; bare `0F EB /r` is MMX and rejected.
+ModR/M.reg is the destination and ModR/M.r/m the source; REX.R and REX.B
+independently select XMM0–XMM15. Execution snapshots both operands and stores
+`old_DEST | old_SRC` across the full 128-bit XMM register. Aliasing is
+supported. No memory callback occurs; RFLAGS, MXCSR, x87, GPRs, and every
+non-destination XMM register are preserved.
+
+Only this exact register form is admitted. Memory, REX.W/X, other or duplicate
+prefixes, VEX/EVEX, sibling opcodes and other forms are excluded. SSE2
+availability, CR0.EM=0, CR0.TS=0, and CR4.OSFXSR=1 are diagnostic preconditions;
+this profile does not model those gates or `#UD/#NM` delivery. JIT/native
+admission and physical execution remain unsupported. See the
+[S2-35.51 plan](../plans/STAGE_2.md#s2-3551--local-only-bounded-register-por).

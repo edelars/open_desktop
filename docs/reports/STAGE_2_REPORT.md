@@ -13247,3 +13247,44 @@ Mac mini/SSH acceptance.
 See the [plan](../plans/STAGE_2.md#s2-3550--local-only-bounded-register-pandn),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-pandn-profile--s2-3550),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3550-local-register-pandn-diagnostic-profile).
+
+## S2-35.51 — local POR register profile
+
+Implemented `s2-long-por-reg-v1` for the exact long-mode form
+`66 [one optional REX.R/B] 0F EB /r`, ModR/M.mod=3. REX.R and REX.B
+independently select the XMM destination and source. The interpreter snapshots
+the source and computes the raw 128-bit `old_DEST | old_SRC` in place, while
+preserving flags, MXCSR, x87, GPRs, and non-destination XMM state with no data
+callback. Bare MMX, memory, REX.W/X, other or duplicate prefixes, VEX/EVEX,
+other forms, control-gate/exception modeling, JIT/native execution, and
+physical execution remain excluded. SSE2 and CR0/CR4 values are diagnostic
+preconditions only.
+
+The local tests cover all 16×16 XMM pairs and independent REX axes, every bit
+position with all four OR truth rows (`1 | 1 = 1` included), zero/all-one and
+alternating/upper/lower masks, aliasing, full-state/source preservation, and
+absence of data callbacks. Missing SSE with seeded x87, truncated fetch, STOP,
+zero-budget, and stop-callback paths are checked for atomic refusal. Strict
+decoder and schema-v2 negative cases include MMX, memory, REX.W/X, duplicate
+prefixes, sibling opcodes, VEX and EVEX. The handwritten XMM8/XMM9 fixture
+contains input bytes `80..8f` and `90..9f`; its literal expected XMM8 result is
+`909192939495969798999a9b9c9d9e9f`. Interpreter execution passed, and the
+fixture is denied by JIT and native admission.
+
+Verification (2026-10-28): `cargo test -p od-isa por --offline` passed (three
+POR tests); `cargo test -p od-testkit por --offline` passed the profile and
+literal-execution tests; `cargo test -p od-runner --test fixture_v2 por
+--offline` passed the POR fixture/JIT-denial test. Adjacent regressions passed:
+od-isa `pand` (9), `andps` (3), `andnps` (3), and `paddb` (2), plus runner
+fixture `pand` (2). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and
+`cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline` passed. The Linux-only native-denial test
+was compile-checked but not executed on this Darwin host. Physical SSE2
+execution remains `not_run`; S2-35, S2-34, global `S2-35 → S2-34`, and
+combined Mac mini/SSH acceptance remain open. Independent Sol review completed
+with no findings.
+
+See the [plan](../plans/STAGE_2.md#s2-3551--local-only-bounded-register-por),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-por-profile--s2-3551),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3551-local-register-por-diagnostic-profile).

@@ -5275,6 +5275,15 @@ mandatory `66` selects XMM/SSE2 rather than MMX; `REX.R` and `REX.B` select
 XMM8 and XMM9 independently. The result is the raw 128-bit AND. This local
 profile assumes SSE2 preconditions and denies JIT and native execution.
 
+### S2-35.51 local register POR diagnostic profile
+
+`s2_35_51_por_register.case.json` is a handwritten high-XMM fixture for
+`s2-long-por-reg-v1`, encoded as `66 45 0F EB C1` (`POR XMM8, XMM9`). The
+mandatory `66` selects XMM/SSE2, and REX.R/REX.B independently select XMM8 and
+XMM9. The interpreter computes the raw 128-bit `old_DEST | old_SRC`; its
+literal XMM8 result is `909192939495969798999a9b9c9d9e9f`. This local profile
+assumes SSE2 preconditions and denies JIT and native execution.
+
 ### S2-35.50 local register PANDN diagnostic profile
 
 `s2_35_50_pandn_register.case.json` is a handwritten high-XMM fixture for

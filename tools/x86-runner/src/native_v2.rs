@@ -1405,6 +1405,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongPxorRegV1
             | v2::Profile::LongPandRegV1
             | v2::Profile::LongPandnRegV1
+            | v2::Profile::LongPorRegV1
             | v2::Profile::LongPaddbRegV1
             | v2::Profile::LongPaddwRegV1
             | v2::Profile::LongPsubwRegV1
@@ -5199,6 +5200,29 @@ mod tests {
     fn s2_35_50_pandn_fixture_is_denied_before_native_execution() {
         let loaded = Fixture::from_json(include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_35_50_pandn_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_51_por_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_51_por_register.case.json"
         ))
         .unwrap();
         assert!(matches!(

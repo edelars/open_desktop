@@ -437,6 +437,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.45 | Local-only bounded register PSRLQ immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.46 | Local-only bounded register PSLLDQ immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.47 | Local-only bounded register PSRLDQ immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [x] | S2-35.51 | Local-only bounded register POR profile; native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.42 | Local-only bounded register PSRLD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.43 | Local-only bounded register PSRAD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
@@ -9100,7 +9101,7 @@ PSRLDQ shift the whole XMM, unlike the independent qword lanes in PSLLQ/PSRLQ.
 | Operation group | Local forms evidenced in S2-35 | Local evidence and next technical dependency |
 |---|---|---|
 | Arithmetic | `PADDB` FC, `PSUBB` F8, `PADDUSB` DC, `PSUBUSB` D8, `PADDW` FD, `PSUBW` F9, `PADDUSW` DD, `PSUBUSW` D9, `PADDSB` EC, `PSUBSB` E8, `PADDSW` ED, `PSUBSW` E9, `PADDD` FE, `PSUBD` FA, `PADDQ` D4, `PSUBQ` FB | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Per-profile interpreter/decoder coverage and literal XMM fixtures exercise lane order, wrap or saturation, state preservation, and profile rejection; several entries record exhaustive lane/register matrices. Other arithmetic mnemonics or memory/MMX forms are not selected. Any extension first depends on the parent profile choosing exact forms; reviewed byte/word/dword/qword operations are local semantic precedents, not evidence of parent acceptance. |
-| Logic | `PXOR` EF | `66 [REX.R/B] 0F EF /r`, ModR/M.mod=3. Local register profile, fixture, full-state checks and strict rejection. `PAND`, `PANDN`, `POR` and other logical forms are not evidenced as S2-35 implementations. A selected next form can reuse the S2-35.1 mandatory-66 XMM decoder/state boundary; no architectural profile decision follows from that reuse. |
+| Logic | `PXOR` EF, `PAND` DB, `PANDN` DF, `POR` EB | Each is a distinct exact `66 [REX.R/B] 0F opcode /r` register-only profile with ModR/M.mod=3. Local decoder/interpreter tests, handwritten fixtures, full-state preservation and strict profile negatives cover each named form. These bounded local slices do not settle parent S2-35/S2-34 selection, profile-wide acceptance, or native-oracle acceptance. No other logical forms or memory/MMX variants are implied. |
 | Comparison | `PCMPEQB` 74, `PCMPEQW` 75, `PCMPEQD` 76, `PCMPGTB` 64, `PCMPGTW` 65, `PCMPGTD` 66 | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Local fixtures and per-profile lane/equality/signed-order checks; S2-35.21 records exhaustive raw byte-pair and 16×16 register-pair coverage. `PCMPEQQ` (SSE4.1) and `PCMPGTQ` (SSE4.2) are explicitly outside these SSE2 slices. More forms require explicit profile selection and parent acceptance. |
 | Unpack | `PUNPCKLBW` 60, `PUNPCKHBW` 68, `PUNPCKLWD` 61, `PUNPCKHWD` 69, `PUNPCKLDQ` 62, `PUNPCKHDQ` 6A, `PUNPCKLQDQ` 6C, `PUNPCKHQDQ` 6D | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Local register fixtures and lane-selection/state checks exist for all eight listed forms. No new local opcode dependency is evidenced; parent native-oracle acceptance remains outstanding. |
 | Pack | `PACKSSWB` 63, `PACKUSWB` 67, `PACKSSDW` 6B | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Local fixtures and boundary/extrema checks; S2-35.33/.34 additionally record exhaustive sign-extended input-position checks and register-pair coverage. These are the only pack forms inventoried here. |
@@ -9197,3 +9198,25 @@ acceptance remains deferred.
 See the [report](../reports/STAGE_2_REPORT.md#s2-3550--local-pandn-register-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-pandn-profile--s2-3550),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3550-local-register-pandn-diagnostic-profile).
+
+#### S2-35.51 — local-only bounded register `POR`
+
+Add `s2-long-por-reg-v1` for exact long-mode `66 [one optional REX.R/B]
+0F EB /r`, with ModR/M.mod=3. ModR/M.reg selects the XMM destination and
+ModR/M.r/m selects the XMM source; REX.R and REX.B independently extend each
+index through XMM15. Snapshot both source and destination before writing
+`DEST = old_DEST | old_SRC` across all 128 raw bits. Aliasing is supported.
+Preserve flags, MXCSR, x87, GPRs, and every non-destination XMM register; do
+not access data memory.
+
+This local diagnostic profile excludes bare MMX, memory, REX.W/X, other or
+duplicate prefixes, VEX/EVEX, other opcodes/forms, modeled SSE2/CR0/CR4 gates
+or exception delivery, JIT/native execution, and physical execution. Its
+assumed preconditions are SSE2 availability, CR0.EM=0, CR0.TS=0, and
+CR4.OSFXSR=1. Verification covers all XMM register pairs and independent REX
+axes, all truth rows at all bit positions (including `1 | 1 = 1`), masks in
+both halves, aliasing/full-state preservation/no callbacks, atomic missing
+state and incomplete/unstarted execution, and strict encoding/profile
+rejection. A handwritten schema-v2 high-XMM fixture executes in the
+interpreter and remains denied by JIT/native admission. Parent/global
+acceptance remains open.
