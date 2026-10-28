@@ -387,6 +387,8 @@ fn flags_stack_size(prefixes: Prefixes) -> Option<OperandSize> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Operation {
+    /// Bare long-mode `0F A2` CPUID. A caller-selected profile is required to execute it.
+    Cpuid,
     /// Bare long-mode CLD, clearing only RFLAGS.DF.
     ClearDirectionFlag,
     /// Bare long-mode STD, setting only RFLAGS.DF.
@@ -1690,6 +1692,36 @@ impl<M: GuestMemory> Fetch<'_, M> {
         // Duplicate groups are outside this slice: do not manufacture #UD or
         // claim a universal last-prefix-wins rule.
         if duplicate {
+            return Err(self.unsupported(opcode));
+        }
+        if opcode
+            == (Opcode {
+                map: OpcodeMap::Escape0f,
+                byte: 0xa2,
+            })
+        {
+            if prefixes == Prefixes::default() {
+                return Ok(Instruction {
+                    length: self.length,
+                    opcode,
+                    prefixes,
+                    operand_size: prefixes.operand_size(),
+                    address_size: OperandSize::Qword,
+                    operation: Operation::Cpuid,
+                });
+            }
+            if prefixes.group1 == Some(0xf0)
+                && prefixes.segment.is_none()
+                && !prefixes.operand_override
+                && !prefixes.address_override
+                && prefixes.rex.is_none()
+                && self.length == 3
+            {
+                return Err(DecodeError::Invalid {
+                    opcode,
+                    length: self.length,
+                });
+            }
             return Err(self.unsupported(opcode));
         }
         let known = (opcode.map == OpcodeMap::Primary

@@ -1,6 +1,7 @@
 //! On-demand single-instruction execution for the implemented long-mode integer slice.
 //! Unlike the fragment API, targets are decoded only when execution reaches them.
 
+use crate::cpuid::CpuidProfile;
 use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, DecodeError, LogicKind,
     MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, canonical,
@@ -578,6 +579,25 @@ pub fn run(
     )
 }
 
+/// Execute with an explicitly selected CPUID profile. The legacy [`run`]
+/// entry point remains closed to CPUID.
+pub fn run_with_cpuid_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    profile: &CpuidProfile,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_cpuid_profile(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        Some(profile),
+        &mut stop_requested,
+    )
+}
+
 /// Continue an execution while carrying the caller's explicit RFLAGS
 /// definedness snapshot. Use the `rflags_defined` value returned by the prior
 /// call; this function does not infer execution history from guest state.
@@ -606,7 +626,25 @@ fn run_execution_loop(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     config: RunConfig,
+    rflags_defined: u64,
+    stop_requested: &mut impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_cpuid_profile(
+        state,
+        memory,
+        config,
+        rflags_defined,
+        None,
+        stop_requested,
+    )
+}
+
+fn run_execution_loop_with_cpuid_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
     mut rflags_defined: u64,
+    cpuid_profile: Option<&CpuidProfile>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> RunResult {
     let mut retired = 0;
@@ -620,11 +658,12 @@ fn run_execution_loop(
         } else if retired == config.instruction_budget {
             Some(RunExit::InstructionBudgetExhausted)
         } else {
-            match step_tracked_with_stop(
+            match step_tracked_with_cpuid_profile(
                 state,
                 memory,
                 config.context,
                 &mut rflags_defined,
+                cpuid_profile,
                 stop_requested,
             ) {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
@@ -659,6 +698,25 @@ pub fn step(
     step_tracked(state, memory, context, &mut rflags_defined)
 }
 
+/// Execute one instruction with an explicitly selected CPUID profile. The
+/// legacy [`step`] entry point remains closed to CPUID.
+pub fn step_with_cpuid_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    profile: &CpuidProfile,
+) -> Result<StepOutcome, MemoryError> {
+    let mut rflags_defined = crate::INTEGER_FLAGS;
+    step_tracked_with_cpuid_profile(
+        state,
+        memory,
+        context,
+        &mut rflags_defined,
+        Some(profile),
+        &mut || false,
+    )
+}
+
 fn step_tracked(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -673,6 +731,17 @@ fn step_tracked_with_stop(
     memory: &mut impl GuestMemory,
     context: AccessContext,
     rflags_defined: &mut u64,
+    stop_requested: &mut impl FnMut() -> bool,
+) -> Result<StepOutcome, MemoryError> {
+    step_tracked_with_cpuid_profile(state, memory, context, rflags_defined, None, stop_requested)
+}
+
+fn step_tracked_with_cpuid_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    rflags_defined: &mut u64,
+    cpuid_profile: Option<&CpuidProfile>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
     let instruction = match long_decode::decode(memory, state.rip, context) {
@@ -695,6 +764,23 @@ fn step_tracked_with_stop(
         Err(DecodeError::Memory(error)) => return Err(error),
     };
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
+    if instruction.operation == Operation::Cpuid {
+        let Some(profile) = cpuid_profile else {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        };
+        let result = profile.query(
+            state.gpr[Register::Rax as usize] as u32,
+            state.gpr[Register::Rcx as usize] as u32,
+        );
+        state.gpr[Register::Rax as usize] = u64::from(result.eax);
+        state.gpr[Register::Rbx as usize] = u64::from(result.ebx);
+        state.gpr[Register::Rcx as usize] = u64::from(result.ecx);
+        state.gpr[Register::Rdx as usize] = u64::from(result.edx);
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
     if matches!(instruction.operation, Operation::RepScas { .. })
         && (state.rflags & crate::ARITHMETIC_FLAGS != (crate::PF | crate::ZF)
             || *rflags_defined & crate::ARITHMETIC_FLAGS != crate::ARITHMETIC_FLAGS)
@@ -1194,6 +1280,7 @@ fn step_tracked_with_stop(
     // Direct control flow uses the decoded condition/displacement; integer
     // operations below use normalized operands at each accepted width.
     let executable = match instruction.operation {
+        Operation::Cpuid => false,
         Operation::MovImmediate { .. }
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
@@ -2705,6 +2792,7 @@ fn step_tracked_with_stop(
         return Ok(StepOutcome::Advanced);
     }
     match instruction.operation {
+        Operation::Cpuid => unreachable!("CPUID is executed before transfer dispatch"),
         Operation::ClearDirectionFlag => {
             state.rflags &= !crate::DF;
         }
@@ -8162,6 +8250,7 @@ mod tests {
     struct Memory {
         code: Vec<u8>,
         code_base: u64,
+        fetches: Vec<u64>,
         data_base: u64,
         bytes: Vec<u8>,
         accesses: Vec<(AccessKind, u64, usize)>,
@@ -8185,6 +8274,7 @@ mod tests {
             Self {
                 code: code.to_vec(),
                 code_base,
+                fetches: vec![],
                 data_base: 0x1000,
                 bytes: (0..32).collect(),
                 accesses: vec![],
@@ -8243,6 +8333,7 @@ mod tests {
     }
     impl GuestMemory for Memory {
         fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+            self.fetches.push(address);
             if let Some((at, error)) = &self.fetch_error {
                 if *at == address {
                     return Err(error.clone());
@@ -83488,5 +83579,197 @@ mod tests {
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());
         }
+    }
+
+    #[test]
+    fn cpuid_is_profile_gated_and_preserves_unrelated_state() {
+        let code = [0x0f, 0xa2];
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.rflags = 0xad7;
+        for (index, value) in state.gpr.iter_mut().enumerate() {
+            *value = 0xfeed_0000_0000_0000 | index as u64;
+        }
+        state.gpr[Register::Rax as usize] = 0xffff_ffff_8000_0008;
+        state.gpr[Register::Rcx as usize] = 0xffff_ffff_ffff_ffff;
+        let before = state.clone();
+        let mut memory = Memory::at(&code, 0x1000);
+
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xa2 })
+        );
+        assert_eq!(state, before, "legacy step must not execute CPUID");
+        assert!(memory.accesses.is_empty());
+
+        assert_eq!(
+            step_with_cpuid_profile(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                &CpuidProfile::DiagnosticV1,
+            ),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.rip, before.rip + 2);
+        assert_eq!(state.rflags, before.rflags);
+        for register in [
+            Register::Rsp,
+            Register::Rbp,
+            Register::Rsi,
+            Register::Rdi,
+            Register::R8,
+            Register::R9,
+            Register::R10,
+            Register::R11,
+            Register::R12,
+            Register::R13,
+            Register::R14,
+            Register::R15,
+        ] {
+            assert_eq!(state.gpr[register as usize], before.gpr[register as usize]);
+        }
+        assert_eq!(state.gpr[Register::Rax as usize], 0x3024);
+        assert_eq!(state.gpr[Register::Rbx as usize], 0);
+        assert_eq!(state.gpr[Register::Rcx as usize], 0);
+        assert_eq!(state.gpr[Register::Rdx as usize], 0);
+        assert!(memory.accesses.is_empty());
+        assert!(memory.atomic_exchanges.is_empty());
+        assert!(memory.atomic_adds.is_empty());
+        assert!(memory.atomic_compare_exchanges.is_empty());
+    }
+
+    #[test]
+    fn cpuid_lock_faults_exactly_and_other_prefixes_remain_unsupported() {
+        for (code, expected) in [
+            (
+                &[0xf0, 0x0f, 0xa2][..],
+                StepOutcome::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None,
+                }),
+            ),
+            (
+                &[0x66, 0x0f, 0xa2][..],
+                StepOutcome::Unsupported { opcode: 0xa2 },
+            ),
+            (
+                &[0x48, 0x0f, 0xa2][..],
+                StepOutcome::Unsupported { opcode: 0xa2 },
+            ),
+            (
+                &[0xf3, 0x0f, 0xa2][..],
+                StepOutcome::Unsupported { opcode: 0xa2 },
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::at(code, 0x1000);
+            assert_eq!(
+                step_with_cpuid_profile(
+                    &mut state,
+                    &mut memory,
+                    AccessContext::default(),
+                    &CpuidProfile::DiagnosticV1,
+                ),
+                Ok(expected)
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0xf0, 0x0f], 0x1000);
+        assert!(matches!(
+            step_with_cpuid_profile(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                &CpuidProfile::DiagnosticV1,
+            ),
+            Err(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            })
+        ));
+        assert_eq!(state, before, "truncated lock form must fault during fetch");
+    }
+
+    #[test]
+    fn cpuid_run_obeys_stop_and_budget_before_fetch_and_retires_once() {
+        let profile = CpuidProfile::DiagnosticV1;
+        for (budget, stop_rip, exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0xa2], 0x1000);
+            let result = run_with_cpuid_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                &profile,
+                || false,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(
+                memory.fetches.is_empty(),
+                "pre-fetch exit must not fetch code"
+            );
+            assert!(
+                memory.accesses.is_empty(),
+                "pre-fetch exit must not access data"
+            );
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.gpr[Register::Rax as usize] = 0x8000_0000;
+        let mut memory = Memory::at(&[0x0f, 0xa2], 0x1000);
+        let result = run_with_cpuid_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x1002),
+                context: AccessContext::default(),
+            },
+            &profile,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.rip, 0x1002);
+        assert_eq!(state.gpr[Register::Rax as usize], 0x8000_0008);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        let mut memory = Memory::at(&[0x0f, 0xa2], 0x1000);
+        let legacy = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(legacy.exit, RunExit::Unsupported { opcode: 0xa2 });
+        assert_eq!(legacy.instructions_executed, 0);
+        assert_eq!(state.rip, 0x1000);
     }
 }

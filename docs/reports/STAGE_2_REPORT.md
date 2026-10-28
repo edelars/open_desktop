@@ -5,6 +5,34 @@
 ISSUE-011/012 остаются открытыми; наличие нового состояния или local instruction
 slice не означает завершение этапа.
 
+## S2-26a — локальный `DiagnosticV1` CPUID
+
+Добавлен immutable `CpuidProfile::DiagnosticV1` в `od-isa::cpuid`; API
+`step_with_cpuid_profile` и `run_with_cpuid_profile` требуют явный выбор этого
+profile. Legacy `step`, `run`, tracked execution и fixture path сохраняют
+fail-closed поведение CPUID. Interpreter поддерживает только bare Long64
+`0F A2`; точный `F0 0F A2` возвращает #UD, прочие prefix-bearing формы
+`Unsupported`. Результаты CPUID zero-extend из u32 в GPR64, сохраняют flags и
+остальное состояние, увеличивают RIP на 2 и не обращаются к data-memory
+callbacks. Профиль не рекламирует feature bits; подробная таблица ответов
+закреплена в [CPU contract](../specs/CPU_CONTRACT.md#локальный-cpuid-профиль-diagnosticv1-s2-26a).
+
+**Локальные проверки:** `cargo check -p od-isa --all-targets --offline`;
+`cargo test -p od-isa --offline cpuid_` (3 passed);
+`cargo test -p od-isa --offline diagnostic_v1_returns` (1 passed);
+`cargo fmt --all -- --check`; `git diff --check`. Graphify code graph обновлён.
+Исполняемая матрица проверяет tuple table для всех заданных leaves и ECX
+0/1/MAX, high input halves, zero-extension результата, flags/unrelated
+register preservation, unsupported prefixes, exact LOCK/fetch fault, STOP,
+budget, одну retirement, отсутствие data callbacks и отказ legacy API. Для
+zero-budget и stop-at-current-RIP тестовая память отдельно считает code fetch
+и подтверждает, что ни одного fetch callback не было.
+
+**Независимое review:** ожидается отдельно. JIT/native/physical execution не
+допущены и не запускались; Mac mini regressions объединены в финальный
+substage. `DiagnosticV1` не является x86-64-v1 CPU или Ubuntu/Linux boot
+contract. S2-26 и этап 2 остаются открытыми.
+
 ## S2-00 — уточнение целевого Linux floor
 
 Пользователь уточнил целевой профиль Ubuntu как Generic `amd64`. Для ABI/ISA

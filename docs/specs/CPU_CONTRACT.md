@@ -10,12 +10,43 @@
 |---|---|
 | Идентичность архитектуры | Гостевая архитектура — x86-64; host ISA — ARM64. Представление гостевого состояния не зависит от host-регистров и ABI. |
 | Состояние CPU | В полном `CpuState` потребуются RIP, GPR, RFLAGS, режим, сегменты, control registers, MSR, векторное состояние и pending events. Поля появляются вместе с поддерживаемыми режимами; прототип ниже использует только подмножество. |
-| CPUID и MSR | Reference target Ubuntu `od-x86-64-v1-neutral-v0.1` зафиксирован ниже. Реализация CPUID/MSR и покрытие точных startup/runtime путей остаются незавершёнными; нельзя объявлять возможности, не реализованные и не проверенные. |
+| CPUID и MSR | Ограниченный локальный `DiagnosticV1` для CPUID описан ниже; это не CPU profile для Ubuntu и не x86-64-v1. Отдельный reference target Ubuntu `od-x86-64-v1-neutral-v0.1` зафиксирован ниже. Реализация CPUID/MSR и покрытие точных startup/runtime путей остаются незавершёнными; нельзя объявлять возможности, не реализованные и не проверенные. |
 | Режимы и привилегии | Для Windows boot потребуется определить long mode, CPL, сегменты, control registers, paging и переходы firmware/loader. Точный минимум ожидает анализа выбранного ISO и S0-05. |
 | Адреса | В целевой модели различать guest virtual/linear, guest physical и host address. Для Ubuntu reference target CPUID задаёт 48-bit linear и 36-bit physical widths; canonicality и выбор соответствующего CPU fault принадлежат CPU-контракту. Перевод linear → physical и MMIO остаются machine/MMU boundaries. |
 | Исключения/events | Каждый реализованный instruction form должен задавать decode faults, architectural faults и состояние на exit. Отображение в guest exception нельзя заменять host panic или общим перехватом. Приоритеты для незаданного набора инструкций не утверждаются этим черновиком. |
 | Память и атомарность | SMP/атомарные операции, fences и memory ordering вне прототипа. Для будущего многопоточного профиля нужен отдельный контракт и проверки соответствующей модели памяти x86. |
 | JIT state | На каждом наблюдаемом exit должны материализоваться определённые архитектурные регистры/флаги и guest instruction offset. Восстановление после исключений и асинхронных событий остаётся отдельной задачей. |
+
+### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
+
+`DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
+`0F A2` (`CPUID`) в режиме Long64. Его явное назначение в profile обязательно;
+неявный/default profile и вызов через legacy API отвергаются fail closed.
+Для vendor/identity, topology и ширин физических/линейных адресов профиль
+сохраняет выбранные значения neutral Ubuntu target ниже. Feature masks и boot
+guarantees от него не наследуются: все feature masks `DiagnosticV1` равны
+нулю. Профиль не представляет x86-64-v1 CPU и не является Ubuntu/Linux boot
+contract.
+
+| Input EAX | EAX | EBX | ECX | EDX | Разрешённое значение |
+|---|---:|---:|---:|---:|---|
+| `0` | `0x00000001` | ASCII `Open` | ASCII `top ` | ASCII `Desk` | Максимальный basic leaf и vendor identity; vendor bytes в порядке EBX/EDX/ECX дают `OpenDesktop `. |
+| `1` | `0x00000600` | `0x00000100` | `0` | `0` | Версия/type и один логический процессор, APIC ID 0; все feature masks равны нулю. |
+| `0x80000000` | `0x80000008` | `0` | `0` | `0` | Максимальный extended leaf. |
+| `0x80000001` | `0` | `0` | `0` | `0` | Feature masks остаются нулевыми. |
+| `0x80000002..0x80000007` | `0` | `0` | `0` | `0` | Нулевые ответы. |
+| `0x80000008` | `0x00003024` | `0` | `0` | `0` | Физическая ширина адреса 36 бит, линейная ширина 48 бит. |
+| Любой другой leaf | `0` | `0` | `0` | `0` | Нулевой ответ. |
+
+Input ECX/subleaf игнорируется. Для leaf 1 EBX содержит только топологические
+поля выше; ECX и EDX, а также feature-bearing поля всех остальных ответов,
+нулевые. Ни один CPUID feature bit не объявляется. Любой префикс запрещён:
+точная форма `F0 0F A2` (`LOCK CPUID`) даёт `#UD`, а остальные prefix-bearing
+формы возвращают `Unsupported`. JIT/native/physical execution для профиля не
+допускается. Это нормативная граница S2-26a. Реализация и local interpreter
+checks внесены в [отчёт этапа 2](../reports/STAGE_2_REPORT.md#s2-26a--локальный-diagnosticv1-cpuid);
+независимое review требуется отдельно. Это не подтверждает physical execution
+или требования загрузки ОС.
 
 ### Ubuntu Generic `amd64`: `od-x86-64-v1-neutral-v0.1`
 

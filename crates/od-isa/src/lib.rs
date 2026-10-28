@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+pub mod cpuid;
 pub mod execute;
 pub mod long_decode;
 pub mod memory;

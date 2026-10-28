@@ -1966,6 +1966,24 @@ Stage 2 report. S2-22, ISSUE-017 and ISSUE-018 remain open.
 
 **Готово:** негативный test ловит ложное объявление capability; CPUID согласован с state и реализованным профилем. Это не заменяет проверку минимальных требований выбранной ОС.
 
+#### S2-26a — локальный `DiagnosticV1` CPUID
+
+Ограничить срез exact bare `0F A2` в Long64 с обязательным явным
+`DiagnosticV1`. Допустимы только vendor identity, maximum basic/extended
+leaves, один логический процессор/APIC ID 0 и physical/linear address widths
+36/48; все CPUID feature masks должны быть нулевыми. Это не x86-64-v1 CPU и
+не Ubuntu/Linux boot contract. ECX/subleaf игнорируется; неизвестные leaves
+возвращают четыре нуля. Legacy API paths отвергают profile fail closed.
+Точный `F0 0F A2` даёт `#UD`; остальные prefix-bearing формы — `Unsupported`.
+JIT/native/physical admission остаётся закрытым.
+
+Профильные значения и границы зафиксированы в
+[CPU contract](../specs/CPU_CONTRACT.md#локальный-cpuid-профиль-diagnosticv1-s2-26a).
+Ограниченный interpreter slice реализован, local evidence внесён в
+[отчёт этапа](../reports/STAGE_2_REPORT.md#s2-26a--локальный-diagnosticv1-cpuid).
+Независимое code review ещё требуется. Не считать этот slice закрытием S2-26
+или подтверждением требований ОС.
+
 ### S2-27. Descriptors, события и системные переходы
 
 The bounded CPL3 GDT-only `VERW AX` form is tracked in S2-22e and is excluded
