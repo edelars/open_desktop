@@ -688,6 +688,12 @@ fn build_block_with_profile(
                         guest_rip,
                         decoded.length,
                         0x89,
+                    )
+                    || exact_qword_address32_indexed_no_base_sib_disp32_memory_bytes(
+                        code,
+                        guest_rip,
+                        decoded.length,
+                        0x89,
                     ))
         } else if profile == BlockBuildProfile::CheckedQwordLoad {
             instructions.is_empty()
@@ -719,6 +725,12 @@ fn build_block_with_profile(
                         0x8b,
                     )
                     || exact_qword_indexed_no_base_sib_disp32_memory_bytes(
+                        code,
+                        guest_rip,
+                        decoded.length,
+                        0x8b,
+                    )
+                    || exact_qword_address32_indexed_no_base_sib_disp32_memory_bytes(
                         code,
                         guest_rip,
                         decoded.length,
@@ -1458,6 +1470,20 @@ fn is_address32_indexed_sib_stack_data_operand(
         && displacement_valid
 }
 
+fn is_address32_indexed_no_base_sib_stack_data_operand(
+    instruction: Instruction,
+    operand: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    instruction.address_size == OperandSize::Dword
+        && instruction.length == 9
+        && operand.address_size == OperandSize::Dword
+        && operand.size == OperandSize::Qword
+        && matches!(operand.base, od_isa::long_decode::AddressBase::None)
+        && operand.index.is_some_and(|register| (register as u8) < 4)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && i32::try_from(operand.displacement).is_ok()
+}
+
 fn is_address32_rsp_sib_stack_base_operand(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
@@ -1515,6 +1541,9 @@ fn is_rsp_memory_data_operand(
         return true;
     }
     if is_address32_indexed_sib_stack_data_operand(instruction, operand) {
+        return true;
+    }
+    if is_address32_indexed_no_base_sib_stack_data_operand(instruction, operand) {
         return true;
     }
     if is_address32_rsp_sib_stack_base_operand(instruction, operand) {
@@ -1610,6 +1639,9 @@ fn is_rbp_memory_data_operand(
         return true;
     }
     if is_address32_indexed_sib_stack_data_operand(instruction, operand) {
+        return true;
+    }
+    if is_address32_indexed_no_base_sib_stack_data_operand(instruction, operand) {
         return true;
     }
     if is_address32_rsp_sib_stack_base_operand(instruction, operand) {
@@ -1756,12 +1788,18 @@ fn is_checked_qword_memory_address(
                 && operand.index.is_none()
                 && operand.scale == 1
                 && i32::try_from(operand.displacement).is_ok();
+            let indexed_no_base_sib_disp32 = instruction.length == 9
+                && matches!(operand.base, od_isa::long_decode::AddressBase::None)
+                && operand.index.is_some_and(|index| (index as u8) < 4)
+                && matches!(operand.scale, 1 | 2 | 4 | 8)
+                && i32::try_from(operand.displacement).is_ok();
             instruction.prefixes.address_override
                 && (base_supported && direct
                     || sib
                     || rsp_no_index_sib
                     || rbp_direct
-                    || absolute_sib_disp32)
+                    || absolute_sib_disp32
+                    || indexed_no_base_sib_disp32)
         }
         OperandSize::Qword => {
             let register_base = matches!(
@@ -2127,6 +2165,35 @@ pub(crate) fn exact_qword_address32_absolute_sib_disp32_memory_bytes(
         && bytes[3] & 7 == 4
         && (bytes[3] >> 3) & 7 <= 5
         && bytes[4] == 0x25
+}
+
+pub(crate) fn exact_qword_address32_indexed_no_base_sib_disp32_memory_bytes(
+    code: CodeView<'_>,
+    guest_rip: u64,
+    length: u8,
+    opcode: u8,
+) -> bool {
+    if length != 9 {
+        return false;
+    }
+    let Some(offset) = guest_rip
+        .checked_sub(code.base_rip)
+        .and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    let Some(bytes) = code.bytes.get(offset..offset.saturating_add(9)) else {
+        return false;
+    };
+    let sib = bytes[4];
+    bytes[0] == 0x67
+        && bytes[1] == 0x48
+        && bytes[2] == opcode
+        && bytes[3] >> 6 == 0
+        && bytes[3] & 7 == 4
+        && (bytes[3] >> 3) & 7 <= 5
+        && sib & 7 == 5
+        && (sib >> 3) & 7 < 4
 }
 
 pub(crate) fn exact_qword_indexed_no_base_sib_disp32_memory_bytes(

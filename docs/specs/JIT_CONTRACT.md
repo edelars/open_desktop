@@ -2209,6 +2209,12 @@ Admit only singleton `48 8B/89 /r sib disp32`: ModRM `mod=00,r/m=100`, SIB base 
 
 Direct V2, shared IR, interpreter, and bounded dispatcher evidence covers load/store × six data registers × four index registers × four scales × signed disp32 boundaries, including data=index pre-state behavior, independently computed/helper targets, u64 wrap, high displacement-byte identity, noncanonical address #GP before callback with stack data registers, AddressOverflow, architectural and backend faults without commit, successful store+STOP, budget/actual-RIP resume without replay, partial windows, and rejected neighboring SIB shapes. See [S3-20aw report](../reports/STAGE_3_S3-20aw_2026-10-27.md). Production owner/MMU integration, physical x86, Mini, and performance remain open.
 
+#### S3-20ax: indexed no-base SIB qword access in address32 mode
+
+Admit only singleton `67 48 8B/89 /r sib disp32`: ModRM `mod=00,r/m=100`, SIB base field `101` (no base), index RAX..RBX, scale 1/2/4/8, data RAX..RBP, and length nine. Transfer width is Qword; effective-address size is Dword. The decoded `MemoryOperand` and `access_address_48` remain the sole source of EA semantics: `(low32(index) * scale + signed_disp32) mod 2^32`, zero-extended to 64 bits before one contiguous qword access. The separate 64-bit indexed no-base 20aw form and 20av no-index SIB `0x25` remain unchanged. Runtime matching checks the exact prefix/opcode/ModRM/SIB shape and decoded metadata from the immutable decoder-built artifact; it does not re-decode displacement bytes.
+
+Evidence compares direct V2, shared IR, interpreter, and borrowed dispatcher for both operations, six data registers, four indices, scales, and signed disp32 edges. It includes independent low32 EA formulas with nonzero index high halves, data=index pre-state, ninth-byte artifact identity, qword crossing at `0xffff_ffff`, exact callback identity and retirement, guest/backend no-commit, store+STOP, budgets and actual-RIP continuation without replay, partial windows 1..8, and rejected SIB neighbors. Production owner/MMU integration, Stage 2/ISA, Mini, physical x86, and performance remain open.
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

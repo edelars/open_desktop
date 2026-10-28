@@ -653,6 +653,12 @@ pub fn compile_ir_memory_store_block_v2(
             entry_rip,
             bytes.len() as u8,
             0x89,
+        )
+        || crate::block::exact_qword_address32_indexed_no_base_sib_disp32_memory_bytes(
+            code,
+            entry_rip,
+            bytes.len() as u8,
+            0x89,
         ))
         || !site.has_supported_profile()
         || !site.matches_source_bytes(bytes, MemorySiteOperationV2::Store)
@@ -808,6 +814,12 @@ fn checked_load_metadata_v2(
                 0x8b,
             )
             || crate::block::exact_qword_indexed_no_base_sib_disp32_memory_bytes(
+                code,
+                entry_rip,
+                decoded.length,
+                0x8b,
+            )
+            || crate::block::exact_qword_address32_indexed_no_base_sib_disp32_memory_bytes(
                 code,
                 entry_rip,
                 decoded.length,
@@ -4106,7 +4118,7 @@ mod tests {
         }
         for opcode in [0x8b, 0x89] {
             for bytes in [
-                vec![0x67, 0x48, opcode, 0x04, 0x0d, 0, 0, 0, 0], // mod00 no-base, valid index field
+                vec![0x67, 0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // mod00 no-base, unsupported RBP index
                 vec![0x67, 0x48, opcode, 0x44, 0x25, 0],          // no-index
                 vec![0x67, 0x48, opcode, 0x44, 0x2d, 0],          // RBP index
                 vec![0x67, 0x48, opcode, 0x44, 0x0d],             // missing disp8
@@ -4170,7 +4182,7 @@ mod tests {
             for source in [
                 vec![0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // unsupported index
                 vec![0x48, opcode, 0x44, 0x25, 0],          // displaced no-index
-                vec![0x67, 0x48, opcode, 0x04, 0x05, 0, 0, 0, 0], // indexed addr32 no-base
+                vec![0x67, 0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // unsupported addr32 RBP index
                 vec![0x48, opcode, 0x04, 0x25, 0, 0, 0],    // truncated disp32
                 vec![0x48, opcode, 0x04, 0x24, 0, 0, 0, 0], // RSP no-index + tail
                 vec![0x48, opcode, 0x04, 0x25, 0, 0, 0, 0, 0x90], // trailing byte
@@ -4246,7 +4258,7 @@ mod tests {
 
         for opcode in [0x8b, 0x89] {
             for source in [
-                vec![0x67, 0x48, opcode, 0x04, 0x05, 0, 0, 0, 0], // indexed no-base
+                vec![0x67, 0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // unsupported RBP index
                 vec![0x67, 0x48, opcode, 0x05, 0, 0, 0, 0],       // direct rm=101 neighbor
                 vec![0x67, 0x48, opcode, 0x04, 0x24, 0, 0, 0, 0], // RSP no-index with tail
                 vec![0x48, 0x67, opcode, 0x04, 0x25, 0, 0, 0, 0], // wrong prefix order
@@ -4886,7 +4898,7 @@ mod tests {
                 vec![0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // unsupported RBP index
                 vec![0x48, opcode, 0x04, 0x06, 0, 0, 0, 0], // unsupported RSI base
                 vec![0x48, opcode, 0x04, 0x35, 0, 0, 0, 0], // unsupported RBP index
-                vec![0x67, 0x48, opcode, 0x04, 0x05, 0, 0, 0, 0], // address32 neighbor
+                vec![0x67, 0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // unsupported address32 RBP index
                 vec![0x48, 0x67, opcode, 0x04, 0x05, 0, 0, 0, 0], // wrong prefix order
             ] {
                 let code = CodeView::new(0x2b00, &source).unwrap();
@@ -4906,6 +4918,101 @@ mod tests {
                     compile_ir_memory_store_block_v2(code, 0x2b00).map(|_| ())
                 };
                 assert!(result.is_err(), "partial indexed no-base SIB {length}");
+            }
+        }
+    }
+
+    #[test]
+    fn address32_indexed_no_base_sib_disp32_has_exact_qword_profile_for_all_registers() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in 0..6_u8 {
+                for index_register in 0..4_u8 {
+                    for scale in [1_u8, 2, 4, 8] {
+                        for displacement in [i32::MIN, -1, 0, 1, i32::MAX] {
+                            let sib = (scale.trailing_zeros() as u8) << 6 | index_register << 3 | 5;
+                            let mut source =
+                                vec![0x67, 0x48, opcode, (data_register << 3) | 4, sib];
+                            source.extend_from_slice(&displacement.to_le_bytes());
+                            let code = CodeView::new(0x2c00, &source).unwrap();
+                            let site = match operation {
+                                MemorySiteOperationV2::Load => {
+                                    let direct = compile_memory_load_block_v2(code, 0x2c00)
+                                        .unwrap_or_else(|error| {
+                                            panic!("direct {source:02x?}: {error:?}")
+                                        });
+                                    let ir = compile_ir_memory_load_block_v2(code, 0x2c00)
+                                        .unwrap_or_else(|error| {
+                                            panic!("IR {source:02x?}: {error:?}")
+                                        });
+                                    assert_eq!(ir.site(), direct.site());
+                                    ir.site().clone()
+                                }
+                                MemorySiteOperationV2::Store => {
+                                    let direct = compile_memory_store_block_v2(code, 0x2c00)
+                                        .unwrap_or_else(|error| {
+                                            panic!("direct {source:02x?}: {error:?}")
+                                        });
+                                    let ir = compile_ir_memory_store_block_v2(code, 0x2c00)
+                                        .unwrap_or_else(|error| {
+                                            panic!("IR {source:02x?}: {error:?}")
+                                        });
+                                    assert_eq!(ir.site(), direct.site());
+                                    ir.site().clone()
+                                }
+                            };
+                            assert!(site.has_supported_profile(), "{source:02x?}");
+                            assert!(site.matches_source_bytes(&source, operation));
+                            assert_eq!(site.operand.base, od_isa::long_decode::AddressBase::None);
+                            assert_eq!(
+                                site.operand.index,
+                                od_isa::Register::from_encoding(index_register)
+                            );
+                            assert_eq!(site.operand.scale, scale);
+                            assert_eq!(site.operand.address_size, od_isa::OperandSize::Dword);
+                            assert_eq!(site.operand.size, od_isa::OperandSize::Qword);
+                            assert_eq!(site.operand.displacement, i64::from(displacement));
+                            assert_eq!(site.next_rip(), 0x2c09);
+                        }
+                    }
+                }
+            }
+        }
+
+        for opcode in [0x8b, 0x89] {
+            for source in [
+                vec![0x67, 0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // RBP index
+                vec![0x67, 0x48, opcode, 0x04, 0x65, 0, 0, 0, 0], // non-exact no-index SIB
+                vec![0x67, 0x48, opcode, 0x04, 0x05, 0, 0, 0, 0, 0], // extra byte
+                vec![0x48, 0x8b, 0x04, 0x2d, 0, 0, 0, 0],         // address64 with RBP index
+                vec![0x48, 0x67, opcode, 0x04, 0x05, 0, 0, 0, 0], // wrong prefix order
+                vec![0x67, 0x48, opcode, 0x05, 0, 0, 0, 0],       // direct rm=101
+            ] {
+                let code = CodeView::new(0x2c00, &source).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x2c00).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x2c00).map(|_| ())
+                };
+                assert!(
+                    result.is_err(),
+                    "invalid address32 indexed no-base {source:02x?}"
+                );
+            }
+            let complete = [0x67, 0x48, opcode, 0x04, 0x05, 0, 0, 0, 0];
+            for length in 1..9 {
+                let code = CodeView::new(0x2c00, &complete[..length]).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x2c00).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x2c00).map(|_| ())
+                };
+                assert!(
+                    result.is_err(),
+                    "partial address32 indexed no-base {length}"
+                );
             }
         }
     }
