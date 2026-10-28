@@ -13336,3 +13336,42 @@ focused package checks.
 See the [plan](../plans/STAGE_2.md#s2-3412--local-only-reverse-direction-register-movaps),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-reverse-direction-movaps-profile--s2-3412),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3412-local-reverse-direction-register-movaps-diagnostic-profile).
+
+## S2-34.13 — local register MOVAPD profile
+
+Implemented the separate `s2-long-movapd-reg-v1` profile for exact long-mode
+`66 [one optional REX.R/B] 0F 28 /r`, ModR/M.mod=3. Mandatory `66` selects
+SSE2 MOVAPD while prefix-free `0F 28 /r` remains the existing MOVAPS form.
+ModR/M.reg plus REX.R selects the destination XMM register; ModR/M.r/m plus
+REX.B selects the source. The interpreter copies raw 128-bit values, allows
+aliases, preserves the source and all other state, advances RIP only on
+success, and makes no data callbacks. Missing local SSE state refuses
+atomically. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 remain assumptions.
+
+Strict profile validation excludes missing/duplicate/out-of-order prefixes,
+reverse `66 0F 29`, MOVUPD `66 0F 10`, memory, F2/F3, segment/address/LOCK,
+REX.W/X, VEX/EVEX and truncation. A handwritten literal XMM8/XMM9 fixture uses
+`66 45 0F 28 C1` and source bytes
+`909192939495969798999a9b9c9d9e9f`. Interpreter execution passes; JIT and
+native admission deny the profile. No aligned-memory behavior, physical
+execution, or parent S2-34 acceptance is claimed.
+
+Focused checks passed (2026-10-28): `cargo test -p od-isa movap --offline`
+(6 tests, including forward/reverse MOVAPS regression, MOVAPD all 16×16 pairs,
+raw FP patterns and atomic boundaries); `cargo test -p od-testkit movap
+--offline` (6 tests, all three fixture/profile cases and strict schema
+negatives); and `cargo test -p od-runner --test fixture_v2 movap --offline`
+(3 tests, interpreter results and JIT denial). `cargo fmt --all -- --check`,
+workspace offline all-target check, Linux `od-x86-runner` all-target compile,
+`graphify update .`, and `git diff --check` passed. The Linux native-denial
+test is compile-checked, not run on this Darwin host. `python3
+tools/check_layout.py` still reports pre-existing checkout issues: unmapped root
+`.git` and two unavailable archived oracle manifests referenced from the Stage 2
+report. No physical x86, Mac mini or SSH acceptance was performed; the combined
+final acceptance substage remains deferred. Independent Sol-medium review
+completed with no findings and reran the focused test groups (6, 6, and 3
+passed).
+
+See the [plan](../plans/STAGE_2.md#s2-3413--local-only-register-movapd),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-movapd-profile--s2-3413),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3413-local-register-movapd-diagnostic-profile).

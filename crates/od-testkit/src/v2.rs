@@ -31,6 +31,7 @@ pub const PROFILE_X87_SSE_STATE: &str = "s2-long-x87-sse-state-v1";
 pub const PROFILE_MOVUPS_REGISTER: &str = "s2-long-movups-reg-v1";
 pub const PROFILE_MOVAPS_REGISTER: &str = "s2-long-movaps-reg-v1";
 pub const PROFILE_MOVAPS_REVERSE_REGISTER: &str = "s2-long-movaps-reg-reverse-v1";
+pub const PROFILE_MOVAPD_REGISTER: &str = "s2-long-movapd-reg-v1";
 pub const PROFILE_XORPS_REGISTER: &str = "s2-long-xorps-reg-v1";
 pub const PROFILE_PXOR_REGISTER: &str = "s2-long-pxor-reg-v1";
 pub const PROFILE_PAND_REGISTER: &str = "s2-long-pand-reg-v1";
@@ -110,6 +111,8 @@ pub enum Profile {
     LongMovapsRegV1,
     #[serde(rename = "s2-long-movaps-reg-reverse-v1")]
     LongMovapsReverseRegV1,
+    #[serde(rename = "s2-long-movapd-reg-v1")]
+    LongMovapdRegV1,
     #[serde(rename = "s2-long-xorps-reg-v1")]
     LongXorpsRegV1,
     #[serde(rename = "s2-long-pxor-reg-v1")]
@@ -630,6 +633,7 @@ impl IntegerState {
                     | Profile::LongMovupsRegV1
                     | Profile::LongMovapsRegV1
                     | Profile::LongMovapsReverseRegV1
+                    | Profile::LongMovapdRegV1
                     | Profile::LongXorpsRegV1
                     | Profile::LongPxorRegV1
                     | Profile::LongPandRegV1
@@ -703,6 +707,7 @@ impl IntegerState {
                     | Profile::LongMovupsRegV1
                     | Profile::LongMovapsRegV1
                     | Profile::LongMovapsReverseRegV1
+                    | Profile::LongMovapdRegV1
                     | Profile::LongXorpsRegV1
                     | Profile::LongPxorRegV1
                     | Profile::LongPandRegV1
@@ -783,6 +788,7 @@ impl IntegerState {
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
+                | Profile::LongMovapdRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
@@ -857,6 +863,7 @@ impl IntegerState {
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
+                | Profile::LongMovapdRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
@@ -980,6 +987,7 @@ impl IntegerState {
             | Profile::LongMovupsRegV1
             | Profile::LongMovapsRegV1
             | Profile::LongMovapsReverseRegV1
+            | Profile::LongMovapdRegV1
             | Profile::LongXorpsRegV1
             | Profile::LongPxorRegV1
             | Profile::LongPandRegV1
@@ -1053,6 +1061,7 @@ impl IntegerState {
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
+                | Profile::LongMovapdRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
@@ -1132,6 +1141,7 @@ impl IntegerState {
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
+                | Profile::LongMovapdRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
@@ -1216,6 +1226,7 @@ impl IntegerState {
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
+                | Profile::LongMovapdRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
@@ -1303,6 +1314,7 @@ impl IntegerState {
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
+                | Profile::LongMovapdRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
@@ -1541,6 +1553,7 @@ impl IntegerState {
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
+                | Profile::LongMovapdRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
@@ -1614,6 +1627,7 @@ impl IntegerState {
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
+                | Profile::LongMovapdRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
@@ -1690,6 +1704,7 @@ impl IntegerState {
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
+                | Profile::LongMovapdRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
@@ -1760,6 +1775,7 @@ impl IntegerState {
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
+                | Profile::LongMovapdRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
@@ -2146,6 +2162,28 @@ impl Fixture {
                 return Err(invalid(
                     "memory.code",
                     "MOVAPS requires one executable instruction, budget 1, and stop_rip immediately afterward",
+                ));
+            }
+        }
+        if self.profile == Profile::LongMovapdRegV1 {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid("memory.code", "required by this profile"));
+            };
+            let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let length = movapd_register_length(&code_bytes).ok_or_else(|| {
+                invalid("memory.code", "outside the register-only MOVAPD profile")
+            })?;
+            if code.guest_address != self.initial_state.rip
+                || code.length != length
+                || !code.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get)
+                    != self.initial_state.rip.get().checked_add(u64::from(length))
+                || self.expected_exit != ExpectedExit::StopAddress
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "MOVAPD requires one executable instruction, budget 1, and stop_rip immediately afterward",
                 ));
             }
         }
@@ -5364,6 +5402,25 @@ fn movaps_register_length(code_bytes: &str, reverse: bool) -> Option<u32> {
                 && modrm >> 6 == 3 =>
         {
             Some(4)
+        }
+        _ => None,
+    }
+}
+
+fn movapd_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0x28, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0x28, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
         }
         _ => None,
     }

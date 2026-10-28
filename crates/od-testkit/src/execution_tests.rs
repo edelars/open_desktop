@@ -14433,6 +14433,59 @@ fn local_movaps_reverse_register_fixture_copies_xmm8_to_xmm9_and_preserves_state
 }
 
 #[test]
+fn local_movapd_register_fixture_copies_literal_raw_xmm_and_preserves_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_13_movapd_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, before.rip + 5);
+    assert_eq!(
+        state.sse.as_ref().unwrap().xmm[8],
+        [
+            0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d,
+            0x9e, 0x9f,
+        ]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().xmm[9],
+        before.sse.as_ref().unwrap().xmm[9]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().xmm[8][..8],
+        [0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().xmm[8][8..],
+        [0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().mxcsr,
+        before.sse.as_ref().unwrap().mxcsr
+    );
+    assert_eq!(state.x87, before.x87);
+    assert_eq!(state.gpr, before.gpr);
+    assert_eq!(state.rflags, before.rflags);
+    assert_eq!(memory.snapshot(), memory_before);
+}
+
+#[test]
 fn local_psubusw_register_uses_literal_lanes_and_preserves_side_state() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_35_9_psubusw_register.case.json"

@@ -476,6 +476,11 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only mandatory-66 `0F 28 /r` MOVAPD XMM-to-XMM register form.
+    MovapdRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only legacy `0F 57 /r` register form, bitwise XOR of raw XMM bits.
     XorpsRegister {
         destination: u8,
@@ -1765,6 +1770,22 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 || (prefix_count == 1
                     && prefixes.rex.is_some()
                     && prefix_bytes[0] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        // MOVAPD is a separate exact profile: mandatory 66 first, optionally
+        // followed by one effective REX.R/B. In particular, a REX before 66
+        // is not accepted because legacy prefixes invalidate that REX.
+        let movapd_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x28
+            && prefixes.operand_override
+            && !duplicate
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.address_override
+            && (prefix_bytes[..prefix_count] == [0x66]
+                || (prefix_count == 2
+                    && prefix_bytes[0] == 0x66
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
                     && prefixes.rex.unwrap() & 0x0a == 0));
         let movups_memory = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x10
@@ -3171,16 +3192,29 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Escape0f, 0x28) => {
-                if !movaps_register {
+                if prefixes.operand_override {
+                    if !movapd_register {
+                        return Err(self.unsupported(opcode));
+                    }
+                    let modrm = self.byte()?;
+                    if modrm >> 6 != 3 {
+                        return Err(self.unsupported(opcode));
+                    }
+                    Operation::MovapdRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else if !movaps_register {
                     return Err(self.unsupported(opcode));
-                }
-                let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
-                    return Err(self.unsupported(opcode));
-                }
-                Operation::MovapsRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    let modrm = self.byte()?;
+                    if modrm >> 6 != 3 {
+                        return Err(self.unsupported(opcode));
+                    }
+                    Operation::MovapsRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x29) => {
@@ -7518,8 +7552,7 @@ mod tests {
         }
 
         for bytes in [
-            &[0x0f, 0x28, 0x00][..],       // memory
-            &[0x66, 0x0f, 0x28, 0xc1][..], // MOVAPD
+            &[0x0f, 0x28, 0x00][..], // memory
             &[0xf2, 0x0f, 0x28, 0xc1][..],
             &[0xf3, 0x0f, 0x28, 0xc1][..],
             &[0x64, 0x0f, 0x28, 0xc1][..],
@@ -7603,6 +7636,73 @@ mod tests {
                 source: 1
             }
         );
+    }
+
+    #[test]
+    fn movapd_register_requires_mandatory_66_and_decodes_all_xmm_pairs() {
+        let mut bare = Memory::new(&[0x66, 0x0f, 0x28, 0xc1]);
+        assert_eq!(
+            bare.decode().unwrap().operation,
+            Operation::MovapdRegister {
+                destination: 0,
+                source: 1
+            }
+        );
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let bytes = [0x66, rex, 0x0f, 0x28, modrm];
+                let mut memory = Memory::new(&bytes);
+                let instruction = memory.decode().unwrap();
+                assert_eq!(instruction.length, 5);
+                assert_eq!(
+                    instruction.operation,
+                    Operation::MovapdRegister {
+                        destination,
+                        source
+                    }
+                );
+            }
+        }
+        let mut independent_axes = Memory::new(&[0x66, 0x45, 0x0f, 0x28, 0xc1]);
+        assert_eq!(
+            independent_axes.decode().unwrap().operation,
+            Operation::MovapdRegister {
+                destination: 8,
+                source: 9
+            }
+        );
+        let mut movaps = Memory::new(&[0x0f, 0x28, 0xc1]);
+        assert_eq!(
+            movaps.decode().unwrap().operation,
+            Operation::MovapsRegister {
+                destination: 0,
+                source: 1
+            }
+        );
+        for bytes in [
+            &[0x66, 0x0f, 0x29, 0xc1][..],
+            &[0x66, 0x0f, 0x10, 0xc1][..],
+            &[0x66, 0x0f, 0x28, 0x00][..],
+            &[0x66, 0xf2, 0x0f, 0x28, 0xc1][..],
+            &[0x66, 0xf3, 0x0f, 0x28, 0xc1][..],
+            &[0x66, 0x66, 0x0f, 0x28, 0xc1][..],
+            &[0x66, 0x40, 0x41, 0x0f, 0x28, 0xc1][..],
+            &[0x40, 0x66, 0x0f, 0x28, 0xc1][..],
+            &[0x64, 0x66, 0x0f, 0x28, 0xc1][..],
+            &[0x67, 0x66, 0x0f, 0x28, 0xc1][..],
+            &[0xf0, 0x66, 0x0f, 0x28, 0xc1][..],
+            &[0x66, 0x48, 0x0f, 0x28, 0xc1][..],
+            &[0x66, 0x42, 0x0f, 0x28, 0xc1][..],
+            &[0x66, 0x0f, 0x28][..],
+            &[0x66, 0x0f][..],
+            &[0x66, 0xc5, 0xf9, 0x28, 0xc1][..],
+            &[0x66, 0x62, 0xf1, 0xfd, 0x08, 0x28, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
     }
 
     #[test]

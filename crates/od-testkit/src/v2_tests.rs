@@ -1208,6 +1208,67 @@ fn movaps_reverse_register_profile_is_distinct_and_rejects_neighboring_encodings
 }
 
 #[test]
+fn movapd_register_profile_requires_mandatory_66_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_13_movapd_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongMovapdRegV1);
+    for bytes in [
+        "66450f28c1", // accepted independent REX.R/B axes
+        "660f28c1",   // accepted low registers
+    ] {
+        let mut accepted = fixture.clone();
+        let code = accepted
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        accepted.stop_rip = Some(HexU64(
+            accepted.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(accepted.validate().is_ok(), "{bytes}");
+    }
+    for bytes in [
+        "0f28c1",       // no mandatory 66
+        "660f29c1",     // reverse MOVAPD
+        "660f10c1",     // MOVUPD
+        "660f2800",     // memory
+        "f2660f28c1",   // F2
+        "f3660f28c1",   // F3
+        "66660f28c1",   // duplicate 66
+        "6640400f28c1", // duplicate REX
+        "40660f28c1",   // REX before legacy prefix
+        "64660f28c1",   // segment
+        "67660f28c1",   // address size
+        "f0660f28c1",   // LOCK
+        "66480f28c1",   // REX.W
+        "66420f28c1",   // REX.X
+        "c5f928c1",     // VEX
+        "62f1fd0828c1", // EVEX
+        "66450f28",     // truncated
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(
+            rejected.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
 fn movups_memory_load_profile_is_separate_and_exactly_bounds_rax_source() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_4_movups_memory_load_rax.case.json"

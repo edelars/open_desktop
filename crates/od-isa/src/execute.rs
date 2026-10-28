@@ -818,6 +818,11 @@ fn step_tracked_with_stop(
             opcode: instruction.opcode.byte,
         });
     }
+    if matches!(instruction.operation, Operation::MovapdRegister { .. }) && state.sse.is_none() {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
     if let Operation::FaddSt0St { source } = instruction.operation
         && exact_fadd_result(state, 0, source).is_none()
     {
@@ -1268,6 +1273,7 @@ fn step_tracked_with_stop(
         Operation::MovupsRegister { .. }
         | Operation::MovapsRegister { .. }
         | Operation::MovapsReverseRegister { .. }
+        | Operation::MovapdRegister { .. }
         | Operation::XorpsRegister { .. }
         | Operation::PxorRegister { .. }
         | Operation::PaddbRegister { .. }
@@ -2653,6 +2659,16 @@ fn step_tracked_with_stop(
                 .sse
                 .as_mut()
                 .expect("MOVAPS local profile state was prevalidated");
+            sse.xmm[usize::from(destination)] = sse.xmm[usize::from(source)];
+        }
+        Operation::MovapdRegister {
+            destination,
+            source,
+        } => {
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("MOVAPD local profile state was prevalidated");
             sse.xmm[usize::from(destination)] = sse.xmm[usize::from(source)];
         }
         Operation::XorpsRegister {
@@ -72917,6 +72933,116 @@ mod tests {
             assert_eq!(result.instructions_executed, 0);
             if !has_sse {
                 assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x29 }));
+            }
+        }
+    }
+
+    #[test]
+    fn movapd_register_copies_raw_xmm_matrix_and_refuses_atomically() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut code = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    code.push(0x40 | ((destination >> 3) << 2) | (source >> 3));
+                }
+                code.extend([0x0f, 0x28, modrm]);
+                let mut memory = Memory::new(&code);
+                let mut state = LongModeState::default();
+                state.rip = 0;
+                state.rflags = 0x0cd7;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = std::array::from_fn(|register| {
+                    std::array::from_fn(|byte| (register * 16 + byte) as u8)
+                });
+                xmm[0] = [0x00; 16];
+                xmm[1] = [0xff; 16];
+                xmm[2] = [0x80; 16];
+                xmm[3] = [0x7f; 16];
+                xmm[4] = [
+                    0x00, 0x00, 0x80, 0x7f, 0x00, 0x00, 0x80, 0x7f, 0x00, 0x00, 0x80, 0x7f, 0x00,
+                    0x00, 0x80, 0x7f,
+                ];
+                xmm[5] = [
+                    0x00, 0x00, 0x80, 0xff, 0x00, 0x00, 0x80, 0xff, 0x00, 0x00, 0x80, 0xff, 0x00,
+                    0x00, 0x80, 0xff,
+                ];
+                xmm[6] = [
+                    0x01, 0x00, 0xc0, 0x7f, 0x01, 0x00, 0xc0, 0x7f, 0x01, 0x00, 0xc0, 0x7f, 0x01,
+                    0x00, 0xc0, 0x7f,
+                ];
+                xmm[7] = [
+                    0x01, 0x00, 0x80, 0x7f, 0x01, 0x00, 0x80, 0x7f, 0x01, 0x00, 0x80, 0x7f, 0x01,
+                    0x00, 0x80, 0x7f,
+                ];
+                xmm[8] = [
+                    0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+                    0x00, 0x00, 0x00,
+                ];
+                xmm[9] = [
+                    0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00,
+                    0x00, 0x00, 0x80,
+                ];
+                state.sse = Some(SseState {
+                    xmm,
+                    mxcsr: 0x0000_1f80,
+                });
+                let before = state.clone();
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(code.len() as u64),
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(result.instructions_executed, 1);
+                let mut expected = before.clone();
+                expected.rip = code.len() as u64;
+                expected.sse.as_mut().unwrap().xmm[destination as usize] =
+                    before.sse.as_ref().unwrap().xmm[source as usize];
+                assert_eq!(state, expected);
+                assert!(
+                    memory.accesses.is_empty(),
+                    "MOVAPD must not access data memory"
+                );
+            }
+        }
+
+        for (budget, stop, code, has_sse) in [
+            (0, None, vec![0x66, 0x0f, 0x28, 0xc1], true),
+            (1, Some(0), vec![0x66, 0x0f, 0x28, 0xc1], true),
+            (1, None, vec![0x66, 0x0f, 0x28], true),
+            (1, None, vec![0x66, 0x0f, 0x28, 0xc1], false),
+        ] {
+            let mut memory = Memory::new(&code);
+            let mut state = LongModeState::default();
+            state.rip = 0;
+            state.x87 = Some(X87State::fixture_seed());
+            if has_sse {
+                state.sse = Some(SseState {
+                    xmm: [[0x5a; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+            }
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip: stop,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(state, before);
+            assert_eq!(result.instructions_executed, 0);
+            if !has_sse {
+                assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x28 }));
             }
         }
     }

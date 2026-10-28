@@ -378,6 +378,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-34.1 | Lossless local-only Long64 x87+SSE snapshot transfer: 16 raw XMM registers and raw MXCSR; no instruction semantics or hardware claim | S2-28a |
 | [x] | S2-34.11 | Local-only register MOVAPS `0F 28 /r`; raw 128-bit XMM copy, JIT/native closed | S2-34.1 |
 | [x] | S2-34.12 | Separate local-only reverse-direction register MOVAPS `0F 29 /r`; raw 128-bit XMM copy, JIT/native closed | S2-34.11 |
+| [x] | S2-34.13 | Separate local-only register MOVAPD `66 0F 28 /r`; raw 128-bit XMM copy, JIT/native closed | S2-34.12 |
 | [x] | S2-34.5 | Separate local-only legacy `MOVUPS [RAX],XMM` store profile; one exact 16-byte write with no CPU commit on backend failure | S2-34.4 |
 | [x] | S2-34.6a | Shared local-only MOVUPS base+displacement profile for legacy `0F 10`/`0F 11`, no SIB/RIP-relative | S2-34.5 |
 | [x] | S2-34.6b | Extend `s2-long-movups-mem-base-v1` with bounded legacy RIP-relative `0F 10`/`0F 11` disp32 forms | S2-34.6a |
@@ -9104,7 +9105,7 @@ PSRLDQ shift the whole XMM, unlike the independent qword lanes in PSLLQ/PSRLQ.
 |---|---|---|
 | Arithmetic | `PADDB` FC, `PSUBB` F8, `PADDUSB` DC, `PSUBUSB` D8, `PADDW` FD, `PSUBW` F9, `PADDUSW` DD, `PSUBUSW` D9, `PADDSB` EC, `PSUBSB` E8, `PADDSW` ED, `PSUBSW` E9, `PADDD` FE, `PSUBD` FA, `PADDQ` D4, `PSUBQ` FB | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Per-profile interpreter/decoder coverage and literal XMM fixtures exercise lane order, wrap or saturation, state preservation, and profile rejection; several entries record exhaustive lane/register matrices. Other arithmetic mnemonics or memory/MMX forms are not selected. Any extension first depends on the parent profile choosing exact forms; reviewed byte/word/dword/qword operations are local semantic precedents, not evidence of parent acceptance. |
 | Logic | `PXOR` EF, `PAND` DB, `PANDN` DF, `POR` EB | Each is a distinct exact `66 [REX.R/B] 0F opcode /r` register-only profile with ModR/M.mod=3. Local decoder/interpreter tests, handwritten fixtures, full-state preservation and strict profile negatives cover each named form. These bounded local slices do not settle parent S2-35/S2-34 selection, profile-wide acceptance, or native-oracle acceptance. No other logical forms or memory/MMX variants are implied. |
-| SSE moves (S2-34 local only) | Register MOVAPS `0F 28 /r` (`s2-long-movaps-reg-v1`) | One bounded register-only profile with optional REX.R/B; local interpreter and handwritten fixture evidence only. It does not imply MOVUPS/MOVAPD or parent S2-34 acceptance; JIT/native remain denied. |
+| SSE moves (S2-34 local only) | Register MOVAPS `0F 28 /r` (`s2-long-movaps-reg-v1`), reverse-direction MOVAPS `0F 29 /r` (`s2-long-movaps-reg-reverse-v1`), and MOVAPD `66 0F 28 /r` (`s2-long-movapd-reg-v1`) | Three exact bounded register-only profiles with their own prefix and opcode allowlists; local interpreter and handwritten fixture evidence only. MOVAPS forms allow optional REX.R/B; MOVAPD requires `66` before optional REX.R/B. These forms do not imply aligned-memory behavior or parent S2-34 acceptance; JIT/native remain denied. |
 | Comparison | `PCMPEQB` 74, `PCMPEQW` 75, `PCMPEQD` 76, `PCMPGTB` 64, `PCMPGTW` 65, `PCMPGTD` 66 | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Local fixtures and per-profile lane/equality/signed-order checks; S2-35.21 records exhaustive raw byte-pair and 16×16 register-pair coverage. `PCMPEQQ` (SSE4.1) and `PCMPGTQ` (SSE4.2) are explicitly outside these SSE2 slices. More forms require explicit profile selection and parent acceptance. |
 | Unpack | `PUNPCKLBW` 60, `PUNPCKHBW` 68, `PUNPCKLWD` 61, `PUNPCKHWD` 69, `PUNPCKLDQ` 62, `PUNPCKHDQ` 6A, `PUNPCKLQDQ` 6C, `PUNPCKHQDQ` 6D | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Local register fixtures and lane-selection/state checks exist for all eight listed forms. No new local opcode dependency is evidenced; parent native-oracle acceptance remains outstanding. |
 | Pack | `PACKSSWB` 63, `PACKUSWB` 67, `PACKSSDW` 6B | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Local fixtures and boundary/extrema checks; S2-35.33/.34 additionally record exhaustive sign-extended input-position checks and register-pair coverage. These are the only pack forms inventoried here. |
@@ -9260,3 +9261,22 @@ full-state and atomicity checks, the handwritten XMM8/XMM9 fixture and JIT/nativ
 denial are local evidence only. This does not imply aligned-memory behavior or
 parent S2-34/S2-35 acceptance. See the [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-reverse-direction-movaps-profile--s2-3412)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3412-local-reverse-direction-register-movaps-diagnostic-profile).
+
+#### S2-34.13 — local-only register `MOVAPD`
+
+The separate diagnostic profile `s2-long-movapd-reg-v1` admits exactly long-mode
+`66 [one optional REX.R/B] 0F 28 /r` with ModR/M.mod=3. Mandatory `66` selects
+the SSE2 MOVAPD form and distinguishes it from MOVAPS. The destination is
+ModR/M.reg plus REX.R; the source is ModR/M.r/m plus REX.B. The interpreter
+copies the raw 128-bit source, permits aliases, preserves all state except the
+destination XMM and RIP, and makes no data-memory callbacks. SSE2 support,
+CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumptions; absent local SSE state
+refuses atomically.
+
+No other legacy prefixes, duplicate/out-of-order prefixes, REX.W/X, memory,
+VEX or EVEX are admitted. Reverse `66 0F 29 /r` and MOVUPD `66 0F 10 /r` are
+separate encodings and remain unsupported. The local profile does not model
+aligned-memory behavior, real SSE exception gates, JIT/native execution or
+physical execution, and does not represent parent S2-34 acceptance. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-movapd-profile--s2-3413)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3413-local-register-movapd-diagnostic-profile).
