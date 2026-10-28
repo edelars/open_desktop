@@ -646,6 +646,50 @@ labels, завершившись успешно. Независимое ревь
 архитектурным exception flags. S2-36 и hardware acceptance остаются открытыми.
 См. [план S2-36n](../plans/STAGE_2.md#s2-36n--finite-binary-division-output-and-rounding-diagnostics).
 
+## S2-36o — finite binary addition and subtraction output in the gap-64 profile
+
+**Статус:** локальные finite add/sub result API реализованы и проверены для
+профиля exponent gap ≤64. Независимые code/docs review завершены. Полная
+приёмка S2-36 и hardware acceptance остаются открытыми.
+
+Добавлены для `Binary32`/`Binary64` новые
+`add_finite_aligned_result` и `subtract_finite_aligned_result`, возвращающие
+`Option<BinaryRoundingResult<Self>>`; существующие bounded API сохранены без
+изменения контрактов. Bounded профиль охватывает конечные
+нормализованные операнды с exponent gap до 64 включительно. `None` возвращается
+для ненулевого gap больше 64; более широкий gap остаётся ограничением профиля
+и не закрыт этой задачей. Для gap до 64 новые результаты совпадают с legacy
+helper-ами там, где те возвращают `Some`; signed-zero и overflow outputs
+дополняют случаи, где прежние helper-ы возвращали `None`.
+
+Exact alignment использует `u128` и сохраняет разряды при gap≤64 до одного
+округления. `tiny`/`overflow`/`inexact` и итоговое bounded значение следуют
+S2-36m, без intermediate rounding. Знак exact zero учитывает операцию:
+для сложения одинаковые знаки нулей сохраняются, а opposing exact terms и
+ненулевое точное cancellation дают `-0` только при `TowardNegative`; вычитание
+следует точной сумме `lhs + (-rhs)`. Вычитание одного нуля из ненулевого `lhs`
+сохраняет знак `lhs`, а комбинации нулей следуют знакам эффективных слагаемых
+и направлению округления. Ненулевой точный результат, округлившийся в ноль,
+сохраняет свой знак. Literal-векторы проверяют эти случаи, включая все режимы,
+two-nonzero cancellation, overflow, signed-zero rounding, gap64/65 и прямой
+subnormal boundary без double rounding.
+
+Нормативный контекст для локальной политики exact-zero signs: Intel SDM Rev.
+093, [Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436) и
+[Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199). Они служат
+основанием для политики знака локального математического результата; это не
+утверждение об интеграции SSE/x87 инструкций и не hardware evidence.
+Проверки автора прошли: `cargo test -p od-isa --offline
+binary_float::tests` (45/45), `cargo test -p od-isa --offline x87::tests`
+(47/47), `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check` и
+`graphify update .`. Graphify сообщил существующее предупреждение парсера для
+`include/open_desktop/host_abi.h` и notice об обновлении community labels,
+завершившись успешно. Независимое code review Sol medium и документационное
+ревью завершились без замечаний. Gap>64 остаётся открытым в
+[ISSUE-024](../KNOWN_ISSUES.md#issue-024--bounded-finite-addsub-helpers-reject-exponent-gaps-greater-than-64).
+См. [план S2-36o](../plans/STAGE_2.md#s2-36o--finite-binary-addition-and-subtraction-output-in-the-gap-64-profile).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

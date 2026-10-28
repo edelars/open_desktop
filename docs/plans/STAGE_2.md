@@ -468,6 +468,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36l | Compare finite normalized binary32/binary64 values | S2-36a; independent review |
 | [x] | S2-36m | Complete finite binary32/binary64 multiplication output with rounding diagnostics | S2-36i; independent review |
 | [x] | S2-36n | Complete finite binary32/binary64 division output with rounding diagnostics | S2-36c, S2-36m; independent review |
+| [x] | S2-36o | Complete finite binary32/binary64 addition and subtraction results in the exponent-gap ≤64 profile | S2-36d–36g, S2-36m; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5267,6 +5268,65 @@ and Tables 4-10–4-12 ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getC
 for destination-format terminology and boundaries. This reference does not
 establish a one-to-one mapping from these local diagnostics to architectural
 exception flags. Keep S2-36 and hardware acceptance open.
+
+#### S2-36o — finite binary addition and subtraction output in the gap-64 profile
+
+**Статус:** локальные finite add/sub result API реализованы и проверены для
+профиля exponent gap ≤64. Полная приёмка S2-36 и hardware acceptance остаются
+открытыми.
+
+Для `Binary32` и `Binary64` добавлены API
+`add_finite_aligned_result(lhs, rhs, mode)` и
+`subtract_finite_aligned_result(lhs, rhs, mode)`, возвращающие
+`Option<BinaryRoundingResult<Self>>`. API принимают конечные нормализованные
+`BinaryFinite` операнды всех поддерживаемых destination/source сочетаний,
+сохраняют существующие `add_finite_aligned` и `subtract_finite_aligned` без
+изменения сигнатур и поведения. Новый bounded профиль принимает
+нормализованный exponent gap до 64 включительно; `None` допустим только для
+ненулевого gap больше 64. Для gap до 64 результат совпадает с точной
+математикой; там, где существующие helper-ы возвращают `Some`, числовое
+значение и `inexact` совпадают с ними. Новые zero-sign и overflow результаты
+дополняют случаи, в которых прежние helper-ы возвращали `None`.
+Более широкий gap остаётся известным ограничением этого профиля и не
+закрывается S2-36o.
+
+Точное выравнивание сохраняет разряды младшего операнда во всех режимах,
+знаках, mixed-format парах и на subnormal/overflow boundaries при gap≤64.
+Математический результат округляется один раз; tiny/overflow/inexact и bounded
+destination result используют определения S2-36m. Архитектурные MXCSR/x87
+flags, exception delivery, DAZ/FTZ, NaN/infinity и instruction integration
+не добавлены.
+
+Знак точного нулевого результата задаётся отдельно для каждой операции:
+сложение нулевых операндов одного знака сохраняет этот знак; сумма точных
+величин противоположных знаков (включая ненулевое точное cancellation)
+возвращает `-0` только при `TowardNegative`, иначе `+0`. Для вычитания
+применяется то же правило к точной сумме `lhs + (-rhs)`: вычитание одного нуля
+из ненулевого `lhs` сохраняет знак `lhs`; комбинации нулей обрабатываются по
+знакам эффективных слагаемых и направлению округления. Точное равенство
+ненулевых операндов даёт `-0` только при `TowardNegative`. Ненулевой результат,
+округлившийся в ноль, сохраняет знак точного результата. Нормативный контекст
+знаков exact-zero операций — Intel SDM Rev. 093, Vol. 1 и Vol. 2A ([Vol. 1,
+official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436), [Vol. 2A,
+official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); эта ссылка
+обосновывает локальную политику результата, но не означает интеграцию или
+аппаратную проверку инструкций.
+
+Literal-векторы покрывают все rounding modes, знаки, одинаковые/разные
+форматы, нули, точную cancellation, ненулевые результаты, округляющиеся в
+signed zero, gap 64/65, normal/subnormal переходы и overflow diagnostics.
+Точное выравнивание в `u128` сохраняет все разряды в пределах gap≤64 перед
+одним округлением. Проверки автора прошли: `cargo test -p od-isa --offline
+binary_float::tests` (45/45), `cargo test -p od-isa --offline x87::tests`
+(47/47), `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check` и
+`graphify update .`. Graphify сообщил существующее предупреждение парсера для
+`include/open_desktop/host_abi.h` и notice об обновлении community labels,
+завершившись успешно. Независимое code review Sol medium и документационное
+ревью завершились без замечаний. См. [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36o--finite-binary-addition-and-subtraction-output-in-the-gap-64-profile).
+Issue [ISSUE-024](../KNOWN_ISSUES.md#issue-024--bounded-finite-addsub-helpers-reject-exponent-gaps-greater-than-64)
+остаётся открытым для exponent gap >64; S2-36 и hardware acceptance также
+остаются открытыми.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

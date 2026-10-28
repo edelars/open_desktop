@@ -1203,3 +1203,12 @@
 - **Суть и последствия:** Layout validation reports the root `.git` worktree pointer as an unmapped file and two missing historical oracle manifests referenced by `docs/reports/STAGE_2_REPORT.md`. This prevents a clean layout-check result in this checkout; it does not affect interpreter or fixture execution.
 - **Воспроизведение:** `python3 tools/check_layout.py` from the repository root in the linked Stage 2 worktree reports `Unmapped root file: .git` and broken local links to `work/stage2-oracle/stage2-20261022-230853-3684f650/manifest.json` and `work/stage1-oracle/stage1-20261022-230241-3b73e810/manifest.json`.
 - **Следующий шаг:** update the layout checker to recognize Git worktree pointer files and restore the referenced manifests or correct their archived references in the report. Do not hide the failures by moving the checkout metadata or fabricating evidence.
+
+### ISSUE-024 — Bounded finite add/sub helpers reject exponent gaps greater than 64
+
+- **Дата обнаружения:** 2026-10-28.
+- **Компонент:** `od-isa` bounded finite binary addition/subtraction helpers S2-36j/k/o (`Binary32::add_finite_aligned`, `Binary64::add_finite_aligned`, `subtract_finite_aligned` and result-API counterparts).
+- **Статус:** открыто; известное ограничение bounded API, не подтверждённый дефект CPU.
+- **Суть и последствия:** legacy и result helpers возвращают `None` для ненулевых конечных нормализованных операндов, если разность нормализованных exponent больше 64. Такие входы математически допустимы, поэтому локальная finite add/sub семантика неполна для конечного диапазона и не может обеспечить полную S2-36 арифметическую приёмку. Это ограничение относится к API и не устанавливает поведение x86-инструкции.
+- **Условие воспроизведения:** вызвать любой `add_finite_aligned`, `subtract_finite_aligned` или соответствующий result API с ненулевыми finite normalized операндами и exponent gap `>64`; основание — documented S2-36j/k/o gap limit и `None` для wider gaps. Gap 64 входит в bounded профиль; gap 65 — первый отказ.
+- **Следующий шаг:** разработать точное tail-представление для произвольного finite exponent gap, доказать корректность округления для всех режимов/знаков и добавить независимые literal-векторы с покрытием cancellation, zero, subnormal и overflow boundaries. S2-36o ограничен gap ≤64 и не закрывает эту проблему; расширение за пределы 64 потребует отдельной реализации и проверки.
