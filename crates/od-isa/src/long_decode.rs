@@ -501,6 +501,11 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only mandatory-66 `0F 57 /r` register form, raw 128-bit XOR.
+    XorpdRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only legacy `66 0F EF /r` register form, raw 128-bit integer XOR.
     PxorRegister {
         destination: u8,
@@ -1862,6 +1867,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefixes.rex.is_some()
                     && prefix_bytes[0] == prefixes.rex.unwrap()
                     && prefixes.rex.unwrap() & 0x0a == 0));
+        let xorpd_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x57
+            && prefixes.operand_override
+            && !duplicate
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.address_override
+            && (prefix_bytes[..prefix_count] == [0x66]
+                || (prefix_count == 2
+                    && prefix_bytes[0] == 0x66
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
         // PXOR's 66 is mandatory (unprefixed 0F EF is MMX). Allow only the
         // mandatory prefix and at most one effective REX.R/B byte.
         let pxor_register = opcode.map == OpcodeMap::Escape0f
@@ -2613,16 +2631,27 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Escape0f, 0x57) => {
-                if !xorps_register {
-                    return Err(self.unsupported(opcode));
-                }
-                let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
-                    return Err(self.unsupported(opcode));
-                }
-                Operation::XorpsRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                if xorpd_register {
+                    let modrm = self.byte()?;
+                    if modrm >> 6 != 3 {
+                        return Err(self.unsupported(opcode));
+                    }
+                    Operation::XorpdRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else {
+                    if !xorps_register {
+                        return Err(self.unsupported(opcode));
+                    }
+                    let modrm = self.byte()?;
+                    if modrm >> 6 != 3 {
+                        return Err(self.unsupported(opcode));
+                    }
+                    Operation::XorpsRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0xef) => {
@@ -4764,7 +4793,6 @@ mod tests {
             }
         }
         for bytes in [
-            &[0x66, 0x0f, 0x57, 0xc1][..],
             &[0xf2, 0x0f, 0x57, 0xc1][..],
             &[0xf3, 0x0f, 0x57, 0xc1][..],
             &[0x67, 0x0f, 0x57, 0xc1][..],
@@ -4778,6 +4806,56 @@ mod tests {
             &[0xc5, 0xf8, 0x57, 0xc1][..],
             &[0xc4, 0xe1, 0x78, 0x57, 0xc1][..],
             &[0x62, 0xf1, 0x7c, 0x08, 0x57, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn xorpd_register_decodes_exact_mandatory_66_high_register_forms() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut memory = Memory::new(&[0x66, rex, 0x0f, 0x57, modrm]);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::XorpdRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, 5);
+                if destination < 8 && source < 8 {
+                    let mut bare_rex = Memory::new(&[0x66, 0x0f, 0x57, modrm]);
+                    assert_eq!(
+                        bare_rex.decode().unwrap().operation,
+                        Operation::XorpdRegister {
+                            destination,
+                            source
+                        }
+                    );
+                }
+            }
+        }
+        for bytes in [
+            &[0xf2, 0x66, 0x0f, 0x57, 0xc1][..],
+            &[0xf3, 0x66, 0x0f, 0x57, 0xc1][..],
+            &[0x67, 0x66, 0x0f, 0x57, 0xc1][..],
+            &[0xf0, 0x66, 0x0f, 0x57, 0xc1][..],
+            &[0x2e, 0x66, 0x0f, 0x57, 0xc1][..],
+            &[0x66, 0x66, 0x0f, 0x57, 0xc1][..],
+            &[0x0f, 0x66, 0x57, 0xc1][..],
+            &[0x66, 0x48, 0x0f, 0x57, 0xc1][..],
+            &[0x66, 0x42, 0x0f, 0x57, 0xc1][..],
+            &[0x66, 0x40, 0x41, 0x0f, 0x57, 0xc1][..],
+            &[0x66, 0x0f, 0x57, 0x01][..],
+            &[0x66, 0x0f, 0x57][..],
+            &[0x66, 0x0f][..],
+            &[0xc5, 0xf9, 0x57, 0xc1][..],
+            &[0x62, 0xf1, 0x7d, 0x08, 0x57, 0xc1][..],
         ] {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");

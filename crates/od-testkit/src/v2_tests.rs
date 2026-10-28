@@ -185,6 +185,42 @@ fn x87_sse_profile_has_strict_wire_scope_and_raw_mxcsr_validation() {
 }
 
 #[test]
+fn xorpd_profile_is_exact_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_17_xorpd_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongXorpdRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "66450f57c1");
+    for bytes in [
+        "0f57c1",
+        "f2660f57c1",
+        "f3660f57c1",
+        "67660f57c1",
+        "f0660f57c1",
+        "2e660f57c1",
+        "0f6657c1",
+        "66480f57c1",
+        "66420f57c1",
+        "66660f57c1",
+        "6640410f57c1",
+        "660f5701",
+        "660f57",
+        "c5f957c1",
+    ] {
+        let mut wrong = fixture.clone();
+        wrong.memory[0].initial_bytes_hex = bytes.into();
+        wrong.memory[0].length = (bytes.len() / 2) as u32;
+        wrong.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        wrong.stop_rip = Some(HexU64(
+            wrong.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(wrong.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
 fn xorps_profile_is_separate_exact_and_rejects_neighbors() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_7a_xorps_register.case.json"

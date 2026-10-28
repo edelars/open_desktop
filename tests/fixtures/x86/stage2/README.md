@@ -5316,3 +5316,8 @@ profile assumes SSE2 preconditions and denies JIT and native execution.
 ### S2-34.16 local reverse-direction register MOVUPD diagnostic profile
 
 `s2_34_16_movupd_reverse_register.case.json` is a handwritten schema-v2 XMM8-to-XMM9 fixture for `s2-long-movupd-reg-reverse-v1`, encoded as `66 45 0F 11 C1`. Mandatory `66` selects packed SSE2 MOVUPD; ModR/M.reg plus REX.R selects source XMM8, while ModR/M.r/m plus REX.B selects destination XMM9. The literal source contains all 16 distinct bytes `808182838485868788898a8b8c8d8e8f`, including a distinguishable high half. The interpreter copies all 128 bits and preserves source and other CPU state. JIT/native admission deny the profile. It covers only register form, with no alignment or parent S2-34 acceptance claim.
+
+
+### S2-34.17 local register XORPD diagnostic profile
+
+`s2_34_17_xorpd_register.case.json` is a handwritten schema-v2 XMM8/XMM9 fixture for `s2-long-xorpd-reg-v1`, encoded as `66 45 0F 57 C1` (`XORPD XMM8,XMM9`). Mandatory `66` selects packed SSE2 XORPD; REX.R/B select high destination/source registers. The interpreter XORs all 128 raw bits, preserves MXCSR, x87, GPR, flags and unrelated XMM state, and performs no data-memory access. Native and JIT admission deny this local profile. It makes no physical execution or parent S2-34 acceptance claim. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-profile-s2-3417-s2-long-xorpd-reg-v1) and [Stage 2 plan](../../../../docs/plans/STAGE_2.md#s2-3417--local-only-register-xorpd).

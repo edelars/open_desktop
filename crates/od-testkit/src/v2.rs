@@ -36,6 +36,7 @@ pub const PROFILE_MOVAPD_REVERSE_REGISTER: &str = "s2-long-movapd-reg-reverse-v1
 pub const PROFILE_MOVUPD_REGISTER: &str = "s2-long-movupd-reg-v1";
 pub const PROFILE_MOVUPD_REVERSE_REGISTER: &str = "s2-long-movupd-reg-reverse-v1";
 pub const PROFILE_XORPS_REGISTER: &str = "s2-long-xorps-reg-v1";
+pub const PROFILE_XORPD_REGISTER: &str = "s2-long-xorpd-reg-v1";
 pub const PROFILE_PXOR_REGISTER: &str = "s2-long-pxor-reg-v1";
 pub const PROFILE_PAND_REGISTER: &str = "s2-long-pand-reg-v1";
 pub const PROFILE_PANDN_REGISTER: &str = "s2-long-pandn-reg-v1";
@@ -124,6 +125,8 @@ pub enum Profile {
     LongMovupdReverseRegV1,
     #[serde(rename = "s2-long-xorps-reg-v1")]
     LongXorpsRegV1,
+    #[serde(rename = "s2-long-xorpd-reg-v1")]
+    LongXorpdRegV1,
     #[serde(rename = "s2-long-pxor-reg-v1")]
     LongPxorRegV1,
     #[serde(rename = "s2-long-pand-reg-v1")]
@@ -647,6 +650,7 @@ impl IntegerState {
                     | Profile::LongMovupdReverseRegV1
                     | Profile::LongMovapdReverseRegV1
                     | Profile::LongXorpsRegV1
+                    | Profile::LongXorpdRegV1
                     | Profile::LongPxorRegV1
                     | Profile::LongPandRegV1
                     | Profile::LongPandnRegV1
@@ -724,6 +728,7 @@ impl IntegerState {
                     | Profile::LongMovupdReverseRegV1
                     | Profile::LongMovapdReverseRegV1
                     | Profile::LongXorpsRegV1
+                    | Profile::LongXorpdRegV1
                     | Profile::LongPxorRegV1
                     | Profile::LongPandRegV1
                     | Profile::LongPandnRegV1
@@ -808,6 +813,7 @@ impl IntegerState {
                 | Profile::LongMovupdReverseRegV1
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
+                | Profile::LongXorpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -886,6 +892,7 @@ impl IntegerState {
                 | Profile::LongMovupdReverseRegV1
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
+                | Profile::LongXorpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1013,6 +1020,7 @@ impl IntegerState {
             | Profile::LongMovupdReverseRegV1
             | Profile::LongMovapdReverseRegV1
             | Profile::LongXorpsRegV1
+            | Profile::LongXorpdRegV1
             | Profile::LongPxorRegV1
             | Profile::LongPandRegV1
             | Profile::LongPandnRegV1
@@ -1090,6 +1098,7 @@ impl IntegerState {
                 | Profile::LongMovupdReverseRegV1
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
+                | Profile::LongXorpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1173,6 +1182,7 @@ impl IntegerState {
                 | Profile::LongMovupdReverseRegV1
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
+                | Profile::LongXorpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1261,6 +1271,7 @@ impl IntegerState {
                 | Profile::LongMovupdReverseRegV1
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
+                | Profile::LongXorpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1352,6 +1363,7 @@ impl IntegerState {
                 | Profile::LongMovupdReverseRegV1
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
+                | Profile::LongXorpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1594,6 +1606,7 @@ impl IntegerState {
                 | Profile::LongMovupdReverseRegV1
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
+                | Profile::LongXorpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1671,6 +1684,7 @@ impl IntegerState {
                 | Profile::LongMovupdReverseRegV1
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
+                | Profile::LongXorpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1751,6 +1765,7 @@ impl IntegerState {
                 | Profile::LongMovupdReverseRegV1
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
+                | Profile::LongXorpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1825,6 +1840,7 @@ impl IntegerState {
                 | Profile::LongMovupdReverseRegV1
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
+                | Profile::LongXorpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -2030,6 +2046,7 @@ impl Fixture {
         if matches!(
             self.profile,
             Profile::LongXorpsRegV1
+                | Profile::LongXorpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -2092,6 +2109,7 @@ impl Fixture {
             let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
             let length = match self.profile {
                 Profile::LongXorpsRegV1 => xorps_register_length(&code_bytes),
+                Profile::LongXorpdRegV1 => xorpd_register_length(&code_bytes),
                 Profile::LongPxorRegV1 => pxor_register_length(&code_bytes),
                 Profile::LongPandRegV1 => pand_register_length(&code_bytes),
                 Profile::LongPandnRegV1 => pandn_register_length(&code_bytes),
@@ -4560,6 +4578,25 @@ fn xorps_register_length(code_bytes: &str) -> Option<u32> {
             if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
         {
             Some(4)
+        }
+        _ => None,
+    }
+}
+
+fn xorpd_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0x57, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0x57, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
         }
         _ => None,
     }

@@ -9347,3 +9347,10 @@ all 16×16 XMM pairs, with independent REX.R/B axes; the handwritten high-XMM
 fixture verifies interpreter execution. JIT and native admission remain
 denied. This register-only slice makes no alignment or parent S2-34 acceptance
 claim.
+
+
+#### S2-34.17 — local-only register XORPD
+
+Добавлен отдельный diagnostic profile `s2-long-xorpd-reg-v1` для точной long-mode формы `66 [one optional REX.R/B] 0F 57 /r`, только при ModR/M.mod=3. ModR/M.reg с REX.R выбирает destination XMM0–15, ModR/M.r/m с REX.B — source. Все 128 бит XOR-ятся как raw bytes; alias/self-XOR корректен. Data memory не затрагивается, остальное состояние сохраняется, отсутствие SSE state и неполное instruction fetch отказывают без commit.
+
+Строгие отрицательные формы включают отсутствующий/повторный/переставленный `66`, REX.W/X, остальные legacy prefixes, memory ModRM, VEX/EVEX и truncation. Ранее существующий XORPS профиль остаётся отдельным и прежнего вида. Od-isa execution matrix сравнивает полное состояние для всех 16×16 XMM-пар (включая self-XOR) и явно проверяет ноль data-memory callbacks. Handwritten XMM8/XMM9 fixture проверяется как testkit, так и CLI fixture-runner: interpreter result сравнивается с literal state, а JIT выдаёт `Unsupported` без snapshot. Native admission остаётся запрещённой. Это не parent S2-34 acceptance и не физическое подтверждение. Проверены `cargo test -p od-isa xorpd --offline` (3 tests), `cargo test -p od-testkit xorpd --offline` (2 tests), `cargo test -p od-runner --test fixture_v2 local_xorpd_register_fixture_xors_raw_xmm_and_jit_denies_profile --offline` (1 test), `cargo check --workspace --all-targets --offline`, Linux x86 runner all-target check, `cargo fmt --all -- --check`, `git diff --check`; Linux native-denial test компилируется, но физический запуск не заявляется.

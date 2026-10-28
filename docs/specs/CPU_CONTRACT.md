@@ -9732,3 +9732,10 @@ truncated fetches are outside the profile. JIT/native and physical execution
 remain denied or unimplemented. No alignment or parent S2-34 acceptance claim
 is implied. See the [S2-34.16 plan](../plans/STAGE_2.md#s2-3416--local-only-reverse-direction-register-movupd)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3416-local-reverse-direction-register-movupd-diagnostic-profile).
+
+
+## Local profile S2-34.17: `s2-long-xorpd-reg-v1`
+
+This separate schema-v2 diagnostic profile admits exactly long-mode `66 [one optional REX.R/B] 0F 57 /r` with ModR/M.mod=3. Mandatory `66` selects legacy packed-double XORPD; ModR/M.reg plus REX.R selects destination XMM0–XMM15 and ModR/M.r/m plus REX.B selects source XMM0–XMM15. Intel SDM revision 093, Vol. 2B, XORPD entry defines this 128-bit bitwise XOR; VEX/EVEX and memory forms are excluded.
+
+Execution XORs all 128 raw bits without host floating-point conversion, supports destination/source aliasing, and changes no MXCSR, x87, GPR, RFLAGS or other XMM register. It makes no data-memory access. SSE2 availability, CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumed profile preconditions; control gates and `#UD`/`#NM` are not modeled. Missing SSE state and truncated fetch refuse atomically. Native/JIT admission and physical execution are not supported or claimed, and parent S2-34 remains open. See the [S2-34.17 plan](../plans/STAGE_2.md#s2-3417--local-only-register-xorpd) and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3417-local-register-xorpd-diagnostic-profile).

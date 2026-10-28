@@ -2118,3 +2118,8 @@ Decoder/executor покрывают пары XMM0–XMM15 и строгие от
 Добавлен handwritten literal high-XMM fixture; interpreter pass и JIT/native
 deny проверки включены. Это локальное подтверждение формы, без alignment,
 physical execution или parent S2-34 acceptance claim.
+
+
+## Local register-only XORPD slice — S2-34.17
+
+The `s2-long-xorpd-reg-v1` schema-v2 profile accepts only `66 [one optional REX.R/B] 0F 57 /r`, ModR/M.mod=3. The od-isa executor test checks all 16×16 register pairs against a full-state expected snapshot, including alias/self-XOR, and asserts zero data-memory callbacks for every pair. Additional tests cover high-XMM decoding, strict prefix/memory/VEX/EVEX negatives, missing SSE state and truncated fetch atomicity. The handwritten XMM8/XMM9 fixture is executed through both testkit and the fixture CLI runner; the runner compares the full literal result and confirms JIT returns `Unsupported` without a snapshot. Native admission remains denied. SSE2 and CR0/CR4 preconditions are assumptions. No physical execution or parent S2-34 acceptance is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#local-profile-s2-3417-s2-long-xorpd-reg-v1) and [fixture](../../tests/fixtures/x86/stage2/s2_34_17_xorpd_register.case.json).
