@@ -5402,3 +5402,7 @@ JIT/native admission is denied; physical status remains `not_run`.
 ### S2-35.53 local register PAVGW diagnostic profile
 
 `s2_35_53_pavgw_register.case.json` is a handwritten high-XMM fixture for `s2-long-pavgw-reg-v1`, encoded as `66 45 0F E3 C1` (`PAVGW XMM8, XMM9`). It checks rounded unsigned 16-bit lane averages with boundary values and an unrelated-state preservation oracle. SSE2 and CR0/CR4 are assumed; it is local-only with no JIT/native/physical admission.
+
+### S2-35.54 local register PMAXUB diagnostic profile
+
+`s2_35_54_pmaxub_register.case.json` is a handwritten high-XMM fixture for `s2-long-pmaxub-reg-v1`, encoded as `66 45 0F DE C1` (`PMAXUB XMM8, XMM9`). It checks unsigned byte maxima across sign-boundary values and preserves unrelated state. SSE2 and CR0/CR4 are assumed; JIT/native/physical admission remain closed.

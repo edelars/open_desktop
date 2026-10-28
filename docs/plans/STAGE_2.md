@@ -9480,3 +9480,7 @@ JIT denial. Parent S2-34/ISSUE-012 остаются open; native denied, physica
 #### S2-35.53 — local-only bounded register `PAVGW`
 
 Implement the legacy mandatory-66 `0F E3 /r` XMM register form only, with optional REX.R/B register extension, rounded unsigned 16-bit lane averages, source alias support, and no memory effects. SSE2 and CR0/CR4 are assumed; do not add CPUID advertisement or JIT/native/physical admission. Keep this distinct from S2-35.52 PAVGB. Verify all XMM register pairs, strict encoding rejects, atomic state/fetch failure, fixture/testkit/runner denial, and document the exact profile contract. Physical checks are deferred to the combined final substage.
+
+#### S2-35.54 — local-only bounded register `PMAXUB`
+
+Implement the legacy mandatory-66 `0F DE /r` XMM register form only, with optional REX.R/B register extension and unsigned byte-wise maximum. Support source aliasing and preserve unrelated state without data-memory effects. Assume SSE2 and CR0/CR4; do not add CPUID advertisement or JIT/native/physical admission. Maintain a distinct `s2-long-pmaxub-reg-v1` profile. Verify all XMM register pairs, strict encoding rejects, atomic missing-state/fetch handling, fixture/testkit/runner denial, and document the local contract. Physical checks are deferred to the combined final substage.
