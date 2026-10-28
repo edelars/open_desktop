@@ -389,6 +389,10 @@ fn flags_stack_size(prefixes: Prefixes) -> Option<OperandSize> {
 pub enum Operation {
     /// Bare long-mode `0F A2` CPUID. A caller-selected profile is required to execute it.
     Cpuid,
+    /// Bare long-mode `0F 32` RDMSR. A caller-selected MSR profile is required.
+    ReadMsr,
+    /// Bare long-mode `0F 30` WRMSR. A caller-selected MSR profile is required.
+    WriteMsr,
     /// Bare long-mode CLD, clearing only RFLAGS.DF.
     ClearDirectionFlag,
     /// Bare long-mode STD, setting only RFLAGS.DF.
@@ -1694,12 +1698,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
         if duplicate {
             return Err(self.unsupported(opcode));
         }
-        if opcode
-            == (Opcode {
-                map: OpcodeMap::Escape0f,
-                byte: 0xa2,
-            })
-        {
+        let modeled_system_operation = match (opcode.map, opcode.byte) {
+            (OpcodeMap::Escape0f, 0xa2) => Some(Operation::Cpuid),
+            (OpcodeMap::Escape0f, 0x32) => Some(Operation::ReadMsr),
+            (OpcodeMap::Escape0f, 0x30) => Some(Operation::WriteMsr),
+            _ => None,
+        };
+        if let Some(operation) = modeled_system_operation {
             if prefixes == Prefixes::default() {
                 return Ok(Instruction {
                     length: self.length,
@@ -1707,7 +1712,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     prefixes,
                     operand_size: prefixes.operand_size(),
                     address_size: OperandSize::Qword,
-                    operation: Operation::Cpuid,
+                    operation,
                 });
             }
             if prefixes.group1 == Some(0xf0)

@@ -8,6 +8,7 @@ use crate::long_decode::{
     general_protection,
 };
 use crate::memory::{AccessContext, ArchitecturalFault, GuestMemory, MemoryError, PrivilegeLevel};
+use crate::msr::MsrProfile;
 use crate::state::X87Tag;
 use crate::x87::{
     RationalRoundingMode, X87Binary80, X87Binary80Class, add_finite_same_exponent,
@@ -598,6 +599,26 @@ pub fn run_with_cpuid_profile(
     )
 }
 
+/// Execute with an explicitly selected MSR probe policy. Other system
+/// instructions still require their own profile and remain fail closed.
+pub fn run_with_msr_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    profile: &MsrProfile,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_profiles(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        None,
+        Some(profile),
+        &mut stop_requested,
+    )
+}
+
 /// Continue an execution while carrying the caller's explicit RFLAGS
 /// definedness snapshot. Use the `rflags_defined` value returned by the prior
 /// call; this function does not infer execution history from guest state.
@@ -629,11 +650,12 @@ fn run_execution_loop(
     rflags_defined: u64,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> RunResult {
-    run_execution_loop_with_cpuid_profile(
+    run_execution_loop_with_profiles(
         state,
         memory,
         config,
         rflags_defined,
+        None,
         None,
         stop_requested,
     )
@@ -643,8 +665,28 @@ fn run_execution_loop_with_cpuid_profile(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     config: RunConfig,
+    rflags_defined: u64,
+    cpuid_profile: Option<&CpuidProfile>,
+    stop_requested: &mut impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_profiles(
+        state,
+        memory,
+        config,
+        rflags_defined,
+        cpuid_profile,
+        None,
+        stop_requested,
+    )
+}
+
+fn run_execution_loop_with_profiles(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
     mut rflags_defined: u64,
     cpuid_profile: Option<&CpuidProfile>,
+    msr_profile: Option<&MsrProfile>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> RunResult {
     let mut retired = 0;
@@ -658,12 +700,13 @@ fn run_execution_loop_with_cpuid_profile(
         } else if retired == config.instruction_budget {
             Some(RunExit::InstructionBudgetExhausted)
         } else {
-            match step_tracked_with_cpuid_profile(
+            match step_tracked_with_profiles(
                 state,
                 memory,
                 config.context,
                 &mut rflags_defined,
                 cpuid_profile,
+                msr_profile,
                 stop_requested,
             ) {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
@@ -717,6 +760,26 @@ pub fn step_with_cpuid_profile(
     )
 }
 
+/// Execute one instruction with an explicitly selected MSR probe policy.
+/// CPUID remains fail closed through this entry point.
+pub fn step_with_msr_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    profile: &MsrProfile,
+) -> Result<StepOutcome, MemoryError> {
+    let mut rflags_defined = crate::INTEGER_FLAGS;
+    step_tracked_with_profiles(
+        state,
+        memory,
+        context,
+        &mut rflags_defined,
+        None,
+        Some(profile),
+        &mut || false,
+    )
+}
+
 fn step_tracked(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -733,7 +796,15 @@ fn step_tracked_with_stop(
     rflags_defined: &mut u64,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
-    step_tracked_with_cpuid_profile(state, memory, context, rflags_defined, None, stop_requested)
+    step_tracked_with_profiles(
+        state,
+        memory,
+        context,
+        rflags_defined,
+        None,
+        None,
+        stop_requested,
+    )
 }
 
 fn step_tracked_with_cpuid_profile(
@@ -742,6 +813,26 @@ fn step_tracked_with_cpuid_profile(
     context: AccessContext,
     rflags_defined: &mut u64,
     cpuid_profile: Option<&CpuidProfile>,
+    stop_requested: &mut impl FnMut() -> bool,
+) -> Result<StepOutcome, MemoryError> {
+    step_tracked_with_profiles(
+        state,
+        memory,
+        context,
+        rflags_defined,
+        cpuid_profile,
+        None,
+        stop_requested,
+    )
+}
+
+fn step_tracked_with_profiles(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    rflags_defined: &mut u64,
+    cpuid_profile: Option<&CpuidProfile>,
+    msr_profile: Option<&MsrProfile>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
     let instruction = match long_decode::decode(memory, state.rip, context) {
@@ -780,6 +871,30 @@ fn step_tracked_with_cpuid_profile(
         state.gpr[Register::Rdx as usize] = u64::from(result.edx);
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
+    }
+    if matches!(
+        instruction.operation,
+        Operation::ReadMsr | Operation::WriteMsr
+    ) {
+        let Some(profile) = msr_profile else {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        };
+        let index = state.gpr[Register::Rcx as usize] as u32;
+        if !profile.handles_index(index) {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        // This profile models the CPU-side #GP decision for the selected
+        // SYSENTER probes at every CPL. Exception delivery and Linux fixup are
+        // outside the interpreter slice.
+        return Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        }));
     }
     if matches!(instruction.operation, Operation::RepScas { .. })
         && (state.rflags & crate::ARITHMETIC_FLAGS != (crate::PF | crate::ZF)
@@ -1281,6 +1396,7 @@ fn step_tracked_with_cpuid_profile(
     // operations below use normalized operands at each accepted width.
     let executable = match instruction.operation {
         Operation::Cpuid => false,
+        Operation::ReadMsr | Operation::WriteMsr => false,
         Operation::MovImmediate { .. }
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
@@ -2793,6 +2909,9 @@ fn step_tracked_with_cpuid_profile(
     }
     match instruction.operation {
         Operation::Cpuid => unreachable!("CPUID is executed before transfer dispatch"),
+        Operation::ReadMsr | Operation::WriteMsr => {
+            unreachable!("MSR probe policy resolves before state commit")
+        }
         Operation::ClearDirectionFlag => {
             state.rflags &= !crate::DF;
         }
@@ -8071,6 +8190,9 @@ fn transfer(
     operation: Operation,
 ) -> Result<(), MemoryError> {
     match operation {
+        Operation::ReadMsr | Operation::WriteMsr => {
+            unreachable!("MSR probe policy resolves before transfer dispatch")
+        }
         Operation::MovImmediate { dst, value } => {
             write_operand(state, memory, context, next_rip, dst, value)?
         }
@@ -83771,5 +83893,210 @@ mod tests {
         assert_eq!(legacy.exit, RunExit::Unsupported { opcode: 0xa2 });
         assert_eq!(legacy.instructions_executed, 0);
         assert_eq!(state.rip, 0x1000);
+    }
+
+    #[test]
+    fn sysenter_msr_probes_fault_at_every_cpl_without_committing_state() {
+        let profile = MsrProfile::SysenterProbeV1;
+        let instructions = [(&[0x0f, 0x32][..], 0x32), (&[0x0f, 0x30][..], 0x30)];
+        let privileges = [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ];
+        for (code, opcode) in instructions {
+            for index in [0x174u32, 0x175, 0x176] {
+                for privilege in privileges {
+                    let mut state = LongModeState::default();
+                    state.rip = 0x1000;
+                    state.rflags = 0xad7;
+                    for (register, value) in state.gpr.iter_mut().enumerate() {
+                        *value = 0xfeed_0000_0000_0000 | register as u64;
+                    }
+                    state.gpr[Register::Rcx as usize] = 0xffff_ffff_0000_0000 | u64::from(index);
+                    let before = state.clone();
+                    let mut memory = Memory::at(code, 0x1000);
+                    let outcome = step_with_msr_profile(
+                        &mut state,
+                        &mut memory,
+                        AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                        &profile,
+                    );
+
+                    assert_eq!(
+                        outcome,
+                        Ok(StepOutcome::Fault(ArchitecturalFault {
+                            vector: 13,
+                            error_code: Some(0),
+                            linear_address: None,
+                        })),
+                        "opcode={opcode:#x} index={index:#x} CPL={privilege:?}"
+                    );
+                    assert_eq!(state, before, "fault must not commit any state");
+                    assert_eq!(memory.fetches, [0x1000, 0x1001]);
+                    assert!(memory.accesses.is_empty());
+                    assert!(memory.atomic_exchanges.is_empty());
+                    assert!(memory.atomic_adds.is_empty());
+                    assert!(memory.atomic_compare_exchanges.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sysenter_msr_profile_is_exact_and_legacy_apis_remain_closed() {
+        let profile = MsrProfile::SysenterProbeV1;
+        for code in [&[0x0f, 0x32][..], &[0x0f, 0x30][..]] {
+            for index in [0x173u64, 0x177, 0x1_0000_0177, u64::MAX] {
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.gpr[Register::Rcx as usize] = index;
+                let before = state.clone();
+                let mut memory = Memory::at(code, 0x1000);
+                assert_eq!(
+                    step_with_msr_profile(
+                        &mut state,
+                        &mut memory,
+                        AccessContext::default(),
+                        &profile,
+                    ),
+                    Ok(StepOutcome::Unsupported { opcode: code[1] })
+                );
+                assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
+            }
+
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.gpr[Register::Rcx as usize] = 0x174;
+            let before = state.clone();
+            let mut memory = Memory::at(code, 0x1000);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { opcode: code[1] })
+            );
+            assert_eq!(state, before, "legacy step must fail closed on MSR");
+            assert_eq!(
+                step_with_cpuid_profile(
+                    &mut state,
+                    &mut memory,
+                    AccessContext::default(),
+                    &CpuidProfile::DiagnosticV1,
+                ),
+                Ok(StepOutcome::Unsupported { opcode: code[1] })
+            );
+            assert_eq!(state, before, "CPUID profile does not admit MSR");
+        }
+
+        for code in [&[0xf0, 0x0f, 0x32][..], &[0xf0, 0x0f, 0x30][..]] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::at(code, 0x1000);
+            assert_eq!(
+                step_with_msr_profile(&mut state, &mut memory, AccessContext::default(), &profile,),
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None,
+                }))
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.fetches, [0x1000, 0x1001, 0x1002]);
+            assert!(memory.accesses.is_empty());
+        }
+
+        for code in [
+            &[0x66, 0x0f, 0x32][..],
+            &[0x48, 0x0f, 0x30][..],
+            &[0xf3, 0x0f, 0x32][..],
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::at(code, 0x1000);
+            assert_eq!(
+                step_with_msr_profile(&mut state, &mut memory, AccessContext::default(), &profile,),
+                Ok(StepOutcome::Unsupported { opcode: code[2] })
+            );
+            assert_eq!(state, before);
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0xf0, 0x0f], 0x1000);
+        assert!(matches!(
+            step_with_msr_profile(&mut state, &mut memory, AccessContext::default(), &profile,),
+            Err(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            })
+        ));
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0x1000, 0x1001, 0x1002]);
+    }
+
+    #[test]
+    fn sysenter_msr_run_faults_without_retirement_and_honors_pre_fetch_stops() {
+        let profile = MsrProfile::SysenterProbeV1;
+        for (budget, stop_rip, expected_exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0x32], 0x1000);
+            let result = run_with_msr_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                &profile,
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty());
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.gpr[Register::Rcx as usize] = 0x176;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x30], 0x1000);
+        let result = run_with_msr_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            &profile,
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0x1000, 0x1001]);
+        assert!(memory.accesses.is_empty());
     }
 }

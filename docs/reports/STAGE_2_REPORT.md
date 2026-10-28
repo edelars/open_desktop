@@ -5,6 +5,40 @@
 ISSUE-011/012 остаются открытыми; наличие нового состояния или local instruction
 slice не означает завершение этапа.
 
+## S2-26b — локальный `SysenterProbeV1` MSR probe
+
+Реализованы immutable `MsrProfile::SysenterProbeV1` и явные
+`step_with_msr_profile` / `run_with_msr_profile`. Они принимают только bare
+Long64 `RDMSR` (`0F 32`) и `WRMSR` (`0F 30`) с индексом `ECX[31:0]` ровно
+`0x174..0x176`; верх RCX игнорируется. Для этих индексов обе формы возвращают
+CPU-side `#GP(0)` при CPL0 и CPL1–3; неизвестные индексы и legacy/CPUID-only
+API остаются `Unsupported`. Fault не меняет state, не вызывает data-memory
+callbacks и не retire-ит инструкцию. Exact LOCK формы дают `#UD` после fetch;
+прочие prefix forms остаются `Unsupported` с приоритетом fetch truncation.
+
+**Локальные проверки:** `cargo check -p od-isa --all-targets --offline`;
+`cargo test -p od-isa --offline sysenter_msr_` (3 passed);
+`cargo test -p od-isa --offline cpuid_` (3 passed);
+`cargo test -p od-isa --offline diagnostic_v1_returns` (1 passed);
+`cargo fmt --all -- --check`; `git diff --check`; `graphify update .`.
+MSR tests покрывают RDMSR/WRMSR × три выбранных индекса × CPL0–3, high RCX
+bits с low32 в allowlist, неразрешённые индексы, отказ legacy и CPUID-only API,
+LOCK/other prefix, точную последовательность успешных и неуспешных fetches,
+STOP/zero budget до fetch, `#GP(0)` без retirement и отсутствие data callbacks.
+CPUID regression tests подтверждают, что `DiagnosticV1` сохранил нулевые
+feature masks и прежнее profile-gated поведение.
+
+**Независимое code review:** повторное Sol medium review чистое после двух
+исправлений тестов: negative RCX vector теперь имеет low32 вне allowlist, а
+усечённый LOCK фиксирует попытку fetch недостающего третьего байта.
+
+Этот срез исполняет только CPU-side fault decision выбранной synthetic target
+policy. Он не утверждает доставку guest `#GP`, Linux safe-write fixup/`-EIO`,
+общее поведение x86 MSR или загрузку Ubuntu/Linux. Успешные MSR read/write,
+JIT/native/physical admission не реализованы и не проверялись; Mac mini/SSH
+проверки остаются для общего финального substage. S2-26 и этап 2 остаются
+открытыми.
+
 ## S2-26a — локальный `DiagnosticV1` CPUID
 
 Добавлен immutable `CpuidProfile::DiagnosticV1` в `od-isa::cpuid`; API

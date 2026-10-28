@@ -1984,6 +1984,30 @@ JIT/native/physical admission остаётся закрытым.
 Независимое code review ещё требуется. Не считать этот slice закрытием S2-26
 или подтверждением требований ОС.
 
+#### S2-26b — локальный `SysenterProbeV1` MSR probe
+
+Узкий immutable `MsrProfile::SysenterProbeV1` исполняет только exact bare
+Long64 `0F 32` (`RDMSR`) и `0F 30` (`WRMSR`) при явном выборе профиля. Индекс
+— только `ECX[31:0]`, верх `RCX` игнорируется. Для выбранных synthetic target
+indices `0x174..0x176` обе формы дают CPU-side `#GP(0)` при CPL0 и CPL1–3;
+неизвестные индексы — `Unsupported`. Это исполнение fault decision уже
+выбранной target policy, а не общий MSR implementation и не общий x86 claim.
+
+Точный LOCK-вариант каждой формы даёт `#UD` после полного fetch; fetch
+truncation имеет приоритет. Остальные префиксные варианты — `Unsupported`.
+Legacy API отвергает профиль fail closed. Не добавлять успешные MSR read/write,
+`-EIO`/Linux fixup, guest `#GP` delivery, retirement, state mutation или
+data-memory callback. Это не подтверждает runtime Linux safe-write fixup либо
+boot. JIT/native/physical admission закрыт; Mac mini checks остаются в общем
+финальном substage.
+
+Нормативные детали находятся в
+[CPU contract](../specs/CPU_CONTRACT.md#локальный-probe-профиль-sysenterprobev1-s2-26b).
+Реализация и local evidence зафиксированы в
+[отчёте этапа](../reports/STAGE_2_REPORT.md#s2-26b--локальный-sysenterprobev1-msr-probe);
+повторное независимое Sol medium review завершено без замечаний. Substage не
+закрывает S2-26 или требования ОС.
+
 ### S2-27. Descriptors, события и системные переходы
 
 The bounded CPL3 GDT-only `VERW AX` form is tracked in S2-22e and is excluded

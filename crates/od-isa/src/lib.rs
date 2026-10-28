@@ -9,6 +9,7 @@ pub mod cpuid;
 pub mod execute;
 pub mod long_decode;
 pub mod memory;
+pub mod msr;
 pub mod state;
 pub mod x87;
 pub use state::{
