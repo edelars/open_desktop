@@ -247,7 +247,7 @@ physical execution. Mac mini проверки отложены до общего
 проверки.
 
 Архитектурный источник: Intel SDM Vol. 3A §§2.8.7.1 и 4.5.3,
-[официальный PDF Intel](https://cdrdv2-public.intel.com/835754/253668-sdm-vol-3a.pdf).
+[официальный PDF Intel](https://cdrdv2.intel.com/v1/dl/getContent/671190).
 Контракт и матрица проверок: [CPU contract](../specs/CPU_CONTRACT.md#локальный-профиль-gsbasev1-s2-26c),
 [план](../plans/STAGE_2.md#s2-26c--локальный-gsbasev1-msr).
 

@@ -95,7 +95,7 @@ GS selector или hidden GS descriptor cache и не изменяет `fs_base`
 выбранным 48-bit linear target; это не обобщение на процессоры с другой
 шириной linear address. В Intel SDM Vol. 3A §§2.8.7.1 и 4.5.3 описаны 32-bit
 индекс RDMSR/WRMSR в 64-bit mode и проверки canonicality при WRMSR к
-IA32_GS_BASE: [официальный Intel SDM Vol. 3A](https://cdrdv2-public.intel.com/835754/253668-sdm-vol-3a.pdf).
+IA32_GS_BASE: [официальный Intel SDM Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190).
 
 Профиль не меняет нулевые feature masks CPUID `DiagnosticV1` и не заявляет
 Linux boot, Linux fixup или guest `#GP` delivery. JIT/native/physical admission
