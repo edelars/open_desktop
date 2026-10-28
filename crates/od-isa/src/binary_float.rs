@@ -362,6 +362,44 @@ impl Binary32 {
             .expect("normalized finite product quotient")
     }
 
+    /// Divides finite values and reports bounded binary32 rounding diagnostics.
+    ///
+    /// A zero divisor returns `None`; a zero numerator returns exact signed
+    /// zero using the XOR sign. Nonzero inputs are divided exactly and rounded
+    /// once; overflow uses the specified mode-dependent infinity or
+    /// maximum-finite encoding.
+    pub fn divide_finite_result(
+        lhs: BinaryFinite,
+        rhs: BinaryFinite,
+        mode: RationalRoundingMode,
+    ) -> Option<BinaryRoundingResult<Self>> {
+        if rhs.significand == 0 {
+            return None;
+        }
+        let sign = lhs.sign ^ rhs.sign;
+        if lhs.significand == 0 {
+            return Some(BinaryRoundingResult::new(
+                Self::from_bits(u32::from(sign) << 31),
+                false,
+                false,
+                false,
+            ));
+        }
+        let quotient =
+            divide_finite_significands(lhs, rhs).expect("nonzero finite divisor has a quotient");
+        Some(
+            Self::round_pack_quotient(
+                quotient.sign(),
+                quotient.exponent(),
+                quotient.quotient(),
+                quotient.remainder(),
+                quotient.denominator(),
+                mode,
+            )
+            .expect("normalized finite quotient"),
+        )
+    }
+
     /// Adds two finite values and rounds once to binary32 precision.
     ///
     /// The exact aligned sum is bridged without discarding bits before target
@@ -691,6 +729,44 @@ impl Binary64 {
             finite_product_quotient(lhs, rhs).expect("normalized finite product bridge");
         Self::round_pack_quotient(sign, exponent, quotient, remainder, denominator, mode)
             .expect("normalized finite product quotient")
+    }
+
+    /// Divides finite values and reports bounded binary64 rounding diagnostics.
+    ///
+    /// A zero divisor returns `None`; a zero numerator returns exact signed
+    /// zero using the XOR sign. Nonzero inputs are divided exactly and rounded
+    /// once; overflow uses the specified mode-dependent infinity or
+    /// maximum-finite encoding.
+    pub fn divide_finite_result(
+        lhs: BinaryFinite,
+        rhs: BinaryFinite,
+        mode: RationalRoundingMode,
+    ) -> Option<BinaryRoundingResult<Self>> {
+        if rhs.significand == 0 {
+            return None;
+        }
+        let sign = lhs.sign ^ rhs.sign;
+        if lhs.significand == 0 {
+            return Some(BinaryRoundingResult::new(
+                Self::from_bits(u64::from(sign) << 63),
+                false,
+                false,
+                false,
+            ));
+        }
+        let quotient =
+            divide_finite_significands(lhs, rhs).expect("nonzero finite divisor has a quotient");
+        Some(
+            Self::round_pack_quotient(
+                quotient.sign(),
+                quotient.exponent(),
+                quotient.quotient(),
+                quotient.remainder(),
+                quotient.denominator(),
+                mode,
+            )
+            .expect("normalized finite quotient"),
+        )
     }
 
     /// Adds two finite values and rounds once to binary64 precision.
@@ -4377,5 +4453,420 @@ mod tests {
             Binary64::from_bits(0x7fef_ffff_ffff_ffff)
         );
         assert!(overflow64.overflow() && overflow64.inexact());
+    }
+
+    #[test]
+    fn finite_division_result_rounds_once_with_signs_and_preserves_legacy_behavior() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let negative_one32 = Binary32::from_bits(0xbf80_0000).normalize_finite().unwrap();
+        let three32 = Binary32::from_bits(0x4040_0000).normalize_finite().unwrap();
+        let one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let three64 = Binary64::from_bits(0x4008_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_three64 = Binary64::from_bits(0xc008_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+
+        // 1/3 takes the quotient-normalization branch where numerator < divisor;
+        // 3/2 takes the branch where numerator >= divisor. Inputs are mixed
+        // across source formats while the destination format stays explicit.
+        let three_halves32 = Binary32::divide_finite_result(
+            three32,
+            Binary64::from_bits(0x4000_0000_0000_0000)
+                .normalize_finite()
+                .unwrap(),
+            Nearest,
+        )
+        .unwrap();
+        assert_eq!(*three_halves32.value(), Binary32::from_bits(0x3fc0_0000));
+        assert!(!three_halves32.inexact() && !three_halves32.overflow());
+        let one_third32 = Binary32::divide_finite_result(one32, three64, Nearest).unwrap();
+        assert_eq!(*one_third32.value(), Binary32::from_bits(0x3eaa_aaab));
+        assert!(one_third32.inexact() && !one_third32.overflow());
+        let three_halves64 = Binary64::divide_finite_result(
+            Binary32::from_bits(0x4040_0000).normalize_finite().unwrap(),
+            Binary64::from_bits(0x4000_0000_0000_0000)
+                .normalize_finite()
+                .unwrap(),
+            Nearest,
+        )
+        .unwrap();
+        assert_eq!(
+            *three_halves64.value(),
+            Binary64::from_bits(0x3ff8_0000_0000_0000)
+        );
+        assert!(!three_halves64.inexact() && !three_halves64.overflow());
+        let one_third64 = Binary64::divide_finite_result(one64, three32, Nearest).unwrap();
+        assert_eq!(
+            *one_third64.value(),
+            Binary64::from_bits(0x3fd5_5555_5555_5555)
+        );
+        assert!(one_third64.inexact() && !one_third64.overflow());
+
+        for (mode, positive32, negative32, positive64, negative64) in [
+            (
+                Nearest,
+                0x3eaa_aaab,
+                0xbeaa_aaab,
+                0x3fd5_5555_5555_5555,
+                0xbfd5_5555_5555_5555,
+            ),
+            (
+                Zero,
+                0x3eaa_aaaa,
+                0xbeaa_aaaa,
+                0x3fd5_5555_5555_5555,
+                0xbfd5_5555_5555_5555,
+            ),
+            (
+                Up,
+                0x3eaa_aaab,
+                0xbeaa_aaaa,
+                0x3fd5_5555_5555_5556,
+                0xbfd5_5555_5555_5555,
+            ),
+            (
+                Down,
+                0x3eaa_aaaa,
+                0xbeaa_aaab,
+                0x3fd5_5555_5555_5555,
+                0xbfd5_5555_5555_5556,
+            ),
+        ] {
+            for (lhs, rhs, expected32, expected64) in [
+                (one32, three64, positive32, positive64),
+                (negative_one32, three64, negative32, negative64),
+                (one32, negative_three64, negative32, negative64),
+                (negative_one32, negative_three64, positive32, positive64),
+            ] {
+                let result32 = Binary32::divide_finite_result(lhs, rhs, mode).unwrap();
+                assert_eq!(*result32.value(), Binary32::from_bits(expected32));
+                assert!(result32.inexact() && !result32.overflow());
+                let result64 = Binary64::divide_finite_result(
+                    Binary64::from_bits(if lhs.sign() {
+                        0xbff0_0000_0000_0000
+                    } else {
+                        0x3ff0_0000_0000_0000
+                    })
+                    .normalize_finite()
+                    .unwrap(),
+                    rhs,
+                    mode,
+                )
+                .unwrap();
+                assert_eq!(*result64.value(), Binary64::from_bits(expected64));
+                assert!(result64.inexact() && !result64.overflow());
+            }
+        }
+
+        // Legacy division remains unchanged, including its zero-input rejection.
+        assert_eq!(
+            Binary32::divide_finite(one32, three32, Nearest),
+            Some((Binary32::from_bits(0x3eaa_aaab), true))
+        );
+        assert_eq!(
+            Binary64::divide_finite(one64, three64, Nearest),
+            Some((Binary64::from_bits(0x3fd5_5555_5555_5555), true))
+        );
+        assert_eq!(
+            Binary32::divide_finite(
+                Binary32::from_bits(0x8000_0000).normalize_finite().unwrap(),
+                one32,
+                Nearest
+            ),
+            None
+        );
+        assert_eq!(
+            Binary64::divide_finite(
+                Binary64::from_bits(0x8000_0000_0000_0000)
+                    .normalize_finite()
+                    .unwrap(),
+                one64,
+                Nearest
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn finite_division_result_preserves_zero_sign_and_reports_tininess() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let zero32 = Binary32::from_bits(0).normalize_finite().unwrap();
+        let negative_zero32 = Binary32::from_bits(0x8000_0000).normalize_finite().unwrap();
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let negative_one32 = Binary32::from_bits(0xbf80_0000).normalize_finite().unwrap();
+        let zero64 = Binary64::from_bits(0).normalize_finite().unwrap();
+        let negative_zero64 = Binary64::from_bits(0x8000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_one64 = Binary64::from_bits(0xbff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+
+        for (lhs, rhs, expected32, expected64) in [
+            (zero32, one32, 0, 0),
+            (negative_zero32, one32, 0x8000_0000, 0x8000_0000_0000_0000),
+            (zero32, negative_one32, 0x8000_0000, 0x8000_0000_0000_0000),
+            (negative_zero32, negative_one32, 0, 0),
+        ] {
+            let result32 = Binary32::divide_finite_result(lhs, rhs, Nearest).unwrap();
+            let result64 = Binary64::divide_finite_result(
+                if lhs.sign() { negative_zero64 } else { zero64 },
+                if rhs.sign() { negative_one64 } else { one64 },
+                Nearest,
+            )
+            .unwrap();
+            assert_eq!(*result32.value(), Binary32::from_bits(expected32));
+            assert_eq!(*result64.value(), Binary64::from_bits(expected64));
+            for (inexact, overflow, tiny) in [
+                (
+                    result32.inexact(),
+                    result32.overflow(),
+                    result32.tiny_after_precision_rounding(),
+                ),
+                (
+                    result64.inexact(),
+                    result64.overflow(),
+                    result64.tiny_after_precision_rounding(),
+                ),
+            ] {
+                assert!(!inexact && !overflow && !tiny);
+            }
+        }
+        for (lhs, rhs) in [
+            (zero32, zero32),
+            (negative_zero32, zero32),
+            (zero32, negative_zero32),
+            (negative_zero32, negative_zero32),
+            (one32, zero32),
+            (one32, negative_zero32),
+        ] {
+            assert!(Binary32::divide_finite_result(lhs, rhs, Nearest).is_none());
+        }
+        for (lhs, rhs) in [
+            (zero64, zero64),
+            (negative_zero64, zero64),
+            (zero64, negative_zero64),
+            (negative_zero64, negative_zero64),
+            (one64, zero64),
+            (one64, negative_zero64),
+        ] {
+            assert!(Binary64::divide_finite_result(lhs, rhs, Nearest).is_none());
+        }
+
+        let two32 = Binary32::from_bits(0x4000_0000).normalize_finite().unwrap();
+        let min_normal32 = Binary32::from_bits(0x0080_0000).normalize_finite().unwrap();
+        let exact_tiny32 = Binary32::divide_finite_result(min_normal32, two32, Nearest).unwrap();
+        assert_eq!(*exact_tiny32.value(), Binary32::from_bits(0x0040_0000));
+        assert!(exact_tiny32.tiny_after_precision_rounding());
+        assert!(!exact_tiny32.inexact() && !exact_tiny32.overflow());
+
+        let min_subnormal32 = Binary32::from_bits(1).normalize_finite().unwrap();
+        let negative_min_subnormal32 = Binary32::from_bits(0x8000_0001).normalize_finite().unwrap();
+        for (mode, positive, negative) in [
+            (Nearest, 0, 0x8000_0000),
+            (Zero, 0, 0x8000_0000),
+            (Up, 1, 0x8000_0000),
+            (Down, 0, 0x8000_0001),
+        ] {
+            for (lhs, expected) in [
+                (min_subnormal32, positive),
+                (negative_min_subnormal32, negative),
+            ] {
+                let result = Binary32::divide_finite_result(lhs, two32, mode).unwrap();
+                assert_eq!(*result.value(), Binary32::from_bits(expected));
+                assert!(result.tiny_after_precision_rounding() && result.inexact());
+                assert!(!result.overflow());
+            }
+        }
+
+        let two64 = Binary64::from_bits(0x4000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let min_normal64 = Binary64::from_bits(0x0010_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let exact_tiny64 = Binary64::divide_finite_result(min_normal64, two64, Nearest).unwrap();
+        assert_eq!(
+            *exact_tiny64.value(),
+            Binary64::from_bits(0x0008_0000_0000_0000)
+        );
+        assert!(exact_tiny64.tiny_after_precision_rounding());
+        assert!(!exact_tiny64.inexact() && !exact_tiny64.overflow());
+        let min_subnormal64 = Binary64::from_bits(1).normalize_finite().unwrap();
+        let negative_min_subnormal64 = Binary64::from_bits(0x8000_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        for (mode, positive, negative) in [
+            (Nearest, 0, 0x8000_0000_0000_0000),
+            (Zero, 0, 0x8000_0000_0000_0000),
+            (Up, 1, 0x8000_0000_0000_0000),
+            (Down, 0, 0x8000_0000_0000_0001),
+        ] {
+            for (lhs, expected) in [
+                (min_subnormal64, positive),
+                (negative_min_subnormal64, negative),
+            ] {
+                let result = Binary64::divide_finite_result(lhs, two64, mode).unwrap();
+                assert_eq!(*result.value(), Binary64::from_bits(expected));
+                assert!(result.tiny_after_precision_rounding() && result.inexact());
+                assert!(!result.overflow());
+            }
+        }
+    }
+
+    #[test]
+    fn finite_division_result_handles_boundaries_overflow_and_extreme_inputs() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let max32 = Binary32::from_bits(0x7f7f_ffff).normalize_finite().unwrap();
+        let max32_exact = Binary32::divide_finite_result(max32, one32, Nearest).unwrap();
+        assert_eq!(*max32_exact.value(), Binary32::from_bits(0x7f7f_ffff));
+        assert!(!max32_exact.inexact() && !max32_exact.overflow());
+
+        // A binary64 quotient just below the normal/subnormal boundary must be
+        // rounded directly to binary32 subnormal units, without double rounding.
+        let boundary = Binary64::from_bits(0x380f_ffff_dfff_ffff)
+            .normalize_finite()
+            .unwrap();
+        let one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let boundary_result = Binary32::divide_finite_result(boundary, one64, Nearest).unwrap();
+        assert_eq!(*boundary_result.value(), Binary32::from_bits(0x007f_ffff));
+        assert!(boundary_result.tiny_after_precision_rounding() && boundary_result.inexact());
+        assert!(!boundary_result.overflow());
+        let min_normal32 = Binary32::from_bits(0x0080_0000).normalize_finite().unwrap();
+        let below_min_normal_divisor = Binary32::from_bits(0x3f80_0001).normalize_finite().unwrap();
+        let just_below =
+            Binary32::divide_finite_result(min_normal32, below_min_normal_divisor, Nearest)
+                .unwrap();
+        assert_eq!(*just_below.value(), Binary32::from_bits(0x007f_ffff));
+        assert!(just_below.tiny_after_precision_rounding() && just_below.inexact());
+
+        let min_subnormal32 = Binary32::from_bits(1).normalize_finite().unwrap();
+        for (lhs, sign) in [
+            (max32, false),
+            (
+                Binary32::from_bits(0xff7f_ffff).normalize_finite().unwrap(),
+                true,
+            ),
+        ] {
+            let max_finite_bits = if sign { 0xff7f_ffff } else { 0x7f7f_ffff };
+            let infinity_bits = if sign { 0xff80_0000 } else { 0x7f80_0000 };
+            for (mode, expected, overflow) in [
+                (Nearest, infinity_bits, true),
+                (Zero, max_finite_bits, true),
+                (Up, if sign { max_finite_bits } else { infinity_bits }, true),
+                (
+                    Down,
+                    if sign { infinity_bits } else { max_finite_bits },
+                    true,
+                ),
+            ] {
+                let result = Binary32::divide_finite_result(lhs, min_subnormal32, mode).unwrap();
+                assert_eq!(*result.value(), Binary32::from_bits(expected));
+                assert_eq!(result.overflow(), overflow);
+                assert!(result.inexact());
+            }
+        }
+        let max64 = Binary64::from_bits(0x7fef_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        let min64 = Binary64::from_bits(1).normalize_finite().unwrap();
+        let negative_min64 = Binary64::from_bits(0x8000_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        let tiny_positive = Binary64::divide_finite_result(min64, max64, Nearest).unwrap();
+        assert_eq!(*tiny_positive.value(), Binary64::from_bits(0));
+        assert!(tiny_positive.tiny_after_precision_rounding() && tiny_positive.inexact());
+        assert!(!tiny_positive.overflow());
+        let tiny_up = Binary64::divide_finite_result(min64, max64, Up).unwrap();
+        assert_eq!(*tiny_up.value(), Binary64::from_bits(1));
+        assert!(tiny_up.tiny_after_precision_rounding() && tiny_up.inexact());
+        let tiny_negative_down =
+            Binary64::divide_finite_result(negative_min64, max64, Down).unwrap();
+        assert_eq!(
+            *tiny_negative_down.value(),
+            Binary64::from_bits(0x8000_0000_0000_0001)
+        );
+        assert!(tiny_negative_down.tiny_after_precision_rounding() && tiny_negative_down.inexact());
+
+        let min_normal64 = Binary64::from_bits(0x0010_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let next_one64 = Binary64::from_bits(0x3ff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        let just_below64 =
+            Binary64::divide_finite_result(min_normal64, next_one64, Nearest).unwrap();
+        assert_eq!(
+            *just_below64.value(),
+            Binary64::from_bits(0x000f_ffff_ffff_ffff)
+        );
+        assert!(just_below64.tiny_after_precision_rounding() && just_below64.inexact());
+
+        for (lhs, sign) in [
+            (max64, false),
+            (
+                Binary64::from_bits(0xffef_ffff_ffff_ffff)
+                    .normalize_finite()
+                    .unwrap(),
+                true,
+            ),
+        ] {
+            let max_finite_bits = if sign {
+                0xffef_ffff_ffff_ffff
+            } else {
+                0x7fef_ffff_ffff_ffff
+            };
+            let infinity_bits = if sign {
+                0xfff0_0000_0000_0000
+            } else {
+                0x7ff0_0000_0000_0000
+            };
+            for (mode, expected) in [
+                (Nearest, infinity_bits),
+                (Zero, max_finite_bits),
+                (Up, if sign { max_finite_bits } else { infinity_bits }),
+                (Down, if sign { infinity_bits } else { max_finite_bits }),
+            ] {
+                let result = Binary64::divide_finite_result(lhs, min64, mode).unwrap();
+                assert_eq!(*result.value(), Binary64::from_bits(expected));
+                assert!(result.overflow() && result.inexact());
+            }
+        }
+
+        let lhs_raw = Binary64::from_bits(0x0000_0000_0000_0001);
+        let rhs_raw = Binary64::from_bits(0x7fef_ffff_ffff_ffff);
+        let lhs_before = lhs_raw.to_bits();
+        let rhs_before = rhs_raw.to_bits();
+        let lhs = lhs_raw.normalize_finite().unwrap();
+        let rhs = rhs_raw.normalize_finite().unwrap();
+        let _ = Binary64::divide_finite_result(lhs, rhs, Nearest).unwrap();
+        assert_eq!(lhs_raw.to_bits(), lhs_before);
+        assert_eq!(rhs_raw.to_bits(), rhs_before);
+        assert_eq!(lhs.significand(), 1 << 63);
+        assert_eq!(lhs.exponent(), -1074);
+        assert_eq!(rhs.exponent(), 1023);
     }
 }

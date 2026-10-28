@@ -467,6 +467,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36k | Compose bounded aligned finite binary32/binary64 subtraction through one rounding | S2-36j; independent review |
 | [x] | S2-36l | Compare finite normalized binary32/binary64 values | S2-36a; independent review |
 | [x] | S2-36m | Complete finite binary32/binary64 multiplication output with rounding diagnostics | S2-36i; independent review |
+| [x] | S2-36n | Complete finite binary32/binary64 division output with rounding diagnostics | S2-36c, S2-36m; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5217,6 +5218,55 @@ Vol. 1, Order 253665-093US (September 2026), §§4.9.1.4–4.9.1.6 and Tables
 4-10–4-12 ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
 This reference does not establish a one-to-one mapping from these local
 diagnostics to architectural exception flags.
+
+#### S2-36n — finite binary division output and rounding diagnostics
+
+**Статус:** complete as a local mathematical result helper. Hardware validation
+and full S2-36 acceptance remain open.
+
+Extend finite binary division with a complete destination-format result and
+`BinaryRoundingResult` diagnostics, reusing
+`divide_finite_significands` for the exact quotient and the S2-36m round/pack
+contract for bounded output. Preserve the existing `divide_finite` API and
+its compatibility behavior, including its existing zero-operand behavior. The
+new complete-result helper returns `None` only for a zero divisor; this local
+mathematical result does not represent or deliver architectural divide-by-zero
+`#Z`. For a zero numerator and nonzero divisor, return exact zero with the XOR
+of operand signs before calling `divide_finite_significands`, whose zero
+significand sentinel is signless.
+
+For nonzero operands, compute the exact quotient once. Select the normal,
+subnormal, or overflow path from that original quotient and apply destination
+rounding without an intermediate round. The final bounded value and
+`tiny`/`overflow`/`inexact` diagnostics follow S2-36m, including its
+post-rounding definitions and rounding-mode-dependent bounded result. For the
+legacy `divide_finite` compatibility API, retain its established return type
+and zero-operand behavior. In the new complete-result helper, overflow is
+represented by the bounded result and diagnostics rather than `None`.
+
+Author checks passed: `cargo test -p od-isa --offline binary_float::tests`
+(41/41), `cargo test -p od-isa --offline x87::tests` (47/47),
+`cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check`, and
+`graphify update .`. Graphify reported the existing `host_abi.h` syntax warning
+and community-label refresh notice, and exited successfully. Independent Sol
+medium code review and documentation review completed clean. See the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36n--finite-binary-division-output-and-rounding-diagnostics).
+
+Keep this as a local finite-mathematics contract. NaN/infinity behavior,
+architectural `#Z` delivery, MXCSR/x87 flags, DAZ/FTZ, instruction integration,
+and full S2-36 acceptance remain out of scope. Literal checks cover signed-zero
+numerator, zero divisor, exact and inexact normal results, direct subnormal
+boundary rounding, rounding-mode-dependent overflow results and diagnostics,
+mixed source/destination formats, and input immutability. The checks show that
+subnormal and overflow decisions use the original exact quotient and that the
+exact quotient is formed only once.
+
+Use Intel SDM Vol. 1, Order 253665-093US (September 2026), §§4.9.1.4–4.9.1.6
+and Tables 4-10–4-12 ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436))
+for destination-format terminology and boundaries. This reference does not
+establish a one-to-one mapping from these local diagnostics to architectural
+exception flags. Keep S2-36 and hardware acceptance open.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

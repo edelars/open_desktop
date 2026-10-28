@@ -596,6 +596,56 @@ binary_float::tests` (38/38), `cargo test -p od-isa --offline x87::tests`
 архитектурным exception flags. Приёмочные критерии S2-36 остаются открытыми.
 См. [план S2-36m](../plans/STAGE_2.md#s2-36m--finite-binary-multiplication-output-and-rounding-diagnostics).
 
+## S2-36n — finite binary division output and rounding diagnostics
+
+**Статус:** finite division result helper реализован; локальные проверки и
+независимые code/docs review завершены. Полная приёмка S2-36 и hardware
+validation остаются открытыми.
+
+Finite binary division дополнено полным результатом в формате назначения и
+диагностикой `BinaryRoundingResult`, используя
+`divide_finite_significands` для точного quotient и round/pack контракт
+S2-36m для ограниченного результата. Существующая сигнатура и совместимое
+поведение `divide_finite`, включая обработку нулевых операндов, сохранены.
+Новый complete-result helper возвращает `None` только при
+нулевом делителе; это локальный математический контракт, а не архитектурная
+доставка `#Z`.
+При нулевом числителе и ненулевом делителе точный zero со знаком XOR
+возвращается до exact helper, поскольку его zero sentinel не содержит знак.
+
+Для ненулевых операндов точный quotient формируется один раз. Выбор normal,
+subnormal или overflow пути выполняется по исходному quotient, без
+промежуточного округления. Итоговое ограниченное значение и диагностики
+`tiny`/`overflow`/`inexact` соответствуют S2-36m. В новом
+complete-result helper `None` применяется только для нулевого делителя;
+overflow выражается ограниченным результатом и диагностикой, а не отказом.
+Legacy `divide_finite` сохраняет прежний тип результата и обработку нулевых
+операндов.
+
+Вне объёма остаются NaN/infinity, архитектурная доставка `#Z`, MXCSR/x87
+flags, DAZ/FTZ, instruction integration и полная приёмка S2-36. Добавленные
+проверки покрывают signed zero numerator, zero divisor, точные и неточные
+normal результаты, прямое округление у subnormal boundary,
+rounding-mode-dependent overflow results/diagnostics, смешанные форматы и
+неизменность входов. Они проверяют использование исходного точного quotient
+для subnormal/overflow решений и однократное вычисление quotient.
+
+Проверки автора прошли: `cargo test -p od-isa --offline
+binary_float::tests` (41/41), `cargo test -p od-isa --offline x87::tests`
+(47/47), `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check` и
+`graphify update .`. Graphify сообщил существующее предупреждение парсера для
+`include/open_desktop/host_abi.h` и notice о необходимости обновить community
+labels, завершившись успешно. Независимое ревью кода Sol medium и документации
+завершилось без замечаний.
+
+Нормативный контекст терминов и границ формата: Intel SDM Vol. 1, Order
+253665-093US (September 2026), §§4.9.1.4–4.9.1.6, Tables 4-10–4-12
+([официальный Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+Эта ссылка не задаёт взаимно-однозначное соответствие локальных диагностик
+архитектурным exception flags. S2-36 и hardware acceptance остаются открытыми.
+См. [план S2-36n](../plans/STAGE_2.md#s2-36n--finite-binary-division-output-and-rounding-diagnostics).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.
