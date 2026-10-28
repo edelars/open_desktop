@@ -10417,3 +10417,29 @@ Normative context: Intel SDM Vol. 1 Rev. 093 (September 2026), §§4.8.2, 4.8.4,
 Independent Sol medium code review completed clean; no findings remain. See the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36d--shared-exact-rational-precision-rounding)
 and [plan](../plans/STAGE_2.md#s2-36d--shared-exact-rational-precision-rounding).
+
+## Local S2-36e: pack an already-rounded normal binary value
+
+`Binary32::pack_normal_rounded_significand(sign, exponent, magnitude)` and
+`Binary64::pack_normal_rounded_significand(...)` pack only already-rounded
+normal significands, with fixed precision 24 or 53. The magnitude must satisfy
+`2^(precision-1) <= magnitude <= 2^precision` and represents
+`(-1)^sign * magnitude * 2^(exponent + 1 - precision)`.
+
+When `magnitude == 2^precision`, normalize the carry to `2^(precision-1)` and
+checked-increment the exponent before checking the format's normal exponent
+range. Thus a carry at `exponent == emin - 1` is accepted as minimum normal.
+Only after this normalization does the helper apply the normal exponent bounds.
+For example, a noncarry at `emin - 1`, or a carry whose incremented exponent is
+outside the normal range, returns `None`.
+
+`None` describes an input outside this normal-packing helper's domain; it is
+not a guest exception. The helpers do not round, pack zero or subnormals, define
+underflow/overflow policy, or update status/exceptions. The caller retains the
+S2-36d `inexact` indication. No x87 packer behavior changes. S2-36
+rounding/exceptions and S2-37/S2-38 remain open; hardware validation is
+deferred. The focused test suite passed 14/14; author-reported workspace,
+formatting, diff, and Graphify checks passed. Independent Sol medium code
+review completed clean; no findings remain. See the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36e--pack-an-already-rounded-normal-binary-value)
+and [plan](../plans/STAGE_2.md#s2-36e--pack-an-already-rounded-normal-binary-value).

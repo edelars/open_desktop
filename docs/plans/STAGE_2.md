@@ -458,6 +458,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36b | Exact unrounded product of finite normalized significands; mathematical helper only | S2-36a; independent review |
 | [x] | S2-36c | Exact finite quotient/remainder decomposition; no rounding or packing | S2-36a; independent review |
 | [x] | S2-36d | Shared exact rational precision rounding with inexact indication | S2-36c; independent review |
+| [x] | S2-36e | Normal-only binary32/binary64 packing of rounded significands | S2-36d; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -4869,6 +4870,40 @@ rounding/exception integration and
 S2-37/S2-38 remain open. Normative context: Intel SDM Vol. 1 Rev. 093,
 §§4.8.2, 4.8.4, 4.8.3.1, and 4.9
 ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)).
+
+#### S2-36e — pack an already-rounded normal binary value
+
+Add `Binary32::pack_normal_rounded_significand(sign, exponent, magnitude)` and
+the corresponding `Binary64` method. These helpers pack only an already-rounded
+normal significand at the format precision: 24 bits for binary32 and 53 bits
+for binary64. The magnitude must be in `[2^(p-1), 2^p]`. It represents
+`(-1)^sign * magnitude * 2^(exponent + 1 - p)`; if it is exactly `2^p`, first
+normalize that carry to `2^(p-1)` and increment the exponent with checked
+arithmetic. Check the normal exponent range only after carry normalization.
+Thus `exponent = emin - 1` with `magnitude = 2^p` packs successfully as the
+minimum normal value. Other inputs outside the normal packer’s magnitude or
+exponent range return `None`; this is a helper-domain result, not a guest
+exception.
+
+Do not round again, pack zero or subnormal values, or define overflow,
+underflow, exception, or status behavior. The caller retains the S2-36d
+`inexact` result. Do not change x87 packing.
+
+Literal coverage includes binary32/binary64 minimum normal, ±1, maximum finite,
+and carry from `emin - 1` into minimum normal. Rejection cases cover a
+noncarry `emin - 1`, carry from `emin - 2`, carry from `emax`, `emax + 1`,
+invalid magnitudes, and `i32` exponent extremes. Composition tests round 1/3 to
+binary32 `0x3eaaaaab` and binary64 `0x3fd5555555555555`, verify an exact 1/1
+composition, and preserve `inexact` for the caller. Negative directed rounding
+is also composed with binary32 packing. The author reports the focused
+`binary_float::tests` passing 14/14, workspace offline check, formatting and
+diff checks, and Graphify update passing. Graphify emitted its existing
+`include/open_desktop/host_abi.h` syntax warning and reported community labels
+need refresh. Independent Sol review completed clean; no findings remain. See
+the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36e--pack-an-already-rounded-normal-binary-value).
+S2-36 rounding/exceptions and S2-37/S2-38 remain open; hardware validation is
+deferred. Normative context is the existing Intel SDM Vol. 1 Rev. 093 reference
+in [S2-36d](#s2-36d--shared-exact-rational-precision-rounding).
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

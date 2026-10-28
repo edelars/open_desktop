@@ -189,6 +189,44 @@ SDM Vol. 1 Rev. 093, §§4.8.2, 4.8.4, 4.8.3.1, and 4.9
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36d-shared-exact-rational-precision-rounding)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-36d--shared-exact-rational-precision-rounding).
 
+## S2-36e — pack an already-rounded normal binary value
+
+**Статус:** implementation and author verification are complete; independent
+Sol medium code review completed clean, with no findings. `Binary32` and
+`Binary64` expose `pack_normal_rounded_significand(sign, exponent, magnitude)`
+for precisions 24 and 53, respectively. The input represents
+`(-1)^sign * magnitude * 2^(exponent + 1 - precision)` and must have magnitude
+in `[2^(precision-1), 2^precision]`. The exact upper carry is normalized to
+`2^(precision-1)` with a checked exponent increment before checking the
+normal exponent range. This admits `emin - 1` plus magnitude `2^precision` as
+minimum normal.
+
+The helpers return `None` when magnitude or the post-carry exponent is outside
+the normal packer domain. This does not represent a guest exception. No
+subnormal, zero, overflow, underflow, exception, or status policy is added. The
+caller retains the S2-36d `inexact` bit. S2-36e does not change x87 packing.
+
+Literal tests cover minimum normal, ±1, maximum finite, and the
+`emin - 1` carry boundary for both formats. Rejection cases cover noncarry
+`emin - 1`, carry from `emin - 2`, carry from `emax`, `emax + 1`, invalid
+magnitudes, and `i32` exponent extremes. Composition vectors round 1/3 to
+binary32 `0x3eaaaaab` and binary64 `0x3fd5555555555555`; the source tests also
+cover exact 1/1, negative directed rounding, and preservation of the caller's
+`inexact` result. Author-reported checks passed:
+
+- `cargo test -p od-isa --offline binary_float::tests`: 14/14.
+- `cargo check --workspace --all-targets --offline`.
+- `cargo fmt --all -- --check` and `git diff --check`.
+- `graphify update .` exited successfully; it emitted the existing
+  `include/open_desktop/host_abi.h` syntax warning and noted community labels
+  need refresh.
+
+Independent Sol medium code review completed clean; no findings remain. No
+hardware execution is claimed.
+S2-36 rounding/exception integration and S2-37/S2-38 remain open. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-36e-pack-an-already-rounded-normal-binary-value)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-36e--pack-an-already-rounded-normal-binary-value).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

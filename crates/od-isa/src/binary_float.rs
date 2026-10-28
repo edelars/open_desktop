@@ -1,7 +1,9 @@
 //! Lossless binary32 and binary64 fields and exact finite-value normalization.
 //!
-//! These types inspect encoded bits only. They do not perform guest floating-point
-//! operations, rounding, or exception handling. Equality on [`Binary32`] and
+//! These types inspect encoded bits without performing guest floating-point
+//! operations. The module also provides mathematical rounding and normal-packing
+//! helpers; they do not implement instruction rounding state or exception
+//! handling. Equality on [`Binary32`] and
 //! [`Binary64`] compares raw encodings, including NaN sign and payload; it does
 //! not model guest floating-point comparison.
 
@@ -102,6 +104,39 @@ impl Binary32 {
             BinaryClass::Infinity | BinaryClass::QuietNaN | BinaryClass::SignalingNaN => None,
         }
     }
+
+    /// Packs an already-rounded, normal binary32 significand.
+    ///
+    /// `magnitude` represents `(-1)^sign * magnitude * 2^(exponent+1-24)`.
+    /// A carry to `2^24` is normalized by incrementing the exponent. This method
+    /// does not round, handle subnormals, or define overflow behavior.
+    pub fn pack_normal_rounded_significand(
+        sign: bool,
+        exponent: i32,
+        magnitude: u128,
+    ) -> Option<Self> {
+        const PRECISION: u32 = 24;
+        const EMIN: i32 = -126;
+        const EMAX: i32 = 127;
+
+        let precision_limit = 1_u128 << PRECISION;
+        if magnitude < (precision_limit >> 1) || magnitude > precision_limit {
+            return None;
+        }
+        let (significand, exponent) = if magnitude == precision_limit {
+            (1_u32 << (PRECISION - 1), exponent.checked_add(1)?)
+        } else {
+            (magnitude as u32, exponent)
+        };
+        if !(EMIN..=EMAX).contains(&exponent) {
+            return None;
+        }
+
+        let biased_exponent = (exponent + 127) as u32;
+        let bits =
+            ((sign as u32) << 31) | (biased_exponent << 23) | (significand & Self::FRACTION_MASK);
+        Some(Self::from_bits(bits))
+    }
 }
 
 /// An immutable binary64 encoding.
@@ -187,6 +222,39 @@ impl Binary64 {
             }
             BinaryClass::Infinity | BinaryClass::QuietNaN | BinaryClass::SignalingNaN => None,
         }
+    }
+
+    /// Packs an already-rounded, normal binary64 significand.
+    ///
+    /// `magnitude` represents `(-1)^sign * magnitude * 2^(exponent+1-53)`.
+    /// A carry to `2^53` is normalized by incrementing the exponent. This method
+    /// does not round, handle subnormals, or define overflow behavior.
+    pub fn pack_normal_rounded_significand(
+        sign: bool,
+        exponent: i32,
+        magnitude: u128,
+    ) -> Option<Self> {
+        const PRECISION: u32 = 53;
+        const EMIN: i32 = -1022;
+        const EMAX: i32 = 1023;
+
+        let precision_limit = 1_u128 << PRECISION;
+        if magnitude < (precision_limit >> 1) || magnitude > precision_limit {
+            return None;
+        }
+        let (significand, exponent) = if magnitude == precision_limit {
+            (1_u64 << (PRECISION - 1), exponent.checked_add(1)?)
+        } else {
+            (magnitude as u64, exponent)
+        };
+        if !(EMIN..=EMAX).contains(&exponent) {
+            return None;
+        }
+
+        let biased_exponent = (exponent + 1023) as u64;
+        let bits =
+            ((sign as u64) << 63) | (biased_exponent << 52) | (significand & Self::FRACTION_MASK);
+        Some(Self::from_bits(bits))
     }
 }
 
@@ -1113,6 +1181,255 @@ mod tests {
                 Nearest,
             ),
             Some((0xaaaa_aaaa_aaaa_aaab, true)),
+        );
+    }
+
+    #[test]
+    fn normal_packers_match_binary32_and_binary64_literal_vectors() {
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(false, -126, 1 << 23)
+                .unwrap()
+                .to_bits(),
+            0x0080_0000,
+        );
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(false, 0, 1 << 23)
+                .unwrap()
+                .to_bits(),
+            0x3f80_0000,
+        );
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(true, 0, 1 << 23)
+                .unwrap()
+                .to_bits(),
+            0xbf80_0000,
+        );
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(false, 127, (1 << 24) - 1)
+                .unwrap()
+                .to_bits(),
+            0x7f7f_ffff,
+        );
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(false, -127, 1 << 24)
+                .unwrap()
+                .to_bits(),
+            0x0080_0000,
+        );
+
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(false, -1022, 1 << 52)
+                .unwrap()
+                .to_bits(),
+            0x0010_0000_0000_0000,
+        );
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(false, 0, 1 << 52)
+                .unwrap()
+                .to_bits(),
+            0x3ff0_0000_0000_0000,
+        );
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(true, 0, 1 << 52)
+                .unwrap()
+                .to_bits(),
+            0xbff0_0000_0000_0000,
+        );
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(false, 1023, (1 << 53) - 1)
+                .unwrap()
+                .to_bits(),
+            0x7fef_ffff_ffff_ffff,
+        );
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(false, -1023, 1 << 53)
+                .unwrap()
+                .to_bits(),
+            0x0010_0000_0000_0000,
+        );
+    }
+
+    #[test]
+    fn normal_packers_reject_out_of_profile_inputs_without_overflow() {
+        for magnitude in [0, (1 << 23) - 1, (1 << 24) + 1, u128::MAX] {
+            assert_eq!(
+                Binary32::pack_normal_rounded_significand(false, 0, magnitude),
+                None,
+            );
+        }
+        for magnitude in [0, (1 << 52) - 1, (1 << 53) + 1, u128::MAX] {
+            assert_eq!(
+                Binary64::pack_normal_rounded_significand(false, 0, magnitude),
+                None,
+            );
+        }
+
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(false, -127, 1 << 23),
+            None,
+        );
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(false, -128, 1 << 24),
+            None,
+        );
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(false, 127, 1 << 24),
+            None,
+        );
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(false, 128, (1 << 24) - 1),
+            None,
+        );
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(false, i32::MIN, 1 << 23),
+            None,
+        );
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(false, i32::MIN, 1 << 24),
+            None,
+        );
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(false, i32::MAX, 1 << 23),
+            None,
+        );
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(false, i32::MAX, 1 << 24),
+            None,
+        );
+
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(false, -1023, 1 << 52),
+            None,
+        );
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(false, -1024, 1 << 53),
+            None,
+        );
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(false, 1023, 1 << 53),
+            None,
+        );
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(false, 1024, (1 << 53) - 1),
+            None,
+        );
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(false, i32::MIN, 1 << 52),
+            None,
+        );
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(false, i32::MIN, 1 << 53),
+            None,
+        );
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(false, i32::MAX, 1 << 52),
+            None,
+        );
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(false, i32::MAX, 1 << 53),
+            None,
+        );
+    }
+
+    #[test]
+    fn normal_packers_compose_with_rounding_without_consuming_inexactness() {
+        use RationalRoundingMode::{NearestTiesEven as Nearest, TowardNegative as Down};
+
+        let one = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let three_b32 = Binary32::from_bits(0x4040_0000).normalize_finite().unwrap();
+        let one_quotient = divide_finite_significands(one, one).unwrap();
+        let (one_magnitude, one_inexact) = round_quotient_to_precision(
+            one_quotient.sign(),
+            one_quotient.quotient(),
+            one_quotient.remainder(),
+            one_quotient.denominator(),
+            24,
+            Nearest,
+        )
+        .unwrap();
+        assert!(!one_inexact);
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(
+                one_quotient.sign(),
+                one_quotient.exponent(),
+                one_magnitude,
+            )
+            .unwrap()
+            .to_bits(),
+            0x3f80_0000,
+        );
+
+        let three_b64 = Binary64::from_bits(0x4008_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let quotient = divide_finite_significands(one, three_b32).unwrap();
+        let (magnitude32, inexact32) = round_quotient_to_precision(
+            quotient.sign(),
+            quotient.quotient(),
+            quotient.remainder(),
+            quotient.denominator(),
+            24,
+            Nearest,
+        )
+        .unwrap();
+        assert!(inexact32);
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(
+                quotient.sign(),
+                quotient.exponent(),
+                magnitude32,
+            )
+            .unwrap()
+            .to_bits(),
+            0x3eaa_aaab,
+        );
+
+        let quotient = divide_finite_significands(one, three_b64).unwrap();
+        let (magnitude64, inexact64) = round_quotient_to_precision(
+            quotient.sign(),
+            quotient.quotient(),
+            quotient.remainder(),
+            quotient.denominator(),
+            53,
+            Nearest,
+        )
+        .unwrap();
+        assert!(inexact64);
+        assert_eq!(
+            Binary64::pack_normal_rounded_significand(
+                quotient.sign(),
+                quotient.exponent(),
+                magnitude64,
+            )
+            .unwrap()
+            .to_bits(),
+            0x3fd5_5555_5555_5555,
+        );
+
+        let negative_one = Binary64::from_bits(0xbff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_quotient = divide_finite_significands(negative_one, three_b64).unwrap();
+        let (negative_magnitude, negative_inexact) = round_quotient_to_precision(
+            negative_quotient.sign(),
+            negative_quotient.quotient(),
+            negative_quotient.remainder(),
+            negative_quotient.denominator(),
+            24,
+            Down,
+        )
+        .unwrap();
+        assert!(negative_quotient.sign());
+        assert!(negative_inexact);
+        assert_eq!(
+            Binary32::pack_normal_rounded_significand(
+                negative_quotient.sign(),
+                negative_quotient.exponent(),
+                negative_magnitude,
+            )
+            .unwrap()
+            .to_bits(),
+            0xbeaa_aaab,
         );
     }
 }
