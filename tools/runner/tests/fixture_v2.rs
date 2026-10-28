@@ -5247,6 +5247,30 @@ fn local_movups_memory_load_fixture_reads_unaligned_bytes_into_xmm8() {
 }
 
 #[test]
+fn local_movupd_memory_load_fixture_reads_raw_xmm_and_jit_denies_profile() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_21_movupd_memory_load_rax.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupdMemLoadV1
+    );
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "66440f1000");
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "000102030405060708090a0b0c0d0e0f".into();
+    assert_eq!(snapshot(&result).state, expected);
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_movss_memory_load_fixture_clears_xmm_upper_bits_and_keeps_native_closed() {
     let bytes = include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_8c_movss_memory_load_rax.case.json"

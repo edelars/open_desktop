@@ -13484,3 +13484,22 @@ Focused verification passed: `cargo test -p od-isa andnpd --offline` (3), `cargo
 Additional S2-34.20 verification passed: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, `cargo test -p od-x86-runner --offline` (9 host-available tests), and `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`. The Linux-target all-target check compiles the explicit native-denial fixture test; it was not executed on this host. `git diff --check` passed, and `graphify update .` refreshed the graph after these edits. Graphify reported its existing parser warning for the unrelated C header `include/open_desktop/host_abi.h`; it did not prevent the refresh. No physical execution was performed.
 
 Second-review follow-up (2026-10-28): corrected decoder sibling expectations so packed `66 0F 55 /r` is recognized as ANDNPD from both ORPD and ANDNPS tests. PAND uses `66 0F DB /r`; PANDN uses `66 0F DF /r`. The ANDNPD schema explicitly rejects both neighbors, and the decoder explicitly maps DF to `PandnRegister`. Reverification passed: `cargo test -p od-isa and --offline` (772), `cargo test -p od-testkit andnpd --offline` (2), `cargo test -p od-testkit pandn --offline` (2), interpreter/JIT fixture test (1), `cargo test -p od-x86-runner --offline` (9 host-available tests), Linux-target all-target x86-runner check (native denial test compiled only), workspace all-target offline check, formatting, diff check, and Graphify refresh. No physical execution was performed.
+
+## S2-34.21 — local MOVUPD `[RAX]` load profile
+
+Implemented a distinct schema-v2 profile for long-mode `66 [optional REX.R only]
+0F 10 /r`, ModR/M.mod=00, r/m=000, exact `[RAX]`. The interpreter validates
+`[RAX,RAX+15]` as a full canonical-48 range with overflow checking, performs one
+16-byte `GuestMemory::read` into temporary storage, then commits all 128 bits of
+the destination XMM and RIP. Unaligned access is accepted locally; this does not
+claim hardware alignment or `#AC` behavior. MOVUPS and scalar profiles remain
+separate. The handwritten high-XMM fixture passes through the interpreter and
+JIT returns `Unsupported`; native admission remains denied.
+
+Focused validation passed (2026-10-28): `cargo test -p od-isa movupd --offline`
+(8 tests), `cargo test -p od-testkit --offline` (349 tests), and
+`cargo test -p od-runner --test fixture_v2 local_movupd_memory_load_fixture
+--offline` (1 test). `cargo check --workspace --all-targets --offline`, Linux
+x86-runner all-target compile check, and `cargo fmt --all -- --check` passed.
+The Linux-only native-denial test was compile-checked, not executed on this host.
+Parent S2-34 remains open; physical SSE2 execution is `not_run`.

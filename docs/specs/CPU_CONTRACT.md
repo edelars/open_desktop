@@ -9734,6 +9734,23 @@ is implied. See the [S2-34.16 plan](../plans/STAGE_2.md#s2-3416--local-only-reve
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3416-local-reverse-direction-register-movupd-diagnostic-profile).
 
 
+## Local profile S2-34.21: `s2-long-movupd-mem-load-v1`
+
+This local diagnostic profile admits long-mode `66 [optional REX.R only]
+0F 10 /r` only for ModR/M.mod=00, r/m=000, the exact `[RAX]` address. REX is
+absent, `40`, or `44`; destination is ModR/M.reg plus REX.R. It reads exactly
+16 bytes once into temporary storage, validates the complete canonical-48
+address range and overflow before data access, then commits all 128 destination
+bits and RIP only after a successful read. Unaligned accesses are accepted by
+this local backend contract; no hardware alignment or `#AC` behavior is claimed.
+
+Displacement, SIB, RIP-relative, address-size override, REX.W/X/B, extra or
+misordered prefixes, VEX/EVEX, MOVUPS and scalar profiles remain separate or
+unsupported. Missing SSE state, failed range validation, memory/backend error
+and truncated fetch do not commit CPU state. JIT/native admission and physical
+execution remain closed; parent S2-34 remains open and physical status is
+`not_run`.
+
 ## Local profile S2-34.17: `s2-long-xorpd-reg-v1`
 
 This separate schema-v2 diagnostic profile admits exactly long-mode `66 [one optional REX.R/B] 0F 57 /r` with ModR/M.mod=3. Mandatory `66` selects legacy packed-double XORPD; ModR/M.reg plus REX.R selects destination XMM0–XMM15 and ModR/M.r/m plus REX.B selects source XMM0–XMM15. Intel SDM revision 093, Vol. 2B, XORPD entry defines this 128-bit bitwise XOR; VEX/EVEX and memory forms are excluded.

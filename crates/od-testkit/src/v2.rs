@@ -78,6 +78,7 @@ pub const PROFILE_MOVSD_MEMORY_LOAD: &str = "s2-long-movsd-mem-load-v1";
 pub const PROFILE_MOVSS_STORE_REGISTER: &str = "s2-long-movss-store-reg-v1";
 pub const PROFILE_MOVSS_MEMORY_STORE: &str = "s2-long-movss-mem-store-v1";
 pub const PROFILE_MOVUPS_MEMORY_LOAD: &str = "s2-long-movups-mem-load-v1";
+pub const PROFILE_MOVUPD_MEMORY_LOAD: &str = "s2-long-movupd-mem-load-v1";
 pub const PROFILE_MOVUPS_MEMORY_STORE: &str = "s2-long-movups-mem-store-v1";
 pub const PROFILE_MOVUPS_MEMORY_BASE: &str = "s2-long-movups-mem-base-v1";
 /// Diagnostic mask for this bounded local fixture profile only. It is not a
@@ -254,6 +255,8 @@ pub enum Profile {
     LongMovssMemStoreV1,
     #[serde(rename = "s2-long-movups-mem-load-v1")]
     LongMovupsMemLoadV1,
+    #[serde(rename = "s2-long-movupd-mem-load-v1")]
+    LongMovupdMemLoadV1,
     #[serde(rename = "s2-long-movups-mem-store-v1")]
     LongMovupsMemStoreV1,
     #[serde(rename = "s2-long-movups-mem-base-v1")]
@@ -721,6 +724,7 @@ impl IntegerState {
                     | Profile::LongMovssMemStoreV1
                     | Profile::LongMovssStoreRegV1
                     | Profile::LongMovupsMemLoadV1
+                    | Profile::LongMovupdMemLoadV1
                     | Profile::LongMovupsMemStoreV1
                     | Profile::LongMovupsMemBaseV1,
                     Some(x87),
@@ -802,6 +806,7 @@ impl IntegerState {
                     | Profile::LongMovssMemStoreV1
                     | Profile::LongMovssStoreRegV1
                     | Profile::LongMovupsMemLoadV1
+                    | Profile::LongMovupdMemLoadV1
                     | Profile::LongMovupsMemStoreV1
                     | Profile::LongMovupsMemBaseV1,
                     Some(sse),
@@ -890,6 +895,7 @@ impl IntegerState {
                 | Profile::LongMovssMemStoreV1
                 | Profile::LongMovssStoreRegV1
                 | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupdMemLoadV1
                 | Profile::LongMovupsMemStoreV1
                 | Profile::LongMovupsMemBaseV1
         ) {
@@ -972,6 +978,7 @@ impl IntegerState {
                 | Profile::LongMovssMemStoreV1
                 | Profile::LongMovssStoreRegV1
                 | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupdMemLoadV1
                 | Profile::LongMovupsMemStoreV1
                 | Profile::LongMovupsMemBaseV1
         ) {
@@ -1103,6 +1110,7 @@ impl IntegerState {
             | Profile::LongMovssMemStoreV1
             | Profile::LongMovssStoreRegV1
             | Profile::LongMovupsMemLoadV1
+            | Profile::LongMovupdMemLoadV1
             | Profile::LongMovupsMemStoreV1
             | Profile::LongMovupsMemBaseV1 => Profile::LongIntegerV1,
             other => other,
@@ -1184,6 +1192,7 @@ impl IntegerState {
                 | Profile::LongMovssMemStoreV1
                 | Profile::LongMovssStoreRegV1
                 | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupdMemLoadV1
                 | Profile::LongMovupsMemStoreV1
                 | Profile::LongMovupsMemBaseV1
                 | Profile::LongGsBaseV1
@@ -1271,6 +1280,7 @@ impl IntegerState {
                 | Profile::LongMovssMemStoreV1
                 | Profile::LongMovssStoreRegV1
                 | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupdMemLoadV1
                 | Profile::LongMovupsMemStoreV1
                 | Profile::LongMovupsMemBaseV1
                 | Profile::LongGsBaseV1
@@ -1363,6 +1373,7 @@ impl IntegerState {
                 | Profile::LongMovssMemStoreV1
                 | Profile::LongMovssStoreRegV1
                 | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupdMemLoadV1
                 | Profile::LongMovupsMemStoreV1
                 | Profile::LongMovupsMemBaseV1
                 | Profile::LongFsBaseV1
@@ -1458,6 +1469,7 @@ impl IntegerState {
                 | Profile::LongMovssMemStoreV1
                 | Profile::LongMovssStoreRegV1
                 | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupdMemLoadV1
                 | Profile::LongMovupsMemStoreV1
                 | Profile::LongMovupsMemBaseV1
                 | Profile::LongFsBaseV1
@@ -1704,6 +1716,7 @@ impl IntegerState {
                 | Profile::LongMovssMemStoreV1
                 | Profile::LongMovssStoreRegV1
                 | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupdMemLoadV1
                 | Profile::LongMovupsMemStoreV1
                 | Profile::LongMovupsMemBaseV1,
                 Some(x87),
@@ -1785,6 +1798,7 @@ impl IntegerState {
                 | Profile::LongMovssMemStoreV1
                 | Profile::LongMovssStoreRegV1
                 | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupdMemLoadV1
                 | Profile::LongMovupsMemStoreV1
                 | Profile::LongMovupsMemBaseV1,
                 None,
@@ -1869,6 +1883,7 @@ impl IntegerState {
                 | Profile::LongMovssMemStoreV1
                 | Profile::LongMovssStoreRegV1
                 | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupdMemLoadV1
                 | Profile::LongMovupsMemStoreV1
                 | Profile::LongMovupsMemBaseV1,
                 Some(sse),
@@ -1947,6 +1962,7 @@ impl IntegerState {
                 | Profile::LongMovssMemStoreV1
                 | Profile::LongMovssStoreRegV1
                 | Profile::LongMovupsMemLoadV1
+                | Profile::LongMovupdMemLoadV1
                 | Profile::LongMovupsMemStoreV1
                 | Profile::LongMovupsMemBaseV1,
                 None,
@@ -2377,16 +2393,23 @@ impl Fixture {
                 ));
             }
         }
-        if self.profile == Profile::LongMovupsMemLoadV1 {
+        if self.profile == Profile::LongMovupsMemLoadV1
+            || self.profile == Profile::LongMovupdMemLoadV1
+        {
             let code = self.memory.iter().find(|region| region.region_id == "code");
             let Some(code) = code else {
                 return Err(invalid("memory.code", "required by this profile"));
             };
             let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
-            let (length, _) = movups_memory_load_destination(&code_bytes).ok_or_else(|| {
+            let decoded = if self.profile == Profile::LongMovupdMemLoadV1 {
+                movupd_memory_load_destination(&code_bytes)
+            } else {
+                movups_memory_load_destination(&code_bytes)
+            };
+            let (length, _) = decoded.ok_or_else(|| {
                 invalid(
                     "memory.code",
-                    "outside the [RAX] MOVUPS memory-load profile",
+                    "outside the exact [RAX] packed memory-load profile",
                 )
             })?;
             let start = self.initial_state.gpr[0].get();
@@ -5766,6 +5789,23 @@ fn movups_memory_load_destination(code_bytes: &str) -> Option<(u32, u8)> {
         (prefix_len + 3) as u32,
         ((modrm >> 3) & 7) | ((bytes.first().copied().unwrap_or(0) & 4) << 1),
     ))
+}
+
+fn movupd_memory_load_destination(code_bytes: &str) -> Option<(u32, u8)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, modrm) = match bytes.as_slice() {
+        [0x66, 0x0f, 0x10, modrm] => (0, *modrm),
+        [0x66, rex, 0x0f, 0x10, modrm] if matches!(rex, 0x40 | 0x44) => (*rex, *modrm),
+        _ => return None,
+    };
+    (modrm >> 6 == 0 && modrm & 7 == 0)
+        .then_some((bytes.len() as u32, ((modrm >> 3) & 7) | ((rex & 4) << 1)))
 }
 
 fn movups_memory_store_length(code_bytes: &str) -> Option<u32> {

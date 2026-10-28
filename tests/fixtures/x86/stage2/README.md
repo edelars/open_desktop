@@ -5334,3 +5334,11 @@ profile assumes SSE2 preconditions and denies JIT and native execution.
 ### S2-34.20 local register ANDNPD diagnostic profile
 
 `s2_34_20_andnpd_register.case.json` is a handwritten schema-v2 XMM8/XMM9 fixture for `s2-long-andnpd-reg-v1`, encoded as `66 45 0F 55 C1` (`ANDNPD XMM8,XMM9`). Mandatory `66` selects packed SSE2 ANDNPD; REX.R/B select high destination/source registers. Execution computes `(~old XMM8) & XMM9` across all 128 raw bits. The asymmetric literal operands distinguish this from `XMM8 & ~XMM9`; alias/self ANDNPD yields zero in the unit matrix. The interpreter preserves MXCSR, x87, GPR, flags and unrelated XMM state, and performs no data-memory access. Native and JIT admission deny this local profile. Parent S2-34 remains open; physical remains `not_run`. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-profile-s2-3420-s2-long-andnpd-reg-v1) and [Stage 2 plan](../../../../docs/plans/STAGE_2.md#s2-3420--local-only-register-andnpd).
+## S2-34.21 — local MOVUPD `[RAX]` load diagnostic profile
+
+`s2_34_21_movupd_memory_load_rax.case.json` is a handwritten schema-v2 fixture
+for exact `66 44 0F 10 00` (`MOVUPD XMM8,[RAX]`). The source is unaligned and
+contains distinct bytes; the interpreter copies the complete 16-byte value to
+XMM8. The local diagnostic profile assumes SSE2/CR0/CR4 preconditions, permits
+only the specified `[RAX]` encoding, and does not claim hardware alignment or
+`#AC` behavior. JIT/native execution and physical validation are outside scope.

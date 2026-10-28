@@ -1470,6 +1470,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongMovssMemLoadV1
             | v2::Profile::LongMovssMemStoreV1
             | v2::Profile::LongMovupsMemLoadV1
+            | v2::Profile::LongMovupdMemLoadV1
             | v2::Profile::LongMovupsMemStoreV1
             | v2::Profile::LongMovupsMemBaseV1
     ) {
@@ -4343,6 +4344,17 @@ mod tests {
     fn movupd_reverse_register_profile_is_native_unsupported_with_unavailable_snapshot() {
         let loaded = Fixture::from_json(include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_34_16_movupd_reverse_register.case.json"
+        ))
+        .unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    }
+
+    #[test]
+    fn movupd_memory_load_profile_is_native_unsupported_with_unavailable_snapshot() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_34_21_movupd_memory_load_rax.case.json"
         ))
         .unwrap();
         let result = execute(&loaded);

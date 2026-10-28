@@ -1683,6 +1683,69 @@ fn movups_memory_load_profile_is_separate_and_exactly_bounds_rax_source() {
 }
 
 #[test]
+fn movupd_memory_load_profile_is_exact_and_rejects_neighboring_forms() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_21_movupd_memory_load_rax.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongMovupdMemLoadV1);
+    for bytes in ["660f1000", "66400f1000", "66440f1000"] {
+        let mut accepted = fixture.clone();
+        let code = accepted
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        accepted.stop_rip = Some(HexU64(
+            accepted.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(accepted.validate().is_ok(), "{bytes}");
+    }
+
+    for bytes in [
+        "660f10c0",         // register form
+        "660f1100",         // reverse/store form
+        "0f1000",           // MOVUPS without mandatory 66
+        "f2660f1000",       // scalar MOVSD prefix
+        "f3660f1000",       // scalar MOVSS prefix
+        "66660f1000",       // duplicate mandatory prefix
+        "40660f1000",       // invalid prefix order
+        "6640440f1000",     // duplicate REX prefix
+        "660f104000",       // disp8
+        "660f108000000000", // disp32
+        "660f100400",       // SIB
+        "660f100500000000", // RIP-relative
+        "66410f1000",       // REX.B
+        "66420f1000",       // REX.X
+        "66480f1000",       // REX.W
+        "67660f1000",       // address size override
+        "c5f91000",         // VEX
+        "c4e1791000",       // VEX3
+        "62f17d081000",     // EVEX
+        "660f10",           // truncated ModR/M
+        "660f",             // truncated opcode
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(
+            rejected.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
 fn movss_memory_load_profile_is_exact_f3_rax_m32_only() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_8c_movss_memory_load_rax.case.json"

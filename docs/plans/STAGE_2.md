@@ -385,6 +385,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-34.17 | Separate local-only register XORPD `66 0F 57 /r`; raw 128-bit XOR, JIT/native closed | S2-34.16 |
 | [x] | S2-34.18 | Separate local-only register ANDPD `66 0F 54 /r`; raw 128-bit AND, JIT/native closed | S2-34.17 |
 | [x] | S2-34.19 | Separate local-only register ORPD `66 0F 56 /r`; raw 128-bit OR, JIT/native closed | S2-34.18 |
+| [x] | S2-34.21 | Local-only exact mandatory-66 `MOVUPD XMM,[RAX]` 16-byte load; JIT/native closed | S2-34.15 |
 | [x] | S2-34.5 | Separate local-only legacy `MOVUPS [RAX],XMM` store profile; one exact 16-byte write with no CPU commit on backend failure | S2-34.4 |
 | [x] | S2-34.6a | Shared local-only MOVUPS base+displacement profile for legacy `0F 10`/`0F 11`, no SIB/RIP-relative | S2-34.5 |
 | [x] | S2-34.6b | Extend `s2-long-movups-mem-base-v1` with bounded legacy RIP-relative `0F 10`/`0F 11` disp32 forms | S2-34.6a |
@@ -9377,3 +9378,28 @@ claim.
 Добавлен отдельный diagnostic profile `s2-long-andnpd-reg-v1` для точной long-mode формы `66 [one optional REX.R/B] 0F 55 /r`, только при ModR/M.mod=3. ModR/M.reg с REX.R выбирает destination XMM0–15, ModR/M.r/m с REX.B — source. Семантика проверена по Intel SDM revision 093, Vol. 2B: каждый raw bit результата равен `(~old_destination) & source`. Не перепутывать с `destination & ~source`; handwritten XMM8/XMM9 literal truth pattern различает варианты. Alias/self-ANDNPD даёт ноль.
 
 Профиль строго отвергает отсутствующий, повторный или misordered `66`, лишние legacy prefixes, REX.W/X, memory operands, VEX/EVEX, truncation, а также XORPD/ANDPD/ORPD/PANDN соседние формы. Старый ANDNPS остаётся отдельным профилем. Decoder и executor покрывают 16×16 назначений (включая alias), byte truth-table pattern, атомарный missing-SSE/truncation refusal и отсутствие data-memory callbacks. Handwritten XMM8/XMM9 fixture проходит testkit и interpreter CLI; JIT и native runner отказывают. S2-34 остаётся open; физическое исполнение `not_run`.
+
+#### S2-34.21 — local-only MOVUPD `[RAX]` load
+
+Добавлен отдельный schema-v2 diagnostic profile `s2-long-movupd-mem-load-v1`
+для точной long-mode формы `66 [optional REX.R only] 0F 10 /r`: ModR/M.mod=00,
+r/m=000, адрес `[RAX]`, назначения XMM0–15. Допустимы только REX absent/40/44;
+REX.R расширяет ModR/M.reg. Исполнитель проверяет весь диапазон
+`[RAX,RAX+15]` для canonical48 и переполнения, делает один `GuestMemory::read`
+ровно 16 байт во временный буфер и лишь после успеха заменяет весь XMM и RIP.
+Невыровненный адрес принят этим локальным backend-срезом; hardware alignment и
+`#AC` не заявляются. Профиль не расширяет общий MOVUPS decoder; MOVUPS register,
+reverse MOVUPD register и scalar пути сохранены отдельно.
+
+Decoder/executor покрывают все 16 назначений, strict addressing/prefix negatives,
+один точный callback, unaligned чтение, full-state сохранение, canonical crossing,
+overflow, injected read/backend errors и truncated fetch без CPU commit. Fixture
+`s2_34_21_movupd_memory_load_rax.case.json` проверяется testkit/CLI interpreter;
+JIT fixture test получает `Unsupported`, а native profile остаётся denied. Проверены
+`cargo test -p od-isa movupd --offline` (8), `cargo test -p od-testkit --offline`
+(349), runner fixture test (1), workspace all-target offline check, Linux x86-runner
+all-target compile check и форматирование. Native Linux denial только compile-checked;
+физическое исполнение `not_run`. Parent S2-34 остаётся open.
+См. [CPU contract](../specs/CPU_CONTRACT.md#local-profile-s2-3421-s2-long-movupd-mem-load-v1),
+[report](../reports/STAGE_2_REPORT.md#s2-3421--local-movupd-rax-load-profile),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3421--local-movupd-rax-load-diagnostic-profile).

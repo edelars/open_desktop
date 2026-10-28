@@ -2123,3 +2123,22 @@ physical execution или parent S2-34 acceptance claim.
 ## Local register-only XORPD slice — S2-34.17
 
 The `s2-long-xorpd-reg-v1` schema-v2 profile accepts only `66 [one optional REX.R/B] 0F 57 /r`, ModR/M.mod=3. The od-isa executor test checks all 16×16 register pairs against a full-state expected snapshot, including alias/self-XOR, and asserts zero data-memory callbacks for every pair. Additional tests cover high-XMM decoding, strict prefix/memory/VEX/EVEX negatives, missing SSE state and truncated fetch atomicity. The handwritten XMM8/XMM9 fixture is executed through both testkit and the fixture CLI runner; the runner compares the full literal result and confirms JIT returns `Unsupported` without a snapshot. Native admission remains denied. SSE2 and CR0/CR4 preconditions are assumptions. No physical execution or parent S2-34 acceptance is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#local-profile-s2-3417-s2-long-xorpd-reg-v1) and [fixture](../../tests/fixtures/x86/stage2/s2_34_17_xorpd_register.case.json).
+
+
+## Local register-only ANDNPD slice — S2-34.20
+
+The `s2-long-andnpd-reg-v1` profile accepts only `66 [one optional REX.R/B] 0F 55 /r` with ModR/M.mod=3. Destination is ModR/M.reg + REX.R, source is ModR/M.r/m + REX.B, and the raw 128-bit result is `(~old_destination) & source`. Tests distinguish operand order (`~0xF0 & 0xCC == 0x0C`, versus `0x30` reversed), cover all 16×16 XMM pairs and self-alias zero, and assert full state preservation with zero data callbacks. Decoder and schema checks reject invalid prefixes, memory, truncation, VEX/EVEX, and neighboring packed logical opcodes; prefix-free ANDNPS stays in its separate profile. Missing SSE state and truncated fetch refuse without commit. The handwritten XMM8/XMM9 fixture is interpreted, JIT returns `Unsupported`, and native denial is covered in the Linux-only x86-runner test. SSE2/CR0/CR4 prerequisites remain assumptions. No physical execution or parent S2-34 acceptance is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#local-profile-s2-3420-s2-long-andnpd-reg-v1), [plan](../plans/STAGE_2.md#s2-3420--local-only-register-andnpd), and [fixture](../../tests/fixtures/x86/stage2/s2_34_20_andnpd_register.case.json).
+
+## Local MOVUPD `[RAX]` load — S2-34.21
+
+The decoder/interpreter slice admits only mandatory-66 long-mode
+`MOVUPD XMM,[RAX]`: ModR/M.mod=00, r/m=000, optional REX.R (`40`/`44` only).
+It validates the entire canonical-48 16-byte range, performs one exact-width read
+into a temporary buffer, and commits XMM plus RIP only on success. This accepts
+unaligned addresses locally without asserting hardware alignment or `#AC`
+semantics. Focused od-isa tests cover all 16 destinations, exact callbacks,
+read failures, canonical crossing/overflow, truncation and strict addressing
+negatives. The handwritten schema-v2 fixture passes through the CLI interpreter;
+JIT is explicitly denied. Workspace checks and the Linux native-denial compile
+check are recorded in the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-3421--local-movupd-rax-load-profile).
+Physical execution status is `not_run`; parent S2-34 remains open.
