@@ -9484,3 +9484,7 @@ Implement the legacy mandatory-66 `0F E3 /r` XMM register form only, with option
 #### S2-35.54 — local-only bounded register `PMAXUB`
 
 Implement the legacy mandatory-66 `0F DE /r` XMM register form only, with optional REX.R/B register extension and unsigned byte-wise maximum. Support source aliasing and preserve unrelated state without data-memory effects. Assume SSE2 and CR0/CR4; do not add CPUID advertisement or JIT/native/physical admission. Maintain a distinct `s2-long-pmaxub-reg-v1` profile. Verify all XMM register pairs, strict encoding rejects, atomic missing-state/fetch handling, fixture/testkit/runner denial, and document the local contract. Physical checks are deferred to the combined final substage.
+
+#### S2-35.55 — local-only bounded register `PMINUB`
+
+Implement the legacy mandatory-66 `0F DA /r` XMM register form only, with optional REX.R/B register extension and unsigned byte-wise minimum. Support source aliasing and preserve unrelated state without data-memory effects. Assume SSE2 and CR0/CR4; do not add CPUID advertisement or JIT/native/physical admission. Maintain a distinct `s2-long-pminub-reg-v1` profile. Verify all XMM register pairs, strict encoding rejects, atomic missing-state/fetch handling, fixture/testkit/runner denial, and document the local contract. Physical checks are deferred to the combined final substage.
