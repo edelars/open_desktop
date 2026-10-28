@@ -429,12 +429,14 @@ fn state(regs: &libc::user_regs_struct) -> LongModeState {
         es_selector: 0,
         ds_unusable: false,
         es_unusable: false,
+        ds_cache: None,
         gdtr: None,
         fs_cache: None,
         gs_cache: None,
 
         x87: None,
         sse: None,
+        es_cache: None,
     }
 }
 
@@ -509,7 +511,8 @@ fn capture(
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(Snapshot {
-        state: (&observed).into(),
+        state: v2::IntegerState::try_from(&observed)
+            .map_err(|error| format!("cannot export native CPU state snapshot: {error}"))?,
         rflags_defined: HexU64(rflags_defined),
         memory,
         exception: if exception_known {
@@ -1560,7 +1563,8 @@ mod tests {
             },
             seed: None,
             converted_from_v1_sha256: None,
-            initial_state: (&state).into(),
+            initial_state: v2::IntegerState::try_from(&state)
+                .expect("test fixture integer state is representable in the snapshot schema"),
             memory: vec![
                 region("code", 0x100000, code, false, true),
                 region("data", 0x200000, &[0; 16], true, false),

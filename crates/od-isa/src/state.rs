@@ -220,6 +220,8 @@ pub struct LongModeState {
     pub es_unusable: bool,
     /// Hidden DS descriptor cache only in the bounded MOV-DS-load profile.
     pub ds_cache: Option<DsDescriptorCache>,
+    /// Hidden ES descriptor cache only in the bounded MOV-ES-load profile.
+    pub es_cache: Option<DataSegmentDescriptorCache>,
     /// GDTR state used by bounded LGDT and GDT-only VERW profiles; no general descriptor support or LDTR is modeled.
     pub gdtr: Option<Gdtr>,
     /// Hidden FS descriptor cache only in the local MOV-FS-load profile.
@@ -239,7 +241,7 @@ pub struct Gdtr {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DsDescriptorCache {
+pub struct DataSegmentDescriptorCache {
     /// The descriptor's 32-bit base; Long64 ordinary data addressing ignores it.
     pub base: u32,
     /// Effective limit after applying descriptor granularity.
@@ -249,6 +251,8 @@ pub struct DsDescriptorCache {
     /// Descriptor flag nibble (AVL, L, D/B, G).
     pub flags: u8,
 }
+
+pub type DsDescriptorCache = DataSegmentDescriptorCache;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FsDescriptorCache {
@@ -275,6 +279,7 @@ impl Default for LongModeState {
             ds_unusable: false,
             es_unusable: false,
             ds_cache: None,
+            es_cache: None,
             gdtr: None,
             fs_cache: None,
             gs_cache: None,
@@ -311,6 +316,7 @@ pub enum FragmentAdapterError {
     UnsupportedGsSelector(u16),
     UnsupportedGdtr(Gdtr),
     UnsupportedDsCache(DsDescriptorCache),
+    UnsupportedEsCache(DataSegmentDescriptorCache),
     UnsupportedFsCache(FsDescriptorCache),
     UnsupportedGsCache(FsDescriptorCache),
     UnsupportedX87,
@@ -367,6 +373,9 @@ impl TryFrom<&LongModeState> for FragmentState {
         }
         if let Some(ds_cache) = state.ds_cache {
             return Err(FragmentAdapterError::UnsupportedDsCache(ds_cache));
+        }
+        if let Some(es_cache) = state.es_cache {
+            return Err(FragmentAdapterError::UnsupportedEsCache(es_cache));
         }
         for encoding in 4..16 {
             if state.gpr[encoding] != 0 {
@@ -508,6 +517,7 @@ mod tests {
 
                         x87: None,
                         sse: None,
+                        es_cache: None,
                     };
                     let before = state.clone();
                     let view = RegisterView::low(register, size);
@@ -645,6 +655,25 @@ mod tests {
         ds_cache_state.ds_cache = Some(ds_cache);
         assert_eq!(
             FragmentState::try_from(&ds_cache_state),
+            Err(FragmentAdapterError::UnsupportedDsCache(ds_cache))
+        );
+        let mut es_cache_state = LongModeState::default();
+        let es_cache = DataSegmentDescriptorCache {
+            base: 0x8765_4321,
+            limit: 0xffff,
+            access: 0x93,
+            flags: 0,
+        };
+        es_cache_state.es_cache = Some(es_cache);
+        assert_eq!(
+            FragmentState::try_from(&es_cache_state),
+            Err(FragmentAdapterError::UnsupportedEsCache(es_cache))
+        );
+        let mut combined_cache_state = LongModeState::default();
+        combined_cache_state.ds_cache = Some(ds_cache);
+        combined_cache_state.es_cache = Some(es_cache);
+        assert_eq!(
+            FragmentState::try_from(&combined_cache_state),
             Err(FragmentAdapterError::UnsupportedDsCache(ds_cache))
         );
         for encoding in 4..16 {

@@ -159,6 +159,30 @@ fn integer_snapshot_export_rejects_ds_hidden_cache() {
 }
 
 #[test]
+fn integer_snapshot_export_rejects_es_only_and_combined_segment_caches() {
+    let es_cache = od_isa::state::DataSegmentDescriptorCache {
+        base: 0x8765_4321,
+        limit: 0xffff,
+        access: 0x93,
+        flags: 0,
+    };
+    let mut es_only = od_isa::LongModeState::default();
+    es_only.es_cache = Some(es_cache);
+    assert!(IntegerState::try_from(&es_only).is_err());
+    assert!(IntegerState::from_cpu_for(&es_only, Profile::LongIntegerV1).is_err());
+
+    let mut both = es_only.clone();
+    both.ds_cache = Some(od_isa::state::DsDescriptorCache {
+        base: 0x1234_5678,
+        limit: 0xffff,
+        access: 0x93,
+        flags: 0,
+    });
+    assert!(IntegerState::try_from(&both).is_err());
+    assert!(IntegerState::from_cpu_for(&both, Profile::LongIntegerV1).is_err());
+}
+
+#[test]
 fn x87_sse_profile_has_strict_wire_scope_and_raw_mxcsr_validation() {
     let mut fixture = x87_sse_fixture().fixture;
     let mut wrong_width = fixture.clone();

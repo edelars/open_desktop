@@ -622,6 +622,13 @@ impl TryFrom<&LongModeState> for IntegerState {
                     .into(),
             });
         }
+        if state.es_cache.is_some() {
+            return Err(FormatError::InvalidField {
+                field: "state.es_cache",
+                reason: "ES hidden descriptor cache is not represented by this snapshot schema"
+                    .into(),
+            });
+        }
         Ok(Self {
             mode: Mode::Long64,
             gpr: state.gpr.map(HexU64),
@@ -669,6 +676,7 @@ impl IntegerState {
             ds_unusable: self.ds_unusable.unwrap_or(false),
             es_unusable: self.es_unusable.unwrap_or(false),
             ds_cache: None,
+            es_cache: None,
             gdtr: match (self.gdtr_base, self.gdtr_limit) {
                 (Some(base), Some(limit)) => Some(od_isa::state::Gdtr {
                     base: base.get(),

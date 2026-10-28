@@ -99,6 +99,52 @@ September 2026, [official Intel PDF](https://cdrdv2-public.intel.com/929354/2536
 Vol. 3A descriptor, privilege, and event references (Order No. 253668-093US,
 September 2026, [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
 
+## S2-27c — exact Long64 `MOV ES, AX`
+
+**Статус:** bounded local implementation checks passed; independent Sol
+medium code review completed clean after the Linux-target conversion fix, with
+no remaining findings. This is an isolated local-only bare `8E C0`
+slice with explicit CPL0/GDTR/hidden-ES-cache admission and a non-null TI=0 GDT
+selector. CPL1–3, missing state, null-with-cache, TI=1, prefix, and neighboring
+forms remain `Unsupported`; this profile does not classify MOV ES as
+architecturally privileged. The existing S2-22k null ES fixture remains
+unchanged and admits only `es_cache == None`. The ES path is designed to reuse
+the existing descriptor validator while committing ES selector/cache state
+separately. Integer and snapshot conversions must reject ES-only and combined
+DS+ES hidden caches when unrepresentable; fragment conversion must reject the
+ES cache. No serialized fixture profile is added.
+
+Static Ubuntu source-to-binary evidence is recorded in the
+[Linux profile report](STAGE_2_LINUX_PROFILE.md#s2-27c--exact-ubuntu-es-load-candidate).
+It identifies an isolated ES instruction; `MOV SS` at `ffffffff83f13304`
+remains unsupported and was not executed. The ES bytes at `ffffffff83f13306`
+are not evidence that a contiguous startup prefix was executed. No Linux boot,
+physical x86, Mac mini, or SSH result is claimed. The known layout-checker
+limitation remains the one documented for the managed worktree in S2-27b: the
+unmapped `.git` marker and two stale links to absent ignored oracle manifests.
+
+**Авторские проверки:** `cargo test -p od-isa --offline mov_es_ax` (4 passed);
+`cargo test -p od-testkit --offline integer_snapshot_export_rejects_es_only_and_combined_segment_caches`
+(1 passed; ES-only and combined DS+ES caches rejected);
+`cargo test -p od-isa --offline fragment_adapter_roundtrips_without_truncating_new_state`
+(1 passed; author confirms assertions for ES-only and combined DS+ES caches);
+`cargo test -p od-isa --offline null_ds_es_loads` (2 passed);
+`cargo check -p od-x86-runner --all-targets --offline --target x86_64-unknown-linux-gnu`
+(passed in 12.29 s). The first Linux-target compile exposed two stale
+infallible `IntegerState` conversions under `cfg(target_os = "linux")`; these
+were changed to propagate fallible conversion errors, and the Linux-target
+check then passed. After that fix, `cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, `git diff --check`, and
+`graphify update .` passed. These checks establish only the local bounded
+behavior listed above and compile coverage; they do not claim native runtime
+or physical execution. Independent Sol medium code review completed clean after
+the Linux-target conversion fix; no findings remain.
+No `python3 tools/check_layout.py` run is claimed for S2-27c; the known
+managed-worktree limitations recorded under S2-27b remain the unmapped `.git`
+marker and two stale links to absent ignored oracle manifests. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-27c--exact-long64-mov-es-ax)
+and [stage plan](../plans/STAGE_2.md#s2-27c--exact-long64-mov-es-ax).
+
 ## S2-26c — локальный `GsBaseV1` MSR
 
 **Статус:** в процессе. Локальные проверки автора внесены ниже. Независимое

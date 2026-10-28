@@ -15811,6 +15811,7 @@ mod tests {
                 x87: None,
                 sse: None,
                 ds_cache: None,
+                es_cache: None,
             };
             let before = state.clone();
             assert_eq!(

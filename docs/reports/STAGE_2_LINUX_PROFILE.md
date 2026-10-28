@@ -487,3 +487,37 @@ September 2026, [official Intel PDF](https://cdrdv2-public.intel.com/929354/2536
 Vol. 3A descriptor/privilege context (Order No. 253668-093US, September 2026,
 [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). See the
 [Stage 2 report](STAGE_2_REPORT.md#s2-27b--exact-long64-mov-ds-ax).
+
+## S2-27c — exact Ubuntu ES load candidate
+
+The Ubuntu 7.0.0-38.38 startup source includes an isolated instruction matching
+bare Long64 `MOV ES, AX` (`8E C0`). Static source-to-binary evidence:
+
+- `arch/x86/boot/startup/gdt_idt.c:62–65` contains the selector setup and
+  segment-register loads; those source files are unchanged by Ubuntu delta
+  `linux` 7.0.0-38.38.
+- In `vmlinux-7.0.0-38-generic.debug`,
+  `__pi_startup_64_setup_gdt_idt` begins at `ffffffff83f132e0`; the isolated
+  `8e c0` bytes are at `ffffffff83f13306`.
+- The selected GDT descriptor at `ffffffff8440f018` is
+  `ff ff 00 00 00 93 cf 00` (base 0, effective limit `0xffffffff`, present
+  DPL0 writable data descriptor, access byte `0x93`, flags nibble `0xc`).
+- The preceding `MOV SS` candidate at `ffffffff83f13304` is explicitly outside
+  this slice, remains unsupported, and was not executed. The ES evidence does
+  not assert execution of a contiguous startup prefix.
+
+This is static package/disassembly evidence only. It does not establish runtime
+execution of the ES instruction, descriptor access, or a Linux boot. The local
+contract is bounded to the exact bare ES load. Author-run implementation checks
+are recorded in the [Stage 2 report](STAGE_2_REPORT.md#s2-27c--exact-long64-mov-es-ax).
+Independent Sol medium code review completed clean after the Linux-target
+conversion fix; no findings remain. This static mapping still establishes no
+runtime execution or boot result.
+Mac mini/SSH and physical x86 checks are not claimed.
+
+Semantic reference: Intel SDM Vol. 2B, `MOV` entry (Order No. 253667-093US,
+September 2026, [official Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf));
+Vol. 3A descriptor/privilege context (Order No. 253668-093US, September 2026,
+[official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-27c--exact-long64-mov-es-ax) and
+[Stage 2 plan](../plans/STAGE_2.md#s2-27c--exact-long64-mov-es-ax).

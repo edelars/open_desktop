@@ -2138,6 +2138,52 @@ Normative contract and official Intel SDM references:
 Fill only actual implementation/check results in the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27b--exact-long64-mov-ds-ax).
 
+#### S2-27c — exact Long64 `MOV ES, AX`
+
+Add a separate bounded local slice only for bare Long64 `8E C0` (`MOV ES, AX`)
+at CPL0 under an explicit local admission gate. This profile restriction does
+not make MOV ES architecturally privileged. Require GDTR, admitted hidden ES
+cache state, and a non-null GDT selector (`AX[15:0]`, TI=0). CPL1–3, missing
+GDTR/cache, null selector with cache, TI=1, prefix variants, and neighboring
+forms return `Unsupported`. Preserve the existing S2-22k null DS/ES fixture:
+it accepts null ES only with `es_cache == None`, with no GDT access or cache
+update. Do not add a serialized profile.
+
+Reuse the bounded S2-27b GDT descriptor validator and memory-access contract;
+keep the ES selector/cache commit distinct. For an admitted selector perform a
+single 8-byte `DescriptorTable` GDT read with Ring0 page privilege, check bounds,
+descriptor type/S, privilege and presence in the specified order, then perform
+at most one Accessed-bit byte write when A=0. Preserve exact `#GP(selector)` /
+`#NP(selector)` codes and propagate read/write faults without ES, RIP, or
+retirement commit. On success update only ES selector/cache fields, advance
+RIP by two bytes, and retire once. Preserve DS and unrelated state.
+
+Update both integer and snapshot conversion guards so they reject both an
+ES-only hidden cache and combined DS+ES caches if those representations cannot
+preserve the cache state; fragment conversion must also fail closed for ES
+cache. Do not silently omit ES cache fields or introduce a new serialized
+fixture profile. The existing null ES fixture remains cache-free.
+
+The test matrix should cover exact bare bytes; successful descriptor load and
+full ES hidden-cache attributes; bounds, read/write faults and ordered type,
+privilege, P, and A-bit behavior; atomicity and separate DS/ES state commits;
+RIP+2/retirement+1; CPL/cache/null/TI/prefix/neighbor admission; unchanged
+S2-22k null ES fixture behavior; fragment rejection; integer and snapshot
+rejection for ES-only and DS+ES caches; and no unrelated-state mutation. Keep
+`MOV SS` unsupported, and do not claim that this isolated ES instruction
+represents the surrounding startup sequence. No LDT, event delivery, Linux
+boot/runtime, physical x86, Mac mini, or SSH checks are in scope. Author-run
+interpreter, adapter, fixture-regression, workspace, Linux-target compilation,
+formatting, diff, and Graphify checks are recorded in the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27c--exact-long64-mov-es-ax).
+Independent Sol medium code review completed clean after the Linux-target
+conversion fix; no findings remain.
+
+Static Ubuntu evidence and its boundary:
+[Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#s2-27c--exact-ubuntu-es-load-candidate).
+Normative semantics and Intel references:
+[CPU contract](../specs/CPU_CONTRACT.md#s2-27c--exact-long64-mov-es-ax).
+
 **Готово:** обязательные переходы имеют исполняемые tests с корректным state; полноценная доставка при paging/privilege transitions подтверждается интеграционно вместе с machine backend, а не mock callbacks.
 
 ## 9. x87, MMX и SSE/SSE2

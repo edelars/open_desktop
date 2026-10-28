@@ -980,6 +980,59 @@ Vol. 3A §§3.4.3–3.4.5.1, 3.5.1, 5.6.1, 5.7, 6.6–6.6.1, 6.11.5, and 7.13
 (Order No. 253668-093US, September 2026,
 [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
 
+### S2-27c — exact Long64 `MOV ES, AX`
+
+This bounded local-only slice is anchored to the isolated Ubuntu instruction
+bytes `8E C0`, the bare Long64 encoding of `MOV ES, AX`. Admission is limited
+to CPL0 by an explicit local profile/state gate; this is not a claim that MOV ES
+is architecturally privileged. It requires a present GDTR, an admitted hidden
+ES cache, and a non-null selector in AX[15:0] with TI=0. CPL1–3, absent GDTR or
+ES cache, null selector with cache, TI=1, prefixes, and other encodings remain
+`Unsupported`. The existing S2-22k null DS/ES fixture is unchanged and admits
+only its null ES selector with `es_cache == None`, without a GDT read or cache
+update. No serialized fixture profile is added.
+
+For an admitted selector, use the existing descriptor lookup and validation
+semantics from S2-27b: bounds-check and read exactly one 8-byte GDT descriptor
+through `DescriptorTable` access at Ring0 page privilege; validate S/type,
+privilege, then P in that order; report type/privilege errors as `#GP(selector)`
+and P=0 as `#NP(selector)`, with selector error code `selector & 0xfffc`.
+For a valid present descriptor, A=1 requires no write; A=0 performs one byte
+write setting the Accessed bit. Preserve the existing descriptor read/write
+fault behavior and do not commit ES state, RIP, or retirement on failure.
+Commit the visible ES selector and its hidden cache (zero-extended descriptor
+base, effective limit equal to the 20-bit limit for G=0 or
+`(limit20 << 12) | 0xfff` for G=1, access byte, and flags nibble) only after
+required accesses succeed; preserve DS and all unrelated state, advance RIP by
+two, and retire once. This ES commit is separate from the DS commit. Cached
+attributes are observable state only; ordinary ES access checks and event
+delivery are outside this slice.
+
+State conversion must fail closed for an ES hidden cache it cannot represent:
+both the integer and snapshot adapters reject ES-only state and combined
+DS+ES-cache state rather than silently dropping either cache. Fragment
+conversion likewise must reject a present ES cache. These guards do not add a
+serialized profile. The S2-22k null ES case remains representable because its
+cache is absent.
+
+No MOV SS, LDT, general segment-loading policy, or event-delivery semantics
+are included. The implementation checks reported for this bounded slice have
+passed; independent Sol medium code review completed clean after the
+Linux-target conversion fix, with no remaining findings, as recorded in the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27c--exact-long64-mov-es-ax).
+The Ubuntu candidate is static source-to-binary evidence only, not a Linux boot
+or runtime-execution claim; Mac mini/SSH checks remain in the common final
+substage. See the [Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-27c--exact-ubuntu-es-load-candidate),
+[stage plan](../plans/STAGE_2.md#s2-27c--exact-long64-mov-es-ax), and
+[stage report](../reports/STAGE_2_REPORT.md#s2-27c--exact-long64-mov-es-ax).
+
+Semantic references: Intel SDM Vol. 2B, `MOV` entry, pp. 4-28–4-31
+(Order No. 253667-093US, September 2026,
+[official Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf));
+Vol. 3A §§3.4.3–3.4.5.1, 3.5.1, 5.6.1, 5.7, 6.6–6.6.1, 6.11.5, and 7.13
+(Order No. 253668-093US, September 2026,
+[official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+
 ### S2-22i — loaded GS.base composition fixture
 
 One additional local-only literal fixture uses the existing
