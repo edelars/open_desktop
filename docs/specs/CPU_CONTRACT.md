@@ -9216,6 +9216,19 @@ unchanged. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only.
 Memory/MMX, REX.R/X/W, other shifts, VEX/EVEX, feature gating, and exception
 delivery are outside this profile. See the [S2-35.37 plan](../plans/STAGE_2.md#s2-3537--local-only-bounded-register-immediate-psllw).
 
+## Local register-only immediate `PSRLW` profile — S2-35.38
+
+The diagnostic profile `s2-long-psrlw-imm-reg-v1` admits exactly
+`66 [optional REX.B] 0F 71 /2 ib`, ModR/M.mod=3. `/2` is required and
+ModR/M.r/m selects XMM0–15; `/6` is the separate PSLLW selector and is rejected
+by this profile. Each little-endian u16 lane shifts logically right by unsigned
+imm8; counts 0–15 shift and zero-fill, while counts >=16 clear all lanes
+without count masking. Lane bits never carry across words. Flags and MXCSR are
+unchanged. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only.
+Memory/MMX, other shifts, REX.R/X/W, VEX/EVEX, feature gating, exception
+delivery, JIT/native execution, and physical behavior are outside this profile.
+See the [S2-35.38 plan](../plans/STAGE_2.md#s2-3538--local-only-bounded-register-immediate-psrlw).
+
 ## Local register-only `PADDUSB` profile — S2-35.4
 
 The exact profile `s2-long-paddusb-reg-v1` admits legacy

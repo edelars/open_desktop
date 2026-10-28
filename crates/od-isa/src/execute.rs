@@ -1293,6 +1293,7 @@ fn step_tracked_with_stop(
         | Operation::PackssdwRegister { .. }
         | Operation::PshufdRegister { .. }
         | Operation::PsllwImmediateRegister { .. }
+        | Operation::PsrlwImmediateRegister { .. }
         | Operation::PsubwRegister { .. }
         | Operation::PadduswRegister { .. }
         | Operation::PsubuswRegister { .. }
@@ -3224,6 +3225,26 @@ fn step_tracked_with_stop(
                 .sse
                 .as_mut()
                 .expect("PSLLW state was prevalidated")
+                .xmm[usize::from(destination)] = shifted;
+        }
+        Operation::PsrlwImmediateRegister { destination, count } => {
+            let original = state
+                .sse
+                .as_ref()
+                .expect("PSRLW state was prevalidated")
+                .xmm[usize::from(destination)];
+            let mut shifted = [0; 16];
+            if count < 16 {
+                for lane in 0..8 {
+                    let value = u16::from_le_bytes([original[lane * 2], original[lane * 2 + 1]]);
+                    let result = value >> count;
+                    shifted[lane * 2..lane * 2 + 2].copy_from_slice(&result.to_le_bytes());
+                }
+            }
+            state
+                .sse
+                .as_mut()
+                .expect("PSRLW state was prevalidated")
                 .xmm[usize::from(destination)] = shifted;
         }
         Operation::PsubwRegister {
@@ -69347,6 +69368,133 @@ mod tests {
     #[test]
     fn psllw_missing_sse_state_does_not_retire_or_mutate() {
         let code = [0x66, 0x0f, 0x71, 0xf0, 1];
+        let mut memory = Memory::at(&code, 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.x87 = Some(X87State::fixture_seed());
+        let before = state.clone();
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Unsupported { opcode: 0x71 }
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn psrlw_immediate_honors_all_unsigned_counts_and_preserves_side_state() {
+        for destination in 0..16u8 {
+            for count in 0..=u8::MAX {
+                let mut code = vec![0x66];
+                if destination >= 8 {
+                    code.push(0x41);
+                }
+                code.extend([0x0f, 0x71, 0xd0 | (destination & 7), count]);
+                let mut memory = Memory::at(&code, 0x1000);
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.rflags = 0x8d7 | crate::DF;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = [0; 16];
+                for lane in 0..8 {
+                    let value =
+                        [0x8000u16, 1, 0xffff, 0x1234, 0x0100, 0x00ff, 0x5555, 0xa5a5][lane];
+                    xmm[lane * 2..lane * 2 + 2].copy_from_slice(&value.to_le_bytes());
+                }
+                let mut xmm_state = [[0x5a; 16]; 16];
+                xmm_state[usize::from(destination)] = xmm;
+                state.sse = Some(SseState {
+                    xmm: xmm_state,
+                    mxcsr: 0x1f80,
+                });
+                let before = state.clone();
+                let expected: [u8; 16] = std::array::from_fn(|index| {
+                    let lane = index / 2;
+                    let value = u16::from_le_bytes([xmm[lane * 2], xmm[lane * 2 + 1]]);
+                    let result = if count >= 16 { 0 } else { value >> count };
+                    result.to_le_bytes()[index % 2]
+                });
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                    StepOutcome::Advanced
+                );
+                let mut unchanged = before;
+                unchanged.rip += code.len() as u64;
+                unchanged.sse.as_mut().unwrap().xmm[usize::from(destination)] = expected;
+                assert_eq!(state, unchanged, "dest={destination} count={count}");
+                assert!(memory.accesses.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn psrlw_exhaustively_shifts_every_word_for_counts_zero_through_fifteen() {
+        assert_eq!(0x8000u16 >> 1, 0x4000);
+        assert_eq!(0xffffu16 >> 1, 0x7fff);
+        assert_eq!(0x8000u16 >> 15, 1);
+        for count in 0..16u8 {
+            let code = [0x66, 0x0f, 0x71, 0xd0, count];
+            let mut memory = Memory::at(&code, 0x1000);
+            let mut state = LongModeState::default();
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            for word in 0..=u16::MAX {
+                state.rip = 0x1000;
+                let bytes = word.to_le_bytes();
+                for lane in 0..8 {
+                    state.sse.as_mut().unwrap().xmm[0][lane * 2..lane * 2 + 2]
+                        .copy_from_slice(&bytes);
+                }
+                step(&mut state, &mut memory, AccessContext::default()).unwrap();
+                let widened = u32::from(word) >> count;
+                let reference = widened as u16;
+                let expected = reference.to_le_bytes();
+                for lane in 0..8 {
+                    assert_eq!(
+                        &state.sse.as_ref().unwrap().xmm[0][lane * 2..lane * 2 + 2],
+                        &expected,
+                        "count={count} word={word:#06x}"
+                    );
+                }
+            }
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn psrlw_stop_and_zero_budget_are_atomic() {
+        let code = [0x66, 0x0f, 0x71, 0xd0, 1];
+        for (budget, stop_rip) in [(1, Some(0x1000)), (0, None)] {
+            let mut memory = Memory::at(&code, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(state, before);
+            assert_eq!(result.instructions_executed, 0);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn psrlw_missing_sse_state_does_not_retire_or_mutate() {
+        let code = [0x66, 0x0f, 0x71, 0xd0, 1];
         let mut memory = Memory::at(&code, 0x1000);
         let mut state = LongModeState::default();
         state.rip = 0x1000;

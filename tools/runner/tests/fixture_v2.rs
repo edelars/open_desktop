@@ -12496,12 +12496,54 @@ fn psllw_literal_fixture_executes_and_keeps_jit_denied() {
     for rejected in [
         "0f71f001",
         "660f71d001",
+        "66400f71f101",
         "660f717101",
         "660f71f0",
         "66480f71f001",
         "66420f71f001",
         "66450f71f001",
         "c5f971f001",
+    ] {
+        let mut invalid = loaded.fixture.clone();
+        invalid.memory[0].initial_bytes_hex = rejected.to_string();
+        invalid.memory[0].length = (rejected.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(invalid.memory[0].length as usize);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + u64::from(invalid.memory[0].length),
+        ));
+        assert!(invalid.to_json().is_err(), "schema admitted {rejected}");
+    }
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn psrlw_literal_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_38_psrlw_imm_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPsrlwImmRegV1
+    );
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PSRLW snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[9],
+        "c848c949ca4acb4bcc4ccd4dce4ecf4f"
+    );
+    for rejected in [
+        "0f71d001",
+        "660f71f001",
+        "66400f71d101",
+        "660f715101",
+        "660f71d0",
+        "66480f71d001",
+        "66420f71d001",
+        "66450f71d001",
+        "c5f971d001",
     ] {
         let mut invalid = loaded.fixture.clone();
         invalid.memory[0].initial_bytes_hex = rejected.to_string();

@@ -5180,3 +5180,13 @@ ModR/M selector and `r/m` selects XMM9. Eight little-endian u16 lanes shift
 left by the unmasked unsigned imm8 count; each result is truncated to 16 bits.
 The local profile assumes SSE2 architectural preconditions and denies JIT and
 native execution.
+
+
+### S2-35.38 local register PSRLW immediate diagnostic profile
+
+`s2_35_38_psrlw_imm_register.case.json` is a handwritten literal XMM9 fixture
+for `s2-long-psrlw-imm-reg-v1`, encoded as `66 41 0F 71 D1 01`. `/2` is the
+ModR/M selector and `r/m` selects XMM9; `/6` is rejected as the sibling PSLLW
+selector. Eight little-endian u16 lanes shift logically right by the unmasked
+unsigned imm8 count; counts >=16 clear every lane. The local profile assumes
+SSE2 architectural preconditions and denies JIT and native execution.

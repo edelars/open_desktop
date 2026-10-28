@@ -429,7 +429,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.34 | Local-only bounded register PACKSSDW XMM diagnostic slice; signed-dword to signed-word saturation, native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.35 | Local-only bounded register PSHUFD XMM diagnostic slice; imm8 dword shuffle, native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.36 | Packed-integer bounded coverage and acceptance inventory; no ISA/profile expansion | S2-34.10, existing S2-35 local evidence |
-| [ ] | S2-35.37 | Local-only bounded register PSLLW immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [x] | S2-35.37 | Local-only bounded register PSLLW immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [x] | S2-35.38 | Local-only bounded register PSRLW immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
@@ -8740,6 +8741,28 @@ found no remaining issues. Other shifts, memory/MMX forms, REX.R/X/W, VEX/EVEX,
 feature gates, exception delivery and physical execution remain excluded.
 S2-34, S2-35, global `S2-35 → S2-34`, and combined Mac mini/SSH acceptance
 remain open.
+
+#### S2-35.38 — local-only bounded register immediate `PSRLW`
+
+The profile `s2-long-psrlw-imm-reg-v1` admits exactly
+`66 [optional REX.B] 0F 71 /2 ib`, ModR/M.mod=3, with XMM0–15. ModR/M.r/m
+selects the destination and `/2` is mandatory; `/6` belongs to PSLLW and is
+rejected by this profile. Each of eight little-endian u16 lanes shifts
+logically right by the unsigned imm8. Counts 0–15 shift and zero-fill; counts
+>=16 clear every lane without masking the count. No lane carry occurs, and
+flags/MXCSR are unchanged. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 remain
+assumptions only.
+
+Local checks cover every word value for counts 0–15 against an independent
+widened reference, all 256 counts on every XMM destination (including the
+0x8000/0xffff sentinels), strict selector/encoding negatives, full-state
+preservation, no data callbacks, and STOP/zero-budget atomicity. The handwritten
+XMM9 fixture exercises interpreter execution with JIT denied. Native denial is
+checked before mapping/process setup; Linux-only guard is compile-only on Darwin.
+Instruction-fetch truncation/page-crossing and complete cross-boundary fetch
+are covered. Other shifts, memory/MMX forms, REX.R/X/W, VEX/EVEX, feature gates,
+exception delivery and physical execution remain excluded. S2-34, S2-35, global
+`S2-35 → S2-34`, and combined Mac mini/SSH acceptance remain open.
 
 
 #### S2-35.33 — local-only bounded register `PACKUSWB`

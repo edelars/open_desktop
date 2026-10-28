@@ -12906,3 +12906,37 @@ ModR/M sequence at 0xffc and the missing imm8 fetch at 0x1000; a complete
 five-byte case confirms a successful fetch across the same boundary.
 Independent Sol review found no remaining findings. S2-34, S2-35 and global
 `S2-35 → S2-34` remain open.
+
+## S2-35.38 — local PSRLW immediate register profile
+
+Implemented the bounded `s2-long-psrlw-imm-reg-v1` interpreter and schema
+profile for `66 [optional REX.B] 0F 71 /2 ib`, ModR/M.mod=3, with XMM0–15 in
+r/m. The immediate is unsigned and unmasked: each of eight independent u16
+lanes shifts logically right for counts 0–15 and clears for counts >=16. Flags
+and MXCSR remain unchanged. The shared decoder keeps the sibling `/6` PSLLW
+operation distinct; strict fixture-schema negatives verify PSRLW rejects `/6`
+and PSLLW rejects `/2`. A literal handwritten XMM9 fixture is included. Both
+profiles remain JIT-denied, and the native runner rejects the new local-only
+profile before mapping or process setup.
+
+Focused checks passed: `cargo test -p od-isa psrlw --offline` (6/6),
+`cargo test -p od-runner --test fixture_v2 psrlw --offline` (1/1), and the
+reciprocal `cargo test -p od-runner --test fixture_v2 psllw --offline` (1/1).
+The interpreter suite exhaustively compares all 65,536 u16 values for every
+count 0–15 to a widened reference; it also covers all 256 counts on all 16 XMM
+destinations, the 0x8000/0xffff sentinels, state preservation, no data-memory
+callbacks, missing SSE state, STOP/zero-budget atomicity, strict encoding,
+and immediate fetch truncation plus full page-crossing fetch. The fixture test
+confirms interpreter execution and JIT denial. Native-denial coverage is
+Linux-only and was compiled, not executed, on Darwin.
+
+`cargo check -p od-x86-runner --tests --offline --target
+x86_64-unknown-linux-gnu`, `cargo fmt --all -- --check`, and
+`cargo check --workspace --all-targets --offline` passed. No JIT/native or
+physical x86 execution was performed. Independent Sol review caught and resolved the shared-decoder selector test
+expectation and bare-REX 40 admission; both interpreter suites and fixture
+suites passed again after correction, and the re-review found no remaining
+findings. S2-35.38 is checked in the plan. S2-34,
+S2-35 and global `S2-35 → S2-34` remain open. See the [plan](../plans/STAGE_2.md#s2-3538--local-only-bounded-register-immediate-psrlw),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-immediate-psrlw-profile--s2-3538),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3538-local-register-psrlw-immediate-diagnostic-profile).
