@@ -556,6 +556,46 @@ instruction integration remain outside this local helper. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36l-finite-binary-comparison)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-36l--finite-binary-comparison-helper).
 
+## S2-36m — finite binary multiplication output and rounding diagnostics
+
+**Статус:** математический finite round/pack и multiplication result helper
+реализованы; локальные проверки и независимые code/docs review завершены.
+Полная приёмка S2-36 и hardware validation остаются открытыми. Этот
+substage расширяет finite multiplication composition до полного результата в
+формате назначения и диагностик `BinaryRoundingResult`. Для ненулевого точного
+результата `tiny` определяется после округления до точности формата назначения
+с неограниченным exponent: он истинен тогда и только тогда, когда модуль этого
+округлённого значения меньше минимального normal. `overflow` истинен только
+когда модуль этого округлённого значения с неограниченным exponent больше
+максимального finite. Знак сохраняется при выборе итогового ограниченного
+результата по режиму округления, а `inexact` описывает точность финального
+результата. Если результат после округления до точности формата с неограниченным
+exponent tiny, исходное точное рациональное значение округляется напрямую в
+единицах subnormal; итогом может быть zero, subnormal или minimum normal.
+Промежуточного normal-rounding нет.
+При точном нуле умножения знак результата равен XOR знаков операндов.
+
+Контракт ограничен локальной математикой finite multiplication. Он не добавляет
+architectural SSE/x87 flags, MXCSR, DAZ/FTZ, операции над NaN/Infinity, полные
+сложение/вычитание, instruction dispatch или приёмку всего S2-36. Проверки
+подтверждают локальный контракт, но не аппаратное поведение или acceptance
+всего этапа.
+
+Проверки автора прошли: `cargo test -p od-isa --offline
+binary_float::tests` (38/38), `cargo test -p od-isa --offline x87::tests`
+(47/47), `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check` и
+`graphify update .`. Graphify сообщил существующее предупреждение парсера для
+`include/open_desktop/host_abi.h`, завершившись с кодом 0. Независимое ревью
+кода Sol medium и документации завершилось без замечаний.
+
+Нормативный контекст терминов и границ формата: Intel SDM Vol. 1, Order
+253665-093US (September 2026), §§4.9.1.4–4.9.1.6, Tables 4-10–4-12
+([официальный Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+Эта ссылка не задаёт взаимно-однозначное соответствие локальных диагностик
+архитектурным exception flags. Приёмочные критерии S2-36 остаются открытыми.
+См. [план S2-36m](../plans/STAGE_2.md#s2-36m--finite-binary-multiplication-output-and-rounding-diagnostics).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

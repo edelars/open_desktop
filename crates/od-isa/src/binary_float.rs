@@ -20,6 +20,62 @@ pub enum BinaryClass {
     SignalingNaN,
 }
 
+/// An encoded result and its mathematical rounding diagnostics.
+///
+/// `overflow` is true when rounding the exact value to the destination
+/// precision with an unbounded exponent produces a magnitude greater than the
+/// destination's maximum finite magnitude. `tiny_after_precision_rounding` is
+/// true when that unbounded-exponent precision-rounded result is nonzero and
+/// has magnitude below the minimum normal magnitude. `inexact` reports loss in
+/// the final bounded encoding, including overflow results. These values are
+/// mathematical diagnostics, not architectural exception flags; they do not
+/// update CPU state or MXCSR.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BinaryRoundingResult<T> {
+    value: T,
+    inexact: bool,
+    overflow: bool,
+    tiny_after_precision_rounding: bool,
+}
+
+impl<T> BinaryRoundingResult<T> {
+    const fn new(
+        value: T,
+        inexact: bool,
+        overflow: bool,
+        tiny_after_precision_rounding: bool,
+    ) -> Self {
+        Self {
+            value,
+            inexact,
+            overflow,
+            tiny_after_precision_rounding,
+        }
+    }
+
+    /// Returns the destination-format encoding produced by the rounding.
+    pub const fn value(&self) -> &T {
+        &self.value
+    }
+
+    /// Returns whether the final bounded encoding lost information.
+    pub const fn inexact(&self) -> bool {
+        self.inexact
+    }
+
+    /// Returns whether unbounded-exponent destination-precision rounding
+    /// exceeds the destination's maximum finite magnitude.
+    pub const fn overflow(&self) -> bool {
+        self.overflow
+    }
+
+    /// Returns whether the nonzero unbounded-exponent destination-precision
+    /// result has magnitude below the destination's minimum normal magnitude.
+    pub const fn tiny_after_precision_rounding(&self) -> bool {
+        self.tiny_after_precision_rounding
+    }
+}
+
 /// An immutable binary32 encoding.
 ///
 /// Equality is raw-bit identity, not guest floating-point equality.
@@ -240,6 +296,70 @@ impl Binary32 {
                 mode,
             )
         }
+    }
+
+    /// Rounds `(-1)^sign * (quotient + remainder/denominator) * 2^(exponent-63)` to binary32.
+    ///
+    /// Returns `None` for a zero denominator, out-of-range remainder, or a
+    /// nonzero quotient that is not normalized. Exact zero is accepted and
+    /// retains `sign`. The diagnostics describe the final bounded encoding,
+    /// except `tiny_after_precision_rounding`, which measures the unbounded
+    /// destination-precision result. No architectural state is updated.
+    pub fn round_pack_quotient(
+        sign: bool,
+        exponent: i32,
+        quotient: u64,
+        remainder: u64,
+        denominator: u64,
+        mode: RationalRoundingMode,
+    ) -> Option<BinaryRoundingResult<Self>> {
+        let result = round_pack_quotient_bits(
+            sign,
+            exponent,
+            quotient,
+            remainder,
+            denominator,
+            mode,
+            24,
+            -126,
+            127,
+            31,
+            127,
+            0x007f_ffff,
+            0x7f80_0000,
+            0x7f7f_ffff,
+        )?;
+        Some(BinaryRoundingResult::new(
+            Self::from_bits(result.value as u32),
+            result.inexact,
+            result.overflow,
+            result.tiny_after_precision_rounding,
+        ))
+    }
+
+    /// Multiplies finite values and reports bounded binary32 rounding diagnostics.
+    ///
+    /// A zero input returns exact signed zero using the XOR sign. Nonzero
+    /// inputs are multiplied exactly and rounded once; overflow uses the
+    /// specified mode-dependent infinity or maximum-finite encoding.
+    pub fn multiply_finite_result(
+        lhs: BinaryFinite,
+        rhs: BinaryFinite,
+        mode: RationalRoundingMode,
+    ) -> BinaryRoundingResult<Self> {
+        let sign = lhs.sign ^ rhs.sign;
+        if lhs.significand == 0 || rhs.significand == 0 {
+            return BinaryRoundingResult::new(
+                Self::from_bits(u32::from(sign) << 31),
+                false,
+                false,
+                false,
+            );
+        }
+        let (sign, exponent, quotient, remainder, denominator) =
+            finite_product_quotient(lhs, rhs).expect("normalized finite product bridge");
+        Self::round_pack_quotient(sign, exponent, quotient, remainder, denominator, mode)
+            .expect("normalized finite product quotient")
     }
 
     /// Adds two finite values and rounds once to binary32 precision.
@@ -507,6 +627,70 @@ impl Binary64 {
                 mode,
             )
         }
+    }
+
+    /// Rounds `(-1)^sign * (quotient + remainder/denominator) * 2^(exponent-63)` to binary64.
+    ///
+    /// Returns `None` for a zero denominator, out-of-range remainder, or a
+    /// nonzero quotient that is not normalized. Exact zero is accepted and
+    /// retains `sign`. The diagnostics describe the final bounded encoding,
+    /// except `tiny_after_precision_rounding`, which measures the unbounded
+    /// destination-precision result. No architectural state is updated.
+    pub fn round_pack_quotient(
+        sign: bool,
+        exponent: i32,
+        quotient: u64,
+        remainder: u64,
+        denominator: u64,
+        mode: RationalRoundingMode,
+    ) -> Option<BinaryRoundingResult<Self>> {
+        let result = round_pack_quotient_bits(
+            sign,
+            exponent,
+            quotient,
+            remainder,
+            denominator,
+            mode,
+            53,
+            -1022,
+            1023,
+            63,
+            1023,
+            0x000f_ffff_ffff_ffff,
+            0x7ff0_0000_0000_0000,
+            0x7fef_ffff_ffff_ffff,
+        )?;
+        Some(BinaryRoundingResult::new(
+            Self::from_bits(result.value),
+            result.inexact,
+            result.overflow,
+            result.tiny_after_precision_rounding,
+        ))
+    }
+
+    /// Multiplies finite values and reports bounded binary64 rounding diagnostics.
+    ///
+    /// A zero input returns exact signed zero using the XOR sign. Nonzero
+    /// inputs are multiplied exactly and rounded once; overflow uses the
+    /// specified mode-dependent infinity or maximum-finite encoding.
+    pub fn multiply_finite_result(
+        lhs: BinaryFinite,
+        rhs: BinaryFinite,
+        mode: RationalRoundingMode,
+    ) -> BinaryRoundingResult<Self> {
+        let sign = lhs.sign ^ rhs.sign;
+        if lhs.significand == 0 || rhs.significand == 0 {
+            return BinaryRoundingResult::new(
+                Self::from_bits(u64::from(sign) << 63),
+                false,
+                false,
+                false,
+            );
+        }
+        let (sign, exponent, quotient, remainder, denominator) =
+            finite_product_quotient(lhs, rhs).expect("normalized finite product bridge");
+        Self::round_pack_quotient(sign, exponent, quotient, remainder, denominator, mode)
+            .expect("normalized finite product quotient")
     }
 
     /// Adds two finite values and rounds once to binary64 precision.
@@ -912,6 +1096,108 @@ fn round_subnormal_quotient(
         return None;
     }
     Some((magnitude as u64, inexact))
+}
+
+fn round_pack_quotient_bits(
+    sign: bool,
+    exponent: i32,
+    quotient: u64,
+    remainder: u64,
+    denominator: u64,
+    mode: RationalRoundingMode,
+    precision: u32,
+    minimum_normal_exponent: i32,
+    maximum_normal_exponent: i32,
+    sign_shift: u32,
+    exponent_bias: i32,
+    fraction_mask: u64,
+    infinity_bits: u64,
+    maximum_finite_bits: u64,
+) -> Option<BinaryRoundingResult<u64>> {
+    if denominator == 0 || remainder >= denominator {
+        return None;
+    }
+    if quotient == 0 {
+        if remainder != 0 {
+            return None;
+        }
+        return Some(BinaryRoundingResult::new(
+            u64::from(sign) << sign_shift,
+            false,
+            false,
+            false,
+        ));
+    }
+    if quotient < (1_u64 << 63) {
+        return None;
+    }
+
+    let (magnitude, rounded_inexact) =
+        round_quotient_to_precision(sign, quotient, remainder, denominator, precision, mode)?;
+    let precision_limit = 1_u128 << precision;
+    if magnitude < (precision_limit >> 1) || magnitude > precision_limit {
+        return None;
+    }
+
+    let carried = magnitude == precision_limit;
+    let rounded_exponent = i64::from(exponent) + i64::from(carried);
+    let tiny_after_precision_rounding = rounded_exponent < i64::from(minimum_normal_exponent);
+    let overflow = rounded_exponent > i64::from(maximum_normal_exponent);
+    let sign_bits = u64::from(sign) << sign_shift;
+
+    if overflow {
+        let to_infinity = match mode {
+            RationalRoundingMode::NearestTiesEven => true,
+            RationalRoundingMode::TowardZero => false,
+            RationalRoundingMode::TowardPositive => !sign,
+            RationalRoundingMode::TowardNegative => sign,
+        };
+        return Some(BinaryRoundingResult::new(
+            sign_bits
+                | if to_infinity {
+                    infinity_bits
+                } else {
+                    maximum_finite_bits
+                },
+            true,
+            true,
+            tiny_after_precision_rounding,
+        ));
+    }
+
+    if tiny_after_precision_rounding {
+        let (magnitude, inexact) = round_subnormal_quotient(
+            sign,
+            exponent,
+            quotient,
+            remainder,
+            denominator,
+            precision,
+            minimum_normal_exponent,
+            minimum_normal_exponent - (precision as i32 - 1),
+            mode,
+        )?;
+        return Some(BinaryRoundingResult::new(
+            sign_bits | magnitude,
+            inexact,
+            false,
+            true,
+        ));
+    }
+
+    let significand = if carried {
+        precision_limit >> 1
+    } else {
+        magnitude
+    } as u64;
+    let biased_exponent = u64::try_from(rounded_exponent + i64::from(exponent_bias)).ok()?;
+    let bits = sign_bits | (biased_exponent << (precision - 1)) | (significand & fraction_mask);
+    Some(BinaryRoundingResult::new(
+        bits,
+        rounded_inexact,
+        false,
+        false,
+    ))
 }
 
 #[cfg(test)]
@@ -3792,5 +4078,304 @@ mod tests {
             ),
             Some((Binary64::from_bits(0x000f_ffff_ffff_ffff), false)),
         );
+    }
+
+    #[test]
+    fn bounded_quotient_rounding_covers_subnormal_precision_and_diagnostics() {
+        use RationalRoundingMode::{NearestTiesEven as Nearest, TowardPositive};
+
+        let exact_min_sub32 =
+            Binary32::round_pack_quotient(false, -149, 1 << 63, 0, 1, Nearest).unwrap();
+        assert_eq!(*exact_min_sub32.value(), Binary32::from_bits(1));
+        assert!(!exact_min_sub32.inexact());
+        assert!(exact_min_sub32.tiny_after_precision_rounding());
+        let halfway_min_sub32 =
+            Binary32::round_pack_quotient(false, -150, 1 << 63, 0, 1, Nearest).unwrap();
+        assert_eq!(*halfway_min_sub32.value(), Binary32::from_bits(0));
+        assert!(halfway_min_sub32.inexact());
+        let away_min_sub32 =
+            Binary32::round_pack_quotient(false, -150, 1 << 63, 0, 1, TowardPositive).unwrap();
+        assert_eq!(*away_min_sub32.value(), Binary32::from_bits(1));
+        assert!(away_min_sub32.inexact());
+
+        let exact_min_sub64 =
+            Binary64::round_pack_quotient(false, -1074, 1 << 63, 0, 1, Nearest).unwrap();
+        assert_eq!(*exact_min_sub64.value(), Binary64::from_bits(1));
+        assert!(!exact_min_sub64.inexact());
+        let halfway_min_sub64 =
+            Binary64::round_pack_quotient(false, -1075, 1 << 63, 0, 1, Nearest).unwrap();
+        assert_eq!(*halfway_min_sub64.value(), Binary64::from_bits(0));
+        assert!(halfway_min_sub64.inexact());
+        let away_min_sub64 =
+            Binary64::round_pack_quotient(false, -1075, 1 << 63, 0, 1, TowardPositive).unwrap();
+        assert_eq!(*away_min_sub64.value(), Binary64::from_bits(1));
+        assert!(away_min_sub64.inexact());
+
+        // The exact value is halfway between max-subnormal and min-normal. Its
+        // unbounded-precision result remains tiny, while direct subnormal rounding
+        // produces the minimum normal encoding (no intermediate double rounding).
+        let rounded_min32 =
+            Binary32::round_pack_quotient(false, -127, 0xffff_ff00_0000_0000, 0, 1, Nearest)
+                .unwrap();
+        assert_eq!(*rounded_min32.value(), Binary32::from_bits(0x0080_0000));
+        assert!(rounded_min32.inexact());
+        assert!(rounded_min32.tiny_after_precision_rounding());
+        let precision_rounds_min32 = Binary32::round_pack_quotient(
+            false,
+            -127,
+            0xffff_ff00_0000_0000 + (1 << 39),
+            0,
+            1,
+            Nearest,
+        )
+        .unwrap();
+        assert_eq!(
+            *precision_rounds_min32.value(),
+            Binary32::from_bits(0x0080_0000)
+        );
+        assert!(precision_rounds_min32.inexact());
+        assert!(!precision_rounds_min32.tiny_after_precision_rounding());
+
+        let rounded_min64 =
+            Binary64::round_pack_quotient(false, -1023, 0xffff_ffff_ffff_f800, 0, 1, Nearest)
+                .unwrap();
+        assert_eq!(
+            *rounded_min64.value(),
+            Binary64::from_bits(0x0010_0000_0000_0000)
+        );
+        assert!(rounded_min64.tiny_after_precision_rounding());
+        let precision_rounds_min64 = Binary64::round_pack_quotient(
+            false,
+            -1023,
+            0xffff_ffff_ffff_f800 + (1 << 10),
+            0,
+            1,
+            Nearest,
+        )
+        .unwrap();
+        assert_eq!(
+            *precision_rounds_min64.value(),
+            Binary64::from_bits(0x0010_0000_0000_0000)
+        );
+        assert!(!precision_rounds_min64.tiny_after_precision_rounding());
+    }
+
+    #[test]
+    fn bounded_quotient_rounding_handles_overflow_zero_and_invalid_decompositions() {
+        use RationalRoundingMode::{NearestTiesEven, TowardNegative, TowardPositive, TowardZero};
+
+        for sign in [false, true] {
+            let zero32 =
+                Binary32::round_pack_quotient(sign, i32::MIN, 0, 0, 1, NearestTiesEven).unwrap();
+            assert_eq!(*zero32.value(), Binary32::from_bits(u32::from(sign) << 31));
+            assert!(
+                !zero32.inexact() && !zero32.overflow() && !zero32.tiny_after_precision_rounding()
+            );
+            let zero64 =
+                Binary64::round_pack_quotient(sign, i32::MAX, 0, 0, 1, NearestTiesEven).unwrap();
+            assert_eq!(*zero64.value(), Binary64::from_bits(u64::from(sign) << 63));
+        }
+
+        assert!(Binary32::round_pack_quotient(false, 0, 1 << 63, 0, 0, NearestTiesEven).is_none());
+        assert!(Binary32::round_pack_quotient(false, 0, 1 << 63, 1, 1, NearestTiesEven).is_none());
+        assert!(
+            Binary32::round_pack_quotient(false, 0, (1 << 63) - 1, 0, 1, NearestTiesEven).is_none()
+        );
+        assert!(Binary32::round_pack_quotient(false, 0, 0, 1, 2, NearestTiesEven).is_none());
+        assert!(Binary64::round_pack_quotient(false, 0, 0, 0, 0, NearestTiesEven).is_none());
+
+        let plus_exact_overflow =
+            Binary32::round_pack_quotient(false, 128, 1 << 63, 0, 1, NearestTiesEven).unwrap();
+        assert_eq!(
+            *plus_exact_overflow.value(),
+            Binary32::from_bits(0x7f80_0000)
+        );
+        assert!(plus_exact_overflow.overflow() && plus_exact_overflow.inexact());
+        let minus_exact_overflow =
+            Binary64::round_pack_quotient(true, 1024, 1 << 63, 0, 1, TowardZero).unwrap();
+        assert_eq!(
+            *minus_exact_overflow.value(),
+            Binary64::from_bits(0xffef_ffff_ffff_ffff)
+        );
+        assert!(minus_exact_overflow.overflow() && minus_exact_overflow.inexact());
+
+        for (mode, positive_bits, negative_bits) in [
+            (NearestTiesEven, 0x7f80_0000, 0xff80_0000),
+            (TowardZero, 0x7f7f_ffff, 0xff7f_ffff),
+            (TowardPositive, 0x7f80_0000, 0xff7f_ffff),
+            (TowardNegative, 0x7f7f_ffff, 0xff80_0000),
+        ] {
+            for sign in [false, true] {
+                let result =
+                    Binary32::round_pack_quotient(sign, 127, u64::MAX, 0, 1, mode).unwrap();
+                assert_eq!(
+                    result.value().to_bits(),
+                    if sign { negative_bits } else { positive_bits }
+                );
+                assert!(result.inexact());
+                assert_eq!(
+                    result.overflow(),
+                    mode != TowardZero
+                        && match mode {
+                            NearestTiesEven => true,
+                            TowardPositive => !sign,
+                            TowardNegative => sign,
+                            TowardZero => false,
+                        }
+                );
+            }
+        }
+
+        // A value just above max-finite rounds down under toward-zero and the
+        // directed mode that points inward; its unbounded result does not carry.
+        for (sign, mode, expected32) in [
+            (false, TowardZero, 0x7f7f_ffff),
+            (false, TowardNegative, 0x7f7f_ffff),
+            (true, TowardZero, 0xff7f_ffff),
+            (true, TowardPositive, 0xff7f_ffff),
+        ] {
+            let result = Binary32::round_pack_quotient(sign, 127, u64::MAX, 0, 1, mode).unwrap();
+            assert_eq!(result.value().to_bits(), expected32);
+            assert!(!result.overflow());
+            assert!(result.inexact());
+        }
+        let extreme_tiny =
+            Binary64::round_pack_quotient(false, i32::MIN, 1 << 63, 0, 1, NearestTiesEven).unwrap();
+        assert_eq!(*extreme_tiny.value(), Binary64::from_bits(0));
+        assert!(extreme_tiny.tiny_after_precision_rounding() && extreme_tiny.inexact());
+        let extreme_overflow =
+            Binary64::round_pack_quotient(false, i32::MAX, 1 << 63, 0, 1, NearestTiesEven).unwrap();
+        assert_eq!(
+            *extreme_overflow.value(),
+            Binary64::from_bits(0x7ff0_0000_0000_0000)
+        );
+        assert!(extreme_overflow.overflow() && extreme_overflow.inexact());
+    }
+
+    #[test]
+    fn finite_multiplication_result_preserves_zero_sign_and_reports_range() {
+        use RationalRoundingMode::{NearestTiesEven as Nearest, TowardZero};
+
+        let zero32 = Binary32::from_bits(0).normalize_finite().unwrap();
+        let negative_zero32 = Binary32::from_bits(0x8000_0000).normalize_finite().unwrap();
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        for (lhs, rhs, expected) in [
+            (zero32, zero32, 0),
+            (negative_zero32, zero32, 0x8000_0000),
+            (zero32, negative_zero32, 0x8000_0000),
+            (negative_zero32, negative_zero32, 0),
+        ] {
+            let result = Binary32::multiply_finite_result(lhs, rhs, Nearest);
+            assert_eq!(*result.value(), Binary32::from_bits(expected));
+            assert!(
+                !result.inexact() && !result.overflow() && !result.tiny_after_precision_rounding()
+            );
+        }
+        let min_subnormal32 = Binary32::from_bits(1).normalize_finite().unwrap();
+        let negative_min_subnormal32 = Binary32::from_bits(0x8000_0001).normalize_finite().unwrap();
+        for (lhs, rhs, expected) in [
+            (zero32, min_subnormal32, 0),
+            (min_subnormal32, zero32, 0),
+            (negative_zero32, min_subnormal32, 0x8000_0000),
+            (min_subnormal32, negative_zero32, 0x8000_0000),
+            (zero32, negative_min_subnormal32, 0x8000_0000),
+            (negative_min_subnormal32, zero32, 0x8000_0000),
+            (negative_zero32, negative_min_subnormal32, 0),
+            (negative_min_subnormal32, negative_zero32, 0),
+        ] {
+            let result = Binary32::multiply_finite_result(lhs, rhs, Nearest);
+            assert_eq!(*result.value(), Binary32::from_bits(expected));
+            assert!(
+                !result.inexact() && !result.overflow() && !result.tiny_after_precision_rounding()
+            );
+        }
+
+        let zero64 = Binary64::from_bits(0).normalize_finite().unwrap();
+        let negative_zero64 = Binary64::from_bits(0x8000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        for (lhs, rhs, expected) in [
+            (zero64, zero64, 0),
+            (negative_zero64, zero64, 0x8000_0000_0000_0000),
+            (zero64, negative_zero64, 0x8000_0000_0000_0000),
+            (negative_zero64, negative_zero64, 0),
+        ] {
+            let result = Binary64::multiply_finite_result(lhs, rhs, Nearest);
+            assert_eq!(*result.value(), Binary64::from_bits(expected));
+            assert!(
+                !result.inexact() && !result.overflow() && !result.tiny_after_precision_rounding()
+            );
+        }
+        let min_subnormal64 = Binary64::from_bits(1).normalize_finite().unwrap();
+        let negative_min_subnormal64 = Binary64::from_bits(0x8000_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        for (lhs, rhs, expected) in [
+            (zero64, min_subnormal64, 0),
+            (min_subnormal64, zero64, 0),
+            (negative_zero64, min_subnormal64, 0x8000_0000_0000_0000),
+            (min_subnormal64, negative_zero64, 0x8000_0000_0000_0000),
+            (zero64, negative_min_subnormal64, 0x8000_0000_0000_0000),
+            (negative_min_subnormal64, zero64, 0x8000_0000_0000_0000),
+            (negative_zero64, negative_min_subnormal64, 0),
+            (negative_min_subnormal64, negative_zero64, 0),
+        ] {
+            let result = Binary64::multiply_finite_result(lhs, rhs, Nearest);
+            assert_eq!(*result.value(), Binary64::from_bits(expected));
+            assert!(
+                !result.inexact() && !result.overflow() && !result.tiny_after_precision_rounding()
+            );
+        }
+
+        let min_normal32 = Binary32::from_bits(0x0080_0000).normalize_finite().unwrap();
+        let min_subnormal_scale32 = Binary32::from_bits(0x3400_0000).normalize_finite().unwrap();
+        let exact_min_subnormal32 =
+            Binary32::multiply_finite_result(min_normal32, min_subnormal_scale32, Nearest);
+        assert_eq!(*exact_min_subnormal32.value(), Binary32::from_bits(1));
+        assert!(!exact_min_subnormal32.inexact() && !exact_min_subnormal32.overflow());
+        assert!(exact_min_subnormal32.tiny_after_precision_rounding());
+
+        let min_normal64 = Binary64::from_bits(0x0010_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let min_subnormal_scale64 = Binary64::from_bits(0x3cb0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let exact_min_subnormal64 =
+            Binary64::multiply_finite_result(min_normal64, min_subnormal_scale64, Nearest);
+        assert_eq!(*exact_min_subnormal64.value(), Binary64::from_bits(1));
+        assert!(!exact_min_subnormal64.inexact() && !exact_min_subnormal64.overflow());
+        assert!(exact_min_subnormal64.tiny_after_precision_rounding());
+
+        let max32 = Binary32::from_bits(0x7f7f_ffff).normalize_finite().unwrap();
+        let max32_result = Binary32::multiply_finite_result(max32, one32, Nearest);
+        assert_eq!(*max32_result.value(), Binary32::from_bits(0x7f7f_ffff));
+        assert!(!max32_result.inexact() && !max32_result.overflow());
+        let two32 = Binary32::from_bits(0x4000_0000).normalize_finite().unwrap();
+        let overflow32 = Binary32::multiply_finite_result(max32, two32, TowardZero);
+        assert_eq!(*overflow32.value(), Binary32::from_bits(0x7f7f_ffff));
+        assert!(overflow32.overflow() && overflow32.inexact());
+
+        let max64 = Binary64::from_bits(0x7fef_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        let max64_result = Binary64::multiply_finite_result(max64, one64, Nearest);
+        assert_eq!(
+            *max64_result.value(),
+            Binary64::from_bits(0x7fef_ffff_ffff_ffff)
+        );
+        assert!(!max64_result.inexact() && !max64_result.overflow());
+        let two64 = Binary64::from_bits(0x4000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let overflow64 = Binary64::multiply_finite_result(max64, two64, TowardZero);
+        assert_eq!(
+            *overflow64.value(),
+            Binary64::from_bits(0x7fef_ffff_ffff_ffff)
+        );
+        assert!(overflow64.overflow() && overflow64.inexact());
     }
 }

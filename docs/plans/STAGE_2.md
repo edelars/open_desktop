@@ -466,6 +466,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36j | Compose bounded aligned finite binary32/binary64 addition through one rounding | S2-36d–36h; independent review |
 | [x] | S2-36k | Compose bounded aligned finite binary32/binary64 subtraction through one rounding | S2-36j; independent review |
 | [x] | S2-36l | Compare finite normalized binary32/binary64 values | S2-36a; independent review |
+| [x] | S2-36m | Complete finite binary32/binary64 multiplication output with rounding diagnostics | S2-36i; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5176,6 +5177,46 @@ passing. Independent Sol code review completed clean, with no findings. NaN/infi
 semantics, SSE comparison predicates and lane/EFLAGS effects, DAZ/MXCSR,
 x87, and instruction integration remain outside this helper.
 See the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36l--finite-binary-comparison).
+
+#### S2-36m — finite binary multiplication output and rounding diagnostics
+
+Extend the finite multiplication composition with a complete destination-format
+output path and `BinaryRoundingResult` diagnostics. For a nonzero exact finite
+result, determine tininess after rounding the exact value to the destination
+precision with an unbounded exponent: `tiny` is true exactly when that rounded
+value's magnitude is below the destination's minimum normal magnitude.
+`overflow` is true only when the magnitude of the same rounded,
+unbounded-exponent value exceeds the destination's maximum finite magnitude.
+Retain the sign when selecting the final bounded output according to the
+requested rounding mode, and report inexactness for the final result. When the
+destination-precision result with an unbounded exponent is tiny, round the
+original exact rational directly in subnormal units; this can produce zero, a
+subnormal, or the minimum normal.
+Do not round a normal-precision intermediate a second time.
+For multiplication whose exact mathematical result is zero, preserve the XOR of
+the operand signs in the zero output.
+
+Keep this as a local finite-mathematics contract. It does not add architectural
+SSE/x87 flags, MXCSR, DAZ/FTZ, NaN or infinity operations, full addition or
+subtraction, instruction dispatch, or the full S2-36 acceptance. Literal checks
+cover destination precision and subnormal boundaries, rounding-mode-dependent
+bounded outputs and overflow, post-rounding tiny/inexact diagnostics, direct
+subnormal rounding, and signed-zero multiplication by zeros and nonzero
+subnormals. Author checks passed: `cargo test -p od-isa --offline
+binary_float::tests` (38/38), `cargo test -p od-isa --offline x87::tests`
+(47/47), `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check`, and
+`graphify update .`. Graphify emitted its existing syntax-extractor warning for
+`include/open_desktop/host_abi.h` and exited 0. Independent Sol medium code
+review and documentation review completed clean. See the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36m--finite-binary-multiplication-output-and-rounding-diagnostics).
+S2-36 acceptance and hardware validation remain open.
+
+For terminology and destination-format boundary context, consult Intel SDM
+Vol. 1, Order 253665-093US (September 2026), §§4.9.1.4–4.9.1.6 and Tables
+4-10–4-12 ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+This reference does not establish a one-to-one mapping from these local
+diagnostics to architectural exception flags.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 
