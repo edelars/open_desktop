@@ -1124,6 +1124,47 @@ fn movups_profile_admits_both_directions_and_rejects_out_of_profile_forms() {
 }
 
 #[test]
+fn movaps_register_profile_is_distinct_and_rejects_neighboring_encodings() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_11_movaps_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongMovapsRegV1);
+    for bytes in [
+        "0f2801",       // memory
+        "0f29c1",       // reverse-direction MOVAPS
+        "660f28c1",     // MOVAPD
+        "f20f28c1",     // F2
+        "f30f28c1",     // F3
+        "640f28c1",     // segment override
+        "670f28c1",     // address override
+        "f00f28c1",     // LOCK
+        "40410f28c1",   // duplicate REX
+        "480f28c1",     // REX.W
+        "420f28c1",     // REX.X
+        "0f10c1",       // MOVUPS
+        "c5f828c1",     // VEX
+        "62f17c0828c1", // EVEX
+        "400f28",       // truncated
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(
+            rejected.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
 fn movups_memory_load_profile_is_separate_and_exactly_bounds_rax_source() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_4_movups_memory_load_rax.case.json"

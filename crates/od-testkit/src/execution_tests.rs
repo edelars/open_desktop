@@ -14343,6 +14343,46 @@ fn local_movups_register_copies_all_128_raw_bits_and_preserves_non_sse_state() {
 }
 
 #[test]
+fn local_movaps_register_fixture_copies_all_raw_bytes_and_preserves_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_11_movaps_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, before.rip + 4);
+    assert_eq!(
+        state.sse.as_ref().unwrap().xmm[8],
+        before.sse.as_ref().unwrap().xmm[9]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().xmm[9],
+        before.sse.as_ref().unwrap().xmm[9]
+    );
+    assert_eq!(
+        state.sse.as_ref().unwrap().mxcsr,
+        before.sse.as_ref().unwrap().mxcsr
+    );
+    assert_eq!(state.x87, before.x87);
+    assert_eq!(state.gpr, before.gpr);
+    assert_eq!(state.rflags, before.rflags);
+}
+
+#[test]
 fn local_psubusw_register_uses_literal_lanes_and_preserves_side_state() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_35_9_psubusw_register.case.json"

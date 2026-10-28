@@ -9625,3 +9625,10 @@ availability, CR0.EM=0, CR0.TS=0, and CR4.OSFXSR=1 are diagnostic preconditions;
 this profile does not model those gates or `#UD/#NM` delivery. JIT/native
 admission and physical execution remain unsupported. See the
 [S2-35.51 plan](../plans/STAGE_2.md#s2-3551--local-only-bounded-register-por).
+
+
+## Local register-only MOVAPS profile — S2-34.11
+
+The exact diagnostic profile `s2-long-movaps-reg-v1` admits long-mode `[one optional REX.R/B] 0F 28 /r` only when ModR/M.mod=3. ModR/M.reg is the XMM destination and r/m is the source; REX.R and REX.B independently select XMM8–XMM15. The interpreter copies all 128 raw source bits, including arbitrary floating-point bit patterns, and changes no flags, MXCSR, x87, GPRs, or other XMM registers. Alias/self-copy is supported; execution performs no data-memory access.
+
+Memory, reverse-direction `0F 29`, MOVUPS `0F 10`, mandatory-66 MOVAPD, F2/F3, segment/address/LOCK prefixes, duplicate REX, REX.W/X, VEX/EVEX, and incomplete instruction fetches are outside the profile. SSE preconditions (CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1) are assumptions; missing local SSE state refuses without commit. Alignment and memory fault semantics, real #UD/#NM gates, JIT/native execution, and physical execution are not modeled. This does not imply acceptance of parent S2-34 or coverage of MOVUPS/MOVAPD. See the [S2-34.11 plan](../plans/STAGE_2.md#s2-3411--local-only-register-movaps).

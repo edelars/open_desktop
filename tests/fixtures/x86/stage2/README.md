@@ -5291,3 +5291,8 @@ assumes SSE2 preconditions and denies JIT and native execution.
 mandatory `66` selects XMM/SSE2; REX.R and REX.B independently select XMM8 and
 XMM9. The destination computes `~old_DEST & SRC` over all 128 bits. This local
 profile assumes SSE2 preconditions and denies JIT and native execution.
+
+
+### S2-34.11 local register MOVAPS diagnostic profile
+
+`s2_34_11_movaps_register.case.json` is a handwritten schema-v2 XMM8/XMM9 fixture for `s2-long-movaps-reg-v1`, encoded as `45 0F 28 C1` (`MOVAPS XMM8, XMM9`). Its literal XMM9 source is `909192939495969798999a9b9c9d9e9f`; the interpreter copies those 16 raw bytes to XMM8. The local profile assumes SSE preconditions and is denied by JIT and native admission. This fixture adds no MOVUPS or MOVAPD coverage and does not represent parent S2-34 acceptance.
