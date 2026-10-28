@@ -5386,5 +5386,6 @@ disp32 no-base addressing. The no-base encodings also set REX.B and demonstrate
 that it is ignored; SIB.index=4 means no index when REX.X=0 and R12 when REX.X=1.
 Raw payloads and store canaries are checked by the CLI runner. Testkit checks
 exact encoded SIB classification and rejects the same bytes when assigned to
-older `[RAX]`, base, RIP-relative, or MOVUPS profiles. JIT/native admission is
-denied; physical status remains `not_run`.
+older `[RAX]`, base, or RIP-relative MOVUPD profiles. MOVUPS retains its own
+SIB profile in S2-34.6c; this mandatory-66 MOVUPD profile does not alter it.
+JIT/native admission is denied; physical status remains `not_run`.

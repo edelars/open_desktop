@@ -13551,7 +13551,8 @@ Implemented the local-only `s2-long-movupd-mem-sib-v1` profile for mandatory-66
 MOVUPD memory load/store with SIB and ModR/M.mod=00/01/10. The decoder reuses
 `rm_operand`/`MemoryOperand` and the established 16-byte execution path. Schema
 validation checks raw ModR/M.r/m and SIB presence directly, preserving strict
-older `[RAX]`, base, RIP and MOVUPS profile boundaries. SIB scales and regular /
+older `[RAX]`, base, and RIP MOVUPD profile boundaries; MOVUPS retains its
+separate SIB profile S2-34.6c, unchanged here. SIB scales and regular /
 extended bases and indexes are supported; index=4 is absent unless REX.X selects
 R12. mod=00/base=5 uses signed disp32 no-base addressing regardless of REX.B.
 
