@@ -10,9 +10,11 @@ slice не означает завершение этапа.
 Пользователь уточнил целевой профиль Ubuntu как Generic `amd64`. Для ABI/ISA
 floor принята нормативная интерпретация x86-64 psABI baseline (x86-64-v1);
 x86-64-v2/v3/v4 не входят в цель. Это не является принятием полного
-CPU/CPUID/MSR/OS boot profile. Конкретные synthetic vendor/family/model,
-CPUID mask и MSR allowlist остаются кандидатами до выбора конкретного CPU и
-сверки его ветвей с exact-image evidence.
+CPU/CPUID/MSR/OS boot profile. После exact-image source/binary analysis выбран
+synthetic reference CPU target `od-x86-64-v1-neutral-v0.1`, описанный в
+[CPU contract](../specs/CPU_CONTRACT.md#ubuntu-generic-amd64-od-x86-64-v1-neutral-v01).
+Это спецификация, а не реализация или подтверждение загрузки. Полный MSR
+allowlist, initial state и runtime branch manifest ещё открыты.
 
 Доказательства разделены на нормативный floor, kernel config requirements,
 upstream source reachability, exact Ubuntu source/binary и observed execution.
@@ -24,7 +26,9 @@ Linux boot и C/D/System остаются открытыми. На 28 октяб
 `startup_64`/`verify_cpu`, FPU и CPUID paths сопоставлены с байтами образа и
 source lines. The main kernel reaches `verify_cpu` after the direct64 prefix;
 compressed 32-bit startup's separate call is bypassed. Vendor-specific early
-branches make the still-unfrozen CPU identity and MSR contract material.
+branches informed selection of the synthetic reference target now recorded in
+the CPU contract; its runtime implementation and complete MSR/entry manifest
+remain open.
 Runtime choice of alternatives, PE signature, frozen CPU/machine manifest and
 guest boot remain unchecked. Подробности
 и ограничения:

@@ -134,17 +134,20 @@ x86-64-v2/v3/v4 не принимаются. Ubuntu описывает обыч�
 `amd64v3`; psABI задаёт baseline и кумулятивные уровни v2–v4. См. прямые
 источники: [Ubuntu supported architectures and baselines](https://ubuntu.com/project/docs/how-ubuntu-is-made/concepts/supported-architectures/)
 и [upstream x86-64 psABI, Micro-Architecture Levels](https://gitlab.com/x86-psABIs/x86-64-ABI/-/blob/master/x86-64-ABI/low-level-sys-info.tex).
-Это решение ограничено ABI/ISA floor. Оно не принимает целостный CPU, CPUID,
-MSR или OS boot profile. В частности, предложенные в архитектурном анализе
-synthetic vendor/family/model/stepping, CPUID mask и MSR allowlist — только
-candidates; они остаются unresolved до exact-source/binary gate.
+Сам floor ограничен ABI/ISA. После exact-source/binary mapping выбран
+synthetic reference CPU target `od-x86-64-v1-neutral-v0.1`, подробно заданный
+в [CPU contract](../specs/CPU_CONTRACT.md#ubuntu-generic-amd64-od-x86-64-v1-neutral-v01).
+Он закрепляет project vendor/family/model/stepping и CPUID policy для будущей
+реализации; это не идентичность существующего физического CPU и не полный
+runtime contract. Полный MSR allowlist, entry state, runtime alternatives,
+initramfs и критерий загрузки остаются незакрытыми.
 
 | Уровень доказательств | Текущий статус | Чего он не доказывает |
 |---|---|---|
 | Нормативный ABI/ISA floor | Generic amd64; baseline x86-64 psABI (v1), без v2/v3/v4 | Полный набор ISA форм и system semantics выбранной ОС |
 | Kernel config requirements | Для exact buildinfo зафиксированы required capabilities из таблицы выше | Что каждая capability обязательно включена в CPUID mask либо исполняется каждым boot path |
 | Upstream source reachability | Сопоставлены upstream v7.0 paths и Ubuntu source delta; см. audit ниже | Что конкретные ветви включены/достижимы в точном binary и выбранной конфигурации |
-| Exact Ubuntu source/binary | Exact kernel/source files подтверждены подписанным snapshot; распакованный kernel ELF совпал по 38 allocated sections с ELF из dbgsym того же build ID. Direct64 prefix, `startup_64`, early `verify_cpu`, CPUID, FPU init/save/restore и alternatives сопоставлены с source paths/lines | Compiled alternatives не означают, что ветка выполнялась; выбранные CPU identity/CPUID mask не закреплены |
+| Exact Ubuntu source/binary | Exact kernel/source files подтверждены подписанным snapshot; распакованный kernel ELF совпал по 38 allocated sections с ELF из dbgsym того же build ID. Direct64 prefix, `startup_64`, early `verify_cpu`, CPUID, FPU init/save/restore и alternatives сопоставлены с source paths/lines | Compiled alternatives не означают, что ветка выполнялась; выбранный target пока не реализован и его runtime ветви не подтверждены |
 | Observed execution | Ubuntu kernel guest boot не наблюдался | Успешный boot, C/D или поддерживаемая ОС |
 
 Exact image, buildinfo, historical metapackage и source package `linux`
@@ -153,17 +156,19 @@ Exact image, buildinfo, historical metapackage и source package `linux`
 сверены с SHA-256 из подписанного `Sources.xz`. Main kernel paths сопоставлены
 с байтами exact image через совпадение ELF sections, build ID и DWARF; ранний
 compressed direct64 prefix сопоставлен с исходником и неизменённой Ubuntu delta.
-До scenario freeze остаются initramfs, command line, начальное
-CPU/CPUID/MSR/CR/segment/table/FP state, memory/device manifest и измеримый
-success milestone. Это не меняет статус S2-00: принят диагностический A;
-profile C/D и observed boot открыты.
+До scenario freeze остаются initramfs, command line, полное начальное
+CPU/MSR/CR/segment/table/FP state, memory/device manifest и измеримый success
+milestone. Выбранный reference CPU target определяет CPUID и несколько ранних
+boundary behaviors, но не является реализацией. Это не меняет статус S2-00:
+принят диагностический A; profile C/D и observed boot открыты.
 
 ## Что остаётся для C/D
 
-1. Выбрать и зафиксировать CPU vendor/family/model/stepping, CPUID leaves и
-   subleaves, feature mask, physical/virtual address widths, MSR behavior и
-   начальное CR/EFER/segment/table/FP state, включая runtime ветви XSAVE и
-   workaround alternatives. Наличие capability в config не задаёт CPUID mask.
+1. Реализовать и независимо проверить выбранный reference target
+   `od-x86-64-v1-neutral-v0.1`: заданные CPUID leaves/subleaves и feature mask,
+   widths и точное поведение уже перечисленных MSR probes. Дополнить полный
+   MSR allowlist и начальные CR/EFER/segment/table/FP state; определить runtime
+   ветви alternatives. Наличие capability в config не доказывает их исполнение.
 2. Заморозить узкий diagnostic PID1 scenario: exact kernel, собственный
    воспроизводимый initramfs, command line, memory map, device/interrupt model
    и serial success marker. Не выдавать его за установленную Ubuntu 26.04.1.
@@ -258,9 +263,10 @@ forms и произвольных SSE2 instructions source path не доказ�
 [`lib/raid6/algos.c`](https://raw.githubusercontent.com/torvalds/linux/v7.0/lib/raid6/algos.c)
 и [`lib/raid6/sse2.c`](https://raw.githubusercontent.com/torvalds/linux/v7.0/lib/raid6/sse2.c).
 
-**Открытый профильный выбор.** До реализации следующего C/D blocker нужно
-закрепить CPU vendor/family/model/stepping и hypervisor identity; maximum
-CPUID leaves/subleaves и feature mask; начальные CR/EFER/segment/table state;
+**Открытые части профиля.** Target `od-x86-64-v1-neutral-v0.1` уже закрепляет
+project CPU vendor/family/model/stepping, maximum CPUID leaves и feature mask;
+он отключает hypervisor-present bit. До реализации следующего C/D blocker
+нужно определить начальные CR/EFER/segment/table state;
 mitigation policy; exact kernel/initramfs/ELF64 init/module hashes;
 command line, page/memory map, UART, timer/interrupt controller и root path;
 критерий успеха (PID1/serial marker). `S2-00` остаётся принятым только для
@@ -391,12 +397,14 @@ The authenticated source also contains later vendor-dependent MSR
 initialization paths, including `MSR_CSTAR` on non-Intel CPUs; these source
 paths are not all mapped to binary addresses in this audit, and their presence
 does not show that each executes on a boot. The x86-64-v1 ABI/ISA floor does
-not select those branches or establish their MSR behavior. The profile remains
-incomplete until a versioned reference CPU contract fixes vendor identity,
-family/model/stepping, CPUID leaves and masks, relevant MSRs, and entry state.
-This static reachability
-finding does not claim that every later initialization path executes on a
-successful boot.
+not select those branches or establish their MSR behavior. The versioned
+reference CPU contract now fixes project vendor identity, family/model/stepping
+and the CPUID target. The profile remains incomplete until that target is
+implemented and checked, and the complete relevant MSRs and entry state are
+specified. The target's exact SYSENTER MSR probe policy is documented in the
+CPU contract; static source evidence does not demonstrate execution of the
+kernel's safe-MSR fixup. This static reachability finding does not claim that
+every later initialization path executes on a successful boot.
 
 The mapped `fpu__init_cpu_generic` path clears CR0.EM/TS before `FNINIT` and
 sets CR4 mask `0x600` (OSFXSR/OSXMMEXCPT). Save and restore initially branch
