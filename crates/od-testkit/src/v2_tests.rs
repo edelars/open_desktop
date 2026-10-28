@@ -1746,6 +1746,69 @@ fn movupd_memory_load_profile_is_exact_and_rejects_neighboring_forms() {
 }
 
 #[test]
+fn movupd_memory_store_profile_is_exact_and_rejects_neighboring_forms() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_22_movupd_memory_store_rax.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongMovupdMemStoreV1);
+    for bytes in ["660f1100", "66400f1100", "66440f1100"] {
+        let mut accepted = fixture.clone();
+        let code = accepted
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        accepted.stop_rip = Some(HexU64(
+            accepted.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(accepted.validate().is_ok(), "{bytes}");
+    }
+    let mut bad_budget = fixture.clone();
+    bad_budget.instruction_budget = 0;
+    assert!(bad_budget.validate().is_err());
+    let mut bad_stop = fixture.clone();
+    bad_stop.stop_rip = Some(HexU64(bad_stop.initial_state.rip.get() + 6));
+    assert!(bad_stop.validate().is_err());
+    for bytes in [
+        "660f1000",
+        "660f11c0",
+        "0f1100",
+        "f2660f1100",
+        "66660f1100",
+        "40660f1100",
+        "66410f1100",
+        "66420f1100",
+        "66480f1100",
+        "660f114000",
+        "660f110400",
+        "660f110500000000",
+        "67660f1100",
+        "c5f91100",
+        "62f17d081100",
+        "660f11",
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(
+            rejected.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
 fn movss_memory_load_profile_is_exact_f3_rax_m32_only() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_8c_movss_memory_load_rax.case.json"

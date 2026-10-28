@@ -9403,3 +9403,9 @@ all-target compile check и форматирование. Native Linux denial т
 См. [CPU contract](../specs/CPU_CONTRACT.md#local-profile-s2-3421-s2-long-movupd-mem-load-v1),
 [report](../reports/STAGE_2_REPORT.md#s2-3421--local-movupd-rax-load-profile),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3421--local-movupd-rax-load-diagnostic-profile).
+
+#### S2-34.22 — local-only MOVUPD `[RAX],XMM` store
+
+Добавлен отдельный локальный профиль `s2-long-movupd-mem-store-v1` для long-mode `66 [optional REX.R only] 0F 11 /r`, ModR/M.mod=00 и r/m=000. Допускаются REX absent/40/44; ModR/M.reg + REX.R выбирает исходный XMM0–15. Исполнение проверяет весь `[RAX,RAX+15]` на canonical48 и переполнение, копирует исходный XMM в `[u8;16]`, делает ровно один `GuestMemory::write` и фиксирует RIP только после успеха. Чтений данных нет; unaligned допустим в локальном профиле. Ошибка backend не обещает rollback RAM для произвольной реализации `GuestMemory`; гарантия FlatMemory применима только к его all-or-error fixture контракту.
+
+Профиль остаётся отдельным от MOVUPS и всех других MOVUPD форм. Отдельный run API test проверяет zero budget и stop-at-current-RIP до fetch: нет callbacks, CPU state не меняется и retirement равен нулю. JIT и native runner отказывают; SSE2 считается предусловием. Parent S2-34 остаётся open; физический запуск `not_run`, ISSUE-012 остаётся открытой.

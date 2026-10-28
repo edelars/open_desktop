@@ -491,6 +491,11 @@ pub enum Operation {
         destination: u8,
         source: MemoryOperand,
     },
+    /// Local-only mandatory-66 MOVUPD store to exactly `[RAX]`.
+    MovupdStoreMemory {
+        destination: MemoryOperand,
+        source: u8,
+    },
     /// Local-only mandatory-66 `0F 29 /r` reverse-direction MOVAPD XMM form.
     MovapdReverseRegister {
         destination: u8,
@@ -1829,6 +1834,18 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefixes.rex.unwrap() & 0x0a == 0));
         let movupd_memory_load = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x10
+            && prefixes.operand_override
+            && !duplicate
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.address_override
+            && (prefix_bytes[..prefix_count] == [0x66]
+                || (prefix_count == 2
+                    && prefix_bytes[0] == 0x66
+                    && prefixes.rex.is_some_and(|rex| matches!(rex, 0x40 | 0x44))
+                    && prefix_bytes[1] == prefixes.rex.unwrap()));
+        let movupd_memory_store = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x11
             && prefixes.operand_override
             && !duplicate
             && prefixes.group1.is_none()
@@ -3326,6 +3343,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 if !movupd_register
                     && !movupd_reverse_register
                     && !movupd_memory_load
+                    && !movupd_memory_store
                     && !movups_register
                     && !movups_memory
                     && !movups_memory_store
@@ -3339,8 +3357,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && !movups_register)
                     || (modrm >> 6 != 3
                         && ((movupd_register && !movupd_memory_load)
-                            || movupd_reverse_register
-                            || (!movupd_memory_load && !movups_memory && !movups_memory_store)))
+                            || (movupd_reverse_register && !movupd_memory_store)
+                            || (!movupd_memory_load
+                                && !movupd_memory_store
+                                && !movups_memory
+                                && !movups_memory_store)))
                 {
                     return Err(self.unsupported(opcode));
                 }
@@ -3360,6 +3381,21 @@ impl<M: GuestMemory> Fetch<'_, M> {
                             address_size: OperandSize::Qword,
                             size: OperandSize::Qword,
                         },
+                    }
+                } else if modrm >> 6 == 0 && (modrm & 7) == 0 && movupd_memory_store {
+                    if rex & 3 != 0 || rex & 2 != 0 {
+                        return Err(self.unsupported(opcode));
+                    }
+                    Operation::MovupdStoreMemory {
+                        destination: MemoryOperand {
+                            base: AddressBase::Register(Register::Rax),
+                            index: None,
+                            scale: 1,
+                            displacement: 0,
+                            address_size: OperandSize::Qword,
+                            size: OperandSize::Qword,
+                        },
+                        source: reg,
                     }
                 } else if modrm >> 6 != 3 && (movups_memory || movups_memory_store) {
                     // Reuse the shared ModR/M decoder for disp8/disp32, extended

@@ -825,6 +825,7 @@ fn step_tracked_with_stop(
             | Operation::MovupdRegister { .. }
             | Operation::MovupdReverseRegister { .. }
             | Operation::MovupdLoadMemory { .. }
+            | Operation::MovupdStoreMemory { .. }
     ) && state.sse.is_none()
     {
         return Ok(StepOutcome::Unsupported {
@@ -1348,6 +1349,7 @@ fn step_tracked_with_stop(
         | Operation::MovsdStoreMemory { .. }
         | Operation::MovupsLoadMemory { .. }
         | Operation::MovupdLoadMemory { .. }
+        | Operation::MovupdStoreMemory { .. }
         | Operation::MovssLoadMemory { .. }
         | Operation::MovssStoreMemory { .. }
         | Operation::MovupsStoreMemory { .. } => state.x87.is_some() && state.sse.is_some(),
@@ -2092,6 +2094,26 @@ fn step_tracked_with_stop(
             .as_mut()
             .expect("MOVUPD local profile state was prevalidated")
             .xmm[usize::from(destination)] = raw;
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
+    if let Operation::MovupdStoreMemory {
+        destination,
+        source,
+    } = instruction.operation
+    {
+        let address = match destination.access_range_address_48(state, next_rip, 16) {
+            Ok(address) => address,
+            Err(error) => return report_memory_error(error),
+        };
+        let raw = state
+            .sse
+            .as_ref()
+            .expect("MOVUPD local profile state was prevalidated")
+            .xmm[usize::from(source)];
+        if let Err(error) = memory.write(address, context, &raw) {
+            return report_memory_error(error);
+        }
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
@@ -3923,6 +3945,7 @@ fn step_tracked_with_stop(
         }
         Operation::MovupsLoadMemory { .. } => unreachable!("MOVUPS load commits before dispatch"),
         Operation::MovupdLoadMemory { .. } => unreachable!("MOVUPD load commits before dispatch"),
+        Operation::MovupdStoreMemory { .. } => unreachable!("MOVUPD store commits before dispatch"),
         Operation::MovssLoadMemory { .. } => unreachable!("MOVSS load commits before dispatch"),
         Operation::MovsdLoadMemory { .. } => unreachable!("MOVSD load commits before dispatch"),
         Operation::MovsdStoreMemory { .. } => unreachable!("MOVSD store commits before dispatch"),
@@ -74170,6 +74193,41 @@ mod tests {
     }
 
     #[test]
+    fn movupd_store_rax_writes_exactly_sixteen_bytes_for_all_sources() {
+        for source in 0..16u8 {
+            let mut code = vec![0x66];
+            if source >= 8 {
+                code.push(0x44);
+            }
+            code.extend([0x0f, 0x11, (source & 7) << 3]);
+            let mut memory = Memory::at(&code, 0x1000);
+            memory.data_base = 0x2001;
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.gpr[Register::Rax as usize] = 0x2001;
+            state.sse = Some(SseState {
+                xmm: [[0xaa; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse.as_mut().unwrap().xmm[source as usize] = [source.wrapping_add(0x80); 16];
+            let before = state.clone();
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(
+                &memory.bytes[..16],
+                &before.sse.as_ref().unwrap().xmm[source as usize]
+            );
+            assert_eq!(memory.accesses, [(AccessKind::Write, 0x2001, 16)]);
+            let mut expected = before;
+            expected.rip = 0x1004 + u64::from(source >= 8);
+            assert_eq!(state, expected);
+        }
+    }
+
+    #[test]
     fn movupd_load_rax_read_failures_and_truncated_fetch_preserve_state() {
         let code = [0x66, 0x44, 0x0f, 0x10, 0x00];
         for error in [
@@ -74237,9 +74295,136 @@ mod tests {
     }
 
     #[test]
+    fn movupd_store_run_limits_at_entry_do_not_fetch_write_or_commit_cpu() {
+        let code = [0x66, 0x44, 0x0f, 0x11, 0x00];
+        for (instruction_budget, stop_rip, expected_exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut memory = Memory::at(&code, 0x1000);
+            memory.data_base = 0x2001;
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.gpr[Register::Rax as usize] = 0x2001;
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn movupd_store_rax_write_failures_and_truncated_fetch_preserve_state() {
+        let code = [0x66, 0x44, 0x0f, 0x11, 0x00];
+        for error in [
+            MemoryError::Backend("injected MOVUPD write failure".into()),
+            MemoryError::PermissionDenied {
+                address: 0x2001,
+                access: AccessKind::Write,
+            },
+            MemoryError::Unmapped {
+                address: 0x2001,
+                access: AccessKind::Write,
+            },
+        ] {
+            let mut memory = Memory::at(&code, 0x1000);
+            memory.data_base = 0x2001;
+            memory.error_kind = Some(AccessKind::Write);
+            memory.error = Some(error.clone());
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.gpr[Register::Rax as usize] = 0x2001;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            assert!(matches!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Err(_)
+            ));
+            assert_eq!(state, before);
+            assert_eq!(memory.accesses, [(AccessKind::Write, 0x2001, 16)]);
+        }
+
+        let mut memory = Memory::at(&code, 0x1000);
+        memory.data_base = 0x2001;
+        let mut no_sse = LongModeState::default();
+        no_sse.rip = 0x1000;
+        no_sse.gpr[Register::Rax as usize] = 0x2001;
+        no_sse.x87 = Some(X87State::fixture_seed());
+        let before = no_sse.clone();
+        assert_eq!(
+            step(&mut no_sse, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0x11 })
+        );
+        assert_eq!(no_sse, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut memory = Memory::new(&code);
+        memory.fetch_error = Some((
+            4,
+            MemoryError::Backend("truncated MOVUPD store fetch".into()),
+        ));
+        let mut state = LongModeState::default();
+        state.rip = 0;
+        state.gpr[Register::Rax as usize] = 0x2001;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        assert!(matches!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Err(_)
+        ));
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
     fn movupd_load_rax_rejects_noncanonical_crossing_and_wrapping_ranges_before_read() {
         for address in [0x0000_7fff_ffff_fff8, 0x0000_8000_0000_0000, u64::MAX - 7] {
             let code = [0x66, 0x0f, 0x10, 0x00];
+            let mut memory = Memory::at(&code, 0x1000);
+            memory.data_base = address;
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.gpr[Register::Rax as usize] = address;
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            assert_ne!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn movupd_store_rax_rejects_noncanonical_crossing_and_wrapping_ranges_before_write() {
+        for address in [0x0000_7fff_ffff_fff8, 0x0000_8000_0000_0000, u64::MAX - 7] {
+            let code = [0x66, 0x0f, 0x11, 0x00];
             let mut memory = Memory::at(&code, 0x1000);
             memory.data_base = address;
             let mut state = LongModeState::default();

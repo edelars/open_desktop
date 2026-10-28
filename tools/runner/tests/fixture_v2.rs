@@ -5367,6 +5367,39 @@ fn local_movups_memory_store_fixture_writes_unaligned_raw_xmm8_to_rax() {
 }
 
 #[test]
+fn local_movupd_memory_store_fixture_writes_unaligned_raw_xmm8_to_rax() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_22_movupd_memory_store_rax.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupdMemStoreV1
+    );
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "66440f1100");
+    assert_eq!(input.fixture.initial_state.gpr[0], HexU64(0x0020_0001));
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    assert_eq!(snapshot(&result).state, expected);
+    assert_eq!(
+        snapshot(&result).memory[1].bytes_hex,
+        "a5808182838485868788898a8b8c8d8e8f5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    );
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+    assert!(matches!(
+        jit_result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_movups_memory_base_fixture_writes_raw_xmm8_through_extended_base_and_disp8() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_6_movups_memory_base.case.json");

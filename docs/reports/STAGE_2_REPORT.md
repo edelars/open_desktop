@@ -13503,3 +13503,26 @@ Focused validation passed (2026-10-28): `cargo test -p od-isa movupd --offline`
 x86-runner all-target compile check, and `cargo fmt --all -- --check` passed.
 The Linux-only native-denial test was compile-checked, not executed on this host.
 Parent S2-34 remains open; physical SSE2 execution is `not_run`.
+
+## S2-34.22 — local MOVUPD `[RAX],XMM` store profile
+
+Added an independent schema-v2 local profile for exact `66 [REX.R] 0F 11 /r`
+with memory operand `[RAX]` and source XMM0–15. It copies the source into a
+16-byte temporary, performs one 16-byte write and advances RIP only on success;
+there are no data-memory reads. Unaligned addresses are accepted locally. The
+contract does not claim hardware atomicity, MMIO/SMP behavior, `#AC`, fault
+priority, or rollback for arbitrary memory backends. JIT/native admission stays
+denied; the handwritten fixture is XMM8 and writable data. Parent S2-34 remains
+open; physical execution is `not_run`; ISSUE-012 remains open.
+
+Verification (2026-10-28): `cargo test -p od-isa movupd_store --offline`
+(4), including `movupd_store_run_limits_at_entry_do_not_fetch_write_or_commit_cpu`
+for both zero budget and stop-at-current-RIP (no callbacks, no CPU mutation,
+zero retirement); `cargo test -p od-testkit movupd_memory_store_profile --offline` (1);
+`cargo test -p od-runner --test fixture_v2 local_movupd_memory_store_fixture
+--offline` (1); `cargo fmt --all -- --check`; `cargo check --workspace
+--all-targets --offline`; Linux `cargo check -p od-x86-runner --all-targets
+--target x86_64-unknown-linux-gnu --offline`; `git diff --check`; and
+`graphify update .` passed. Native denial was compile-checked only; physical
+execution remains `not_run`. Write-error checks assert CPU-state preservation,
+not memory rollback for arbitrary `GuestMemory` implementations.

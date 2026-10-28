@@ -5342,3 +5342,13 @@ contains distinct bytes; the interpreter copies the complete 16-byte value to
 XMM8. The local diagnostic profile assumes SSE2/CR0/CR4 preconditions, permits
 only the specified `[RAX]` encoding, and does not claim hardware alignment or
 `#AC` behavior. JIT/native execution and physical validation are outside scope.
+
+### S2-34.22 local MOVUPD `[RAX],XMM` store diagnostic profile
+
+`s2_34_22_movupd_memory_store_rax.case.json` is a handwritten schema-v2
+XMM8-to-`[RAX]` case encoded as `66 44 0F 11 00`. It verifies all 16 raw source
+bytes are written to unaligned writable data, with exactly one data write and no
+data reads. Interpreter runs the fixture; JIT and native profiles deny it. This
+local profile makes no hardware atomicity, MMIO/SMP, `#AC`, fault-priority, or
+arbitrary-backend rollback claim. Parent S2-34 remains open and physical status
+is `not_run`.
