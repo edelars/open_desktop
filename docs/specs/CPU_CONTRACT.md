@@ -10531,3 +10531,31 @@ diff, and Graphify checks passing; independent Sol review completed clean, with
 no findings. See the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36h--finite-binary-division-composition)
 and [plan](../plans/STAGE_2.md#s2-36h--finite-binary-division-composition).
+
+## Local S2-36i: finite binary multiplication composition
+
+`Binary32::multiply_finite(lhs, rhs, mode)` and `Binary64::multiply_finite(...)`
+return `Option<(Self, bool)>`: a destination encoding and final mathematical
+`inexact`. They accept finite normalized values and return `None` for either
+zero operand; they do not define guest zero multiplication, guest exceptions,
+or NaN/infinity behavior. For nonzero operands the result retains the XOR sign,
+including a signed zero when a tiny product rounds to zero.
+
+The product composition uses a private, bounded normalized-product bridge. The
+exact `u128` significand product has at least 22 trailing zero bits because
+each normalized binary32/binary64 significand has at least 11. After at most
+one left shift to normalize, the even low 64-bit half is split into
+`remainder = low_half / 2` with denominator `2^63`, preserving the exact
+quotient/remainder decomposition. This bridge is specialized to the formats;
+it is not a generic conversion framework and does not reuse x87 jam helpers.
+
+Destination format selects p=24/emin=-126 or p=53/emin=-1022. Compose the exact
+product with one normal S2-36d round plus S2-36e packing, or use direct S2-36f
+subnormal-unit rounding from the bridge without an intermediate rounding step.
+Only final mathematical `inexact` is returned. No flags, exceptions, or x87
+behavior change. Broader arithmetic and S2-37/S2-38 remain open; hardware
+validation is deferred. Author-reported tests passed 27/27 with workspace,
+formatting, diff, and Graphify checks. Independent Sol code review completed
+clean; no findings remain. See
+the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36i--finite-binary-multiplication-composition)
+and [plan](../plans/STAGE_2.md#s2-36i--finite-binary-multiplication-composition).

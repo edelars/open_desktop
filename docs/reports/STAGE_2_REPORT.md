@@ -367,6 +367,56 @@ instruction/exception work remain open. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36h-finite-binary-division-composition)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-36h--finite-binary-division-composition).
 
+## S2-36i — finite binary multiplication composition
+
+**Статус:** finite multiplication composition and author checks are complete;
+independent Sol medium code review completed clean, with no findings. Public
+`Binary32::multiply_finite(lhs, rhs, mode)` and `Binary64::multiply_finite(...)`
+return `Option<(Self, bool)>`: destination encoding plus final mathematical
+`inexact`. Inputs are finite normalized `BinaryFinite` values. Either zero
+operand returns `None`; zero-multiply behavior, guest exceptions, and
+NaN/infinity policy are not defined. A nonzero product keeps the operand-sign
+XOR, including when it rounds to signed zero.
+
+The exact `u128` product is bridged through a private normalized-product helper
+to the exact quotient/remainder input required by the rounder. Both normalized
+binary32 and binary64 significands have at least 11 trailing zero bits, so the
+product has at least 22. It is normalized with at most one left shift; the low
+64-bit half is even and splits losslessly into `remainder = low_half / 2` and
+denominator `2^63`. The bridge is a format-specific proof, not a generic
+conversion helper, and does not reuse x87 jam code.
+
+Destination format selects precision and normal exponent threshold even with
+mixed inputs: binary32 p=24/emin=-126; binary64 p=53/emin=-1022. Normal results
+round once through S2-36d and pack through S2-36e. Below `emin`, the helper
+rounds directly to subnormal units through S2-36f from the original exact
+bridge tuple. No intermediate normal rounding is performed. The returned
+boolean is only final mathematical inexactness; there are no flags, exceptions,
+or x87 changes.
+
+Tests cover exact 1×1 and 1.5×1.5 with sign combinations, mixed-format products,
+binary32/binary64 successor-of-one squares under nearest and upward modes, a
+multi-bit product rounding vector, minimum-normal/subnormal boundaries,
+minimum-subnormal products that round to signed zero or one subnormal unit,
+maximum-subnormal/maximum-finite results, overflow rejection, zero rejection,
+and input immutability. The double-round regression multiplies binary64
+`0x380f_ffff_dfff_ffff` by `0x3ff0_0000_0000_0000` into binary32 and expects
+largest subnormal `0x007f_ffff` with `inexact=true`.
+
+Author-reported checks passed:
+
+- `cargo test -p od-isa --offline binary_float::tests`: 27/27.
+- `cargo fmt --all -- --check && git diff --check`.
+- `cargo check --workspace --all-targets --offline`.
+- `graphify update .` completed at 7766 nodes/15326 edges, with the known
+  `include/open_desktop/host_abi.h` syntax warning and label-refresh notice.
+
+Independent Sol medium code review completed clean; no findings remain.
+Broader S2-36 arithmetic and S2-37/S2-38 instruction/exception work remain
+open; hardware validation is deferred. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-36i-finite-binary-multiplication-composition)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-36i--finite-binary-multiplication-composition).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

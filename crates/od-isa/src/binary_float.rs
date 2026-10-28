@@ -210,6 +210,37 @@ impl Binary32 {
             )
         }
     }
+
+    /// Multiplies two finite values and rounds once to binary32 precision.
+    ///
+    /// The exact integer product is normalized and bridged to a rational
+    /// significand without discarding bits. `inexact` reports only final target
+    /// precision loss; no floating-point status or exception is updated.
+    pub fn multiply_finite(
+        lhs: BinaryFinite,
+        rhs: BinaryFinite,
+        mode: RationalRoundingMode,
+    ) -> Option<(Self, bool)> {
+        if lhs.significand == 0 || rhs.significand == 0 {
+            return None;
+        }
+        let (sign, exponent, quotient, remainder, denominator) = finite_product_quotient(lhs, rhs)?;
+        if exponent >= -126 {
+            let (magnitude, inexact) =
+                round_quotient_to_precision(sign, quotient, remainder, denominator, 24, mode)?;
+            let value = Self::pack_normal_rounded_significand(sign, exponent, magnitude)?;
+            Some((value, inexact))
+        } else {
+            Self::round_pack_subnormal_quotient(
+                sign,
+                exponent,
+                quotient,
+                remainder,
+                denominator,
+                mode,
+            )
+        }
+    }
 }
 
 /// An immutable binary64 encoding.
@@ -402,6 +433,37 @@ impl Binary64 {
             )
         }
     }
+
+    /// Multiplies two finite values and rounds once to binary64 precision.
+    ///
+    /// The exact integer product is normalized and bridged to a rational
+    /// significand without discarding bits. `inexact` reports only final target
+    /// precision loss; no floating-point status or exception is updated.
+    pub fn multiply_finite(
+        lhs: BinaryFinite,
+        rhs: BinaryFinite,
+        mode: RationalRoundingMode,
+    ) -> Option<(Self, bool)> {
+        if lhs.significand == 0 || rhs.significand == 0 {
+            return None;
+        }
+        let (sign, exponent, quotient, remainder, denominator) = finite_product_quotient(lhs, rhs)?;
+        if exponent >= -1022 {
+            let (magnitude, inexact) =
+                round_quotient_to_precision(sign, quotient, remainder, denominator, 53, mode)?;
+            let value = Self::pack_normal_rounded_significand(sign, exponent, magnitude)?;
+            Some((value, inexact))
+        } else {
+            Self::round_pack_subnormal_quotient(
+                sign,
+                exponent,
+                quotient,
+                remainder,
+                denominator,
+                mode,
+            )
+        }
+    }
 }
 
 /// Exact normalized representation shared by finite binary32 and binary64 values.
@@ -460,6 +522,34 @@ pub fn multiply_finite_significands(lhs: BinaryFinite, rhs: BinaryFinite) -> (bo
     let exponent = lhs.exponent + rhs.exponent + 1;
     let magnitude = u128::from(lhs.significand) * u128::from(rhs.significand);
     (sign, exponent, magnitude)
+}
+
+fn finite_product_quotient(
+    lhs: BinaryFinite,
+    rhs: BinaryFinite,
+) -> Option<(bool, i32, u64, u64, u64)> {
+    let (sign, product_exponent, magnitude) = multiply_finite_significands(lhs, rhs);
+    if magnitude == 0 {
+        return None;
+    }
+
+    let shift = magnitude.leading_zeros();
+    if shift > 1 {
+        return None;
+    }
+    let normalized = magnitude << shift;
+    let low = normalized as u64;
+    if low & 1 != 0 {
+        return None;
+    }
+    let exponent = product_exponent.checked_sub(shift as i32)?;
+    let quotient = (normalized >> 64) as u64;
+    let remainder = low >> 1;
+    let denominator = 1_u64 << 63;
+    if quotient < (1_u64 << 63) || remainder >= denominator {
+        return None;
+    }
+    Some((sign, exponent, quotient, remainder, denominator))
 }
 
 /// Adds two normalized finite values after exact alignment to a shared exponent.
@@ -1789,6 +1879,301 @@ mod tests {
         );
         assert_eq!(lhs_raw.to_bits(), lhs_before);
         assert_eq!(rhs_raw.to_bits(), rhs_before);
+    }
+
+    #[test]
+    fn finite_multiplication_composes_once_to_normal_precision() {
+        use RationalRoundingMode::{NearestTiesEven as Nearest, TowardPositive as Up};
+
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary32::multiply_finite(one32, one32, Nearest),
+            Some((Binary32::from_bits(0x3f80_0000), false)),
+        );
+        assert_eq!(
+            Binary64::multiply_finite(one64, one64, Nearest),
+            Some((Binary64::from_bits(0x3ff0_0000_0000_0000), false)),
+        );
+        assert_eq!(
+            Binary32::multiply_finite(one32, one64, Nearest),
+            Some((Binary32::from_bits(0x3f80_0000), false)),
+        );
+        assert_eq!(
+            Binary64::multiply_finite(one32, one64, Nearest),
+            Some((Binary64::from_bits(0x3ff0_0000_0000_0000), false)),
+        );
+
+        let one_and_half32 = Binary32::from_bits(0x3fc0_0000).normalize_finite().unwrap();
+        let negative_one_and_half32 = Binary32::from_bits(0xbfc0_0000).normalize_finite().unwrap();
+        let one_and_half64 = Binary64::from_bits(0x3ff8_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_one_and_half64 = Binary64::from_bits(0xbff8_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary32::multiply_finite(one_and_half32, one_and_half32, Nearest),
+            Some((Binary32::from_bits(0x4010_0000), false)),
+        );
+        assert_eq!(
+            Binary64::multiply_finite(one_and_half64, one_and_half64, Nearest),
+            Some((Binary64::from_bits(0x4002_0000_0000_0000), false)),
+        );
+        for (lhs, rhs, sign) in [
+            (one_and_half32, one_and_half32, false),
+            (one_and_half32, negative_one_and_half32, true),
+            (negative_one_and_half32, one_and_half32, true),
+            (negative_one_and_half32, negative_one_and_half32, false),
+        ] {
+            let (result, inexact) = Binary32::multiply_finite(lhs, rhs, Nearest).unwrap();
+            assert_eq!(
+                result.to_bits(),
+                if sign { 0xc010_0000 } else { 0x4010_0000 }
+            );
+            assert!(!inexact);
+        }
+        for (lhs, rhs, sign) in [
+            (one_and_half64, one_and_half64, false),
+            (one_and_half64, negative_one_and_half64, true),
+            (negative_one_and_half64, one_and_half64, true),
+            (negative_one_and_half64, negative_one_and_half64, false),
+        ] {
+            let (result, inexact) = Binary64::multiply_finite(lhs, rhs, Nearest).unwrap();
+            assert_eq!(
+                result.to_bits(),
+                if sign {
+                    0xc002_0000_0000_0000
+                } else {
+                    0x4002_0000_0000_0000
+                }
+            );
+            assert!(!inexact);
+        }
+
+        let next_one32 = Binary32::from_bits(0x3f80_0001).normalize_finite().unwrap();
+        assert_eq!(
+            Binary32::multiply_finite(next_one32, next_one32, Nearest),
+            Some((Binary32::from_bits(0x3f80_0002), true)),
+        );
+        assert_eq!(
+            Binary32::multiply_finite(next_one32, next_one32, Up),
+            Some((Binary32::from_bits(0x3f80_0003), true)),
+        );
+        let next_one64 = Binary64::from_bits(0x3ff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::multiply_finite(next_one64, next_one64, Nearest),
+            Some((Binary64::from_bits(0x3ff0_0000_0000_0002), true)),
+        );
+        assert_eq!(
+            Binary64::multiply_finite(next_one64, next_one64, Up),
+            Some((Binary64::from_bits(0x3ff0_0000_0000_0003), true)),
+        );
+
+        let lhs = Binary64::from_bits(0x3ff0_0000_01ff_ffff)
+            .normalize_finite()
+            .unwrap();
+        let rhs = Binary64::from_bits(0x3ff0_0000_0400_0002)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::multiply_finite(lhs, rhs, Nearest),
+            Some((Binary64::from_bits(0x3ff0_0000_0600_0001), true)),
+        );
+    }
+
+    #[test]
+    fn finite_multiplication_composes_directly_to_subnormal_precision() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+        };
+
+        let half32 = Binary32::from_bits(0x3f00_0000).normalize_finite().unwrap();
+        let min_normal32 = Binary32::from_bits(0x0080_0000).normalize_finite().unwrap();
+        assert_eq!(
+            Binary32::multiply_finite(min_normal32, half32, Nearest),
+            Some((Binary32::from_bits(0x0040_0000), false)),
+        );
+        let min_subnormal32 = Binary32::from_bits(1).normalize_finite().unwrap();
+        assert_eq!(
+            Binary32::multiply_finite(min_subnormal32, half32, Nearest),
+            Some((Binary32::from_bits(0), true)),
+        );
+        let negative_min_subnormal32 = Binary32::from_bits(0x8000_0001).normalize_finite().unwrap();
+        assert_eq!(
+            Binary32::multiply_finite(negative_min_subnormal32, half32, Nearest),
+            Some((Binary32::from_bits(0x8000_0000), true)),
+        );
+        assert_eq!(
+            Binary32::multiply_finite(min_subnormal32, half32, Up),
+            Some((Binary32::from_bits(1), true)),
+        );
+        assert_eq!(
+            Binary32::multiply_finite(negative_min_subnormal32, half32, Down),
+            Some((Binary32::from_bits(0x8000_0001), true)),
+        );
+
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let max_subnormal32 = Binary32::from_bits(0x007f_ffff).normalize_finite().unwrap();
+        assert_eq!(
+            Binary32::multiply_finite(max_subnormal32, one32, Nearest),
+            Some((Binary32::from_bits(0x007f_ffff), false)),
+        );
+        let max_finite32 = Binary32::from_bits(0x7f7f_ffff).normalize_finite().unwrap();
+        let two32 = Binary32::from_bits(0x4000_0000).normalize_finite().unwrap();
+        assert_eq!(
+            Binary32::multiply_finite(max_finite32, one32, Nearest),
+            Some((Binary32::from_bits(0x7f7f_ffff), false)),
+        );
+        assert_eq!(
+            Binary32::multiply_finite(max_finite32, two32, Nearest),
+            None,
+        );
+
+        let half64 = Binary64::from_bits(0x3fe0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let min_normal64 = Binary64::from_bits(0x0010_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::multiply_finite(min_normal64, half64, Nearest),
+            Some((Binary64::from_bits(0x0008_0000_0000_0000), false)),
+        );
+        let min_subnormal64 = Binary64::from_bits(1).normalize_finite().unwrap();
+        assert_eq!(
+            Binary64::multiply_finite(min_subnormal64, half64, Nearest),
+            Some((Binary64::from_bits(0), true)),
+        );
+        let negative_min_subnormal64 = Binary64::from_bits(0x8000_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::multiply_finite(negative_min_subnormal64, half64, Nearest),
+            Some((Binary64::from_bits(0x8000_0000_0000_0000), true)),
+        );
+        assert_eq!(
+            Binary64::multiply_finite(min_subnormal64, half64, Up),
+            Some((Binary64::from_bits(1), true)),
+        );
+        assert_eq!(
+            Binary64::multiply_finite(negative_min_subnormal64, half64, Down),
+            Some((Binary64::from_bits(0x8000_0000_0000_0001), true)),
+        );
+
+        let one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let max_subnormal64 = Binary64::from_bits(0x000f_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::multiply_finite(max_subnormal64, one64, Nearest),
+            Some((Binary64::from_bits(0x000f_ffff_ffff_ffff), false)),
+        );
+        let max_finite64 = Binary64::from_bits(0x7fef_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        let two64 = Binary64::from_bits(0x4000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::multiply_finite(max_finite64, one64, Nearest),
+            Some((Binary64::from_bits(0x7fef_ffff_ffff_ffff), false)),
+        );
+        assert_eq!(
+            Binary64::multiply_finite(max_finite64, two64, Nearest),
+            None,
+        );
+
+        assert_eq!(
+            Binary32::multiply_finite(min_subnormal32, min_subnormal32, Nearest),
+            Some((Binary32::from_bits(0), true)),
+        );
+        assert_eq!(
+            Binary64::multiply_finite(min_subnormal64, min_subnormal64, Nearest),
+            Some((Binary64::from_bits(0), true)),
+        );
+    }
+
+    #[test]
+    fn finite_multiplication_rejects_zero_preserves_inputs_and_avoids_subnormal_double_rounding() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let zero32 = Binary32::from_bits(0).normalize_finite().unwrap();
+        let negative_zero64 = Binary64::from_bits(0x8000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(Binary32::multiply_finite(zero32, zero32, Nearest), None);
+        assert_eq!(Binary32::multiply_finite(one32, zero32, Nearest), None);
+        assert_eq!(
+            Binary64::multiply_finite(zero32, negative_zero64, Nearest),
+            None
+        );
+        assert_eq!(
+            Binary64::multiply_finite(one64, negative_zero64, Nearest),
+            None
+        );
+        assert_eq!(
+            Binary64::multiply_finite(negative_zero64, one32, Nearest),
+            None
+        );
+
+        let subnormal_edge_raw = Binary64::from_bits(0x380f_ffff_dfff_ffff);
+        let one_raw = Binary64::from_bits(0x3ff0_0000_0000_0000);
+        let edge_before = subnormal_edge_raw.to_bits();
+        let one_before = one_raw.to_bits();
+        let edge = subnormal_edge_raw.normalize_finite().unwrap();
+        let one = one_raw.normalize_finite().unwrap();
+        assert_eq!(
+            Binary32::multiply_finite(edge, one, Nearest),
+            Some((Binary32::from_bits(0x007f_ffff), true)),
+        );
+
+        let next_one32_raw = Binary32::from_bits(0x3f80_0001);
+        let next_one64_raw = Binary64::from_bits(0x3ff0_0000_0000_0001);
+        let lhs_raw = Binary64::from_bits(0x3ff0_0000_01ff_ffff);
+        let rhs_raw = Binary64::from_bits(0x3ff0_0000_0400_0002);
+        let before = [
+            next_one32_raw.to_bits() as u64,
+            next_one64_raw.to_bits(),
+            lhs_raw.to_bits(),
+            rhs_raw.to_bits(),
+        ];
+        let _ = Binary32::multiply_finite(
+            next_one32_raw.normalize_finite().unwrap(),
+            next_one32_raw.normalize_finite().unwrap(),
+            Nearest,
+        );
+        let _ = Binary64::multiply_finite(
+            next_one64_raw.normalize_finite().unwrap(),
+            next_one64_raw.normalize_finite().unwrap(),
+            Nearest,
+        );
+        let _ = Binary64::multiply_finite(
+            lhs_raw.normalize_finite().unwrap(),
+            rhs_raw.normalize_finite().unwrap(),
+            Nearest,
+        );
+        assert_eq!(
+            [
+                next_one32_raw.to_bits() as u64,
+                next_one64_raw.to_bits(),
+                lhs_raw.to_bits(),
+                rhs_raw.to_bits(),
+            ],
+            before,
+        );
+        assert_eq!(subnormal_edge_raw.to_bits(), edge_before);
+        assert_eq!(one_raw.to_bits(), one_before);
     }
 
     #[test]

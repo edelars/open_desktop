@@ -462,6 +462,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36f | Direct exact quotient rounding to binary subnormal units | S2-36c, S2-36d; independent review |
 | [x] | S2-36g | Bounded exact aligned addition of finite significands | S2-36a; independent review |
 | [x] | S2-36h | Compose finite binary32/binary64 division through one rounding | S2-36c–36f; independent review |
+| [x] | S2-36i | Compose finite binary32/binary64 multiplication through one rounding | S2-36b, S2-36d–36f; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5022,6 +5023,45 @@ Independent Sol review completed clean with no findings. Keep broader S2-36
 arithmetic and S2-37/S2-38 instruction/exception work open; no hardware
 validation is claimed.
 See the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36h--finite-binary-division-composition).
+
+#### S2-36i — finite binary multiplication composition
+
+Add `Binary32::multiply_finite(lhs, rhs, mode)` and the `Binary64` counterpart,
+returning `Option<(Self, bool)>`: destination encoding and final mathematical
+`inexact`. Inputs are finite normalized `BinaryFinite` values. Reject a zero
+operand with `None`; this helper defines no guest exception or infinity/NaN
+policy. The nonzero result sign remains the XOR of operand signs, including
+when a tiny product rounds to signed zero.
+
+Use a private, specialized normalized-product bridge. First retain the exact
+`u128` significand product. Each normalized binary32/binary64 significand has
+at least 11 low zero bits, so their product has at least 22. Normalize the
+product with at most one left shift, then decompose it losslessly into a
+quotient, remainder, and denominator `2^63`: the low half is even and
+`remainder = low_half / 2`. This is a proof-backed bridge for these formats,
+not a generic rational-conversion utility; do not use x87 jam helpers.
+
+Select destination precision and `emin` (binary32 p=24/−126, binary64 p=53/
+−1022) independent of source formats. Use one S2-36d normal rounding followed
+by S2-36e packing when the product exponent is normal; otherwise round the
+original bridge quotient directly through S2-36f. Preserve one final
+`inexact` result, with no flags, exceptions, or intermediate rounding. Do not
+modify x87 behavior.
+
+Literal tests cover 1×1, 1.5×1.5 and signs, binary32/binary64 successor-of-one
+squares under nearest/upward modes, mixed-format exact products, a multi-bit
+product regression, minimum-normal/subnormal boundaries, min-subnormal products
+that round to signed zero or one subnormal unit, max-subnormal and max-finite
+boundaries, and overflow rejection. A double-round regression multiplies
+binary64 `0x380f_ffff_dfff_ffff` by 1.0 into binary32 and expects largest
+subnormal `0x007f_ffff` with `inexact=true`. The author reports focused tests
+passing 27/27, formatting/diff checks and workspace offline all-target check
+passing, and Graphify update completing at 7766 nodes/15326 edges with the
+known `include/open_desktop/host_abi.h` syntax warning and label-refresh notice.
+Independent Sol review completed clean with no findings. Keep broader S2-36
+arithmetic and S2-37/S2-38 instruction/exception work open; hardware
+validation is deferred.
+See the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36i--finite-binary-multiplication-composition).
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 
