@@ -5438,3 +5438,7 @@ JIT/native admission is denied; physical status remains `not_run`.
 ### S2-35.62 local register PMULUDQ diagnostic profile
 
 `s2_35_62_pmuludq_register.case.json` is a handwritten high-XMM fixture for `s2-long-pmuludq-reg-v1`, encoded as `66 45 0F F4 C1` (`PMULUDQ XMM8, XMM9`). It uses independent odd-dword sentinels to verify that only lanes 0 and 2 are multiplied and that both complete qword products are stored. SSE2 and CR0/CR4 are assumed; JIT/native/physical admission remain closed.
+
+### S2-35.63 local register PMADDWD diagnostic profile
+
+`s2_35_63_pmaddwd_register.case.json` is a handwritten high-XMM fixture for `s2-long-pmaddwd-reg-v1`, encoded as `66 45 0F F5 C1` (`PMADDWD XMM8, XMM9`). The inputs cover signed products, adjacent pair addition, the two-product signed overflow corner, and independent high-register extension. It verifies 32-bit wrapping and unrelated-state preservation. The local profile accepts only register form with optional REX.R/B; SSE2 and CR0/CR4 are assumed, while JIT/native/physical admission remains closed.

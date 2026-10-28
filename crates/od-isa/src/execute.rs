@@ -1347,6 +1347,7 @@ fn step_tracked_with_stop(
         | Operation::PsadbwRegister { .. }
         | Operation::PmovmskbXmmToGpr { .. }
         | Operation::PmuludqRegister { .. }
+        | Operation::PmaddwdRegister { .. }
         | Operation::AndpsRegister { .. }
         | Operation::AndpdRegister { .. }
         | Operation::OrpdRegister { .. }
@@ -3143,6 +3144,38 @@ fn step_tracked_with_stop(
                     u32::from_le_bytes(source[dword_offset..dword_offset + 4].try_into().unwrap());
                 let product = u64::from(lhs) * u64::from(rhs);
                 destination[offset..offset + 8].copy_from_slice(&product.to_le_bytes());
+            }
+        }
+        Operation::PmaddwdRegister {
+            destination,
+            source,
+        } => {
+            let source = state
+                .sse
+                .as_ref()
+                .expect("PMADDWD local profile state was prevalidated")
+                .xmm[usize::from(source)];
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("PMADDWD local profile state was prevalidated");
+            let destination = &mut sse.xmm[usize::from(destination)];
+            let old_destination = *destination;
+            for lane in 0..4 {
+                let word_offset = lane * 4;
+                let lhs0 = i16::from_le_bytes([
+                    old_destination[word_offset],
+                    old_destination[word_offset + 1],
+                ]);
+                let rhs0 = i16::from_le_bytes([source[word_offset], source[word_offset + 1]]);
+                let lhs1 = i16::from_le_bytes([
+                    old_destination[word_offset + 2],
+                    old_destination[word_offset + 3],
+                ]);
+                let rhs1 = i16::from_le_bytes([source[word_offset + 2], source[word_offset + 3]]);
+                let sum = (i32::from(lhs0) * i32::from(rhs0))
+                    .wrapping_add(i32::from(lhs1) * i32::from(rhs1));
+                destination[word_offset..word_offset + 4].copy_from_slice(&sum.to_le_bytes());
             }
         }
         Operation::PaddbRegister {
@@ -70944,6 +70977,139 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn pmaddwd_register_multiplies_adjacent_signed_words_and_wraps_for_all_xmm_pairs() {
+        let left = [i16::MIN, i16::MIN, 2, -3, i16::MAX, i16::MAX, 0x1234, -1];
+        let right = [i16::MIN, i16::MIN, -3, 2, i16::MAX, i16::MAX, -1, 0x1234];
+        let patterns = [
+            (left, right),
+            ([i16::MIN; 8], [i16::MIN; 8]),
+            ([0; 8], [i16::MAX; 8]),
+            ([1; 8], [-1; 8]),
+        ];
+        let to_bytes = |words: [i16; 8]| -> [u8; 16] {
+            let mut bytes = [0; 16];
+            for (i, word) in words.into_iter().enumerate() {
+                bytes[i * 2..i * 2 + 2].copy_from_slice(&word.to_le_bytes());
+            }
+            bytes
+        };
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                for (lhs, rhs) in patterns {
+                    let mut code = vec![0x66];
+                    if destination >= 8 || source >= 8 {
+                        code.push(rex);
+                    }
+                    code.extend([0x0f, 0xf5, modrm]);
+                    let mut memory = Memory::at(&code, 0x1000);
+                    let mut state = LongModeState::default();
+                    state.x87 = Some(X87State::fixture_seed());
+                    state.sse = Some(SseState {
+                        xmm: [[0xa5; 16]; 16],
+                        mxcsr: 0xe1a5_5a7e,
+                    });
+                    state.sse.as_mut().unwrap().xmm[destination as usize] = to_bytes(lhs);
+                    if source != destination {
+                        state.sse.as_mut().unwrap().xmm[source as usize] = to_bytes(rhs);
+                    }
+                    state.rip = 0x1000;
+                    state.rflags = 0x8d7 | crate::DF;
+                    let before = state.clone();
+                    let old_source = if source == destination { lhs } else { rhs };
+                    let expected: [i32; 4] = std::array::from_fn(|lane| {
+                        let i = lane * 2;
+                        (i32::from(lhs[i]) * i32::from(old_source[i]))
+                            .wrapping_add(i32::from(lhs[i + 1]) * i32::from(old_source[i + 1]))
+                    });
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                        StepOutcome::Advanced
+                    );
+                    let mut expected_bytes = [0; 16];
+                    for (lane, value) in expected.into_iter().enumerate() {
+                        expected_bytes[lane * 4..lane * 4 + 4]
+                            .copy_from_slice(&value.to_le_bytes());
+                    }
+                    let mut unchanged = before;
+                    unchanged.rip += code.len() as u64;
+                    unchanged.sse.as_mut().unwrap().xmm[destination as usize] = expected_bytes;
+                    assert_eq!(state, unchanged, "dest={destination}, src={source}");
+                    if lhs[0] == i16::MIN
+                        && lhs[1] == i16::MIN
+                        && old_source[0] == i16::MIN
+                        && old_source[1] == i16::MIN
+                    {
+                        assert_eq!(
+                            &expected_bytes[..4],
+                            &0x8000_0000u32.to_le_bytes(),
+                            "the exceptional two-product sum wraps"
+                        );
+                    }
+                    assert!(
+                        memory.accesses.is_empty(),
+                        "PMADDWD performed a data access"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pmaddwd_missing_state_truncated_fetch_and_unstarted_run_are_atomic() {
+        let code = [0x66, 0x0f, 0xf5, 0xc1];
+        let mut memory = Memory::at(&code, 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        let before = state.clone();
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Unsupported { opcode: 0xf5 }
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+        let mut memory = Memory::at(&[0x66, 0x0f, 0xf5], 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.sse = Some(SseState {
+            xmm: [[0xa5; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        assert!(step(&mut state, &mut memory, AccessContext::default()).is_err());
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+        for (budget, stop_rip, expected_exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut memory = Memory::at(&code, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
         }
     }
 
