@@ -365,6 +365,14 @@ impl MemorySiteV2 {
             && matches!(self.operand.scale, 1 | 2 | 4 | 8)
             && length == 9
             && i32::try_from(self.operand.displacement).is_ok();
+        let address32_indexed_no_base_rbp_sib_disp32_data_profile = self.operand.address_size
+            == od_isa::OperandSize::Dword
+            && self.operand.size == od_isa::OperandSize::Qword
+            && matches!(self.operand.base, od_isa::long_decode::AddressBase::None)
+            && self.operand.index == Some(od_isa::Register::Rbp)
+            && matches!(self.operand.scale, 1 | 2 | 4 | 8)
+            && length == 9
+            && i32::try_from(self.operand.displacement).is_ok();
         let absolute_sib_disp32_data_profile = self.operand.address_size
             == od_isa::OperandSize::Qword
             && self.operand.size == od_isa::OperandSize::Qword
@@ -398,6 +406,7 @@ impl MemorySiteV2 {
             || address32_rbp_direct_base_data_profile
             || address32_absolute_sib_disp32_data_profile
             || address32_indexed_no_base_sib_disp32_data_profile
+            || address32_indexed_no_base_rbp_sib_disp32_data_profile
             || absolute_sib_disp32_data_profile
             || indexed_no_base_sib_disp32_data_profile
             || indexed_no_base_rbp_sib_disp32_data_profile
@@ -615,6 +624,10 @@ impl MemorySiteV2 {
                             && matches!(self.operand.scale, 1 | 2 | 4 | 8)
                         || self.operand.address_size == od_isa::OperandSize::Dword
                             && self.operand.index.is_some_and(|index| (index as u8) < 4)
+                            && matches!(self.operand.scale, 1 | 2 | 4 | 8)
+                        || self.operand.address_size == od_isa::OperandSize::Dword
+                            && length == 9
+                            && self.operand.index == Some(od_isa::Register::Rbp)
                             && matches!(self.operand.scale, 1 | 2 | 4 | 8))
                     && i32::try_from(self.operand.displacement).is_ok()
             }
@@ -636,6 +649,7 @@ impl MemorySiteV2 {
                     && !address32_rsp_base_rbp_indexed_sib_data_profile
                     && !address32_rbp_base_rbp_indexed_sib_data_profile
                     && !indexed_no_base_rbp_sib_disp32_data_profile
+                    && !address32_indexed_no_base_rbp_sib_disp32_data_profile
             })
             || !matches!(
                 self.operand.address_size,
@@ -741,6 +755,8 @@ impl MemorySiteV2 {
                 && self.operand.index.is_some_and(|index| (index as u8) < 4)
                 && matches!(self.operand.scale, 1 | 2 | 4 | 8)
                 && i32::try_from(self.operand.displacement).is_ok();
+            let indexed_no_base_rbp_sib_disp32 =
+                address32_indexed_no_base_rbp_sib_disp32_data_profile;
             return (supported_base
                 || rsp_no_index_sib
                 || rsp_indexed_sib
@@ -749,7 +765,8 @@ impl MemorySiteV2 {
                 || rbp_base_rbp_indexed_sib
                 || rbp_direct
                 || absolute_sib_disp32
-                || indexed_no_base_sib_disp32)
+                || indexed_no_base_sib_disp32
+                || indexed_no_base_rbp_sib_disp32)
                 && (direct
                     || indexed
                     || rsp_no_index_sib
@@ -759,7 +776,8 @@ impl MemorySiteV2 {
                     || rbp_base_rbp_indexed_sib
                     || rbp_direct
                     || absolute_sib_disp32
-                    || indexed_no_base_sib_disp32);
+                    || indexed_no_base_sib_disp32
+                    || indexed_no_base_rbp_sib_disp32);
         }
 
         let displacement_is_valid = match (self.operand.base, self.operand.index, length) {
@@ -856,7 +874,7 @@ impl MemorySiteV2 {
                 && mode == 0
                 && base == 4
                 && source[4] & 7 == 5
-                && (source[4] >> 3) & 7 < 4
+                && ((source[4] >> 3) & 7 < 4 || (source[4] >> 3) & 7 == 5)
             {
                 let sib = source[4];
                 return data_register <= 5

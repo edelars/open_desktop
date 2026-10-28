@@ -694,6 +694,11 @@ fn is_checked_memory_address(
             && operand.index.is_some_and(|index| (index as u8) < 4)
             && matches!(operand.scale, 1 | 2 | 4 | 8)
             && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement);
+        let indexed_no_base_rbp_sib_disp32 = instruction_length == 9
+            && matches!(operand.base, AddressBase::None)
+            && operand.index == Some(od_isa::Register::Rbp)
+            && matches!(operand.scale, 1 | 2 | 4 | 8)
+            && i32::try_from(operand.displacement).is_ok();
         let indexed_base_supported = base_supported
             || operand.index.is_some_and(|index| (index as u8) < 4)
                 && (matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
@@ -707,7 +712,8 @@ fn is_checked_memory_address(
             || rsp_no_index_sib
             || rbp_direct
             || absolute_sib_disp32
-            || indexed_no_base_sib_disp32;
+            || indexed_no_base_sib_disp32
+            || indexed_no_base_rbp_sib_disp32;
     }
     if operand.address_size != od_isa::OperandSize::Qword {
         return false;
@@ -975,6 +981,7 @@ fn is_scoped_memory_data_operand(
             || is_address32_rbp_direct_stack_base_operand(operand, instruction_length)
             || is_address32_absolute_sib_stack_data_operand(operand, instruction_length)
             || is_address32_indexed_no_base_sib_stack_data_operand(operand, instruction_length)
+            || is_address32_indexed_no_base_rbp_sib_stack_data_operand(operand, instruction_length)
             || is_indexed_no_base_rbp_sib_stack_data_operand(operand, instruction_length))
 }
 
@@ -1026,6 +1033,19 @@ fn is_address32_indexed_no_base_sib_stack_data_operand(
         && matches!(operand.scale, 1 | 2 | 4 | 8)
         && operand.size == od_isa::OperandSize::Qword
         && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+}
+
+fn is_address32_indexed_no_base_rbp_sib_stack_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    operand.address_size == od_isa::OperandSize::Dword
+        && instruction_length == 9
+        && matches!(operand.base, AddressBase::None)
+        && operand.index == Some(od_isa::Register::Rbp)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && operand.size == od_isa::OperandSize::Qword
+        && i32::try_from(operand.displacement).is_ok()
 }
 
 fn is_address32_direct_stack_data_operand(operand: MemoryOperand, instruction_length: u64) -> bool {
@@ -1338,7 +1358,7 @@ mod tests {
     }
 
     #[test]
-    fn checked_load_rejects_addr32_no_base_rbp_index_even_at_length_eight() {
+    fn checked_load_addr32_no_base_rbp_index_requires_exact_nine_byte_profile() {
         for length in [8_u64, 9] {
             let mut forged = checked_load_program();
             let next_rip = 0x2000 + length;
@@ -1357,10 +1377,14 @@ mod tests {
             if let Operation::Exit { target_rip, .. } = forged.operations.last_mut().unwrap() {
                 *target_rip = next_rip;
             }
-            assert!(matches!(
-                verify(&forged),
-                Err(VerifyError::InvalidCheckedLoadDescriptor { .. })
-            ));
+            if length == 8 {
+                assert!(matches!(
+                    verify(&forged),
+                    Err(VerifyError::InvalidCheckedLoadDescriptor { .. })
+                ));
+            } else {
+                assert!(verify(&forged).is_ok());
+            }
         }
     }
 
