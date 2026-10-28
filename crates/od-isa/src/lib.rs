@@ -13,8 +13,8 @@ pub mod msr;
 pub mod state;
 pub mod x87;
 pub use state::{
-    FragmentAdapterError, FsDescriptorCache, LongModeState, OperandSize, RegisterError,
-    RegisterView,
+    DataSegmentDescriptorCache, DsDescriptorCache, FragmentAdapterError, FsDescriptorCache,
+    LongModeState, OperandSize, RegisterError, RegisterView,
 };
 
 const CF: u64 = 1 << 0;
