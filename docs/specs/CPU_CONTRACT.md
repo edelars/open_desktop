@@ -9216,6 +9216,19 @@ unchanged. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only.
 Memory/MMX, REX.R/X/W, other shifts, VEX/EVEX, feature gating, and exception
 delivery are outside this profile. See the [S2-35.37 plan](../plans/STAGE_2.md#s2-3537--local-only-bounded-register-immediate-psllw).
 
+## Local register-only immediate `PSLLD` profile — S2-35.41
+
+The diagnostic profile `s2-long-pslld-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 72 /6 ib`, ModR/M.mod=3. `/6` is required and
+ModR/M.r/m selects XMM0–15; `REX.B` extends the destination. Four independent
+little-endian u32 lanes shift logically left by unsigned imm8. Counts 0–31
+retain the low 32 result bits; counts >=32 clear all lanes without count
+masking. No carry crosses dwords; flags and MXCSR are unchanged. The
+implementation assumes SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1. Memory/MMX,
+REX.R/X/W, extra prefixes, VEX/EVEX, feature gating, exception delivery,
+JIT/native execution, and physical behavior are outside this profile. See the
+[S2-35.41 plan](../plans/STAGE_2.md#s2-3541--local-only-bounded-register-immediate-pslld).
+
 ## Local register-only immediate `PSRLW` profile — S2-35.38
 
 The diagnostic profile `s2-long-psrlw-imm-reg-v1` admits exactly

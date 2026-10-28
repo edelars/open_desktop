@@ -12974,3 +12974,37 @@ combined Mac mini/SSH acceptance remain open. See the
 [plan](../plans/STAGE_2.md#s2-3539--local-only-bounded-register-immediate-psraw),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-immediate-psraw-profile--s2-3539),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3539-local-register-psraw-immediate-diagnostic-profile).
+
+
+## S2-35.41 — local PSLLD immediate register profile
+
+Added `s2-long-pslld-imm-reg-v1` for exact `66 [no REX or optional 41] 0F
+72 /6 ib`, ModR/M.mod=3. `/6` is required and ModR/M.r/m selects XMM0–15;
+REX.B extends the destination. Four independent little-endian u32 lanes shift
+logically left by unsigned unmasked imm8. Counts 0–31 retain the low 32 bits;
+counts >=32 clear each lane. The implementation does not mask the count or
+carry bits across lanes, and preserves flags/MXCSR.
+
+The local test matrix checks all 256 counts on each destination with a widened
+u64 reference, boundary values, walking bits and a reproducible raw lane vector;
+strict selector/opcode and prefix negatives, no-data-callback and full-state
+preservation, missing SSE and STOP/zero-budget atomicity, instruction-fetch
+truncation/page crossing, complete cross-boundary fetch, and the handwritten
+XMM9 fixture with JIT denied are included. The native runner denies this profile
+before mapping/process setup. Linux native denial is compile-only on Darwin.
+SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 remain assumptions; physical SSE/SSE2
+execution is not run. S2-34, S2-35, global `S2-35 → S2-34`, physical validation,
+and combined Mac mini/SSH acceptance remain open. See the
+[plan](../plans/STAGE_2.md#s2-3541--local-only-bounded-register-immediate-pslld),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-immediate-pslld-profile--s2-3541),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3541-local-register-pslld-immediate-diagnostic-profile).
+
+
+Local verification: `cargo test -p od-isa pslld --offline` passed (5 tests),
+and `cargo test -p od-runner --test fixture_v2 pslld --offline` passed (1 test).
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --tests --offline --target
+x86_64-unknown-linux-gnu`, and `git diff --check`, and `graphify update .` passed. The Linux-only native
+deny test was compile-checked, not executed on this Darwin host. Independent
+`gpt-6.1-sol` medium review found no remaining findings and independently
+reran the PSLLD interpreter and fixture tests.

@@ -432,6 +432,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.37 | Local-only bounded register PSLLW immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.38 | Local-only bounded register PSRLW immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.39 | Local-only bounded register PSRAW immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [ ] | S2-35.41 | Local-only bounded register PSLLD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
@@ -8787,6 +8788,39 @@ setup; Linux-only guard is compile-only on Darwin. Other shifts, memory/MMX,
 REX.R/X/W and bare REX, VEX/EVEX, feature gates, exception delivery and physical
 execution remain excluded. S2-34, S2-35, global `S2-35 → S2-34`, and combined
 Mac mini/SSH acceptance remain open.
+
+#### S2-35.41 — local-only bounded register immediate `PSLLD`
+
+The profile `s2-long-pslld-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 72 /6 ib`, ModR/M.mod=3. ModR/M.r/m
+selects destination XMM0–15; `/6` is required. Four independent little-endian
+u32 lanes shift logically left by unsigned imm8. Counts 0–31 retain the low
+32 result bits; counts >=32 clear every lane without masking the count. There
+is no cross-lane carry; flags and MXCSR are unchanged. SSE2 and CR0.EM=0,
+CR0.TS=0, CR4.OSFXSR=1 remain assumptions only.
+
+Local checks cover all 256 counts on each of 16 destinations and compare the
+sub-32 results with a u64 reference across boundary values, walking bits and a
+carry-chain vector. They also cover strict /6 and 0F 72 sibling negatives,
+full-state/source preservation, no data callbacks, missing SSE state,
+STOP/zero-budget atomicity, immediate truncation/page crossing, and complete
+cross-boundary fetch. The handwritten XMM9 fixture checks interpreter execution
+with JIT denied. Native denial is before mapping/process setup; Linux-only guard
+is compile-only on Darwin. Other shifts, memory/MMX, REX.R/X/W, extra prefixes,
+VEX/EVEX, feature gates, exception delivery and physical execution remain
+excluded.
+
+S2-35.41 implementation check (2026-10-27): `cargo test -p od-isa pslld
+--offline` passed (5 tests), including all 256 counts on all 16 destinations,
+u64 reference vectors, strict decode negatives, page-crossing fetch, state and
+atomicity checks. `cargo test -p od-runner --test fixture_v2 pslld --offline`
+passed (1 test), verifying the handwritten fixture, profile rejection matrix,
+and JIT denial. Formatting, workspace all-target offline check, Linux-target
+x86-runner test compilation, `git diff --check`, and Graphify update passed.
+Linux native denial
+is compile-only on this Darwin host. Independent `gpt-6.1-sol` medium review
+found no remaining findings and independently reran the PSLLD interpreter and
+fixture tests.
 
 S2-35.39 implementation check (2026-10-27): focused PSRAW interpreter tests
 passed (5), including exhaustive counts/word values, every count on all XMM
