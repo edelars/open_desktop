@@ -704,9 +704,19 @@ fn is_checked_memory_address(
             8 => i32::try_from(operand.displacement).is_ok(),
             _ => false,
         };
+    let rsp_base_rbp_indexed_sib = matches!(instruction_length, 4 | 5 | 8)
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+        && operand.index == Some(od_isa::Register::Rbp)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && match instruction_length {
+            4 => operand.displacement == 0,
+            5 => (i8::MIN as i64..=i8::MAX as i64).contains(&operand.displacement),
+            8 => (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement),
+            _ => false,
+        };
     let supported_index = match operand.index {
         Some(index) => {
-            (matches!(index as u8, 0..=3) || rbp_indexed_sib)
+            (matches!(index as u8, 0..=3) || rbp_indexed_sib || rsp_base_rbp_indexed_sib)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && match instruction_length {
                     4 => operand.displacement == 0,
@@ -783,6 +793,7 @@ fn is_scoped_memory_data_operand(
             && (is_indexed_qword_sib_data_operand(operand, instruction_length)
                 || is_indexed_no_base_qword_sib_data_operand(operand, instruction_length)
                 || is_rbp_index_qword_sib_data_operand(operand, instruction_length)
+                || is_rsp_base_rbp_index_qword_sib_data_operand(operand, instruction_length)
                 || (operand.index.is_none()
                     && operand.scale == 1
                     && match data_register {
@@ -1061,6 +1072,24 @@ fn is_rbp_index_qword_sib_data_operand(operand: MemoryOperand, instruction_lengt
             operand.base,
             AddressBase::Register(register) if (register as u8) < 4
         )
+        && operand.index == Some(od_isa::Register::Rbp)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && match instruction_length {
+            4 => operand.displacement == 0,
+            5 => i8::try_from(operand.displacement).is_ok(),
+            8 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
+        && operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
+}
+
+fn is_rsp_base_rbp_index_qword_sib_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    matches!(instruction_length, 4 | 5 | 8)
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
         && operand.index == Some(od_isa::Register::Rbp)
         && matches!(operand.scale, 1 | 2 | 4 | 8)
         && match instruction_length {

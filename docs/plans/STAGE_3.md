@@ -198,6 +198,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20ax | Address32 indexed no-base SIB disp32 qword MOV | Только `67 48 8B/89 /r sib disp32`, ModRM `mod=00,r/m=100`, SIB base=101/index RAX..RBX/scale 1/2/4/8, data RAX..RBP; Dword EA/Qword transfer; длина 9 |
 | [partial] | S3-20ay | Address64 no-displacement SIB qword MOV с индексом RBP | Только `48 8B/89 /r sib`, ModRM `mod=00,r/m=100`, base RAX..RBX, index RBP, scale 1/2/4/8, data RAX..RBP; длина 4; остальные индексные профили остаются exact |
 | [partial] | S3-20ba | Address32 indexed SIB qword MOV with RBP index | Только `67 48 8B/89 /r sib [disp8|disp32]`, ModRM `mod=00/01/10,r/m=100`, base RAX..RBX, index RBP, scale 1/2/4/8, data RAX..RBP; Dword EA/Qword data; длины 5/6/9 |
+| [partial] | S3-20bb | Address64 indexed SIB qword MOV with RSP base and RBP index | Только `48 8B/89 /r sib [disp8|disp32]`, ModRM `mod=00/01/10,r/m=100`, SIB base=RSP/index=RBP, scale 1/2/4/8, data RAX..RBP; длины 4/5/8 |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1707,6 +1708,12 @@ The focused matrices cover source/decoded-profile validation, direct V2/shared I
 Добавить exact singleton `67 48 8B/89 /r sib [disp8|disp32]`: ModRM `mod=00/01/10,r/m=100`, base RAX..RBX, индекс ровно RBP, scale 1/2/4/8, data RAX..RBP; длины 5/6/9, Dword EA и Qword transfer. Существующие 20ay/20az address64 profiles и address32 SIB profiles остаются отдельными; не расширять общий index whitelist и не принимать stack/no-base base, другие индексы, дополнительные prefixes, пары или V3. Decoder `MemoryOperand`/`access_address_48` остаётся единственным источником low32 base/index/displacement семантики.
 
 Приёмка покрывает load/store ×6 data ×4 base ×4 scale и no-disp/disp8/disp32 с signed краями; сравнивает direct V2/shared IR/interpreter полное state/RAM/callback/retirement. Проверяются independent `(low32(base) + low32(RBP)*scale + signed displacement) mod 2^32`, high halves, aliases из pre-state, qword callback через 4 GiB, byte-nine effect, architectural/backend no-commit, store+STOP, partial windows и invalid соседние формы. Bounded dispatcher должен продолжить с фактического RIP после budget split без повторного эффекта. Отчёт: [S3-20ba report](../reports/STAGE_3_S3-20ba_2026-10-27.md). Owner/MMU, Stage 2/ISA, Mini, physical x86 и performance не входят в этот срез.
+
+#### S3-20bb. Address64 indexed SIB с RSP base и RBP index
+
+Добавить exact singleton `48 8B/89 /r sib [disp8|disp32]`: ModRM `mod=00/01/10,r/m=100`, SIB base=RSP/index=RBP, scale 1/2/4/8, data RAX..RBP; длины 4/5/8. Общий whitelist индексов не расширяется: добавляется только точная пара RSP base + RBP index, отдельно от ранее принятых RSP-base/low-index и low-base/RBP-index профилей. Нет `67`, RBP/no-base base, других новых индексов, дополнительных prefix, pair или V3. `MemoryOperand` и `access_address_48` остаются единственным источником EA semantics и wrapping u64.
+
+Приёмка покрывает load/store ×6 data ×4 scale × no-disp/disp8/disp32 signed границы с direct V2/shared IR/interpreter parity и independent formula `RSP + RBP*scale + signed displacement mod 2^64`. Host evidence включает aliases из pre-state, u64 wrap, #SS для noncanonical qword начала/конца по RSP base без callback, #GP control по low-GPR base, AddressOverflow отдельно от guest fault, backend no-commit с exact callback, store+STOP commit, dispatcher NOP/pair continuation и partial windows без effects. Отчёт: [S3-20bb report](../reports/STAGE_3_S3-20bb_2026-10-27.md). Owner/MMU, Stage 2/ISA, Mini, physical x86 и performance вне этого среза.
 
 ### S3-21. Подтвердить memory slice на физическом x86
 
