@@ -787,6 +787,11 @@ fn is_checked_memory_address(
                     || matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
                     || matches!(instruction_length, 5 | 8)
                         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
+                    || instruction_length == 4
+                        && matches!(
+                            operand.base,
+                            AddressBase::Register(od_isa::Register::Rsi | od_isa::Register::Rdi)
+                        )
                     || instruction_length == 8 && matches!(operand.base, AddressBase::None))
         }
         None => operand.scale == 1,
@@ -798,6 +803,14 @@ fn is_checked_memory_address(
             || operand.index.is_some()
                 && matches!(instruction_length, 5 | 8)
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
+            || instruction_length == 4
+                && operand.index.is_some_and(|index| (index as u8) < 4)
+                && matches!(operand.scale, 1 | 2 | 4 | 8)
+                && operand.displacement == 0
+                && matches!(
+                    operand.base,
+                    AddressBase::Register(od_isa::Register::Rsi | od_isa::Register::Rdi)
+                )
             || instruction_length == 4
                 && operand.index.is_none()
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
@@ -1240,6 +1253,11 @@ fn is_indexed_qword_sib_data_operand(operand: MemoryOperand, instruction_length:
     };
     (matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
         || matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+        || instruction_length == 4
+            && matches!(
+                operand.base,
+                AddressBase::Register(od_isa::Register::Rsi | od_isa::Register::Rdi)
+            )
         || matches!(instruction_length, 5 | 8)
             && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp)))
         && operand.index.is_some_and(|register| (register as u8) < 4)
