@@ -680,9 +680,17 @@ fn is_checked_memory_address(
     if operand.address_size != od_isa::OperandSize::Qword {
         return false;
     }
+    let rbp_index_no_disp_sib = instruction_length == 4
+        && matches!(
+            operand.base,
+            AddressBase::Register(register) if (register as u8) < 4
+        )
+        && operand.index == Some(od_isa::Register::Rbp)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && operand.displacement == 0;
     let supported_index = match operand.index {
         Some(index) => {
-            matches!(index as u8, 0..=3)
+            (matches!(index as u8, 0..=3) || rbp_index_no_disp_sib)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && match instruction_length {
                     4 => operand.displacement == 0,
@@ -758,6 +766,7 @@ fn is_scoped_memory_data_operand(
         && ((operand.address_size == od_isa::OperandSize::Qword
             && (is_indexed_qword_sib_data_operand(operand, instruction_length)
                 || is_indexed_no_base_qword_sib_data_operand(operand, instruction_length)
+                || is_rbp_index_qword_sib_data_operand(operand, instruction_length)
                 || (operand.index.is_none()
                     && operand.scale == 1
                     && match data_register {
@@ -1009,6 +1018,19 @@ fn is_indexed_qword_sib_data_operand(operand: MemoryOperand, instruction_length:
         && operand.index.is_some_and(|register| (register as u8) < 4)
         && matches!(operand.scale, 1 | 2 | 4 | 8)
         && displacement_valid
+}
+
+fn is_rbp_index_qword_sib_data_operand(operand: MemoryOperand, instruction_length: u64) -> bool {
+    instruction_length == 4
+        && matches!(
+            operand.base,
+            AddressBase::Register(register) if (register as u8) < 4
+        )
+        && operand.index == Some(od_isa::Register::Rbp)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && operand.displacement == 0
+        && operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
 }
 
 fn validate_flags(flags: FlagEffect, operation: usize) -> Result<(), VerifyError> {

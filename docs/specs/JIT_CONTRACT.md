@@ -2215,6 +2215,12 @@ Admit only singleton `67 48 8B/89 /r sib disp32`: ModRM `mod=00,r/m=100`, SIB ba
 
 Evidence compares direct V2, shared IR, interpreter, and borrowed dispatcher for both operations, six data registers, four indices, scales, and signed disp32 edges. It includes independent low32 EA formulas with nonzero index high halves, data=index pre-state, ninth-byte artifact identity, qword crossing at `0xffff_ffff`, exact callback identity and retirement, guest/backend no-commit, store+STOP, budgets and actual-RIP continuation without replay, partial windows 1..8, and rejected SIB neighbors. Production owner/MMU integration, Stage 2/ISA, Mini, physical x86, and performance remain open.
 
+#### S3-20ay: qword SIB access with RBP index
+
+Admit only singleton `48 8B/89 /r sib`: ModRM `mod=00,r/m=100`, base RAX..RBX, index RBP, scale 1/2/4/8, data RAX..RBP, exact length four. This is a narrow separate index=RBP branch; generic index admission stays RAX..RBX. SIB index field `100` with `REX.X=0` remains no-index and never aliases RBP. Other SIB combinations, displacement/prefix forms, and special base encodings are not admitted by this branch; previously bounded no-index, RSP-base, RBP-base, and no-base profiles keep their separate validators. The decoded `MemoryOperand` and `access_address_48` alone compute `base + RBP*scale` with u64 wrapping and canonical/range checks.
+
+Descriptor and host evidence cover load/store × six data registers × four low bases × four scales, with independent target formulas, high RBP bits, `data=RBP`/`data=base` pre-state aliases, full qword stores, and direct V2/shared IR/interpreter state/RAM/callback/retirement parity. Fault coverage includes #GP for noncanonical start/end before callback, qword endpoint AddressOverflow, backend error classification and callback target, and committed store+STOP. The dispatcher resumes from the actual RIP after a budget split without repeating the SIB access. Partial windows and disallowed RSP/no-base bases with RBP index, RSI/RDI index, displacement, and prefix forms are rejected. The existing no-index SIB `0x24` and no-base `0x2d` profiles remain separately gated. See [S3-20ay report](../reports/STAGE_3_S3-20ay_2026-10-27.md). Production owner/MMU integration, Stage 2/ISA, Mini, physical x86, and performance remain open.
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

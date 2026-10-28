@@ -170,6 +170,16 @@ impl MemorySiteV2 {
                 8 => i32::try_from(self.operand.displacement).is_ok(),
                 _ => false,
             };
+        let rbp_index_no_disp_sib_data_profile = length == 4
+            && self.operand.address_size == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Qword
+            && matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4
+            )
+            && self.operand.index == Some(od_isa::Register::Rbp)
+            && matches!(self.operand.scale, 1 | 2 | 4 | 8)
+            && self.operand.displacement == 0;
         let address32_direct_data_profile = self.operand.address_size == od_isa::OperandSize::Dword
             && self.operand.size == od_isa::OperandSize::Qword
             && self.operand.index.is_none()
@@ -277,6 +287,7 @@ impl MemorySiteV2 {
             || (self.operand.address_size == od_isa::OperandSize::Qword
                 && self.operand.size == od_isa::OperandSize::Qword
                 && (indexed_sib_data_profile
+                    || rbp_index_no_disp_sib_data_profile
                     || (self.operand.index.is_none()
                         && self.operand.scale == 1
                         && match data_register {
@@ -491,7 +502,7 @@ impl MemorySiteV2 {
                         | od_isa::Register::Rcx
                         | od_isa::Register::Rdx
                         | od_isa::Register::Rbx
-                )
+                ) && !rbp_index_no_disp_sib_data_profile
             })
             || !matches!(
                 self.operand.address_size,
@@ -930,6 +941,16 @@ impl MemorySiteV2 {
                     && self.operand.index.is_none()
                     && self.operand.scale == 1
                     && i32::try_from(self.operand.displacement).is_ok();
+            }
+            if mode == 0 && source.len() == 4 && sib & 7 < 4 && (sib >> 3) & 7 == 5 {
+                return data_register <= 5
+                    && self.next_rip.checked_sub(self.guest_rip) == Some(4)
+                    && self.operand.address_size == od_isa::OperandSize::Qword
+                    && self.operand.size == od_isa::OperandSize::Qword
+                    && od_isa::Register::from_encoding(sib & 7) == Some(decoded_base)
+                    && self.operand.index == Some(od_isa::Register::Rbp)
+                    && self.operand.scale == 1_u8 << (sib >> 6)
+                    && self.operand.displacement == 0;
             }
             (base < 4
                 || base == 4 && decoded_base == od_isa::Register::Rsp

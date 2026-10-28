@@ -659,6 +659,12 @@ pub fn compile_ir_memory_store_block_v2(
             entry_rip,
             bytes.len() as u8,
             0x89,
+        )
+        || crate::block::exact_qword_rbp_index_sib_memory_bytes(
+            code,
+            entry_rip,
+            bytes.len() as u8,
+            0x89,
         ))
         || !site.has_supported_profile()
         || !site.matches_source_bytes(bytes, MemorySiteOperationV2::Store)
@@ -820,6 +826,12 @@ fn checked_load_metadata_v2(
                 0x8b,
             )
             || crate::block::exact_qword_address32_indexed_no_base_sib_disp32_memory_bytes(
+                code,
+                entry_rip,
+                decoded.length,
+                0x8b,
+            )
+            || crate::block::exact_qword_rbp_index_sib_memory_bytes(
                 code,
                 entry_rip,
                 decoded.length,
@@ -1678,7 +1690,7 @@ mod tests {
                 vec![0x48, opcode, 0x04],             // truncated before SIB
                 vec![0x48, opcode, 0x04, 0x20],       // no-index
                 vec![0x48, opcode, 0x04, 0x05],       // no-base
-                vec![0x48, opcode, 0x04, 0x28],       // RSP base
+                vec![0x48, opcode, 0x04, 0x30],       // RSI index
                 vec![0x4a, opcode, 0x04, 0x18],       // extended index
                 vec![0x49, opcode, 0x04, 0x18],       // extended base
                 vec![0x48, opcode, 0x04, 0x18, 0x90], // trailing byte
@@ -3004,7 +3016,7 @@ mod tests {
             vec![0x48, 0x8b, 0x30],       // unsupported RSI data register
             vec![0x48, 0x8b, 0xc0],       // register-register mod=11
             vec![0x48, 0x8b, 0x04],       // truncated SIB
-            vec![0x48, 0x8b, 0x04, 0x28], // RBP base requires disp32
+            vec![0x48, 0x8b, 0x04, 0x30], // unsupported RSI index
             vec![0x48, 0x8b, 0x04, 0x20], // no-index SIB
             vec![0x48, 0x8b, 0x04, 0x05], // no-base SIB requires disp32
             vec![0x48, 0x8b, 0x04, 0x2d, 0, 0, 0, 0], // no-base with unsupported RBP index
@@ -5015,5 +5027,101 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn indexed_rbp_sib_without_displacement_is_exact_for_all_data_and_base_registers() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in 0..6_u8 {
+                for base_register in 0..4_u8 {
+                    for scale in [1_u8, 2, 4, 8] {
+                        let sib = (scale.trailing_zeros() as u8) << 6 | (5 << 3) | base_register;
+                        let source = [0x48, opcode, (data_register << 3) | 4, sib];
+                        let code = CodeView::new(0x2d00, &source).unwrap();
+                        let site = match operation {
+                            MemorySiteOperationV2::Load => {
+                                let direct = compile_memory_load_block_v2(code, 0x2d00).unwrap();
+                                let ir = compile_ir_memory_load_block_v2(code, 0x2d00).unwrap();
+                                assert_eq!(ir.site(), direct.site());
+                                ir.site().clone()
+                            }
+                            MemorySiteOperationV2::Store => {
+                                let direct = compile_memory_store_block_v2(code, 0x2d00).unwrap();
+                                let ir = compile_ir_memory_store_block_v2(code, 0x2d00).unwrap();
+                                assert_eq!(ir.site(), direct.site());
+                                ir.site().clone()
+                            }
+                        };
+                        assert!(site.has_supported_profile(), "{source:02x?}");
+                        assert!(site.matches_source_bytes(&source, operation));
+                        assert_eq!(site.next_rip(), 0x2d04);
+                        assert_eq!(site.operand.address_size, od_isa::OperandSize::Qword);
+                        assert_eq!(site.operand.size, od_isa::OperandSize::Qword);
+                        assert_eq!(
+                            site.operand.base,
+                            od_isa::long_decode::AddressBase::Register(
+                                od_isa::Register::from_encoding(base_register).unwrap()
+                            )
+                        );
+                        assert_eq!(site.operand.index, Some(od_isa::Register::Rbp));
+                        assert_eq!(site.operand.scale, scale);
+                        assert_eq!(site.operand.displacement, 0);
+                    }
+                }
+            }
+        }
+
+        for opcode in [0x8b, 0x89] {
+            for source in [
+                vec![0x48, opcode, 0x04, 0x2c],             // RSP base plus RBP index
+                vec![0x48, opcode, 0x04, 0x2d],             // no-base plus RBP index
+                vec![0x48, opcode, 0x04, 0x30],             // RSI index is outside the whitelist
+                vec![0x48, opcode, 0x04, 0x38],             // RDI index is outside the whitelist
+                vec![0x48, opcode, 0x44, 0x28, 0],          // indexed disp8 neighbor
+                vec![0x48, opcode, 0x84, 0x28, 0, 0, 0, 0], // indexed disp32 neighbor
+                vec![0x67, 0x48, opcode, 0x04, 0x28],       // address32 neighbor
+                vec![0x48, 0x67, opcode, 0x04, 0x28],       // reordered prefix
+            ] {
+                let code = CodeView::new(0x2d00, &source).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x2d00).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x2d00).map(|_| ())
+                };
+                assert!(
+                    result.is_err(),
+                    "unsupported SIB neighbor admitted {source:02x?}"
+                );
+            }
+            let complete = [0x48, opcode, 0x04, 0x28];
+            for length in 1..4 {
+                let code = CodeView::new(0x2d00, &complete[..length]).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x2d00).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x2d00).map(|_| ())
+                };
+                assert!(
+                    result.is_err(),
+                    "partial RBP-index SIB admitted at {length}"
+                );
+            }
+        }
+
+        // SIB index=100 is still the no-index encoding; it never aliases RBP.
+        let no_index = [0x48, 0x8b, 0x04, 0x24];
+        let site =
+            compile_ir_memory_load_block_v2(CodeView::new(0x2d00, &no_index).unwrap(), 0x2d00)
+                .unwrap()
+                .site()
+                .clone();
+        assert_eq!(
+            site.operand.base,
+            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+        );
+        assert_eq!(site.operand.index, None);
     }
 }
