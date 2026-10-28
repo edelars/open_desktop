@@ -133,6 +133,62 @@ Vol. 1 Rev. 093, §§4.8.2, 4.8.4, 4.8.3.1, and 4.9
 the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36c-exact-finite-quotient-and-remainder)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-36c--exact-finite-quotient-and-remainder).
 
+## S2-36d — shared exact rational precision rounding
+
+**Статус:** implementation and author checks are complete; independent Sol
+medium code review completed clean, with no findings. The private
+`rational_rounding` module now owns
+`RationalRoundingMode` and the shared rounding implementation. The enum is
+re-exported through `binary_float` and `x87`. The new public binary helper is
+`round_quotient_to_precision(sign, q, r, d, precision, mode) ->
+Option<(u128, bool)>`; its tuple is unsigned rounded magnitude and `inexact`.
+The existing public x87 helper retains its signature and result type, delegates
+to the shared implementation, and discards `inexact`.
+
+The helper rounds the exact coefficient `(-1)^sign * (q + r/d)` to precision
+1…64 using nearest ties to even, toward zero, toward positive, or toward
+negative. It combines discarded `q` bits with the exact `r/d` tail, so nearest
+ties and directed increments use the full exact remainder. `inexact` is true
+when either discarded `q` bits or `r` are nonzero. A rounding carry is
+preserved as magnitude `2^precision`; the helper does not adjust an exponent,
+pack a binary32/binary64 result, or update status. A zero coefficient returns
+unsigned magnitude 0 and `inexact=false`, without selecting a guest zero sign.
+If `k = 64 - precision`, the rounded coefficient represented by the returned
+magnitude is `magnitude * 2^k`. When composed with an S2-36c quotient at
+exponent `e`, the represented value is
+`(-1)^sign * magnitude * 2^(e + 1 - precision)`.
+
+Inputs are rejected with `None` when precision is outside 1…64, `d == 0`,
+`r >= d`, `q` is nonzero but below `2^63`, or `q == 0 && r != 0`. No floating
+point exceptions, architectural status flags, instruction execution, or x87
+API/behavior changes are claimed.
+
+Author-reported checks passed:
+
+- `cargo test -p od-isa --offline binary_float::tests`: 11/11.
+- `cargo test -p od-isa --offline x87::tests`: 47/47.
+- `cargo check --workspace --all-targets --offline`.
+- `cargo fmt --all -- --check` and `git diff --check`.
+- `graphify update .` exited successfully and emitted the existing
+  `include/open_desktop/host_abi.h` extractor syntax warning.
+
+The binary tests include literal precision-24 and precision-53 ties and
+non-ties, precision-63/64 cases with rational tails, precision-1 boundaries,
+and a precision-64 carry to `2^64`. They verify all four modes on positive and
+negative inputs, inexact from either discarded bits or a rational remainder,
+exact results, and rejection of precisions 0/65/`u32::MAX`, zero denominator,
+`r >= d`, unnormalized nonzero `q`, and a zero `q` with nonzero `r`. A
+binary32/64 division composition test checks the helper at precisions 24, 53,
+and 64. The author reports both focused test commands passed without warnings.
+
+Independent Sol medium code review completed clean; no findings remain. S2-36
+rounding and exception integration plus S2-37/S2-38 remain open. Normative
+context: Intel
+SDM Vol. 1 Rev. 093, §§4.8.2, 4.8.4, 4.8.3.1, and 4.9
+([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-36d-shared-exact-rational-precision-rounding)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-36d--shared-exact-rational-precision-rounding).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

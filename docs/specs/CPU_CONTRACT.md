@@ -10379,3 +10379,41 @@ Independent Sol medium code review completed clean; both reported findings
 were resolved, and no findings remain. See the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36c--exact-finite-quotient-and-remainder)
 and [plan](../plans/STAGE_2.md#s2-36c--exact-finite-quotient-and-remainder).
+
+## Local S2-36d: shared exact rational precision rounding
+
+`binary_float::round_quotient_to_precision(sign, q, r, d, precision, mode)`
+returns `Option<(u128, bool)>`: an unsigned rounded magnitude and an `inexact`
+indicator. It rounds the exact mathematical coefficient
+`(-1)^sign * (q + r/d)` to precision 1…64. The supported mathematical modes
+are nearest ties to even, toward zero, toward positive, and toward negative.
+`RationalRoundingMode` is defined in a private shared module and re-exported
+from both `binary_float` and `x87`.
+
+For nonzero normalized `q`, let `k = 64 - precision`. The result keeps the top
+`precision` bits as an integer magnitude; the rounded coefficient represented
+by that magnitude is `magnitude * 2^k`. When composed with an S2-36c division
+result with exponent `e`, its represented value is
+`(-1)^sign * magnitude * 2^(e + 1 - precision)`. The rounding increment is
+determined from the discarded low bits together with the exact rational
+remainder. `inexact` is true exactly when discarded `q`
+bits or `r` are nonzero. Nearest mode compares the full tail, including exact
+ties; directed modes increment only when the result is inexact and the
+requested direction is away from zero for the value's sign. A carry is
+returned as magnitude `2^precision`; this helper does not change an exponent
+or pack a floating-point encoding. A zero coefficient returns `(0, false)`;
+no signed zero is selected.
+
+The helper returns `None` for precision outside 1…64, `d == 0`, `r >= d`, a
+nonzero `q < 2^63`, or `q == 0 && r != 0`. The existing public
+`x87::round_quotient_to_precision` signature remains `Option<u128>` and
+delegates to the shared helper while discarding the inexact indicator. Its
+previous result behavior remains covered by x87 tests. This mathematical
+contract adds no exponent adjustment, packing, status flags, exceptions, or
+instruction execution. S2-36 rounding integration and S2-37/S2-38 remain open.
+Normative context: Intel SDM Vol. 1 Rev. 093 (September 2026), §§4.8.2, 4.8.4,
+4.8.3.1, and 4.9
+([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)).
+Independent Sol medium code review completed clean; no findings remain. See the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36d--shared-exact-rational-precision-rounding)
+and [plan](../plans/STAGE_2.md#s2-36d--shared-exact-rational-precision-rounding).

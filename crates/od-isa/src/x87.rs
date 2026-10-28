@@ -10,6 +10,8 @@
 //! Vol. 1 §§4.2.2 and
 //! 8.2.2, Tables 4-3 and 8-3).
 
+pub use crate::rational_rounding::RationalRoundingMode;
+
 /// An immutable, lossless 80-bit x87 double-extended encoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct X87Binary80([u8; 10]);
@@ -54,17 +56,6 @@ pub struct X87FiniteQuotient {
     quotient: u64,
     remainder: u64,
     denominator: u64,
-}
-
-/// Mathematical rounding direction for an exact rational coefficient.
-///
-/// These modes do not represent x87 control-word values or instruction state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RationalRoundingMode {
-    NearestTiesEven,
-    TowardZero,
-    TowardPositive,
-    TowardNegative,
 }
 
 impl X87FiniteQuotient {
@@ -217,37 +208,8 @@ pub fn round_quotient_to_precision(
     precision: u32,
     mode: RationalRoundingMode,
 ) -> Option<u128> {
-    if !(1..=64).contains(&precision) || d == 0 || r >= d {
-        return None;
-    }
-    if (q == 0 && r != 0) || (q != 0 && q < (1_u64 << 63)) {
-        return None;
-    }
-
-    if q == 0 {
-        return Some(0);
-    }
-
-    let k = 64 - precision;
-    let t = q >> k;
-    let lo = q - (t << k);
-    let inexact = lo != 0 || r != 0;
-    let increment = match mode {
-        RationalRoundingMode::NearestTiesEven => {
-            if k == 0 {
-                let complement = d - r;
-                r > complement || (r == complement && t & 1 != 0)
-            } else {
-                let halfway = 1_u64 << (k - 1);
-                lo > halfway || (lo == halfway && (r != 0 || t & 1 != 0))
-            }
-        }
-        RationalRoundingMode::TowardZero => false,
-        RationalRoundingMode::TowardPositive => inexact && !sign,
-        RationalRoundingMode::TowardNegative => inexact && sign,
-    };
-
-    Some(u128::from(t) + u128::from(increment))
+    crate::rational_rounding::round_quotient_to_precision(sign, q, r, d, precision, mode)
+        .map(|(magnitude, _)| magnitude)
 }
 
 /// Pack an already-rounded, nonzero normal significand into binary80.

@@ -457,6 +457,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36a | Lossless binary32/binary64 classification and exact finite normalization; no arithmetic | S2-36; independent review |
 | [x] | S2-36b | Exact unrounded product of finite normalized significands; mathematical helper only | S2-36a; independent review |
 | [x] | S2-36c | Exact finite quotient/remainder decomposition; no rounding or packing | S2-36a; independent review |
+| [x] | S2-36d | Shared exact rational precision rounding with inexact indication | S2-36c; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -4821,6 +4822,53 @@ recorded in the
 Normative context: Intel SDM Vol. 1 Rev. 093, §§4.8.2, 4.8.4, 4.8.3.1, and 4.9
 ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)). S2-36
 rounding/packing and S2-37/S2-38 remain open.
+
+#### S2-36d — shared exact rational precision rounding
+
+Add `binary_float::round_quotient_to_precision(sign, q, r, d, precision,
+mode) -> Option<(u128, bool)>` as a public mathematical helper. It rounds the
+exact coefficient `(-1)^sign * (q + r/d)` to a requested precision in the
+inclusive range 1…64 and returns the unsigned rounded magnitude plus an
+`inexact` indication. `RationalRoundingMode` is shared from the private
+`rational_rounding` module and publicly re-exported through both `binary_float`
+and `x87`. The four modes are nearest ties to even, toward zero, toward
+positive, and toward negative.
+
+For nonzero normalized `q`, retain only the top `precision` bits as `t`; the
+discard count is `k = 64 - precision`. The rounded coefficient represented
+by the returned magnitude is `magnitude * 2^k`; when composed with an S2-36c
+quotient whose exponent is `e`, the rounded value is
+`(-1)^sign * magnitude * 2^(e + 1 - precision)`. The discarded low bits and
+exact rational remainder jointly determine inexactness and whether rounding
+increments `t`. Nearest rounding compares the combined
+tail exactly, including ties; directed modes increment only for an inexact
+result in the direction of the sign. A carry is returned as magnitude
+`2^precision` and does not adjust an exponent or pack binary32/binary64. The
+helper returns no sign or signed zero; the zero coefficient returns `(0,
+false)`, independent of the input sign.
+
+Reject precision outside 1…64, `d == 0`, `r >= d`, a nonzero unnormalized
+`q < 2^63`, and `q == 0 && r != 0` with `None`. Preserve the existing public
+`x87::round_quotient_to_precision` signature and result: it delegates to the
+shared helper and discards the inexact bit. Its prior behavior and x87 rounding
+tests remain intact. This slice adds no exponent adjustment, packing,
+floating-point status flags, guest exceptions, or instruction semantics.
+
+Tests cover literal precision-24/53 ties and non-ties, precision-63/64 rational
+tails, precision-1 boundaries, a precision-64 carry to `2^64`, all four modes
+for both signs, exact/inexact results, invalid-input bounds, and composition
+with binary32/64 division at precisions 24/53/64. The implementation author
+reports `cargo test -p od-isa --offline binary_float::tests` passing 11/11 and
+`cargo test -p od-isa --offline x87::tests` passing 47/47, both without
+warnings. `cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, `git diff --check`, and Graphify update passed;
+Graphify emitted its existing `include/open_desktop/host_abi.h` extractor
+syntax warning. Independent Sol medium code review completed clean; no
+findings remain. S2-36
+rounding/exception integration and
+S2-37/S2-38 remain open. Normative context: Intel SDM Vol. 1 Rev. 093,
+§§4.8.2, 4.8.4, 4.8.3.1, and 4.9
+([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)).
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

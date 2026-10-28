@@ -5,6 +5,8 @@
 //! [`Binary64`] compares raw encodings, including NaN sign and payload; it does
 //! not model guest floating-point comparison.
 
+pub use crate::rational_rounding::RationalRoundingMode;
+
 /// The six value classes shared by IEEE 754 binary32 and binary64 encodings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BinaryClass {
@@ -340,11 +342,27 @@ pub fn divide_finite_significands(
     ))
 }
 
+/// Rounds an exact rational quotient to binary precision, preserving inexactness.
+///
+/// The result is the unsigned rounded magnitude and whether discarded bits or a
+/// rational remainder made the value inexact. A carry to `2^precision` is
+/// preserved; this does not pack a binary32/binary64 value or update flags.
+pub fn round_quotient_to_precision(
+    sign: bool,
+    q: u64,
+    r: u64,
+    d: u64,
+    precision: u32,
+    mode: RationalRoundingMode,
+) -> Option<(u128, bool)> {
+    crate::rational_rounding::round_quotient_to_precision(sign, q, r, d, precision, mode)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Binary32, Binary64, BinaryClass, BinaryFinite, BinaryFiniteQuotient,
-        divide_finite_significands, multiply_finite_significands,
+        Binary32, Binary64, BinaryClass, BinaryFinite, BinaryFiniteQuotient, RationalRoundingMode,
+        divide_finite_significands, multiply_finite_significands, round_quotient_to_precision,
     };
 
     fn normalized(
@@ -978,5 +996,123 @@ mod tests {
         assert_eq!(raw_denominator.to_bits(), denominator_before);
         assert_eq!(finite_numerator.exponent(), -1074);
         assert_eq!(finite_denominator.exponent(), 1);
+    }
+
+    #[test]
+    fn quotient_precision_rounding_matches_literal_vectors() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let cases = [
+            (0, 0, 1, 24, 0, false),
+            (0x8000_0000_0000_0000, 0, 1, 24, 0x0080_0000, false),
+            (0x8000_0080_0000_0000, 0, 1, 24, 0x0080_0000, true),
+            (0x8000_0180_0000_0000, 0, 1, 24, 0x0080_0002, true),
+            (0x8000_0000_0000_0400, 0, 1, 53, 0x0010_0000_0000_0000, true),
+            (0x8000_0000_0000_0c00, 0, 1, 53, 0x0010_0000_0000_0002, true),
+            (0x8000_0000_0000_0001, 1, 4, 63, 0x4000_0000_0000_0001, true),
+            (0x8000_0000_0000_0002, 1, 2, 64, 0x8000_0000_0000_0002, true),
+            (0x8000_0000_0000_0003, 1, 2, 64, 0x8000_0000_0000_0004, true),
+            (u64::MAX, 1, 2, 64, 1_u128 << 64, true),
+            (0xbfff_ffff_ffff_ffff, u64::MAX - 1, u64::MAX, 1, 1, true),
+            (0xc000_0000_0000_0000, 0, 1, 1, 2, true),
+        ];
+
+        for (q, r, d, precision, expected_magnitude, expected_inexact) in cases {
+            assert_eq!(
+                round_quotient_to_precision(false, q, r, d, precision, Nearest),
+                Some((expected_magnitude, expected_inexact)),
+                "q={q:#018x} r={r} d={d} p={precision}"
+            );
+        }
+    }
+
+    #[test]
+    fn quotient_precision_rounding_handles_modes_tail_and_invalid_inputs() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let modes = [Nearest, Zero, Up, Down];
+        for sign in [false, true] {
+            for (mode, expected) in [
+                (Nearest, 2),
+                (Zero, 2),
+                (Up, if sign { 2 } else { 3 }),
+                (Down, if sign { 3 } else { 2 }),
+            ] {
+                assert_eq!(
+                    round_quotient_to_precision(sign, 0xa000_0000_0000_0000, 0, 1, 2, mode,),
+                    Some((expected, true)),
+                    "sign={sign} mode={mode:?}"
+                );
+            }
+        }
+
+        let q = 0x8000_0000_0000_0000;
+        assert_eq!(
+            round_quotient_to_precision(false, q, 1, 4, 64, Nearest),
+            Some((u128::from(q), true)),
+        );
+        assert_eq!(
+            round_quotient_to_precision(false, q, 0, 4, 24, Nearest),
+            Some((0x0080_0000, false)),
+        );
+        for mode in modes {
+            for precision in [0, 65, u32::MAX] {
+                assert_eq!(
+                    round_quotient_to_precision(false, 0, 0, 1, precision, mode),
+                    None,
+                );
+            }
+            assert_eq!(round_quotient_to_precision(false, 7, 0, 0, 24, mode), None);
+            assert_eq!(round_quotient_to_precision(false, 7, 1, 1, 24, mode), None);
+            assert_eq!(round_quotient_to_precision(false, 1, 0, 1, 24, mode), None);
+            assert_eq!(round_quotient_to_precision(false, 0, 1, 2, 24, mode), None);
+        }
+    }
+
+    #[test]
+    fn quotient_precision_rounding_composes_with_binary_division() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let one = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let three = Binary64::from_bits(0x4008_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let quotient = divide_finite_significands(one, three).unwrap();
+        assert_eq!(
+            round_quotient_to_precision(
+                quotient.sign(),
+                quotient.quotient(),
+                quotient.remainder(),
+                quotient.denominator(),
+                24,
+                Nearest,
+            ),
+            Some((0x00aa_aaab, true)),
+        );
+        assert_eq!(
+            round_quotient_to_precision(
+                quotient.sign(),
+                quotient.quotient(),
+                quotient.remainder(),
+                quotient.denominator(),
+                53,
+                Nearest,
+            ),
+            Some((0x0015_5555_5555_5555, true)),
+        );
+        assert_eq!(
+            round_quotient_to_precision(
+                quotient.sign(),
+                quotient.quotient(),
+                quotient.remainder(),
+                quotient.denominator(),
+                64,
+                Nearest,
+            ),
+            Some((0xaaaa_aaaa_aaaa_aaab, true)),
+        );
     }
 }
