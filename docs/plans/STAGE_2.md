@@ -478,6 +478,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36v | Raw binary64-to-binary32 narrowing with explicit rounding mode and local diagnostics | S2-36a, S2-36m; independent review |
 | [x] | S2-36w | Bounded signed i64-to-binary32/binary64 value conversion with explicit rounding mode | S2-36d, S2-36e; independent review |
 | [x] | S2-36x | Bounded raw binary32/binary64-to-signed-i32 conversion with explicit rounding mode and local invalid outcome | S2-36a, S2-36m; independent review |
+| [x] | S2-36y | Bounded raw binary32/binary64-to-signed-i64 conversion with explicit rounding mode and local invalid outcome | S2-36x; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5672,6 +5673,41 @@ Vol. 1 §4.9.2 discusses invalid-exception precedence. These references do not
 extend this helper into architectural exception handling.
 [Official Intel Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)
 and [Vol. 1 PDF](https://cdrdv2-public.intel.com/835781/325462-sdm-vol-1-2abcd-3abcd-4.pdf).
+
+#### S2-36y — bounded raw binary32/binary64 to signed i64 conversion
+
+Add `Binary32::to_i64(mode)` and `Binary64::to_i64(mode)` as local value-only
+conversions returning `BinaryIntegerResult<i64>`. Preserve the existing
+`BinaryIntegerResult<T = i32>` default and the S2-36x i32 methods and results.
+Round the exact finite source value first, then validate the rounded magnitude
+against the signed i64 range. Both signed zeros produce exact zero. Non-finite
+sources or rounded out-of-range values return the `i64::MIN` sentinel with
+`invalid_operation=true` and `inexact=false`; exact `-2^63` remains a valid
+result. Valid inexact conversions report a discarded fractional source part.
+This helper does not mutate the source, CPU state, or MXCSR, and does not
+deliver architectural exceptions.
+
+Use one private integer-magnitude rounding helper for i32 and i64. Preserve the
+common zero and exponent-below-zero cases, reject exponents above 63, and use
+`rational_rounding::round_quotient_to_precision` for exponents 0 through 63 so
+the 64-bit halfway case never constructs an overflowing shift. Keep typed
+range checks and minimum-value formation in each wrapper; do not add a public
+destination-width framework or x87/executor dependency.
+
+Literal tests cover both source widths and all four modes, exact and fractional
+values, exponents 31/32, 52/53, 62/63/64, huge finite values, and non-finite
+classes. Boundary cases use the actual neighboring encodings around ±2^63:
+binary32's largest positive value below 2^63 is 2^63−2^39, while binary64's is
+2^63−1024. Do not posit fractional binary64 values between those neighboring
+encodings. Verify valid exact `-2^63`, the invalid positive `2^63`, invalid
+adjacent out-of-range encodings, invalid-result suppression of inexactness,
+and source immutability. Preserve and rerun the unchanged S2-36x i32 suite.
+
+Provenance: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` p. 3-232,
+`CVTSS2SI` p. 3-242, `CVTTSD2SI` p. 3-253, and `CVTTSS2SI` p. 3-255 specify
+REX.W signed quadword conversion, rounding/truncation, and masked indefinite
+behavior. This local helper does not implement MXCSR or architectural delivery.
+Full S2-36/Stage 2 acceptance and hardware/Mac mini validation remain open.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

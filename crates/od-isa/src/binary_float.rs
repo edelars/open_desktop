@@ -89,10 +89,11 @@ pub struct BinaryArithmeticResult<T> {
     invalid_operation: bool,
 }
 
-/// Result of a local raw binary32/binary64 to signed i32 value conversion.
+/// Result of a local raw binary32/binary64 to signed integer value conversion.
 ///
 /// `invalid_operation` describes this helper's conversion outcome. It is not
 /// an architectural exception flag or a decision about exception delivery.
+/// The default integer type remains `i32` for source compatibility.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BinaryIntegerResult<T = i32> {
     value: T,
@@ -109,7 +110,8 @@ impl<T> BinaryIntegerResult<T> {
         }
     }
 
-    /// Returns the converted i32, or `i32::MIN` for an invalid conversion.
+    /// Returns the converted signed integer, or the operation's signed-indefinite
+    /// sentinel when the conversion is invalid.
     pub const fn value(&self) -> &T {
         &self.value
     }
@@ -300,63 +302,90 @@ fn normalize_i64(value: i64) -> (bool, i32, u64) {
     (sign, leading_bit, significand)
 }
 
+/// Rounds the magnitude of one exact finite binary value to an integer.
+///
+/// Exponents above 63 cannot fit any signed 64-bit destination and are
+/// rejected by this shared bounded helper. Typed wrappers validate their own
+/// destination range after rounding.
+fn round_finite_integer_magnitude(
+    finite: BinaryFinite,
+    mode: RationalRoundingMode,
+) -> Option<(u128, bool)> {
+    let exponent = finite.exponent();
+    let significand = finite.significand();
+
+    if significand == 0 {
+        return Some((0, false));
+    }
+    if exponent > 63 {
+        return None;
+    }
+    if exponent < 0 {
+        let increment = match mode {
+            RationalRoundingMode::NearestTiesEven => exponent == -1 && significand > (1_u64 << 63),
+            RationalRoundingMode::TowardZero => false,
+            RationalRoundingMode::TowardPositive => !finite.sign(),
+            RationalRoundingMode::TowardNegative => finite.sign(),
+        };
+        return Some((u128::from(increment), true));
+    }
+
+    crate::rational_rounding::round_quotient_to_precision(
+        finite.sign(),
+        significand,
+        0,
+        1,
+        exponent as u32 + 1,
+        mode,
+    )
+}
+
 /// Rounds one exact finite binary value to an integer and validates i32 range.
 fn round_finite_to_i32(
     finite: BinaryFinite,
     mode: RationalRoundingMode,
 ) -> BinaryIntegerResult<i32> {
     let sign = finite.sign();
-    let exponent = finite.exponent();
-    let significand = finite.significand();
-
-    if significand == 0 {
-        return BinaryIntegerResult::new(0, false, false);
-    }
-
-    // Exponents above 31 cannot round into the i32 range. Exponent 31 is
-    // handled below because negative values just beyond -2^31 may round back
-    // to the valid minimum depending on the selected mode.
-    if exponent > 31 {
+    let Some((magnitude, inexact)) = round_finite_integer_magnitude(finite, mode) else {
         return BinaryIntegerResult::new(i32::MIN, false, true);
-    }
-
-    let (magnitude, inexact) = if exponent < 0 {
-        let increment = match mode {
-            RationalRoundingMode::NearestTiesEven => exponent == -1 && significand > (1_u64 << 63),
-            RationalRoundingMode::TowardZero => false,
-            RationalRoundingMode::TowardPositive => !sign,
-            RationalRoundingMode::TowardNegative => sign,
-        };
-        (u64::from(increment), true)
-    } else {
-        let shift = (63 - exponent) as u32;
-        let integer = significand >> shift;
-        let remainder = significand & ((1_u64 << shift) - 1);
-        let inexact = remainder != 0;
-        let increment = match mode {
-            RationalRoundingMode::NearestTiesEven => {
-                let halfway = 1_u64 << (shift - 1);
-                remainder > halfway || (remainder == halfway && integer & 1 != 0)
-            }
-            RationalRoundingMode::TowardZero => false,
-            RationalRoundingMode::TowardPositive => inexact && !sign,
-            RationalRoundingMode::TowardNegative => inexact && sign,
-        };
-        (integer + u64::from(increment), inexact)
     };
-
-    let limit = if sign { 1_u64 << 31 } else { i32::MAX as u64 };
+    let limit = if sign { 1_u128 << 31 } else { i32::MAX as u128 };
     if magnitude > limit {
         return BinaryIntegerResult::new(i32::MIN, false, true);
     }
     let value = if sign {
-        if magnitude == 1_u64 << 31 {
+        if magnitude == 1_u128 << 31 {
             i32::MIN
         } else {
             -(magnitude as i32)
         }
     } else {
         magnitude as i32
+    };
+    BinaryIntegerResult::new(value, inexact, false)
+}
+
+/// Rounds one exact finite binary value to an integer and validates i64 range.
+fn round_finite_to_i64(
+    finite: BinaryFinite,
+    mode: RationalRoundingMode,
+) -> BinaryIntegerResult<i64> {
+    let sign = finite.sign();
+    let Some((magnitude, inexact)) = round_finite_integer_magnitude(finite, mode) else {
+        return BinaryIntegerResult::new(i64::MIN, false, true);
+    };
+    let limit = if sign { 1_u128 << 63 } else { i64::MAX as u128 };
+    if magnitude > limit {
+        return BinaryIntegerResult::new(i64::MIN, false, true);
+    }
+    let value = if sign {
+        if magnitude == 1_u128 << 63 {
+            i64::MIN
+        } else {
+            -(magnitude as i64)
+        }
+    } else {
+        magnitude as i64
     };
     BinaryIntegerResult::new(value, inexact, false)
 }
@@ -383,6 +412,20 @@ impl Binary32 {
         match self.normalize_finite() {
             Some(finite) => round_finite_to_i32(finite, mode),
             None => BinaryIntegerResult::new(i32::MIN, false, true),
+        }
+    }
+
+    /// Converts a raw finite encoding to signed i64 using `mode`.
+    ///
+    /// Rounding is applied to the exact source value before the rounded
+    /// integer is checked against the i64 range. This local value conversion
+    /// does not modify the source, CPU state, or MXCSR and does not deliver
+    /// architectural exceptions. Non-finite or out-of-range inputs return the
+    /// `i64::MIN` sentinel with `invalid_operation` set.
+    pub fn to_i64(self, mode: RationalRoundingMode) -> BinaryIntegerResult<i64> {
+        match self.normalize_finite() {
+            Some(finite) => round_finite_to_i64(finite, mode),
+            None => BinaryIntegerResult::new(i64::MIN, false, true),
         }
     }
 
@@ -1158,6 +1201,20 @@ impl Binary64 {
         match self.normalize_finite() {
             Some(finite) => round_finite_to_i32(finite, mode),
             None => BinaryIntegerResult::new(i32::MIN, false, true),
+        }
+    }
+
+    /// Converts a raw finite encoding to signed i64 using `mode`.
+    ///
+    /// Rounding is applied to the exact source value before the rounded
+    /// integer is checked against the i64 range. This local value conversion
+    /// does not modify the source, CPU state, or MXCSR and does not deliver
+    /// architectural exceptions. Non-finite or out-of-range inputs return the
+    /// `i64::MIN` sentinel with `invalid_operation` set.
+    pub fn to_i64(self, mode: RationalRoundingMode) -> BinaryIntegerResult<i64> {
+        match self.normalize_finite() {
+            Some(finite) => round_finite_to_i64(finite, mode),
+            None => BinaryIntegerResult::new(i64::MIN, false, true),
         }
     }
 
@@ -9060,6 +9117,244 @@ mod tests {
                 );
                 assert_eq!(source.to_bits(), bits);
             }
+        }
+    }
+
+    #[test]
+    fn raw_to_i64_fraction_rounding_matrix_for_both_source_widths() {
+        use RationalRoundingMode::{
+            NearestTiesEven as N, TowardNegative as D, TowardPositive as U, TowardZero as Z,
+        };
+        let modes = [N, Z, U, D];
+        let cases32 = [
+            (0x0000_0000, [0, 0, 0, 0], false),
+            (0x8000_0000, [0, 0, 0, 0], false),
+            (0x0000_0001, [0, 0, 1, 0], true),
+            (0x8000_0001, [0, 0, 0, -1], true),
+            (0x3f00_0000, [0, 0, 1, 0], true),
+            (0xbf00_0000, [0, 0, 0, -1], true),
+            (0x3fc0_0000, [2, 1, 2, 1], true),
+            (0xbfc0_0000, [-2, -1, -1, -2], true),
+            (0x4020_0000, [2, 2, 3, 2], true),
+            (0xc020_0000, [-2, -2, -2, -3], true),
+            (0x4f00_0000, [2_147_483_648; 4], false),
+        ];
+        for (bits, values, inexact) in cases32 {
+            let source = Binary32::from_bits(bits);
+            for (index, mode) in modes.into_iter().enumerate() {
+                let result = source.to_i64(mode);
+                assert_eq!(
+                    (
+                        *result.value(),
+                        result.inexact(),
+                        result.invalid_operation()
+                    ),
+                    (values[index], inexact, false),
+                    "{bits:#010x} {mode:?}"
+                );
+            }
+            assert_eq!(source.to_bits(), bits);
+        }
+
+        let cases64 = [
+            (0x0000_0000_0000_0000, [0, 0, 0, 0], false),
+            (0x8000_0000_0000_0000, [0, 0, 0, 0], false),
+            (0x0000_0000_0000_0001, [0, 0, 1, 0], true),
+            (0x8000_0000_0000_0001, [0, 0, 0, -1], true),
+            (0x3fe0_0000_0000_0000, [0, 0, 1, 0], true),
+            (0xbfe0_0000_0000_0000, [0, 0, 0, -1], true),
+            (0x3ff8_0000_0000_0000, [2, 1, 2, 1], true),
+            (0xbff8_0000_0000_0000, [-2, -1, -1, -2], true),
+            (0x4004_0000_0000_0000, [2, 2, 3, 2], true),
+            (0xc004_0000_0000_0000, [-2, -2, -2, -3], true),
+        ];
+        for (bits, values, inexact) in cases64 {
+            let source = Binary64::from_bits(bits);
+            for (index, mode) in modes.into_iter().enumerate() {
+                let result = source.to_i64(mode);
+                assert_eq!(
+                    (
+                        *result.value(),
+                        result.inexact(),
+                        result.invalid_operation()
+                    ),
+                    (values[index], inexact, false),
+                    "{bits:#018x} {mode:?}"
+                );
+            }
+            assert_eq!(source.to_bits(), bits);
+        }
+    }
+
+    #[test]
+    fn raw_to_i64_limits_and_adjacent_source_encodings() {
+        use RationalRoundingMode::{
+            NearestTiesEven as N, TowardNegative as D, TowardPositive as U, TowardZero as Z,
+        };
+        let modes = [N, Z, U, D];
+        let cases32 = [
+            (0x5eff_ffff, 9_223_371_487_098_961_920, false),
+            (0xdeff_ffff, -9_223_371_487_098_961_920, false),
+            (0x5f00_0000, i64::MIN, true),
+            (0xdf00_0000, i64::MIN, false),
+            (0x5f00_0001, i64::MIN, true),
+            (0xdf00_0001, i64::MIN, true),
+        ];
+        for (bits, value, invalid) in cases32 {
+            let source = Binary32::from_bits(bits);
+            for mode in modes {
+                let result = source.to_i64(mode);
+                assert_eq!(
+                    (
+                        *result.value(),
+                        result.inexact(),
+                        result.invalid_operation()
+                    ),
+                    (value, false, invalid),
+                    "{bits:#010x} {mode:?}"
+                );
+            }
+            assert_eq!(source.to_bits(), bits);
+        }
+
+        let cases64 = [
+            (0x43df_ffff_ffff_ffff, 9_223_372_036_854_774_784, false),
+            (0xc3df_ffff_ffff_ffff, -9_223_372_036_854_774_784, false),
+            (0x43e0_0000_0000_0000, i64::MIN, true),
+            (0xc3e0_0000_0000_0000, i64::MIN, false),
+            (0x43e0_0000_0000_0001, i64::MIN, true),
+            (0xc3e0_0000_0000_0001, i64::MIN, true),
+        ];
+        for (bits, value, invalid) in cases64 {
+            let source = Binary64::from_bits(bits);
+            for mode in modes {
+                let result = source.to_i64(mode);
+                assert_eq!(
+                    (
+                        *result.value(),
+                        result.inexact(),
+                        result.invalid_operation()
+                    ),
+                    (value, false, invalid),
+                    "{bits:#018x} {mode:?}"
+                );
+            }
+            assert_eq!(source.to_bits(), bits);
+        }
+
+        let powers32 = [
+            (0x4eff_ffff, 2_147_483_520),
+            (0x4f00_0000, 2_147_483_648),
+            (0x5980_0000, 4_503_599_627_370_496),
+            (0x5a00_0000, 9_007_199_254_740_992),
+            (0x5e80_0000, 4_611_686_018_427_387_904),
+        ];
+        for (bits, value) in powers32 {
+            for (positive_bits, signed_value) in [(bits, value), (bits | 0x8000_0000, -value)] {
+                let source = Binary32::from_bits(positive_bits);
+                for mode in modes {
+                    let result = source.to_i64(mode);
+                    assert_eq!(
+                        (
+                            *result.value(),
+                            result.inexact(),
+                            result.invalid_operation()
+                        ),
+                        (signed_value, false, false),
+                        "{positive_bits:#010x} {mode:?}"
+                    );
+                }
+                assert_eq!(source.to_bits(), positive_bits);
+            }
+        }
+
+        let powers64 = [
+            (0x41e0_0000_0000_0000, 2_147_483_648),
+            (0x41f0_0000_0000_0000, 4_294_967_296),
+            (0x4330_0000_0000_0000, 4_503_599_627_370_496),
+            (0x4340_0000_0000_0000, 9_007_199_254_740_992),
+            (0x43d0_0000_0000_0000, 4_611_686_018_427_387_904),
+        ];
+        for (bits, value) in powers64 {
+            for (source_bits, signed_value) in
+                [(bits, value), (bits | 0x8000_0000_0000_0000, -value)]
+            {
+                let source = Binary64::from_bits(source_bits);
+                for mode in modes {
+                    let result = source.to_i64(mode);
+                    assert_eq!(
+                        (
+                            *result.value(),
+                            result.inexact(),
+                            result.invalid_operation()
+                        ),
+                        (signed_value, false, false),
+                        "{source_bits:#018x} {mode:?}"
+                    );
+                }
+                assert_eq!(source.to_bits(), source_bits);
+            }
+        }
+    }
+
+    #[test]
+    fn raw_to_i64_invalid_non_finite_and_huge_values_suppress_inexact() {
+        use RationalRoundingMode::{
+            NearestTiesEven as N, TowardNegative as D, TowardPositive as U, TowardZero as Z,
+        };
+        let modes = [N, Z, U, D];
+        for bits in [
+            0x7f80_0000,
+            0xff80_0000,
+            0x7fc0_0001,
+            0xffc0_0001,
+            0x7f80_0001,
+            0xff80_0001,
+            0x5f80_0000,
+            0xdf80_0000,
+            0x7f7f_ffff,
+        ] {
+            let source = Binary32::from_bits(bits);
+            for mode in modes {
+                let result = source.to_i64(mode);
+                assert_eq!(
+                    (
+                        *result.value(),
+                        result.inexact(),
+                        result.invalid_operation()
+                    ),
+                    (i64::MIN, false, true),
+                    "{bits:#010x} {mode:?}"
+                );
+            }
+            assert_eq!(source.to_bits(), bits);
+        }
+        for bits in [
+            0x7ff0_0000_0000_0000,
+            0xfff0_0000_0000_0000,
+            0x7ff8_0000_0000_0001,
+            0xfff8_0000_0000_0001,
+            0x7ff0_0000_0000_0001,
+            0xfff0_0000_0000_0001,
+            0x43f0_0000_0000_0000,
+            0xc3f0_0000_0000_0000,
+            0x7fef_ffff_ffff_ffff,
+            0xffef_ffff_ffff_ffff,
+        ] {
+            let source = Binary64::from_bits(bits);
+            for mode in modes {
+                let result = source.to_i64(mode);
+                assert_eq!(
+                    (
+                        *result.value(),
+                        result.inexact(),
+                        result.invalid_operation()
+                    ),
+                    (i64::MIN, false, true),
+                    "{bits:#018x} {mode:?}"
+                );
+            }
+            assert_eq!(source.to_bits(), bits);
         }
     }
 }

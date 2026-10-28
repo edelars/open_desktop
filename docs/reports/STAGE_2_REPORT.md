@@ -1048,6 +1048,48 @@ implements only the local contract above. See the [official Vol. 2A PDF](https:/
 and [Vol. 1 PDF](https://cdrdv2-public.intel.com/835781/325462-sdm-vol-1-2abcd-3abcd-4.pdf),
 and the [S2-36x plan](../plans/STAGE_2.md#s2-36x--bounded-raw-binary32binary64-to-signed-i32-conversion).
 
+## S2-36y — bounded raw binary32/binary64 to signed i64 conversion
+
+Implemented `Binary32::to_i64(mode)` and `Binary64::to_i64(mode)` as pure
+value conversions returning `BinaryIntegerResult<i64>`. The default generic
+type remains `i32`, and the S2-36x methods retain their public signatures and
+sentinel behavior. Both methods round the exact value before checking signed
+range. Zero is exact; `-2^63` is valid; non-finite or out-of-range results use
+the `i64::MIN` sentinel with `invalid_operation=true` and `inexact=false`.
+Valid inexact conversions report their fractional loss. The source, CPU state,
+and MXCSR are unchanged; exception delivery is outside this helper.
+
+The former i32-specific split/halfway implementation is now a shared private
+magnitude-rounding helper. It handles zero and exponents below zero directly,
+uses the rational precision-rounding primitive for exponents 0 through 63,
+and rejects larger exponents. Typed wrappers independently enforce their
+destination limits and avoid negating signed minimum values.
+
+Literal checks cover both source widths across all four modes, signed zeros,
+fractional values, exponents 31/32, 52/53, 62/63/64, huge finite values, signed
+infinities, and quiet/signaling NaNs. The range matrix uses actual adjacent
+source encodings: binary32's positive predecessor is 2^63−2^39 and binary64's
+is 2^63−1024. It verifies exact valid `-2^63`, invalid `+2^63` and adjacent
+out-of-range values, local invalid/inexact suppression, and raw source
+immutability. The existing i32 suite remains unchanged.
+
+Focused `raw_to_i64` tests passed 3/3; all `binary_float::tests` passed 79/79,
+including the unchanged S2-36x i32 tests. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and `git diff --check`
+completed successfully with no warnings or diff errors. `graphify update .`
+completed with 7,953 nodes, 16,024 edges, and 255 communities. Its output noted
+one syntax warning for the unrelated `include/open_desktop/host_abi.h`, 13
+files without extracted symbols, and 48 unclassified metadata/unsupported
+files. Independent Sol medium code and documentation reviews found no defects.
+Full S2-36/Stage 2 acceptance and hardware/Mac mini checks remain open and
+deferred to the combined final substage. See the
+[S2-36y plan](../plans/STAGE_2.md#s2-36y--bounded-raw-binary32binary64-to-signed-i64-conversion).
+
+Provenance: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` p. 3-232,
+`CVTSS2SI` p. 3-242, `CVTTSD2SI` p. 3-253, and `CVTTSS2SI` p. 3-255.
+The architectural behavior is referenced for bounds only; no instruction,
+MXCSR, sticky-flag or exception-delivery semantics are implemented here.
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.
