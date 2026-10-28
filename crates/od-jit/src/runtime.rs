@@ -188,6 +188,27 @@ fn is_rbp_base_rbp_index_sib_profile(operand: MemoryOperand, length: u64) -> boo
         }
 }
 
+fn is_rsp_base_rsi_rdi_index_sib_profile(operand: MemoryOperand, length: u64) -> bool {
+    matches!(length, 4 | 5 | 8)
+        && operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(
+            operand.base,
+            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+        )
+        && matches!(
+            operand.index,
+            Some(od_isa::Register::Rsi | od_isa::Register::Rdi)
+        )
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && match length {
+            4 => operand.displacement == 0,
+            5 => i8::try_from(operand.displacement).is_ok(),
+            8 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
+}
+
 fn is_rsi_rdi_base_rbp_index_sib_profile(operand: MemoryOperand, length: u64) -> bool {
     matches!(length, 4 | 5 | 8)
         && operand.address_size == od_isa::OperandSize::Qword
@@ -399,6 +420,8 @@ impl MemorySiteV2 {
                 8 => i32::try_from(self.operand.displacement).is_ok(),
                 _ => false,
             };
+        let rsp_base_rsi_rdi_index_sib_data_profile =
+            is_rsp_base_rsi_rdi_index_sib_profile(self.operand, length);
         let rbp_base_rbp_index_sib_data_profile =
             is_rbp_base_rbp_index_sib_profile(self.operand, length);
         let rsi_rdi_base_rbp_index_sib_data_profile =
@@ -557,6 +580,7 @@ impl MemorySiteV2 {
                 && (indexed_sib_data_profile
                     || rbp_index_sib_data_profile
                     || rsp_base_rbp_index_sib_data_profile
+                    || rsp_base_rsi_rdi_index_sib_data_profile
                     || rbp_base_rbp_index_sib_data_profile
                     || rsi_rdi_base_rbp_index_sib_data_profile
                     || low_base_rsi_rdi_index_sib_data_profile
@@ -712,7 +736,11 @@ impl MemorySiteV2 {
                     || register == od_isa::Register::Rsp
                         && self.operand.address_size == od_isa::OperandSize::Qword
                         && (self.operand.index.is_some_and(|index| (index as u8) < 4)
-                            || self.operand.index == Some(od_isa::Register::Rbp))
+                            || self.operand.index == Some(od_isa::Register::Rbp)
+                            || matches!(
+                                self.operand.index,
+                                Some(od_isa::Register::Rsi | od_isa::Register::Rdi)
+                            ))
                         && matches!(self.operand.scale, 1 | 2 | 4 | 8)
                         && (length == 4 && self.operand.displacement == 0
                             || length == 5 && i8::try_from(self.operand.displacement).is_ok()
@@ -796,6 +824,7 @@ impl MemorySiteV2 {
                         | od_isa::Register::Rbx
                 ) && !rbp_index_sib_data_profile
                     && !rsp_base_rbp_index_sib_data_profile
+                    && !rsp_base_rsi_rdi_index_sib_data_profile
                     && !rbp_base_rbp_index_sib_data_profile
                     && !rsi_rdi_base_rbp_index_sib_data_profile
                     && !low_base_rsi_rdi_index_sib_data_profile
@@ -1235,6 +1264,31 @@ impl MemorySiteV2 {
                 )
                 && self.operand.index.is_none()
                 && self.operand.scale == 1
+                && displacement_valid;
+        }
+        if matches!((source.len(), mode), (4, 0) | (5, 1) | (8, 2))
+            && modrm & 7 == 4
+            && source
+                .get(3)
+                .is_some_and(|sib| sib & 7 == 4 && matches!((sib >> 3) & 7, 6 | 7))
+        {
+            let sib = source[3];
+            let site_register = match expected_operation {
+                MemorySiteOperationV2::Load => self.destination,
+                MemorySiteOperationV2::Store => self.source,
+            };
+            let displacement_valid = match mode {
+                0 => self.operand.displacement == 0,
+                1 => i8::try_from(self.operand.displacement).is_ok(),
+                2 => i32::try_from(self.operand.displacement).is_ok(),
+                _ => false,
+            };
+            return data_register <= 5
+                && site_register == Some(data_register)
+                && self.next_rip.checked_sub(self.guest_rip) == Some(source.len() as u64)
+                && is_rsp_base_rsi_rdi_index_sib_profile(self.operand, source.len() as u64)
+                && self.operand.index == od_isa::Register::from_encoding((sib >> 3) & 7)
+                && self.operand.scale == 1_u8 << (sib >> 6)
                 && displacement_valid;
         }
         if mode == 0 && modrm & 7 == 4 && source.len() == 8 && source[3] == 0x25 {

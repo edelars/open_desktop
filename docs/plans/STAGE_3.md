@@ -1824,6 +1824,12 @@ JIT descriptor и host direct V2/shared IR/interpreter должны провер
 
 Приёмка: direct V2/shared IR/interpreter parity CPU/RAM/callback/retirement; все операции × low bases × RSI/RDI × scales × data GPR и формы mod00/disp8/disp32; high-half truncation и modulo-2^32 wrap, включая product/addition wrap; qword crossing 4 GiB одним contiguous callback; final byte 9 меняет decoded disp32 target; noncanonical high halves не порождают #GP после address-size truncation (Dword EA плюс qword length также не может переполнить u64); architectural/backend load/store no-commit; store+STOP и entry STOP/stop-RIP/zero-budget; actual-RIP continuation через 5/6/9-byte формы без replay; partial windows и invalid neighbors без эффектов. Отчёт: [S3-20br report](../reports/STAGE_3_S3-20br_2026-10-28.md). Production owner/MMU, Stage 2/ISA, Mini и performance вне среза.
 
+#### S3-20bs. Address64 indexed SIB с RSP base и RSI/RDI index
+
+Поддержать только singleton `48 8B/89 /r sib [disp8|disp32]`: ModRM `mod=00/01/10,r/m=100`, SIB base ровно RSP, index ровно RSI или RDI, scale 1/2/4/8, data RAX..RBP, длины 4/5/8. EA остаётся decoder-owned через `MemoryOperand::access_address_48`: старые полные RSP + старый полный RSI/RDI×scale + signed displacement с wrapping u64. `data=RSP` адресуется и сохраняется из pre-state; load меняет RSP только после успешного чтения. RSI/RDI используются только как индекс и сохраняются.
+
+Приёмка: direct V2/shared IR/interpreter parity для обеих операций × 6 data GPR × RSI/RDI × 4 scale × mod00/disp8/disp32 signed edges; complete CPU/RAM, независимый EA oracle, callback address/count и retirement. Проверить pre-state `data=RSP`, full-width index bits, #SS при noncanonical start/end для RSP-base до callback, #GP для low-base control, отдельный AddressOverflow, architectural/backend no-commit load/store, store+STOP, entry STOP/stop-RIP/zero budget, byte8 disp32 target identity и actual-RIP continuation по 4/5/8-byte формам без replay. Partial windows и forbidden neighbors должны останавливаться без эффекта. Отчёт: [S3-20bs report](../reports/STAGE_3_S3-20bs_2026-10-28.md). Production owner/MMU, Stage 2/ISA, Mini и performance вне среза.
+
 ### S3-21. Подтвердить memory slice на физическом x86
 
 1. Выполнить после локального завершения Stage 3 как финальный gate. Использовать завершённый S2-09 native memory profile. Проверить одинаковые входы, наблюдение всех заявленных GPR, нормализацию guest addresses и сравнение memory effects.

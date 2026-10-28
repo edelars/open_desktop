@@ -684,6 +684,12 @@ pub fn compile_ir_memory_store_block_v2(
             bytes.len() as u8,
             0x89,
         )
+        || crate::block::exact_qword_rsp_base_rsi_rdi_index_sib_memory_bytes(
+            code,
+            entry_rip,
+            bytes.len() as u8,
+            0x89,
+        )
         || crate::block::exact_qword_rbp_base_rbp_index_sib_memory_bytes(
             code,
             entry_rip,
@@ -910,6 +916,12 @@ fn checked_load_metadata_v2(
                 0x8b,
             )
             || crate::block::exact_qword_rsp_base_rbp_index_sib_memory_bytes(
+                code,
+                entry_rip,
+                decoded.length,
+                0x8b,
+            )
+            || crate::block::exact_qword_rsp_base_rsi_rdi_index_sib_memory_bytes(
                 code,
                 entry_rip,
                 decoded.length,
@@ -1996,8 +2008,8 @@ mod tests {
             vec![0x48, 0x8b, 0x04, 0x20],       // no-index SIB, not RSI index
             vec![0x48, 0x8b, 0x04, 0x36],       // RSI base and RSI index
             vec![0x48, 0x8b, 0x04, 0x3f],       // RDI base and RDI index
-            vec![0x48, 0x8b, 0x44, 0x34, 0],    // RSP base with RSI index
-            vec![0x67, 0x48, 0x8b, 0x04, 0x34], // address32 RSP base with RSI index
+            vec![0x48, 0x8b, 0x44, 0x35, 0],    // RBP base with RSI index
+            vec![0x67, 0x48, 0x8b, 0x04, 0x34], // address32 form is outside this profile
             vec![0x48, 0x8b, 0x04],             // truncated SIB
         ] {
             let code = CodeView::new(0x5b00, &source).unwrap();
@@ -2131,7 +2143,6 @@ mod tests {
         }
 
         for source in [
-            vec![0x48, 0x8b, 0x44, 0x34, 0],          // RSP base with RSI index
             vec![0x48, 0x8b, 0x44, 0x35, 0],          // RBP base with RSI index
             vec![0x48, 0x8b, 0x04, 0x35, 0, 0, 0, 0], // no-base RSI index
             vec![0x67, 0x48, 0x8b, 0x44, 0x34, 0],    // address32 RSP base with RSI index
@@ -2279,7 +2290,7 @@ mod tests {
             vec![0x67, 0x48, 0x8b, 0x44, 0x35, 0],          // RBP base
             vec![0x67, 0x48, 0x8b, 0x44, 0x34, 0],          // RSP base
             vec![0x67, 0x48, 0x8b, 0x04, 0x35, 0, 0, 0, 0], // no base
-            vec![0x48, 0x8b, 0x44, 0x34, 0],                // address64 RSP base with RSI index
+            vec![0x48, 0x8b, 0x44, 0x35, 0],                // address64 RBP base with RSI index
         ] {
             let code = CodeView::new(0x5c00, &source).unwrap();
             assert!(
@@ -6922,8 +6933,6 @@ mod tests {
         for opcode in [0x8b, 0x89] {
             for source in [
                 vec![0x48, opcode, 0x44, 0x35, 0], // RBP base with RSI index
-                vec![0x48, opcode, 0x44, 0x34, 0], // RSP base with RSI index
-                vec![0x48, opcode, 0x44, 0x3c, 0], // RSP base with RDI index
                 vec![0x48, opcode, 0x04, 0x35, 0, 0, 0, 0], // no-base RSI index
                 vec![0x67, 0x48, opcode, 0x44, 0x34, 0], // unsupported RSI index
                 vec![0x48, 0x67, opcode, 0x44, 0x28, 0], // reordered prefix
@@ -7050,6 +7059,126 @@ mod tests {
                 assert!(
                     result.is_err(),
                     "unsupported RSP/RBP SIB admitted: {bytes:02x?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rsp_base_rsi_rdi_index_sib_has_exact_qword_profile() {
+        let displacement_cases = [
+            (0_u8, [0_i32].as_slice()),
+            (1, [i8::MIN as i32, -1, 0, i8::MAX as i32].as_slice()),
+            (2, [i32::MIN, -1, 0, 1, i32::MAX].as_slice()),
+        ];
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in 0_u8..=5 {
+                for index_register in [6_u8, 7] {
+                    for scale_shift in 0..4_u8 {
+                        for (mode, displacements) in displacement_cases {
+                            for &displacement in displacements {
+                                let mut bytes = vec![
+                                    0x48,
+                                    opcode,
+                                    (mode << 6) | (data_register << 3) | 4,
+                                    (scale_shift << 6) | (index_register << 3) | 4,
+                                ];
+                                match mode {
+                                    0 => {}
+                                    1 => bytes.push(displacement as u8),
+                                    2 => bytes.extend_from_slice(&displacement.to_le_bytes()),
+                                    _ => unreachable!(),
+                                }
+                                let code = CodeView::new(0x2df0, &bytes).unwrap();
+                                let site = match operation {
+                                    MemorySiteOperationV2::Load => {
+                                        let ir = compile_ir_memory_load_block_v2(code, 0x2df0)
+                                            .unwrap_or_else(|error| {
+                                                panic!("load rejected {bytes:02x?}: {error:?}")
+                                            });
+                                        let direct =
+                                            compile_memory_load_block_v2(code, 0x2df0).unwrap();
+                                        assert_eq!(ir.site(), direct.site());
+                                        ir.site().clone()
+                                    }
+                                    MemorySiteOperationV2::Store => {
+                                        let ir =
+                                            compile_ir_memory_store_block_v2(code, 0x2df0).unwrap();
+                                        let direct =
+                                            compile_memory_store_block_v2(code, 0x2df0).unwrap();
+                                        assert_eq!(ir.site(), direct.site());
+                                        ir.site().clone()
+                                    }
+                                };
+                                assert!(site.has_supported_profile());
+                                assert!(site.matches_source_bytes(&bytes, operation));
+                                assert_eq!(
+                                    site.operand().base,
+                                    od_isa::long_decode::AddressBase::Register(
+                                        od_isa::Register::Rsp
+                                    )
+                                );
+                                assert_eq!(
+                                    site.operand().index,
+                                    Some(if index_register == 6 {
+                                        od_isa::Register::Rsi
+                                    } else {
+                                        od_isa::Register::Rdi
+                                    })
+                                );
+                                assert_eq!(site.operand().scale, 1 << scale_shift);
+                                assert_eq!(site.operand().displacement, i64::from(displacement));
+                                let mut state = od_isa::LongModeState::default();
+                                state.gpr[4] = 0x0000_0000_1000_0000;
+                                state.gpr[usize::from(index_register)] = 0x0000_0000_0000_0103;
+                                let expected = state.gpr[4]
+                                    .wrapping_add(
+                                        state.gpr[usize::from(index_register)]
+                                            .wrapping_mul(1 << scale_shift),
+                                    )
+                                    .wrapping_add_signed(i64::from(displacement));
+                                assert_eq!(
+                                    site.operand().access_address_48(&state, site.next_rip()),
+                                    Ok(expected)
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for opcode in [0x8b, 0x89] {
+            for bytes in [
+                vec![0x48, opcode, 0x04, 0x2d],       // no-base/RBP index
+                vec![0x48, opcode, 0x44, 0x35, 0],    // RBP base/RSI index
+                vec![0x67, 0x48, opcode, 0x04, 0x34], // address32
+                vec![0x66, 0x48, opcode, 0x04, 0x2c], // extra prefix
+            ] {
+                let code = CodeView::new(0x2df0, &bytes).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x2df0).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x2df0).map(|_| ())
+                };
+                assert!(
+                    result.is_err(),
+                    "unsupported RSP/RSI-RDI SIB admitted: {bytes:02x?}"
+                );
+            }
+            let complete = [0x48, opcode, 0x84, 0x74, 0x7f, 1, 2, 3];
+            for length in 1..complete.len() {
+                let code = CodeView::new(0x2df0, &complete[..length]).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x2df0).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x2df0).map(|_| ())
+                };
+                assert!(
+                    result.is_err(),
+                    "partial RSP+RSI/RDI disp32 admitted at {length}"
                 );
             }
         }
