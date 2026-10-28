@@ -5153,3 +5153,11 @@ word is interpreted as signed i16, clamped to [0,255], and narrowed; ffff,
 7fff exercise the low and high boundaries. The result contains eight
 destination lanes followed by eight source lanes. The local profile assumes
 SSE2 architectural preconditions and denies JIT and native execution.
+
+### S2-35.34 local register PACKSSDW diagnostic profile
+
+`s2_35_34_packssdw_register.case.json` is a handwritten literal XMM8,XMM9
+fixture for `s2-long-packssdw-reg-v1`, encoded as `66 45 0F 6B C1`. Each
+signed dword is clamped to [-32768,32767] and narrowed; destination lanes come
+first, followed by source lanes. The local profile assumes SSE2 architectural
+preconditions and denies JIT and native execution.

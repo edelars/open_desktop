@@ -12841,3 +12841,23 @@ This is local interpreter/profile evidence only. PACKSSDW, other packing,
 shuffles/shifts, memory/MMX, extra prefixes, REX.W/X, VEX/EVEX execution,
 feature gates, guest exception delivery, physical execution, S2-34, S2-35,
 global `S2-35 → S2-34`, and combined Mac mini/SSH acceptance remain open.
+
+## S2-35.34 — local PACKSSDW XMM register slice
+
+Added local profile `s2-long-packssdw-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 6B /r`, ModR/M.mod=3, XMM0–15. Four signed
+little-endian i32 lanes from the original destination followed by four from
+the original source are independently clamped to [-32768,32767] and written
+as eight concatenated little-endian i16 lanes. Distinct source and all
+non-destination state are preserved; self-aliasing uses the original source
+value. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. JIT and
+native execution are denied.
+
+Coverage adds signed boundary/extrema sentinels, every sign-extended i16 raw
+pattern at each dword position in both operands against an independently
+widened reference, every XMM register pair including REX.R/B, full-state
+preservation, missing-state/truncation atomicity, zero data callbacks, strict
+prefix/VEX/EVEX/memory decoder and schema denials, and a literal XMM8/XMM9
+fixture. Linux-native denial is added and compile-checked on this Darwin host;
+it was not physically executed. These checks are local interpreter/profile
+evidence only and do not claim physical x86 acceptance.

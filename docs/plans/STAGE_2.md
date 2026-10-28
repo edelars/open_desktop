@@ -8709,3 +8709,28 @@ memory, MMX, extra prefixes, REX.W/X, VEX/EVEX, feature gates, exception
 delivery and physical execution remain excluded. S2-34, S2-35, global
 `S2-35 → S2-34`, and combined Mac mini/SSH acceptance remain open. Evidence is
 recorded in [STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).
+
+
+#### S2-35.34 — local-only bounded register `PACKSSDW`
+
+The bounded profile `s2-long-packssdw-reg-v1` admits legacy
+`66 [one optional REX.R/B] 0F 6B /r`, ModR/M.mod=3 and XMM0–15. ModR/M.reg is
+the destination and ModR/M.r/m the source. Read four signed little-endian i32
+lanes from the original destination, then four from the original source;
+clamp each to [-32768,32767] before narrowing to little-endian i16. The eight
+results are concatenated in operand order into destination words 0–3 and 4–7.
+A distinct source and all non-destination architectural state are preserved;
+self-pack reads the original aliased value. SSE2 and CR0.EM=0, CR0.TS=0,
+CR4.OSFXSR=1 are assumptions only.
+
+Coverage includes signed limits and adjacent values, signed dword extrema,
+exhaustive all 65,536 sign-extended i16 inputs at each of four positions in
+both operands against an independent widened reference, all 16×16 XMM/REX.R/B
+pairs, full-state/source preservation and zero data callbacks. Truncation,
+missing state, STOP/budget atomicity, strict decoder/schema negatives
+including VEX `C5 F9 6B C1`, and a handwritten literal XMM8/XMM9 fixture cover
+the profile boundary. JIT and native execution are denied. Other packing,
+shuffles/shifts, memory, MMX, extra prefixes, REX.W/X, VEX/EVEX execution,
+feature gates, exception delivery and physical execution remain excluded.
+S2-34, S2-35, global `S2-35 → S2-34`, and combined Mac mini/SSH acceptance
+remain open. Evidence is recorded in [STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).

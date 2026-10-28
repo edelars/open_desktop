@@ -433,6 +433,47 @@ fn packuswb_profile_is_exact_requires_raw_state_and_rejects_neighbors() {
 }
 
 #[test]
+fn packssdw_profile_is_exact_requires_raw_state_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_34_packssdw_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongPackssdwRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "66450f6bc1");
+    fixture.validate().unwrap();
+    for bytes in [
+        "0f6bc1",
+        "f2660f6bc1",
+        "f3660f6bc1",
+        "67660f6bc1",
+        "f0660f6bc1",
+        "66480f6bc1",
+        "66420f6bc1",
+        "6640410f6bc1",
+        "660f6b01",
+        "660f6b",
+        "c5f96bc1",
+        "c4e1796bc1",
+        "62f17d086bc1",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.to_owned();
+        let len = (bytes.len() / 2) as u32;
+        invalid.memory[0].length = len;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(len as usize);
+        invalid.stop_rip = Some(HexU64(invalid.initial_state.rip.get() + u64::from(len)));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing = fixture.clone();
+    missing.initial_state.sse = None;
+    assert!(missing.validate().is_err());
+    let mut wrong = fixture;
+    wrong.profile = Profile::LongPackuswbRegV1;
+    assert!(wrong.validate().is_err());
+}
+
+#[test]
 fn andps_profile_is_separate_exact_and_rejects_neighbors() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_7b_andps_register.case.json"
