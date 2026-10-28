@@ -481,6 +481,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36y | Bounded raw binary32/binary64-to-signed-i64 conversion with explicit rounding mode and local invalid outcome | S2-36x; independent review |
 | [x] | S2-36z | Pure raw binary32/binary64 SSE MIN/MAX selection with right-operand NaN/equality selection and local invalid outcome | S2-36t, S2-36a; independent review |
 | [x] | S2-36aa | Pure raw same-format binary32/binary64 square root with explicit rounding and local invalid outcome | S2-36a, S2-36d-f; independent review |
+| [x] | S2-36ab | Deterministic raw binary32 SSE reciprocal reference; no instruction dispatch or MXCSR | S2-36c, S2-36e, S2-36f; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5743,6 +5744,43 @@ NaN sign or payload mapping for this local helper. Vol. 2B `SQRTSD` pp. 4-667–
 exceptions. Architectural denormal reporting and MXCSR behavior remain outside
 the helper contract. [Official Intel Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)
 and [Vol. 2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241).
+
+#### S2-36ab — deterministic raw binary32 SSE reciprocal reference
+
+Add `Binary32::reciprocal_sse_raw()` as a pure deterministic reference for
+legacy RCPSS/RCPPS value semantics. Signed zero and every signed subnormal
+input map to same-sign infinity; infinity maps to same-sign zero (inferred from
+`APPROXIMATE(1/SRC)`); QNaN is preserved and SNaN is quieted by setting the
+quiet bit while preserving sign and payload. Normal finite inputs use the
+existing exact same-format division for `1.0 / source`, rounded once using
+fixed nearest-ties-even. A subnormal rounded result is flushed to same-sign
+zero. There is no local diagnostics result, CPU/MXCSR mutation, exception
+delivery, instruction dispatch, packed-lane support, DAZ/FTZ framework, native
+or JIT behavior.
+
+This is a deterministic local reference policy, not a claim about exact
+hardware output bits. Correctly rounded normal outputs have relative error at
+most `2^-24`, within Intel's `1.5 * 2^-12` bound. Tests use integer-only exact
+significand products to check `|x*y - 1| <= 3/8192` for nonzero normal outputs;
+flushed zeros are excluded. Coverage includes all subnormal leading-bit
+positions, both signs and zeros/infinities, NaN payload behavior, literal
+reciprocals, normal/subnormal output transition neighbors, representative
+normal encodings, and source immutability. No host float/division oracle is
+used.
+
+Final Mac mini hardware acceptance must validate the `3/8192` relative-error
+envelope for non-flushed normal outputs; it must not require exact equality
+with this helper's bits. Keep the ambiguous tiny-result boundary as a separate
+unresolved hardware question until the threshold text is clarified.
+
+Intel SDM Rev. 093 Vol. 2B RCPPS pp. 4-538–4-539 and RCPSS pp. 4-540–4-541
+specify no SIMD FP exceptions, independence from MXCSR RC, signed-zero
+interpretation for denormal sources, signed-zero flush for tiny results,
+SNaN quieting/QNaN return, and relative error no greater than
+`1.5 * 2^-12`. The published input-threshold inequalities overlap
+contradictorily; see [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpss-rcpps-threshold-inequalities-overlap).
+Exact hardware behavior around the tiny-result boundary remains unresolved.
+Full S2-36 and physical/Mac mini acceptance remain open.
 
 #### S2-36y — bounded raw binary32/binary64 to signed i64 conversion
 

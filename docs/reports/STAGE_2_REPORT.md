@@ -5,6 +5,52 @@
 ISSUE-011/012 остаются открытыми; наличие нового состояния или local instruction
 slice не означает завершение этапа.
 
+## S2-36ab — deterministic raw binary32 SSE reciprocal reference
+
+`Binary32::reciprocal_sse_raw()` implements the local deterministic reference
+policy: signed zero and signed subnormal inputs map to same-sign infinity;
+infinity maps to same-sign zero; QNaN is unchanged and SNaN is quieted by
+setting the quiet bit while preserving sign/payload. Normal finite input uses
+the existing exact same-format `1.0 / source` divide path with fixed
+nearest-ties-even rounding, then flushes any subnormal result to same-sign
+zero. The API has no diagnostic outcome and does not mutate source, CPU state,
+or MXCSR. It does not deliver SIMD FP exceptions or add instruction dispatch,
+packed lanes, DAZ/FTZ framework, native, or JIT behavior.
+
+The correctly rounded normal result is within relative error `2^-24`, safely
+inside Intel's `1.5 * 2^-12` bound. Unit checks independently compare exact
+integer significand products against `|x*y - 1| <= 3/8192`; flushed-zero
+results are excluded. Literal coverage includes signed zeros, every subnormal
+leading-bit position and sign, infinities, NaN sign/payload handling, exact
+reciprocals, `1/3`, min-normal and output-boundary neighbors, max-finite input,
+and source preservation. The test contains no host floating-point oracle.
+
+**Checks:** `cargo test -p od-isa --offline
+binary_float::tests::raw_sse_reciprocal` passed 2/2;
+`cargo test -p od-isa --offline binary_float::tests` passed 86/86;
+`cargo check -p od-isa --all-targets --offline` passed;
+`cargo fmt --all -- --check` passed after formatting; `git diff --check` passed;
+`graphify update .` completed. Graphify retained its existing extractor warning
+for `include/open_desktop/host_abi.h` (line 68), recorded as ISSUE-010.
+Independent `gpt-6.1-sol` high review found that the integer-only product
+checker needed an explicit sign equality assertion; the assertion was added,
+the focused and full binary-float tests passed again, and re-review found no
+remaining code or documentation findings. The reviewer independently fetched
+the official Intel SDM Rev. 093 Vol. 2B PDF and confirmed the overlapping
+RCPPS pp. 4-538–4-539 and RCPSS pp. 4-540–4-541 threshold inequalities recorded
+for ISSUE-025.
+
+The local reference policy does not claim bitwise hardware equivalence. Intel
+SDM Rev. 093 Vol. 2B RCPPS pp. 4-538–4-539 and RCPSS pp. 4-540–4-541 specify
+the approximation bound and special/denormal behavior, but the published
+threshold inequalities overlap contradictorily. This ambiguity and its
+hardware-validation next step are recorded in
+[ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpss-rcpps-threshold-inequalities-overlap).
+Final Mac mini hardware acceptance is to validate the `3/8192` relative-error
+envelope for non-flushed normal outputs, without requiring exact equality to
+the helper's result bits. The ambiguous tiny-result boundary remains a
+separate unresolved hardware question.
+
 ## S2-36a — raw binary32/binary64 classification and finite normalization
 
 **Статус:** source implementation and focused tests are complete; workspace
