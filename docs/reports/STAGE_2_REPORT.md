@@ -183,6 +183,36 @@ they do not establish native runtime or physical behavior. Independent Sol
 medium code review completed clean after the LOCK-prefix wording correction;
 no findings remain.
 
+## S2-27e — entry-only maskable-interrupt eligibility notification
+
+**Статус:** implementation and focused tests passed; independent Sol medium
+code review completed clean; no findings remain.
+`run_with_maskable_request` is an optional local API over a
+caller-owned immutable `Option<u8>` vector. At a caller-confirmed fresh
+completed-instruction boundary with no pending synchronous exception, debug
+event, or inhibition, it may return a distinct pre-fetch eligibility result
+when IF=1, after `stop_rip` → exactly one
+`stop_requested` poll → budget precedence. It does not mutate or acknowledge
+the vector, CPU, memory, IF, or retirement. With IF clear or no request it
+delegates directly to the existing event-free run path without interrupt
+request polling; existing run APIs are unchanged. A prior `Fault` is not
+evidence for interrupt delivery.
+
+The API reads concrete IF from `state.rflags`; `rflags_defined` tracks
+`INTEGER_FLAGS` and does not include IF. It does not infer IF validity from that
+mask and preserves the caller's definedness mask. The caller must supply a
+concrete IF bit. For an eligible request, entry TF/RF/VM bits produce
+`IncompatibleEntryFlags` before host-exit checks.
+
+**Авторские проверки:** `cargo test -p od-isa --offline maskable_request_`
+(5/5); `cargo check --workspace --all-targets --offline`;
+`cargo fmt --all -- --check`; `git diff --check`; and `graphify update .`
+passed. There is no APIC/IDT/gate/stack handling, event delivery, asynchronous
+arrival, MOV SS shadow, REP partial-event claim, or generic event framework.
+No boot or physical execution claim is made. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-27e--entry-only-maskable-interrupt-eligibility-notification)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-27e--entry-only-maskable-interrupt-eligibility-notification).
+
 ## S2-26c — локальный `GsBaseV1` MSR
 
 **Статус:** в процессе. Локальные проверки автора внесены ниже. Независимое

@@ -1079,6 +1079,46 @@ entry (Order No. 253666-093US, September 2026,
 references define architectural instruction behavior; the `Some(idtr)` gate
 is local profile policy.
 
+### S2-27e — entry-only maskable-interrupt eligibility notification
+
+The implemented `run_with_maskable_request` API accepts a caller-owned,
+immutable optional maskable vector (`Option<u8>`). It may report only that a
+maskable interrupt is eligible at the supplied entry boundary; it does not
+accept, consume, acknowledge, queue, or deliver the request. Eligibility is
+returned as `MaskableRequestRunResult::InterruptEligible { vector, rip }`; all
+event-free executions return `MaskableRequestRunResult::Run(RunResult)`. The
+caller must invoke it only at a freshly confirmed completed-instruction
+boundary, with no pending synchronous exception, debug event, or interrupt
+inhibition. A prior `Fault` run result does not by itself establish a
+deliverable boundary or turn that fault into interrupt delivery.
+
+The API validates `initial_rflags_defined` against `INTEGER_FLAGS`; IF is not
+part of that definedness mask. It consults the concrete IF bit in
+`state.rflags`, does not infer IF validity from `rflags_defined`, and leaves the
+definedness mask unchanged. The caller is responsible for supplying a concrete
+IF value; no admitted instruction in this local profile leaves IF undefined.
+For an eligible request, TF/RF/VM set in entry `RFLAGS` returns
+`IncompatibleEntryFlags` before host-exit checks.
+
+For a candidate `Some(vector)` with IF set, preserve host-exit precedence at
+that entry: `stop_rip`, one `stop_requested` poll, then retirement budget. Any
+selected host exit is returned before the eligibility result. If those checks
+permit execution, return a distinct eligibility result before instruction
+fetch. That result leaves CPU state, memory, retirement, IF, and the caller's
+request unchanged. With IF clear or no request, delegate directly to the
+existing event-free run path. Do not poll for interrupt requests during that
+call; the caller retains its vector unchanged. Existing event-free run APIs and
+their behavior remain unchanged.
+
+This is only a local readiness notification: there is no APIC, IDT lookup, gate
+validation, stack frame, event delivery, asynchronous arrival, MOV SS shadow,
+or REP partial-event behavior. The caller must resubmit a still-pending request
+on a later call. Do not add a generic event framework. The implementation and
+author tests are recorded in the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27e--entry-only-maskable-interrupt-eligibility-notification);
+independent Sol medium code review completed clean; no findings remain. See the
+[Stage 2 plan](../plans/STAGE_2.md#s2-27e--entry-only-maskable-interrupt-eligibility-notification)
+for the bounded matrix and remaining claim limits.
+
 ### S2-22i — loaded GS.base composition fixture
 
 One additional local-only literal fixture uses the existing

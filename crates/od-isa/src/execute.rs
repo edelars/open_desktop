@@ -62,6 +62,18 @@ pub enum RunInputError {
     InvalidRflagsDefined { value: u64 },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MaskableRequestRunInputError {
+    InvalidRflagsDefined { value: u64 },
+    IncompatibleEntryFlags { value: u64 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MaskableRequestRunResult {
+    InterruptEligible { vector: u8, rip: u64 },
+    Run(RunResult),
+}
+
 /// Explicit in-memory restart state for bounded address-size-32 REPNE strings.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepContinuation {
@@ -641,6 +653,74 @@ pub fn run_with_rflags_defined(
         initial_rflags_defined,
         &mut stop_requested,
     ))
+}
+
+/// Execute from a caller-certified fresh instruction boundary while reporting
+/// one caller-owned maskable request before any instruction fetch.
+///
+/// The caller must invoke this only at a fresh boundary with no pending
+/// exception, debug event, synchronous fault, or interrupt inhibition. A
+/// previous `RunExit::Fault` is not a maskable request and is never converted
+/// into event delivery here. A returned `InterruptEligible` is only
+/// an entry notification: it does not deliver/acknowledge the vector, consume
+/// the request, access IDT state, or change CPU state. The caller must resubmit
+/// the request on a later call if it remains pending. IF is a concrete
+/// caller-supplied control bit; `rflags_defined` intentionally tracks only the
+/// integer profile's arithmetic flags and DF, and no admitted instruction
+/// leaves IF undefined. TF/RF/VM are rejected when a request is eligible;
+/// pending debug/inhibition state is not represented and remains a caller
+/// precondition.
+pub fn run_with_maskable_request(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    initial_rflags_defined: u64,
+    request: Option<u8>,
+    mut stop_requested: impl FnMut() -> bool,
+) -> Result<MaskableRequestRunResult, MaskableRequestRunInputError> {
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return Err(MaskableRequestRunInputError::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+
+    const IF: u64 = 1 << 9;
+    const TF_RF_VM: u64 = (1 << 8) | (1 << 16) | (1 << 17);
+    let Some(vector) = request.filter(|_| state.rflags & IF != 0) else {
+        return Ok(MaskableRequestRunResult::Run(run_execution_loop(
+            state,
+            memory,
+            config,
+            initial_rflags_defined,
+            &mut stop_requested,
+        )));
+    };
+
+    let incompatible = state.rflags & TF_RF_VM;
+    if incompatible != 0 {
+        return Err(MaskableRequestRunInputError::IncompatibleEntryFlags {
+            value: incompatible,
+        });
+    }
+
+    let exit = if config.stop_rip == Some(state.rip) {
+        RunExit::StopAddress
+    } else if stop_requested() {
+        RunExit::StopRequested
+    } else if config.instruction_budget == 0 {
+        RunExit::InstructionBudgetExhausted
+    } else {
+        return Ok(MaskableRequestRunResult::InterruptEligible {
+            vector,
+            rip: state.rip,
+        });
+    };
+
+    Ok(MaskableRequestRunResult::Run(RunResult {
+        exit,
+        instructions_executed: 0,
+        rflags_defined: initial_rflags_defined,
+    }))
 }
 
 fn run_execution_loop(
@@ -86010,5 +86090,275 @@ mod tests {
             assert!(memory.fetches.is_empty());
             assert!(memory.accesses.is_empty());
         }
+    }
+
+    #[test]
+    fn maskable_request_notification_is_pre_fetch_preserving_and_idempotent() {
+        let mut state = LongModeState {
+            rip: 0x1000,
+            rflags: 2 | (1 << 9) | crate::CF,
+            ..LongModeState::default()
+        };
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x0b], 0x1000);
+        let defined = crate::INTEGER_FLAGS & !crate::AF;
+        for _ in 0..2 {
+            let mut stop_calls = 0;
+            assert_eq!(
+                run_with_maskable_request(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    defined,
+                    Some(0xe7),
+                    || {
+                        stop_calls += 1;
+                        false
+                    },
+                ),
+                Ok(MaskableRequestRunResult::InterruptEligible {
+                    vector: 0xe7,
+                    rip: 0x1000
+                })
+            );
+            assert_eq!(stop_calls, 1);
+            assert_eq!(defined, crate::INTEGER_FLAGS & !crate::AF);
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty());
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn maskable_request_honors_stop_then_callback_then_budget() {
+        let config = |stop_rip, instruction_budget| RunConfig {
+            instruction_budget,
+            stop_rip,
+            context: AccessContext::default(),
+        };
+        let mut state = LongModeState {
+            rip: 0x1000,
+            rflags: 2 | (1 << 9),
+            ..LongModeState::default()
+        };
+        let mut memory = Memory::at(&[0x90], 0x1000);
+        let mut calls = 0;
+        assert_eq!(
+            run_with_maskable_request(
+                &mut state,
+                &mut memory,
+                config(Some(0x1000), 1),
+                crate::INTEGER_FLAGS,
+                Some(0x20),
+                || {
+                    calls += 1;
+                    false
+                },
+            ),
+            Ok(MaskableRequestRunResult::Run(RunResult {
+                exit: RunExit::StopAddress,
+                instructions_executed: 0,
+                rflags_defined: crate::INTEGER_FLAGS,
+            }))
+        );
+        assert_eq!(calls, 0);
+        assert!(memory.fetches.is_empty());
+
+        calls = 0;
+        assert_eq!(
+            run_with_maskable_request(
+                &mut state,
+                &mut memory,
+                config(None, 1),
+                crate::INTEGER_FLAGS,
+                Some(0x20),
+                || {
+                    calls += 1;
+                    true
+                },
+            ),
+            Ok(MaskableRequestRunResult::Run(RunResult {
+                exit: RunExit::StopRequested,
+                instructions_executed: 0,
+                rflags_defined: crate::INTEGER_FLAGS,
+            }))
+        );
+        assert_eq!(calls, 1);
+        assert!(memory.fetches.is_empty());
+
+        calls = 0;
+        assert_eq!(
+            run_with_maskable_request(
+                &mut state,
+                &mut memory,
+                config(None, 0),
+                crate::INTEGER_FLAGS,
+                Some(0x20),
+                || {
+                    calls += 1;
+                    false
+                },
+            ),
+            Ok(MaskableRequestRunResult::Run(RunResult {
+                exit: RunExit::InstructionBudgetExhausted,
+                instructions_executed: 0,
+                rflags_defined: crate::INTEGER_FLAGS,
+            }))
+        );
+        assert_eq!(calls, 1);
+        assert!(memory.fetches.is_empty());
+    }
+
+    #[test]
+    fn maskable_request_without_request_or_if_matches_event_free_run() {
+        for (request, flags) in [(None, 2 | (1 << 9)), (Some(0x30), 2)] {
+            let mut state = LongModeState {
+                rip: 0x1000,
+                rflags: flags,
+                ..LongModeState::default()
+            };
+            let mut expected_state = state.clone();
+            let mut actual_memory = Memory::at(&[0x0f, 0x0b], 0x1000);
+            let mut expected_memory = Memory::at(&[0x0f, 0x0b], 0x1000);
+            let config = RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            };
+            let mut actual_stop_calls = 0;
+            let mut expected_stop_calls = 0;
+            let actual = run_with_maskable_request(
+                &mut state,
+                &mut actual_memory,
+                config,
+                crate::INTEGER_FLAGS,
+                request,
+                || {
+                    actual_stop_calls += 1;
+                    false
+                },
+            );
+            let expected = run(&mut expected_state, &mut expected_memory, config, || {
+                expected_stop_calls += 1;
+                false
+            });
+            assert_eq!(actual, Ok(MaskableRequestRunResult::Run(expected)));
+            assert_eq!(state, expected_state);
+            assert_eq!(actual_memory.fetches, expected_memory.fetches);
+            assert_eq!(actual_stop_calls, expected_stop_calls);
+        }
+    }
+
+    #[test]
+    fn maskable_request_definedness_and_incompatible_flag_gates_fail_closed() {
+        let mut state = LongModeState {
+            rip: 0x1000,
+            rflags: 2 | (1 << 9),
+            ..LongModeState::default()
+        };
+        let mut memory = Memory::at(&[0x90], 0x1000);
+        assert_eq!(
+            run_with_maskable_request(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default()
+                },
+                crate::INTEGER_FLAGS | (1 << 9),
+                Some(0x20),
+                || false,
+            ),
+            Err(MaskableRequestRunInputError::InvalidRflagsDefined {
+                value: crate::INTEGER_FLAGS | (1 << 9)
+            })
+        );
+        for bit in [8, 16, 17] {
+            state.rflags = 2 | (1 << 9) | (1 << bit);
+            assert!(matches!(
+                run_with_maskable_request(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default()
+                    },
+                    crate::INTEGER_FLAGS,
+                    Some(0x20),
+                    || false,
+                ),
+                Err(MaskableRequestRunInputError::IncompatibleEntryFlags { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn maskable_request_never_relabels_fetch_or_data_faults_on_event_free_path() {
+        let mut fetch_state = LongModeState {
+            rip: 0x1000,
+            rflags: 2,
+            ..LongModeState::default()
+        };
+        let mut truncated = Memory::at(&[0x0f], 0x1000);
+        let fetch = run_with_maskable_request(
+            &mut fetch_state,
+            &mut truncated,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            crate::INTEGER_FLAGS,
+            Some(0x20),
+            || false,
+        );
+        assert!(matches!(
+            fetch,
+            Ok(MaskableRequestRunResult::Run(RunResult {
+                exit: RunExit::MemoryError(MemoryError::Unmapped {
+                    access: AccessKind::Fetch,
+                    ..
+                }),
+                ..
+            }))
+        ));
+
+        let mut data_state = LongModeState {
+            rip: 0x1000,
+            rflags: 2,
+            ..LongModeState::default()
+        };
+        data_state.gpr[Register::Rbx as usize] = 0x1000;
+        let mut data_memory = Memory::at(&[0x48, 0x8b, 0x03], 0x1000);
+        data_memory.error = Some(MemoryError::Backend(
+            "injected event-free load fault".into(),
+        ));
+        data_memory.error_kind = Some(AccessKind::Read);
+        let data = run_with_maskable_request(
+            &mut data_state,
+            &mut data_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            crate::INTEGER_FLAGS,
+            None,
+            || false,
+        );
+        assert!(matches!(
+            data,
+            Ok(MaskableRequestRunResult::Run(RunResult {
+                exit: RunExit::MemoryError(MemoryError::Backend(_)),
+                instructions_executed: 0,
+                ..
+            }))
+        ));
     }
 }

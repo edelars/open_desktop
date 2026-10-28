@@ -2221,6 +2221,40 @@ Static Ubuntu mapping and its limitations:
 Normative contract and source references:
 [CPU contract](../specs/CPU_CONTRACT.md#s2-27d--exact-long64-lidt-rsp-6).
 
+#### S2-27e — entry-only maskable-interrupt eligibility notification
+
+Add a separate optional local execution API with a caller-owned immutable
+`Option<u8>` maskable vector. The caller must confirm a fresh completed-
+instruction boundary and no pending synchronous exception, debug event, or
+interrupt inhibition. A prior `Fault` outcome is not an interrupt-delivery
+request or proof of an eligible boundary.
+
+For a candidate request with IF=1, apply host exits in this order:
+`stop_rip`, call `stop_requested` exactly once, then check the retirement
+budget. Return those host exits before any distinct pre-fetch eligibility
+result carrying the vector. Eligibility must not mutate CPU state, memory,
+retirement, IF, or the caller-owned vector. When IF=0 or no request is supplied,
+delegate directly to the existing event-free run API and perform no
+interrupt-request polling during that call; leave the vector untouched.
+
+The implementation validates `initial_rflags_defined` against
+`INTEGER_FLAGS`, which does not include IF; it reads the concrete IF bit from
+caller-supplied `state.rflags` and preserves the definedness mask. The caller
+must supply a concrete IF value. For an eligible request, TF/RF/VM set in entry
+RFLAGS returns `IncompatibleEntryFlags` before host-exit checks. The fresh-
+boundary and no-pending-event conditions remain caller preconditions and are
+not synthesized by this local API. Focused tests cover stop-rip/one-stop-
+poll/budget precedence, pre-fetch eligibility with no state/memory/retirement
+change, no-request and IF-clear delegation, caller request retention, and
+definedness/input gates. Existing run APIs remain unchanged. A prior `Fault` is
+never converted into delivery. No
+APIC, IDT/gate/stack
+handling, event delivery, asynchronous arrival, MOV SS shadow, REP
+partial-event handling, or generic event framework is included. Author tests
+and workspace checks are recorded in the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27e--entry-only-maskable-interrupt-eligibility-notification);
+independent Sol medium code review completed clean; no findings remain.
+
 **Готово:** обязательные переходы имеют исполняемые tests с корректным state; полноценная доставка при paging/privilege transitions подтверждается интеграционно вместе с machine backend, а не mock callbacks.
 
 ## 9. x87, MMX и SSE/SSE2
