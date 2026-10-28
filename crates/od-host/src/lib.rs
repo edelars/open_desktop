@@ -14595,7 +14595,7 @@ mod tests {
             assert_eq!(partial_state, before);
             assert_eq!((partial_ram.reads, partial_ram.writes), (0, 0));
         }
-        let invalid_source = [0x67, 0x48, 0x8b, 0x44, 0x36, 0]; // base/index RSI is outside this profile
+        let invalid_source = [0x67, 0x48, 0x8b, 0x74, 0x36, 0]; // RSI data is outside the six-register whitelist
         let invalid_code = CodeView::new(ENTRY, &invalid_source).unwrap();
         let invalid_boundary = od_jit::memory_dispatch::FixtureExecutionBoundary::new(
             invalid_code,
@@ -52358,7 +52358,7 @@ mod tests {
         ];
         let stop = AtomicU8::new(0);
         for opcode in [0x8b_u8, 0x89] {
-            for base in [0_u8, 1, 2, 3, 4] {
+            for base in [0_u8, 1, 2, 3, 4, 6, 7] {
                 for index in [6_u8, 7] {
                     for scale_shift in 0..4_u8 {
                         for data_register in 0..6_u8 {
@@ -52532,24 +52532,24 @@ mod tests {
         // The last byte of the 32-bit displacement controls the target; both
         // halves of the base/index register values are otherwise preserved.
         let identity_sources = [
-            [0x67, 0x48, 0x8b, 0x84, 0x34, 0, 0, 0, 0],
-            [0x67, 0x48, 0x8b, 0x84, 0x34, 0, 0, 0, 1],
+            [0x67, 0x48, 0x8b, 0x84, 0x3e, 0, 0, 0, 0],
+            [0x67, 0x48, 0x8b, 0x84, 0x3e, 0, 0, 0, 1],
         ];
         let identity_state = {
             let mut state = od_isa::LongModeState {
                 rip: ENTRY,
                 ..Default::default()
             };
-            state.gpr[4] = 0xffff_ffff_0000_0010;
-            state.gpr[6] = 0xdead_beef_0000_0020;
+            state.gpr[6] = 0xffff_ffff_0000_0010;
+            state.gpr[7] = 0xdead_beef_0000_0020;
             state
         };
         let mut identity_targets = Vec::new();
         for source in identity_sources {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = target32(
-                identity_state.gpr[4],
                 identity_state.gpr[6],
+                identity_state.gpr[7],
                 1,
                 i32::from_le_bytes(source[5..9].try_into().unwrap()),
             );
@@ -52576,15 +52576,15 @@ mod tests {
 
         // Truncation wraps both arithmetic and the transfer width semantics:
         // the qword is one contiguous callback from 0xffff_fffc upward.
-        let crossing_source = [0x67, 0x48, 0x8b, 0x04, 0x34];
+        let crossing_source = [0x67, 0x48, 0x8b, 0x04, 0x3e];
         let crossing_code = CodeView::new(ENTRY, &crossing_source).unwrap();
         let mut crossing_state = od_isa::LongModeState {
             rip: ENTRY,
             ..Default::default()
         };
-        crossing_state.gpr[4] = 0x1_0000_0000_u64.wrapping_add(0xffff_fffc);
-        crossing_state.gpr[6] = 0;
-        let crossing_target = target32(crossing_state.gpr[4], crossing_state.gpr[6], 1, 0);
+        crossing_state.gpr[6] = 0x1_0000_0000_u64.wrapping_add(0xffff_fffc);
+        crossing_state.gpr[7] = 0xdead_beef_0000_0000;
+        let crossing_target = target32(crossing_state.gpr[6], crossing_state.gpr[7], 1, 0);
         assert_eq!(crossing_target, 0xffff_fffc);
         let mut crossing_ram = make_ram(&crossing_source, crossing_target, 0x8877_6655_4433_2211);
         let crossing_published = PublishedCode::publish_ir_memory_load_v2(
@@ -52608,18 +52608,17 @@ mod tests {
 
         // Low32 base/index arithmetic wraps independently of their high
         // halves, while the qword source value remains full width.
-        let wrap_source = [0x67, 0x48, 0x89, 0x6c, 0xf4, 0xff];
+        let wrap_source = [0x67, 0x48, 0x89, 0x6c, 0xf6, 0xff];
         let wrap_code = CodeView::new(ENTRY, &wrap_source).unwrap();
         let mut wrap_initial = od_isa::LongModeState {
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
         };
-        wrap_initial.gpr[4] = 0xdead_beef_ffff_fff0;
-        wrap_initial.gpr[6] = 0xdead_beef_8000_0003;
+        wrap_initial.gpr[6] = 0xdead_beef_ffff_fff0;
         wrap_initial.gpr[5] = 0xfedc_ba98_7654_3210;
-        let wrap_target = target32(wrap_initial.gpr[4], wrap_initial.gpr[6], 8, -1);
-        assert_eq!(wrap_target, 7);
+        let wrap_target = target32(wrap_initial.gpr[6], wrap_initial.gpr[6], 8, -1);
+        assert_eq!(wrap_target, 0xffff_ff6f);
         let mut wrap_interpreter_state = wrap_initial.clone();
         let mut wrap_interpreter_ram = make_ram(&wrap_source, wrap_target, 0);
         assert!(matches!(
@@ -52752,7 +52751,7 @@ mod tests {
         // this borrowed fixture path; neither direction may commit state or
         // RAM before that error is returned.
         for opcode in [0x8b_u8, 0x89] {
-            let source = code_for(opcode, 4, 7, 2, 4, 1, -1);
+            let source = code_for(opcode, 6, 7, 2, 4, 1, -1);
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = target32(0x1100, 0x20, 4, -1);
             let published = if opcode == 0x8b {
@@ -52770,7 +52769,7 @@ mod tests {
                 rip: ENTRY,
                 ..Default::default()
             };
-            state.gpr[4] = 0x1_0000_1100;
+            state.gpr[6] = 0x1_0000_1100;
             state.gpr[7] = 0xffff_ffff_0000_0020;
             state.gpr[5] = 0xfeed_face_cafe_beef;
             let before = state.clone();
@@ -52841,7 +52840,7 @@ mod tests {
         // Guest architectural faults retain their payload and do not commit
         // either the destination register or a store, for both opcodes.
         for opcode in [0x8b_u8, 0x89] {
-            let source = code_for(opcode, 4, 7, 2, 4, 1, -1);
+            let source = code_for(opcode, 6, 7, 2, 4, 1, -1);
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = target32(0x1100, 0x20, 4, -1);
             let published = if opcode == 0x8b {
@@ -52859,7 +52858,7 @@ mod tests {
                 rip: ENTRY,
                 ..Default::default()
             };
-            state.gpr[4] = 0x1_0000_1100;
+            state.gpr[6] = 0x1_0000_1100;
             state.gpr[7] = 0xffff_ffff_0000_0020;
             state.gpr[5] = 0xfeed_face_cafe_beef;
             let before = state.clone();
@@ -52920,43 +52919,45 @@ mod tests {
 
         // Entry STOP, stop-RIP and zero budget prevent callbacks for each
         // admitted length; the address32 high halves do not trigger #GP.
-        for (mode, displacement) in [(0_u8, 0_i32), (1, -1), (2, 0x10000)] {
-            let source = code_for(0x8b, 4, 6, 1, 1, mode, displacement);
-            let code = CodeView::new(ENTRY, &source).unwrap();
-            let target = target32(0x1000, 0x20, 2, displacement);
-            let published = PublishedCode::publish_ir_memory_load_v2(
-                &od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY).unwrap(),
-            )
-            .unwrap();
-            for guard in 0..3 {
-                let mut state = od_isa::LongModeState {
-                    rip: ENTRY,
-                    ..Default::default()
-                };
-                state.gpr[4] = 0x1_0000_1000;
-                state.gpr[6] = 0xffff_ffff_0000_0020;
-                let before = state.clone();
-                let mut ram = make_ram(&source, target, 0x9988_7766_5544_3322);
-                let requested_stop = AtomicU8::new(u8::from(guard == 1));
-                let result = published
-                    .execute_ir_memory_load_v2(
-                        &mut state,
-                        &mut ram,
-                        AccessContext::default(),
-                        u64::from(guard != 0),
-                        (guard == 2).then_some(ENTRY),
-                        &requested_stop,
-                    )
-                    .unwrap();
-                assert_eq!(state, before);
-                assert_eq!(result.retired_instructions, 0);
-                assert_eq!((ram.reads, ram.writes), (0, 0));
+        for (base, index) in [(4_u8, 6_u8), (6, 6), (6, 7), (7, 6), (7, 7)] {
+            for (mode, displacement) in [(0_u8, 0_i32), (1, -1), (2, 0x10000)] {
+                let source = code_for(0x8b, base, index, 1, 1, mode, displacement);
+                let code = CodeView::new(ENTRY, &source).unwrap();
+                let target = target32(0x1000, 0x20, 2, displacement);
+                let published = PublishedCode::publish_ir_memory_load_v2(
+                    &od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY).unwrap(),
+                )
+                .unwrap();
+                for guard in 0..3 {
+                    let mut state = od_isa::LongModeState {
+                        rip: ENTRY,
+                        ..Default::default()
+                    };
+                    state.gpr[usize::from(base)] = 0x1_0000_1000;
+                    state.gpr[usize::from(index)] = 0xffff_ffff_0000_0020;
+                    let before = state.clone();
+                    let mut ram = make_ram(&source, target, 0x9988_7766_5544_3322);
+                    let requested_stop = AtomicU8::new(u8::from(guard == 1));
+                    let result = published
+                        .execute_ir_memory_load_v2(
+                            &mut state,
+                            &mut ram,
+                            AccessContext::default(),
+                            u64::from(guard != 0),
+                            (guard == 2).then_some(ENTRY),
+                            &requested_stop,
+                        )
+                        .unwrap();
+                    assert_eq!(state, before);
+                    assert_eq!(result.retired_instructions, 0);
+                    assert_eq!((ram.reads, ram.writes), (0, 0));
+                }
             }
         }
 
         // Store+STOP preserves the successful qword write and commits the
         // exact next RIP once for a 9-byte address32 singleton.
-        let stop_source = code_for(0x89, 4, 7, 2, 4, 2, -1);
+        let stop_source = code_for(0x89, 6, 7, 2, 4, 2, -1);
         let stop_code = CodeView::new(ENTRY, &stop_source).unwrap();
         let stop_target = target32(0x1000, 0x20, 4, -1);
         let stop_published = PublishedCode::publish_ir_memory_store_v2(
@@ -52968,7 +52969,8 @@ mod tests {
             rip: ENTRY,
             ..Default::default()
         };
-        stop_state.gpr[4] = 0x1000;
+        stop_state.gpr[4] = 0xfedc_ba98_7654_3210;
+        stop_state.gpr[6] = 0x1000;
         stop_state.gpr[7] = 0x20;
         let mut stop_ram = make_ram(&stop_source, stop_target, 0);
         stop_ram.stop_on_write = Some(requested_stop.clone());
@@ -52993,51 +52995,58 @@ mod tests {
             (0..8)
                 .map(|offset| *stop_ram.data.get(&(stop_target + offset)).unwrap())
                 .collect::<Vec<_>>(),
-            0x1000_u64.to_le_bytes()
+            0xfedc_ba98_7654_3210_u64.to_le_bytes()
         );
         drop(stop_published);
 
         // Partial execution windows and unsupported neighboring base shapes
         // stop before publication or memory effects.
         let mut dispatcher = PublishedMemoryBlockExecutor;
-        for (mode, displacement) in [(0_u8, 0_i32), (1, -1), (2, 0x0001_0000)] {
-            let partial_source = code_for(0x8b, 4, 6, 1, 1, mode, displacement);
-            let partial_code = CodeView::new(ENTRY, &partial_source).unwrap();
-            for visible in 1..partial_source.len() as u64 {
-                let mut state = od_isa::LongModeState {
-                    rip: ENTRY,
-                    ..Default::default()
-                };
-                state.gpr[4] = 0x1000;
-                state.gpr[6] = 0x20;
-                let before = state.clone();
-                let target = target32(0x1000, 0x20, 2, displacement);
-                let mut ram = make_ram(&partial_source, target, 0x1234);
-                let result = unsafe {
-                    od_jit::memory_dispatch::run(
-                        partial_code,
-                        od_jit::memory_dispatch::FixtureExecutionBoundary::new(
+        for (base, index) in [(6_u8, 6_u8), (6, 7), (7, 6), (7, 7)] {
+            for (mode, displacement) in [(0_u8, 0_i32), (1, -1), (2, 0x0001_0000)] {
+                let partial_source = code_for(0x8b, base, index, 1, 1, mode, displacement);
+                let partial_code = CodeView::new(ENTRY, &partial_source).unwrap();
+                for visible in 1..partial_source.len() as u64 {
+                    let mut state = od_isa::LongModeState {
+                        rip: ENTRY,
+                        ..Default::default()
+                    };
+                    state.gpr[usize::from(base)] = 0x1000;
+                    state.gpr[usize::from(index)] = 0x20;
+                    let before = state.clone();
+                    let target = target32(
+                        state.gpr[usize::from(base)],
+                        state.gpr[usize::from(index)],
+                        2,
+                        displacement,
+                    );
+                    let mut ram = make_ram(&partial_source, target, 0x1234);
+                    let result = unsafe {
+                        od_jit::memory_dispatch::run(
                             partial_code,
-                            ENTRY + visible,
+                            od_jit::memory_dispatch::FixtureExecutionBoundary::new(
+                                partial_code,
+                                ENTRY + visible,
+                            )
+                            .unwrap(),
+                            &mut state,
+                            &mut ram,
+                            AccessContext::default(),
+                            1,
+                            None,
+                            &stop,
+                            &mut dispatcher,
                         )
-                        .unwrap(),
-                        &mut state,
-                        &mut ram,
-                        AccessContext::default(),
-                        1,
-                        None,
-                        &stop,
-                        &mut dispatcher,
-                    )
+                    }
+                    .unwrap();
+                    assert_eq!(
+                        result.exit,
+                        od_jit::memory_dispatch::BoundedMemoryExit::BoundaryReached { rip: ENTRY }
+                    );
+                    assert_eq!(result.blocks_executed, 0);
+                    assert_eq!(state, before);
+                    assert_eq!((ram.reads, ram.writes), (0, 0));
                 }
-                .unwrap();
-                assert_eq!(
-                    result.exit,
-                    od_jit::memory_dispatch::BoundedMemoryExit::BoundaryReached { rip: ENTRY }
-                );
-                assert_eq!(result.blocks_executed, 0);
-                assert_eq!(state, before);
-                assert_eq!((ram.reads, ram.writes), (0, 0));
             }
         }
         let unsupported_source = [0x67, 0x48, 0x8b, 0x04, 0x65, 0, 0, 0, 0];
@@ -53077,68 +53086,78 @@ mod tests {
         // Dispatcher resumes after actual 5/6/9-byte RIPs without replaying
         // the first read, then interprets NOP and executes the frozen pair.
         let mut executor = PublishedMemoryBlockExecutor;
-        for (mode, displacement) in [(0_u8, 0_i32), (1, -1), (2, 0x0001_0000)] {
-            let mut source = code_for(0x8b, 4, 6, 0, 1, mode, displacement);
-            let instruction_len = source.len();
-            source.push(0x90);
-            source.extend_from_slice(&[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]);
-            let code = CodeView::new(ENTRY, &source).unwrap();
-            let mut state = od_isa::LongModeState {
-                rip: ENTRY,
-                ..Default::default()
-            };
-            state.gpr[4] = 0x1000;
-            state.gpr[6] = 0x20;
-            state.gpr[3] = 0xdead_beef;
-            let target = target32(state.gpr[4], state.gpr[6], 1, displacement);
-            let mut ram = make_ram(&source, target, 0x55aa_55aa_55aa_55aa);
-            let first = unsafe {
-                od_jit::memory_dispatch::run_with_nop_fallback(
-                    code,
-                    od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, code.code_end())
-                        .unwrap(),
-                    &mut state,
-                    &mut ram,
-                    AccessContext::default(),
+        for (base, index) in [(4_u8, 6_u8), (6, 6), (6, 7), (7, 6), (7, 7)] {
+            for (mode, displacement) in [(0_u8, 0_i32), (1, -1), (2, 0x0001_0000)] {
+                let mut source = code_for(0x8b, base, index, 0, 1, mode, displacement);
+                let instruction_len = source.len();
+                source.push(0x90);
+                source.extend_from_slice(&[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]);
+                let code = CodeView::new(ENTRY, &source).unwrap();
+                let mut state = od_isa::LongModeState {
+                    rip: ENTRY,
+                    ..Default::default()
+                };
+                state.gpr[usize::from(base)] = 0x1000;
+                state.gpr[usize::from(index)] = 0x20;
+                state.gpr[3] = 0xdead_beef;
+                let target = target32(
+                    state.gpr[usize::from(base)],
+                    state.gpr[usize::from(index)],
                     1,
-                    None,
-                    &stop,
-                    &mut executor,
-                )
-            }
-            .unwrap();
-            assert_eq!(
-                first.remaining_budget, 0,
-                "source={source:02x?} first={first:?}"
-            );
-            assert_eq!(state.rip, ENTRY + instruction_len as u64);
-            assert_eq!(first.retired_native, 1);
-            assert_eq!(first.retired_interpreter, 0);
-            assert_eq!(ram.reads, 1);
-
-            let second = unsafe {
-                od_jit::memory_dispatch::run_with_nop_fallback(
-                    CodeView::new(state.rip, &source[instruction_len..]).unwrap(),
-                    od_jit::memory_dispatch::FixtureExecutionBoundary::new(
-                        CodeView::new(state.rip, &source[instruction_len..]).unwrap(),
-                        ENTRY + source.len() as u64,
+                    displacement,
+                );
+                let mut ram = make_ram(&source, target, 0x55aa_55aa_55aa_55aa);
+                let first = unsafe {
+                    od_jit::memory_dispatch::run_with_nop_fallback(
+                        code,
+                        od_jit::memory_dispatch::FixtureExecutionBoundary::new(
+                            code,
+                            code.code_end(),
+                        )
+                        .unwrap(),
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                        1,
+                        None,
+                        &stop,
+                        &mut executor,
                     )
-                    .unwrap(),
-                    &mut state,
-                    &mut ram,
-                    AccessContext::default(),
-                    3,
-                    None,
-                    &stop,
-                    &mut executor,
-                )
+                }
+                .unwrap();
+                assert_eq!(
+                    first.remaining_budget, 0,
+                    "source={source:02x?} first={first:?}"
+                );
+                assert_eq!(state.rip, ENTRY + instruction_len as u64);
+                assert_eq!(first.retired_native, 1);
+                assert_eq!(first.retired_interpreter, 0);
+                assert_eq!(ram.reads, 1);
+
+                let second = unsafe {
+                    od_jit::memory_dispatch::run_with_nop_fallback(
+                        CodeView::new(state.rip, &source[instruction_len..]).unwrap(),
+                        od_jit::memory_dispatch::FixtureExecutionBoundary::new(
+                            CodeView::new(state.rip, &source[instruction_len..]).unwrap(),
+                            ENTRY + source.len() as u64,
+                        )
+                        .unwrap(),
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                        3,
+                        None,
+                        &stop,
+                        &mut executor,
+                    )
+                }
+                .unwrap();
+                assert_eq!(second.retired_native, 2);
+                assert_eq!(second.retired_interpreter, 1);
+                assert_eq!(second.remaining_budget, 0);
+                assert_eq!(state.rip, ENTRY + source.len() as u64);
+                assert_eq!(ram.reads, 2, "only the resumed pair adds one read");
             }
-            .unwrap();
-            assert_eq!(second.retired_native, 2);
-            assert_eq!(second.retired_interpreter, 1);
-            assert_eq!(second.remaining_budget, 0);
-            assert_eq!(state.rip, ENTRY + source.len() as u64);
-            assert_eq!(ram.reads, 2, "only the resumed pair adds one read");
         }
 
         // S3-20bx: no-base addr32 SIB uses only the low 32 bits of RSI/RDI,
