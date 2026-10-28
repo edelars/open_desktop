@@ -474,6 +474,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36r | Same-format raw binary32/binary64 multiplication results for finite values, zeros, infinities and NaNs; local invalid-operation outcome | S2-36m, S2-36q; independent review |
 | [x] | S2-36s | Same-format raw binary32/binary64 division results for finite values, zeros, infinities and NaNs; local invalid-operation and divide-by-zero outcomes | S2-36n, S2-36q, S2-36r; independent review |
 | [x] | S2-36t | Same-format raw binary32/binary64 comparison relation with quiet/signaling NaN modes and local invalid outcome | S2-36l, S2-36a; independent review |
+| [x] | S2-36u | Exact raw binary32-to-binary64 widening with local SNaN invalid outcome | S2-36a, S2-36q; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5554,6 +5555,40 @@ subnormal/normal edges, adjacent normals и relation reversal. Авторски�
 Graphify update. Независимые Sol medium code review и docs review завершились
 без замечаний; аппаратная/Mac mini проверка отложена до общего финального
 substage. S2-36 остаётся открытой.
+
+#### S2-36u — raw binary32-to-binary64 widening
+
+**Статус:** `Binary64::widen_from_binary32` реализован как exact raw-value
+conversion; авторские локальные проверки и независимые Sol medium code/docs
+reviews завершены чисто. S2-36 и hardware/Mac mini acceptance остаются
+открытыми.
+
+Метод принимает `Binary32` raw encoding и возвращает
+`BinaryArithmeticResult<Binary64>` без rounding mode. Нули сохраняют sign;
+normal и subnormal конечные значения точно расширяются integer-only путём;
+все binary32 subnormals становятся normal binary64, включая минимум `2^-149`.
+Infinity сохраняет class/sign. NaN сохраняет sign и source fraction, размещая
+его в верхних 23 битах binary64 fraction; SNaN устанавливает target quiet bit
+и сообщает local `invalid_operation`, QNaN его не сообщает. Все rounding
+diagnostics false; метод не изменяет source, CPU/MXCSR state, не моделирует
+denormal-input delivery и не выполняет instruction dispatch.
+
+Нормативное преобразование NaN взято из Intel SDM Rev. 093 Vol. 1 Table D-11;
+CVTSS2SD Rev. 093 Vol. 2A §3-240 отмечен как будущий instruction consumer
+([Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199)). Эти ссылки
+обосновывают raw conversion contract, не instruction admission, denormal
+exception delivery или hardware evidence.
+
+Literal vectors покрывают оба signs, zeros, normals, min/max subnormal,
+all 23 subnormal leading-bit positions, minnormal/adjacent values, maxfinite,
+infinities, QNaN/SNaN payloads and source immutability. Проверки прошли:
+`cargo test -p od-isa --offline binary_float::tests` (67/67),
+`cargo test -p od-isa --offline x87::tests` (47/47), fmt, workspace offline
+check, diff check и Graphify update. Graphify успешно завершился с существующими
+warnings для `include/open_desktop/host_abi.h` и files without symbols.
+Независимые Sol medium code/docs reviews завершились без замечаний; hardware
+acceptance отложена до общего финального substage.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

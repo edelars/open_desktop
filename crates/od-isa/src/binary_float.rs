@@ -76,11 +76,13 @@ impl<T> BinaryRoundingResult<T> {
     }
 }
 
-/// Result of a same-format binary32/binary64 arithmetic operation.
+/// Result of a raw binary arithmetic or exact widening operation.
 ///
 /// The rounding diagnostics have the same local mathematical meaning as
-/// [`BinaryRoundingResult`]. `invalid_operation` is a local operation outcome,
-/// not an architectural exception flag or delivery decision.
+/// [`BinaryRoundingResult`]. They are false for exact widening conversions.
+/// `invalid_operation` is a local operation outcome, including signaling-NaN
+/// quieting during widening; it is not an architectural exception flag or
+/// delivery decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BinaryArithmeticResult<T> {
     rounding: BinaryRoundingResult<T>,
@@ -1010,6 +1012,45 @@ impl Binary64 {
             }
             BinaryClass::Infinity | BinaryClass::QuietNaN | BinaryClass::SignalingNaN => None,
         }
+    }
+
+    /// Widens a raw binary32 encoding exactly, without using host floating point.
+    ///
+    /// Every finite value is represented exactly in binary64. A signaling NaN
+    /// is quieted in the widened result and reports a local invalid-operation
+    /// outcome; a quiet NaN preserves its sign and payload. The rounding
+    /// diagnostics are always false because this conversion is exact. This is
+    /// a value conversion only: it does not model denormal-input exception
+    /// delivery or modify CPU/MXCSR state.
+    pub fn widen_from_binary32(source: Binary32) -> BinaryArithmeticResult<Self> {
+        let sign = (source.sign() as u64) << 63;
+        let fraction = source.fraction() as u64;
+        let (biased_exponent, widened_fraction, invalid_operation) = match source.class() {
+            BinaryClass::Zero => (0, 0, false),
+            BinaryClass::Subnormal => {
+                let leading_bit = 31 - source.fraction().leading_zeros();
+                let unbiased_exponent = leading_bit as i32 - 149;
+                let exponent = (unbiased_exponent + 1023) as u64;
+                let normalized_fraction = (fraction << (52 - leading_bit)) & Self::FRACTION_MASK;
+                (exponent, normalized_fraction, false)
+            }
+            BinaryClass::Normal => (
+                source.biased_exponent() as u64 + (1023 - 127),
+                fraction << (52 - 23),
+                false,
+            ),
+            BinaryClass::Infinity => (Self::EXPONENT_MASK as u64, 0, false),
+            BinaryClass::QuietNaN => (Self::EXPONENT_MASK as u64, fraction << (52 - 23), false),
+            BinaryClass::SignalingNaN => (
+                Self::EXPONENT_MASK as u64,
+                (fraction << (52 - 23)) | Self::QUIET_BIT,
+                true,
+            ),
+        };
+        BinaryArithmeticResult::exact(
+            Self::from_bits(sign | (biased_exponent << 52) | widened_fraction),
+            invalid_operation,
+        )
     }
 
     /// Compares same-format raw binary64 operands without changing their bits.
@@ -7966,6 +8007,109 @@ mod tests {
                     }
                 );
             }
+        }
+    }
+
+    #[test]
+    fn binary32_to_binary64_widening_preserves_zero_and_finite_literals() {
+        for (source_bits, expected_bits) in [
+            (0x0000_0000, 0x0000_0000_0000_0000),
+            (0x8000_0000, 0x8000_0000_0000_0000),
+            (0x3f80_0000, 0x3ff0_0000_0000_0000),
+            (0xbf80_0000, 0xbff0_0000_0000_0000),
+            (0x3f80_0001, 0x3ff0_0000_2000_0000),
+            (0xbf80_0001, 0xbff0_0000_2000_0000),
+            (0x0080_0000, 0x3810_0000_0000_0000),
+            (0x0080_0001, 0x3810_0000_2000_0000),
+            (0x8080_0001, 0xb810_0000_2000_0000),
+            (0x7f7f_ffff, 0x47ef_ffff_e000_0000),
+            (0xff7f_ffff, 0xc7ef_ffff_e000_0000),
+            (0x4049_0fdb, 0x4009_21fb_6000_0000),
+        ] {
+            let source = Binary32::from_bits(source_bits);
+            let result = Binary64::widen_from_binary32(source);
+            assert_eq!(
+                result.value().to_bits(),
+                expected_bits,
+                "{source_bits:#010x}"
+            );
+            assert!(!result.inexact());
+            assert!(!result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
+            assert!(!result.invalid_operation());
+            assert_eq!(source.to_bits(), source_bits);
+        }
+    }
+
+    #[test]
+    fn binary32_subnormal_widening_maps_every_leading_bit_position() {
+        for (source_bits, expected_bits) in [
+            (0x0000_0001, 0x36a0_0000_0000_0000),
+            (0x0000_0002, 0x36b0_0000_0000_0000),
+            (0x0000_0004, 0x36c0_0000_0000_0000),
+            (0x0000_0008, 0x36d0_0000_0000_0000),
+            (0x0000_0010, 0x36e0_0000_0000_0000),
+            (0x0000_0020, 0x36f0_0000_0000_0000),
+            (0x0000_0040, 0x3700_0000_0000_0000),
+            (0x0000_0080, 0x3710_0000_0000_0000),
+            (0x0000_0100, 0x3720_0000_0000_0000),
+            (0x0000_0200, 0x3730_0000_0000_0000),
+            (0x0000_0400, 0x3740_0000_0000_0000),
+            (0x0000_0800, 0x3750_0000_0000_0000),
+            (0x0000_1000, 0x3760_0000_0000_0000),
+            (0x0000_2000, 0x3770_0000_0000_0000),
+            (0x0000_4000, 0x3780_0000_0000_0000),
+            (0x0000_8000, 0x3790_0000_0000_0000),
+            (0x0001_0000, 0x37a0_0000_0000_0000),
+            (0x0002_0000, 0x37b0_0000_0000_0000),
+            (0x0004_0000, 0x37c0_0000_0000_0000),
+            (0x0008_0000, 0x37d0_0000_0000_0000),
+            (0x0010_0000, 0x37e0_0000_0000_0000),
+            (0x0020_0000, 0x37f0_0000_0000_0000),
+            (0x0040_0000, 0x3800_0000_0000_0000),
+            (0x8000_0001, 0xb6a0_0000_0000_0000),
+            (0x807f_ffff, 0xb80f_ffff_c000_0000),
+        ] {
+            let source = Binary32::from_bits(source_bits);
+            let source_before = source.to_bits();
+            let result = Binary64::widen_from_binary32(source);
+            assert_eq!(
+                result.value().to_bits(),
+                expected_bits,
+                "{source_bits:#010x}"
+            );
+            assert!(!result.inexact());
+            assert!(!result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
+            assert!(!result.invalid_operation());
+            assert_eq!(source.to_bits(), source_before);
+        }
+    }
+
+    #[test]
+    fn binary32_to_binary64_widening_preserves_infinity_and_nan_rules() {
+        for (source_bits, expected_bits, invalid) in [
+            (0x7f80_0000, 0x7ff0_0000_0000_0000, false),
+            (0xff80_0000, 0xfff0_0000_0000_0000, false),
+            (0x7fc1_2345, 0x7ff8_2468_a000_0000, false),
+            (0xffc6_5432, 0xfff8_ca86_4000_0000, false),
+            (0x7f81_2345, 0x7ff8_2468_a000_0000, true),
+            (0xff80_0001, 0xfff8_0000_2000_0000, true),
+            (0x7fff_ffff, 0x7fff_ffff_e000_0000, false),
+        ] {
+            let source = Binary32::from_bits(source_bits);
+            let source_before = source.to_bits();
+            let result = Binary64::widen_from_binary32(source);
+            assert_eq!(
+                result.value().to_bits(),
+                expected_bits,
+                "{source_bits:#010x}"
+            );
+            assert_eq!(result.invalid_operation(), invalid);
+            assert!(!result.inexact());
+            assert!(!result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
+            assert_eq!(source.to_bits(), source_before);
         }
     }
 }

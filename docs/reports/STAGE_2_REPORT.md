@@ -895,6 +895,40 @@ for QNaN/SNaN while UCOMI raises invalid for SNaN. This API models relation and
 local invalid only, not architectural status/EFLAGS or delivery. See [plan
 S2-36t](../plans/STAGE_2.md#s2-36t--raw-same-format-binary32binary64-comparison).
 
+## S2-36u — raw binary32-to-binary64 widening
+
+**Статус:** `Binary64::widen_from_binary32` добавлен; авторские локальные
+проверки и независимые Sol medium code/docs reviews завершились без замечаний.
+Полная S2-36 и hardware/Mac mini acceptance остаются открытыми.
+
+Метод расширяет raw `Binary32` в `BinaryArithmeticResult<Binary64>` без
+rounding mode и host floating-point. Знак нуля сохраняется; конечные normal и
+subnormal values преобразуются точно, причём все binary32 subnormals становятся
+normal binary64. Infinity сохраняет знак. NaN payload размещается в верхних
+23 битах binary64 fraction с сохранением знака. SNaN quiet-ится в выходе и
+возвращает локальный `invalid_operation=true`; QNaN оставляет его false. Все
+rounding diagnostics ложны, вход не меняется, CPU/MXCSR state и denormal input
+exception delivery вне этого value-only API.
+
+Литеральные векторы включают оба знака нуля и конечных значений, minnormal,
+adjacent normal, maxfinite, все 23 позиции старшего set bit subnormal,
+infinity, несколько QNaN/SNaN payload patterns и неизменность source.
+Пройдены `cargo test -p od-isa --offline binary_float::tests` (67/67),
+`cargo test -p od-isa --offline x87::tests` (47/47), `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check` и
+`graphify update .`. Graphify успешно обновил граф и вывел существующие
+предупреждения для `include/open_desktop/host_abi.h` и файлов без символов;
+это не блокировало обновление. Независимые Sol medium code/docs reviews
+завершились без замечаний; Mac mini/SSH acceptance не выполнялись и отложены до
+общего финального substage.
+
+Provenance: Intel SDM Rev. 093 Vol. 1 Table D-11 задаёт binary32→binary64 NaN
+sign, exponent, payload extension и quieting SNaN; CVTSS2SD Vol. 2A §3-240
+указана лишь как будущий consumer. См. [Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/671436)
+и [Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199). Это основание
+для raw conversion contract, не instruction admission или hardware evidence.
+См. [план S2-36u](../plans/STAGE_2.md#s2-36u--raw-binary32-to-binary64-widening).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.
