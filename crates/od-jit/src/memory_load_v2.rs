@@ -732,6 +732,12 @@ pub fn compile_ir_memory_store_block_v2(
             bytes.len() as u8,
             0x89,
         )
+        || crate::block::exact_qword_low_base_no_index_sib_memory_bytes(
+            code,
+            entry_rip,
+            bytes.len() as u8,
+            0x89,
+        )
         || crate::block::exact_qword_rsi_rdi_base_index_sib_memory_bytes(
             code,
             entry_rip,
@@ -1006,6 +1012,12 @@ fn checked_load_metadata_v2(
                 0x8b,
             )
             || crate::block::exact_qword_low_base_rsi_rdi_index_sib_memory_bytes(
+                code,
+                entry_rip,
+                decoded.length,
+                0x8b,
+            )
+            || crate::block::exact_qword_low_base_no_index_sib_memory_bytes(
                 code,
                 entry_rip,
                 decoded.length,
@@ -2089,7 +2101,7 @@ mod tests {
         }
 
         for source in [
-            vec![0x48, 0x8b, 0x04, 0x20],       // no-index SIB, not RSI index
+            vec![0x48, 0x8b, 0x04, 0x60],       // no-index SIB with non-unit scale
             vec![0x48, 0x8b, 0x04, 0x26],       // RSI base with no index
             vec![0x48, 0x8b, 0x04, 0x27],       // RDI base with no index
             vec![0x48, 0x8b, 0x44, 0x25, 0],    // RBP base with no index
@@ -3261,7 +3273,7 @@ mod tests {
         for opcode in [0x8b, 0x89] {
             for source in [
                 vec![0x48, opcode, 0x04],             // truncated before SIB
-                vec![0x48, opcode, 0x04, 0x20],       // no-index
+                vec![0x48, opcode, 0x04, 0x60],       // no-index with non-unit scale
                 vec![0x48, opcode, 0x04, 0x05],       // no-base
                 vec![0x48, opcode, 0x04, 0x26],       // RSI base with no index
                 vec![0x4a, opcode, 0x04, 0x18],       // extended index
@@ -4203,7 +4215,7 @@ mod tests {
         ] {
             for bytes in [
                 vec![0x48, opcode, 0x44],                         // truncated before SIB
-                vec![0x48, opcode, 0x44, 0x20, 0],                // no-index SIB
+                vec![0x48, opcode, 0x44, 0x60, 0],                // no-index with non-unit scale
                 vec![0x48, opcode, 0x44, 0x25, 0],                // RBP base with no index
                 vec![0x48, opcode, 0x04, 0x65, 0, 0, 0, 0], // no-base with invalid no-index scale
                 vec![0x48, opcode, 0x44, 0x18],             // missing disp8
@@ -4344,7 +4356,7 @@ mod tests {
         ] {
             for bytes in [
                 vec![0x48, opcode, 0x24],             // truncated before SIB
-                vec![0x48, opcode, 0x24, 0x20],       // truncated disp8 form
+                vec![0x48, opcode, 0x24, 0x60],       // unsupported no-index scale
                 vec![0x48, opcode, 0x24, 0x25],       // no base
                 vec![0x48, opcode, 0x24, 0x05],       // RBP base special
                 vec![0x4a, opcode, 0x24, 0x18],       // extended index
@@ -4586,11 +4598,11 @@ mod tests {
             vec![0x48, 0x8b, 0xc0],       // register-register mod=11
             vec![0x48, 0x8b, 0x04],       // truncated SIB
             vec![0x48, 0x8b, 0x04, 0x26], // RSI base with no index
-            vec![0x48, 0x8b, 0x04, 0x20], // no-index SIB
+            vec![0x48, 0x8b, 0x04, 0x60], // no-index SIB with non-unit scale
             vec![0x48, 0x8b, 0x04, 0x05], // no-base SIB requires disp32
             vec![0x48, 0x8b, 0x04, 0x65, 0, 0, 0, 0], // no-base with invalid no-index scale
-            vec![0x48, 0x8b, 0x44, 0x20, 1], // no-index SIB with disp8
-            vec![0x48, 0x8b, 0x84, 0x20, 1, 0, 0, 0], // no-index SIB with disp32
+            vec![0x48, 0x8b, 0x44, 0x60, 1], // no-index SIB with non-unit scale
+            vec![0x48, 0x8b, 0x84, 0x60, 1, 0, 0, 0], // no-index SIB with non-unit scale
             vec![0x48, 0x8b, 0x44, 0x00], // mod=01 displacement
             vec![0x48, 0x8b, 0x40],       // truncated disp8
             vec![0x48, 0x8b, 0x80, 0, 0, 0], // truncated disp32
@@ -8265,5 +8277,195 @@ mod tests {
             );
             assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
         }
+    }
+
+    #[test]
+    fn low_base_no_index_sib_has_exact_qword_profile() {
+        let displacements = [
+            (0_u8, 0_i32),
+            (1, i8::MIN as i32),
+            (1, -1),
+            (1, 0),
+            (1, i8::MAX as i32),
+            (2, i32::MIN),
+            (2, -1),
+            (2, 0),
+            (2, 1),
+            (2, i32::MAX),
+        ];
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for base in 0_u8..=3 {
+                for data in 0_u8..=5 {
+                    for &(mode, displacement) in &displacements {
+                        let mut source =
+                            vec![0x48, opcode, (mode << 6) | (data << 3) | 4, 0x20 | base];
+                        match mode {
+                            0 => {}
+                            1 => source.push(displacement as u8),
+                            _ => source.extend_from_slice(&displacement.to_le_bytes()),
+                        }
+                        let code = CodeView::new(0x5d00, &source).unwrap();
+                        let mut decode_memory = CodeMemory::full_code(code);
+                        let decoded = long_decode::decode(
+                            &mut decode_memory,
+                            0x5d00,
+                            AccessContext::default(),
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            decoded.length as usize,
+                            source.len(),
+                            "decoder length mismatch for {source:02x?}"
+                        );
+                        match opcode {
+                            0x8b => assert!(
+                                crate::block::is_checked_qword_load_form(decoded),
+                                "checked load form rejected {source:02x?}: {:?}",
+                                decoded.operation
+                            ),
+                            0x89 => assert!(
+                                crate::block::is_checked_qword_store_form(decoded),
+                                "checked store form rejected {source:02x?}: {:?}",
+                                decoded.operation
+                            ),
+                            _ => unreachable!(),
+                        }
+                        let (decoded_register, decoded_operand) = match decoded.operation {
+                            Operation::Mov {
+                                dst: Operand::Register(register),
+                                src: Operand::Memory(operand),
+                            } if opcode == 0x8b => (register.register() as u8, operand),
+                            Operation::Mov {
+                                dst: Operand::Memory(operand),
+                                src: Operand::Register(register),
+                            } if opcode == 0x89 => (register.register() as u8, operand),
+                            _ => panic!("unexpected decoded operation for {source:02x?}"),
+                        };
+                        let decoded_site = MemorySiteV2 {
+                            instruction_index: 0,
+                            guest_rip: 0x5d00,
+                            next_rip: 0x5d00 + source.len() as u64,
+                            operation,
+                            destination: (opcode == 0x8b).then_some(decoded_register),
+                            source: (opcode == 0x89).then_some(decoded_register),
+                            operand: decoded_operand,
+                        };
+                        assert!(
+                            decoded_site.has_supported_profile(),
+                            "profile rejected {source:02x?}: {decoded_operand:?}"
+                        );
+                        assert!(
+                            decoded_site.matches_source_bytes(&source, operation),
+                            "source rejected {source:02x?}: {decoded_operand:?}"
+                        );
+                        let direct_site = if opcode == 0x8b {
+                            *compile_memory_load_block_v2(code, 0x5d00)
+                                .unwrap_or_else(|error| {
+                                    panic!("direct V2 rejected {source:02x?}: {error:?}")
+                                })
+                                .site()
+                        } else {
+                            *compile_memory_store_block_v2(code, 0x5d00)
+                                .unwrap_or_else(|error| {
+                                    panic!("direct V2 rejected {source:02x?}: {error:?}")
+                                })
+                                .site()
+                        };
+                        let shared_ir_site = if opcode == 0x8b {
+                            *compile_ir_memory_load_block_v2(code, 0x5d00)
+                                .unwrap_or_else(|error| {
+                                    panic!("shared IR rejected {source:02x?}: {error:?}")
+                                })
+                                .site()
+                        } else {
+                            *compile_ir_memory_store_block_v2(code, 0x5d00)
+                                .unwrap_or_else(|error| {
+                                    panic!("shared IR rejected {source:02x?}: {error:?}")
+                                })
+                                .site()
+                        };
+                        for site in [&direct_site, &shared_ir_site] {
+                            assert!(site.has_supported_profile());
+                            assert!(site.matches_source_bytes(&source, operation));
+                            assert_eq!(site.operand.address_size, od_isa::OperandSize::Qword);
+                            assert_eq!(site.operand.size, od_isa::OperandSize::Qword);
+                            assert_eq!(
+                                site.operand.base,
+                                AddressBase::Register(Register::from_encoding(base).unwrap())
+                            );
+                            assert_eq!(site.operand.index, None);
+                            assert_eq!(site.operand.scale, 1);
+                        }
+                        let mut state = od_isa::LongModeState {
+                            rip: 0x5d00,
+                            ..Default::default()
+                        };
+                        state.gpr[usize::from(base)] = 0x1234_5678;
+                        assert_eq!(
+                            shared_ir_site
+                                .operand
+                                .access_address_48(&state, shared_ir_site.next_rip()),
+                            Ok(state.gpr[usize::from(base)]
+                                .wrapping_add_signed(i64::from(displacement,)))
+                        );
+                        for visible in 1..source.len() {
+                            let partial = CodeView::new(0x5d00, &source[..visible]).unwrap();
+                            let result = if opcode == 0x8b {
+                                compile_memory_load_block_v2(partial, 0x5d00).map(|_| ())
+                            } else {
+                                compile_memory_store_block_v2(partial, 0x5d00).map(|_| ())
+                            };
+                            assert!(result.is_err(), "partial source admitted: {source:02x?}");
+                        }
+                    }
+                }
+            }
+        }
+
+        for source in [
+            vec![0x48, 0x8b, 0x04, 0x60], // no-index sentinel with non-unit scale
+            vec![0x48, 0x8b, 0x04, 0x26], // SIB base RSI, outside low-base profile
+            vec![0x67, 0x48, 0x8b, 0x04, 0x20], // address32 variant
+            vec![0x66, 0x48, 0x8b, 0x04, 0x20], // extra prefix
+        ] {
+            let code = CodeView::new(0x5d00, &source).unwrap();
+            assert!(compile_memory_load_block_v2(code, 0x5d00).is_err());
+            assert!(compile_ir_memory_load_block_v2(code, 0x5d00).is_err());
+        }
+
+        let first_disp = [0x48, 0x8b, 0x84, 0x20, 0, 0, 0, 1];
+        let second_disp = [0x48, 0x8b, 0x84, 0x20, 0, 0, 0, 2];
+        let first =
+            compile_ir_memory_load_block_v2(CodeView::new(0x5d00, &first_disp).unwrap(), 0x5d00)
+                .unwrap();
+        let second =
+            compile_ir_memory_load_block_v2(CodeView::new(0x5d00, &second_disp).unwrap(), 0x5d00)
+                .unwrap();
+        assert_ne!(first.source_bytes(), second.source_bytes());
+        assert_ne!(
+            first.site().operand.displacement,
+            second.site().operand.displacement
+        );
+        let state = od_isa::LongModeState {
+            gpr: [0x1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            ..Default::default()
+        };
+        assert_eq!(
+            first
+                .site()
+                .operand
+                .access_address_48(&state, first.site().next_rip()),
+            Ok(0x0100_1000)
+        );
+        assert_eq!(
+            second
+                .site()
+                .operand
+                .access_address_48(&state, second.site().next_rip()),
+            Ok(0x0200_1000)
+        );
     }
 }

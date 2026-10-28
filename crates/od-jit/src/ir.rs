@@ -976,6 +976,7 @@ fn is_scoped_memory_data_operand(
                 || is_rbp_base_rbp_index_qword_sib_data_operand(operand, instruction_length)
                 || is_rbp_base_rsi_rdi_index_qword_sib_data_operand(operand, instruction_length)
                 || is_low_base_rsi_rdi_index_qword_sib_data_operand(operand, instruction_length)
+                || is_low_base_no_index_qword_sib_data_operand(operand, instruction_length)
                 || is_rsi_rdi_base_rsi_rdi_index_qword_sib_data_operand(
                     operand,
                     instruction_length,
@@ -1163,6 +1164,24 @@ fn is_scoped_memory_data_operand(
                 instruction_length,
             )
             || is_indexed_no_base_rbp_sib_stack_data_operand(operand, instruction_length))
+}
+
+fn is_low_base_no_index_qword_sib_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(instruction_length, 4 | 5 | 8)
+        && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+        && operand.index.is_none()
+        && operand.scale == 1
+        && match instruction_length {
+            4 => operand.displacement == 0,
+            5 => i8::try_from(operand.displacement).is_ok(),
+            8 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
 }
 
 fn is_indexed_no_base_qword_sib_data_operand(
