@@ -5171,3 +5171,12 @@ fixture for `s2-long-packssdw-reg-v1`, encoded as `66 45 0F 6B C1`. Each
 signed dword is clamped to [-32768,32767] and narrowed; destination lanes come
 first, followed by source lanes. The local profile assumes SSE2 architectural
 preconditions and denies JIT and native execution.
+
+### S2-35.37 local register PSLLW immediate diagnostic profile
+
+`s2_35_37_psllw_imm_register.case.json` is a handwritten literal XMM9 fixture
+for `s2-long-psllw-imm-reg-v1`, encoded as `66 41 0F 71 F1 01`. `/6` is the
+ModR/M selector and `r/m` selects XMM9. Eight little-endian u16 lanes shift
+left by the unmasked unsigned imm8 count; each result is truncated to 16 bits.
+The local profile assumes SSE2 architectural preconditions and denies JIT and
+native execution.

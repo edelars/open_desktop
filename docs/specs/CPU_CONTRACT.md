@@ -9205,6 +9205,17 @@ control-fault claim. Memory, other prefixes, REX.W/X, VEX/EVEX, native/JIT and
 physical execution are excluded. S2-34, S2-35 and global `S2-35 → S2-34` remain
 open. See the [S2-35.35 plan](../plans/STAGE_2.md#s2-3535--local-only-bounded-register-pshufd).
 
+## Local register-only immediate `PSLLW` profile — S2-35.37
+
+The diagnostic profile `s2-long-psllw-imm-reg-v1` admits exactly
+`66 [optional REX.B] 0F 71 /6 ib`, ModR/M.mod=3. `/6` is required and
+ModR/M.r/m selects XMM0–15. Each little-endian u16 lane shifts logically left
+by the unsigned imm8; counts 0–15 retain the low 16 bits and counts >=16 zero
+all lanes without count masking. No carry crosses lanes; flags and MXCSR are
+unchanged. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only.
+Memory/MMX, REX.R/X/W, other shifts, VEX/EVEX, feature gating, and exception
+delivery are outside this profile. See the [S2-35.37 plan](../plans/STAGE_2.md#s2-3537--local-only-bounded-register-immediate-psllw).
+
 ## Local register-only `PADDUSB` profile — S2-35.4
 
 The exact profile `s2-long-paddusb-reg-v1` admits legacy

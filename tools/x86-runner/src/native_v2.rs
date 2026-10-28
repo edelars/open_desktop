@@ -1435,6 +1435,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongPacksswbRegV1
             | v2::Profile::LongPackuswbRegV1
             | v2::Profile::LongPackssdwRegV1
+            | v2::Profile::LongPsllwImmRegV1
             | v2::Profile::LongPsubusbRegV1
             | v2::Profile::LongAndpsRegV1
             | v2::Profile::LongOrpsRegV1
@@ -5227,6 +5228,20 @@ mod tests {
             admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
             "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_37_psllw_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_37_psllw_imm_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { ref reason }
+                if reason == "this profile is local-only; native state does not observe every profile field"
+        ));
     }
 
     #[cfg(target_os = "linux")]

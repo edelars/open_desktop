@@ -429,6 +429,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.34 | Local-only bounded register PACKSSDW XMM diagnostic slice; signed-dword to signed-word saturation, native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.35 | Local-only bounded register PSHUFD XMM diagnostic slice; imm8 dword shuffle, native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.36 | Packed-integer bounded coverage and acceptance inventory; no ISA/profile expansion | S2-34.10, existing S2-35 local evidence |
+| [ ] | S2-35.37 | Local-only bounded register PSLLW immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
@@ -8714,6 +8715,27 @@ feature gates, and guest exception delivery are excluded. This child leaves
 S2-34, S2-35, global `S2-35 → S2-34`, and combined Mac mini/SSH acceptance
 open.
 
+#### S2-35.37 — local-only bounded register immediate `PSLLW`
+
+The profile `s2-long-psllw-imm-reg-v1` admits exactly
+`66 [optional REX.B] 0F 71 /6 ib`, ModR/M.mod=3, with XMM0–15. ModR/M.r/m
+selects the destination; `/6` is mandatory. Each of eight little-endian u16
+lanes is shifted logically left by the unsigned imm8. Counts 0–15 retain the
+low 16 result bits; counts >=16 clear all lanes without masking the count.
+There is no lane carry, and flags/MXCSR are unchanged. SSE2 and CR0.EM=0,
+CR0.TS=0, CR4.OSFXSR=1 remain assumptions only.
+
+Local coverage checks all 256 counts with lane sentinels on every XMM destination,
+every 65,536 lane words for counts 0–15 against a widened reference,
+strict encoding/schema negatives, full-state/source preservation, no data
+callbacks, and STOP/zero-budget atomicity. The handwritten XMM9 fixture is
+checked through interpreter execution with JIT denied; a Linux-only native
+admission denial guard is compiled for the Linux target on this Darwin host, but
+not executed there. These checks need
+independent review. Other shifts, memory/MMX forms, REX.R/X/W, VEX/EVEX, feature gates,
+exception delivery and physical execution remain excluded. S2-34, S2-35,
+global `S2-35 → S2-34`, and combined Mac mini/SSH acceptance remain open.
+
 
 #### S2-35.33 — local-only bounded register `PACKUSWB`
 
@@ -8786,7 +8808,7 @@ indexed in the [Stage 2 fixture README](../../tests/fixtures/x86/stage2/README.m
 | Unpack | `PUNPCKLBW` 60, `PUNPCKHBW` 68, `PUNPCKLWD` 61, `PUNPCKHWD` 69, `PUNPCKLDQ` 62, `PUNPCKHDQ` 6A, `PUNPCKLQDQ` 6C, `PUNPCKHQDQ` 6D | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Local register fixtures and lane-selection/state checks exist for all eight listed forms. No new local opcode dependency is evidenced; parent native-oracle acceptance remains outstanding. |
 | Pack | `PACKSSWB` 63, `PACKUSWB` 67, `PACKSSDW` 6B | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Local fixtures and boundary/extrema checks; S2-35.33/.34 additionally record exhaustive sign-extended input-position checks and register-pair coverage. These are the only pack forms inventoried here. |
 | Shuffle | `PSHUFD` 70 + imm8 | `66 [REX.R/B] 0F 70 /r ib`, ModR/M.mod=3. Exact register-only profile and fixture; local tests cover all 256 controls and all 16×16 register pairs, aliasing, fetch truncation and strict negatives. Other shuffle forms have no selected S2-35 profile here. |
-| Shifts | None | No shift profile, fixture, or local evidence is recorded in the CPU contract, Stage 2 report, or fixture index. Before a shift slice, select a bounded operation and define its operand width, count source/masking, lane behavior and exact encoding from the architectural source; no specific x86 shift set is declared required here. |
+| Shifts | `PSLLW` 71 /6 + imm8 | `66 [REX.B] 0F 71 /6 ib`, ModR/M.mod=3; ModR/M.r/m is destination. S2-35.37 defines unmasked count handling and local-only fixture/interpreter coverage; other shifts are not selected. |
 
 For every implemented row, the local contract is register-only and assumes
 SSE2 plus CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 where the profile says so.

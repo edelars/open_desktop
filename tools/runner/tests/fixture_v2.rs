@@ -1454,9 +1454,10 @@ fn run(bytes: &[u8], engine: &str, exit: i32) -> (LoadedFixture, RunResult) {
     assert_eq!(
         output.status.code(),
         Some(exit),
-        "case {}: {}",
+        "case {}: {}\n{}",
         loaded.fixture.case_id,
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
     assert!(
         output.stderr.is_empty(),
@@ -12471,6 +12472,46 @@ fn pshufd_literal_cli_fixture_executes_and_keeps_jit_denied() {
         &value.state.sse.as_ref().unwrap().xmm[9],
         "909192939495969798999a9b9c9d9e9f"
     );
+    let (_, jit) = run(bytes, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
+fn psllw_literal_fixture_executes_and_keeps_jit_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_37_psllw_imm_register.case.json");
+    let (loaded, interp) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        loaded.fixture.profile,
+        od_testkit::v2::Profile::LongPsllwImmRegV1
+    );
+    assert!(matches!(interp.outcome, Outcome::StopAddress {}));
+    let Observation::Available { value } = interp.snapshot else {
+        panic!("PSLLW snapshot unavailable")
+    };
+    assert_eq!(
+        &value.state.sse.as_ref().unwrap().xmm[9],
+        "20232427282b2c2f30333437383b3c3f"
+    );
+    for rejected in [
+        "0f71f001",
+        "660f71d001",
+        "660f717101",
+        "660f71f0",
+        "66480f71f001",
+        "66420f71f001",
+        "66450f71f001",
+        "c5f971f001",
+    ] {
+        let mut invalid = loaded.fixture.clone();
+        invalid.memory[0].initial_bytes_hex = rejected.to_string();
+        invalid.memory[0].length = (rejected.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(invalid.memory[0].length as usize);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + u64::from(invalid.memory[0].length),
+        ));
+        assert!(invalid.to_json().is_err(), "schema admitted {rejected}");
+    }
     let (_, jit) = run(bytes, "jit", 4);
     assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
 }

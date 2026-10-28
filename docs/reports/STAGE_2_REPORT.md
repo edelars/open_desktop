@@ -12886,3 +12886,19 @@ reconciled S2-35 task checklist, is recorded in
 It records local interpreter/profile evidence separately from native admission
 and physical execution; the latter remains `not_run` for SSE/SSE2 under the
 current integer-only oracle harness.
+
+## S2-35.37 — local PSLLW immediate register profile
+
+Added the bounded interpreter operation and schema profile for
+`s2-long-psllw-imm-reg-v1`: `66 [optional REX.B] 0F 71 /6 ib`, register-only;
+ModR/M.r/m selects XMM0–15, and the immediate is an unmasked unsigned count.
+Counts >=16 zero each 16-bit lane. A literal XMM9 fixture is recorded in the
+fixture README. `cargo check -p od-isa -p od-testkit --all-targets --offline`
+passed. Focused checks now cover all 256 counts on all 16 destinations, every
+16-bit lane value at counts 0–15 against a widened reference, strict
+encoding/schema negatives, the literal fixture's interpreter result and JIT
+denial, and STOP/zero-budget atomicity. `cargo check -p od-x86-runner --tests
+--offline --target x86_64-unknown-linux-gnu` passed, compiling the Linux-only
+native-denial test; the test itself was not executed on this Darwin host.
+Independent review remains pending; S2-34, S2-35 and global
+`S2-35 → S2-34` remain open.
