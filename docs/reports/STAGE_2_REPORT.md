@@ -1008,6 +1008,46 @@ only a local mathematical conversion contract; it does not update MXCSR or
 deliver that architectural exception. See [official Intel Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)
 and the [S2-36w plan](../plans/STAGE_2.md#s2-36w--bounded-signed-i64-to-binary32binary64-value-conversion).
 
+## S2-36x — bounded raw binary32/binary64 to signed i32 conversion
+
+`Binary32::to_i32(mode)` and `Binary64::to_i32(mode)` return the local
+`BinaryIntegerResult` with converted value, inexactness, and
+`invalid_operation`. Both use exact raw classification and finite
+normalization, then integer-only quotient/remainder rounding. The implementation
+handles magnitudes below one directly, rounds the finite integer/fraction split
+for larger inputs, and checks the i32 range only after rounding. This preserves
+the valid exact `i32::MIN` encoding and values slightly below it that round back
+to the minimum under selected modes. Invalid conversions return the
+`i32::MIN` sentinel with `inexact=false`. Neither helper changes its source or
+CPU/MXCSR state, delivers exceptions, nor represents architectural sticky-flag
+behavior or exception priority.
+
+Literal tests cover both widths across all four modes: signed zeros and minimum
+subnormals; values below, at, and above 0.5; ±1.5 and ±2.5; exact integers;
+binary64 quarter/half/three-quarter cases around both signed range boundaries;
+binary32 adjacent range encodings; huge finite values; both signed infinities;
+and both signs of quiet and signaling NaNs. Tests verify source encodings remain
+unchanged, valid results' inexactness, and invalid sentinel/inexact behavior.
+The focused `raw_to_i32` suite passed 4/4 tests and the full
+`binary_float::tests` suite passed 76/76. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check`, and
+`graphify update .` also completed successfully.
+`python3 tools/check_layout.py` remains blocked by the pre-existing open
+[ISSUE-023](../KNOWN_ISSUES.md#issue-023--layout-checker-reports-worktree-metadata-and-stale-oracle-links):
+it reports the `.git` worktree pointer as unmapped and the two archived Stage 1/2
+oracle manifests as broken links. This task did not change layout.
+
+Full S2-36 and Stage 2 acceptance remain open. This local conversion helper is
+not instruction integration; SSE/MXCSR architectural exception delivery and
+hardware/Mac mini comparison remain deferred to the combined final substage.
+
+Provenance: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` p. 3-232, `CVTSS2SI` p. 3-242,
+`CVTTSD2SI` p. 3-253, and `CVTTSS2SI` p. 3-255; Vol. 1 §4.9.2. The SDM defines the
+architectural conversion and exception behavior; the helper deliberately
+implements only the local contract above. See the [official Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)
+and [Vol. 1 PDF](https://cdrdv2-public.intel.com/835781/325462-sdm-vol-1-2abcd-3abcd-4.pdf),
+and the [S2-36x plan](../plans/STAGE_2.md#s2-36x--bounded-raw-binary32binary64-to-signed-i32-conversion).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

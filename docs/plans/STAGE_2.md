@@ -477,6 +477,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36u | Exact raw binary32-to-binary64 widening with local SNaN invalid outcome | S2-36a, S2-36q; independent review |
 | [x] | S2-36v | Raw binary64-to-binary32 narrowing with explicit rounding mode and local diagnostics | S2-36a, S2-36m; independent review |
 | [x] | S2-36w | Bounded signed i64-to-binary32/binary64 value conversion with explicit rounding mode | S2-36d, S2-36e; independent review |
+| [x] | S2-36x | Bounded raw binary32/binary64-to-signed-i32 conversion with explicit rounding mode and local invalid outcome | S2-36a, S2-36m; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5641,6 +5642,36 @@ exception. This pure helper accepts an explicit mode and does not mutate MXCSR
 or deliver architectural exceptions. Full S2-36, instruction integration, and
 hardware/Mac mini acceptance remain open; hardware execution stays deferred to
 the combined final substage.
+
+#### S2-36x — bounded raw binary32/binary64 to signed i32 conversion
+
+Add `Binary32::to_i32(mode)` and `Binary64::to_i32(mode)` as local value-only
+conversions returning `BinaryIntegerResult<i32>` with `value`, `inexact`, and
+`invalid_operation`. Normalize finite raw encodings exactly, round to an integer
+under the explicit mode, then validate the rounded value against the i32 range.
+Both signed zeros convert exactly to zero. Non-finite sources or
+rounded out-of-range values return the `i32::MIN` sentinel with
+`invalid_operation=true` and `inexact=false`; exact `-2^31` remains valid.
+The helper does not mutate the encoding, CPU state, or MXCSR and does not
+deliver exceptions. Its invalid/inexact outcome is local and does not encode
+architectural sticky flags or exception priority.
+
+Literal checks cover both widths and all four modes, signed zero/subnormals,
+halfway and adjacent encodings, ±1.5/±2.5, exact integers, exact i32 limits,
+the binary64 quarter/half/three-quarter values around both range edges, binary32
+adjacent range encodings, huge finite values, infinities, and both signs/classes
+of NaN. Invalid results assert the sentinel and suppressed local inexactness;
+all source encodings are checked unchanged. The exact local checks and current
+limitations are recorded in the [S2-36x report](../reports/STAGE_2_REPORT.md#s2-36x--bounded-raw-binary32binary64-to-signed-i32-conversion).
+Full S2-36/Stage 2 acceptance and hardware/Mac mini validation remain open.
+
+Provenance: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` pp. 3-232 and `CVTSS2SI`
+p. 3-242 specify MXCSR rounding, range and masked indefinite behavior;
+`CVTTSD2SI` p. 3-253 and `CVTTSS2SI` p. 3-255 specify truncation toward zero.
+Vol. 1 §4.9.2 discusses invalid-exception precedence. These references do not
+extend this helper into architectural exception handling.
+[Official Intel Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)
+and [Vol. 1 PDF](https://cdrdv2-public.intel.com/835781/325462-sdm-vol-1-2abcd-3abcd-4.pdf).
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 
