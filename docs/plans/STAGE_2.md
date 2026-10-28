@@ -471,6 +471,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36o | Complete finite binary32/binary64 addition and subtraction results in the exponent-gap ≤64 profile | S2-36d–36g, S2-36m; independent review |
 | [x] | S2-36p | Extend finite binary32/binary64 add/sub result APIs across the full finite exponent range | S2-36o, S2-36m; independent review |
 | [x] | S2-36q | Same-format raw binary32/binary64 add/sub results for finite values, zeros, infinities and NaNs; local invalid-operation outcome | S2-36p, S2-36a; independent review |
+| [x] | S2-36r | Same-format raw binary32/binary64 multiplication results for finite values, zeros, infinities and NaNs; local invalid-operation outcome | S2-36m, S2-36q; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5445,6 +5446,42 @@ cases сверяются с S2-36p diagnostics. Авторские провер�
 изменении community labels). Независимые Sol medium code review и docs review
 завершились без замечаний. Hardware/SSH проверка отложена до общего финального
 substage; полная S2-36 приёмка остаётся открытой.
+
+#### S2-36r — raw same-format binary32/binary64 multiplication
+
+**Статус:** raw multiplication result APIs реализованы; независимые Sol medium
+code review и docs review завершены чисто. Полная приёмка S2-36 и
+hardware/Mac mini acceptance остаются открытыми.
+
+`Binary32::multiply_raw_result` и `Binary64::multiply_raw_result` принимают
+raw операнды одного формата и возвращают `BinaryArithmeticResult<Self>` с
+encoding, diagnostics S2-36m и отдельным local `invalid_operation`. Старое имя
+`BinaryAddSubResult` сохранено как public type alias, а сигнатуры add/sub API
+остались совместимы. NaN обработка использует тот же first-source resolver,
+что и S2-36q: выбранный QNaN сохраняется, выбранный SNaN quiet-ится только
+quiet bit, любой SNaN помечает invalid. Источник — Intel SDM Rev. 093, Vol. 1,
+§4.8.3.5/Table 4-8 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+
+`0 × ∞` и `∞ × 0` возвращают отрицательный Intel QNaN indefinite для
+соответствующего формата и `invalid_operation=true` (Table D-1 того же SDM).
+Прочие infinity результаты имеют XOR sign; QNaN/SNaN propagation происходит
+до проверки этих случаев. Конечные raw operands, включая zeros и subnormals,
+нормализуются и делегируются `multiply_finite_result`, сохраняя single-rounding
+и `inexact`/`overflow`/`tiny_after_precision_rounding`. Для special/invalid
+результатов эти три rounding diagnostics false. Это локальный result contract,
+не MXCSR/x87 status, masking или exception delivery.
+
+Literal checks обеих ширин покрывают signs и operand order, QNaN/SNaN source
+priority, `0 × ∞`, infinity combinations, finite×infinity, XOR signed zero по
+всем rounding modes и finite exact/inexact/subnormal/underflow/overflow
+delegation. Авторские проверки прошли:
+`cargo test -p od-isa --offline binary_float::tests` (57/57),
+`cargo test -p od-isa --offline x87::tests` (47/47),
+`cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check` и
+`graphify update .`. Independent Sol medium code review и docs review завершены
+без замечаний; hardware/SSH и Mac mini проверка отложены до общего финального
+substage. S2-36 не завершён.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

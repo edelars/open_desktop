@@ -778,6 +778,47 @@ invalid infinity encodings: Table D-1
 exception delivery, x87 operand ordering или hardware execution. См. также
 [план S2-36q](../plans/STAGE_2.md#s2-36q--raw-same-format-binary32binary64-addition-and-subtraction).
 
+## S2-36r — raw same-format binary32/binary64 multiplication results
+
+**Статус:** `Binary32::multiply_raw_result` / `Binary64::multiply_raw_result`
+реализованы; авторские локальные checks завершились успешно. Independent Sol
+medium code review и docs review завершились без замечаний.
+Инструкция/exception integration, hardware/Mac mini acceptance и полная S2-36
+остаются открытыми.
+
+Обе функции принимают два raw операнда одного формата и возвращают
+`BinaryArithmeticResult<Self>`: raw result encoding, `inexact`, `overflow`,
+`tiny_after_precision_rounding` и отдельный local `invalid_operation`.
+`BinaryAddSubResult<T>` сохранён как public alias, существующие add/sub
+сигнатуры и поведение не менялись. NaN resolver выделен в per-format helper и
+переиспользуется add/sub и multiply: выбирается первый source NaN; выбранный
+QNaN сохраняется, выбранный SNaN quiet-ится установкой quiet bit, любой SNaN
+входа помечает invalid. RHS source order и sign/payload сохраняются.
+
+`0 × ∞` и `∞ × 0` дают negative QNaN indefinite (`0xffc00000` /
+`0xfff8000000000000`) и `invalid_operation=true`. Другие случаи с infinity
+возвращают infinity с XOR sign; special/invalid results имеют false rounding
+diagnostics. Конечные operands (normal, subnormal и zero) нормализуются и
+делегируются S2-36m `multiply_finite_result`, сохраняя его точное однократное
+округление и diagnostics. `invalid_operation` — локальный результат, не
+MXCSR/x87 flag, masking state или exception delivery.
+
+Literal matrices обеих ширин проверяют source order, qNaN/sNaN, sign/payload,
+zero/infinity combinations, infinity/infinity, finite×infinity и XOR zero sign
+во всех rounding modes. Конечные exact/inexact/underflow/subnormal/overflow
+cases сравниваются с S2-36m в обоих порядках операндов. Авторские проверки:
+`cargo test -p od-isa --offline binary_float::tests` (57/57),
+`cargo test -p od-isa --offline x87::tests` (47/47),
+`cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check`,
+`graphify update .`. Independent Sol medium code review и docs review завершились
+без замечаний. Hardware/SSH проверка отложена до общего финального substage.
+
+NaN provenance: Intel SDM Rev. 093, Vol. 1, §4.8.3.5/Table 4-8; invalid
+zero×infinity encodings: Table D-1 ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+Ссылка фиксирует raw local result contract, не architectural exception
+delivery. См. [план S2-36r](../plans/STAGE_2.md#s2-36r--raw-same-format-binary32binary64-multiplication).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

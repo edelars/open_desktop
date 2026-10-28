@@ -76,18 +76,18 @@ impl<T> BinaryRoundingResult<T> {
     }
 }
 
-/// Result of a same-format binary32/binary64 addition or subtraction.
+/// Result of a same-format binary32/binary64 arithmetic operation.
 ///
 /// The rounding diagnostics have the same local mathematical meaning as
 /// [`BinaryRoundingResult`]. `invalid_operation` is a local operation outcome,
 /// not an architectural exception flag or delivery decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BinaryAddSubResult<T> {
+pub struct BinaryArithmeticResult<T> {
     rounding: BinaryRoundingResult<T>,
     invalid_operation: bool,
 }
 
-impl<T> BinaryAddSubResult<T> {
+impl<T> BinaryArithmeticResult<T> {
     const fn new(rounding: BinaryRoundingResult<T>, invalid_operation: bool) -> Self {
         Self {
             rounding,
@@ -122,11 +122,14 @@ impl<T> BinaryAddSubResult<T> {
         self.rounding.tiny_after_precision_rounding()
     }
 
-    /// Returns the local invalid-operation outcome for this add/sub operation.
+    /// Returns the local invalid-operation outcome for this operation.
     pub const fn invalid_operation(&self) -> bool {
         self.invalid_operation
     }
 }
+
+/// Compatibility name for the same-format add/sub result type.
+pub type BinaryAddSubResult<T> = BinaryArithmeticResult<T>;
 
 /// An immutable binary32 encoding.
 ///
@@ -414,6 +417,47 @@ impl Binary32 {
             .expect("normalized finite product quotient")
     }
 
+    /// Multiplies same-format raw binary32 operands and returns result diagnostics.
+    ///
+    /// NaNs use the Intel SDM Rev. 093 first-source rule and signaling NaNs set
+    /// the local invalid-operation outcome. Zero times infinity returns the
+    /// Intel indefinite QNaN. Finite operands use the single-rounding finite
+    /// result path; no architectural state or exception delivery is updated.
+    pub fn multiply_raw_result(
+        lhs: Self,
+        rhs: Self,
+        mode: RationalRoundingMode,
+    ) -> BinaryArithmeticResult<Self> {
+        let lhs_class = lhs.class();
+        let rhs_class = rhs.class();
+        if let Some(result) = Self::propagate_nan(lhs, rhs, lhs_class, rhs_class) {
+            return result;
+        }
+
+        let lhs_infinity = lhs_class == BinaryClass::Infinity;
+        let rhs_infinity = rhs_class == BinaryClass::Infinity;
+        let lhs_zero = lhs_class == BinaryClass::Zero;
+        let rhs_zero = rhs_class == BinaryClass::Zero;
+        if (lhs_infinity && rhs_zero) || (lhs_zero && rhs_infinity) {
+            return BinaryArithmeticResult::exact(Self::from_bits(0xffc0_0000), true);
+        }
+
+        let sign = lhs.sign() ^ rhs.sign();
+        if lhs_infinity || rhs_infinity {
+            return BinaryArithmeticResult::exact(
+                Self::from_bits((Self::EXPONENT_MASK << 23) | (u32::from(sign) << 31)),
+                false,
+            );
+        }
+
+        let lhs_finite = lhs.normalize_finite().expect("finite binary32 operand");
+        let rhs_finite = rhs.normalize_finite().expect("finite binary32 operand");
+        BinaryArithmeticResult::new(
+            Self::multiply_finite_result(lhs_finite, rhs_finite, mode),
+            false,
+        )
+    }
+
     /// Divides finite values and reports bounded binary32 rounding diagnostics.
     ///
     /// A zero divisor returns `None`; a zero numerator returns exact signed
@@ -598,23 +642,8 @@ impl Binary32 {
     ) -> BinaryAddSubResult<Self> {
         let lhs_class = lhs.class();
         let rhs_class = rhs.class();
-        let lhs_nan = matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
-        let rhs_nan = matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
-        if lhs_nan || rhs_nan {
-            let (selected, selected_class) = if lhs_nan {
-                (lhs, lhs_class)
-            } else {
-                (rhs, rhs_class)
-            };
-            let value = if selected_class == BinaryClass::SignalingNaN {
-                Self::from_bits(selected.0 | Self::QUIET_BIT)
-            } else {
-                selected
-            };
-            return BinaryAddSubResult::exact(
-                value,
-                lhs_class == BinaryClass::SignalingNaN || rhs_class == BinaryClass::SignalingNaN,
-            );
+        if let Some(result) = Self::propagate_nan(lhs, rhs, lhs_class, rhs_class) {
+            return result;
         }
 
         let lhs_infinity = lhs_class == BinaryClass::Infinity;
@@ -647,6 +676,33 @@ impl Binary32 {
         }
         .expect("finite binary32 add/sub result is supported");
         BinaryAddSubResult::new(rounded, false)
+    }
+
+    fn propagate_nan(
+        lhs: Self,
+        rhs: Self,
+        lhs_class: BinaryClass,
+        rhs_class: BinaryClass,
+    ) -> Option<BinaryArithmeticResult<Self>> {
+        let lhs_nan = matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+        let rhs_nan = matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+        if !lhs_nan && !rhs_nan {
+            return None;
+        }
+        let (selected, selected_class) = if lhs_nan {
+            (lhs, lhs_class)
+        } else {
+            (rhs, rhs_class)
+        };
+        let value = if selected_class == BinaryClass::SignalingNaN {
+            Self::from_bits(selected.0 | Self::QUIET_BIT)
+        } else {
+            selected
+        };
+        Some(BinaryArithmeticResult::exact(
+            value,
+            lhs_class == BinaryClass::SignalingNaN || rhs_class == BinaryClass::SignalingNaN,
+        ))
     }
 }
 
@@ -936,6 +992,47 @@ impl Binary64 {
             .expect("normalized finite product quotient")
     }
 
+    /// Multiplies same-format raw binary64 operands and returns result diagnostics.
+    ///
+    /// NaNs use the Intel SDM Rev. 093 first-source rule and signaling NaNs set
+    /// the local invalid-operation outcome. Zero times infinity returns the
+    /// Intel indefinite QNaN. Finite operands use the single-rounding finite
+    /// result path; no architectural state or exception delivery is updated.
+    pub fn multiply_raw_result(
+        lhs: Self,
+        rhs: Self,
+        mode: RationalRoundingMode,
+    ) -> BinaryArithmeticResult<Self> {
+        let lhs_class = lhs.class();
+        let rhs_class = rhs.class();
+        if let Some(result) = Self::propagate_nan(lhs, rhs, lhs_class, rhs_class) {
+            return result;
+        }
+
+        let lhs_infinity = lhs_class == BinaryClass::Infinity;
+        let rhs_infinity = rhs_class == BinaryClass::Infinity;
+        let lhs_zero = lhs_class == BinaryClass::Zero;
+        let rhs_zero = rhs_class == BinaryClass::Zero;
+        if (lhs_infinity && rhs_zero) || (lhs_zero && rhs_infinity) {
+            return BinaryArithmeticResult::exact(Self::from_bits(0xfff8_0000_0000_0000), true);
+        }
+
+        let sign = lhs.sign() ^ rhs.sign();
+        if lhs_infinity || rhs_infinity {
+            return BinaryArithmeticResult::exact(
+                Self::from_bits((Self::EXPONENT_MASK << 52) | (u64::from(sign) << 63)),
+                false,
+            );
+        }
+
+        let lhs_finite = lhs.normalize_finite().expect("finite binary64 operand");
+        let rhs_finite = rhs.normalize_finite().expect("finite binary64 operand");
+        BinaryArithmeticResult::new(
+            Self::multiply_finite_result(lhs_finite, rhs_finite, mode),
+            false,
+        )
+    }
+
     /// Divides finite values and reports bounded binary64 rounding diagnostics.
     ///
     /// A zero divisor returns `None`; a zero numerator returns exact signed
@@ -1120,23 +1217,8 @@ impl Binary64 {
     ) -> BinaryAddSubResult<Self> {
         let lhs_class = lhs.class();
         let rhs_class = rhs.class();
-        let lhs_nan = matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
-        let rhs_nan = matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
-        if lhs_nan || rhs_nan {
-            let (selected, selected_class) = if lhs_nan {
-                (lhs, lhs_class)
-            } else {
-                (rhs, rhs_class)
-            };
-            let value = if selected_class == BinaryClass::SignalingNaN {
-                Self::from_bits(selected.0 | Self::QUIET_BIT)
-            } else {
-                selected
-            };
-            return BinaryAddSubResult::exact(
-                value,
-                lhs_class == BinaryClass::SignalingNaN || rhs_class == BinaryClass::SignalingNaN,
-            );
+        if let Some(result) = Self::propagate_nan(lhs, rhs, lhs_class, rhs_class) {
+            return result;
         }
 
         let lhs_infinity = lhs_class == BinaryClass::Infinity;
@@ -1169,6 +1251,33 @@ impl Binary64 {
         }
         .expect("finite binary64 add/sub result is supported");
         BinaryAddSubResult::new(rounded, false)
+    }
+
+    fn propagate_nan(
+        lhs: Self,
+        rhs: Self,
+        lhs_class: BinaryClass,
+        rhs_class: BinaryClass,
+    ) -> Option<BinaryArithmeticResult<Self>> {
+        let lhs_nan = matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+        let rhs_nan = matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+        if !lhs_nan && !rhs_nan {
+            return None;
+        }
+        let (selected, selected_class) = if lhs_nan {
+            (lhs, lhs_class)
+        } else {
+            (rhs, rhs_class)
+        };
+        let value = if selected_class == BinaryClass::SignalingNaN {
+            Self::from_bits(selected.0 | Self::QUIET_BIT)
+        } else {
+            selected
+        };
+        Some(BinaryArithmeticResult::exact(
+            value,
+            lhs_class == BinaryClass::SignalingNaN || rhs_class == BinaryClass::SignalingNaN,
+        ))
     }
 }
 
@@ -6563,29 +6672,36 @@ mod tests {
             (0x0080_0000, 0x807f_ffff),
             (0x0000_0000, 0xbf80_0000),
         ] {
-            let lhs_raw = Binary32::from_bits(lhs_bits);
-            let rhs_raw = Binary32::from_bits(rhs_bits);
-            let lhs = lhs_raw.normalize_finite().unwrap();
-            let rhs = rhs_raw.normalize_finite().unwrap();
-            for mode in modes {
-                for (raw, finite) in [
-                    (
-                        Binary32::add_raw_result(lhs_raw, rhs_raw, mode),
-                        Binary32::add_finite_aligned_result(lhs, rhs, mode).unwrap(),
-                    ),
-                    (
-                        Binary32::subtract_raw_result(lhs_raw, rhs_raw, mode),
-                        Binary32::subtract_finite_aligned_result(lhs, rhs, mode).unwrap(),
-                    ),
-                ] {
-                    assert_eq!(raw.value(), finite.value());
-                    assert_eq!(raw.inexact(), finite.inexact());
-                    assert_eq!(raw.overflow(), finite.overflow());
-                    assert_eq!(
-                        raw.tiny_after_precision_rounding(),
-                        finite.tiny_after_precision_rounding(),
-                    );
-                    assert!(!raw.invalid_operation());
+            for (lhs_bits, rhs_bits) in [
+                (lhs_bits, rhs_bits),
+                (lhs_bits ^ 0x8000_0000, rhs_bits),
+                (lhs_bits, rhs_bits ^ 0x8000_0000),
+                (lhs_bits ^ 0x8000_0000, rhs_bits ^ 0x8000_0000),
+            ] {
+                let lhs_raw = Binary32::from_bits(lhs_bits);
+                let rhs_raw = Binary32::from_bits(rhs_bits);
+                let lhs = lhs_raw.normalize_finite().unwrap();
+                let rhs = rhs_raw.normalize_finite().unwrap();
+                for mode in modes {
+                    for (raw, finite) in [
+                        (
+                            Binary32::add_raw_result(lhs_raw, rhs_raw, mode),
+                            Binary32::add_finite_aligned_result(lhs, rhs, mode).unwrap(),
+                        ),
+                        (
+                            Binary32::subtract_raw_result(lhs_raw, rhs_raw, mode),
+                            Binary32::subtract_finite_aligned_result(lhs, rhs, mode).unwrap(),
+                        ),
+                    ] {
+                        assert_eq!(raw.value(), finite.value());
+                        assert_eq!(raw.inexact(), finite.inexact());
+                        assert_eq!(raw.overflow(), finite.overflow());
+                        assert_eq!(
+                            raw.tiny_after_precision_rounding(),
+                            finite.tiny_after_precision_rounding(),
+                        );
+                        assert!(!raw.invalid_operation());
+                    }
                 }
             }
         }
@@ -6597,19 +6713,209 @@ mod tests {
             (0x0010_0000_0000_0000, 0x800f_ffff_ffff_ffff),
             (0x0000_0000_0000_0000, 0xbff0_0000_0000_0000),
         ] {
-            let lhs_raw = Binary64::from_bits(lhs_bits);
-            let rhs_raw = Binary64::from_bits(rhs_bits);
+            for (lhs_bits, rhs_bits) in [
+                (lhs_bits, rhs_bits),
+                (lhs_bits ^ 0x8000_0000_0000_0000, rhs_bits),
+                (lhs_bits, rhs_bits ^ 0x8000_0000_0000_0000),
+                (
+                    lhs_bits ^ 0x8000_0000_0000_0000,
+                    rhs_bits ^ 0x8000_0000_0000_0000,
+                ),
+            ] {
+                let lhs_raw = Binary64::from_bits(lhs_bits);
+                let rhs_raw = Binary64::from_bits(rhs_bits);
+                let lhs = lhs_raw.normalize_finite().unwrap();
+                let rhs = rhs_raw.normalize_finite().unwrap();
+                for mode in modes {
+                    for (raw, finite) in [
+                        (
+                            Binary64::add_raw_result(lhs_raw, rhs_raw, mode),
+                            Binary64::add_finite_aligned_result(lhs, rhs, mode).unwrap(),
+                        ),
+                        (
+                            Binary64::subtract_raw_result(lhs_raw, rhs_raw, mode),
+                            Binary64::subtract_finite_aligned_result(lhs, rhs, mode).unwrap(),
+                        ),
+                    ] {
+                        assert_eq!(raw.value(), finite.value());
+                        assert_eq!(raw.inexact(), finite.inexact());
+                        assert_eq!(raw.overflow(), finite.overflow());
+                        assert_eq!(
+                            raw.tiny_after_precision_rounding(),
+                            finite.tiny_after_precision_rounding(),
+                        );
+                        assert!(!raw.invalid_operation());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn raw_binary32_multiply_special_case_matrix_is_literal() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let qnan = Binary32::from_bits(0x7fc1_2345);
+        let neg_qnan = Binary32::from_bits(0xffc2_3456);
+        let snan = Binary32::from_bits(0x7f81_2345);
+        let quiet_snan = Binary32::from_bits(0x7fc1_2345);
+        let neg_snan = Binary32::from_bits(0xff81_3456);
+        let quiet_neg_snan = Binary32::from_bits(0xffc1_3456);
+        let one = Binary32::from_bits(0x3f80_0000);
+        for (lhs, rhs, expected, invalid) in [
+            (qnan, snan, qnan, true),
+            (snan, qnan, quiet_snan, true),
+            (one, neg_qnan, neg_qnan, false),
+            (neg_qnan, one, neg_qnan, false),
+            (one, snan, quiet_snan, true),
+            (snan, one, quiet_snan, true),
+            (neg_snan, qnan, quiet_neg_snan, true),
+            (qnan, neg_snan, qnan, true),
+            (snan, neg_snan, quiet_snan, true),
+            (neg_snan, snan, quiet_neg_snan, true),
+        ] {
+            let result = Binary32::multiply_raw_result(lhs, rhs, Nearest);
+            assert_eq!(*result.value(), expected);
+            assert_eq!(result.invalid_operation(), invalid);
+            assert!(!result.inexact() && !result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
+        }
+
+        let p_inf = Binary32::from_bits(0x7f80_0000);
+        let n_inf = Binary32::from_bits(0xff80_0000);
+        let p_zero = Binary32::from_bits(0x0000_0000);
+        let n_zero = Binary32::from_bits(0x8000_0000);
+        let n_one = Binary32::from_bits(0xbf80_0000);
+        for (lhs, rhs, expected, invalid) in [
+            (p_zero, p_inf, 0xffc0_0000, true),
+            (n_inf, p_zero, 0xffc0_0000, true),
+            (n_zero, n_inf, 0xffc0_0000, true),
+            (p_inf, n_zero, 0xffc0_0000, true),
+            (p_inf, p_inf, 0x7f80_0000, false),
+            (p_inf, n_inf, 0xff80_0000, false),
+            (n_inf, n_inf, 0x7f80_0000, false),
+            (p_inf, n_one, 0xff80_0000, false),
+            (n_one, p_inf, 0xff80_0000, false),
+            (n_inf, n_one, 0x7f80_0000, false),
+        ] {
+            let result = Binary32::multiply_raw_result(lhs, rhs, Nearest);
+            assert_eq!(result.value().to_bits(), expected);
+            assert_eq!(result.invalid_operation(), invalid);
+            assert!(!result.inexact() && !result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
+        }
+    }
+
+    #[test]
+    fn raw_binary64_multiply_special_case_matrix_is_literal() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let qnan = Binary64::from_bits(0x7ff8_1234_5678_9abc);
+        let neg_qnan = Binary64::from_bits(0xfff8_2345_6789_abcd);
+        let snan = Binary64::from_bits(0x7ff0_1234_5678_9abc);
+        let quiet_snan = Binary64::from_bits(0x7ff8_1234_5678_9abc);
+        let neg_snan = Binary64::from_bits(0xfff0_2345_6789_abcd);
+        let quiet_neg_snan = Binary64::from_bits(0xfff8_2345_6789_abcd);
+        let one = Binary64::from_bits(0x3ff0_0000_0000_0000);
+        for (lhs, rhs, expected, invalid) in [
+            (qnan, snan, qnan, true),
+            (snan, qnan, quiet_snan, true),
+            (one, neg_qnan, neg_qnan, false),
+            (neg_qnan, one, neg_qnan, false),
+            (one, snan, quiet_snan, true),
+            (snan, one, quiet_snan, true),
+            (neg_snan, qnan, quiet_neg_snan, true),
+            (qnan, neg_snan, qnan, true),
+            (snan, neg_snan, quiet_snan, true),
+            (neg_snan, snan, quiet_neg_snan, true),
+        ] {
+            let result = Binary64::multiply_raw_result(lhs, rhs, Nearest);
+            assert_eq!(*result.value(), expected);
+            assert_eq!(result.invalid_operation(), invalid);
+            assert!(!result.inexact() && !result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
+        }
+
+        let p_inf = Binary64::from_bits(0x7ff0_0000_0000_0000);
+        let n_inf = Binary64::from_bits(0xfff0_0000_0000_0000);
+        let p_zero = Binary64::from_bits(0x0000_0000_0000_0000);
+        let n_zero = Binary64::from_bits(0x8000_0000_0000_0000);
+        let n_one = Binary64::from_bits(0xbff0_0000_0000_0000);
+        for (lhs, rhs, expected, invalid) in [
+            (p_zero, p_inf, 0xfff8_0000_0000_0000, true),
+            (n_inf, p_zero, 0xfff8_0000_0000_0000, true),
+            (n_zero, n_inf, 0xfff8_0000_0000_0000, true),
+            (p_inf, n_zero, 0xfff8_0000_0000_0000, true),
+            (p_inf, p_inf, 0x7ff0_0000_0000_0000, false),
+            (p_inf, n_inf, 0xfff0_0000_0000_0000, false),
+            (n_inf, n_inf, 0x7ff0_0000_0000_0000, false),
+            (p_inf, n_one, 0xfff0_0000_0000_0000, false),
+            (n_one, p_inf, 0xfff0_0000_0000_0000, false),
+            (n_inf, n_one, 0x7ff0_0000_0000_0000, false),
+        ] {
+            let result = Binary64::multiply_raw_result(lhs, rhs, Nearest);
+            assert_eq!(result.value().to_bits(), expected);
+            assert_eq!(result.invalid_operation(), invalid);
+            assert!(!result.inexact() && !result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
+        }
+    }
+
+    #[test]
+    fn raw_multiply_finite_results_delegate_all_diagnostics_to_s2_36m() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let modes = [Nearest, Zero, Up, Down];
+        for lhs_bits in [0x0000_0000_u32, 0x8000_0000] {
+            for rhs_bits in [0x0000_0000_u32, 0x8000_0000] {
+                let lhs = Binary32::from_bits(lhs_bits);
+                let rhs = Binary32::from_bits(rhs_bits);
+                for mode in modes {
+                    let result = Binary32::multiply_raw_result(lhs, rhs, mode);
+                    assert_eq!(result.value().to_bits(), lhs_bits ^ rhs_bits);
+                    assert!(!result.invalid_operation());
+                    assert!(!result.inexact() && !result.overflow());
+                    assert!(!result.tiny_after_precision_rounding());
+                }
+            }
+        }
+        for lhs_bits in [0x0000_0000_0000_0000_u64, 0x8000_0000_0000_0000] {
+            for rhs_bits in [0x0000_0000_0000_0000_u64, 0x8000_0000_0000_0000] {
+                let lhs = Binary64::from_bits(lhs_bits);
+                let rhs = Binary64::from_bits(rhs_bits);
+                for mode in modes {
+                    let result = Binary64::multiply_raw_result(lhs, rhs, mode);
+                    assert_eq!(result.value().to_bits(), lhs_bits ^ rhs_bits);
+                    assert!(!result.invalid_operation());
+                    assert!(!result.inexact() && !result.overflow());
+                    assert!(!result.tiny_after_precision_rounding());
+                }
+            }
+        }
+        for (lhs_bits, rhs_bits) in [
+            (0x3f80_0000_u32, 0x4000_0000_u32), // exact normal
+            (0x3f80_0001, 0x3f80_0001),         // inexact normal
+            (0x0080_0000, 0x3400_0000),         // exact subnormal
+            (0x0000_0001, 0x3f00_0000),         // underflow boundary
+            (0x7f7f_ffff, 0x4000_0000),         // overflow
+            (0x8000_0000, 0x0000_0001),         // signed zero
+        ] {
+            let lhs_raw = Binary32::from_bits(lhs_bits);
+            let rhs_raw = Binary32::from_bits(rhs_bits);
             let lhs = lhs_raw.normalize_finite().unwrap();
             let rhs = rhs_raw.normalize_finite().unwrap();
             for mode in modes {
                 for (raw, finite) in [
                     (
-                        Binary64::add_raw_result(lhs_raw, rhs_raw, mode),
-                        Binary64::add_finite_aligned_result(lhs, rhs, mode).unwrap(),
+                        Binary32::multiply_raw_result(lhs_raw, rhs_raw, mode),
+                        Binary32::multiply_finite_result(lhs, rhs, mode),
                     ),
                     (
-                        Binary64::subtract_raw_result(lhs_raw, rhs_raw, mode),
-                        Binary64::subtract_finite_aligned_result(lhs, rhs, mode).unwrap(),
+                        Binary32::multiply_raw_result(rhs_raw, lhs_raw, mode),
+                        Binary32::multiply_finite_result(rhs, lhs, mode),
                     ),
                 ] {
                     assert_eq!(raw.value(), finite.value());
@@ -6617,11 +6923,118 @@ mod tests {
                     assert_eq!(raw.overflow(), finite.overflow());
                     assert_eq!(
                         raw.tiny_after_precision_rounding(),
-                        finite.tiny_after_precision_rounding(),
+                        finite.tiny_after_precision_rounding()
                     );
                     assert!(!raw.invalid_operation());
                 }
             }
         }
+
+        for (lhs_bits, rhs_bits) in [
+            (0x3ff0_0000_0000_0000_u64, 0x4000_0000_0000_0000), // exact normal
+            (0x3ff0_0000_0000_0001, 0x3ff0_0000_0000_0001),     // inexact normal
+            (0x0010_0000_0000_0000, 0x3cb0_0000_0000_0000),     // exact subnormal
+            (0x0000_0000_0000_0001, 0x3fe0_0000_0000_0000),     // underflow boundary
+            (0x7fef_ffff_ffff_ffff, 0x4000_0000_0000_0000),     // overflow
+            (0x8000_0000_0000_0000, 0x0000_0000_0000_0001),     // signed zero
+        ] {
+            let lhs_raw = Binary64::from_bits(lhs_bits);
+            let rhs_raw = Binary64::from_bits(rhs_bits);
+            let lhs = lhs_raw.normalize_finite().unwrap();
+            let rhs = rhs_raw.normalize_finite().unwrap();
+            for mode in modes {
+                for (raw, finite) in [
+                    (
+                        Binary64::multiply_raw_result(lhs_raw, rhs_raw, mode),
+                        Binary64::multiply_finite_result(lhs, rhs, mode),
+                    ),
+                    (
+                        Binary64::multiply_raw_result(rhs_raw, lhs_raw, mode),
+                        Binary64::multiply_finite_result(rhs, lhs, mode),
+                    ),
+                ] {
+                    assert_eq!(raw.value(), finite.value());
+                    assert_eq!(raw.inexact(), finite.inexact());
+                    assert_eq!(raw.overflow(), finite.overflow());
+                    assert_eq!(
+                        raw.tiny_after_precision_rounding(),
+                        finite.tiny_after_precision_rounding()
+                    );
+                    assert!(!raw.invalid_operation());
+                }
+            }
+        }
+
+        let exact32 = Binary32::multiply_raw_result(
+            Binary32::from_bits(0x3f80_0000),
+            Binary32::from_bits(0x4000_0000),
+            Nearest,
+        );
+        assert_eq!(exact32.value().to_bits(), 0x4000_0000);
+        assert!(!exact32.inexact() && !exact32.overflow());
+        let inexact32 = Binary32::multiply_raw_result(
+            Binary32::from_bits(0x3f80_0001),
+            Binary32::from_bits(0x3f80_0001),
+            Nearest,
+        );
+        assert_eq!(inexact32.value().to_bits(), 0x3f80_0002);
+        assert!(inexact32.inexact());
+        let subnormal32 = Binary32::multiply_raw_result(
+            Binary32::from_bits(0x0080_0000),
+            Binary32::from_bits(0x3400_0000),
+            Nearest,
+        );
+        assert_eq!(subnormal32.value().to_bits(), 1);
+        assert!(!subnormal32.inexact() && subnormal32.tiny_after_precision_rounding());
+        let underflow32 = Binary32::multiply_raw_result(
+            Binary32::from_bits(1),
+            Binary32::from_bits(0x3f00_0000),
+            Nearest,
+        );
+        assert_eq!(underflow32.value().to_bits(), 0);
+        assert!(underflow32.inexact() && underflow32.tiny_after_precision_rounding());
+        let overflow32 = Binary32::multiply_raw_result(
+            Binary32::from_bits(0x7f7f_ffff),
+            Binary32::from_bits(0x4000_0000),
+            Nearest,
+        );
+        assert_eq!(overflow32.value().to_bits(), 0x7f80_0000);
+        assert!(overflow32.inexact() && overflow32.overflow());
+
+        let exact64 = Binary64::multiply_raw_result(
+            Binary64::from_bits(0x3ff0_0000_0000_0000),
+            Binary64::from_bits(0x4000_0000_0000_0000),
+            Nearest,
+        );
+        assert_eq!(exact64.value().to_bits(), 0x4000_0000_0000_0000);
+        assert!(!exact64.inexact() && !exact64.overflow());
+        let inexact64 = Binary64::multiply_raw_result(
+            Binary64::from_bits(0x3ff0_0000_0000_0001),
+            Binary64::from_bits(0x3ff0_0000_0000_0001),
+            Nearest,
+        );
+        assert_eq!(inexact64.value().to_bits(), 0x3ff0_0000_0000_0002);
+        assert!(inexact64.inexact());
+        let subnormal64 = Binary64::multiply_raw_result(
+            Binary64::from_bits(0x0010_0000_0000_0000),
+            Binary64::from_bits(0x3cb0_0000_0000_0000),
+            Nearest,
+        );
+        assert_eq!(subnormal64.value().to_bits(), 1);
+        assert!(!subnormal64.inexact() && subnormal64.tiny_after_precision_rounding());
+        let underflow64 = Binary64::multiply_raw_result(
+            Binary64::from_bits(1),
+            Binary64::from_bits(0x3fe0_0000_0000_0000),
+            Nearest,
+        );
+        assert_eq!(underflow64.value().to_bits(), 0);
+        assert!(underflow64.inexact() && underflow64.tiny_after_precision_rounding());
+        let overflow64 = Binary64::multiply_raw_result(
+            Binary64::from_bits(0x7fef_ffff_ffff_ffff),
+            Binary64::from_bits(0x4000_0000_0000_0000),
+            Nearest,
+        );
+        assert_eq!(overflow64.value().to_bits(), 0x7ff0_0000_0000_0000);
+        assert!(overflow64.inexact() && overflow64.overflow());
     }
 }
