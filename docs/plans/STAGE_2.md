@@ -388,6 +388,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-34.21 | Local-only exact mandatory-66 `MOVUPD XMM,[RAX]` 16-byte load; JIT/native closed | S2-34.15 |
 | [x] | S2-34.23 | Separate local-only MOVUPD memory base+displacement profile `s2-long-movupd-mem-base-v1`, both directions; JIT/native closed | S2-34.22 |
 | [x] | S2-34.24 | Separate local-only MOVUPD RIP-relative profile `s2-long-movupd-mem-rip-v1`, both directions; JIT/native closed | S2-34.23 |
+| [x] | S2-34.25 | Separate local-only MOVUPD SIB profile `s2-long-movupd-mem-sib-v1`, both directions; JIT/native closed | S2-34.24 |
 | [x] | S2-34.5 | Separate local-only legacy `MOVUPS [RAX],XMM` store profile; one exact 16-byte write with no CPU commit on backend failure | S2-34.4 |
 | [x] | S2-34.6a | Shared local-only MOVUPS base+displacement profile for legacy `0F 10`/`0F 11`, no SIB/RIP-relative | S2-34.5 |
 | [x] | S2-34.6b | Extend `s2-long-movups-mem-base-v1` with bounded legacy RIP-relative `0F 10`/`0F 11` disp32 forms | S2-34.6a |
@@ -9426,3 +9427,26 @@ Handwritten fixtures отдельно исполняют load `[R9+1]` (`66 45 0
 Добавлен отдельный строгий profile `s2-long-movupd-mem-rip-v1`: только long-mode `66 [optional REX.R only] 0F 10/11 /r`, ModRM.mod=00/rm=101 и disp32. REX отсутствует/40/44; REX.B, SIB и любые другие формы исключены. REX.R выбирает XMM0–15. Эффективный адрес — RIP после полной инструкции плюс signed disp32; длина 8 байт без REX и 9 с REX. Decoder использует `rm_operand`, а execution — общий `NextRip`/16-byte memory path. Предыдущие `[RAX]` и base+displacement профили остаются строгими.
 
 Handwritten load/store cases покрывают REX.R, XMM8 и mapped target. Decoder и interpreter matrices проверяют all XMM registers, обе длины инструкции, signed disp32 extrema/negative/zero/positive offsets, точный callback address и полный 16-byte callback, canonical crossing, truncation, zero budget и stop before fetch. Testkit проверяет CPU commit только после успеха; runner asserts literal payload/canaries, interpreter output и JIT denial. Схемные negatives проверяют REX.B/X/W, SIB/base формы, префиксы, address32, VEX/EVEX и truncation. Существующие exact `[RAX]`, MOVUPD base и MOVUPS RIP профили проверены отдельно. Проверки и ограничение physical `not_run` зафиксированы в [отчёте](../reports/STAGE_2_REPORT.md#s2-3424--local-movupd-rip-relative-memory-profile); native denial compile-checked only, parent S2-34 и ISSUE-012 остаются open.
+
+
+#### S2-34.25 — local-only MOVUPD SIB memory forms
+
+Добавлен отдельный строгий профиль `s2-long-movupd-mem-sib-v1`: long-mode
+`66 [optional one REX.R/X/B] 0F 10/11 /r`, ModR/M.mod=00/01/10, r/m=100 и
+обязательный SIB. REX.W, address32, другие префиксы, non-SIB/register формы,
+VEX/EVEX отвергаются. REX.R выбирает XMM, scale покрывает 1/2/4/8, индекс
+R12 кодируется SIB.index=4 с REX.X=1; без REX.X index=4 означает отсутствие
+индекса. Для mod=00/base=5 задаётся no-base + signed disp32 независимо от
+REX.B; R13 как base допустим только при mod=01/10. RSP/RBP сохраняют SS
+атрибуцию, а R12/R13/no-base — data.
+
+`rm_operand`/`MemoryOperand` и существующая 16-byte read/write семантика
+переиспользуются. Schema validator отдельно проверяет исходный класс
+ModR/M/SIB; прежние `[RAX]`, base, RIP-relative и MOVUPS profiles отвергают
+SIB, даже если target data отображён. Детерминированная матрица decoder покрывает
+обе операции, mod 00/01/10, четыре scale, отсутствие/обычные/расширенные
+индексы и базы, SIB-special index/base значения, REX.R/X/B и XMM0–15. Fixtures
+проверяют indexed load/store и base=5 no-base load/store с REX.B, raw payload,
+canaries, callback width/address, injected backend errors, interpreter result и
+JIT denial. Parent S2-34/ISSUE-012 остаются open; native denied, physical
+`not_run`.

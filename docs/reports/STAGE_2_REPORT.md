@@ -13543,3 +13543,28 @@ Added a separate strict profile `s2-long-movupd-mem-rip-v1` for long-mode mandat
 Handwritten load/store fixtures use mapped data and XMM8/REX.R; runner checks literal XMM payloads, stored bytes and canaries, interpreter retirement, and JIT denial. Decoder/execution unit matrices cover both directions and all 16 XMM registers, absent/REX.R 8/9-byte lengths, signed disp32 extrema/negative/zero/positive offsets, exact callback addresses and 16-byte widths, canonical crossing, truncated fetch, zero budget and stop-before-fetch. Testkit callback/error checks verify one 16-byte access and CPU-state preservation. Schema negatives reject REX.B/X/W, SIB/base forms, wrong opcode/prefix, address-size 32, VEX/EVEX and truncation; old `[RAX]` and base profiles reject mapped-target RIP independently. Existing MOVUPS RIP load/store fixtures remain valid after narrowing the schema-only MOVUPD profile gate.
 
 Verification: `cargo test -p od-isa movupd --offline` (16), `cargo test -p od-testkit movupd_memory_base --offline` (2), three focused MOVUPD runner tests and both MOVUPS RIP regression tests passed; `cargo fmt --all -- --check`, workspace offline all-target check, Linux x86-runner all-target compile check, `git diff --check` and `graphify update .` passed. Native denial was compile-checked only. SSE2/control-state preconditions are assumed; no hardware alignment/fault, arbitrary-backend rollback, or physical execution claim is made. Parent S2-34 remains open, ISSUE-012 remains open, and physical status is `not_run`. See [CPU contract](../specs/CPU_CONTRACT.md#local-profile-s2-3424-s2-long-movupd-mem-rip-v1), [plan](../plans/STAGE_2.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3424-local-movupd-rip-relative-diagnostic-profile).
+
+
+## S2-34.25 — local MOVUPD SIB memory profile
+
+Implemented the local-only `s2-long-movupd-mem-sib-v1` profile for mandatory-66
+MOVUPD memory load/store with SIB and ModR/M.mod=00/01/10. The decoder reuses
+`rm_operand`/`MemoryOperand` and the established 16-byte execution path. Schema
+validation checks raw ModR/M.r/m and SIB presence directly, preserving strict
+older `[RAX]`, base, RIP and MOVUPS profile boundaries. SIB scales and regular /
+extended bases and indexes are supported; index=4 is absent unless REX.X selects
+R12. mod=00/base=5 uses signed disp32 no-base addressing regardless of REX.B.
+
+Four handwritten fixtures cover indexed and no-base load/store. Runner checks
+interpreter results, raw XMM payloads, memory canaries and JIT denial. Decoder
+coverage spans both opcodes, three ModR/M memory modes, scales 1/2/4/8, all XMM
+registers, REX.R/X/B, and base/index special cases. Testkit verifies original
+SIB encoding class and rejects mapped-target SIB under the older profiles;
+callback tests check one 16-byte read/write and CPU-state preservation after
+injected errors. The generic MOVUPD executor’s existing canonical-range and
+pre-fetch limit checks remain the implementation used by this SIB profile.
+
+This is local-only evidence: JIT/native remain denied, physical status is
+`not_run`, and parent S2-34 and ISSUE-012 remain open.
+
+Focused verification (2026-10-28): `cargo test -p od-isa movupd --offline` (21), `cargo test -p od-testkit movupd_sib --offline` (1), `cargo test -p od-testkit movupd_memory_base_uses_one_data_callback --offline` (1, including SIB exact-address/width and injected-error paths), and `cargo test -p od-runner --test fixture_v2 local_movupd_sib --offline` (1) passed. `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, Linux `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`, `git diff --check`, and `graphify update .` passed. The Linux native-denial test is compile-checked only; physical execution remains `not_run`.

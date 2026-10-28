@@ -6216,4 +6216,16 @@ mod tests {
         assert!(matches!(result.outcome, Outcome::Unsupported { ref reason }
             if reason == "this profile is local-only; native state does not observe every profile field"));
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_34_25_movupd_sib_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_load_r9_r10_scale2.case.json"
+        ))
+        .unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { ref reason }
+            if reason == "this profile is local-only; native state does not observe every profile field"));
+    }
 }

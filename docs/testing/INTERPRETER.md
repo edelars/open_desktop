@@ -2142,3 +2142,17 @@ negatives. The handwritten schema-v2 fixture passes through the CLI interpreter;
 JIT is explicitly denied. Workspace checks and the Linux native-denial compile
 check are recorded in the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-3421--local-movupd-rax-load-profile).
 Physical execution status is `not_run`; parent S2-34 remains open.
+
+## Local MOVUPD SIB memory profile — S2-34.25
+
+The `s2-long-movupd-mem-sib-v1` fixture profile requires mandatory `66`, a
+memory ModR/M with r/m=100, and a following SIB byte. The od-isa matrix checks
+both load/store opcodes across mod=00/01/10, every scale, all XMM registers,
+REX.R/X/B combinations and ordinary/extended/no-index/no-base encodings.
+Handwritten fixtures exercise indexed load/store and mod=00/base=5 signed
+absolute displacement load/store with REX.B ignored. Testkit validates the
+original encoded ModR/M/SIB class and verifies that old exact `[RAX]`, base,
+RIP-relative and MOVUPS profiles reject SIB even when data is mapped. Callback
+checks assert one 16-byte access and unchanged CPU state after injected errors;
+runner fixtures check raw payloads, canaries and interpreter/JIT behavior.
+Physical execution is `not_run`; see the [Stage 2 report](../reports/STAGE_2_REPORT.md).

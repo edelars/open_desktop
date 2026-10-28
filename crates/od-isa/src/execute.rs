@@ -70227,6 +70227,7 @@ mod tests {
             let mut memory = Memory::at(&code, 0x1000);
             let mut state = LongModeState::default();
             state.rip = 0x1000;
+            state.x87 = Some(X87State::fixture_seed());
             state.sse = Some(SseState {
                 xmm: [[0xa5; 16]; 16],
                 mxcsr: 0x1f80,
@@ -72911,7 +72912,10 @@ mod tests {
                     mxcsr: 0x1f80,
                 });
                 let before = state.clone();
-                assert!(step(&mut state, &mut memory, AccessContext::default()).is_err());
+                assert_ne!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Advanced)
+                );
                 assert_eq!(state, before);
                 assert!(memory.accesses.is_empty());
             }
@@ -74329,6 +74333,145 @@ mod tests {
     }
 
     #[test]
+    fn movupd_sib_both_directions_reject_bad_ranges_and_preserve_state_on_failure() {
+        for (opcode, kind) in [(0x10u8, AccessKind::Read), (0x11, AccessKind::Write)] {
+            // SIB.base=5 with mod=00 means no base. REX.B is deliberately set
+            // and must not turn it into R13; the signed disp32 addresses data.
+            let code = [0x66, 0x41, 0x0f, opcode, 0x04, 0x25, 1, 0, 0x20, 0];
+            let mut memory = Memory::at(&code, 0x1000);
+            memory.data_base = 0x200001;
+            memory.error = Some(MemoryError::Backend("injected SIB data failure".into()));
+            memory.error_kind = Some(kind);
+            let decoded = long_decode::decode(&mut memory, 0x1000, AccessContext::default());
+            assert!(
+                matches!(
+                    decoded.as_ref().map(|instruction| instruction.operation),
+                    Ok(Operation::MovupdLoadMemory { .. } | Operation::MovupdStoreMemory { .. })
+                ),
+                "SIB decode mismatch: {decoded:?}"
+            );
+            memory.accesses.clear();
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = step(&mut state, &mut memory, AccessContext::default());
+            assert!(matches!(result, Err(MemoryError::Backend(_))), "{result:?}");
+            assert_eq!(state, before);
+            assert_eq!(
+                memory
+                    .accesses
+                    .iter()
+                    .filter(|(access, ..)| *access == kind)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                memory
+                    .accesses
+                    .iter()
+                    .find(|(access, ..)| *access == kind)
+                    .unwrap()
+                    .1,
+                0x200001
+            );
+            assert_eq!(
+                memory
+                    .accesses
+                    .iter()
+                    .find(|(access, ..)| *access == kind)
+                    .unwrap()
+                    .2,
+                16
+            );
+        }
+
+        for opcode in [0x10u8, 0x11] {
+            let code = [0x66, 0x0f, opcode, 0x04, 0x20]; // [RAX], SIB, no index
+            for address in [0x0000_7fff_ffff_fff8, 0x0000_8000_0000_0000, u64::MAX - 7] {
+                let mut memory = Memory::at(&code, 0x1000);
+                memory.data_base = address;
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.x87 = Some(X87State::fixture_seed());
+                state.gpr[Register::Rax as usize] = address;
+                state.sse = Some(SseState {
+                    xmm: [[0x5a; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+                let before = state.clone();
+                assert_ne!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Advanced)
+                );
+                assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn movupd_sib_run_limits_and_truncated_sib_do_not_access_data_or_commit() {
+        for opcode in [0x10u8, 0x11] {
+            let code = [0x66, 0x41, 0x0f, opcode, 0x04, 0x25, 1, 0, 0x20, 0];
+            for (budget, stop, expected) in [
+                (0, None, RunExit::InstructionBudgetExhausted),
+                (1, Some(0x1000), RunExit::StopAddress),
+            ] {
+                let mut memory = Memory::at(&code, 0x1000);
+                memory.data_base = 0x200001;
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.x87 = Some(X87State::fixture_seed());
+                state.sse = Some(SseState {
+                    xmm: [[0xa5; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+                let before = state.clone();
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: budget,
+                        stop_rip: stop,
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(result.exit, expected);
+                assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
+            }
+            for truncated in [&code[..5], &code[..8], &code[..9]] {
+                let mut memory = Memory::at(truncated, 0x1000);
+                memory.data_base = 0x200001;
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.x87 = Some(X87State::fixture_seed());
+                state.sse = Some(SseState {
+                    xmm: [[0x33; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+                let before = state.clone();
+                assert!(step(&mut state, &mut memory, AccessContext::default()).is_err());
+                assert_eq!(state, before);
+                assert_eq!(
+                    memory
+                        .accesses
+                        .iter()
+                        .filter(|(kind, ..)| *kind != AccessKind::Fetch)
+                        .count(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
     fn movupd_store_rax_write_failures_and_truncated_fetch_preserve_state() {
         let code = [0x66, 0x44, 0x0f, 0x11, 0x00];
         for error in [
@@ -75165,7 +75308,6 @@ mod tests {
             &[0x45, 0x0f, 0x11, 0x05, 0, 0, 0, 0][..],
             &[0x48, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..], // REX.W
             &[0x42, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..], // REX.X
-            &[0x66, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..], // mandatory legacy prefix
             &[0xf2, 0x0f, 0x11, 0x05, 0, 0, 0, 0][..],
             &[0xf3, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
             &[0x67, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..], // address size

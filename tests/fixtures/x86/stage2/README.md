@@ -5374,3 +5374,17 @@ XMM8, ModRM.mod=00/rm=101 and a signed disp32 targeting mapped data. The decoder
 uses the full instruction's next RIP; execution shares the existing 16-byte
 memory path. JIT and native execution are denied. Physical behavior remains
 unverified (`not_run`).
+
+
+### S2-34.25 local MOVUPD SIB memory diagnostic profile
+
+The separate `s2-long-movupd-mem-sib-v1` profile admits mandatory-66 MOVUPD
+load/store with ModR/M.mod=00/01/10 and r/m=100, followed by SIB. Four
+handwritten fixtures cover indexed XMM8 load `[R9+R10*2-1]`, indexed XMM8
+store `[RAX+R12*8+1]`, and load/store with ModR/M.mod=00/SIB.base=5 signed
+disp32 no-base addressing. The no-base encodings also set REX.B and demonstrate
+that it is ignored; SIB.index=4 means no index when REX.X=0 and R12 when REX.X=1.
+Raw payloads and store canaries are checked by the CLI runner. Testkit checks
+exact encoded SIB classification and rejects the same bytes when assigned to
+older `[RAX]`, base, RIP-relative, or MOVUPS profiles. JIT/native admission is
+denied; physical status remains `not_run`.

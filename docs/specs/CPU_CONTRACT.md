@@ -9794,3 +9794,27 @@ Handwritten local fixtures use `66 45 0F 10 81 01 00 00 00` for `[R9+1]` load to
 ## Local profile S2-34.24: `s2-long-movupd-mem-rip-v1`
 
 Admits only long-mode `66 [optional REX.R only] 0F 10/11 /r`, ModRM.mod=00/rm=101 and signed disp32. REX is absent, `40`, or `44`; REX.B (which would not turn this encoding into R13), SIB, address-size override, other prefixes, register mode, and all other ModRM modes are rejected. ModRM.reg plus REX.R selects XMM0–15. Effective address is the RIP after the full instruction plus sign-extended disp32; instruction lengths are 8 bytes without REX and 9 bytes with REX. The decoder reuses `rm_operand`/`NextRip`; execution reuses the existing full 16-byte read/write and range checks. Loads/stores issue one callback and commit CPU state only after success. Unaligned access is admitted locally. JIT/native execution and physical validation remain unsupported; arbitrary-backend memory rollback is not claimed. Parent S2-34 remains open, ISSUE-012 remains open, physical status is `not_run`.
+
+
+## Local profile S2-34.25: `s2-long-movupd-mem-sib-v1`
+
+Admits long-mode `66 [optional one REX.R/X/B] 0F 10/11 /r` only for memory
+ModR/M.mod=00/01/10 and r/m=100, followed by mandatory SIB. REX.W, address-size
+override, all other prefixes, register mode, non-SIB forms, VEX and EVEX are
+rejected. ModR/M.reg plus REX.R selects XMM0–15. SIB scale selects 1/2/4/8;
+SIB index 4 is absent when REX.X=0 and R12 when REX.X=1. SIB base is extended
+by REX.B except mod=00/base=5, which means no base and signed disp32 regardless
+of REX.B. R13 is a base only with mod=01/10. Address calculation reuses
+`rm_operand`/`MemoryOperand`; execution uses the established 16-byte MOVUPD
+load/store path and full-range canonical checks. Actual RSP/RBP bases retain SS
+fault attribution; R12/R13 and no-base references retain data attribution.
+
+Schema validation checks original ModR/M/SIB bytes, not a normalized memory
+operand, and keeps old exact `[RAX]`, base, RIP-relative and MOVUPS profiles
+strict against SIB, including mapped-target cases. Local fixtures cover indexed
+load/store and base=5 no-base load/store with raw payloads/canaries; tests cover
+ModR/M modes, all scales, independent REX.R/X/B and all XMM registers for both
+opcodes, signed no-base disp32 and ignored REX.B, one 16-byte callback and
+CPU-state preservation on backend errors. JIT/native execution and physical
+validation are unsupported; physical status is `not_run`, ISSUE-012 and parent
+S2-34 remain open.

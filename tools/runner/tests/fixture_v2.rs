@@ -5357,6 +5357,106 @@ fn local_movupd_memory_base_rejects_rip_relative_when_target_is_mapped_data() {
 }
 
 #[test]
+fn local_movupd_sib_load_store_execute_and_jit_denies() {
+    let load_bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_load_r9_r10_scale2.case.json"
+    );
+    let (load_input, load_result) = run(load_bytes, "interpreter", 0);
+    assert_eq!(
+        load_input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupdMemSibV1
+    );
+    assert_eq!(
+        load_input.fixture.memory[0].initial_bytes_hex,
+        "66470f104451ff"
+    );
+    assert_eq!(count(&load_result), 1);
+    let mut expected_load = load_input.fixture.initial_state.clone();
+    expected_load.rip = load_input.fixture.stop_rip.unwrap();
+    expected_load.sse.as_mut().unwrap().xmm[8] = "000102030405060708090a0b0c0d0e0f".into();
+    assert_eq!(snapshot(&load_result).state, expected_load);
+    assert_eq!(
+        snapshot(&load_result).memory[1].bytes_hex,
+        load_input.fixture.memory[1].initial_bytes_hex
+    );
+    let (_, jit_load) = run(load_bytes, "jit", 4);
+    assert!(matches!(jit_load.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(jit_load.snapshot, Observation::Unavailable { .. }));
+
+    let store_bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_store_rax_r12_scale8.case.json"
+    );
+    let (store_input, store_result) = run(store_bytes, "interpreter", 0);
+    assert_eq!(
+        store_input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupdMemSibV1
+    );
+    assert_eq!(
+        store_input.fixture.memory[0].initial_bytes_hex,
+        "66460f1144e001"
+    );
+    assert_eq!(count(&store_result), 1);
+    let mut expected_store = store_input.fixture.initial_state.clone();
+    expected_store.rip = store_input.fixture.stop_rip.unwrap();
+    assert_eq!(snapshot(&store_result).state, expected_store);
+    assert_eq!(
+        snapshot(&store_result).memory[1].bytes_hex,
+        "a5808182838485868788898a8b8c8d8e8f5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    );
+    let (_, jit_store) = run(store_bytes, "jit", 4);
+    assert!(matches!(jit_store.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_store.snapshot,
+        Observation::Unavailable { .. }
+    ));
+
+    for (bytes, is_store) in [
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_nobase_load.case.json"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_nobase_store.case.json"
+            )
+            .as_slice(),
+            true,
+        ),
+    ] {
+        let (input, result) = run(bytes, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMovupdMemSibV1
+        );
+        assert_eq!(count(&result), 1);
+        let mut expected = input.fixture.initial_state.clone();
+        expected.rip = input.fixture.stop_rip.unwrap();
+        if !is_store {
+            expected.sse.as_mut().unwrap().xmm[8] = "000102030405060708090a0b0c0d0e0f".into();
+            assert_eq!(
+                snapshot(&result).memory[1].bytes_hex,
+                input.fixture.memory[1].initial_bytes_hex
+            );
+        } else {
+            let initial = &input.fixture.memory[1].initial_bytes_hex;
+            let payload = &input.fixture.initial_state.sse.as_ref().unwrap().xmm[8];
+            let expected_memory = format!("{}{}{}", &initial[..2], payload, &initial[34..]);
+            assert_eq!(
+                snapshot(&result).memory[1].bytes_hex,
+                expected_memory,
+                "{} outcome={:?}",
+                input.fixture.case_id,
+                result.outcome
+            );
+        }
+        assert_eq!(snapshot(&result).state, expected);
+    }
+}
+
+#[test]
 fn local_movupd_rip_relative_load_and_store_fixtures_use_next_rip_and_jit_denies() {
     for bytes in [
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_24_movupd_rip_load.case.json")

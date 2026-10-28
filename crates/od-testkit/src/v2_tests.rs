@@ -2338,6 +2338,77 @@ fn movupd_memory_base_profile_is_separate_and_requires_66() {
 }
 
 #[test]
+fn movupd_sib_profile_checks_the_original_encoding_class() {
+    for bytes in [
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_load_r9_r10_scale2.case.json"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_store_rax_r12_scale8.case.json"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_nobase_load.case.json"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_nobase_store.case.json"
+        )
+        .as_slice(),
+    ] {
+        let fixture = Fixture::from_json(bytes).unwrap().fixture;
+        assert_eq!(fixture.profile, Profile::LongMovupdMemSibV1);
+        assert!(fixture.validate().is_ok(), "{}", fixture.case_id);
+        for old_profile in [
+            Profile::LongMovupdMemLoadV1,
+            Profile::LongMovupdMemStoreV1,
+            Profile::LongMovupsMemLoadV1,
+            Profile::LongMovupsMemStoreV1,
+            Profile::LongMovupdMemBaseV1,
+            Profile::LongMovupdMemRipV1,
+            Profile::LongMovupsMemBaseV1,
+        ] {
+            let mut old = fixture.clone();
+            old.profile = old_profile;
+            assert!(old.validate().is_err(), "{old_profile:?} admitted SIB");
+        }
+    }
+
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_load_r9_r10_scale2.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    for malformed in [
+        "660f1004",       // truncated SIB
+        "66480f100408",   // REX.W
+        "67660f100408",   // address-size override
+        "66660f100408",   // duplicate mandatory prefix
+        "41660f100408",   // REX before 66
+        "f3660f100408",   // scalar prefix
+        "660f100400",     // no mandatory 66 SIB class
+        "66470f1004",     // SIB missing
+        "66470f104451",   // missing disp8
+        "66470f108485",   // missing disp32
+        "c5f81004",       // VEX
+        "62f17c08100408", // EVEX
+    ] {
+        let mut bad = template.clone();
+        let code = bad
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = malformed.into();
+        code.length = (malformed.len() / 2) as u32;
+        code.comparison_mask_hex = "ff".repeat(malformed.len() / 2);
+        bad.stop_rip = Some(HexU64(bad.initial_state.rip.get() + u64::from(code.length)));
+        assert!(bad.validate().is_err(), "admitted {malformed}");
+    }
+}
+
+#[test]
 fn x87_schema_admits_fdivr_forms_and_inexact_no_stop_case() {
     let mut fixture = x87_fixture().fixture;
     fixture.case_id = "local_fdivr_exact".into();

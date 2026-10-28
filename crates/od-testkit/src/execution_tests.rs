@@ -15038,6 +15038,10 @@ fn movupd_memory_base_uses_one_data_callback_and_commits_only_after_success() {
         (include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_23_movupd_memory_base_store_r8_disp8.case.json").as_slice(), Some(AccessKind::Write)),
         (include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_24_movupd_rip_load.case.json").as_slice(), Some(AccessKind::Read)),
         (include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_24_movupd_rip_store.case.json").as_slice(), Some(AccessKind::Write)),
+        (include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_load_r9_r10_scale2.case.json").as_slice(), Some(AccessKind::Read)),
+        (include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_store_rax_r12_scale8.case.json").as_slice(), Some(AccessKind::Write)),
+        (include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_nobase_load.case.json").as_slice(), Some(AccessKind::Read)),
+        (include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_25_movupd_sib_nobase_store.case.json").as_slice(), Some(AccessKind::Write)),
     ] {
         let base = Fixture::from_json(fixture_bytes).unwrap().fixture;
         for fail in [false, true] {
@@ -15056,6 +15060,7 @@ fn movupd_memory_base_uses_one_data_callback_and_commits_only_after_success() {
             let result = step(&mut state, &mut memory, AccessContext::default());
             let data_accesses: Vec<_> = memory.accesses.iter().filter(|(kind, ..)| *kind == failed_access.unwrap()).collect();
             assert_eq!(data_accesses.len(), 1, "{} fail={fail}", fixture.case_id);
+            assert_eq!(data_accesses[0].1, 0x0020_0001, "{} fail={fail}", fixture.case_id);
             assert_eq!(data_accesses[0].2, 16, "{} fail={fail}", fixture.case_id);
             if fail {
                 assert!(matches!(result, Err(MemoryError::Backend(_))), "{result:?}");
