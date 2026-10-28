@@ -82,3 +82,6 @@ JIT/native execution and await the shared physical acceptance. Details:
 The local-only S2-35.49 `PAND` diagnostic profile accepts only register-form
 `66 [REX.R/B] 0F DB /r` and preserves unrelated CPU state. Its literal fixture
 is interpreter-only; JIT/native and physical SSE2 execution are not claimed.
+
+
+The local-only S2-34.20 ANDNPD profile supports long-mode register `66 [REX.R/B] 0F 55 /r` as `(~destination) & source` across raw 128-bit XMM values; ANDNPS remains separate. JIT/native and physical execution remain outside the profile. See the [CPU contract](docs/specs/CPU_CONTRACT.md#local-profile-s2-3420-s2-long-andnpd-reg-v1).
