@@ -7004,4 +7004,37 @@ mod tests {
             "0080ff7f8000ff008001ff00ffff0080"
         );
     }
+
+    #[test]
+    fn packuswb_literal_fixture_runs_in_interpreter_and_jit_stays_denied() {
+        let fixture = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_33_packuswb_register.case.json"
+        ))
+        .expect("PACKUSWB schema");
+        fixture.fixture.validate().unwrap();
+        let code = [0x66, 0x45, 0x0f, 0x67, 0xc1];
+        assert!(
+            od_jit::compile(&code).is_err(),
+            "PACKUSWB remains JIT-denied"
+        );
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(1) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("PACKUSWB snapshot unavailable")
+        };
+        assert_eq!(
+            value.state.sse.as_ref().unwrap().xmm[8],
+            "00000000017f80ffffff008000000001"
+        );
+        assert_eq!(
+            value.state.sse.as_ref().unwrap().xmm[9],
+            "0001ff7f01ff80000000ffff00ff0100"
+        );
+    }
 }

@@ -5144,3 +5144,12 @@ word inputs include the saturation boundaries and `0100`/`ff00`; destination
 bytes 0–7 contain the eight saturated original destination words, followed by
 the eight saturated original source words in bytes 8–15. The local profile
 assumes SSE2 architectural preconditions and denies JIT and native execution.
+
+
+s2_35_33_packuswb_register.case.json is a handwritten literal XMM8,XMM9
+fixture for s2-long-packuswb-reg-v1, encoded as 66 45 0F 67 C1. Each input
+word is interpreted as signed i16, clamped to [0,255], and narrowed; ffff,
+8000, and ff00 therefore produce 00, while 0001, 007f, 0080, 00ff, 0100, and
+7fff exercise the low and high boundaries. The result contains eight
+destination lanes followed by eight source lanes. The local profile assumes
+SSE2 architectural preconditions and denies JIT and native execution.

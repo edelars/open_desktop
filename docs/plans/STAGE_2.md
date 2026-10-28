@@ -8682,3 +8682,30 @@ shuffle/shift operations, memory, MMX, extra prefixes, REX.W/X, VEX/EVEX,
 feature gates, exception delivery, and physical execution remain excluded.
 S2-34, S2-35, global `S2-35 → S2-34`, and combined Mac mini/SSH acceptance
 remain open. Evidence is recorded in [STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).
+
+
+#### S2-35.33 — local-only bounded register `PACKUSWB`
+
+The bounded profile `s2-long-packuswb-reg-v1` admits legacy
+`66 [one optional REX.R/B] 0F 67 /r`, ModR/M.mod=3 and XMM0–15. The `67`
+after `0F` is the opcode byte, not the address-size prefix. ModR/M.reg is the
+destination and ModR/M.r/m the source. Read eight signed little-endian i16
+words from the original destination, then eight from the original source; clamp
+each independently to [0,255] and write the destination results into bytes 0–7
+and source results into bytes 8–15. This is concatenated operand order, not
+interleaved; a distinct source is preserved, and self-pack reads the original
+aliased value before writing. SSE2 and CR0.EM=0, CR0.TS=0,
+CR4.OSFXSR=1 are assumptions only.
+
+Coverage includes `ffff` (-1), `8000` and `ff00` signedness sentinels;
+0000/0001/007f/0080/00ff/0100/7fff clamp boundaries; all 65,536 i16 values in
+each of eight positions for DEST and SRC against a widened reference; all
+16×16 XMM/REX.R/B pairs, distinct order sentinels, self-aliasing, full-state
+and source preservation, and zero data callbacks. Truncation, missing SSE state,
+STOP/budget atomicity, strict decoder/schema negatives including VEX
+`C5 F9 67 C1`, and a handwritten XMM8/XMM9 fixture cover boundaries. JIT and
+native execution are denied. PACKSSDW, other pack/shuffle/shift operations,
+memory, MMX, extra prefixes, REX.W/X, VEX/EVEX, feature gates, exception
+delivery and physical execution remain excluded. S2-34, S2-35, global
+`S2-35 → S2-34`, and combined Mac mini/SSH acceptance remain open. Evidence is
+recorded in [STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).

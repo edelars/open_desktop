@@ -12798,3 +12798,46 @@ The docs-only review identified and corrected the clamp/reference wording; the
 final docs re-review passed. This remains local
 interpreter/profile evidence only and does not close S2-34, S2-35, global
 `S2-35 → S2-34`, physical x86 validation, or combined Mac mini/SSH acceptance.
+
+## S2-35.33 — local PACKUSWB XMM register slice
+
+Implemented `s2-long-packuswb-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 67 /r`, ModR/M.mod=3 and XMM0–15. The `67`
+after `0F` is decoded as the opcode byte. The interpreter reads signed
+little-endian i16 words from the original destination and source, clamps each
+through a widened signed value to [0,255], and writes eight destination bytes
+followed by eight source bytes. Only the destination XMM register and RIP change;
+a distinct source register and all other architectural state are preserved.
+Self-pack reads the original aliased value before writing. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 remain assumptions only.
+JIT compilation and native execution are denied.
+
+Coverage includes `ffff` (-1), `8000`, `ff00`, and boundary inputs
+0000/0001/007f/0080/00ff/0100/7fff; an independent two's-complement widened
+reference checks every i16 bit pattern at each of eight lanes in each operand.
+The suite also covers all 16×16 XMM/REX.R/B pairs, destination-then-source
+ordering, self-aliasing, full-state and source preservation, zero data-memory
+callbacks, truncation, missing SSE state, STOP/budget atomicity, strict schema
+and decoder negatives including VEX `C5 F9 67 C1`, and a handwritten literal
+XMM8/XMM9 fixture. JIT denial is exercised by the fixture runner, and native
+denial is covered by the Linux-gated admission test (compile-checked here, not
+executed on this Darwin host).
+
+`cargo test -p od-isa packuswb --offline`, `cargo test -p od-testkit packuswb
+--offline`, and `cargo test -p od-runner packuswb_literal_fixture --offline`
+passed. The complete `cargo test --workspace --all-targets --offline --quiet`
+run passed. `cargo fmt --all -- --check`, host
+`cargo check --workspace --all-targets --offline`, Linux x86_64
+`cargo check --workspace --all-targets --offline --target
+x86_64-unknown-linux-gnu`, and `git diff --check` passed. `graphify update .`
+completed with the existing `include/open_desktop/host_abi.h` extractor warning.
+`tools/check_layout.py` remains blocked by the worktree `.git` file being
+classified as an unmapped root file and two pre-existing broken links in the
+Stage 2 report to ignored `work/stage*-oracle/.../manifest.json` files; no new
+project directory was introduced. Independent `gpt-6.1-sol` medium review
+found no remaining code findings after restoring adjacent PACKSSWB/PADDUSB
+test expectations and making the exhaustive oracle independent.
+
+This is local interpreter/profile evidence only. PACKSSDW, other packing,
+shuffles/shifts, memory/MMX, extra prefixes, REX.W/X, VEX/EVEX execution,
+feature gates, guest exception delivery, physical execution, S2-34, S2-35,
+global `S2-35 → S2-34`, and combined Mac mini/SSH acceptance remain open.
