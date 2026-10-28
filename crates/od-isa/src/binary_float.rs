@@ -380,6 +380,47 @@ pub fn multiply_finite_significands(lhs: BinaryFinite, rhs: BinaryFinite) -> (bo
     (sign, exponent, magnitude)
 }
 
+/// Adds two normalized finite values after exact alignment to a shared exponent.
+///
+/// Returns `(sign, exponent, magnitude)` for the exact sum
+/// `(-1)^sign * magnitude * 2^(exponent-63)`. The larger exponent is aligned by
+/// a left shift of at most 64 bits; wider gaps are outside this helper's bounded
+/// profile and return `None`. Zero operands are mathematical identities, and
+/// exact cancellation uses the signless zero sentinel `(false, 0, 0)`.
+pub fn add_finite_aligned(lhs: BinaryFinite, rhs: BinaryFinite) -> Option<(bool, i32, u128)> {
+    if lhs.significand == 0 {
+        return Some(if rhs.significand == 0 {
+            (false, 0, 0)
+        } else {
+            (rhs.sign, rhs.exponent, u128::from(rhs.significand))
+        });
+    }
+    if rhs.significand == 0 {
+        return Some((lhs.sign, lhs.exponent, u128::from(lhs.significand)));
+    }
+
+    let exponent = lhs.exponent.min(rhs.exponent);
+    let lhs_gap = u32::try_from(i64::from(lhs.exponent) - i64::from(exponent)).ok()?;
+    let rhs_gap = u32::try_from(i64::from(rhs.exponent) - i64::from(exponent)).ok()?;
+    if lhs_gap > 64 || rhs_gap > 64 {
+        return None;
+    }
+
+    let lhs_magnitude = u128::from(lhs.significand) << lhs_gap;
+    let rhs_magnitude = u128::from(rhs.significand) << rhs_gap;
+    if lhs.sign == rhs.sign {
+        return Some((lhs.sign, exponent, lhs_magnitude + rhs_magnitude));
+    }
+
+    if lhs_magnitude == rhs_magnitude {
+        Some((false, 0, 0))
+    } else if lhs_magnitude > rhs_magnitude {
+        Some((lhs.sign, exponent, lhs_magnitude - rhs_magnitude))
+    } else {
+        Some((rhs.sign, exponent, rhs_magnitude - lhs_magnitude))
+    }
+}
+
 /// Exact quotient and remainder decomposition for two normalized finite values.
 ///
 /// For nonzero operands, `lhs / rhs` is represented exactly as
@@ -548,7 +589,8 @@ fn round_subnormal_quotient(
 mod tests {
     use super::{
         Binary32, Binary64, BinaryClass, BinaryFinite, BinaryFiniteQuotient, RationalRoundingMode,
-        divide_finite_significands, multiply_finite_significands, round_quotient_to_precision,
+        add_finite_aligned, divide_finite_significands, multiply_finite_significands,
+        round_quotient_to_precision,
     };
 
     fn normalized(
@@ -986,6 +1028,254 @@ mod tests {
             multiply_finite_significands(max_b64, max_b64),
             (false, 2047, 0xffff_ffff_ffff_f000_0000_0000_0040_0000),
         );
+    }
+
+    #[test]
+    fn finite_addition_matches_exact_aligned_literal_vectors() {
+        let one = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_one = Binary64::from_bits(0xbff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let half = Binary64::from_bits(0x3fe0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_half = Binary64::from_bits(0xbfe0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let one_and_half = Binary64::from_bits(0x3ff8_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+
+        assert_eq!(
+            add_finite_aligned(one, one),
+            Some((false, 0, 0x1_0000_0000_0000_0000)),
+        );
+        assert_eq!(
+            add_finite_aligned(one, half),
+            Some((false, -1, 0x1_8000_0000_0000_0000)),
+        );
+        assert_eq!(
+            add_finite_aligned(one, negative_half),
+            Some((false, -1, 0x8000_0000_0000_0000)),
+        );
+        assert_eq!(
+            add_finite_aligned(one_and_half, negative_one),
+            Some((false, 0, 0x4000_0000_0000_0000)),
+        );
+
+        let next_one = Binary64::from_bits(0x3ff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            add_finite_aligned(next_one, negative_one),
+            Some((false, 0, 0x800)),
+        );
+
+        let min_normal = Binary64::from_bits(0x0010_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_largest_subnormal = Binary64::from_bits(0x800f_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            add_finite_aligned(min_normal, negative_largest_subnormal),
+            Some((false, -1023, 0x1000)),
+        );
+
+        let min_subnormal = Binary64::from_bits(1).normalize_finite().unwrap();
+        assert_eq!(
+            add_finite_aligned(min_subnormal, min_subnormal),
+            Some((false, -1074, 0x1_0000_0000_0000_0000)),
+        );
+        let max_finite = Binary64::from_bits(0x7fef_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            add_finite_aligned(max_finite, max_finite),
+            Some((false, 1023, 0x1_ffff_ffff_ffff_f000)),
+        );
+
+        let two_to_minus_64 = Binary64::from_bits(0x3bf0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_two_to_minus_64 = Binary64::from_bits(0xbbf0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            add_finite_aligned(one, two_to_minus_64),
+            Some((false, -64, 0x8000_0000_0000_0000_8000_0000_0000_0000,)),
+        );
+        assert_eq!(
+            add_finite_aligned(one, negative_two_to_minus_64),
+            Some((false, -64, 0x7fff_ffff_ffff_ffff_8000_0000_0000_0000,)),
+        );
+        assert_eq!(add_finite_aligned(one, negative_one), Some((false, 0, 0)));
+
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        assert_eq!(
+            add_finite_aligned(one32, next_one),
+            Some((false, 0, 0x1_0000_0000_0000_0800)),
+        );
+    }
+
+    #[test]
+    fn finite_addition_handles_sign_order_gaps_and_cancellation() {
+        let one = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_one = Binary64::from_bits(0xbff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_next_one = Binary64::from_bits(0xbff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        let half = Binary64::from_bits(0x3fe0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_half = Binary64::from_bits(0xbfe0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let two_to_minus_63 = Binary64::from_bits(0x3c00_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_two_to_minus_63 = Binary64::from_bits(0xbc00_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let two_to_minus_64 = Binary64::from_bits(0x3bf0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_two_to_minus_64 = Binary64::from_bits(0xbbf0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let two_to_minus_65 = Binary64::from_bits(0x3be0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+
+        for (lhs, rhs, expected) in [
+            (one, half, (false, -1, 0x1_8000_0000_0000_0000)),
+            (half, one, (false, -1, 0x1_8000_0000_0000_0000)),
+            (one, negative_half, (false, -1, 0x8000_0000_0000_0000)),
+            (negative_half, one, (false, -1, 0x8000_0000_0000_0000)),
+            (negative_one, half, (true, -1, 0x8000_0000_0000_0000)),
+            (half, negative_one, (true, -1, 0x8000_0000_0000_0000)),
+            (
+                negative_one,
+                negative_half,
+                (true, -1, 0x1_8000_0000_0000_0000),
+            ),
+            (
+                negative_half,
+                negative_one,
+                (true, -1, 0x1_8000_0000_0000_0000),
+            ),
+        ] {
+            assert_eq!(add_finite_aligned(lhs, rhs), Some(expected));
+        }
+        assert_eq!(
+            add_finite_aligned(one, negative_next_one),
+            Some((true, 0, 0x800))
+        );
+        assert_eq!(
+            add_finite_aligned(negative_next_one, one),
+            Some((true, 0, 0x800))
+        );
+        assert_eq!(
+            add_finite_aligned(one, two_to_minus_63),
+            Some((false, -63, 0x4000_0000_0000_0000_8000_0000_0000_0000,)),
+        );
+        assert_eq!(
+            add_finite_aligned(one, negative_two_to_minus_63),
+            Some((false, -63, 0x3fff_ffff_ffff_ffff_8000_0000_0000_0000,)),
+        );
+        assert_eq!(
+            add_finite_aligned(one, two_to_minus_63),
+            add_finite_aligned(two_to_minus_63, one),
+        );
+        assert_eq!(
+            add_finite_aligned(one, negative_two_to_minus_63),
+            add_finite_aligned(negative_two_to_minus_63, one),
+        );
+        assert_eq!(
+            add_finite_aligned(one, two_to_minus_64),
+            add_finite_aligned(two_to_minus_64, one),
+        );
+        assert_eq!(
+            add_finite_aligned(one, negative_two_to_minus_64),
+            add_finite_aligned(negative_two_to_minus_64, one),
+        );
+        assert_eq!(add_finite_aligned(one, two_to_minus_65), None);
+        assert_eq!(add_finite_aligned(two_to_minus_65, one), None);
+
+        assert_eq!(add_finite_aligned(one, negative_one), Some((false, 0, 0)));
+        let max_finite = Binary64::from_bits(0x7fef_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        let negative_max_finite = Binary64::from_bits(0xffef_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            add_finite_aligned(max_finite, negative_max_finite),
+            Some((false, 0, 0)),
+        );
+        let min_subnormal = Binary64::from_bits(1).normalize_finite().unwrap();
+        let negative_min_subnormal = Binary64::from_bits(0x8000_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            add_finite_aligned(min_subnormal, negative_min_subnormal),
+            Some((false, 0, 0)),
+        );
+    }
+
+    #[test]
+    fn finite_addition_treats_zeros_as_neutral_and_preserves_inputs() {
+        let one = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let negative_one = Binary64::from_bits(0xbff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let positive_zero = Binary32::from_bits(0).normalize_finite().unwrap();
+        let negative_zero = Binary64::from_bits(0x8000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+
+        assert_eq!(
+            add_finite_aligned(positive_zero, one),
+            Some((false, 0, 0x8000_0000_0000_0000)),
+        );
+        assert_eq!(
+            add_finite_aligned(one, negative_zero),
+            Some((false, 0, 0x8000_0000_0000_0000)),
+        );
+        assert_eq!(
+            add_finite_aligned(negative_zero, negative_one),
+            Some((true, 0, 0x8000_0000_0000_0000)),
+        );
+        assert_eq!(
+            add_finite_aligned(negative_zero, positive_zero),
+            Some((false, 0, 0))
+        );
+
+        let extreme_zero = BinaryFinite::new(true, 0, i32::MAX, BinaryClass::Zero);
+        assert_eq!(
+            add_finite_aligned(extreme_zero, one),
+            Some((false, 0, 0x8000_0000_0000_0000)),
+        );
+        assert_eq!(
+            add_finite_aligned(one, extreme_zero),
+            Some((false, 0, 0x8000_0000_0000_0000)),
+        );
+
+        let subnormal = Binary64::from_bits(1).normalize_finite().unwrap();
+        let normal = Binary32::from_bits(0x3f80_0001).normalize_finite().unwrap();
+        let subnormal_before = subnormal;
+        let normal_before = normal;
+        assert_eq!(subnormal.source_class(), BinaryClass::Subnormal);
+        assert_eq!(normal.source_class(), BinaryClass::Normal);
+        let _ = add_finite_aligned(subnormal, normal);
+        assert_eq!(subnormal, subnormal_before);
+        assert_eq!(normal, normal_before);
     }
 
     #[test]

@@ -10479,3 +10479,27 @@ suggested label refresh after community changes. Independent Sol medium code
 review completed clean; no findings remain. See the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36f--direct-exact-quotient-rounding-to-subnormal-units)
 and [plan](../plans/STAGE_2.md#s2-36f--direct-exact-quotient-rounding-to-subnormal-units).
+
+## Local S2-36g: bounded exact aligned addition
+
+`add_finite_aligned(lhs, rhs)` returns `Option<(bool, i32, u128)>`. A nonzero
+result represents exactly `(-1)^sign * magnitude * 2^(exponent - 63)`. The
+helper chooses the smaller input exponent as the common exponent, left-shifts
+the higher-exponent significand by the exponent gap in `u128`, and accepts gaps
+through 64. Same-sign aligned magnitudes are added. Opposite-sign magnitudes
+are subtracted, with the larger magnitude's sign retained. Exact cancellation
+returns `(false, 0, 0)`.
+
+A zero operand returns the other operand's sign, exponent, and significand;
+two zero operands return the signless zero sentinel. Gaps greater than 64
+return `None` because they are outside this bounded helper profile. `None` is
+not guest overflow. The helper does not round, jam, report inexactness, normalize
+the final result, pack a binary value, or choose a guest zero sign. It performs
+no host floating-point operations and does not reuse/change x87 jam helpers.
+Broader addition, wider gaps, final normalization, packing, and instruction
+behavior remain open. Author reports `binary_float::tests` passing 21/21 and
+workspace, formatting, diff, and Graphify checks passing; Graphify noted the
+existing `include/open_desktop/host_abi.h` extractor warning and label refresh.
+Independent Sol code review completed clean; no findings remain. See the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36g--bounded-exact-aligned-addition)
+and [plan](../plans/STAGE_2.md#s2-36g--bounded-exact-aligned-addition).

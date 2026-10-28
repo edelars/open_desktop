@@ -460,6 +460,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36d | Shared exact rational precision rounding with inexact indication | S2-36c; independent review |
 | [x] | S2-36e | Normal-only binary32/binary64 packing of rounded significands | S2-36d; independent review |
 | [x] | S2-36f | Direct exact quotient rounding to binary subnormal units | S2-36c, S2-36d; independent review |
+| [x] | S2-36g | Bounded exact aligned addition of finite significands | S2-36a; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -4947,6 +4948,38 @@ clean with no findings; see the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36f--direct-exact-quotient-rounding-to-subnormal-units).
 Normative context is the existing Intel SDM Vol. 1 Rev. 093 reference in
 [S2-36d](#s2-36d--shared-exact-rational-precision-rounding).
+
+#### S2-36g — bounded exact aligned addition
+
+Add public `add_finite_aligned(lhs, rhs) -> Option<(bool, i32, u128)>` for two
+`BinaryFinite` values. A nonzero result is the exact signed magnitude
+`(-1)^sign * magnitude * 2^(exponent - 63)`. Choose the smaller input exponent
+as the common exponent and left-shift the higher-exponent significand by its
+gap using `u128`; accept gaps through 64. For equal signs, add aligned
+magnitudes. For opposite signs, subtract the smaller aligned magnitude from
+the larger and use the larger magnitude's sign. Exact cancellation returns the
+signless zero sentinel `(false, 0, 0)`.
+
+A zero operand is a mathematical identity: return the other operand's sign,
+exponent, and magnitude; two zeros return the signless sentinel. Gap 65 or
+larger returns `None` as outside this bounded helper, not as guest overflow.
+The helper performs no rounding, sticky/jam truncation, inexact reporting,
+final normalization, packing, guest zero-sign selection, or host floating-point
+arithmetic. Do not reuse x87 jam helpers or alter x87 behavior.
+
+Literal tests cover same/opposite signs, order symmetry, exact cancellation,
+small residual after nearly equal operands, normal/subnormal combinations,
+zero-neutral behavior, exact exponent-gap-64 results and gap-65 rejection.
+The author reports `cargo test -p od-isa --offline binary_float::tests`
+passing 21/21 without warnings, `cargo fmt --all -- --check && git diff --check`
+passing, and `cargo check --workspace --all-targets --offline` passing.
+Graphify update passed (7752 nodes/15252 edges) with the existing
+`include/open_desktop/host_abi.h` syntax warning and label-refresh notice.
+Independent Sol review completed clean with no findings; see the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36g--bounded-exact-aligned-addition).
+Keep broader addition, gaps above 64, final normalization, packing, and
+instruction behavior open. S2-36 exception behavior and S2-37/S2-38 remain
+open; hardware validation is deferred.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

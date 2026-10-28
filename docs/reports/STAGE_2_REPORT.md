@@ -276,6 +276,50 @@ remain open. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36f-direct-exact-quotient-rounding-to-subnormal-units)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-36f--direct-exact-quotient-rounding-to-subnormal-units).
 
+## S2-36g — bounded exact aligned addition
+
+**Статус:** bounded helper and author checks are complete; independent Sol
+review completed clean, with no findings. Public
+`add_finite_aligned(lhs, rhs) -> Option<(bool, i32, u128)>` returns an exact
+sign/magnitude/common-exponent tuple for finite normalized inputs. It chooses
+the lower input exponent as common exponent, aligns the higher exponent by an
+exact `u128` left shift, and admits gaps through 64. It adds magnitudes for
+matching signs; for opposite signs it subtracts and keeps the sign of the
+larger aligned magnitude. Exact cancellation yields signless `(false, 0, 0)`.
+
+Selected literal vectors from the tests:
+
+| Inputs | Result `(sign, exponent, magnitude)` |
+|---|---|
+| `1 + 1` | `(false, 0, 0x1_0000_0000_0000_0000)` |
+| `1 + 1/2` | `(false, -1, 0x1_8000_0000_0000_0000)` |
+| `1 - 1/2` | `(false, -1, 0x8000_0000_0000_0000)` |
+| binary64 successor of `1` minus `1` | `(false, 0, 0x800)` |
+| binary64 minimum normal minus largest subnormal | `(false, -1023, 0x1000)` |
+| binary64 minimum subnormal plus itself | `(false, -1074, 0x1_0000_0000_0000_0000)` |
+| binary64 maximum finite plus itself | `(false, 1023, 0x1_ffff_ffff_ffff_f000)` |
+
+Additional vectors cover both operand orders across exponent gaps 63/64, a
+gap-65 `None`, exact cancellation for equal-magnitude, extreme, and subnormal
+operands, small residuals for adjacent operands, mixed binary32/binary64 inputs,
+and signed zeros as neutral operands.
+Tests preserve input values. Gaps greater than 64 are outside the bounded
+helper and return `None`, not guest overflow. The helper does not round, report
+inexactness, jam/sticky-shift, normalize, pack, or define a guest zero sign; no
+host floating-point operation or x87 jam-helper reuse is involved. Broader
+addition, larger gaps, final normalization, packing, and instructions remain
+open; there is no hardware claim. Author-reported checks passed:
+
+- `cargo test -p od-isa --offline binary_float::tests`: 21/21, no warnings.
+- `cargo fmt --all -- --check && git diff --check`.
+- `cargo check --workspace --all-targets --offline`.
+- `graphify update .` completed at 7752 nodes/15252 edges, with the existing
+  `include/open_desktop/host_abi.h` syntax warning and label-refresh notice.
+
+Independent Sol code review completed clean; no findings remain. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-36g-bounded-exact-aligned-addition)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-36g--bounded-exact-aligned-addition).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.
