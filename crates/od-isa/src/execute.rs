@@ -1345,6 +1345,7 @@ fn step_tracked_with_stop(
         | Operation::PmullwRegister { .. }
         | Operation::PmulhuwRegister { .. }
         | Operation::PsadbwRegister { .. }
+        | Operation::PmovmskbXmmToGpr { .. }
         | Operation::AndpsRegister { .. }
         | Operation::AndpdRegister { .. }
         | Operation::OrpdRegister { .. }
@@ -3099,6 +3100,20 @@ fn step_tracked_with_stop(
                 destination[start..start + 8].fill(0);
                 destination[start..start + 2].copy_from_slice(&sum.to_le_bytes());
             }
+        }
+        Operation::PmovmskbXmmToGpr {
+            destination,
+            source,
+        } => {
+            let xmm = state
+                .sse
+                .as_ref()
+                .expect("PMOVMSKB local profile state was prevalidated")
+                .xmm[usize::from(source)];
+            let mask = xmm.iter().enumerate().fold(0u32, |mask, (lane, byte)| {
+                mask | (u32::from(byte >> 7) << lane)
+            });
+            state.gpr[usize::from(destination)] = u64::from(mask);
         }
         Operation::PaddbRegister {
             destination,
@@ -70775,6 +70790,117 @@ mod tests {
                     assert!(memory.accesses.is_empty(), "PSADBW performed a data access");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn pmovmskb_xmm_to_gpr_builds_byte_sign_mask_and_zero_extends_for_all_register_pairs() {
+        let mut patterns: Vec<[u8; 16]> = [0x0000u16, 0xffff, 0x5555, 0xaaaa]
+            .into_iter()
+            .map(|mask| std::array::from_fn(|i| if mask & (1 << i) != 0 { 0x80 } else { 0x7f }))
+            .collect();
+        for bit in 0..16 {
+            patterns.extend([
+                std::array::from_fn(|i| if i == bit { 0x80 } else { 0 }),
+                std::array::from_fn(|i| if i == bit { 0x80 } else { 0x7f }),
+            ]);
+        }
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                for xmm in &patterns {
+                    let mut code = vec![0x66];
+                    if destination >= 8 || source >= 8 {
+                        code.push(rex);
+                    }
+                    code.extend([0x0f, 0xd7, modrm]);
+                    let mut memory = Memory::at(&code, 0x1000);
+                    let mut state = LongModeState::default();
+                    state.x87 = Some(X87State::fixture_seed());
+                    state.sse = Some(SseState {
+                        xmm: [[0xa5; 16]; 16],
+                        mxcsr: 0xe1a5_5a7e,
+                    });
+                    state.sse.as_mut().unwrap().xmm[source as usize] = *xmm;
+                    state.gpr[destination as usize] = 0xdead_beef_1234_5678;
+                    state.rip = 0x1000;
+                    state.rflags = 0x8d7 | crate::DF;
+                    let before = state.clone();
+                    let expected = xmm
+                        .iter()
+                        .enumerate()
+                        .fold(0u32, |mask, (i, byte)| mask | (u32::from(byte >> 7) << i));
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                        StepOutcome::Advanced
+                    );
+                    let mut unchanged = before;
+                    unchanged.rip += code.len() as u64;
+                    unchanged.gpr[destination as usize] = u64::from(expected);
+                    assert_eq!(
+                        state, unchanged,
+                        "gpr={destination}, xmm={source}, bytes={xmm:02x?}"
+                    );
+                    assert!(
+                        memory.accesses.is_empty(),
+                        "PMOVMSKB performed a data access"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pmovmskb_missing_state_truncated_fetch_and_unstarted_run_are_atomic() {
+        let code = [0x66, 0x0f, 0xd7, 0xc1];
+        let mut memory = Memory::at(&code, 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        let before = state.clone();
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Unsupported { opcode: 0xd7 }
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+        let mut memory = Memory::at(&[0x66, 0x0f, 0xd7], 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.sse = Some(SseState {
+            xmm: [[0xa5; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        assert!(step(&mut state, &mut memory, AccessContext::default()).is_err());
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+        for (budget, stop_rip, expected_exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut memory = Memory::at(&code, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
         }
     }
 

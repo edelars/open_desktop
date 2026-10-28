@@ -4658,6 +4658,28 @@ fn local_pavgw_register_fixture_averages_unsigned_words_and_keeps_jit_closed() {
 }
 
 #[test]
+fn local_pmovmskb_xmm_gpr_fixture_extracts_sign_mask_and_zero_extends() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_61_pmovmskb_xmm_gpr.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongPmovmskbXmmGprV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.gpr[8] = HexU64(0x0000_0000_0000_a4b5);
+    assert_eq!(snapshot(&result).state, expected);
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_psadbw_register_fixture_sums_unsigned_byte_distances_and_keeps_jit_closed() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_60_psadbw_register.case.json");
