@@ -9476,3 +9476,7 @@ S2-34.6c и не изменялся этим добавлением. Детер�
 canaries, callback width/address, injected backend errors, interpreter result и
 JIT denial. Parent S2-34/ISSUE-012 остаются open; native denied, physical
 `not_run`.
+
+#### S2-35.53 — local-only bounded register `PAVGW`
+
+Implement the legacy mandatory-66 `0F E3 /r` XMM register form only, with optional REX.R/B register extension, rounded unsigned 16-bit lane averages, source alias support, and no memory effects. SSE2 and CR0/CR4 are assumed; do not add CPUID advertisement or JIT/native/physical admission. Keep this distinct from S2-35.52 PAVGB. Verify all XMM register pairs, strict encoding rejects, atomic state/fetch failure, fixture/testkit/runner denial, and document the exact profile contract. Physical checks are deferred to the combined final substage.

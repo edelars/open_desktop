@@ -13615,3 +13615,7 @@ Verification passed: `cargo test -p od-isa --offline` (1,150 tests),
 No Mac mini/SSH or other physical run was performed; it remains reserved for
 the combined final acceptance substage. Parent S2-34, S2-35, and the global
 `S2-35 → S2-34` dependency remain open.
+
+## S2-35.53 — local PAVGW register profile
+
+Implemented the local diagnostic `s2-long-pavgw-reg-v1` profile for mandatory-66 `0F E3 /r`, register form only, with independently extended XMM destination/source registers and rounded unsigned 16-bit lane averages. The operation preserves unrelated state and makes no data-memory callbacks. SSE2 and CR0/CR4 remain assumed preconditions; CPUID, JIT/native and physical admission remain closed. Handwritten fixture: `s2_35_53_pavgw_register.case.json`. Focused local verification on macOS: `cargo test -p od-isa pavgw --offline` passed (3 tests); `cargo test -p od-testkit pavgw --offline` passed (1 test); `cargo test -p od-runner --test fixture_v2 local_pavgw --offline` passed (1 test); `cargo check -p od-x86-runner --all-targets --offline` passed; `git diff --check` passed. A Linux-target native denial test could not be linked on this macOS host: the host linker rejected GNU/Linux linker arguments (`ld: unknown options: --as-needed -Bstatic -Bdynamic --eh-frame-hdr -z --gc-sections`). No physical/SSH test was run; those remain deferred to the combined final substage.

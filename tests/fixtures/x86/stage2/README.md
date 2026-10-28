@@ -5398,3 +5398,7 @@ exact encoded SIB classification and rejects the same bytes when assigned to
 older `[RAX]`, base, or RIP-relative MOVUPD profiles. MOVUPS retains its own
 SIB profile in S2-34.6c; this mandatory-66 MOVUPD profile does not alter it.
 JIT/native admission is denied; physical status remains `not_run`.
+
+### S2-35.53 local register PAVGW diagnostic profile
+
+`s2_35_53_pavgw_register.case.json` is a handwritten high-XMM fixture for `s2-long-pavgw-reg-v1`, encoded as `66 45 0F E3 C1` (`PAVGW XMM8, XMM9`). It checks rounded unsigned 16-bit lane averages with boundary values and an unrelated-state preservation oracle. SSE2 and CR0/CR4 are assumed; it is local-only with no JIT/native/physical admission.

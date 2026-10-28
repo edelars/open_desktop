@@ -9841,3 +9841,7 @@ opcodes, signed no-base disp32 and ignored REX.B, one 16-byte callback and
 CPU-state preservation on backend errors. JIT/native execution and physical
 validation are unsupported; physical status is `not_run`, ISSUE-012 and parent
 S2-34 remain open.
+
+## Local register-only `PAVGW` profile — S2-35.53
+
+The `s2-long-pavgw-reg-v1` profile admits only long-mode `66 [REX.R/B] 0F E3 /r` with ModR/M.mod=3. REX.R extends the destination XMM index and REX.B extends the source index independently through XMM15. It computes each unsigned 16-bit lane as `(a + b + 1) >> 1`, using a widened intermediate; source/destination aliasing is valid. All other state is preserved and the instruction performs no data-memory access. SSE2 and CR0/CR4 prerequisites are assumed by this local diagnostic profile. MMX, memory, VEX, EVEX, other prefix combinations, CPUID advertisement, JIT/native admission, and physical admission remain unsupported. The opcode and operation are specified in Intel SDM revision 093, Vol. 2B, PAVGW ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)).

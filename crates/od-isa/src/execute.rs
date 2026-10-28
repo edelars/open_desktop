@@ -1337,6 +1337,7 @@ fn step_tracked_with_stop(
         | Operation::PandnRegister { .. }
         | Operation::PorRegister { .. }
         | Operation::PavgbRegister { .. }
+        | Operation::PavgwRegister { .. }
         | Operation::AndpsRegister { .. }
         | Operation::AndpdRegister { .. }
         | Operation::OrpdRegister { .. }
@@ -2923,6 +2924,28 @@ fn step_tracked_with_stop(
                 .expect("PAVGB local profile state was prevalidated");
             for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(source) {
                 *dst = ((u16::from(*dst) + u16::from(src) + 1) >> 1) as u8;
+            }
+        }
+        Operation::PavgwRegister {
+            destination,
+            source,
+        } => {
+            let source = state
+                .sse
+                .as_ref()
+                .expect("PAVGW local profile state was prevalidated")
+                .xmm[usize::from(source)];
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("PAVGW local profile state was prevalidated");
+            let destination = &mut sse.xmm[usize::from(destination)];
+            for lane in 0..8 {
+                let offset = lane * 2;
+                let lhs = u16::from_le_bytes([destination[offset], destination[offset + 1]]);
+                let rhs = u16::from_le_bytes([source[offset], source[offset + 1]]);
+                let average = ((u32::from(lhs) + u32::from(rhs) + 1) >> 1) as u16;
+                destination[offset..offset + 2].copy_from_slice(&average.to_le_bytes());
             }
         }
         Operation::PaddbRegister {
@@ -70065,6 +70088,122 @@ mod tests {
                     assert!(memory.accesses.is_empty(), "PAVGB performed a data access");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn pavgw_register_averages_unsigned_words_with_rounding_for_all_xmm_pairs() {
+        let lhs = [
+            0x0000u16, 0x0001, 0x7ffe, 0x7fff, 0x8000, 0xfffe, 0xffff, 0x1234,
+        ];
+        let rhs = [
+            0x0001u16, 0x0000, 0x7fff, 0x8000, 0x8000, 0xffff, 0xffff, 0x9876,
+        ];
+        let patterns = [
+            (lhs, rhs),
+            ([0; 8], [0; 8]),
+            ([1; 8], [0; 8]),
+            ([u16::MAX; 8], [u16::MAX; 8]),
+        ];
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                for (left, right) in patterns {
+                    let mut code = vec![0x66];
+                    if destination >= 8 || source >= 8 {
+                        code.push(rex);
+                    }
+                    code.extend([0x0f, 0xe3, modrm]);
+                    let mut memory = Memory::at(&code, 0x1000);
+                    let mut state = LongModeState::default();
+                    state.x87 = Some(X87State::fixture_seed());
+                    state.sse = Some(SseState {
+                        xmm: [[0x5a; 16]; 16],
+                        mxcsr: 0xe1a5_5a7e,
+                    });
+                    let to_bytes = |words: [u16; 8]| -> [u8; 16] {
+                        let mut bytes = [0; 16];
+                        for (i, word) in words.into_iter().enumerate() {
+                            bytes[i * 2..i * 2 + 2].copy_from_slice(&word.to_le_bytes());
+                        }
+                        bytes
+                    };
+                    state.sse.as_mut().unwrap().xmm[destination as usize] = to_bytes(left);
+                    if source != destination {
+                        state.sse.as_mut().unwrap().xmm[source as usize] = to_bytes(right);
+                    }
+                    state.rip = 0x1000;
+                    state.rflags = 0x8d7 | crate::DF;
+                    let before = state.clone();
+                    let rhs = if source == destination { left } else { right };
+                    let expected = to_bytes(std::array::from_fn(|i| {
+                        ((u32::from(left[i]) + u32::from(rhs[i]) + 1) >> 1) as u16
+                    }));
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                        StepOutcome::Advanced
+                    );
+                    let mut unchanged = before;
+                    unchanged.rip += code.len() as u64;
+                    unchanged.sse.as_mut().unwrap().xmm[destination as usize] = expected;
+                    assert_eq!(state, unchanged, "dest={destination}, src={source}");
+                    assert!(memory.accesses.is_empty(), "PAVGW performed a data access");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pavgw_missing_state_truncated_fetch_and_unstarted_run_are_atomic() {
+        let code = [0x66, 0x0f, 0xe3, 0xc1];
+        let mut memory = Memory::at(&code, 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        let before = state.clone();
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Unsupported { opcode: 0xe3 }
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+        let mut memory = Memory::at(&[0x66, 0x0f, 0xe3], 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.sse = Some(SseState {
+            xmm: [[0xa5; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        assert!(step(&mut state, &mut memory, AccessContext::default()).is_err());
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+        for (budget, stop_rip, expected_exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut memory = Memory::at(&code, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
         }
     }
 
