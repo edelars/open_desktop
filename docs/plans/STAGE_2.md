@@ -473,6 +473,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36q | Same-format raw binary32/binary64 add/sub results for finite values, zeros, infinities and NaNs; local invalid-operation outcome | S2-36p, S2-36a; independent review |
 | [x] | S2-36r | Same-format raw binary32/binary64 multiplication results for finite values, zeros, infinities and NaNs; local invalid-operation outcome | S2-36m, S2-36q; independent review |
 | [x] | S2-36s | Same-format raw binary32/binary64 division results for finite values, zeros, infinities and NaNs; local invalid-operation and divide-by-zero outcomes | S2-36n, S2-36q, S2-36r; independent review |
+| [x] | S2-36t | Same-format raw binary32/binary64 comparison relation with quiet/signaling NaN modes and local invalid outcome | S2-36l, S2-36a; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5521,6 +5522,38 @@ underflow/overflow delegation. Авторские проверки: binary_float
 (47/47), fmt, workspace check, diff check и Graphify update. Независимые Sol
 medium code review и docs review завершились без замечаний; аппаратная/Mac mini
 проверка отложена до общего финального substage. S2-36 не завершён.
+
+#### S2-36t — raw same-format binary32/binary64 comparison
+
+**Статус:** raw comparison APIs реализованы; независимые Sol medium code review
+и docs review завершены чисто. Полная S2-36 приёмка и hardware/Mac mini
+acceptance остаются открытыми.
+
+`Binary32::compare_raw` и `Binary64::compare_raw` принимают два raw операнда
+одного формата и явный `BinaryComparisonMode::{Quiet, Signaling}`. Результат
+`BinaryComparisonResult` содержит `BinaryComparisonRelation::{Less, Equal,
+Greater, Unordered}` и отдельный local `invalid_operation`. NaN даёт
+`Unordered` без quieting/rewriting: quiet mode отмечает invalid только для
+SNaN, signaling mode — для QNaN и SNaN. Это compare predicate contract, не
+first-source arithmetic NaN propagation. Infinities сортируются как signed
+infinity; finite operands делегируют S2-36l `compare_finite`, включая
+численное равенство `+0`/`-0` и subnormal/normal ordering. Raw `Eq` wrapper
+сохранён; `PartialOrd`/`Ord`, EFLAGS, MXCSR/x87 state, instruction dispatch и
+exception delivery не добавляются.
+
+Нормативный контекст — Intel SDM Rev. 093, Vol. 2A: COMISD/UCOMISD §3-199,
+COMISS/UCOMISS §3-201 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+Для обеих инструкций NaN relation unordered; COMI signals invalid for QNaN or
+SNaN, UCOMI только для SNaN. Этот raw API фиксирует relation/local invalid
+без EFLAGS update или architectural delivery.
+
+Literal tests обеих ширин охватывают qNaN/sNaN в обоих operand positions,
+quiet/signaling mode, обе NaNs, неизменность raw bits, signed infinities/zeros,
+subnormal/normal edges, adjacent normals и relation reversal. Авторские
+проверки: binary_float (64/64), x87 (47/47), fmt, workspace check, diff check и
+Graphify update. Независимые Sol medium code review и docs review завершились
+без замечаний; аппаратная/Mac mini проверка отложена до общего финального
+substage. S2-36 остаётся открытой.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

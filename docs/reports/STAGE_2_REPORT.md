@@ -860,6 +860,41 @@ finite nonzero / zero), §4.9.2 (QNaN takes precedence over divide-by-zero),
 обосновывают local raw result contract, не exception flags/delivery.
 См. [план S2-36s](../plans/STAGE_2.md#s2-36s--raw-same-format-binary32binary64-division).
 
+## S2-36t — raw same-format binary32/binary64 comparison
+
+**Статус:** `Binary32::compare_raw` / `Binary64::compare_raw` реализованы.
+Локальные авторские проверки прошли; independent Sol medium code review и docs
+review завершились без замечаний. Полная S2-36 и hardware/Mac mini acceptance
+остаются открытыми.
+
+Методы принимают два same-format raw operands и явный
+`BinaryComparisonMode::{Quiet, Signaling}`, возвращая
+`BinaryComparisonResult` с relation `Less`, `Equal`, `Greater` или `Unordered`
+и local `invalid_operation`. Любой NaN возвращает Unordered без изменения
+операндов: Quiet ставит invalid только для SNaN; Signaling — для QNaN и SNaN.
+Это не arithmetic first-source NaN propagation. Нормальные конечные значения,
+нули и subnormals delegate to `compare_finite`; signed zero численно равен,
+хотя raw `Eq` остаётся bitwise. Бесконечности сравниваются в обычном
+численном порядке. Новые API не добавляют EFLAGS/MXCSR/x87 state, exception
+delivery или `PartialOrd`/`Ord`.
+
+Literal vectors для обеих ширин проверяют NaN source position/type по обоим
+режимам, обе NaNs, неизменность raw bits, signed infinity/zero behavior,
+subnormal/normal and adjacent-normal boundaries, exact equality и reversal
+отношений. Пройдены `cargo test -p od-isa --offline binary_float::tests`
+(64/64), `cargo test -p od-isa --offline x87::tests` (47/47),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check` и `graphify update .`. Независимые Sol medium code review и
+docs review завершились без замечаний; hardware/SSH проверка отложена до общего
+финального substage. S2-36 не заявляется завершённой.
+
+Provenance: Intel SDM Rev. 093, Vol. 2A COMISD/UCOMISD §3-199 and
+COMISS/UCOMISS §3-201 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+Для этих compare families NaN relationship is unordered; COMI raises invalid
+for QNaN/SNaN while UCOMI raises invalid for SNaN. This API models relation and
+local invalid only, not architectural status/EFLAGS or delivery. See [plan
+S2-36t](../plans/STAGE_2.md#s2-36t--raw-same-format-binary32binary64-comparison).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

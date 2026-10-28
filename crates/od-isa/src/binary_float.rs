@@ -143,6 +143,50 @@ pub struct BinaryDivisionResult<T> {
     divide_by_zero: bool,
 }
 
+/// Comparison mode that controls whether quiet NaNs signal a local invalid result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BinaryComparisonMode {
+    /// Invalid is reported only for signaling NaN operands.
+    Quiet,
+    /// Invalid is reported for either quiet or signaling NaN operands.
+    Signaling,
+}
+
+/// Numerical relation produced by a same-format binary comparison.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BinaryComparisonRelation {
+    Less,
+    Equal,
+    Greater,
+    Unordered,
+}
+
+/// Relation and local invalid-operation outcome for a binary comparison.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BinaryComparisonResult {
+    relation: BinaryComparisonRelation,
+    invalid_operation: bool,
+}
+
+impl BinaryComparisonResult {
+    const fn new(relation: BinaryComparisonRelation, invalid_operation: bool) -> Self {
+        Self {
+            relation,
+            invalid_operation,
+        }
+    }
+
+    /// Returns the numerical relation, including `Unordered` for any NaN.
+    pub const fn relation(&self) -> BinaryComparisonRelation {
+        self.relation
+    }
+
+    /// Returns the local invalid-operation outcome.
+    pub const fn invalid_operation(&self) -> bool {
+        self.invalid_operation
+    }
+}
+
 impl<T> BinaryDivisionResult<T> {
     const fn new(
         rounding: BinaryRoundingResult<T>,
@@ -278,6 +322,66 @@ impl Binary32 {
             }
             BinaryClass::Infinity | BinaryClass::QuietNaN | BinaryClass::SignalingNaN => None,
         }
+    }
+
+    /// Compares same-format raw binary32 operands without changing their bits.
+    ///
+    /// Either NaN produces `Unordered`. Quiet mode reports invalid only for a
+    /// signaling NaN; signaling mode reports invalid for every NaN. This is a
+    /// local comparison result and does not update flags or CPU state.
+    pub fn compare_raw(lhs: Self, rhs: Self, mode: BinaryComparisonMode) -> BinaryComparisonResult {
+        let lhs_class = lhs.class();
+        let rhs_class = rhs.class();
+        let lhs_nan = is_nan_class(lhs_class);
+        let rhs_nan = is_nan_class(rhs_class);
+        if lhs_nan || rhs_nan {
+            let invalid = mode == BinaryComparisonMode::Signaling
+                || lhs_class == BinaryClass::SignalingNaN
+                || rhs_class == BinaryClass::SignalingNaN;
+            return BinaryComparisonResult::new(BinaryComparisonRelation::Unordered, invalid);
+        }
+
+        let lhs_infinity = lhs_class == BinaryClass::Infinity;
+        let rhs_infinity = rhs_class == BinaryClass::Infinity;
+        if lhs_infinity && rhs_infinity {
+            return BinaryComparisonResult::new(
+                if lhs.sign() == rhs.sign() {
+                    BinaryComparisonRelation::Equal
+                } else if lhs.sign() {
+                    BinaryComparisonRelation::Less
+                } else {
+                    BinaryComparisonRelation::Greater
+                },
+                false,
+            );
+        }
+        if lhs_infinity {
+            return BinaryComparisonResult::new(
+                if lhs.sign() {
+                    BinaryComparisonRelation::Less
+                } else {
+                    BinaryComparisonRelation::Greater
+                },
+                false,
+            );
+        }
+        if rhs_infinity {
+            return BinaryComparisonResult::new(
+                if rhs.sign() {
+                    BinaryComparisonRelation::Greater
+                } else {
+                    BinaryComparisonRelation::Less
+                },
+                false,
+            );
+        }
+
+        let lhs_finite = lhs.normalize_finite().expect("finite binary32 operand");
+        let rhs_finite = rhs.normalize_finite().expect("finite binary32 operand");
+        BinaryComparisonResult::new(
+            comparison_relation(compare_finite(lhs_finite, rhs_finite)),
+            false,
+        )
     }
 
     /// Packs an already-rounded, normal binary32 significand.
@@ -908,6 +1012,66 @@ impl Binary64 {
         }
     }
 
+    /// Compares same-format raw binary64 operands without changing their bits.
+    ///
+    /// Either NaN produces `Unordered`. Quiet mode reports invalid only for a
+    /// signaling NaN; signaling mode reports invalid for every NaN. This is a
+    /// local comparison result and does not update flags or CPU state.
+    pub fn compare_raw(lhs: Self, rhs: Self, mode: BinaryComparisonMode) -> BinaryComparisonResult {
+        let lhs_class = lhs.class();
+        let rhs_class = rhs.class();
+        let lhs_nan = is_nan_class(lhs_class);
+        let rhs_nan = is_nan_class(rhs_class);
+        if lhs_nan || rhs_nan {
+            let invalid = mode == BinaryComparisonMode::Signaling
+                || lhs_class == BinaryClass::SignalingNaN
+                || rhs_class == BinaryClass::SignalingNaN;
+            return BinaryComparisonResult::new(BinaryComparisonRelation::Unordered, invalid);
+        }
+
+        let lhs_infinity = lhs_class == BinaryClass::Infinity;
+        let rhs_infinity = rhs_class == BinaryClass::Infinity;
+        if lhs_infinity && rhs_infinity {
+            return BinaryComparisonResult::new(
+                if lhs.sign() == rhs.sign() {
+                    BinaryComparisonRelation::Equal
+                } else if lhs.sign() {
+                    BinaryComparisonRelation::Less
+                } else {
+                    BinaryComparisonRelation::Greater
+                },
+                false,
+            );
+        }
+        if lhs_infinity {
+            return BinaryComparisonResult::new(
+                if lhs.sign() {
+                    BinaryComparisonRelation::Less
+                } else {
+                    BinaryComparisonRelation::Greater
+                },
+                false,
+            );
+        }
+        if rhs_infinity {
+            return BinaryComparisonResult::new(
+                if rhs.sign() {
+                    BinaryComparisonRelation::Greater
+                } else {
+                    BinaryComparisonRelation::Less
+                },
+                false,
+            );
+        }
+
+        let lhs_finite = lhs.normalize_finite().expect("finite binary64 operand");
+        let rhs_finite = rhs.normalize_finite().expect("finite binary64 operand");
+        BinaryComparisonResult::new(
+            comparison_relation(compare_finite(lhs_finite, rhs_finite)),
+            false,
+        )
+    }
+
     /// Packs an already-rounded, normal binary64 significand.
     ///
     /// `magnitude` represents `(-1)^sign * magnitude * 2^(exponent+1-53)`.
@@ -1495,6 +1659,18 @@ impl BinaryFinite {
     }
 }
 
+fn is_nan_class(class: BinaryClass) -> bool {
+    matches!(class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN)
+}
+
+fn comparison_relation(ordering: core::cmp::Ordering) -> BinaryComparisonRelation {
+    match ordering {
+        core::cmp::Ordering::Less => BinaryComparisonRelation::Less,
+        core::cmp::Ordering::Equal => BinaryComparisonRelation::Equal,
+        core::cmp::Ordering::Greater => BinaryComparisonRelation::Greater,
+    }
+}
+
 /// Compares two finite values numerically without changing raw-encoding identity.
 ///
 /// Signed zeros compare equal. Nonzero values compare by sign and then by their
@@ -1969,9 +2145,10 @@ fn round_pack_quotient_bits(
 #[cfg(test)]
 mod tests {
     use super::{
-        Binary32, Binary64, BinaryClass, BinaryFinite, BinaryFiniteQuotient, BinaryRoundingResult,
-        RationalRoundingMode, add_finite_aligned, compare_finite, divide_finite_significands,
-        finite_exponent_gap, multiply_finite_significands, round_quotient_to_precision,
+        Binary32, Binary64, BinaryClass, BinaryComparisonMode, BinaryComparisonRelation,
+        BinaryFinite, BinaryFiniteQuotient, BinaryRoundingResult, RationalRoundingMode,
+        add_finite_aligned, compare_finite, divide_finite_significands, finite_exponent_gap,
+        multiply_finite_significands, round_quotient_to_precision,
     };
 
     use core::cmp::Ordering;
@@ -7644,5 +7821,151 @@ mod tests {
         );
         assert_eq!(overflow64.value().to_bits(), 0x7ff0_0000_0000_0000);
         assert!(overflow64.inexact() && overflow64.overflow());
+    }
+
+    #[test]
+    fn raw_binary32_comparison_nan_modes_are_literal_and_nonmutating() {
+        use BinaryComparisonMode::{Quiet, Signaling};
+        use BinaryComparisonRelation::Unordered;
+
+        let qnan = Binary32::from_bits(0x7fc1_2345);
+        let neg_qnan = Binary32::from_bits(0xffc2_3456);
+        let snan = Binary32::from_bits(0x7f81_2345);
+        let neg_snan = Binary32::from_bits(0xff81_3456);
+        let one = Binary32::from_bits(0x3f80_0000);
+        for (lhs, rhs, quiet_invalid) in [
+            (qnan, one, false),
+            (one, qnan, false),
+            (qnan, neg_qnan, false),
+            (qnan, snan, true),
+            (snan, qnan, true),
+            (snan, neg_snan, true),
+            (neg_snan, one, true),
+            (one, neg_snan, true),
+        ] {
+            let lhs_before = lhs.to_bits();
+            let rhs_before = rhs.to_bits();
+            for (mode, invalid) in [(Quiet, quiet_invalid), (Signaling, true)] {
+                let result = Binary32::compare_raw(lhs, rhs, mode);
+                assert_eq!(result.relation(), Unordered);
+                assert_eq!(result.invalid_operation(), invalid);
+                assert_eq!(lhs.to_bits(), lhs_before);
+                assert_eq!(rhs.to_bits(), rhs_before);
+            }
+        }
+    }
+
+    #[test]
+    fn raw_binary64_comparison_nan_modes_are_literal_and_nonmutating() {
+        use BinaryComparisonMode::{Quiet, Signaling};
+        use BinaryComparisonRelation::Unordered;
+
+        let qnan = Binary64::from_bits(0x7ff8_1234_5678_9abc);
+        let neg_qnan = Binary64::from_bits(0xfff8_2345_6789_abcd);
+        let snan = Binary64::from_bits(0x7ff0_1234_5678_9abc);
+        let neg_snan = Binary64::from_bits(0xfff0_2345_6789_abcd);
+        let one = Binary64::from_bits(0x3ff0_0000_0000_0000);
+        for (lhs, rhs, quiet_invalid) in [
+            (qnan, one, false),
+            (one, qnan, false),
+            (qnan, neg_qnan, false),
+            (qnan, snan, true),
+            (snan, qnan, true),
+            (snan, neg_snan, true),
+            (neg_snan, one, true),
+            (one, neg_snan, true),
+        ] {
+            let lhs_before = lhs.to_bits();
+            let rhs_before = rhs.to_bits();
+            for (mode, invalid) in [(Quiet, quiet_invalid), (Signaling, true)] {
+                let result = Binary64::compare_raw(lhs, rhs, mode);
+                assert_eq!(result.relation(), Unordered);
+                assert_eq!(result.invalid_operation(), invalid);
+                assert_eq!(lhs.to_bits(), lhs_before);
+                assert_eq!(rhs.to_bits(), rhs_before);
+            }
+        }
+    }
+
+    #[test]
+    fn raw_binary32_comparison_orders_infinities_zeros_and_finite_edges() {
+        use BinaryComparisonMode::{Quiet, Signaling};
+        use BinaryComparisonRelation::{Equal, Greater, Less};
+
+        let pairs = [
+            (0xff80_0000_u32, 0xff80_0000_u32, Equal),
+            (0xff80_0000, 0x7f80_0000, Less),
+            (0x7f80_0000, 0xff80_0000, Greater),
+            (0xff80_0000, 0xff7f_ffff, Less),
+            (0x7f7f_ffff, 0x7f80_0000, Less),
+            (0x8000_0000, 0x0000_0000, Equal),
+            (0x3f80_0000, 0x3f80_0000, Equal),
+            (0x8000_0001, 0x8000_0000, Less),
+            (0x0000_0000, 0x0000_0001, Less),
+            (0x007f_ffff, 0x0080_0000, Less),
+            (0x3f80_0000, 0x3f80_0001, Less),
+            (0x4000_0000, 0x4000_0001, Less),
+            (0xbf80_0001, 0xbf80_0000, Less),
+        ];
+        for (lhs_bits, rhs_bits, expected) in pairs {
+            let lhs = Binary32::from_bits(lhs_bits);
+            let rhs = Binary32::from_bits(rhs_bits);
+            for mode in [Quiet, Signaling] {
+                let result = Binary32::compare_raw(lhs, rhs, mode);
+                let reversed = Binary32::compare_raw(rhs, lhs, mode);
+                assert_eq!(result.relation(), expected);
+                assert_eq!(result.invalid_operation(), false);
+                assert_eq!(
+                    reversed.relation(),
+                    match expected {
+                        Less => Greater,
+                        Equal => Equal,
+                        Greater => Less,
+                        BinaryComparisonRelation::Unordered => unreachable!(),
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn raw_binary64_comparison_orders_infinities_zeros_and_finite_edges() {
+        use BinaryComparisonMode::{Quiet, Signaling};
+        use BinaryComparisonRelation::{Equal, Greater, Less};
+
+        let pairs = [
+            (0xfff0_0000_0000_0000_u64, 0xfff0_0000_0000_0000_u64, Equal),
+            (0xfff0_0000_0000_0000, 0x7ff0_0000_0000_0000, Less),
+            (0x7ff0_0000_0000_0000, 0xfff0_0000_0000_0000, Greater),
+            (0xfff0_0000_0000_0000, 0xffef_ffff_ffff_ffff, Less),
+            (0x7fef_ffff_ffff_ffff, 0x7ff0_0000_0000_0000, Less),
+            (0x8000_0000_0000_0000, 0x0000_0000_0000_0000, Equal),
+            (0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000, Equal),
+            (0x8000_0000_0000_0001, 0x8000_0000_0000_0000, Less),
+            (0x0000_0000_0000_0000, 0x0000_0000_0000_0001, Less),
+            (0x000f_ffff_ffff_ffff, 0x0010_0000_0000_0000, Less),
+            (0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0001, Less),
+            (0x4000_0000_0000_0000, 0x4000_0000_0000_0001, Less),
+            (0xbff0_0000_0000_0001, 0xbff0_0000_0000_0000, Less),
+        ];
+        for (lhs_bits, rhs_bits, expected) in pairs {
+            let lhs = Binary64::from_bits(lhs_bits);
+            let rhs = Binary64::from_bits(rhs_bits);
+            for mode in [Quiet, Signaling] {
+                let result = Binary64::compare_raw(lhs, rhs, mode);
+                let reversed = Binary64::compare_raw(rhs, lhs, mode);
+                assert_eq!(result.relation(), expected);
+                assert_eq!(result.invalid_operation(), false);
+                assert_eq!(
+                    reversed.relation(),
+                    match expected {
+                        Less => Greater,
+                        Equal => Equal,
+                        Greater => Less,
+                        BinaryComparisonRelation::Unordered => unreachable!(),
+                    }
+                );
+            }
+        }
     }
 }
