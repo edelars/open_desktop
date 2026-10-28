@@ -720,6 +720,8 @@ fn is_checked_memory_address(
             && operand.index == Some(od_isa::Register::Rbp)
             && matches!(operand.scale, 1 | 2 | 4 | 8)
             && i32::try_from(operand.displacement).is_ok();
+        let indexed_no_base_rsi_rdi_sib_disp32 =
+            is_address32_indexed_no_base_rsi_rdi_sib_data_operand(*operand, instruction_length);
         let indexed_base_supported = base_supported
             || operand.index.is_some_and(|index| (index as u8) < 4)
                 && (matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
@@ -756,7 +758,8 @@ fn is_checked_memory_address(
             || rbp_direct
             || absolute_sib_disp32
             || indexed_no_base_sib_disp32
-            || indexed_no_base_rbp_sib_disp32;
+            || indexed_no_base_rbp_sib_disp32
+            || indexed_no_base_rsi_rdi_sib_disp32;
     }
     if operand.address_size != od_isa::OperandSize::Qword {
         return false;
@@ -1136,6 +1139,10 @@ fn is_scoped_memory_data_operand(
             || is_address32_absolute_sib_stack_data_operand(operand, instruction_length)
             || is_address32_indexed_no_base_sib_stack_data_operand(operand, instruction_length)
             || is_address32_indexed_no_base_rbp_sib_stack_data_operand(operand, instruction_length)
+            || is_address32_indexed_no_base_rsi_rdi_sib_stack_data_operand(
+                operand,
+                instruction_length,
+            )
             || is_indexed_no_base_rbp_sib_stack_data_operand(operand, instruction_length))
 }
 
@@ -1216,6 +1223,29 @@ fn is_address32_indexed_no_base_rbp_sib_stack_data_operand(
         && matches!(operand.scale, 1 | 2 | 4 | 8)
         && operand.size == od_isa::OperandSize::Qword
         && i32::try_from(operand.displacement).is_ok()
+}
+
+fn is_address32_indexed_no_base_rsi_rdi_sib_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    operand.address_size == od_isa::OperandSize::Dword
+        && instruction_length == 9
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(operand.base, AddressBase::None)
+        && matches!(
+            operand.index,
+            Some(od_isa::Register::Rsi | od_isa::Register::Rdi)
+        )
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && i32::try_from(operand.displacement).is_ok()
+}
+
+fn is_address32_indexed_no_base_rsi_rdi_sib_stack_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    is_address32_indexed_no_base_rsi_rdi_sib_data_operand(operand, instruction_length)
 }
 
 fn is_address32_direct_stack_data_operand(operand: MemoryOperand, instruction_length: u64) -> bool {

@@ -601,6 +601,17 @@ impl MemorySiteV2 {
             && matches!(self.operand.scale, 1 | 2 | 4 | 8)
             && length == 9
             && i32::try_from(self.operand.displacement).is_ok();
+        let address32_indexed_no_base_rsi_rdi_sib_disp32_data_profile = self.operand.address_size
+            == od_isa::OperandSize::Dword
+            && self.operand.size == od_isa::OperandSize::Qword
+            && matches!(self.operand.base, od_isa::long_decode::AddressBase::None)
+            && matches!(
+                self.operand.index,
+                Some(od_isa::Register::Rsi | od_isa::Register::Rdi)
+            )
+            && matches!(self.operand.scale, 1 | 2 | 4 | 8)
+            && length == 9
+            && i32::try_from(self.operand.displacement).is_ok();
         let absolute_sib_disp32_data_profile = self.operand.address_size
             == od_isa::OperandSize::Qword
             && self.operand.size == od_isa::OperandSize::Qword
@@ -650,6 +661,7 @@ impl MemorySiteV2 {
             || address32_absolute_sib_disp32_data_profile
             || address32_indexed_no_base_sib_disp32_data_profile
             || address32_indexed_no_base_rbp_sib_disp32_data_profile
+            || address32_indexed_no_base_rsi_rdi_sib_disp32_data_profile
             || absolute_sib_disp32_data_profile
             || indexed_no_base_sib_disp32_data_profile
             || indexed_no_base_rbp_sib_disp32_data_profile
@@ -900,7 +912,8 @@ impl MemorySiteV2 {
                         || self.operand.address_size == od_isa::OperandSize::Dword
                             && length == 9
                             && self.operand.index == Some(od_isa::Register::Rbp)
-                            && matches!(self.operand.scale, 1 | 2 | 4 | 8))
+                            && matches!(self.operand.scale, 1 | 2 | 4 | 8)
+                        || address32_indexed_no_base_rsi_rdi_sib_disp32_data_profile)
                     && i32::try_from(self.operand.displacement).is_ok()
             }
         };
@@ -931,6 +944,7 @@ impl MemorySiteV2 {
                     && !indexed_no_base_rbp_sib_disp32_data_profile
                     && !indexed_no_base_rsi_rdi_sib_disp32_data_profile
                     && !address32_indexed_no_base_rbp_sib_disp32_data_profile
+                    && !address32_indexed_no_base_rsi_rdi_sib_disp32_data_profile
             })
             || !matches!(
                 self.operand.address_size,
@@ -954,7 +968,8 @@ impl MemorySiteV2 {
                 || address32_indexed_sib_data_profile
                 || address32_low_base_rsi_rdi_index_sib_data_profile
                 || address32_rsi_rdi_base_rbp_index_sib_data_profile
-                || address32_rsp_base_rsi_rdi_index_sib_data_profile;
+                || address32_rsp_base_rsi_rdi_index_sib_data_profile
+                || address32_indexed_no_base_rsi_rdi_sib_disp32_data_profile;
             let supported_base =
                 supported_base || address32_rbp_base_rsi_rdi_index_sib_data_profile;
             let direct = self.operand.index.is_none()
@@ -972,7 +987,7 @@ impl MemorySiteV2 {
                     9 => i32::try_from(self.operand.displacement).is_ok(),
                     _ => false,
                 }
-                && self.operand.index.is_some_and(|index| {
+                && (self.operand.index.is_some_and(|index| {
                     matches!(
                         index,
                         od_isa::Register::Rax
@@ -980,7 +995,7 @@ impl MemorySiteV2 {
                             | od_isa::Register::Rdx
                             | od_isa::Register::Rbx
                     ) || index == od_isa::Register::Rbp
-                })
+                }) || address32_indexed_no_base_rsi_rdi_sib_disp32_data_profile)
                 && matches!(self.operand.scale, 1 | 2 | 4 | 8);
             let rsp_no_index_sib = matches!(length, 5 | 6 | 9)
                 && matches!(
@@ -1044,6 +1059,8 @@ impl MemorySiteV2 {
                 && i32::try_from(self.operand.displacement).is_ok();
             let indexed_no_base_rbp_sib_disp32 =
                 address32_indexed_no_base_rbp_sib_disp32_data_profile;
+            let indexed_no_base_rsi_rdi_sib_disp32 =
+                address32_indexed_no_base_rsi_rdi_sib_disp32_data_profile;
             return (supported_base
                 || rsp_no_index_sib
                 || rsp_indexed_sib
@@ -1053,7 +1070,8 @@ impl MemorySiteV2 {
                 || rbp_direct
                 || absolute_sib_disp32
                 || indexed_no_base_sib_disp32
-                || indexed_no_base_rbp_sib_disp32)
+                || indexed_no_base_rbp_sib_disp32
+                || indexed_no_base_rsi_rdi_sib_disp32)
                 && (direct
                     || indexed
                     || address32_indexed_sib_data_profile
@@ -1067,6 +1085,7 @@ impl MemorySiteV2 {
                     || absolute_sib_disp32
                     || indexed_no_base_sib_disp32
                     || indexed_no_base_rbp_sib_disp32
+                    || indexed_no_base_rsi_rdi_sib_disp32
                     || address32_rsi_rdi_base_rbp_index_sib_data_profile
                     || address32_rsp_base_rsi_rdi_index_sib_data_profile
                     || address32_rbp_base_rsi_rdi_index_sib_data_profile);
@@ -1166,7 +1185,7 @@ impl MemorySiteV2 {
                 && mode == 0
                 && base == 4
                 && source[4] & 7 == 5
-                && ((source[4] >> 3) & 7 < 4 || (source[4] >> 3) & 7 == 5)
+                && matches!((source[4] >> 3) & 7, 0..=3 | 5..=7)
             {
                 let sib = source[4];
                 return data_register <= 5
