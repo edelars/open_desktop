@@ -1650,19 +1650,26 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && matches!(instruction.length, 3 | 4 | 5 | 6 | 7 | 8 | 9)
         && ((destination.register() as u8) < 4
             || matches!(destination.register() as u8, 6 | 7)
-                && matches!(instruction.length, 3 | 4 | 7)
-                && instruction.address_size == OperandSize::Qword
-                && operand.address_size == OperandSize::Qword
                 && operand.size == OperandSize::Qword
                 && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
                 && operand.index.is_none()
                 && operand.scale == 1
-                && match instruction.length {
-                    3 => operand.displacement == 0,
-                    4 => i8::try_from(operand.displacement).is_ok(),
-                    7 => i32::try_from(operand.displacement).is_ok(),
-                    _ => false,
-                }
+                && (instruction.address_size == OperandSize::Qword
+                    && operand.address_size == OperandSize::Qword
+                    && match instruction.length {
+                        3 => operand.displacement == 0,
+                        4 => i8::try_from(operand.displacement).is_ok(),
+                        7 => i32::try_from(operand.displacement).is_ok(),
+                        _ => false,
+                    }
+                    || instruction.address_size == OperandSize::Dword
+                        && operand.address_size == OperandSize::Dword
+                        && match instruction.length {
+                            4 => operand.displacement == 0,
+                            5 => i8::try_from(operand.displacement).is_ok(),
+                            8 => i32::try_from(operand.displacement).is_ok(),
+                            _ => false,
+                        })
             || destination.register() as u8 == 4
                 && is_rsp_memory_data_operand(instruction, operand)
             || destination.register() as u8 == 5
@@ -1693,17 +1700,24 @@ pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
             || source.register() as u8 == 4 && is_rsp_memory_data_operand(instruction, operand)
             || source.register() as u8 == 5 && is_rbp_memory_data_operand(instruction, operand)
             || matches!(source.register() as u8, 6 | 7)
-                && matches!(instruction.length, 3 | 4 | 7)
-                && instruction.address_size == OperandSize::Qword
-                && operand.address_size == OperandSize::Qword
                 && operand.index.is_none()
                 && operand.scale == 1
-                && match instruction.length {
-                    3 => operand.displacement == 0,
-                    4 => i8::try_from(operand.displacement).is_ok(),
-                    7 => i32::try_from(operand.displacement).is_ok(),
-                    _ => false,
-                }
+                && (instruction.address_size == OperandSize::Qword
+                    && operand.address_size == OperandSize::Qword
+                    && match instruction.length {
+                        3 => operand.displacement == 0,
+                        4 => i8::try_from(operand.displacement).is_ok(),
+                        7 => i32::try_from(operand.displacement).is_ok(),
+                        _ => false,
+                    }
+                    || instruction.address_size == OperandSize::Dword
+                        && operand.address_size == OperandSize::Dword
+                        && match instruction.length {
+                            4 => operand.displacement == 0,
+                            5 => i8::try_from(operand.displacement).is_ok(),
+                            8 => i32::try_from(operand.displacement).is_ok(),
+                            _ => false,
+                        })
                 && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4))
         && source.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
@@ -3425,10 +3439,11 @@ pub(crate) fn exact_qword_address32_memory_bytes(
     };
     bytes[0..3] == [0x67, 0x48, opcode]
         && bytes[3] >> 6 == expected_mode
-        && (bytes[3] >> 3) & 7 <= 5
-        && (bytes[3] & 7 < 4
-            || expected_mode != 0 && bytes[3] & 7 == 5
-            || matches!(bytes[3] & 7, 6 | 7))
+        && ((bytes[3] >> 3) & 7 <= 5
+            && (bytes[3] & 7 < 4
+                || expected_mode != 0 && bytes[3] & 7 == 5
+                || matches!(bytes[3] & 7, 6 | 7))
+            || (bytes[3] >> 3) & 7 >= 6 && bytes[3] & 7 < 4)
 }
 
 pub(crate) fn exact_qword_address32_sib_memory_bytes(

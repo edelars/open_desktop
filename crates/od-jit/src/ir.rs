@@ -353,18 +353,26 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                     }
                 } else if matches!(src.0, 6 | 7) {
                     let length = instruction_length(program, active_instruction);
-                    let displacement_valid = match length {
-                        3 => operand.displacement == 0,
-                        4 => i8::try_from(operand.displacement).is_ok(),
-                        7 => i32::try_from(operand.displacement).is_ok(),
-                        _ => false,
-                    };
-                    if !matches!(length, 3 | 4 | 7)
-                        || operand.address_size != od_isa::OperandSize::Qword
+                    let addr64_profile = matches!(length, 3 | 4 | 7)
+                        && operand.address_size == od_isa::OperandSize::Qword
+                        && match length {
+                            3 => operand.displacement == 0,
+                            4 => i8::try_from(operand.displacement).is_ok(),
+                            7 => i32::try_from(operand.displacement).is_ok(),
+                            _ => false,
+                        };
+                    let addr32_profile = matches!(length, 4 | 5 | 8)
+                        && operand.address_size == od_isa::OperandSize::Dword
+                        && match length {
+                            4 => operand.displacement == 0,
+                            5 => i8::try_from(operand.displacement).is_ok(),
+                            8 => i32::try_from(operand.displacement).is_ok(),
+                            _ => false,
+                        };
+                    if !(addr64_profile || addr32_profile)
                         || operand.size != od_isa::OperandSize::Qword
                         || operand.index.is_some()
                         || operand.scale != 1
-                        || !displacement_valid
                         || !matches!(
                             operand.base,
                             od_isa::long_decode::AddressBase::Register(register)
@@ -1019,8 +1027,10 @@ fn is_direct_low_base_rsi_rdi_load_operand(
     data_register: u8,
 ) -> bool {
     matches!(data_register, 6 | 7)
-        && matches!(instruction_length, 3 | 4 | 7)
-        && operand.address_size == od_isa::OperandSize::Qword
+        && (matches!(instruction_length, 3 | 4 | 7)
+            && operand.address_size == od_isa::OperandSize::Qword
+            || matches!(instruction_length, 4 | 5 | 8)
+                && operand.address_size == od_isa::OperandSize::Dword)
         && operand.size == od_isa::OperandSize::Qword
         && matches!(
             operand.base,
@@ -1028,10 +1038,13 @@ fn is_direct_low_base_rsi_rdi_load_operand(
         )
         && operand.index.is_none()
         && operand.scale == 1
-        && match instruction_length {
-            3 => operand.displacement == 0,
-            4 => i8::try_from(operand.displacement).is_ok(),
-            7 => i32::try_from(operand.displacement).is_ok(),
+        && match (operand.address_size, instruction_length) {
+            (od_isa::OperandSize::Qword, 3) => operand.displacement == 0,
+            (od_isa::OperandSize::Qword, 4) => i8::try_from(operand.displacement).is_ok(),
+            (od_isa::OperandSize::Qword, 7) => i32::try_from(operand.displacement).is_ok(),
+            (od_isa::OperandSize::Dword, 4) => operand.displacement == 0,
+            (od_isa::OperandSize::Dword, 5) => i8::try_from(operand.displacement).is_ok(),
+            (od_isa::OperandSize::Dword, 8) => i32::try_from(operand.displacement).is_ok(),
             _ => false,
         }
 }
