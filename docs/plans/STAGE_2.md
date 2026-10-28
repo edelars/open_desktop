@@ -9370,3 +9370,10 @@ claim.
 Добавлен отдельный diagnostic profile `s2-long-orpd-reg-v1` для точной long-mode формы `66 [one optional REX.R/B] 0F 56 /r`, только при ModR/M.mod=3. ModR/M.reg с REX.R выбирает destination XMM0–15, ModR/M.r/m с REX.B — source. Исполнение выполняет raw OR всех 128 бит с alias/self-OR, не вызывает data-memory callbacks и сохраняет все остальные части состояния; существующие ORPS и другие логические профили остаются отдельными.
 
 Строгие отрицательные формы включают отсутствие/дублирование/перестановку `66`, другие legacy prefixes, REX.W/X, memory ModRM, VEX/EVEX, truncation, ORPS без `66`, ANDPD, ANDNPD, XORPD и POR. Handwritten fixture `s2_34_19_orpd_register.case.json` проверяется testkit и CLI interpreter; JIT и native runner запрещают профиль. Unit matrix покрывает XMM0–15 и alias/self-OR, а missing-SSE-state и truncated-fetch отказ атомарны. SSE2 и CR0/CR4 prerequisites предполагаются; guest control gates и `#UD`/`#NM` не реализованы. Семантика соответствует Intel SDM revision 093, Vol. 2B, ORPD. Parent S2-34 остаётся open; physical статус `not_run`.
+
+
+#### S2-34.20 — local-only register ANDNPD
+
+Добавлен отдельный diagnostic profile `s2-long-andnpd-reg-v1` для точной long-mode формы `66 [one optional REX.R/B] 0F 55 /r`, только при ModR/M.mod=3. ModR/M.reg с REX.R выбирает destination XMM0–15, ModR/M.r/m с REX.B — source. Семантика проверена по Intel SDM revision 093, Vol. 2B: каждый raw bit результата равен `(~old_destination) & source`. Не перепутывать с `destination & ~source`; handwritten XMM8/XMM9 literal truth pattern различает варианты. Alias/self-ANDNPD даёт ноль.
+
+Профиль строго отвергает отсутствующий, повторный или misordered `66`, лишние legacy prefixes, REX.W/X, memory operands, VEX/EVEX, truncation, а также XORPD/ANDPD/ORPD/PANDN соседние формы. Старый ANDNPS остаётся отдельным профилем. Decoder и executor покрывают 16×16 назначений (включая alias), byte truth-table pattern, атомарный missing-SSE/truncation refusal и отсутствие data-memory callbacks. Handwritten XMM8/XMM9 fixture проходит testkit и interpreter CLI; JIT и native runner отказывают. S2-34 остаётся open; физическое исполнение `not_run`.

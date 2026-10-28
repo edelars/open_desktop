@@ -262,6 +262,49 @@ fn orpd_profile_is_exact_and_rejects_neighbors() {
 }
 
 #[test]
+fn andnpd_profile_is_exact_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_20_andnpd_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongAndnpdRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "66450f55c1");
+    for bytes in [
+        "0f55c1", // legacy encoding without mandatory 66 is outside profile
+        "f2660f55c1",
+        "f3660f55c1",
+        "67660f55c1",
+        "f0660f55c1",
+        "2e660f55c1",
+        "0f6655c1",
+        "66480f55c1",
+        "66420f55c1",
+        "66660f55c1",
+        "6640410f55c1",
+        "660f5501",
+        "660f55",
+        "c5f955c1",
+        "62f17d0855c1",
+        "660f54c1", // ANDPD
+        "660f56c1", // ORPD
+        "660f57c1", // XORPD
+        "0f55c1",   // ANDNPS
+        "660fdbc1", // PAND
+        "660fdfc1", // PANDN
+    ] {
+        let mut wrong = fixture.clone();
+        wrong.memory[0].initial_bytes_hex = bytes.into();
+        wrong.memory[0].length = (bytes.len() / 2) as u32;
+        wrong.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        wrong.stop_rip = Some(HexU64(
+            wrong.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(wrong.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
 fn xorps_profile_is_separate_exact_and_rejects_neighbors() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_7a_xorps_register.case.json"

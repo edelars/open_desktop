@@ -12785,6 +12785,50 @@ fn local_orpd_register_uses_high_xmm_literal_and_preserves_architectural_side_st
 }
 
 #[test]
+fn local_andnpd_register_uses_high_xmm_literal_and_preserves_architectural_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_20_andnpd_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(state.rip, before.rip + 5);
+    let expected: [u8; 16] = std::array::from_fn(|i| {
+        !before.sse.as_ref().unwrap().xmm[8][i] & before.sse.as_ref().unwrap().xmm[9][i]
+    });
+    assert_eq!(
+        expected,
+        [
+            0x0f, 0xe0, 0x0d, 0xc0, 0x0b, 0xa0, 0x09, 0x80, 0x07, 0x60, 0x05, 0x40, 0x03, 0x20,
+            0x01, 0x00
+        ]
+    );
+    assert_eq!(state.sse.as_ref().unwrap().xmm[8], expected);
+    assert_eq!(
+        state.sse.as_ref().unwrap().mxcsr,
+        before.sse.as_ref().unwrap().mxcsr
+    );
+    assert_eq!(state.x87, before.x87);
+    assert_eq!(state.gpr, before.gpr);
+    assert_eq!(state.rflags, before.rflags);
+    assert_eq!(memory.snapshot(), memory_before);
+}
+
+#[test]
 fn local_pxor_register_uses_literal_pattern_and_preserves_architectural_side_state() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_35_1_pxor_register.case.json"

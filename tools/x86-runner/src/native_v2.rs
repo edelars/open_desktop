@@ -1411,6 +1411,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongXorpdRegV1
             | v2::Profile::LongAndpdRegV1
             | v2::Profile::LongOrpdRegV1
+            | v2::Profile::LongAndnpdRegV1
             | v2::Profile::LongPxorRegV1
             | v2::Profile::LongPandRegV1
             | v2::Profile::LongPandnRegV1
@@ -4272,6 +4273,9 @@ mod tests {
                 [..],
             &include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_19_orpd_register.case.json")
                 [..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_20_andnpd_register.case.json"
+            )[..],
             &include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_7b_andps_register.case.json")
                 [..],
             &include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_7c_orps_register.case.json")

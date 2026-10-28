@@ -516,6 +516,11 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only mandatory-66 `0F 55 /r` register form, raw `(~dst) & src`.
+    AndnpdRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only legacy `66 0F EF /r` register form, raw 128-bit integer XOR.
     PxorRegister {
         destination: u8,
@@ -1903,6 +1908,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefixes.rex.is_some()
                     && prefix_bytes[1] == prefixes.rex.unwrap()
                     && prefixes.rex.unwrap() & 0x0a == 0));
+        let andnpd_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x55
+            && prefixes.operand_override
+            && !duplicate
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.address_override
+            && (prefix_bytes[..prefix_count] == [0x66]
+                || (prefix_count == 2
+                    && prefix_bytes[0] == 0x66
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
         let xorpd_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x57
             && prefixes.operand_override
@@ -2643,6 +2661,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::OrpdRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x55) if andnpd_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::AndnpdRegister {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
@@ -7125,7 +7153,6 @@ mod tests {
             &[0x66, 0x0f][..],
             &[0xc5, 0xf9, 0x56, 0xc1][..],
             &[0x62, 0xf1, 0x7d, 0x08, 0x56, 0xc1][..],
-            &[0x66, 0x0f, 0x55, 0xc1][..],
         ] {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
@@ -7153,6 +7180,13 @@ mod tests {
                 },
             ),
             (
+                &[0x66, 0x0f, 0x55, 0xc1][..],
+                Operation::AndnpdRegister {
+                    destination: 0,
+                    source: 1,
+                },
+            ),
+            (
                 &[0x66, 0x0f, 0xeb, 0xc1][..],
                 Operation::PorRegister {
                     destination: 0,
@@ -7163,6 +7197,74 @@ mod tests {
             let decoded = Memory::new(bytes).decode().unwrap();
             assert_eq!(decoded.operation, expected, "{bytes:02x?}");
         }
+    }
+
+    #[test]
+    fn andnpd_register_decodes_exact_mandatory_66_high_register_forms() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut bytes = vec![0x66];
+                if rex != 0x40 {
+                    bytes.push(rex);
+                }
+                bytes.extend([0x0f, 0x55, modrm]);
+                let mut memory = Memory::new(&bytes);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::AndnpdRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, bytes.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0x66, 0x0f, 0x55, 0x01][..],
+            &[0x66, 0x48, 0x0f, 0x55, 0xc1],
+            &[0x66, 0x42, 0x0f, 0x55, 0xc1],
+            &[0x66, 0x66, 0x0f, 0x55, 0xc1],
+            &[0xf2, 0x66, 0x0f, 0x55, 0xc1],
+            &[0x66, 0x67, 0x0f, 0x55, 0xc1],
+            &[0x66, 0x0f, 0x55],
+            &[0x66, 0x0f],
+            &[0xc5, 0xf9, 0x55, 0xc1],
+            &[0x62, 0xf1, 0x7d, 0x08, 0x55, 0xc1],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+        let mut andnps = Memory::new(&[0x0f, 0x55, 0xc1]);
+        assert!(matches!(
+            andnps.decode().unwrap().operation,
+            Operation::AndnpsRegister { .. }
+        ));
+        for bytes in [
+            &[0x66, 0x0f, 0x54, 0xc1][..], // ANDPD
+            &[0x66, 0x0f, 0x56, 0xc1][..], // ORPD
+            &[0x66, 0x0f, 0x57, 0xc1][..], // XORPD
+            &[0x66, 0x0f, 0xdb, 0xc1][..], // PAND
+            &[0x66, 0x0f, 0xdf, 0xc1][..], // PANDN
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(!matches!(
+                memory.decode().unwrap().operation,
+                Operation::AndnpdRegister { .. }
+            ));
+        }
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0xdf, 0xc1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::PandnRegister {
+                destination: 0,
+                source: 1
+            }
+        );
     }
 
     #[test]
@@ -7334,7 +7436,6 @@ mod tests {
             }
         }
         for bytes in [
-            &[0x66, 0x0f, 0x55, 0xc1][..],
             &[0xf2, 0x0f, 0x55, 0xc1][..],
             &[0xf3, 0x0f, 0x55, 0xc1][..],
             &[0x67, 0x0f, 0x55, 0xc1][..],
@@ -7352,6 +7453,16 @@ mod tests {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
         }
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0x55, 0xc1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::AndnpdRegister {
+                destination: 0,
+                source: 1
+            }
+        );
     }
 
     #[test]

@@ -132,6 +132,8 @@ pub enum Profile {
     LongAndpdRegV1,
     #[serde(rename = "s2-long-orpd-reg-v1")]
     LongOrpdRegV1,
+    #[serde(rename = "s2-long-andnpd-reg-v1")]
+    LongAndnpdRegV1,
     #[serde(rename = "s2-long-pxor-reg-v1")]
     LongPxorRegV1,
     #[serde(rename = "s2-long-pand-reg-v1")]
@@ -658,6 +660,7 @@ impl IntegerState {
                     | Profile::LongXorpdRegV1
                     | Profile::LongAndpdRegV1
                     | Profile::LongOrpdRegV1
+                    | Profile::LongAndnpdRegV1
                     | Profile::LongPxorRegV1
                     | Profile::LongPandRegV1
                     | Profile::LongPandnRegV1
@@ -738,6 +741,7 @@ impl IntegerState {
                     | Profile::LongXorpdRegV1
                     | Profile::LongAndpdRegV1
                     | Profile::LongOrpdRegV1
+                    | Profile::LongAndnpdRegV1
                     | Profile::LongPxorRegV1
                     | Profile::LongPandRegV1
                     | Profile::LongPandnRegV1
@@ -825,6 +829,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
+                | Profile::LongAndnpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -906,6 +911,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
+                | Profile::LongAndnpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1036,6 +1042,7 @@ impl IntegerState {
             | Profile::LongXorpdRegV1
             | Profile::LongAndpdRegV1
             | Profile::LongOrpdRegV1
+            | Profile::LongAndnpdRegV1
             | Profile::LongPxorRegV1
             | Profile::LongPandRegV1
             | Profile::LongPandnRegV1
@@ -1116,6 +1123,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
+                | Profile::LongAndnpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1202,6 +1210,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
+                | Profile::LongAndnpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1293,6 +1302,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
+                | Profile::LongAndnpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1387,6 +1397,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
+                | Profile::LongAndnpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1632,6 +1643,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
+                | Profile::LongAndnpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1712,6 +1724,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
+                | Profile::LongAndnpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1795,6 +1808,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
+                | Profile::LongAndnpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -1872,6 +1886,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
+                | Profile::LongAndnpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -2080,6 +2095,7 @@ impl Fixture {
                 | Profile::LongXorpdRegV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
+                | Profile::LongAndnpdRegV1
                 | Profile::LongPxorRegV1
                 | Profile::LongPandRegV1
                 | Profile::LongPandnRegV1
@@ -2145,6 +2161,7 @@ impl Fixture {
                 Profile::LongXorpdRegV1 => xorpd_register_length(&code_bytes),
                 Profile::LongAndpdRegV1 => andpd_register_length(&code_bytes),
                 Profile::LongOrpdRegV1 => orpd_register_length(&code_bytes),
+                Profile::LongAndnpdRegV1 => andnpd_register_length(&code_bytes),
                 Profile::LongPxorRegV1 => pxor_register_length(&code_bytes),
                 Profile::LongPandRegV1 => pand_register_length(&code_bytes),
                 Profile::LongPandnRegV1 => pandn_register_length(&code_bytes),
@@ -4648,6 +4665,25 @@ fn andpd_register_length(code_bytes: &str) -> Option<u32> {
     match bytes.as_slice() {
         [0x66, 0x0f, 0x54, modrm] if modrm >> 6 == 3 => Some(4),
         [0x66, rex, 0x0f, 0x54, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn andnpd_register_length(code_bytes: &str) -> Option<u32> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0x55, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0x55, modrm]
             if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
         {
             Some(5)

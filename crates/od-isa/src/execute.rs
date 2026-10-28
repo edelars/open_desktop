@@ -1337,6 +1337,7 @@ fn step_tracked_with_stop(
         | Operation::AndpsRegister { .. }
         | Operation::AndpdRegister { .. }
         | Operation::OrpdRegister { .. }
+        | Operation::AndnpdRegister { .. }
         | Operation::OrpsRegister { .. }
         | Operation::AndnpsRegister { .. }
         | Operation::MovssRegister { .. }
@@ -2774,6 +2775,23 @@ fn step_tracked_with_stop(
                 .expect("ORPD local profile state was prevalidated");
             for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(source) {
                 *dst |= src;
+            }
+        }
+        Operation::AndnpdRegister {
+            destination,
+            source,
+        } => {
+            let source = state
+                .sse
+                .as_ref()
+                .expect("ANDNPD local profile state was prevalidated")
+                .xmm[usize::from(source)];
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("ANDNPD local profile state was prevalidated");
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(source) {
+                *dst = !*dst & src;
             }
         }
         Operation::PxorRegister {
@@ -73461,6 +73479,128 @@ mod tests {
                     "ORPD must not access data memory"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn andnpd_register_ands_complemented_destination_across_full_matrix() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut code = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    code.push(0x40 | ((destination >> 3) << 2) | (source >> 3));
+                }
+                code.extend([0x0f, 0x55, modrm]);
+                let mut memory = Memory::new(&code);
+                let mut state = LongModeState::default();
+                state.rip = 0;
+                state.rflags = 0x0cd7;
+                state.x87 = Some(X87State::fixture_seed());
+                let xmm = std::array::from_fn(|register| {
+                    std::array::from_fn(|byte| (register * 16 + byte) as u8)
+                });
+                state.sse = Some(SseState { xmm, mxcsr: 0x1f80 });
+                let before = state.clone();
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(code.len() as u64),
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(result.instructions_executed, 1);
+                let mut expected = before.clone();
+                expected.rip = code.len() as u64;
+                expected.sse.as_mut().unwrap().xmm[destination as usize] =
+                    std::array::from_fn(|byte| {
+                        !before.sse.as_ref().unwrap().xmm[destination as usize][byte]
+                            & before.sse.as_ref().unwrap().xmm[source as usize][byte]
+                    });
+                assert_eq!(state, expected, "dest={destination}, src={source}");
+                assert!(
+                    memory.accesses.is_empty(),
+                    "ANDNPD must not access data memory"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn andnpd_register_truth_table_aliases_and_atomic_refusals() {
+        let code = [0x66, 0x0f, 0x55, 0xc1];
+        let mut memory = Memory::new(&code);
+        let mut state = LongModeState::default();
+        state.sse = Some(SseState {
+            xmm: [[0; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        state.x87 = Some(X87State::fixture_seed());
+        state.sse.as_mut().unwrap().xmm[0] = [0xf0; 16];
+        state.sse.as_mut().unwrap().xmm[1] = [0xcc; 16];
+        run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(4),
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(state.sse.as_ref().unwrap().xmm[0], [0x0c; 16]);
+        assert_ne!(
+            [0x0c; 16], [0x30; 16],
+            "operand reversal must be observable"
+        );
+
+        let mut alias = Memory::new(&[0x66, 0x0f, 0x55, 0xc0]);
+        state.rip = 0;
+        state.sse.as_mut().unwrap().xmm[0] = [0xa5; 16];
+        let result = run(
+            &mut state,
+            &mut alias,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(4),
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(state.sse.as_ref().unwrap().xmm[0], [0; 16]);
+
+        let mut missing = LongModeState::default();
+        let before = missing.clone();
+        let mut missing_memory = Memory::new(&code);
+        assert_eq!(
+            step(&mut missing, &mut missing_memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0x55 })
+        );
+        assert_eq!(missing, before);
+        for truncated in [&[0x66][..], &[0x66, 0x0f][..], &[0x66, 0x0f, 0x55][..]] {
+            let mut truncated_state = LongModeState::default();
+            truncated_state.x87 = Some(X87State::fixture_seed());
+            truncated_state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = truncated_state.clone();
+            let mut truncated_memory = Memory::new(truncated);
+            assert!(
+                step(
+                    &mut truncated_state,
+                    &mut truncated_memory,
+                    AccessContext::default()
+                )
+                .is_err()
+            );
+            assert_eq!(truncated_state, before);
+            assert!(truncated_memory.accesses.is_empty());
         }
     }
 
